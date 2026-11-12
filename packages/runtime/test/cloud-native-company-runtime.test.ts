@@ -3237,6 +3237,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// moved once more.
 	// On 12 November 2026 manage_code took bring_in (existing code brought in, 20260930736000): its description, and its
 	// schema's from and look with change no longer required, so they moved again.
+	// On 12 November 2026 save_app's description no longer lists the emblems, which are 24 now and would put it past
+	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
+	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again. Both on one tree, they were
+	// measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3283,9 +3287,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"a7f8b967cc6490da3cb8691cb24b4584d870119c6cf00cc82020462e53c47895",
+		"9ba4fe194bbdb97fc08afa9f02a2d899b9f908bd1c90ee3d92babddfc3d9c255",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"1d004bbab7f5169912400a86f02bde6825db74498b0f529b2e1876509839d332",
+		"440f0773f5b1d64025537c15f4e9a13f00e868b752b0c0545da7662aab345a5f",
 	);
 });

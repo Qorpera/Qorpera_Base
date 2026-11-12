@@ -68,9 +68,11 @@ it("offers save_app and post_app as Company File tools", async () => {
 it("tells how to make a page worth opening, within the bytes a tool's description may hold", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
-	// The tool boundary refuses a tool whose description is over 4096 bytes, and with it every run: the lists of
-	// emblems and colours are part of this one, so a longer list can push it over.
+	// The tool boundary refuses a tool whose description is over 4096 bytes, and with it every run: the list of colours
+	// is part of this one, so a longer list can push it over. The emblems are listed on the schema alone since there are
+	// 24 (12 November 2026), which put it at 4177.
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
+	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
 	for (const rule of [
 		"The first screen answers how this stands, without scrolling, on a laptop and on a phone",
 		"A page with nothing to look at is a document, not an app.",
@@ -166,7 +168,7 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	);
 	refusesArguments(
 		tool,
-		save("sales", "k", manifest("S", { emblem: "rocket" }), []),
+		save("sales", "k", manifest("S", { emblem: "unicorn" }), []),
 		"manifest.emblem must be one of",
 	);
 	refusesArguments(tool, save("sales", "k", manifest("S", { entry: "a.css" }), []), "manifest.entry");
@@ -792,5 +794,186 @@ it("turns a page into an explainer when its manifest takes the kit, and refuses 
 	await refuses(
 		g.call("save_app", save("fee", "entry-1", manifest("Fee", { entry: "main.html" }), [])),
 		"APP_KIT_ENTRY",
+	);
+});
+
+/* ---- An app's own icons (@qorpera/cloud-client/app-icons; 12 November 2026) ------------------------------------- */
+
+const ICON =
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="18"/><path d="M24 13v22M13 24h22" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>';
+const icons = (from: number, count: number) =>
+	Array.from({ length: count }, (_, n) => ({ path: `icons/sign-${from + n}.svg`, text: ICON }));
+
+it("tells on files how to draw an app's own icons, and on emblem that members may pick one", async () => {
+	const f = await fixture();
+	const schema = f.tool("save_app").inputSchema as {
+		properties: { files: { description: string }; manifest: { properties: { emblem: { description: string } } } };
+	};
+	for (const said of [
+		"An app's own icons are files icons/<id>.svg, the id one or two words for what it shows, such as compass or trail-sign",
+		"When a member asks you for new icons for an app, draw 3 clearly different ones from its name and what its page shows",
+		"save them in one call with manifest null and only the icons in files: an ask for icons never changes manifest.emblem",
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"> holding one bold, solid shape filled black (#000)',
+		"white lines of stroke-width 2.6 to 3.4 with stroke-linecap round",
+		"so it still reads at 34 px",
+		"An app keeps at most 12: to draw more, give a new one the id of an old one it replaces.",
+		"company_read shows an .svg as its text, not as a picture",
+		"Then tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer.",
+	])
+		expect(schema.properties.files.description).toContain(said);
+	expect(schema.properties.manifest.properties.emblem.description).toContain(
+		"Members may pick another for their own drawer, or one of the app's own icons (files says how to draw those).",
+	);
+});
+
+it("saves an app's own icons alone, the manifest kept, and says where the member picks one", async () => {
+	const f = await fixture();
+	await f.call(
+		"save_app",
+		save("trips", "make-1", manifest("Trip planner", { emblem: "map" }), [{ path: "index.html", text: PAGE }]),
+	);
+	const before = f.text("apps/trips/app.toml");
+	const answer = read(
+		await f.call(
+			"save_app",
+			save("trips", "icons-1", null, [
+				{ path: "icons/compass.svg", text: ICON },
+				{ path: "./icons/trail-sign.svg", text: ICON },
+				{ path: "icons/tent-2.svg", text: `<?xml version="1.0"?>\n<!-- a tent -->\n${ICON}\n` },
+			]),
+		),
+	);
+	expect(answer).toMatchObject({ state: "applied", created: false });
+	expect(answer).not.toHaveProperty("look");
+	expect(answer.next).toBe(
+		"Saved. Tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer.",
+	);
+	expect(units(f)).toEqual([
+		"apps/trips/icons",
+		"apps/trips/icons/compass.svg",
+		"apps/trips/icons/trail-sign.svg",
+		"apps/trips/icons/tent-2.svg",
+	]);
+	expect(f.text("apps/trips/icons/compass.svg")).toBe(ICON);
+	expect(f.files.get("apps/trips/icons/compass.svg")?.file.mediaType).toBe("image/svg+xml");
+	expect(f.text("apps/trips/app.toml")).toBe(before);
+	// A save of a page with an icon among its files answers as any save of a page.
+	const page = read(
+		await f.call(
+			"save_app",
+			save("trips", "page-1", null, [
+				{ path: "index.html", text: PAGE },
+				{ path: "icons/compass.svg", text: ICON },
+			]),
+		),
+	);
+	expect(page.next).toContain("Show it to the member with a link in your message: [trips](app:trips).");
+	// An explainer may have icons too: its kit's files stay as they are.
+	await f.call(
+		"save_app",
+		save("fee", "make-2", manifest("How the fee works", { kit: "explainer" }), [{ path: "scenes.js", text: SCENES }]),
+	);
+	await f.call("save_app", save("fee", "icons-2", null, [{ path: "icons/coin-stack.svg", text: ICON }]));
+	expect(units(f)).toEqual(["apps/fee/icons", "apps/fee/icons/coin-stack.svg"]);
+});
+
+it("refuses an icon the web could not draw, with what to change, and other files under icons/", async () => {
+	const f = await fixture();
+	const tool = f.tool("save_app");
+	const refusesIcon = (path: string, text: string, said: string) =>
+		refusesArguments(tool, save("trips", "k", null, [{ path, text }]), said);
+	const PLACE =
+		"an app's own icon is icons/<id>.svg, its id lowercase letters, digits and hyphens, such as icons/compass.svg or icons/trail-sign.svg";
+	for (const path of [
+		"icons/Compass.svg",
+		"icons/compass.SVG",
+		"icons/a.png",
+		"icons/trail sign.svg",
+		"icons/more/compass.svg",
+		"Icons/compass.svg",
+		"icons/notes.md",
+		"icons/-compass.svg",
+	])
+		refusesIcon(path, ICON, `${path}: ${PLACE}`);
+	refusesIcon(
+		"icons/compass.svg",
+		ICON.replace('viewBox="0 0 48 48"', 'viewBox="0 0 24 24"'),
+		'icons/compass.svg: an icon is drawn on the 48 by 48 grid: viewBox="0 0 48 48"',
+	);
+	refusesIcon(
+		"icons/compass.svg",
+		ICON.replace("<circle ", '<circle transform="rotate(4)" '),
+		"icons/compass.svg: a circle may not have transform",
+	);
+	refusesIcon(
+		"icons/compass.svg",
+		ICON.replace('stroke="#fff"', 'stroke="#e33"'),
+		"icons/compass.svg: fill and stroke are black where the colour goes, white where it is cut out, or none",
+	);
+	refusesIcon(
+		"icons/compass.svg",
+		'<svg viewBox="0 0 48 48"><text x="4" y="30">T</text></svg>',
+		"icons/compass.svg: text is not a shape an icon may use",
+	);
+	refusesIcon(
+		"icons/compass.svg",
+		'<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="18" fill="#fff"/></svg>',
+		"icons/compass.svg: an icon needs at least one black shape",
+	);
+	refusesIcon("icons/compass.svg", `${ICON}<p>`, "icons/compass.svg: the icon must end with </svg>");
+	refusesIcon(
+		"icons/compass.svg",
+		ICON.replace("</svg>", `${'<circle cx="1" cy="1" r="1"/>'.repeat(300)}</svg>`),
+		"icons/compass.svg: an icon is at most 8 KiB",
+	);
+	// An SVG anywhere else in the app is the page's own, as before.
+	expect(() =>
+		tool.parseArguments(save("trips", "k", null, [{ path: "chart.svg", text: "<svg><text>1</text></svg>" }])),
+	).not.toThrow();
+	expect(f.commits).toEqual([]);
+});
+
+it("keeps at most 12 icons: a new one takes an old one's id, or an old one goes first", async () => {
+	const f = await fixture();
+	await refuses(
+		f.call(
+			"save_app",
+			save("trips", "make-1", manifest("Trip planner"), [{ path: "index.html", text: PAGE }, ...icons(1, 13)]),
+		),
+		"APP_ICONS_FULL: an app keeps at most 12 icons, and this save gives it 13; save at most 12",
+	);
+	await f.call(
+		"save_app",
+		save("trips", "make-2", manifest("Trip planner"), [{ path: "index.html", text: PAGE }, ...icons(1, 3)]),
+	);
+	await f.call("save_app", save("trips", "icons-1", null, icons(4, 9)));
+	expect([...f.files.keys()].filter((path) => path.startsWith("apps/trips/icons/"))).toHaveLength(12);
+	await refuses(
+		f.call("save_app", save("trips", "icons-2", null, icons(13, 3))),
+		"APP_ICONS_FULL: an app keeps at most 12 icons, and this save would leave it 15: give each new icon the id of an old one it replaces (the oldest: sign-1, sign-2, sign-3), or delete old ones with company_delete first",
+	);
+	// Drawn over: three new icons under old ids leave it 12.
+	const over = '<svg viewBox="0 0 48 48"><rect x="8" y="8" width="32" height="32" rx="6"/></svg>';
+	const drawn = read(
+		await f.call(
+			"save_app",
+			save(
+				"trips",
+				"icons-3",
+				null,
+				icons(1, 3).map((icon) => ({ ...icon, text: over })),
+			),
+		),
+	);
+	expect(drawn.state).toBe("applied");
+	expect(f.text("apps/trips/icons/sign-2.svg")).toBe(over);
+	// An app that holds more, as a machine may leave it, still saves its page; only a new icon is refused.
+	f.seed("apps/trips/icons/sign-13.svg", ICON);
+	expect(
+		read(await f.call("save_app", save("trips", "page-1", null, [{ path: "index.html", text: PAGE }]))).state,
+	).toBe("applied");
+	await refuses(
+		f.call("save_app", save("trips", "icons-4", null, [{ path: "icons/compass.svg", text: ICON }])),
+		"APP_ICONS_FULL",
 	);
 });
