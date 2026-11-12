@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { CODE_BUNDLE_MAXIMUM_BYTES, type CodeBundleRef } from "./code-bundle-store.ts";
@@ -46,6 +46,7 @@ import {
 	type CodeImportRaw,
 	type CodeImportReadValue,
 	type CodeImportRefSeen,
+	type CodeImportRemoved,
 	type CodeImportRemoveValue,
 	type CodeImportSink,
 	codeImportAuthors,
@@ -267,34 +268,71 @@ export async function readIncomingCodeBundle(
 	});
 }
 
-/** Part C1's `CodeImportRemoveJob`, the run's `tidy`: the file source is removed once the import is in, and its folder
- * with it when that leaves the folder empty. Nothing else is: a folder that holds more than the bundle keeps the rest.
- * Answers whether the file was there. A link on the way, or something that is no file in the file's place, is refused
- * (`CODE_HOST_LINK`, `CODE_HOST_UNEXPECTED_FILE`), naming no path. */
+/** Whether the file at `$1` is the one the import read: a plain file whose SHA-256 is `$2` (exit 0), or not: another
+ * file, no plain file, or none (exit 3). It only reads. */
+export const CODE_HOST_IMPORT_TIDY_SAME = `[ -f "$1" ] && [ ! -L "$1" ] || exit 3
+hash=$(sha256sum <"$1") || exit 3
+case $hash in "$2 "*) exit 0 ;; *) exit 3 ;; esac`;
+
+/** The file taken aside by one rename within its own folder, then proven and removed there. A removal by name takes the
+ * version its name shows at that moment, and a job's view shows what another view publishes meanwhile
+ * (RUNTIME-FOLDER-WRITES.md, "Pending changes and base versions"), so a file an agent saves at that name between a check
+ * and a removal would be the one removed. A rename takes one version; until it is published, the view shows that version
+ * at the new name, so the hash read there and the removal there act on that version and no other; and the core applies
+ * the move only while its base still holds. When the version taken is the one (exit 0) it is removed. When it is not,
+ * it is put back (exit 4); when something stands at its name by then (exit 5), it is left aside and the job fails, so
+ * its view publishes nothing. A file gone before the rename moves nothing (exit 3). */
+export const CODE_HOST_IMPORT_TIDY_TAKE = `file=$1 aside=$2 want=$3
+mv --no-copy -T -- "$file" "$aside" 2>/dev/null || exit 3
+if [ -f "$aside" ] && [ ! -L "$aside" ] && hash=$(sha256sum <"$aside"); then
+	case $hash in "$want "*) rm -f -- "$aside" || exit 1; exit 0 ;; esac
+fi
+if [ -e "$file" ] || [ -L "$file" ]; then exit 5; fi
+mv --no-copy -T -- "$aside" "$file" || exit 1
+exit 4`;
+
+/** Part C1's `CodeImportRemoveJob`, the run's `tidy`: the file source is removed once the import is in, only while it is
+ * still the file the import read (`sha256`, the request's `fileSha256` the read job checked), and its folder with it
+ * when that leaves the folder empty. Another file at the path (an agent's new bundle, saved there while the import
+ * waited for quiet), no file, or no plain file there is kept: nothing is removed, and it answers `removed: false` with
+ * `IMPORT_FILE_CHANGED`. First a check that only reads (`CODE_HOST_IMPORT_TIDY_SAME`); then the file is taken aside by a rename and proven
+ * again before it goes (`CODE_HOST_IMPORT_TIDY_TAKE`), so a file saved at its name between the two is kept too. A folder that holds more
+ * than the bundle keeps the rest. A link on the way or in the file's place is refused (`CODE_HOST_LINK`), naming no
+ * path. */
 export async function removeIncomingCodeFile(
 	job: CodeHostJob,
 	value: CodeImportRemoveValue,
-): Promise<{ removed: boolean }> {
-	const input = closed(value, ["repository", "path"]);
+): Promise<CodeImportRemoved> {
+	const input = closed(value, ["repository", "path", "sha256"]);
 	const repository = keptRepositoryOf(input.repository),
-		{ path } = input;
-	if (typeof path !== "string" || !codeImportIncomingPathValid(path)) throw new Error("INVALID_CODE_HOST_JOB");
+		{ path, sha256 } = input;
+	if (
+		typeof path !== "string" ||
+		!codeImportIncomingPathValid(path) ||
+		typeof sha256 !== "string" ||
+		!SHA256.test(sha256)
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		const source = await incoming(run, path),
-			types = [...source.folders, source.type];
-		if (types.includes("link")) throw new CodeHostRefusal("CODE_HOST_LINK");
-		if (
-			!source.folders.every((type) => type === "directory" || type === "none") ||
-			!["file", "none"].includes(source.type as string)
-		)
-			throw new CodeHostRefusal("CODE_HOST_UNEXPECTED_FILE");
-		if (source.folders[2] !== "directory") return { removed: false };
-		const removed = await run.sh('[ -f "$1" ] || exit 3; rm -f -- "$1" || exit 1; exit 0', [source.file]);
-		if (removed.status !== 0 && removed.status !== 3)
-			throw new CodeHostJobFailure(FAILED, `the removal ended ${removed.status}`);
-		// The folder goes only when nothing else is in it.
-		await run.sh('rmdir -- "$1" 2>/dev/null; exit 0', [source.folder]);
-		return { removed: removed.status === 0 };
+			kept = { removed: false, code: "IMPORT_FILE_CHANGED" } as const;
+		if ([...source.folders, source.type].includes("link")) throw new CodeHostRefusal("CODE_HOST_LINK");
+		if (source.folders[2] !== "directory") return kept;
+		// The folder goes only when nothing else is in it: after a removal, or when an earlier run's removal was saved.
+		const emptied = () => run.sh('rmdir -- "$1" 2>/dev/null; exit 0', [source.folder]);
+		if (source.type !== "file" || (await run.sh(CODE_HOST_IMPORT_TIDY_SAME, [source.file, sha256])).status !== 0) {
+			await emptied();
+			return kept;
+		}
+		const taken = await run.sh(CODE_HOST_IMPORT_TIDY_TAKE, [
+			source.file,
+			`${source.folder}/.tidy-${randomUUID()}`,
+			sha256,
+		]);
+		if (taken.status !== 0 && taken.status !== 3 && taken.status !== 4)
+			throw new CodeHostJobFailure(FAILED, `the tidy ended ${taken.status}`);
+		await emptied();
+		return taken.status === 0 ? { removed: true, code: null } : kept;
 	});
 }
 

@@ -358,6 +358,49 @@ SCAN
 )
 pass "an import's jobs: the sweep, the strict check's message id and what it only warns of, the refs plan's two transactions, the facts' formats, the scan's lists"
 pass "C1's key scan in this image: offsets and kinds alone, each offset its value's place, every kind found, a stop after its time, the 64 KiB bound"
+# The import's tidy (code-host-import.ts, its two scripts word for word: runner-orchestrator's code-host-import test pins
+# them), run by dash as the job runs them: the file the import read goes through a rename aside in its own folder and is
+# removed there; another file at its name is left untouched by the check that only reads; one taken aside that is not the
+# file read is put back where it was; a file that is gone moves nothing.
+{ IFS= read -r -d '' TIDY_SAME || true; } <<'TIDY_SAME'
+[ -f "$1" ] && [ ! -L "$1" ] || exit 3
+hash=$(sha256sum <"$1") || exit 3
+case $hash in "$2 "*) exit 0 ;; *) exit 3 ;; esac
+TIDY_SAME
+{ IFS= read -r -d '' TIDY_TAKE || true; } <<'TIDY_TAKE'
+file=$1 aside=$2 want=$3
+mv --no-copy -T -- "$file" "$aside" 2>/dev/null || exit 3
+if [ -f "$aside" ] && [ ! -L "$aside" ] && hash=$(sha256sum <"$aside"); then
+	case $hash in "$want "*) rm -f -- "$aside" || exit 1; exit 0 ;; esac
+fi
+if [ -e "$file" ] || [ -L "$file" ]; then exit 5; fi
+mv --no-copy -T -- "$aside" "$file" || exit 1
+exit 4
+TIDY_TAKE
+(
+	T=$(mktemp -d -p /var/lib/qorpera-code-host)
+	mkdir -p "$T/drop"
+	printf 'bundle A' >"$T/drop/a.bundle"
+	A=$(printf 'bundle A' | sha256sum | cut -d" " -f1)
+	/bin/sh -c "$TIDY_SAME" sh "$T/drop/a.bundle" "$A"
+	/bin/sh -c "$TIDY_TAKE" sh "$T/drop/a.bundle" "$T/drop/.tidy-1" "$A"
+	[[ ! -e $T/drop/a.bundle && -z $(ls -A "$T/drop") ]]
+	printf 'bundle B' >"$T/drop/a.bundle"
+	S=0
+	/bin/sh -c "$TIDY_SAME" sh "$T/drop/a.bundle" "$A" || S=$?
+	[[ $S == 3 ]]
+	S=0
+	/bin/sh -c "$TIDY_TAKE" sh "$T/drop/a.bundle" "$T/drop/.tidy-2" "$A" || S=$?
+	[[ $S == 4 && $(cat "$T/drop/a.bundle") == "bundle B" && $(ls -A "$T/drop") == a.bundle ]]
+	S=0
+	/bin/sh -c "$TIDY_SAME" sh "$T/drop/gone.bundle" "$A" || S=$?
+	[[ $S == 3 ]]
+	S=0
+	/bin/sh -c "$TIDY_TAKE" sh "$T/drop/gone.bundle" "$T/drop/.tidy-3" "$A" || S=$?
+	[[ $S == 3 && $(ls -A "$T/drop") == a.bundle ]]
+	rm -rf "$T"
+)
+pass "the import's tidy: the file read removed through a rename aside, another file left as it is, one taken aside put back"
 
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"

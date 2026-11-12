@@ -40,6 +40,8 @@ import {
 	type CodeImportLookValue,
 	type CodeImportOutcome,
 	type CodeImportReadValue,
+	type CodeImportRemoved,
+	type CodeImportRemoveValue,
 	type CodeImportRequest,
 	type CodeImportSink,
 	CodeImportStop,
@@ -631,7 +633,7 @@ async function world(
 	const b = {
 		looks: [] as { look: boolean; now: number }[],
 		reads: [] as CodeImportReadValue[],
-		removes: [] as string[],
+		removes: [] as CodeImportRemoveValue[],
 		/** The look job's answer: the look alone, or the restore-shaped bundle with it. */
 		look: async (
 			value: CodeImportLookValue,
@@ -646,7 +648,7 @@ async function world(
 			for await (const piece of pieces(s.raw, 512)) await sink.write(piece);
 			return s.fetched;
 		},
-		remove: async (_path: string) => ({ removed: true }),
+		remove: async (_value: CodeImportRemoveValue): Promise<CodeImportRemoved> => ({ removed: true, code: null }),
 	};
 	const jobs: CodeImportJobs = {
 		read: async (_job, value, sink) => {
@@ -671,8 +673,9 @@ async function world(
 			return await b.look(value, sink);
 		},
 		remove: async (_job, value) => {
-			b.removes.push(value.path);
-			return await b.remove(value.path);
+			b.removes.push(value);
+			expect(value.repository).toEqual(place);
+			return await b.remove(value);
 		},
 	};
 	/** Restore's own jobs, each call written down with what the run gave it. */
@@ -996,7 +999,8 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		]);
 		// The mark's read and the file's read give way; from the look on, no job does.
 		expect(x.hosts.yields).toEqual([true, true, false, false, false, false, false, false, false]);
-		expect(x.b.removes).toEqual([FILE]);
+		// The tidy is given the SHA-256 the read job checked: it removes only that file.
+		expect(x.b.removes).toEqual([{ repository: place, path: FILE, sha256: digest(x.s.raw) }]);
 		expect(x.store.stored.get(`${COMPANY}/acme/app/${x.s.rawName}`)?.manifest).toMatchObject({
 			from: { file: FILE },
 		});
@@ -1009,6 +1013,16 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(await y.run()).toMatchObject({ state: "done", result: "imported" });
 		expect(y.errors()).toEqual(["CODE_HOST_REMOVE_FAILED"]);
 		expect(JSON.stringify(y.events)).not.toContain("shop.bundle");
+		// Another file at the path (an agent's new bundle): the tidy keeps it, the run logs its code alone, and the import
+		// is in.
+		const z = await world({ input: "file" });
+		z.b.remove = async () => ({ removed: false, code: "IMPORT_FILE_CHANGED" });
+		expect(await z.run()).toMatchObject({ state: "done", result: "imported" });
+		expect(z.errors()).toEqual([]);
+		expect(z.events.filter((event) => event.step === "tidied")).toEqual([
+			expect.objectContaining({ event: "code-import", removed: false, kept: "IMPORT_FILE_CHANGED" }),
+		]);
+		expect(JSON.stringify(z.events)).not.toContain("shop.bundle");
 	});
 
 	it("a look alone: ends looked, with the look recorded and its bundle removed; nothing at the place is touched, and a claim that comes with the look does not look again", async () => {
@@ -1687,7 +1701,9 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		y.clock.now = NOW + 3_600_000;
 		expect(await y.run()).toMatchObject({ state: "done", result: "imported", rawBundle: y.s.rawName });
 		expect([y.b.reads.length, y.fetching.calls]).toEqual([0, 0]);
-		expect(y.b.removes).toEqual(["code/_incoming/again/shop.bundle"]);
+		expect(y.b.removes.map((value) => [value.path, value.sha256])).toEqual([
+			["code/_incoming/again/shop.bundle", y.input.fileSha256],
+		]);
 		await expectBuilt(y);
 	});
 

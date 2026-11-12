@@ -88,7 +88,8 @@ import { CodingControlBusy } from "./coding-executor.ts";
  *   close …       restore's own jobs (`code-host-restore.ts`) on the restore-shaped bundle, proven by the look
  *                 (`proven: true`): close (`fresh: false`), set aside until a job sees the place emptied, build, and
  *                 open, whose record (`qorpera_code_import_record`, the registry row and change 1) is made inside its
- *                 job, before the mark goes. Then `tidy` removes a file source's folder.
+ *                 job, before the mark goes. Then `tidy` removes a file source while it is still the file read
+ *                 (and its folder when that leaves it empty).
  *
  * How it ends, by where it got (the design's 5.3, as the lead's second check corrected it):
  * - The kernel took the request back (`busy` at the look, `lost` at any call) or was not heard, a job gave way, the
@@ -650,17 +651,26 @@ export class CodeImport {
 			false,
 		);
 		this.#report({ event: "code-import", step: "opened", ...run.named, state: opened.state });
-		if (input.via === "file" && "file" in input.from) {
-			// The file is in the repository now. A file that could not be removed is left: the import is in.
+		if (input.via === "file" && "file" in input.from && input.fileSha256 !== null) {
+			// The file is in the repository now, and goes only while it is still the file the read job read (its
+			// `fileSha256`): another file an agent put there meanwhile stays. A file that could not be removed is left: the
+			// import is in.
 			run.step = "tidy";
-			const path = input.from.file;
+			const path = input.from.file,
+				sha256 = input.fileSha256;
 			try {
 				const tidied = await this.#job(
 					run,
-					(job) => this.#jobs.remove(job, { repository: run.repository, path }),
+					(job) => this.#jobs.remove(job, { repository: run.repository, path, sha256 }),
 					false,
 				);
-				this.#report({ event: "code-import", step: "tidied", ...run.named, removed: tidied?.removed === true });
+				this.#report({
+					event: "code-import",
+					step: "tidied",
+					...run.named,
+					removed: tidied?.removed === true,
+					...(tidied?.removed === false ? { kept: tidied.code } : {}),
+				});
 			} catch (error) {
 				if (error instanceof ImportStopped) throw error;
 				this.#report({ event: "code-import-error", step: "tidy", ...run.named, code: codeOf(error) });

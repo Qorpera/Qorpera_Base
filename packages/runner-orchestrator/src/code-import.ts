@@ -2248,13 +2248,19 @@ export type CodeImportLookJob = (
 	options?: { fsckMs?: number; scanSeconds?: number; chunkBytes?: number },
 ) => Promise<CodeImportLooked>;
 
-/** Part B's `removeIncomingCodeFile` (the run's `tidy`): the file source removed, and its folder when that leaves it
- * empty; whether the file was there. */
+/** Part B's `removeIncomingCodeFile` (the run's `tidy`): the file source removed only while it is still the file the
+ * import read (`sha256`, the request's `fileSha256`, which the read job checked), and its folder when that leaves it
+ * empty. Another file at the path, none, or no plain file there is kept (`removed: false`, with the code the run logs,
+ * `IMPORT_FILE_CHANGED`). */
 export interface CodeImportRemoveValue {
 	readonly repository: CloudCodingRepository;
 	readonly path: string;
+	readonly sha256: string;
 }
-export type CodeImportRemoveJob = (job: CodeHostJob, value: CodeImportRemoveValue) => Promise<{ removed: boolean }>;
+export type CodeImportRemoved =
+	| { readonly removed: true; readonly code: null }
+	| { readonly removed: false; readonly code: "IMPORT_FILE_CHANGED" };
+export type CodeImportRemoveJob = (job: CodeHostJob, value: CodeImportRemoveValue) => Promise<CodeImportRemoved>;
 
 /** The code host jobs the run takes from part B, beside restore's own. */
 export interface CodeImportJobs {

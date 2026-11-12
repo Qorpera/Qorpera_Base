@@ -785,6 +785,39 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		quiet(w.events);
 	});
 
+	it("keeps a file source an agent replaced while the import waited for quiet: the bundle read comes in, the new one stays", async () => {
+		const w = await world();
+		const path = "code/_incoming/swap/notes.bundle";
+		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
+		await git(source.notes, "bundle", "create", join(w.companyRoot, path), "--all");
+		const sha256 = createHash("sha256")
+			.update(await readFile(join(w.companyRoot, path)))
+			.digest("hex");
+		const row = w.k.ask("acme", "swap", { file: path }, { fileSha256: sha256 });
+		w.k.quiet = false;
+		await w.pass();
+		expect(row).toMatchObject({ state: "queued", progress: { step: "read", waiting: "SESSIONS_BUSY" } });
+		// While the import waits, the agent puts another bundle at the same path.
+		const other = await scratch("code-import-e2e-swap-");
+		await git(other, "init", "--quiet", "--initial-branch=main");
+		await writeFile(join(other, "other.md"), "another project\n");
+		await git(other, "add", ".");
+		await git(other, "commit", "--quiet", "-m", "other");
+		await git(other, "bundle", "create", join(w.companyRoot, path), "--all");
+		const replaced = await readFile(join(w.companyRoot, path));
+		w.k.quiet = true;
+		await w.pass();
+		expect(w.k.raised).toEqual([]);
+		// The bundle read is the one brought in, and the new one is not removed: it and its folder stay as they are.
+		expect(row.outcome).toMatchObject({ state: "done", result: "imported", mainSha: source.notesMain });
+		expect(await readFile(join(w.place("acme", "swap"), "main", "notes.md"), "utf8")).toBe("notes\n");
+		expect((await readFile(join(w.companyRoot, path))).equals(replaced)).toBe(true);
+		expect(w.events.filter((event) => event.step === "tidied")).toEqual([
+			expect.objectContaining({ removed: false, kept: "IMPORT_FILE_CHANGED" }),
+		]);
+		quiet(w.events);
+	});
+
 	it("refuses in the look a file name git takes and the company folder does not, and never closes the place", async () => {
 		const w = await world();
 		const work = await scratch("code-import-e2e-bad-");

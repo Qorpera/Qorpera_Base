@@ -21,6 +21,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codeBundleName } from "../src/code-bundle-store.ts";
 import {
 	CODE_HOST_IMPORT_JOBS,
+	CODE_HOST_IMPORT_TIDY_SAME,
+	CODE_HOST_IMPORT_TIDY_TAKE,
 	codeImportBelow,
 	lookCodeImport,
 	readIncomingCodeBundle,
@@ -1282,33 +1284,79 @@ describe(
 			expect(await readdir(f.scratchRoot)).toEqual([]);
 		});
 
-		it("removes the file source, and its folder when nothing else is in it", async () => {
+		it("removes the file source only while it is the file the import read, and its folder when nothing else is in it", async () => {
 			const f = await fixture();
-			const remove = (path: string) => removeIncomingCodeFile(f.job, { repository: kept, path });
-			const alone = await placed(f, Buffer.from("bundle"), "code/_incoming/alone/a.bundle");
-			expect(await remove(alone)).toEqual({ removed: true });
+			const A = Buffer.from("bundle A, the one read"),
+				B = Buffer.from("bundle B, put there after the read");
+			const remove = (path: string, sha256 = digest(A), job = f.job) =>
+				removeIncomingCodeFile(job, { repository: kept, path, sha256 });
+			const stays = { removed: false, code: "IMPORT_FILE_CHANGED" };
+			const listed = (folder: string) => readdir(join(f.companyRoot, folder));
+			// The plain case: the file read, and its folder, now empty.
+			const alone = await placed(f, A, "code/_incoming/alone/a.bundle");
+			expect(await remove(alone)).toEqual({ removed: true, code: null });
 			expect(await exists(join(f.companyRoot, "code/_incoming/alone"))).toBe(false);
 			expect(await exists(join(f.companyRoot, "code/_incoming"))).toBe(true);
-			// Run again after a stop: the file is gone.
-			expect(await remove(alone)).toEqual({ removed: false });
-			const shared = await placed(f, Buffer.from("bundle"), "code/_incoming/shared/a.bundle");
+			// Run again after a stop: the file is gone, and nothing is removed.
+			expect(await remove(alone)).toEqual(stays);
+			// The review's case: bundle A was read, then an agent put bundle B at the same path while the import waited.
+			// B is kept, and so is its folder.
+			const swapped = await placed(f, B, "code/_incoming/swapped/a.bundle");
+			const renames = () => f.log.filter((command) => command.argv[2]?.includes("mv --no-copy -T")).length;
+			const before = renames();
+			expect(await remove(swapped)).toEqual(stays);
+			expect(await readFile(join(f.companyRoot, swapped))).toEqual(B);
+			expect(await listed("code/_incoming/swapped")).toEqual(["a.bundle"]);
+			// Seen by a read alone: B is not even moved (a move and its way back would give B a new version).
+			expect(renames()).toBe(before);
+			// B saved at the path after the job's first look and before its rename: the file taken aside is proven again,
+			// is not the one read, and is put back where it was.
+			const late = await placed(f, A, "code/_incoming/late/a.bundle");
+			const racing: CodeHostJob = {
+				...f.job,
+				shell: {
+					run: async (command, signal) => {
+						if (command.argv[2]?.includes("mv --no-copy -T")) await writeFile(join(f.companyRoot, late), B);
+						return f.job.shell.run(command, signal);
+					},
+				},
+			};
+			expect(await remove(late, digest(A), racing)).toEqual(stays);
+			expect(await readFile(join(f.companyRoot, late))).toEqual(B);
+			expect(await listed("code/_incoming/late")).toEqual(["a.bundle"]);
+			// A folder that holds another file keeps it.
+			const shared = await placed(f, A, "code/_incoming/shared/a.bundle");
 			await writeFile(join(f.companyRoot, "code/_incoming/shared/notes.txt"), "the agent's\n");
-			expect(await remove(shared)).toEqual({ removed: true });
-			expect(await readdir(join(f.companyRoot, "code/_incoming/shared"))).toEqual(["notes.txt"]);
-			expect(await remove(shared)).toEqual({ removed: false });
-			expect(await readdir(join(f.companyRoot, "code/_incoming/shared"))).toEqual(["notes.txt"]);
+			expect(await remove(shared)).toEqual({ removed: true, code: null });
+			expect(await listed("code/_incoming/shared")).toEqual(["notes.txt"]);
+			expect(await remove(shared)).toEqual(stays);
+			expect(await listed("code/_incoming/shared")).toEqual(["notes.txt"]);
+			// A folder in the file's place: no plain file, kept.
 			await mkdir(join(f.companyRoot, "code/_incoming/dir/a.bundle"), { recursive: true });
-			await expect(remove("code/_incoming/dir/a.bundle")).rejects.toMatchObject({
-				code: "CODE_HOST_UNEXPECTED_FILE",
-				message: "CODE_HOST_UNEXPECTED_FILE",
-			});
+			expect(await remove("code/_incoming/dir/a.bundle")).toEqual(stays);
+			expect(await listed("code/_incoming/dir")).toEqual(["a.bundle"]);
 			await mkdir(join(f.root, "elsewhere"));
-			await writeFile(join(f.root, "elsewhere/a.bundle"), "theirs");
+			await writeFile(join(f.root, "elsewhere/a.bundle"), A);
 			await symlink(join(f.root, "elsewhere"), join(f.companyRoot, "code/_incoming/link"));
 			await expect(remove("code/_incoming/link/a.bundle")).rejects.toMatchObject({ code: "CODE_HOST_LINK" });
-			expect(await readFile(join(f.root, "elsewhere/a.bundle"), "utf8")).toBe("theirs");
-			expect(await remove("code/_incoming/never/a.bundle")).toEqual({ removed: false });
-			await expect(remove("code/acme/shop/a.bundle")).rejects.toThrow("INVALID_CODE_HOST_JOB");
+			expect(await readFile(join(f.root, "elsewhere/a.bundle"))).toEqual(A);
+			expect(await remove("code/_incoming/never/a.bundle")).toEqual(stays);
+			// A folder an earlier run emptied, whose own removal was not saved: it goes now.
+			await mkdir(join(f.companyRoot, "code/_incoming/emptied"));
+			expect(await remove("code/_incoming/emptied/a.bundle")).toEqual(stays);
+			expect(await exists(join(f.companyRoot, "code/_incoming/emptied"))).toBe(false);
+			// No file is ever left aside.
+			for (const folder of await listed("code/_incoming"))
+				expect((await listed(`code/_incoming/${folder}`)).filter((name) => name.startsWith(".tidy-"))).toEqual([]);
+			const commands = f.log.length;
+			for (const bad of [
+				() => remove("code/acme/shop/a.bundle"),
+				() => remove(alone, "x"),
+				() => removeIncomingCodeFile(f.job, { repository: kept, path: alone } as never),
+			])
+				await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
+			expect(f.log).toHaveLength(commands);
+			expect(await readdir(f.scratchRoot)).toEqual([]);
 		});
 	},
 );
@@ -1347,9 +1395,11 @@ describe("code host: the import's shell, as the image runs it", () => {
 		expect(() => codeImportBelow(1)).toThrow("INVALID_CODE_IMPORT");
 	});
 
-	it("the code host image's proof runs C1's scan as it is", async () => {
+	it("the code host image's proof runs C1's scan and the tidy's two scripts as they are", async () => {
 		const proof = await readFile(join(HERE, "../../../deploy/code-host/test/prove-in-code-host.sh"), "utf8");
 		expect(proof).toContain(`<<'SCAN'\n${CODE_IMPORT_SCAN}\nSCAN\n`);
+		expect(proof).toContain(`<<'TIDY_SAME'\n${CODE_HOST_IMPORT_TIDY_SAME}\nTIDY_SAME\n`);
+		expect(proof).toContain(`<<'TIDY_TAKE'\n${CODE_HOST_IMPORT_TIDY_TAKE}\nTIDY_TAKE\n`);
 	});
 
 	it("a stop is the code alone", () => {
