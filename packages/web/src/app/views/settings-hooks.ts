@@ -123,6 +123,9 @@ export class HooksView {
 	readonly #kinds: readonly Kind[];
 	/** Told after a hook was added, paused, resumed or removed. */
 	readonly #changed: () => void;
+	readonly #card: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
+	readonly #added: ((hook: EventHook) => void) | undefined;
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
 	#loading = true;
@@ -143,11 +146,25 @@ export class HooksView {
 	constructor(
 		client: HooksClient,
 		signal: AbortSignal,
-		options: { access?: HooksAccess; kinds?: readonly HookKind[]; changed?: () => void } = {},
+		options: {
+			access?: HooksAccess;
+			kinds?: readonly HookKind[];
+			changed?: () => void;
+			/** More of a hook, drawn in its card between its words and its buttons (the Mailbox: who answers a
+			 * mailbox). The page that gives it calls `redraw` when what it shows changed. */
+			card?: (hook: EventHook) => HTMLElement | null;
+			/** More of the form that adds one, drawn under its fields (the Mailbox: who answers the new mailbox). */
+			form?: (kind: HookKind) => HTMLElement | null;
+			/** Told the hook the form made. */
+			added?: (hook: EventHook) => void;
+		} = {},
 	) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#changed = options.changed ?? (() => {});
+		this.#card = options.card;
+		this.#formExtra = options.form;
+		this.#added = options.added;
 		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -164,6 +181,11 @@ export class HooksView {
 		// The kernel sends a webhook's address only to an owner or admin: a member who just became one reads it.
 		if (this.#access.canManage() && this.#hooks?.some((hook) => kindOf(hook) === "webhook" && !hook.url))
 			void this.#refresh();
+	}
+
+	/** Draws again what the page's own parts of the cards and the form show (`card`, `form`). */
+	redraw(): void {
+		this.#draw();
 	}
 
 	dispose(): void {
@@ -290,6 +312,7 @@ export class HooksView {
 			// The new one shows at once, with its address to copy; the next read sorts it in.
 			this.#hooks = [...(this.#hooks ?? []).filter((item) => item.id !== hook.id), hook];
 			this.#changed();
+			this.#added?.(hook);
 			const focus = hook.url ? `hook-copy:${hook.id}` : `hook-add:${kind}`;
 			this.#draw(focus);
 			await this.#refresh(focus);
@@ -348,7 +371,7 @@ export class HooksView {
 		);
 	}
 
-	#card(hook: EventHook): HTMLElement {
+	#cardOf(hook: EventHook): HTMLElement {
 		const kind = kindOf(hook);
 		const manage = this.#access.canManage();
 		const busy = this.#working === hook.id;
@@ -398,6 +421,7 @@ export class HooksView {
 				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
 				h("small", { class: "hook-state" }, this.#state(hook)),
 			),
+			this.#card?.(hook) ?? null,
 			h("div", { class: "connection-actions" }, ...actions),
 			address,
 			this.#outcomeLine(hook.id),
@@ -464,6 +488,7 @@ export class HooksView {
 			h("div", { class: "hook-form-row" }, name, domain ? h("span", { class: "hook-domain" }, `@${domain}`) : null),
 			h("small", null, t(text.hint)),
 			purpose,
+			this.#formExtra?.(kind) ?? null,
 			this.#outcomeLine(kind),
 			h("div", { class: "hook-form-actions" }, add, cancel),
 		);
@@ -503,7 +528,7 @@ export class HooksView {
 			h(
 				"div",
 				{ class: "connection-list" },
-				...hooks.map((hook) => this.#card(hook)),
+				...hooks.map((hook) => this.#cardOf(hook)),
 				this.#loading
 					? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
 					: hooks.length

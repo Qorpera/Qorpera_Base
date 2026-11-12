@@ -7,6 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
+import type { WebRoutine, WebRoutineDraft } from "../src/cloud/routines.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
@@ -20,6 +21,7 @@ import {
 	at,
 	bo,
 	cofounder,
+	connections,
 	digitalPostConnected,
 	letter,
 	letterFolder,
@@ -106,9 +108,70 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	await reader.open();
 	const main = h("main");
 	document.body.append(main);
-	// The address and Digital Post calls behind Addresses: no hooks yet, Digital Post not connected.
-	const hooks: EventHook[] = [];
+	// The address and Digital Post calls behind Addresses: a mailbox for each address the mail lists, Digital Post not
+	// connected.
+	const hooks: EventHook[] = fake.addresses.map((address, n) => ({
+		id: id(950 + n),
+		name: `mail-${String(address.address).split("@")[0]}`,
+		purpose: String(address.address).split("@")[0]!,
+		proof: "mail",
+		status: "active",
+		email: String(address.address),
+		createdAt: timestamp,
+	}));
+	// The routines that start on mail to a mailbox, as the routine list gives them: each address's own (`routines`), and
+	// those the page makes. Who answers an address follows them, as the cloud's address read does.
+	const listening: WebRoutine[] = fake.addresses.flatMap((address, n) =>
+		(address.routines as { routineId: string; title: string; staffAgentId: string }[]).map(
+			(routine) =>
+				({
+					routineId: routine.routineId,
+					title: routine.title,
+					staffAgentId: routine.staffAgentId,
+					status: "active",
+					triggers: [{ id: "file", kind: "listener", source: "event", hookId: id(950 + n), timeZone: "UTC" }],
+				}) as WebRoutine,
+		),
+	);
+	const answered = () => {
+		fake.addresses = fake.addresses.map((address) => {
+			const hook = hooks.find((each) => each.email === address.address);
+			const active = listening.filter(
+				(routine) =>
+					routine.status === "active" &&
+					routine.triggers.some((trigger) => "hookId" in trigger && trigger.hookId === hook?.id),
+			);
+			return {
+				...address,
+				routines: active.map(({ routineId, title, staffAgentId }) => ({ routineId, title, staffAgentId })),
+				handledBy: [...new Set(active.map((routine) => routine.staffAgentId))].map((staffAgentId) => ({
+					staffAgentId,
+					name: [cofounder, ada, bo].find((agent) => agent.id === staffAgentId)?.displayName,
+				})),
+			};
+		});
+	};
 	const manage: MailboxManage = {
+		routines: {
+			list: vi.fn(async () => listening.map((routine) => ({ ...routine }))),
+			save: vi.fn(async (draft: WebRoutineDraft) => {
+				listening.push({
+					routineId: id(700 + listening.length),
+					title: draft.title,
+					staffAgentId: draft.staffAgentId,
+					status: "active",
+					triggers: [draft.trigger],
+				} as WebRoutine);
+				answered();
+				return "saved" as const;
+			}),
+			setEnabled: vi.fn(async (routine: { routineId: string }, _account: unknown, enabled: boolean) => {
+				const kept = listening.find((each) => each.routineId === routine.routineId);
+				if (kept) kept.status = enabled ? "active" : "paused";
+				answered();
+			}),
+		},
+		accounts: vi.fn(async () => connections),
 		hooks: {
 			list: vi.fn(async () => [...hooks]),
 			createHook: vi.fn(),
@@ -285,17 +348,35 @@ describe("the Inbox", () => {
 		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
 		button(none.main, "Add mailbox")!.click();
 		const form = none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
-		// The name is all the form asks for.
+		// The name is all the form asks to be typed; who answers the address is picked on its chip.
 		expect([...form.querySelectorAll("input")].map((field) => field.getAttribute("aria-label"))).toEqual([
 			"Mailbox name",
 		]);
-		type(form.querySelector('input[aria-label="Mailbox name"]')!, "hello");
-		none.fake.addresses = [ADDRESS];
-		form.requestSubmit();
+		const answers = () => none.main.querySelector<HTMLButtonElement>("[data-focus-key='add-answerer']")!;
+		const picked = () => answers().querySelector(".mailbox-writer-name")?.textContent;
+		expect(picked()).toBe("Choose who answers");
+		answers().click();
+		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual(["Nobody", "Co-Founder", "Ada", "Bo"]);
+		menuRow("Bo").click();
+		expect(picked()).toBe("Bo");
+		expect(document.activeElement).toBe(answers());
+		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
+		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
 		await vi.waitFor(() =>
 			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "hello", expect.anything()),
 		);
 		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
+		// The new address goes to the agent picked: a routine of Bo's that starts on its mail.
+		await vi.waitFor(() => expect(none.manage.routines!.save).toHaveBeenCalledTimes(1));
+		expect(vi.mocked(none.manage.routines!.save).mock.calls[0]?.[0]).toMatchObject({
+			staffAgentId: bo.id,
+			title: "Answer email to hello@acme.example",
+			trigger: { kind: "listener", source: "event", hookId: id(950), only: ["mail.received"] },
+		});
+		await vi.waitFor(() =>
+			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
+		);
 	});
 });
 
@@ -677,35 +758,136 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-tab[aria-selected='true']")?.textContent).toBe("Sent");
 	});
 
-	it("lists each address with who answers it, and asks the Co-Founder to give it to another agent", async () => {
-		const { main, controller } = await mailbox(() => {});
-		vi.spyOn(controller, "openCofounderConversation").mockResolvedValue({ sessionId: session.sessionId });
+	// Jonas, 12 Nov 2026: "don't like the UX of giving an agent an email - should be more intuitive".
+	it("lists each address once with who answers it, and gives it to another agent in one step", async () => {
+		const { main, controller, manage } = await mailbox(() => {});
 		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
-		expect(texts(main, ".mailbox-address-name strong")).toEqual(["hello@acme.example"]);
-		expect(main.querySelector(".mailbox-address-agent")?.textContent).toBe("Ada answers it");
-		expect(main.querySelector(".mailbox-week")?.textContent).toBe("12");
-		button(main, "Change")!.click();
-		expect(texts(main, ".mailbox-pick")).toEqual(["Co-Founder", "Ada", "Bo"]);
-		expect(main.querySelector(".mailbox-pick.is-current")?.textContent).toBe("Ada");
-		button(main, "Bo")!.click();
+		// One line an address: its name, who answers it on a chip, how much came, and its buttons.
+		await vi.waitFor(() => expect(main.querySelectorAll(".hook-card")).toHaveLength(1));
+		const card = () => main.querySelector<HTMLElement>(".hook-card")!;
+		const chip = () => card().querySelector<HTMLButtonElement>(".mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const said = () => card().querySelector(".mailbox-address-agent > .mailbox-muted")?.textContent;
+		expect(card().querySelector(".settings-copy strong")?.textContent).toBe("hello@acme.example");
+		expect(main.querySelector(".mailbox-address")).toBeNull();
+		expect([said(), named()]).toEqual(["Answered by", "Ada"]);
+		expect(card().querySelector(".mailbox-week")?.textContent).toBe("12");
+		expect(texts(card(), ".connection-actions button")).toEqual(["Pause", "Remove"]);
+		// The chip opens the agents, the one who answers it checked.
+		chip().click();
+		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual(["Nobody", "Co-Founder", "Ada", "Bo"]);
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("true");
+		expect(menuRow("Bo").getAttribute("aria-checked")).toBe("false");
+		menuRow("Bo").click();
+		// While it is on its way the chip names who it goes to, and waits.
+		expect([said(), named()]).toEqual(["Setting it up", "Bo"]);
+		expect(chip().disabled).toBe(true);
 		await vi.waitFor(() =>
-			expect(send).toHaveBeenCalledWith(
-				session.sessionId,
-				"Please have Bo answer the email that comes to hello@acme.example.",
-			),
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
 		);
+		// Ada's routine stopped first, then Bo got one of his own that starts on the address's mail: the member's own
+		// save, on their model account, and no word to the Co-Founder.
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls).toEqual([
+			[expect.objectContaining({ routineId: id(801) }), undefined, false, expect.any(String)],
+		]);
+		expect(vi.mocked(manage.routines!.save).mock.calls).toEqual([
+			[
+				{
+					clientRoutineId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+					staffAgentId: bo.id,
+					title: "Answer email to hello@acme.example",
+					prompt: expect.stringContaining("Read each email that arrives at hello@acme.example"),
+					trigger: {
+						id: "file",
+						kind: "listener",
+						source: "event",
+						hookId: id(950),
+						only: ["mail.received"],
+						timeZone: expect.any(String),
+						replyPolicy: "optional",
+					},
+					effort: "low",
+				},
+				expect.objectContaining({ connectionId: id(880) }),
+				expect.any(String),
+			],
+		]);
+		expect(vi.mocked(manage.routines!.setEnabled).mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(manage.routines!.save).mock.invocationCallOrder[0]!,
+		);
+		expect(send).not.toHaveBeenCalled();
+		expect([said(), named()]).toEqual(["Answered by", "Bo"]);
+		expect(chip().disabled).toBe(false);
+		expect(document.activeElement).toBe(chip());
+		// Back to Ada: her routine is taken up again, and no second one is made.
+		chip().click();
+		menuRow("Ada").click();
 		await vi.waitFor(() =>
-			expect(main.querySelector(".mailbox-toast")?.textContent).toBe(
-				"Asked Co-Founder to give hello@acme.example to Bo",
-			),
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada answers hello@acme.example"),
 		);
+		expect(manage.routines!.save).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.slice(1)).toEqual([
+			[expect.objectContaining({ staffAgentId: bo.id }), undefined, false, expect.any(String)],
+			[
+				expect.objectContaining({ routineId: id(801) }),
+				expect.objectContaining({ connectionId: id(880) }),
+				true,
+				expect.any(String),
+			],
+		]);
+		// Nobody: whoever answers it stops, and the chip asks again.
+		chip().click();
+		menuRow("Nobody").click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Nobody answers hello@acme.example now"),
+		);
+		expect([said(), named()]).toEqual([undefined, "Choose who answers"]);
+		expect(chip().classList.contains("is-current")).toBe(false);
 		// The company's addresses are made, paused and removed here, and Digital Post connected.
-		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		expect(button(main, "Add mailbox")).toBeDefined();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='mailbox']")).not.toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='webhook']")).toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
+	});
+
+	it("says why an address could not be given to an agent, and leaves who answers it as the cloud says", async () => {
+		const { main, manage } = await mailbox((mail) => {
+			mail.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		expect(named()).toBe("Choose who answers");
+		// None of the member's model accounts can pay for work that starts on its own: nothing is written.
+		vi.mocked(manage.accounts!).mockResolvedValueOnce({ ...connections, connections: [] });
+		chip().click();
+		menuRow("Ada").click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".hook-card .mailbox-error")?.textContent).toBe(
+				"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+			),
+		);
+		expect(manage.routines!.save).not.toHaveBeenCalled();
+		expect(named()).toBe("Choose who answers");
+		expect(main.querySelector(".mailbox-toast")).toBeNull();
+		// The save refused: its reason is said, and the next try clears it.
+		vi.mocked(manage.routines!.save).mockRejectedValueOnce(new Error("The company is paused."));
+		chip().click();
+		menuRow("Ada").click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".hook-card .mailbox-error")?.textContent).toBe("The company is paused."),
+		);
+		chip().click();
+		menuRow("Ada").click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada answers hello@acme.example"),
+		);
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		expect(named()).toBe("Ada");
 	});
 
 	it("builds the address cards again for a company opened again, and in a new time zone or language", async () => {
@@ -1820,9 +2002,14 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-answers")).toBeNull();
 		expect(button(main, "Reply")).toBeUndefined();
 		button(main, "Back to Inbox")!.click();
+		// Addresses shows each address and who answers it, with nothing to change.
 		tab(main, "Addresses");
-		expect(button(main, "Change")).toBeUndefined();
-		expect(main.querySelector(".mailbox-manage")).toBeNull();
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		expect(main.querySelector(".mailbox-answer-line .mailbox-address-agent")?.textContent).toBe("Ada answers it");
+		expect(main.querySelector(".mailbox-answerer")).toBeNull();
+		expect(main.querySelector(".mailbox-manage .connection-actions button")).toBeNull();
+		expect(button(main, "Add mailbox")).toBeUndefined();
+		expect(main.querySelector(".mailbox-manage .digital-post")).toBeNull();
 	});
 });
 

@@ -342,10 +342,19 @@ export const WORKSPACE: Record<string, string> = {
 	"No agent answers it yet": "Ingen agent svarer på den endnu",
 	"in the last 7 days": "de seneste 7 dage",
 	Change: "Skift",
-	"Who should answer it?": "Hvem skal svare på den?",
-	"Please have {name} answer the email that comes to {address}.":
-		"Lad venligst {name} svare på de e-mails, der kommer til {address}.",
-	"Asked {cofounder} to give {address} to {name}": "Bad {cofounder} om at give {address} til {name}",
+	"Who answers it": "Hvem svarer på den",
+	"Choose who answers": "Vælg, hvem der svarer",
+	"Answered by": "Besvares af",
+	"Setting it up": "Sætter det op",
+	"{name} and {count} more": "{name} og {count} mere",
+	"{name} answers {address}": "{name} svarer på {address}",
+	"Nobody answers {address} now": "Ingen svarer på {address} nu",
+	"Answer email to {address}": "Svar på e-mail til {address}",
+	"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.":
+		"Læs hver e-mail, der kommer til {address}, og tag dig af den for virksomheden. Svar afsenderen, når e-mailen kræver et svar, som et svar på netop den e-mail. Lad automatiske e-mails, og e-mails der ikke kræver svar, være ubesvarede. Når du ikke selv kan klare noget, så sig det til det medlem, der skal tage sig af det, og sig, hvad du har brug for.",
+	"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.":
+		"En agent svarer selv på e-mail på en af dine egne modelkonti, og ingen af dine kan betale for det. Tilslut en under Indstillinger → AI-abonnementer.",
+	"The address could not be given to the agent.": "Adressen kunne ikke gives til agenten.",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",

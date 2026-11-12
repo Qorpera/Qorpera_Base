@@ -468,7 +468,13 @@ switched off or something failed, so the provider retries; a message the databas
 logged and settled with 200, since a retry would send the same message.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
-`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+`only: ["mail.received"]`. An agent makes one with `manage_routine`; an owner or admin gives a mailbox to an agent
+in the Mailbox's Addresses (Jonas, 12 November 2026: giving an agent an email "should be more intuitive"), which
+writes that routine's file for the agent as the member's own save (`when: event`, the mailbox's hook,
+`only: [mail.received]`, reply `optional`, effort `low`), on the member's own model account that works while they
+are away, and pauses the routine of whoever answered the mailbox before. The save's own rules check the hook and who
+pays, as for an agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the
+routine rules already take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
 whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
 says so and names the authentication results.
 
