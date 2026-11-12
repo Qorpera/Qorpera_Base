@@ -44,7 +44,7 @@ PROXY=${QORPERA_PROOF_PROXY:?the proxy of the test machine}
 SCRIPTS=${QORPERA_PROOF_SCRIPTS:?the folder of the executor's commands for a repository's checks and site}
 # The guest agent's source: runtime/src (the agent and the two files it imports) and contracts/src, each with a
 # package.json, which this machine's Node runs with their types stripped.
-GUEST=${QORPERA_PROOF_GUEST:?the folder of the guest agent's source}
+GUEST=${QORPERA_PROOF_GUEST:?the folder of the source of the guest agent}
 # Docker's official images from their public mirror, which has no pull limit worth the name.
 LIBRARY=public.ecr.aws/docker/library
 ALPINE=$LIBRARY/alpine:3.22

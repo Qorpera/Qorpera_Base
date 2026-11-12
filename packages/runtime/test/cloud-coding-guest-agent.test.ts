@@ -924,6 +924,20 @@ async function planted(path: string, bytes = MIB): Promise<string> {
 
 describe("the machine's package caches (own code storage, step 6)", () => {
 	it("are the folder and one per tool, the group's to share, aged by tmpfiles", () => {
+		expect(CODING_PACKAGE_CACHES).toEqual({
+			root: "/var/cache/qorpera-packages",
+			group: "qorpera-coding",
+			limitBytes: 8589934592,
+			age: "30d",
+			tools: [
+				{ folder: "npm", variable: "npm_config_cache" },
+				{ folder: "pnpm", variable: "npm_config_store_dir" },
+				{ folder: "yarn", variable: "YARN_CACHE_FOLDER" },
+				{ folder: "pip", variable: "PIP_CACHE_DIR" },
+				{ folder: "uv", variable: "UV_CACHE_DIR" },
+				{ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" },
+			],
+		});
 		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
 		expect(codingPackageCachesTmpfiles(CODING_PACKAGE_CACHES.root)).toBe(
 			[
@@ -1000,6 +1014,15 @@ describe("the package caches' trim", () => {
 	}
 	const past = new Date("2020-01-01T00:00:00Z");
 	const ahead = (days: number) => new Date(Date.now() + days * 86_400_000);
+	/** The blocks of everything below `root`'s folders (no file linked twice here). */
+	async function held(path: string): Promise<number> {
+		let bytes = 0;
+		for (const name of await readdir(path)) {
+			const stat = await lstat(join(path, name));
+			bytes += stat.blocks * 512 + (stat.isDirectory() ? await held(join(path, name)) : 0);
+		}
+		return bytes;
+	}
 
 	it("empties whole tool folders, the least recently read, written or changed first, until they hold the limit", async () => {
 		const root = await caches();
@@ -1025,9 +1048,12 @@ describe("the package caches' trim", () => {
 		}
 		for (const folder of ["uv", "pip"]) expect(await readdir(join(root, folder, "store"))).toEqual(["entry"]);
 		expect(await readdir(join(root, "yarn", "v6"))).toEqual(["tiny"]);
-		// Under the limit, nothing goes.
-		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual([]);
-		expect(await trimCodingPackageCaches(root, 0)).toEqual(["uv", "pip", "yarn"]);
+		// At the limit, nothing goes; a byte under it, the least recently used that holds anything.
+		let total = 0;
+		for (const folder of await readdir(root)) total += await held(join(root, folder));
+		expect(await trimCodingPackageCaches(root, total)).toEqual([]);
+		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv"]);
+		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "yarn"]);
 	});
 
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {

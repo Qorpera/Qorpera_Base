@@ -518,11 +518,11 @@ export function codingPackageCachesTmpfiles(root: string): string {
 	].join("\n");
 }
 /** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
- * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (one that holds nothing
- * is passed over). A folder's size is the blocks of what it holds (a file linked twice counted once), its last use the
- * newest read, write or change of a file in it (a hard link into a project changes only the change time). A tool
- * folder that is not a real folder is neither counted nor emptied. Emptied, a folder stays, with its owner, mode and
- * ACL. */
+ * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
+ * order; one that holds nothing is passed over). A folder's size is the blocks of what it holds (a file linked twice
+ * counted once), its last use the newest read, write or change of a file in it (a hard link into a project changes only
+ * the change time). A tool folder that is not a real folder is neither counted nor emptied. Emptied, a folder stays,
+ * with its owner, mode and ACL. */
 export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
 	const seen = new Set<string>();
 	const folders: { folder: string; path: string; bytes: number; usedMs: number }[] = [];
@@ -550,9 +550,7 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 	}
 	let total = folders.reduce((sum, { bytes }) => sum + bytes, 0);
 	const emptied: string[] = [];
-	for (const { folder, path, bytes } of folders.sort(
-		(a, b) => a.usedMs - b.usedMs || (a.folder < b.folder ? -1 : a.folder > b.folder ? 1 : 0),
-	)) {
+	for (const { folder, path, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
 		if (total <= limitBytes) break;
 		if (bytes === 0) continue;
 		for (const name of (await missing(() => readdir(path))) ?? [])
