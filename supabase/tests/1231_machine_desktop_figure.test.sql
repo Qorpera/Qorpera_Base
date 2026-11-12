@@ -8,7 +8,8 @@
 --    dressed), and its template (co-founder for the Co-Founder, none for a folder hire).
 -- 2. The figure follows the agent's row: a saved one, a retired one as saved (the executor draws its replacement), none
 --    again; and a starter whose row is gone is null.
--- 3. Nothing else in the entry moved: its other keys are the ones the executor reads.
+-- 3. Nothing else in the entry moved: its other keys are the ones the executor reads (and the company's time zone, which
+--    20260930739000 added: test 1233).
 -- 4. The function is the service role's alone, names this migration and keeps the earlier ones.
 -- The fixture is removed at the end.
 
@@ -111,8 +112,8 @@ set session_replication_role = origin;
 select pg_temp.check((select array_agg(key order by key) from jsonb_object_keys(pg_temp.entry('12310000-0000-4000-8000-0000000000a1')) key)
 	= array['asleepSince','binding','bindingText','bootId','commands','createdAt','desiredState','instanceSha256','lastError','lastUsedAt',
 		'lifetime','machineId','placementId','released','removeDue','removing','reserved','retired','runningAt','schema','sleepDue','starter',
-		'stopDue'],
-	'the entry has the keys the executor reads, and the starter: '
+		'stopDue','timeZone'],
+	'the entry has the keys the executor reads, the starter and the company''s time zone (20260930739000): '
 	|| (select string_agg(key, ',' order by key) from jsonb_object_keys(pg_temp.entry('12310000-0000-4000-8000-0000000000a1')) key));
 select pg_temp.check(pg_temp.entry('12310000-0000-4000-8000-0000000000a1') ->> 'schema' = 'qorpera.company-machine-state/v2'
 	and pg_temp.entry('12310000-0000-4000-8000-0000000000a1') ->> 'desiredState' = 'running'
