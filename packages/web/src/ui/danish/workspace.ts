@@ -355,6 +355,10 @@ export const WORKSPACE: Record<string, string> = {
 	"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.":
 		"En agent svarer selv på e-mail på en af dine egne modelkonti, og ingen af dine kan betale for det. Tilslut en under Indstillinger → AI-abonnementer.",
 	"The address could not be given to the agent.": "Adressen kunne ikke gives til agenten.",
+	"{name}'s routine for this address did not start. {name}'s routines say why.":
+		"{name}s rutine for denne adresse startede ikke. {name}s rutiner siger hvorfor.",
+	"{name} was given this address at the same moment, and answers it.":
+		"{name} fik denne adresse i samme øjeblik og svarer på den.",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",

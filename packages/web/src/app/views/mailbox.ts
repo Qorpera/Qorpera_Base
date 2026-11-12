@@ -13,7 +13,13 @@ import type {
 	MailWaitingItem,
 	MailWaitingSend,
 } from "../../cloud/mail.ts";
-import { canPayForRoutine, claudeLogin, latestVersions, type WebRoutines } from "../../cloud/routines.ts";
+import {
+	canPayForRoutine,
+	claudeLogin,
+	latestVersions,
+	type WebRoutine,
+	type WebRoutines,
+} from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
@@ -58,7 +64,9 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   12 Nov 2026: "don't like the UX of giving an agent an email - should be more intuitive"): the chip on the address's
  *   line opens the agents, and the one picked answers its mail from then on. Behind it that is a routine of the agent's
  *   that starts on mail to the address, written as the member's own save, on their own model account that works while
- *   they are away; whoever answered it before stops. The form that adds an address asks who answers it too.
+ *   they are away. Whoever answered it before stops only once that routine is seen at work, so an address is never
+ *   left with nobody because the new agent could not take it (`giveAddress`). The form that adds an address asks who
+ *   answers it too.
  * - Write: the member writes an email. Nobody owns a new one: the Writer chip says "You" (Jonas, 10 Nov 2026: "It
  *   should have no agent owning it by default"), and Send sends it as the member's own email from one of the company's
  *   addresses (contract, M2e). Who it goes to are chips, as a mail app has them: an address typed becomes one at a
@@ -2035,11 +2043,36 @@ function answerWith(
 	return turn;
 }
 
-/** Gives an address to an agent, or to nobody: the agent answers its mail through a routine of its own that starts on
- * mail to the address, written here as the member's own save (cloud/routines.ts), on their own model account. Whoever
- * answered it until now stops first, so two agents never answer one email. An agent that answered it before takes its
- * routine up again. The company's mail is read again after, so the line says who answers it now. What could not be
- * done is kept for the address's line; nothing is thrown. */
+/** The routines that start on mail to a mailbox, as the routine list gives them now. */
+async function listeners(routines: NonNullable<MailboxManage["routines"]>, hookId: string): Promise<WebRoutine[]> {
+	return (await routines.list()).filter((routine) =>
+		routine.triggers.some(
+			(trigger) => trigger.kind === "listener" && trigger.source === "event" && trigger.hookId === hookId,
+		),
+	);
+}
+
+/** The routine changed last comes first: the cloud's own times, and the ids where two are the same. */
+function newestFirst(a: WebRoutine, b: WebRoutine): number {
+	return Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.routineId < b.routineId ? -1 : 1);
+}
+
+/** Gives an address to an agent, or to nobody. The agent answers its mail through a routine of its own that starts on
+ * mail to the address, written here as the member's own save (cloud/routines.ts), on their own model account.
+ *
+ * - The agent's routine comes first, and is seen at work before anything else changes: an agent that answered the
+ *   address before takes up the routine it had last, and gets a new one when that one stays paused (it waits for a
+ *   login only its own page moves: who pays for a routine is never switched here). With no model account that can
+ *   pay, or a routine that does not start, nothing has changed and whoever answered the address still does.
+ * - Only then does whoever answered it until now stop, so the address is never left with nobody because the new agent
+ *   could not take it. If they cannot be stopped, the agent's routine stops again, and the address is as it was.
+ * - Two members may give one address to two agents at the same moment, each page reading the routines before the
+ *   other's save. The routines are then read once more: a routine at work that was not when this began is the other
+ *   member's, and the one the cloud saved last is kept, here and on their page, so one agent answers. The line says
+ *   so when it is not the agent this member picked.
+ *
+ * The company's mail is read again after, so the line says who answers it now. What could not be done is kept for the
+ * address's line; nothing is thrown. */
 async function giveAddress(
 	page: Page,
 	calls: MailboxManage,
@@ -2055,29 +2088,40 @@ async function giveAddress(
 	const { [target.address]: _said, ...rest } = ui.answerErrors;
 	ui.answerErrors = rest;
 	page.redraw();
-	let failed: string | null = null;
+	const atWork = (routine: WebRoutine) => routine.status === "active";
+	const stop = (routine: WebRoutine) => routines.setEnabled(routine, undefined, false, crypto.randomUUID());
+	// What is said under the address after: why it could not be done, or that another member's pick stands.
+	let said: string | null = null;
+	// Who answers it in the end, once that is settled: the agent picked, unless another member's pick was saved last.
+	let settled: { readonly answers: string | null } | null = null;
 	try {
-		const listening = (await routines.list()).filter((routine) =>
-			routine.triggers.some(
-				(trigger) => trigger.kind === "listener" && trigger.source === "event" && trigger.hookId === target.hookId,
-			),
-		);
-		for (const routine of listening)
-			if (routine.status === "active" && routine.staffAgentId !== agentId)
-				await routines.setEnabled(routine, undefined, false, crypto.randomUUID());
-		const own = agent ? listening.filter((routine) => routine.staffAgentId === agent.id) : [];
-		if (agent && !own.some((routine) => routine.status === "active")) {
+		const before = await listeners(routines, target.hookId);
+		const wasAtWork = new Set(before.filter(atWork).map((routine) => routine.routineId));
+		let now = before;
+		let mine = agent ? before.find((routine) => routine.staffAgentId === agent.id && atWork(routine)) : undefined;
+		// The routine this began, if any: the agent's own, taken up again or new.
+		let started: WebRoutine | undefined;
+		if (agent && !mine) {
 			const account = payingAccount(await accounts(company.signal));
-			const paused = own.find((routine) => routine.status === "paused");
 			if (!account)
-				failed = t(
-					"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+				throw new Error(
+					t(
+						"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+					),
 				);
-			else if (paused) await routines.setEnabled(paused, account, true, crypto.randomUUID());
-			else
+			const [paused] = before
+				.filter((routine) => routine.staffAgentId === agent.id && routine.status === "paused")
+				.sort(newestFirst);
+			if (paused) {
+				await routines.setEnabled(paused, account, true, crypto.randomUUID());
+				now = await listeners(routines, target.hookId);
+				started = now.find((routine) => routine.routineId === paused.routineId && atWork(routine));
+			}
+			if (!started) {
+				const clientRoutineId = crypto.randomUUID();
 				await routines.save(
 					{
-						clientRoutineId: crypto.randomUUID(),
+						clientRoutineId,
 						staffAgentId: agent.id,
 						title: t("Answer email to {address}", { address: target.address }),
 						prompt: t(
@@ -2099,26 +2143,57 @@ async function giveAddress(
 					account,
 					crypto.randomUUID(),
 				);
+				now = await listeners(routines, target.hookId);
+				started = now.find((routine) => routine.clientRoutineId === clientRoutineId && atWork(routine));
+			}
+			if (!started)
+				throw new Error(
+					t("{name}'s routine for this address did not start. {name}'s routines say why.", {
+						name: agent.displayName,
+					}),
+				);
+			mine = started;
+		}
+		// A routine at work now that was not when this began, and is not the one this began: another member's pick.
+		const arrived = now.filter(
+			(routine) => atWork(routine) && !wasAtWork.has(routine.routineId) && routine !== started,
+		);
+		const [newest] = [...(started ? [started] : []), ...arrived].sort(newestFirst);
+		if (agent && newest && newest !== started) {
+			// Their pick was saved last, so it stands; their page stops the others. This one's routine steps back.
+			if (started) await stop(started);
+			settled = { answers: newest.staffAgentId };
+			said = t("{name} was given this address at the same moment, and answers it.", {
+				name: agentName(page, newest.staffAgentId),
+			});
+		} else {
+			try {
+				for (const routine of now) if (atWork(routine) && routine !== mine) await stop(routine);
+			} catch (error) {
+				// Whoever answered it still does: the agent's routine stops again, so two never answer one email.
+				if (started) await stop(started).catch(() => {});
+				throw error;
+			}
+			settled = { answers: agentId };
 		}
 	} catch (error) {
 		// A refusal saved nothing; the file's or the mailbox's problems say why, in English.
-		failed =
+		said =
 			error instanceof WebCompanyFolderRejectedError
 				? withProblems(t("The address could not be given to the agent."), error.problems)
 				: describeError(error);
 	}
 	await CompanyMail.of(company)?.reread();
 	ui.answering = null;
-	if (failed) {
-		ui.answerErrors = { ...ui.answerErrors, [target.address]: failed };
-		page.redraw(focus);
-	} else
+	if (said) ui.answerErrors = { ...ui.answerErrors, [target.address]: said };
+	if (!settled) page.redraw(focus);
+	else
 		say(
 			page,
-			agent
-				? t("{name} answers {address}", { name: agent.displayName, address: target.address })
+			settled.answers
+				? t("{name} answers {address}", { name: agentName(page, settled.answers), address: target.address })
 				: t("Nobody answers {address} now", { address: target.address }),
-			agentId,
+			settled.answers,
 			focus,
 		);
 }
