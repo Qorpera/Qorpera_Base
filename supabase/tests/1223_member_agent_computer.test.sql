@@ -17,8 +17,10 @@
 -- 7. every reader of a machine no run started: the conversation trigger, the view, a session's machines, the operators'
 --    compute requests, machine_start by name, machine_run, machine_screen, stop and delete by an agent, the folder view
 --    and its live run, the busy and always-on check-ins, the stop record;
--- 8. the save check through such a machine's folder view: every run with a command on its disk, checked as a starter is,
---    whether its command or its run still goes on or not; a disk no run commanded checks nothing more;
+-- 8. the save check through such a machine's folder view: every run with a command or a screen action on its disk (its
+--    placement), checked as a starter is, whether its command or its run still goes on or not; a disk no run acted on
+--    checks nothing more; a look records nothing; an earlier placement's disk is not this one; the start's answer is
+--    always a machine the window's list holds;
 -- 9. the idle rule: busy moves such a machine's last use only while a command whose conversation is asked runs on it;
 -- 10. the null-together check, the grants and the markers;
 -- 11. two sessions at once make one computer (two connections; what the test committed is removed at the end).
@@ -47,13 +49,34 @@ begin
 	return v_result;
 end
 $$;
-create function pg_temp.mc_run(p_receipt uuid, p_key text, p_machine text, p_head text) returns jsonb language plpgsql as $$
-declare v_result jsonb;
+-- A machine_run, by Alice's run unless another run's binding is named.
+create function pg_temp.mc_run(p_receipt uuid, p_key text, p_machine text, p_head text, p_binding jsonb default null)
+returns jsonb language plpgsql as $$
+declare v_result jsonb; v_binding jsonb := coalesce(p_binding, pg_temp.mc_binding());
 begin
-	perform public.qorpera_begin_native_tool_operation(pg_temp.mc_binding(), p_receipt, 'machine_run:' || p_key, repeat('a', 64), repeat('5', 64), false);
-	v_result := public.qorpera_authorize_machine_command(pg_temp.mc_binding(), jsonb_build_object('machineId', (pg_temp.mc_machine(p_machine)).id),
+	perform public.qorpera_begin_native_tool_operation(v_binding, p_receipt, 'machine_run:' || p_key, repeat('a', 64), repeat('5', 64), false);
+	v_result := public.qorpera_authorize_machine_command(v_binding, jsonb_build_object('machineId', (pg_temp.mc_machine(p_machine)).id),
 		'start', p_receipt, repeat('a', 64), jsonb_build_object('commandHead', p_head, 'notify', false));
-	perform public.qorpera_complete_native_tool_operation(pg_temp.mc_binding(), p_receipt, repeat('a', 64), v_result);
+	perform public.qorpera_complete_native_tool_operation(v_binding, p_receipt, repeat('a', 64), v_result);
+	return v_result;
+end
+$$;
+-- A machine_screen action by Alice's run (1198's envelope): its receipt begun, the executor's read, the receipt completed.
+create function pg_temp.mc_screen(p_receipt uuid, p_key text, p_machine text, p_action jsonb) returns jsonb language plpgsql as $$
+declare v_result jsonb; v_envelope text := jsonb_build_object('schema', 'qorpera.cloud-tool-operation/v2',
+	'principals', (public.qorpera_describe_native_tool_authority(pg_temp.mc_binding()) -> 'identity')
+		- array['assignmentId', 'runnerId', 'leaseId', 'sponsorVersion', 'providerConnectionId', 'providerConnectionVersion'],
+	'operation', jsonb_build_object('tool', 'machine_screen', 'toolVersion', 'qorpera.machine-tools/v1', 'logicalOperationKey', p_key,
+		'requiresCompanyRevision', false, 'arguments', jsonb_build_object('operationKey', p_key, 'machine', p_machine,
+			'action', p_action, 'intent', 'Keep a note of it.'),
+		'target', jsonb_build_object('realm', 'company_machine', 'machineId', (pg_temp.mc_machine(p_machine)).id)))::text;
+begin
+	perform public.qorpera_begin_native_tool_operation(pg_temp.mc_binding(), p_receipt, 'machine_screen:' || p_key,
+		encode(extensions.digest(v_envelope, 'sha256'), 'hex'), repeat('e', 64), false);
+	v_result := public.qorpera_authorize_machine_screen(pg_temp.mc_binding(), jsonb_build_object('machineId', (pg_temp.mc_machine(p_machine)).id),
+		p_receipt, v_envelope);
+	perform public.qorpera_complete_native_tool_operation(pg_temp.mc_binding(), p_receipt, encode(extensions.digest(v_envelope, 'sha256'), 'hex'),
+		'{}'::jsonb);
 	return v_result;
 end
 $$;
@@ -416,15 +439,16 @@ end $$;
 -- 8. A save through the view: every run with a command on the disk is checked as a starter is --------------------------------
 -- secret/ is a part of the folder only Alice of the agents reads (her own grant). Alice's run reads secret/s.txt and runs a
 -- command on carol-desktop-2: what she read may be on its disk.
-create function pg_temp.nc_view_actor() returns jsonb language sql as $$
-	select jsonb_build_object('kind', 'view', 'viewId', current_setting('qorpera_test.nc_view')::jsonb ->> 'viewId',
-		'pass', current_setting('qorpera_test.nc_view')::jsonb ->> 'pass')
+-- The view of carol-desktop-2's boot unless another view's setting is named.
+create function pg_temp.nc_view_actor(p_view text default 'qorpera_test.nc_view') returns jsonb language sql as $$
+	select jsonb_build_object('kind', 'view', 'viewId', current_setting(p_view)::jsonb ->> 'viewId',
+		'pass', current_setting(p_view)::jsonb ->> 'pass')
 $$;
-create function pg_temp.nc_save(p_key text) returns jsonb language plpgsql as $$
+create function pg_temp.nc_save(p_key text, p_view text default 'qorpera_test.nc_view') returns jsonb language plpgsql as $$
 declare v_text text := 'Saved from the machine: ' || p_key;
 begin
-	perform pg_temp.base_seal(pg_temp.nc_view_actor(), pg_temp.base_manifest(v_text));
-	return public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', pg_temp.nc_view_actor(), p_key,
+	perform pg_temp.base_seal(pg_temp.nc_view_actor(p_view), pg_temp.base_manifest(v_text));
+	return public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', pg_temp.nc_view_actor(p_view), p_key,
 		jsonb_build_array(jsonb_build_object('op', 'write', 'path', p_key || '.md', 'file', pg_temp.base_stage(v_text))));
 end $$;
 create function pg_temp.nc_saved(p_result jsonb) returns boolean language sql as $$
@@ -489,6 +513,83 @@ begin
 	perform pg_temp.base_assert(pg_temp.nc_saved(pg_temp.nc_save('nc-readable-again')), '8: readable again');
 end $$;
 
+-- 8b. Screen actions (review r1 F1 of #1690): Alice only acts on bob-desktop's screen (she types what she read into a
+-- file under /home/desktop); Bob's run, which reads no secret, copies that file into /company with a command. The save
+-- checks Alice's reads too: her screen action is recorded on the disk. A look records nothing. The disk is the view's
+-- placement: what a run did on an earlier placement's disk is not checked.
+do $$
+declare v_pass jsonb; v_run uuid;
+begin
+	-- Bob's run: the owner's post in his thread, materialized and started as 924 starts Alice's.
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', pg_temp.nc_agent('bob'), 'Copy the note into the company folder.');
+	v_pass := pg_temp.base_materialize();
+	v_run := (select run.id from public.qorpera_execution_runs run where run.id::text in (select jsonb_array_elements_text(v_pass -> 'run_ids'))
+		and run.staff_agent_id = pg_temp.nc_agent('bob'));
+	perform pg_temp.base_assert(v_run is not null, '8b: Bob''s run: ' || v_pass::text);
+	perform set_config('qorpera_test.nc_bob', pg_temp.base_start(v_run)::text, true);
+	perform pg_temp.base_public_send(current_setting('qorpera_test.nc_bob')::jsonb, 'progress', 'nc-bob-ack');
+	-- bob-desktop runs, and its boot's view opens (Bob's and the owner's: the owner pressed for him).
+	perform pg_temp.nc_shift('bob-desktop', 'wanted_at = clock_timestamp() - interval ''1 hour''');
+	perform pg_temp.nc_place('bob-desktop');
+	perform pg_temp.mc_custody('bob-desktop', 'run');
+	perform pg_temp.base_assert(pg_temp.mc_running('bob-desktop', '12230000-0000-4000-8000-0000000000b8') #>> '{machine,state}' = 'running',
+		'8b: bob-desktop runs');
+	perform set_config('qorpera_test.nc_view_bob', public.qorpera_folder_view_open('92400000-0000-4000-8000-000000000020',
+		'{"kind":"platform"}', 'test_machine', jsonb_build_object('companyMachineId', (pg_temp.mc_machine('bob-desktop')).id,
+			'placementId', (pg_temp.mc_placement('bob-desktop')).id, 'bootId', '12230000-0000-4000-8000-0000000000b8'))::text, true);
+end $$;
+do $$
+declare v jsonb; v_disk uuid := (pg_temp.mc_placement('bob-desktop')).id;
+begin
+	-- An earlier placement's disk (retired, removed): a command of Alice's there is not this disk's.
+	begin
+		set local session_replication_role = replica;
+		insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding,
+			instance_sha256, running_at, boot_id, retired_at, removing_at, removed_at)
+		values ('12230000-0000-4000-8000-0000000000e9', (pg_temp.mc_machine('bob-desktop')).id, '92400000-0000-4000-8000-000000000010',
+			'mx-1223', repeat('c', 64), '{"providerId": "machine-1223"}', repeat('9', 64), clock_timestamp() - interval '2 days',
+			'12230000-0000-4000-8000-0000000000ea', clock_timestamp() - interval '1 day', clock_timestamp() - interval '1 day',
+			clock_timestamp() - interval '1 day');
+		insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify,
+			started_at, sent_at, ended_at, state, exit_code, requested_by_user_id)
+		values ('12230000-0000-4000-8000-0000000000c9', (pg_temp.mc_machine('bob-desktop')).id, (pg_temp.mc_binding() ->> 'runId')::uuid,
+			pg_temp.nc_agent('alice'), '12230000-0000-4000-8000-0000000000e9', 'cat secret/s.txt', false, clock_timestamp() - interval '2 days',
+			clock_timestamp() - interval '2 days', clock_timestamp() - interval '2 days', 'succeeded', 0, pg_temp.nc_user('owner'));
+		set local session_replication_role = origin;
+		perform pg_temp.nc_grant(false);
+		perform pg_temp.base_assert(pg_temp.nc_saved(pg_temp.nc_save('nc-bob-desk-earlier-disk', 'qorpera_test.nc_view_bob')),
+			'8b: an earlier placement''s disk is not this one''s');
+		raise sqlstate 'P0F99';
+	exception when sqlstate 'P0F99' then null;
+	end;
+	-- Alice looks at the screen: a look records nothing.
+	v := public.qorpera_authorize_machine_screen(pg_temp.mc_binding(), jsonb_build_object('machineId', (pg_temp.mc_machine('bob-desktop')).id),
+		null, null);
+	perform pg_temp.base_assert(v ->> 'state' = 'authorized' and not exists (select 1 from public.qorpera_company_machine_screen_runs
+		where placement_id = v_disk), '8b: a look records nothing: ' || v::text);
+	-- She types what she read into a file on the desktop and saves it: her action is recorded on the disk, once.
+	v := pg_temp.mc_screen('12230000-0000-4000-8000-0000000000f1', 'nc-type-1', 'bob-desktop',
+		'{"type":"type","text":"Only Alice reads this."}');
+	perform pg_temp.base_assert(v ->> 'state' = 'authorized', '8b: her action: ' || v::text);
+	v := pg_temp.mc_screen('12230000-0000-4000-8000-0000000000f2', 'nc-type-2', 'bob-desktop', '{"type":"key","keys":["ctrl+s"]}');
+	perform pg_temp.base_assert(v ->> 'state' = 'authorized', '8b: her second action: ' || v::text);
+	perform pg_temp.base_assert((select array_agg(run_id) from public.qorpera_company_machine_screen_runs where placement_id = v_disk)
+		= array[(pg_temp.mc_binding() ->> 'runId')::uuid], '8b: one row for her run on this disk');
+	-- Bob copies the file into /company with a command; Alice ran none here.
+	v := pg_temp.mc_run('12230000-0000-4000-8000-0000000000c3', 'nc-bob-copy', 'bob-desktop',
+		'cp /home/desktop/note.txt /company/note.txt', current_setting('qorpera_test.nc_bob')::jsonb);
+	perform pg_temp.base_assert(v ->> 'state' = 'authorized' and not exists (select 1 from public.qorpera_company_machine_commands
+		where placement_id = v_disk and run_id = (pg_temp.mc_binding() ->> 'runId')::uuid), '8b: Bob''s command, none of Alice''s: ' || v::text);
+	-- Alice still reads what she read: the save goes.
+	perform pg_temp.base_assert(pg_temp.nc_saved(pg_temp.nc_save('nc-bob-desk-readable', 'qorpera_test.nc_view_bob')),
+		'8b: her reads still hold');
+	-- Her access narrowed: the save is refused, though she ran no command there.
+	perform pg_temp.nc_grant(false);
+	perform pg_temp.base_error($sql$select pg_temp.nc_save('nc-bob-desk-narrowed', 'qorpera_test.nc_view_bob')$sql$, '42501',
+		'A read is no longer readable');
+	perform pg_temp.nc_grant(true);
+end $$;
+
 -- 9. The idle rule: busy moves the last use only while a command whose conversation is asked runs on it ----------------------
 do $$
 declare v_before timestamptz;
@@ -531,6 +632,43 @@ begin
 		'7: an agent deletes it: ' || v::text);
 end $$;
 
+-- 8c. The machine a start answers is always one the window lists (review r1 F2 of #1690): Hank has 20 newer machines
+-- without a screen and an older desktop computer, asleep; the list's 20 hold the desktop, and the start answers it.
+do $$
+declare v_list jsonb; v text;
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter, appearance_color,
+		appearance_shape, employment_status, lifecycle_state, created_at, updated_at, updated_by_user_id)
+	values ('92400000-0000-4000-8000-000000000010', '12230000-0000-4000-8000-0000000000d6', 'Hank', 'Research', 'Test.', 'blue', 'round',
+		'active', 'setup', statement_timestamp(), statement_timestamp(), '92400000-0000-4000-8000-000000000001');
+	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id,
+		requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, desired_by, created_at)
+	select extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+		case when n = 0 then 'hank-old-desk' else 'hank-box-' || n end, 'Hank''s.', '12230000-0000-4000-8000-0000000000d6',
+		'92400000-0000-4000-8000-000000000001', case when n = 0 then 2 else 1 end, case when n = 0 then 4294967296 else 1073741824 end,
+		10737418240, 'standard', 'task', case when n = 0 then 'stopped' else 'running' end, 'member',
+		case when n = 0 then clock_timestamp() - interval '1 day' else clock_timestamp() - make_interval(secs => 21 - n) end
+	from generate_series(0, 20) n;
+	set local session_replication_role = origin;
+	perform pg_temp.base_claims('authenticated', pg_temp.nc_user('viewer'));
+	v_list := public.qorpera_list_agent_machines('92400000-0000-4000-8000-000000000010', '12230000-0000-4000-8000-0000000000d6');
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert(jsonb_array_length(v_list -> 'machines') = 20
+			and exists (select 1 from jsonb_array_elements(v_list -> 'machines') m where m ->> 'name' = 'hank-old-desk'),
+		'8c: the list''s 20 hold the desktop: ' || v_list::text);
+	perform pg_temp.base_claims('authenticated', pg_temp.nc_user('owner'));
+	set local role authenticated;
+	v := pg_temp.nc_try(format('select public.qorpera_member_start_agent_computer(%L, %L)', '92400000-0000-4000-8000-000000000010',
+		'12230000-0000-4000-8000-0000000000d6'));
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert(pg_temp.nc_answer(v) ->> 'state' = 'existing' and pg_temp.nc_answer(v) #>> '{machine,name}' = 'hank-old-desk'
+			and exists (select 1 from jsonb_array_elements(v_list -> 'machines') m
+				where m ->> 'machineId' = pg_temp.nc_answer(v) #>> '{machine,machineId}'),
+		'8c: the start answers the listed desktop: ' || v);
+end $$;
+
 -- 10. The null-together check, the grants and the markers ----------------------------------------------------------------------
 do $$
 declare v_role text;
@@ -550,10 +688,18 @@ begin
 				'10: no ' || v_role);
 		end if;
 	end loop;
+	-- The screen runs are no role's, as the commands are.
+	perform pg_temp.base_assert((select relrowsecurity from pg_class where oid = 'public.qorpera_company_machine_screen_runs'::regclass)
+		and not exists (select 1 from unnest(array['anon', 'authenticated', 'service_role']) r(role)
+			cross join unnest(array['select', 'insert', 'update', 'delete']) priv(name)
+			where has_table_privilege(r.role, 'public.qorpera_company_machine_screen_runs', priv.name)),
+		'10: the screen runs are no role''s');
 	perform pg_temp.base_assert(not exists (select 1 from unnest(array[
 			'public.qorpera_member_start_agent_computer(uuid,uuid)',
 			'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
-			'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)']) f(sig)
+			'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)',
+			'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
+			'public.qorpera_list_agent_machines(uuid,uuid)']) f(sig)
 		where strpos(pg_get_functiondef(f.sig::regprocedure), '20260930730000') = 0),
 		'10: every new or patched body names the migration');
 	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure),

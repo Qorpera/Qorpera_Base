@@ -1444,7 +1444,12 @@ stops and deletes it as one it started.
   "started" | "existing", machine: {machineId, name, state}}`, or `{state: "refused", reason}`.
 - Such a machine has no starting run: `started_by_run_id` and `started_by_receipt_id` are null together. Its folder view
   acts as its agent and member, company-wide, as a view whose starter's run has ended; a save through it checks the
-  read sets of every run with a command on its disk, as a starter's is checked. A busy record moves its last use only
+  read sets of every run with a command or an authorized `machine_screen` action on its disk, as a starter's is checked
+  (`qorpera_company_machine_screen_runs` records the action's run once per placement; a look records nothing). The disk
+  is the placement's: a machine keeps it while it sleeps and wakes on its node, and a new placement starts empty.
+- The computer window's list (`qorpera_list_agent_machines`) takes the agent's machines big enough for a desktop first
+  into its 20, and `existing` is the first of them in the list's own order: the window always lists the machine a start
+  answers. A busy record moves its last use only
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
 

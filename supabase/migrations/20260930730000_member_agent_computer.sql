@@ -30,11 +30,29 @@
 --   - qorpera_folder_commit, below; the busy and always-on check-ins have no starting conversation to ask (an agent's
 --     command keeps its own), hence the idle rule below.
 -- * qorpera_folder_commit, a save through such a machine's folder view: the check that a detached test machine's
---   starter's run still reads what it read (what that run read may be on the disk) has no starter run here. What a run
---   read reaches this disk through the commands the run started on it (machine_run): a run's own reads are not in the
---   view's read set, and a release through the view while the command ran lands in that run's read set too. So each run
---   with a command on this placement's disk is checked as a starter is, its read set under its own authority, in run id
---   order. A machine an agent started keeps exactly its check.
+--   starter's run still reads what it read (what that run read may be on the disk) has no starter run here. A run's own
+--   reads are in no read set the view keeps; they reach this disk through what the run does on it: the commands it
+--   starts (machine_run) and the actions it takes on the screen (machine_screen: text it types or pastes, a file or page
+--   it opens, keys and clicks into programs that write files; review r1 F1 of #1690). So each run with a command or a
+--   recorded screen action on this disk is checked as a starter is, its read set under its own authority, in run id order.
+--   A machine an agent started keeps exactly its check.
+-- * The disk is the placement's: the machine's instance is named by its placement id (lxdCompanyMachineName). A machine
+--   that sleeps and wakes on the same node keeps its placement and its disk, over many boots; a move to another node, or
+--   a disk the folder check refused (qorpera.test-machine/new-disk), retires the placement, and the next placement starts
+--   with a new, empty disk (machine_start's text: "starts fresh with an empty disk"). Nothing carries files from one
+--   placement to the next. So "this disk" is the view's placement, as the view's own read set is (20260930420000): runs
+--   that acted on an earlier placement's disk are not checked for a save from a later one.
+-- * qorpera_company_machine_screen_runs: one row per run and placement whose machine_screen action was authorized there
+--   (qorpera_authorize_machine_screen, the one place an action reaches the host: its authorized answer; a look records
+--   nothing). Kept for every machine; only the save check of a machine no run started reads it.
+-- * Other ways a run's reads could reach a disk: a company file the machine opens or reads goes through the view and is
+--   in its own read set; save_coding_value reads the clipboard and writes nothing to the disk; machine_start's name and
+--   purpose stay in SQL (the placement's binding carries ids and sizes only); a member's hold, look and typed text are a
+--   member's, not a run's (the member reads the root, as the view needs); nothing reaches a machine from outside or from
+--   another machine of the company. Not possible otherwise.
+-- * The computer window's list (qorpera_list_agent_machines) takes the agent's machines big enough for a desktop first
+--   into its 20 (review r1 F2 of #1690), and the start's `existing` answer is the first of them in the list's own order,
+--   so the window always finds the machine a start answers. The list's order shown does not change.
 -- * The idle rule for a machine no run started: a busy record moves its last use only while a command whose
 --   conversation the busy check-in asks runs on its placement. Busy outside such a command (a page left spinning on the
 --   desktop) asks no one, so it no longer keeps the machine awake: it sleeps after its quiet window without use (a
@@ -80,6 +98,17 @@ alter table public.qorpera_company_machines
 comment on column public.qorpera_company_machines.started_by_run_id is
 	'The run whose machine_start made the machine; null for one a member started (20260930730000), with started_by_receipt_id.';
 
+-- The runs whose screen actions reached a disk (review r1 F1 of #1690): one row per run and placement, at its first
+-- authorized action there. Kept as the commands are: no role reads or writes it; the functions do.
+create table public.qorpera_company_machine_screen_runs (
+	placement_id uuid not null references public.qorpera_company_machine_placements(id) on delete restrict,
+	run_id uuid not null references public.qorpera_execution_runs(id) on delete restrict,
+	first_action_at timestamptz not null,
+	primary key (placement_id, run_id)
+);
+alter table public.qorpera_company_machine_screen_runs enable row level security;
+revoke all on table public.qorpera_company_machine_screen_runs from public, anon, authenticated, service_role;
+
 -- 2. A member's start of a computer for an agent -------------------------------------------------------------------------------
 
 create function public.qorpera_member_start_agent_computer(p_profile_id uuid, p_staff_agent_id uuid) returns jsonb
@@ -121,7 +150,10 @@ begin
 	where machine.profile_id = p_profile_id and machine.removed_at is null and machine.desired_state <> 'deleted'
 		and (machine.started_by_staff_agent_id = p_staff_agent_id or machine.screen_staff_agent_id = p_staff_agent_id)
 		and machine.cpus >= c_cpus and machine.memory_bytes >= c_memory_gib * 1073741824
-	order by public.qorpera_company_machine_state(machine) = 'running' desc, machine.created_at desc, machine.id
+	-- In the computer window's own order (qorpera_list_agent_machines), so the machine answered is the one it shows first.
+	order by public.qorpera_company_machine_state(machine) = 'running' desc,
+		case when machine.screen_staff_agent_id = p_staff_agent_id then machine.screen_used_at end desc nulls last,
+		machine.created_at desc, machine.id
 	limit 1;
 	if v_machine.id is not null then
 		return jsonb_build_object('schema', 'qorpera.member-agent-computer/v1', 'state', 'existing',
@@ -194,7 +226,8 @@ do $$ begin execute pg_temp.member_agent_computer_patched(
 	$new$		elsif v_view.kind = 'test_machine' then
 			-- 20260930420000: a detached test machine: what its starter's run read may be on the disk.
 			-- 20260930730000: a machine a member started has no starter run; what a run read reaches its disk through the
-			-- commands the run started there, so each run with a command on this disk is checked as a starter is, in id order.
+			-- commands it started and the screen actions it took there, so each such run is checked as a starter is, in id
+			-- order. The disk is the view's placement (a new placement starts with a new disk).
 			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id,
 				public.qorpera_folder_run_reader(v_file.profile_id, reader.run_id))
 			from (select machine.started_by_run_id as run_id from public.qorpera_company_machines machine
@@ -204,7 +237,37 @@ do $$ begin execute pg_temp.member_agent_computer_patched(
 				join public.qorpera_company_machines machine on machine.id = command.machine_id
 				where command.machine_id = v_view.company_machine_id and command.placement_id = v_view.placement_id
 					and machine.started_by_run_id is null
+				union
+				select screen.run_id from public.qorpera_company_machine_screen_runs screen
+				join public.qorpera_company_machines machine on machine.id = v_view.company_machine_id
+				where screen.placement_id = v_view.placement_id and machine.started_by_run_id is null
 				order by 1) reader;$new$]); end $$;
+
+-- An authorized screen action records its run on the disk; a look records nothing. The authorized answer is the only way
+-- an action reaches the host.
+do $$ begin execute pg_temp.member_agent_computer_patched(
+	'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure,
+	array[$old$		or screen_used_at < clock_timestamp() - interval '30 seconds');
+	return jsonb_build_object(
+		'schema', 'qorpera.machine-screen-authority/v1',
+		'state', 'authorized',$old$,
+	$new$		or screen_used_at < clock_timestamp() - interval '30 seconds');
+	-- 20260930730000: a run whose action reaches this disk, once per run and disk: what it read may be on the disk through
+	-- the screen; a save from a machine no run started checks it (qorpera_folder_commit).
+	if v_args is not null then
+		insert into public.qorpera_company_machine_screen_runs(placement_id, run_id, first_action_at)
+		values (v_placement.id, v_run.id, clock_timestamp()) on conflict do nothing;
+	end if;
+	return jsonb_build_object(
+		'schema', 'qorpera.machine-screen-authority/v1',
+		'state', 'authorized',$new$]); end $$;
+
+-- The computer window's list takes the machines big enough for a desktop first into its 20 (review r1 F2 of #1690).
+do $$ begin execute pg_temp.member_agent_computer_patched(
+	'public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure,
+	array[$old$				order by now_in.state = 'running' desc,$old$,
+	$new$				-- 20260930730000: the desktops first into the 20, so the one a start answers is always listed.
+				order by (machine.cpus >= 2 and machine.memory_bytes >= 4294967296) desc, now_in.state = 'running' desc,$new$]); end $$;
 
 -- 4. The idle rule for a machine no run started -------------------------------------------------------------------------------
 
@@ -229,7 +292,9 @@ begin
 	foreach v_function in array array[
 		'public.qorpera_member_start_agent_computer(uuid,uuid)',
 		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
-		'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)'
+		'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)',
+		'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
+		'public.qorpera_list_agent_machines(uuid,uuid)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930730000') = 0 then
 			raise exception '20260930730000 marker is missing in %', v_function; end if;
@@ -238,7 +303,13 @@ begin
 			where oid = 'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure), '20260930420000') = 0
 		or strpos((select prosrc from pg_proc
 			where oid = 'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)'::regprocedure),
-			'20260930181000') = 0 then
+			'20260930181000') = 0
+		or exists (select 1 from unnest(array['20260930708000', '20260930712000', '20260930713000', 'F35 of #1661']) marker
+			where strpos((select prosrc from pg_proc
+				where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure), marker) = 0)
+		or exists (select 1 from unnest(array['20260930712000', '20260930713000']) marker
+			where strpos((select prosrc from pg_proc
+				where oid = 'public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure), marker) = 0) then
 		raise exception '20260930730000: a patched body lost its earlier marker'; end if;
 end $guard$;
 
