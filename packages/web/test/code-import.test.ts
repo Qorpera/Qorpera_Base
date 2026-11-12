@@ -331,7 +331,8 @@ describe("the words of an import", () => {
 			"den består af andre projekter, og dem kan Qorpera ikke hente ind endnu",
 		],
 		[
-			["IMPORT_HISTORY_DAMAGED"],
+			// An error of git's check, alone or with its message id (the executor's codeImportHistoryCode).
+			["IMPORT_HISTORY_DAMAGED", "IMPORT_HISTORY_DAMAGED_MISSING_TREE", "IMPORT_HISTORY_DAMAGED_BAD_OBJECT_SHA1"],
 			"its history has damage Qorpera can't take in",
 			"dens historik har skader, som Qorpera ikke kan tage ind",
 		],
@@ -341,7 +342,14 @@ describe("the words of an import", () => {
 			"dens historik har gamle git-objekter, som Qorpera ikke kan tage ind endnu",
 		],
 		[
-			["IMPORT_TOO_MANY_ENTRIES", "IMPORT_NAMES_REFUSED", "CODE_HOST_NAMES_NOT_NFC", "IMPORT_BRANCH_NAME"],
+			[
+				"IMPORT_TOO_MANY_ENTRIES",
+				"IMPORT_TOO_MANY_FILES",
+				"IMPORT_TOO_MANY_REFS",
+				"IMPORT_NAMES_REFUSED",
+				"CODE_HOST_NAMES_NOT_NFC",
+				"IMPORT_BRANCH_NAME",
+			],
 			"it has more files, or names, than Qorpera can keep",
 			"den har flere filer eller navne, end Qorpera kan gemme",
 		],
