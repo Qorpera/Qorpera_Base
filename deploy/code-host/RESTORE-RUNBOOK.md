@@ -213,6 +213,38 @@ A request never ends `done` before the job that opened its place has saved, and 
 nothing: a restore is recorded only while its place is closed. A finish for a restore that was never recorded is
 refused by the database (`Code restore is not recorded`), and the request is claimed again.
 
+**An import that recorded its repository and can never open (not drilled).** Code brought in (a request of kind
+`import`) closes, builds and opens its place with a restore's jobs, and records its repository (the registry row and
+change 1) inside its open job, before the mark goes. From that record on the database never ends it: only the
+executor's finish `done/imported` does, once the place is open, and a claim hands it out again each time its
+15-minute lease ran out, however often. While it runs, no other request of that company is claimed. So an import
+whose open fails every time (`progress` has `recorded`, `attempts` keeps growing, and the executor's log has
+`code-import-error`, step `open`, with the same code on each claim) holds back the company's undos, downloads and
+restores until you end it:
+
+1. Find it, and read the bundle its mark names:
+   ```sql
+   select id, state, attempts, lease_until, progress -> 'recorded' ->> 'bundle' as bundle
+   from public.qorpera_code_requests
+   where kind = 'import' and profile_id = '<company id>' and state in ('queued', 'running');
+   ```
+2. End it as the database ends a request past its claims. The statement changes nothing while an executor holds a
+   live lease: it must say `UPDATE 1`; if it says `UPDATE 0`, run it again after `lease_until`.
+   ```sql
+   update public.qorpera_code_requests set state = 'failed', lease_token = null, lease_owner = null,
+     lease_until = null, finished_at = now(), updated_at = now(),
+     outcome = '{"schema":"qorpera.code-request-outcome/v1","state":"failed","code":"DID_NOT_FINISH"}'
+   where id = '<request id>' and kind = 'import' and progress ? 'recorded'
+     and (state = 'queued' or (state = 'running' and lease_until <= now()));
+   ```
+   A finish the executor sends for it later is `lost`, and no claim hands it out again.
+3. The place is still closed: `restoring.json` names that bundle, and turns on the repository fail with the restore's
+   words. Do as the `PLACE_CLOSED` row says: ask a restore at once, mode `restore`, with that bundle's name and `keep`.
+   Its close finds the mark for the same bundle and goes on from it (the mark's request id is not compared); it opens
+   the place and records a restore, change 2, at main as it was brought in.
+4. If that restore fails at its open too, leave the place closed: nothing is lost (the source the import came from
+   and both its bundles are kept). It needs a developer, as in "By hand".
+
 **The first part is the step**: `FRESH_BUNDLE_FAILED`, `VERIFY_FAILED`, `CLOSE_FAILED`, `SET_ASIDE_FAILED`,
 `BUILD_FAILED`, `OPEN_FAILED`, `DISCARD_FAILED`.
 
