@@ -42,7 +42,8 @@ including when reconstruction has replaced pixels with summaries. Arbitrary
 provider-message media cannot acquire authority through this path.
 
 The result fence sends every tool output of a model request's history to the
-host, which returns each as a host-issued envelope of at most 8 KiB. Since bundle
+host, which returns each as a host-issued envelope of at most 32 KiB (8 KiB until
+perf sprint T2, 8 Nov 2026). Since bundle
 v104 a request may carry any number of outputs: the frame is bounded at 64 MiB
 each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
 more than any model context holds.
@@ -141,9 +142,14 @@ The host owns the closed provenance envelope and rechecks live run authority
 before releasing results. Only an exact host-issued same-call envelope may
 pass through unchanged. An attacker-supplied envelope is data, not authority.
 Raw result text is private and is never a public send. Each final serialized
-envelope is capped at 8 KiB, with original byte count, hash and truncation.
-This can exceed 1,000 tokens and requires manual payload-budget review; it
-cannot exceed the upstream 10,000-token item ceiling under a byte-level bound.
+envelope is capped at 32 KiB, with original byte count, hash and truncation.
+That is about 8,200 tokens at Codex's 4 bytes a token. Codex records each tool
+output in its history under the model's truncation policy, but the governed
+session's fixed configuration sets `tool_output_token_limit=65536`
+(`CLOUD_CODEX_BOUNDARY_FIXED_CONFIG`), which replaces it: about 78,000 tokens
+in tokens mode, 256 KiB in bytes mode (a model Codex has no metadata for), so an
+issued 32 KiB envelope is never cut there. The fence bounds every output again
+before each request.
 
 ## Usage-limit codes (Sign in with ChatGPT)
 
@@ -266,6 +272,12 @@ new unit checks were run from the exact source modules using pinned `rustc
 harness was not run. The proof records the executed source hashes and actual
 Linux guest package manifest. These are scripted loopback checks in a dedicated
 Linux VM, with no real-model or production acceptance.
+
+History (v237, 12 Nov 2026): the paragraph below and its proof record describe the m896 build `1c08fd01…`; the pinned
+executable is now #1530's rebuild `9c299f88…` (the same source, lock and toolchain, the 32 KiB result patch), whose
+real-binary runs on the node02 test VM are recorded in PR #1530 (run `20261112T141023-89105-191dc3bc`: eight native files,
+312 passed, none skipped; and with the run log's parser fixed, `scripts/prove-run-log-full-result.mjs`, run
+`20261112T172355-61541-8f6e1a35`: 13 of 13).
 
 The current [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
 the pinned 318,891,312-byte release executable, SHA-256

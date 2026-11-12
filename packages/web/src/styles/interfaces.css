@@ -39,13 +39,10 @@
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
-/* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
- * 2026). The emblem turns white; the selection shows through its cuts. */
-.rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-app.active .interface-emblem { --emblem-ink: #fff; }
-.rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
+/* The open page: its tile in a soft wash of its own colour, its emblem kept in that colour (Jonas, 12 Nov 2026: "the
+ * icons shouldn't turn white when selected"; before, the tile was the selection colour with a white emblem). */
+.rail-app.active, .rail-app.active:hover { background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
-.rail-app.active:focus-visible { outline-color: #fff; }
 /* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
  * make way. Its tile shows no hover while it moves. */
 .rail-apps-grid.is-sorting { cursor: grabbing; }
@@ -62,10 +59,9 @@
 .rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
 .rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
 .rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
-/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"); the
- * open page's stays white on the selection. */
+/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"), the
+ * open page's too; an app in a group is drawn in the group's (12 Nov 2026). */
 .rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }
-.rail-app.active .rail-app-stand .interface-emblem { --emblem-ink: #fff; }
 /* A group: two stacked cards in its first app's colour; open, they fan apart, and its apps follow it in the grid. */
 .group-emblem rect { transform-box: fill-box; transform-origin: center; transition: transform 440ms var(--ease-out); }
 .group-emblem .group-card-back { fill: none; stroke: var(--emblem-ink); stroke-width: 2; }
@@ -360,3 +356,44 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 	.interface-mail .email-draft-heading { flex-direction: column; align-items: flex-start; }
 	.interface-mail .email-draft-row { flex-direction: column; align-items: flex-start; gap: 2px; }
 }
+/* The Colour menu's swatches: a dot in each colour; Default an empty ring. */
+.colour-swatch { width: 14px; height: 14px; margin: 0 2px; border-radius: 50%; background: var(--swatch, currentColor); flex: none; }
+.colour-swatch.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted, currentColor); }
+/* Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the panel an app's menu opens beside it. */
+.context-panel { width: 300px; max-width: calc(100vw - 16px); padding: 12px; gap: 0; }
+.app-look { display: grid; gap: 6px; }
+.app-look-title { margin: 0 2px 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.app-look-label { margin: 6px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.app-look .color-grid.app-look-colours { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 3px; width: 100%; margin: 2px 0 0; }
+.app-look .color-choice { grid-column: auto; width: 100%; max-width: 20px; height: auto; aspect-ratio: 1; }
+.app-look .color-choice:nth-child(7) { grid-column: auto; }
+.app-look .color-choice.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
+.app-look .color-choice[aria-checked="true"]::after { inset: -3px; }
+.app-look-note { margin: 0 2px; font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
+.app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
+.app-look-icon:hover { background: var(--hover); }
+.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.app-look-icon[aria-checked="true"] { background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, transparent); box-shadow: inset 0 0 0 2px var(--app-colour, var(--text)); }
+.app-look-icon .interface-emblem { width: 28px; height: 28px; --emblem-ink: var(--app-colour, var(--text)); }
+.app-look-drawing {
+	aspect-ratio: 1; border-radius: 9px; background-size: 300% 100%; animation: app-look-shimmer 1.3s linear infinite;
+	background-image: linear-gradient(100deg, var(--hover) 30%, color-mix(in srgb, var(--app-colour, var(--text)) 18%, var(--hover)) 50%, var(--hover) 70%);
+}
+@keyframes app-look-shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+.app-look-empty { grid-column: 1 / -1; padding: 2px; font-size: 12px; color: var(--text-muted); }
+.app-look-generate {
+	display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 9px 11px; border: 1px solid var(--border-strong);
+	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.app-look-generate:hover:not(:disabled) { background: var(--hover); }
+.app-look-generate:disabled { cursor: default; opacity: 0.75; }
+.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection); }
+.app-look-generate-text { display: grid; gap: 1px; font-size: 13px; }
+.app-look-generate-text small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
+.app-look-problem { margin: 2px; font-size: 12px; color: var(--danger); }
+.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+/* An app whose agent draws new icons breathes until they come. */
+.rail-app.is-drawing .interface-emblem { animation: app-drawing 1.2s ease-in-out infinite; }
+@keyframes app-drawing { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .app-look-drawing, .rail-app.is-drawing .interface-emblem { animation: none; } }

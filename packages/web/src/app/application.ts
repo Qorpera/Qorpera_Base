@@ -1437,6 +1437,8 @@ export function mountApplication(
 					if (companyApps !== apps) return;
 					controller.store.set({ apps: next });
 					decorateAppCards();
+					// The apps changed: the icons read for some of them may have too (an agent drew new ones).
+					controller.refreshAppIcons();
 				},
 				(groups) => {
 					if (companyApps !== apps) return;
@@ -1444,6 +1446,18 @@ export function mountApplication(
 				},
 			);
 			companyApps = apps;
+			controller.appIconReader = (app) => apps.icons(app);
+			// Generate icon's message takes the thread's own model account, as an answer from an app does.
+			controller.appIconAccounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				companyCurrent,
+			);
+			// An agent's icons-only save changes no app's manifest: every read of the apps (a hint, the minute's clock, the tab
+			// coming back) reads the icons read before (review F5 on #1696).
+			apps.onRead(() => controller.refreshAppIcons());
 			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
 			// and again on each change hint of the folder, as the thread's wall is.
 			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>

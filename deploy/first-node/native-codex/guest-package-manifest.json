@@ -13,9 +13,9 @@
   "nativeCompany": {
     "schema": "qorpera.native-company-guest/v1",
     "binaryPath": "/opt/qorpera-harnesses/native-company/codex",
-    "binarySha256": "1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c",
+    "binarySha256": "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4",
     "sourceCommit": "be2951ea34f0d295ed0becf97079f92fa5f6950e",
-    "patchSha256": "1148d8eced8187ab6063d3d442c6fac6e851702e3e0cdccad90aa9e4b608bfab",
+    "patchSha256": "b7eab8423d4198e16bb893ef300ae162d1c9218642a61efe5d13f88666c6349a",
     "target": "x86_64-unknown-linux-gnu",
     "profile": "release"
   },
@@ -58,12 +58,12 @@
     {
       "file": "native-company/artifact.json",
       "bytes": 1816,
-      "sha256": "a73a38b9fe095245f0faed872b083100cb65de4ffc7b9ad18d37b4d3cb996f3f"
+      "sha256": "7e4066fb6d1e04b0bed8ee5b79fb9c1cc96c5d01e35198eec359a9f74d751e49"
     },
     {
       "file": "native-company/codex",
-      "bytes": 318891312,
-      "sha256": "1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c"
+      "bytes": 318813136,
+      "sha256": "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4"
     },
     {
       "file": "native-company/LICENSE",
@@ -132,8 +132,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 3672036,
-      "sha256": "87e82252f5cd6b44babc5374d810aeaee369e6695cf1cb8eec26124661eb6e95"
+      "bytes": 3683766,
+      "sha256": "868713739077cca0959900aae9774ac79f1571830d14727f1033ec0062ea3c61"
     },
     {
       "file": "qorpera-native-provider-host.service",
