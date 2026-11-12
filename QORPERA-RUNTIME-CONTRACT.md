@@ -6472,7 +6472,9 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
      read on with `path` and `offset`. A link's target is shown the same way.
    - Each path is answered on its own: absent (also for a path the run may not read, as today), a folder, a file
      that is not text or an image format not shown (`refused`, with today's words), or one the folder could not
-     read now. A company whose work is stopped, or a read the run may no longer show at its release, shows nothing.
+     read now (its own failure, or a request that timed out or lost its connection, also after the answer began).
+     A company whose work is stopped, a cancel, bytes that fail their check, or a read the run may no longer show
+     at its release, shows nothing.
    - An image among several is named, never shown (`kind: "image"`, its media type and size, `shown: false`): one
      result shows one picture, after the answer that names it. Read alone from offset 0, it is shown as before.
    - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,

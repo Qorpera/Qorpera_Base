@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { CloudCompanyFolderClient, CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
+import { HttpCloudCompanyFolderBytes } from "@qorpera/runtime/cloud-company-folder-bytes";
+import {
+	CloudCompanyFolderClient,
+	CloudCompanyFolderError,
+	type CloudCompanyFolderFile,
+} from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -492,6 +497,51 @@ it("answers each path on its own, without failing the others: absent, a folder, 
 	vi.spyOn(f.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("read_revoked"));
 	await refuses(f.call("company_read", { paths: ["docs/plan.md", "docs/latest"] }), CloudToolRefusal, "READ_REVOKED");
 	expect(f.releases).toHaveLength(before);
+});
+
+it("answers a file whose bytes were cut off on their way as that path's, through the real transport, and shows the rest", async () => {
+	// The byte transport the run uses, whose answer for one file drops after its headers (review r2 of #1700).
+	const cutOff = async () =>
+		new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new Uint8Array([123]));
+					controller.error(new TypeError("terminated"));
+				},
+			}),
+			{ status: 200 },
+		);
+	const f = await fixture(
+		{ files: { "docs/plan.md": "the plan", "docs/notes.md": "notes" } },
+		{
+			bytes: (inner, run) => {
+				const http = new HttpCloudCompanyFolderBytes({
+					baseUrl: "http://127.0.0.1:9",
+					token: "t".repeat(43),
+					binding: run.binding,
+					holder: () => `job.${run.binding.jobId.toLowerCase()}.${"h".repeat(43)}`,
+					identity: run.identity,
+					control: run.control,
+					fetch: cutOff,
+				});
+				return {
+					...inner,
+					range: (file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal) =>
+						file.fileSha256 === sha("the plan")
+							? http.range(file, offset, length, signal)
+							: inner.range(file, offset, length, signal),
+				};
+			},
+		},
+	);
+	expect(parse(await f.call("company_read", { paths: ["docs/plan.md", "docs/notes.md"] })).files).toEqual([
+		{ path: "docs/plan.md", refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" },
+		expect.objectContaining({ path: "docs/notes.md", text: "notes", nextOffset: null }),
+	]);
+	expect(f.releases.map(released)).toEqual([["docs/notes.md"]]);
+	// Read alone, the same cut is not shown as anything: the call's outcome is unconfirmed, as before.
+	const alone = await f.call("company_read", { path: "docs/plan.md" }).catch((error: unknown) => error);
+	expect(alone).toMatchObject({ category: "transport_unavailable" });
 });
 
 it("takes path or paths, offset and limit only with path, and up to 8 files, each once", async () => {
