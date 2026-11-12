@@ -6745,22 +6745,16 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null, undefined],
 			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY", undefined],
 			// A page that loads its style from the top of the domain (the first live site, 11 November 2026).
-			[
-				"SITE_LINKS_FROM_ROOT",
-				"SITE_LINKS_FROM_ROOT index.html /src/style.css\n",
-				"index.html",
-				null,
-				"/src/style.css",
-			],
+			["SITE_LINKS_FROM_ROOT", "SITE_LINKS_FROM_ROOT index.html 2\n", "index.html", null, 2],
 		] as const)(
 			"refuses a site the code made wrong (%s): the drop after it, and no boundary of its own",
-			async (code, printed, path, variable, link) => {
+			async (code, printed, path, variable, links) => {
 				const f = await siteFixture({ collect: { code: 3, printed } });
 				expect(await f.site()).toEqual({
 					state: "site_refused",
 					ms: expect.any(Number),
 					checks: PASSED,
-					problem: { code, path, variable, ...(link === undefined ? {} : { link }) },
+					problem: { code, path, variable, ...(links === undefined ? {} : { links }) },
 				});
 				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
 				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
@@ -7349,38 +7343,44 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					files: { "img/vieux-clé-8899.png": "x" },
 					outcome: refused({ code: "SITE_FILE_NAME", path: "img/***.png", variable: null }),
 				},
+				// Review round 3 of #1691: a link is never printed, so no value in one reaches anyone in any spelling: one only
+				// the host's mask knows (with a backslash; at the end of a long link, where a cut would have carried its
+				// start), the session's by character references, and the review's CSS escape of a parenthesis (the URL token
+				// takes it whole; neither the file's bytes nor a mask hold the value as it is written).
 				{
-					// A link from the root holds an older value: the collect names the file and the link, the transport's mask
-					// misses the value in its \xHH spelling, and the host's mask takes it out of the decoded link.
 					case: "an older value of the machine's with a backslash, in a link from the root",
 					secrets: { OTHER_KEY: "unrelated-value-1" },
 					older: ["old\\link-value-77"],
 					files: { "index.html": '<a href="/old\\link-value-77/x.html">x</a>' },
-					outcome: refused({
-						code: "SITE_LINKS_FROM_ROOT",
-						path: "index.html",
-						variable: null,
-						link: "/***/x.html",
-					}),
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
 				},
 				{
-					// Spelled by character references, the session's value is in the link the parser reads and not in the
-					// file's bytes: only its variable is named.
 					case: "a value of the session's spelled by character references, in a link from the root",
 					secrets: { LINK_KEY: "link-secret-4242" },
 					older: [],
 					files: { "index.html": '<a href="/k/&#108;ink-secret-4242">x</a>' },
-					outcome: refused({ code: "SITE_HOLDS_SECRET", path: null, variable: "LINK_KEY" }),
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
 				},
 				{
-					// Review of #1691, F1: a link of "/", 120 two-byte characters and an older value of 32 bytes. Cut at the
-					// answer's 1,000 bytes it would carry the value's first 28 bytes, which neither mask knows whole: the
-					// collect names the file without its link.
-					case: "an older value of the machine's at the end of a link too long to name whole",
+					case: "an older value of the machine's at the end of a long link",
 					secrets: { OTHER_KEY: "unrelated-value-1" },
 					older: ["OLDsecret-0123456789abcdefghijKL"],
 					files: { "index.html": `<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>` },
-					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: null }),
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
+				},
+				{
+					case: "the session's value in a style sheet's URL, a parenthesis escaped (the review's case)",
+					secrets: { ESCAPED_KEY: "prefix-secret-1234)tail-5678" },
+					older: [],
+					files: { "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "a.css", variable: null, links: 1 }),
+				},
+				{
+					case: "an older value of the machine's in a style sheet's URL, a parenthesis escaped",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["prefix-secret-1234)tail-5678"],
+					files: { "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "a.css", variable: null, links: 1 }),
 				},
 				{
 					// The same for a name a site cannot serve: cut, it would carry the value's first 15 bytes.

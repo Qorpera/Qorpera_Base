@@ -396,8 +396,8 @@ pass "the collect refuses a site that holds a secret value, by its variable and 
 SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c \
 	'printf "<link rel=\"stylesheet\" href=\"/css/app.css\">\n" >dist/index.html'
 collect 0000000003-0001
-[[ $CODE == 3 && $OUT == "SITE_LINKS_FROM_ROOT index.html /css/app.css" ]] || fail "a link from the root gave $CODE: $OUT"
-pass "the collect refuses a site whose page links from the top of the domain, by its file and link"
+[[ $CODE == 3 && $OUT == "SITE_LINKS_FROM_ROOT index.html 1" ]] || fail "a link from the root gave $CODE: $OUT"
+pass "the collect refuses a site whose page links from the top of the domain, by its file and how many (never the link)"
 as_session rm -r "$CHECKS/0000000003-0001/src/dist"
 collect 0000000003-0001
 [[ $CODE == 3 && $OUT == SITE_FOLDER_MISSING ]] || fail "a missing folder gave $CODE: $OUT"

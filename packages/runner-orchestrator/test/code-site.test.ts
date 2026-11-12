@@ -238,21 +238,19 @@ describe("the collect's and the drop's answers", () => {
 		expect(refused("SITE_HOLDS_SECRET STRIPE_KEY\n")).toEqual({
 			problem: { code: "SITE_HOLDS_SECRET", path: null, variable: "STRIPE_KEY" },
 		});
-		// A link from the root: the file (a path of the site, no space in it), then the link as the file writes it.
-		expect(refused("SITE_LINKS_FROM_ROOT index.html /src/style.css\n")).toEqual({
-			problem: { code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: "/src/style.css" },
+		// Links from the root: the file (a path of the site, no space in it) and how many it has, never a link (review
+		// round 3 of #1691).
+		expect(refused("SITE_LINKS_FROM_ROOT index.html 3\n")).toEqual({
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 3 },
 		});
-		expect(refused("SITE_LINKS_FROM_ROOT css/a.css  /img/caf\\xc3\\xa9 1.png\\x0a\n")).toEqual({
-			problem: { code: "SITE_LINKS_FROM_ROOT", path: "css/a.css", variable: null, link: " /img/café 1.png\n" },
+		expect(refused("SITE_LINKS_FROM_ROOT css/a.css 1\n")).toEqual({
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: "css/a.css", variable: null, links: 1 },
 		});
-		// A detail that would not fit whole is left out (review of #1691, F1): the code alone, or the file without its link.
+		// A detail that would not fit whole is left out (review of #1691, F1): the code alone.
 		expect(refused("SITE_FILE_NAME\n")).toEqual({ problem: problem("SITE_FILE_NAME") });
 		expect(refused("SITE_FILE_TOO_LARGE\n")).toEqual({ problem: problem("SITE_FILE_TOO_LARGE") });
-		expect(refused("SITE_LINKS_FROM_ROOT index.html\n")).toEqual({
-			problem: { code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: null },
-		});
 		expect(refused("SITE_LINKS_FROM_ROOT\n")).toEqual({
-			problem: { code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, link: null },
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, links: null },
 		});
 		// A detail of 1,000 bytes, the most the collect writes.
 		expect(refused(`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}\n`)).toEqual({
@@ -276,9 +274,15 @@ describe("the collect's and the drop's answers", () => {
 			`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}a\n`,
 			"SITE_HOLDS_SECRET 1KEY js/app.js\n",
 			"SITE_HOLDS_SECRET KEY-1 js/app.js\n",
-			"SITE_LINKS_FROM_ROOT index.html \n",
-			"SITE_LINKS_FROM_ROOT  /a.css\n",
-			"SITE_LINKS_FROM_ROOT index.html /a\\x41PI-KEY.css\n",
+			"SITE_LINKS_FROM_ROOT index.html\n",
+			"SITE_LINKS_FROM_ROOT index.html /src/style.css\n",
+			"SITE_LINKS_FROM_ROOT index.html 1 /src/style.css\n",
+			"SITE_LINKS_FROM_ROOT index.html 0\n",
+			"SITE_LINKS_FROM_ROOT index.html 03\n",
+			"SITE_LINKS_FROM_ROOT index.html 1234567890\n",
+			"SITE_LINKS_FROM_ROOT index.html 3 \n",
+			"SITE_LINKS_FROM_ROOT  3\n",
+			"SITE_LINKS_FROM_ROOT 3\n",
 			"SITE_UNHEARD_OF\n",
 			"SITE_NO_INDEX",
 			"SITE_NO_INDEX\nSITE_NO_INDEX\n",
@@ -389,16 +393,16 @@ describe("the words of a refused site", () => {
 			`${head}holds the value of STRIPE_KEY in one of its files or file names.${key}${foot}`,
 		);
 		expect(said(problem("SITE_FILE_TOO_LARGE"))).toBe(`${head}has a file over 10 MB.${foot}`);
-		// A link from the root, with its file and link; a link the host's mask took away; neither (no mask to be had).
+		// Links from the root: the file and how many, never a link; one; no file to be shown.
 		const relative =
-			'. A site is served under an address of its own, never at the top of a domain: link its files with relative links (src/app.js, ../img/logo.png), in its scripts too, which Qorpera does not read; for a bundler, set its base path, such as Vite\'s base: "./".';
-		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: "/src/style.css" })).toBe(
-			`${head}has a link that starts with /: index.html links to /src/style.css${relative}${foot}`,
+			'. A site is served under an address of its own, never at the top of a domain: link its files with relative links (src/app.js, ../img/logo.png), in its scripts too, which Qorpera does not read, or set your bundler\'s base path (Vite: base: "./").';
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 3 })).toBe(
+			`${head}has links that start with / in index.html (3 of them)${relative}${foot}`,
 		);
-		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: null })).toBe(
-			`${head}has a link that starts with / in index.html${relative}${foot}`,
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "css/a.css", variable: null, links: 1 })).toBe(
+			`${head}has a link that starts with / in css/a.css${relative}${foot}`,
 		);
-		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, link: null })).toBe(
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, links: null })).toBe(
 			`${head}has a link that starts with /${relative}${foot}`,
 		);
 		expect(said(problem("SITE_FILE_NAME"))).toBe(
@@ -412,8 +416,8 @@ describe("the words of a refused site", () => {
 			`the site in "web/�dist" has a file whose name a site cannot serve: a�b�${"x".repeat(900)}.html (only letters`,
 		);
 		expect(fits.split("\n")).toHaveLength(1);
-		// Review of #1691, F1: a path or a link is never cut, since a cut one can carry the start of a secret value no mask
-		// knows whole. Past the words' 3,500 bytes it is left out: the link first, then the path.
+		// Review of #1691, F1: a path is never cut, since a cut one can carry the start of a secret value no mask knows
+		// whole. Past the words' 3,500 bytes it is left out.
 		const name = codeSiteRefusedSummary(problem("SITE_FILE_NAME", `a${"x".repeat(5000)}.html`), "dist");
 		expect(name).toContain('the site in "dist" has a file whose name a site cannot serve (only letters');
 		expect(name).not.toContain("xxxxxxxx");
@@ -424,18 +428,14 @@ describe("the words of a refused site", () => {
 		expect(bytes(largest)).toBeLessThanOrEqual(3500);
 		expect(largest).toContain(`holds the value of ${"A".repeat(128)} in one of its files or file names.`);
 		expect(largest.endsWith("[code=CODING_CHECKS_SITE_REFUSED]")).toBe(true);
-		const link = (path: string, to: string) =>
-			codeSiteRefusedSummary({ code: "SITE_LINKS_FROM_ROOT", path, variable: null, link: to }, "é".repeat(150));
-		const long = link("index.html", `/\n${"é".repeat(5000)}`);
+		const links = (path: string) =>
+			codeSiteRefusedSummary({ code: "SITE_LINKS_FROM_ROOT", path, variable: null, links: 2 }, "é".repeat(150));
+		const long = links("p".repeat(3000));
 		expect(bytes(long)).toBeLessThanOrEqual(3500);
-		expect(long).toContain("has a link that starts with / in index.html. A site is served");
-		expect(long).not.toContain(" links to ");
-		const both = link("p".repeat(3000), "/x.css");
-		expect(both).toContain("has a link that starts with /. A site is served");
-		expect(both).not.toContain("pppppppp");
-		const whole = link(`a/${"b".repeat(500)}.html`, `/\n${"é".repeat(800)}`);
-		expect(whole).toContain(`: a/${"b".repeat(500)}.html links to /\uFFFD${"é".repeat(800)}. A site`);
-		expect(bytes(whole)).toBeLessThanOrEqual(3500);
+		expect(long).toContain("has a link that starts with /. A site is served");
+		expect(long).not.toContain("pppppppp");
+		const whole = links(`a/${"b".repeat(500)}.html`);
+		expect(whole).toContain(`has links that start with / in a/${"b".repeat(500)}.html (2 of them). A site`);
 	});
 });
 
@@ -1309,8 +1309,9 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 		expect(await collectOf(files), line).toMatchObject({ code: 3, signal: null, output: line });
 	const page = (body: string) => `<!doctype html><html><head><title>t</title></head><body>${body}</body></html>`;
 
-	it("refuses a page that links from the root in any attribute that loads or leads somewhere, naming the file and the link", async () => {
-		for (const [body, link] of [
+	it("refuses a page that links from the root in any attribute that loads or leads somewhere, naming its file", async () => {
+		// Each with the link it holds (review round 3 of #1691: the answer names the file and how many, never a link).
+		for (const [body] of [
 			['<link rel="stylesheet" href="/src/style.css">', "/src/style.css"],
 			['<script type="module" src="/src/app.js"></script>', "/src/app.js"],
 			['<img src="a.png" srcset="small.png 1x, /big.png 2x">', "/big.png"],
@@ -1342,31 +1343,27 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			['<a href="/&NewLine;nl">x</a>', "/\\x0anl"],
 			['<style>a { background: image-set("/set.png" 1x) }</style>', "/set.png"],
 		])
-			await refusedWith({ "index.html": page(body) }, `SITE_LINKS_FROM_ROOT index.html ${link}\n`);
+			await refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n");
 	});
 
-	it("names a link whole or leaves it out, never cuts it (review of #1691, F1)", async () => {
-		// The review's case: "/", 120 two-byte characters and 32 bytes of ASCII. Cut at 1,000 bytes the answer would carry
-		// the first 28 of those 32, which a value no mask knows whole could be: the file is named without its link.
-		const tail = "OLDsecret-0123456789abcdefghijKL";
+	it("never names a link: its file and how many it has (review round 3 of #1691)", async () => {
+		// The review of round 1's case, a long link ending in 32 bytes of ASCII, and three links in one page.
 		await refusedWith(
-			{ "index.html": page(`<a href="/${"é".repeat(120)}${tail}">x</a>`) },
-			"SITE_LINKS_FROM_ROOT index.html\n",
-		);
-		// "index.html " and the link's spelling: 1,000 bytes are named whole, 1,001 are not.
-		const link = (rest: string) => `/${"é".repeat(123)}${rest}`;
-		await refusedWith(
-			{ "index.html": page(`<a href="${link("abcd")}">x</a>`) },
-			`SITE_LINKS_FROM_ROOT index.html /${"\\xc3\\xa9".repeat(123)}abcd\n`,
+			{ "index.html": page(`<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>`) },
+			"SITE_LINKS_FROM_ROOT index.html 1\n",
 		);
 		await refusedWith(
-			{ "index.html": page(`<a href="${link("abcde")}">x</a>`) },
-			"SITE_LINKS_FROM_ROOT index.html\n",
+			{ "index.html": page('<link href="/a.css"><a href="b.html">b</a><img src="/c.png"><a href="/">home</a>') },
+			"SITE_LINKS_FROM_ROOT index.html 3\n",
+		);
+		await refusedWith(
+			{ "index.html": page("x"), "a.css": "a { background: url(/a.png) } @import '/b.css'; b { c: url(c.png) }" },
+			"SITE_LINKS_FROM_ROOT a.css 2\n",
 		);
 	});
 
 	it("refuses a style sheet that links from the root, in url() or @import", async () => {
-		for (const [css, link] of [
+		for (const [css] of [
 			['@import "/base.css";', "/base.css"],
 			["@import '/print.css' print;", "/print.css"],
 			["@import url(/u.css);", "/u.css"],
@@ -1383,19 +1380,27 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			['a { background: url("\\2f q.png") }', "/q.png"],
 			["a { background: url(/*x*/) }", "/*x*/"],
 			['@font-face { font-family: A; src: local("A"), url(/font.woff) }', "/font.woff"],
+			// Review round 3 of #1691, F2: escapes as CSS Syntax decodes them, in names, strings and URLs.
+			['@im\\70ort "/base.css";', "/base.css"],
+			["a { background:u\\72l(/image.png) }", "/image.png"],
+			["a { background: \\75 rl(/x.png) }", "/x.png"],
+			["a { background: U\\52L(/y.png) }", "/y.png"],
+			['a { background: image-\\73 et("/z.png" 1x) }', "/z.png"],
+			['a { mask-image: src("/s.png") }', "/s.png"],
+			["a { background: url(\\/x.png) }", "/x.png"],
+			['@\\69MPORT "\\2f q.css";', "/q.css"],
+			["a { background: url(/a\\ b.png) }", "/a b.png"],
+			["a { background: url(/prefix-secret-1234\\)tail-5678) }", "/prefix-secret-1234)tail-5678"],
 		])
-			await refusedWith(
-				{ "index.html": page("x"), "css/site.css": css },
-				`SITE_LINKS_FROM_ROOT css/site.css ${link}\n`,
-			);
+			await refusedWith({ "index.html": page("x"), "css/site.css": css }, "SITE_LINKS_FROM_ROOT css/site.css 1\n");
 		// A page of any case of its extension; the first link in C order of the files: a.css before index.html.
 		await refusedWith(
 			{ "index.html": page("x"), "Page.HTM": page('<a href="/x">x</a>') },
-			"SITE_LINKS_FROM_ROOT Page.HTM /x\n",
+			"SITE_LINKS_FROM_ROOT Page.HTM 1\n",
 		);
 		await refusedWith(
 			{ "index.html": page('<link href="/i.css">'), "a.css": "b { background: url(/a.png) }" },
-			"SITE_LINKS_FROM_ROOT a.css /a.png\n",
+			"SITE_LINKS_FROM_ROOT a.css 1\n",
 		);
 	});
 
@@ -1432,6 +1437,13 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 				"@import url(rel.css) layer(base) supports(display: grid);",
 				'@media print { e { content: "/p" } }',
 				'@import foo "/not-an-import.css";',
+				// No url token: a hash, another function's name, a space inside a bare URL, a comment, a string.
+				"g { background: #url(/x) } h { background: myurl(/x) } i { background: url(/a b.png) }",
+				'/* u\\72l(/in-comment.png) */ j { content: "u\\72l(/in-string.png)" }',
+				// A bad URL runs to its own ")", an escaped one inside it is no end; a control inside a URL makes it bad.
+				"k { b: url(x y\\) url(/z.png) } l { b: url(/a\u0001b.png) }",
+				// Escapes decoded before a URL is judged: "//" to another host, and a scheme.
+				'@import "\\2f\\2f cdn.example/x.css"; m { b: image-set("\\68ttps://x.example/a.png" 1x) }',
 			].join("\n"),
 			"app.js": "fetch('/api/items'); const u = '/src/x.js';",
 			"notes.txt": '<a href="/x">',
@@ -1441,17 +1453,31 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
 	});
 
-	it("never names a file or a link that holds a secret value, in any spelling: only the variable", async () => {
-		const environment = { QORPERA_SITE_SECRET_NAMES: "LINK_KEY", LINK_KEY: "link-secret-4242" };
+	it("never prints a byte of a link, so a value in one stays unseen in any spelling (review round 3 of #1691)", async () => {
+		const environment = {
+			QORPERA_SITE_SECRET_NAMES: "LINK_KEY ESCAPED_KEY",
+			LINK_KEY: "link-secret-4242",
+			ESCAPED_KEY: "prefix-secret-1234)tail-5678",
+		};
 		// Written plainly the file's bytes hold it, and the scan of the bytes names the file as before.
 		const plain = await collectOf({ "index.html": page('<a href="/k/link-secret-4242">x</a>') }, environment);
 		expect(plain.output).toBe("SITE_HOLDS_SECRET LINK_KEY index.html\n");
-		// By character references, only the link the parser reads holds it: the variable alone.
+		// By character references, or by a CSS escape (the review's case: the URL token takes the escaped parenthesis,
+		// and the bytes never hold the value): a link from the root, with no byte of it printed.
 		const spelled = await collectOf({ "index.html": page('<a href="/k/&#108;ink-secret-4242">x</a>') }, environment);
-		expect(spelled).toMatchObject({ code: 3, output: "SITE_HOLDS_SECRET LINK_KEY\n" });
-		const err = await readFile(join(spelled.m.root, spelled.name, "site.err"), "utf8");
-		for (const text of [plain.output, spelled.output, err]) expect(text).not.toContain("link-secret-4242");
-		expect(await spelled.m.wrote(spelled.name)).toEqual([]);
+		expect(spelled).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT index.html 1\n" });
+		const escaped = await collectOf(
+			{ "index.html": page("x"), "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+			environment,
+		);
+		expect(escaped).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT a.css 1\n" });
+		for (const run of [plain, spelled, escaped]) {
+			const err = await readFile(join(run.m.root, run.name, "site.err"), "utf8");
+			for (const value of [environment.LINK_KEY, environment.ESCAPED_KEY])
+				for (let at = 0; at + 8 <= value.length; at++)
+					for (const text of [run.output, err]) expect(text).not.toContain(value.slice(at, at + 8));
+			expect(await run.m.wrote(run.name)).toEqual([]);
+		}
 	});
 
 	it("reads 25 MiB of pages and styles within the collect's time", async () => {
@@ -1477,10 +1503,19 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 		};
 		const slow = await collectOf(odd);
 		expect(slow.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
+		// Style sheets of as many tokens as bytes: the tokenizer stays linear.
+		const tokens = await collectOf({
+			"index.html": "<p>x</p>",
+			"t.css": "a/".repeat(5 * MiB),
+			"u.css": "(".repeat(5 * MiB),
+			"v.css": '"x" '.repeat((9 * MiB) / 4),
+		});
+		expect(tokens.output).toMatch(/^tree [0-9a-f]{40}\nfiles 4\n/);
 		console.log(
-			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms`,
+			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms`,
 		);
 		expect(made.ms).toBeLessThan(60_000);
 		expect(slow.ms).toBeLessThan(60_000);
+		expect(tokens.ms).toBeLessThan(60_000);
 	});
 });

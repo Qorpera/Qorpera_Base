@@ -2297,10 +2297,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * the parser decoded it, so a secret value holding such a byte passed. The decoded path is masked again here with the
 	 * mask of the collect's own output (every value the machine's masks cover: the session's, the machine's other
 	 * sessions' and their older ones, beyond the collect's own environment). No mask to be had (the session released
-	 * meanwhile, or the guest never took the start with these values): the path is not shown. A link from the root
-	 * (`SITE_LINKS_FROM_ROOT`), spelled as a path is, is masked and hidden the same way. Without secrets (no broker)
-	 * nothing is masked, as the transport masks nothing. The variable is a name the answer spells as itself, already
-	 * masked; every other part of a problem is a fixed word. The turn's abort is thrown on. */
+	 * meanwhile, or the guest never took the start with these values): the path is not shown. Without secrets (no
+	 * broker) nothing is masked, as the transport masks nothing. The variable is a name the answer spells as itself,
+	 * already masked; a count of links is a number; every other part of a problem is a fixed word. No part is ever a
+	 * byte of a file's content (review round 3 of #1691). The turn's abort is thrown on. */
 	async #siteProblemMasked(
 		ready: Prepared,
 		run: SiteRun,
@@ -2308,9 +2308,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 	): Promise<CodeSiteProblem> {
 		const secrets = this.#sessionSecrets(ready);
-		const link = problem.link ?? null;
-		if ((problem.path === null && link === null) || !secrets) return problem;
-		const hidden: CodeSiteProblem = { ...problem, path: null, ...(link === null ? {} : { link: null }) };
+		if (problem.path === null || !secrets) return problem;
 		try {
 			const masks = await secrets.output(
 				{
@@ -2322,20 +2320,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				},
 				signal,
 			);
-			if (masks === null) return hidden;
-			const masked = (text: string) => {
-				const mask = masks();
-				return Buffer.concat([mask.push(Buffer.from(text, "utf8")), mask.end()]).toString("utf8");
-			};
-			return {
-				...problem,
-				path: problem.path === null ? null : masked(problem.path),
-				...(link === null ? {} : { link: masked(link) }),
-			};
+			if (masks === null) return { ...problem, path: null };
+			const mask = masks();
+			const masked = Buffer.concat([mask.push(Buffer.from(problem.path, "utf8")), mask.end()]);
+			return { ...problem, path: masked.toString("utf8") };
 		} catch (error) {
 			if (signal.aborted) throw signal.reason;
 			this.#checksReport({ event: "code-checks-error", step: "mask", ...run.step, error });
-			return hidden;
+			return { ...problem, path: null };
 		}
 	}
 	/** The site's collect or drop as a command of the run (#takeSite), to its end through #checksCommand, with its log
