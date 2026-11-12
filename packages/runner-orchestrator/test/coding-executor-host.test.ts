@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
+	CODING_PACKAGE_CACHE_ENVIRONMENT,
 	type CodingGuestCommandState,
 	type CodingGuestRunRequest,
 	type CodingGuestUsage,
@@ -2930,8 +2931,8 @@ describe("a coding session on the folder model", () => {
 		expect(mocked.seedTransfer).not.toHaveBeenCalled();
 		expect(mocked.refresh).not.toHaveBeenCalled();
 		expect(mocked.leaseTransports).toEqual([]);
-		// Its commands run as its user, at its worktree, with Git's settings for the company folder, under this boot's
-		// start, and kept in the session's custody folder.
+		// Its commands run as its user, at its worktree, with Git's settings for the company folder and the machine's
+		// package caches, under this boot's start, and kept in the session's custody folder.
 		const authorize = vi.fn(async () => undefined);
 		await f.host.commandTransport(f.scope(), authorize, f.signal);
 		expect(mocked.commandTransports).toEqual([]);
@@ -2944,7 +2945,7 @@ describe("a coding session on the folder model", () => {
 					uid: 200000,
 					gid: 200000,
 					cwd: f.cwd,
-					environment: codingFolderGitEnvironment(f.claim.workerId),
+					environment: { ...codingFolderGitEnvironment(f.claim.workerId), ...CODING_PACKAGE_CACHE_ENVIRONMENT },
 				},
 				custody: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource,
 				limitBytes: 67108864,
@@ -5632,6 +5633,41 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		await expect(ask()).rejects.toBe(refusal);
 	});
 
+	it("gives a session command the machine's package caches over the company's values of their names, as every command of its runs (own code storage, step 6)", async () => {
+		// Each tool's download cache in the machine's shared folder (the guest agent makes it).
+		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toEqual({
+			npm_config_cache: "/var/cache/qorpera-packages/npm",
+			npm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
+			YARN_CACHE_FOLDER: "/var/cache/qorpera-packages/yarn",
+			PIP_CACHE_DIR: "/var/cache/qorpera-packages/pip",
+			UV_CACHE_DIR: "/var/cache/qorpera-packages/uv",
+			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
+		});
+		const company = Object.fromEntries(
+			Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+		);
+		const f = await checksFixture({ secrets: { ...company, API_KEY: "env-value-api-key-CANARY" } });
+		// A command of the session's own, through the transport its model's commands take, as the guest is asked to run it.
+		const transport = await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "npm ci", timeoutMs: null };
+		expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "succeeded" });
+		const [session] = f.ran();
+		expect(session).toMatchObject({ commandId: input.commandId, command: "npm ci", cwd: f.cwd });
+		expect(session?.environment).toMatchObject({
+			...codingFolderGitEnvironment(f.claim.workerId),
+			...CODING_PACKAGE_CACHE_ENVIRONMENT,
+			API_KEY: "env-value-api-key-CANARY",
+		});
+		// And the copy and each check of a run.
+		expect(await f.run()).toMatchObject({ state: "passed" });
+		expect(f.ran()).toHaveLength(1 + 1 + CHECKS.length);
+		for (const ran of f.ran()) expect(ran.environment).toMatchObject(CODING_PACKAGE_CACHE_ENVIRONMENT);
+	});
+
 	it("copies the candidate in the session's home and runs each check from its folder of the copy, as the session's user, with CI=true", async () => {
 		const f = await checksFixture({ secrets: { API_KEY: "env-value-api-key-CANARY", CI: "false-from-the-vault" } });
 		const run = await f.run();
@@ -6696,6 +6732,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				QORPERA_CHECKS_REPOSITORY: "/vault/repository-10",
 				QORPERA_SITE_FOLDER: "vault-site-folder-11",
 				QORPERA_SITE_SECRET_NAMES: "VAULT NAMES TWELVE",
+				// The machine's package caches win over a company value of their names (own code storage, step 6).
+				...Object.fromEntries(
+					Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name, index) => [name, `/vault/cache-${13 + index}`]),
+				),
 			};
 			const f = await siteFixture({ secrets });
 			const asked = f.vault.mock.calls.length;
@@ -6733,6 +6773,24 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					.join(" "),
 			);
 			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY STRIPE_SECRET");
+		});
+
+		it("gives the collect and the drop the machine's package caches over the company's values of their names (own code storage, step 6)", async () => {
+			const company = Object.fromEntries(
+				Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+			);
+			const f = await siteFixture({
+				secrets: { ...company, API_KEY: "value-of-the-api-key-1" },
+				collect: { code: 4 },
+			});
+			expect(await f.site()).toMatchObject({ state: "passed", site: { state: "missed" } });
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
+			for (const ran of f.ran())
+				expect(ran.environment).toMatchObject({
+					...CODING_PACKAGE_CACHE_ENVIRONMENT,
+					API_KEY: "value-of-the-api-key-1",
+				});
+			expect(f.command("collect").environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY");
 		});
 
 		it.each([

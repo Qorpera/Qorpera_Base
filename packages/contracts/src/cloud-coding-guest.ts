@@ -42,6 +42,36 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
 	usageProcesses: 8192,
 });
 
+/** The machine's package caches (own code storage, step 6, part W): download caches its sessions and Qorpera's checks
+ * share. A machine serves one member, one agent and one repository, and every session user there is root through sudo,
+ * so a cache its sessions share crosses no line that exists. The guest agent makes the folder and one per tool (root,
+ * group `group`, 2775, the group's rwx as access and default ACL entries) at the first mount of each boot, empties whole
+ * tool folders, least recently used first, while they hold more than `limitBytes`, and tmpfiles removes what was not
+ * used for `age`. The executor points each tool at its folder in every session command's and every checks command's
+ * environment (CODING_PACKAGE_CACHE_ENVIRONMENT), over a company value of the same name. Download caches only: no build
+ * cache, and not Go, cargo or mise, whose caches hold configuration or programs. */
+export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
+	root: "/var/cache/qorpera-packages",
+	group: "qorpera-coding",
+	limitBytes: 8 * 1024 ** 3,
+	/** tmpfiles' age field. */
+	age: "30d",
+	tools: /* @__PURE__ */ Object.freeze([
+		/* @__PURE__ */ Object.freeze({ folder: "npm", variable: "npm_config_cache" }),
+		/* @__PURE__ */ Object.freeze({ folder: "pnpm", variable: "npm_config_store_dir" }),
+		/* @__PURE__ */ Object.freeze({ folder: "yarn", variable: "YARN_CACHE_FOLDER" }),
+		/* @__PURE__ */ Object.freeze({ folder: "pip", variable: "PIP_CACHE_DIR" }),
+		/* @__PURE__ */ Object.freeze({ folder: "uv", variable: "UV_CACHE_DIR" }),
+		/* @__PURE__ */ Object.freeze({ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" }),
+	]),
+});
+/** Each tool's variable and its folder, as every session command and every checks command gets them. */
+export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze(
+	Object.fromEntries(
+		CODING_PACKAGE_CACHES.tools.map(({ folder, variable }) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
+	),
+);
+
 export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "quiesce" | "stop-session" | "status";
 export const CODING_GUEST_VERBS: readonly CodingGuestVerb[] = /* @__PURE__ */ Object.freeze([
 	"mount",

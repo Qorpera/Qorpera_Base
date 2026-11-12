@@ -828,6 +828,10 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("FOLDER_RESTART: the machine restarted because the company folder");
 		expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
 		expect(instructions).toContain("a new disk keeps only /company, which holds the repository");
+		// Own code storage, step 6: the machine's package caches, which its sessions and the checks share.
+		expect(instructions).toContain(
+			"start fresh. Packages you download with npm, pnpm, yarn, pip, uv and Playwright are kept on this machine for later sessions and for Qorpera's checks. ",
+		);
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",

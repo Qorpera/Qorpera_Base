@@ -10,6 +10,7 @@ import {
 	type CloudCodingRepository,
 	type CloudCodingStorageBinding,
 	CODING_GUEST,
+	CODING_PACKAGE_CACHE_ENVIRONMENT,
 	cloudCodingSessionLayout,
 	type IdleRuleSample,
 	idleRuleBusy,
@@ -594,9 +595,10 @@ const CODE_SITE_DROP_MS = 60_000;
 /** What the wall budget of a run that takes a site gives it beyond its checks': the collect's 120 s, and 120 s for the
  * boundary and the drop. */
 const CODE_SITE_BUDGET_MS = 240_000;
-/** The names the folder command transport sets in every command's environment after its secrets
- * (coding-folder-command-transport.ts, `sessionEnvironment`): a secret of one of these names never reaches a command
- * with its own value, so the collect is not given it to look for. */
+/** The names every command of a session gets after its secrets: the folder command transport's own
+ * (coding-folder-command-transport.ts, `sessionEnvironment`) and the machine's package caches, which the host gives every
+ * session command and every command of a checks run (CODING_PACKAGE_CACHE_ENVIRONMENT; own code storage, step 6). A
+ * secret of one of these names never reaches a command with its own value, so the collect is not given it to look for. */
 const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
 	"HOME",
 	"USER",
@@ -608,6 +610,7 @@ const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
 	"XDG_RUNTIME_DIR",
 	"DBUS_SESSION_BUS_ADDRESS",
 	"DOCKER_HOST",
+	...Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT),
 ]);
 /** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
 class CodingChecksUnauthorized extends Error {
@@ -1899,11 +1902,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
 	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
 	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
-	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The run works in a folder of its own, `~/.qorpera-checks/<its turn's
-	 * sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs' folders; a command of a run
-	 * that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The copy makes that folder first (the fence) and ends
-	 * what earlier runs left running in theirs; after it, before the first check, every command of an earlier run the
-	 * host did not see end for certain is cancelled and read once more (#checksLookAgain; review rounds 5 and 6, F1).
+	 * command gets `CI=true`, `QORPERA_CHECKS=1` and the machine's package caches, as every session command does
+	 * (CODING_PACKAGE_CACHE_ENVIRONMENT; own code storage, step 6). The copy holds exactly the candidate's tracked files
+	 * and installs run fresh in it. Packages may come from this machine's cache; npm checks each against the lockfile's
+	 * integrity, other tools check less. No build output is carried. The run works in a folder of its own,
+	 * `~/.qorpera-checks/<its turn's sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs'
+	 * folders; a command of a run that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The copy makes that folder
+	 * first (the fence) and ends what earlier runs left running in theirs; after it, before the first check, every command
+	 * of an earlier run the host did not see end for certain is cancelled and read once more (#checksLookAgain; review
+	 * rounds 5 and 6, F1).
 	 * The first check that fails ends the run. It never throws for a check's or the machine's sake: what could not run,
 	 * or ran past the run's wall budget, is `not_run` with why, a running command stopped first (#stopChecksCommand). A
 	 * command whose stop could not be confirmed (its cancels rejected, or still `running`) holds every later run of the
@@ -1970,9 +1977,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// Each command of the run by its place: the copy 0, each check from 1; the site's collect and drop by name.
 			commandId = (index: number | "site" | "drop") =>
 				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
-		// Every command of the run, the copy's, each check's and the site's, knows its run by the root and its name.
+		// Every command of the run, the copy's, each check's and the site's, knows its run by the root and its name, and
+		// finds the machine's package caches where the session's own commands do.
 		const base = {
 			...codingFolderGitEnvironment(claim.workerId),
+			...CODING_PACKAGE_CACHE_ENVIRONMENT,
 			CI: "true",
 			QORPERA_CHECKS: "1",
 			QORPERA_CHECKS_ROOT: root,
@@ -3955,11 +3964,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await host(action, checkedScope, commandId, inputSha256, checked);
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
-		// The session's own user runs each command at its worktree, with Git's settings for the company folder.
+		// The session's own user runs each command at its worktree, with Git's settings for the company folder and the
+		// machine's package caches.
 		if (folder && ready.folder)
 			return this.#folderTransport(folder, ready, {
 				cwd: ready.folder.cwd,
-				environment: codingFolderGitEnvironment(ready.claim.workerId),
+				environment: { ...codingFolderGitEnvironment(ready.claim.workerId), ...CODING_PACKAGE_CACHE_ENVIRONMENT },
 				authorize: checkedAuthorize,
 			});
 		return new LxdCodingCommandTransport({

@@ -24,6 +24,7 @@ import { promisify } from "node:util";
 import {
 	CODING_GUEST,
 	CODING_GUEST_VERBS,
+	CODING_PACKAGE_CACHES,
 	type CodingGuestCancelRequest,
 	type CodingGuestCommand,
 	type CodingGuestCommandAnswer,
@@ -58,7 +59,8 @@ import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts"
 // at /run/qorpera-folder/mounts/<worker32> and a user manager that sees it at /company. Each command runs in its own
 // transient unit as the session's user, through `agent.mjs relay`, which writes its output into a ring of files and
 // its exit into exit.json. The machine's disk keeps each command's intent and outcome; nothing here is the truth the
-// executor keeps in SQL, only what this machine saw.
+// executor keeps in SQL, only what this machine saw. The machine's package caches, which all its sessions and
+// Qorpera's checks share (CODING_PACKAGE_CACHES), are made and trimmed at the first mount of each boot.
 
 const executeFile = promisify(execFile);
 const COMPACT = /^[0-9a-f]{32}$/;
@@ -92,6 +94,7 @@ const TOOLS = Object.freeze({
 	getent: "/usr/bin/getent",
 	chmod: "/usr/bin/chmod",
 	umount: "/usr/bin/umount",
+	systemdTmpfiles: "/usr/bin/systemd-tmpfiles",
 });
 
 export interface CodingGuestAgentPorts {
@@ -102,6 +105,9 @@ export interface CodingGuestAgentPorts {
 	folderCache?: string;
 	/** Where the user managers' drop-ins go. */
 	systemdRoot?: string;
+	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
+	 * their tool folders may hold at boot. */
+	packageCaches?: { root: string; config: string; limitBytes: number };
 	subidFiles?: { uid: string; gid: string };
 	/** systemd-resolved's upstream list, bound over a session's /etc/resolv.conf (the stub is not in its netns). */
 	resolvConf?: string;
@@ -135,6 +141,11 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		folderRoot: ports.folderRoot ?? CODING_GUEST.folder,
 		folderCache: ports.folderCache ?? FOLDER_CACHE.machine,
 		systemdRoot: ports.systemdRoot ?? "/run/systemd/system",
+		packageCaches: ports.packageCaches ?? {
+			root: CODING_PACKAGE_CACHES.root,
+			config: "/etc/tmpfiles.d/qorpera-packages.conf",
+			limitBytes: CODING_PACKAGE_CACHES.limitBytes,
+		},
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
 		agent: ports.agent ?? CODING_GUEST.agent,
@@ -487,6 +498,88 @@ async function ensureSubids(at: Agent, name: string, uid: number): Promise<void>
 	]);
 }
 
+/** The tmpfiles lines of the machine's package caches under `root` (CODING_PACKAGE_CACHES): the folder and one per tool,
+ * root's in the group qorpera-coding, setgid so that what is made in them keeps the group, with the group's rwx as access
+ * and default ACL entries, so that what one session (or `sudo`) makes in them the next can add to, whatever its umask
+ * (tmpfiles adds the base entries and the mask; no setfacl). The age is tmpfiles' own: systemd-tmpfiles-clean.timer
+ * removes what was not read, written or changed for 30 days. Each tool folder is a line of its own, so it is only ever
+ * emptied, never removed. */
+export function codingPackageCachesTmpfiles(root: string): string {
+	const { group, age, tools } = CODING_PACKAGE_CACHES;
+	const acl = `group:${group}:rwx,default:group:${group}:rwx`;
+	return [
+		"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
+		"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
+		...[root, ...tools.map(({ folder }) => `${root}/${folder}`)].flatMap((path) => [
+			`d ${path} 2775 root ${group} ${age}`,
+			`a ${path} - - - - ${acl}`,
+		]),
+		"",
+	].join("\n");
+}
+/** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
+ * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (one that holds nothing
+ * is passed over). A folder's size is the blocks of what it holds (a file linked twice counted once), its last use the
+ * newest read, write or change of a file in it (a hard link into a project changes only the change time). A tool
+ * folder that is not a real folder is neither counted nor emptied. Emptied, a folder stays, with its owner, mode and
+ * ACL. */
+export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
+	const seen = new Set<string>();
+	const folders: { folder: string; path: string; bytes: number; usedMs: number }[] = [];
+	for (const { folder } of CODING_PACKAGE_CACHES.tools) {
+		const path = join(root, folder);
+		if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
+		let bytes = 0;
+		let usedMs = 0;
+		for (const directories = [path]; directories.length > 0; ) {
+			const directory = directories.pop() as string;
+			for (const name of (await missing(() => readdir(directory))) ?? []) {
+				const entry = join(directory, name);
+				const stat = await missing(() => lstat(entry));
+				if (!stat) continue;
+				if (stat.isDirectory()) directories.push(entry);
+				else if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+				if (stat.nlink > 1 && !stat.isDirectory()) {
+					if (seen.has(`${stat.dev}:${stat.ino}`)) continue;
+					seen.add(`${stat.dev}:${stat.ino}`);
+				}
+				bytes += stat.blocks * 512;
+			}
+		}
+		folders.push({ folder, path, bytes, usedMs });
+	}
+	let total = folders.reduce((sum, { bytes }) => sum + bytes, 0);
+	const emptied: string[] = [];
+	for (const { folder, path, bytes } of folders.sort(
+		(a, b) => a.usedMs - b.usedMs || (a.folder < b.folder ? -1 : a.folder > b.folder ? 1 : 0),
+	)) {
+		if (total <= limitBytes) break;
+		if (bytes === 0) continue;
+		for (const name of (await missing(() => readdir(path))) ?? [])
+			await rm(join(path, name), { recursive: true, force: true });
+		total -= bytes;
+		emptied.push(folder);
+	}
+	return emptied;
+}
+/** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
+ * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
+ * and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. */
+async function ensurePackageCaches(at: Agent): Promise<void> {
+	const ready = join(at.runtimeRoot, "packages.ready");
+	if (await exists(ready)) return;
+	const { root, config, limitBytes } = at.packageCaches;
+	await mkdir(dirname(config), { recursive: true, mode: 0o755 });
+	await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
+	try {
+		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
+	} catch {
+		throw new Error("CODING_GUEST_PACKAGE_CACHES_UNCONFIRMED");
+	}
+	await trimCodingPackageCaches(root, limitBytes);
+	await writeText(ready, "", 0o600);
+}
+
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
 const NAT_RULES = `table inet qorpera_guest
 delete table inet qorpera_guest
@@ -745,7 +838,8 @@ async function readSessionUser(session: Places): Promise<{ uid: number; gid: num
 	return { uid: user.uid as number, gid: user.gid as number };
 }
 
-/** `mount`: the session's user, network and view; then its user manager once the folder is up. */
+/** `mount`: the machine's package caches once a boot, the session's user, network and view; then its user manager once
+ * the folder is up. */
 export async function mountCodingGuestSession(
 	request: CodingGuestMountRequest,
 	ports: CodingGuestAgentPorts = {},
@@ -759,9 +853,10 @@ export async function mountCodingGuestSession(
 		const held = await readSessionUser(session);
 		if (held && (held.uid !== request.uid || held.gid !== request.gid))
 			throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
-		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", () =>
-			ensureUser(at, request.uid, request.gid),
-		);
+		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
+			await ensurePackageCaches(at);
+			return ensureUser(at, request.uid, request.gid);
+		});
 		await mkdir(session.session, { recursive: true, mode: 0o755 });
 		if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
 		await ensureNetwork(at, session);
