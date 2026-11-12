@@ -14,6 +14,7 @@ import {
 	parseAppGroups,
 	writeAppGroups,
 } from "@qorpera/cloud-client/app-groups";
+import { AGENT_COLOURS, type AgentColour } from "@qorpera/cloud-client/company-state-shared";
 import {
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
@@ -58,15 +59,21 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  * change (the drawer skips it until then).
  *
  * `save_app`'s `group` places a new app in a group in the same commit (`placeAppInGroup`).
+ *
+ * A group may have the company's colour (Jonas, 12 November 2026: "have the co-founder pick colours for fjeldtur's
+ * groups"), one of the agents' palette: `create_group`'s `colour` and `colour_group` set it, `list` shows it, and every
+ * other change keeps it (a group ungrouped takes its colour with it). The drawer draws the group and what is in it in
+ * that colour, unless a member chose their own.
  */
 
 const TOOL_VERSION = "folder-v2/1";
-const ACTIONS = ["list", "create_group", "rename_group", "ungroup", "move"] as const;
+const ACTIONS = ["list", "create_group", "rename_group", "colour_group", "ungroup", "move"] as const;
 type Action = (typeof ACTIONS)[number];
 const FIELDS: Record<Action, { required: readonly string[]; optional: readonly string[] }> = {
 	list: { required: [], optional: ["cursor"] },
-	create_group: { required: ["name"], optional: ["parent", "items"] },
+	create_group: { required: ["name"], optional: ["parent", "items", "colour"] },
 	rename_group: { required: ["group", "name"], optional: [] },
+	colour_group: { required: ["group", "colour"], optional: [] },
 	ungroup: { required: ["group"], optional: [] },
 	move: { required: ["item", "group"], optional: ["before"] },
 };
@@ -99,9 +106,13 @@ export interface OrganizeAppsRequest {
 	readonly before?: string | null;
 	/** Where a page of list starts: a line of the layout. */
 	readonly cursor?: number;
+	/** A group's colour; null takes it away (colour_group). */
+	readonly colour?: AgentColour | null;
 }
 
-type Node = { kind: "item"; key: string; words: string } | { kind: "group"; id: string; name: string; items: Node[] };
+type Node =
+	| { kind: "item"; key: string; words: string }
+	| { kind: "group"; id: string; name: string; items: Node[]; colour?: AgentColour };
 
 /** The drawer entries the company has, as one call reads them. */
 interface Company {
@@ -120,8 +131,10 @@ interface Company {
 
 export const ORGANIZE_APPS_DESCRIPTION =
 	"Sort the company's apps into groups in the apps drawer, the grid where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, in the file apps/groups.md: no member approval is needed and every member sees a change at once. " +
-	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group, groups by id and name with how many apps they hold, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, and items moves those keys (or group:<id>) into it, in order. A group of that name already there is that group. rename_group renames group; its id stays. ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level and a key the company does not have. " +
-	"How to sort, plainly: 1. Group by what the founder thinks in: a product, a customer, a piece of work. Never by agent, by kind of page (such as Reports) or by date. 2. Name a group in one to three words, in the company's own words. 3. The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front. 4. Two group levels at most. Three to twelve apps in a group; a group with one app goes away (ungroup it). 5. You sort the company's layout; what a member changed in their own drawer is theirs, and you leave it. 6. After a change, say it in one line to the member who asked, or on your wall.";
+	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group, groups by id and name with how many apps they hold and their colour, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, items moves those keys (or group:<id>) into it, in order, and colour gives it a colour. A group of that name already there is that group. rename_group renames group; its id stays. " +
+	`colour_group sets group's colour to colour, one of ${AGENT_COLOURS.join(", ")}; null takes it away. ` +
+	"ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level, a key the company does not have and a colour not in the palette. " +
+	"How to sort, plainly: 1. Group by what the founder thinks in: a product, a customer, a piece of work. Never by agent, by kind of page (such as Reports) or by date. 2. Name a group in one to three words, in the company's own words. 3. The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front. 4. Two group levels at most. Three to twelve apps in a group; a group with one app goes away (ungroup it). 5. Give every group a colour that sets it apart from the others and fits its product or area, by the palette's names; a group inside a group usually takes its parent's colour, so leave its own unset. Members can pick their own colours, which win in their drawer. 6. You sort the company's layout; what a member changed in their own drawer is theirs, and you leave it. 7. After a change, say it in one line to the member who asked, or on your wall.";
 
 const groupRef = (value: unknown, label: string): string => {
 	const id =
@@ -183,6 +196,15 @@ export function parseOrganizeAppsArguments(value: JsonValue): OrganizeAppsReques
 		request.cursor = a.cursor;
 	}
 	if (Object.hasOwn(a, "before")) request.before = a.before === null ? null : entryRef(a.before, "before");
+	if (Object.hasOwn(a, "colour")) {
+		const colour = a.colour === null ? null : AGENT_COLOURS.find((name) => name === a.colour);
+		if (colour === undefined)
+			throw new CloudToolArgumentRefusal(
+				`colour must be one of the palette's colours (${AGENT_COLOURS.join(", ")}), or null for none`,
+			);
+		// colour_group's null takes a group's colour away; create_group's gives it none, as leaving colour out does.
+		if (colour !== null || action === "colour_group") request.colour = colour;
+	}
 	return request as unknown as OrganizeAppsRequest;
 }
 
@@ -210,6 +232,7 @@ export function cloudAppGroupsTool(options: {
 				item: { type: "string", maxLength: 80 },
 				before: { type: ["string", "null"], maxLength: 80 },
 				cursor: { type: "integer", minimum: 0, maximum: 100000 },
+				colour: { type: ["string", "null"], enum: [...AGENT_COLOURS, null] },
 			},
 		},
 		parseArguments: (value) => parseOrganizeAppsArguments(value) as unknown as JsonValue,
@@ -496,6 +519,7 @@ function apply(
 		}
 		// Its entries stand one level below it.
 		for (const item of request.items ?? []) move(tree, company, item, group, level + 1, null);
+		if (request.colour) group.colour = request.colour;
 		return { group: group.id, ...(same ? { reused: true as const } : {}) };
 	}
 	if (request.action === "rename_group") {
@@ -510,6 +534,13 @@ function apply(
 		)
 			throw new CloudToolRefusal("That name is taken by another group there");
 		found.group.name = name;
+		return {};
+	}
+	if (request.action === "colour_group") {
+		const found = findGroup(tree, request.group ?? "");
+		if (!found) throw missingGroup(request.group ?? "");
+		if (request.colour) found.group.colour = request.colour;
+		else delete found.group.colour;
 		return {};
 	}
 	if (request.action === "ungroup") {
@@ -652,15 +683,17 @@ function tidy(items: Node[], company: Company): string[] {
 	return taken;
 }
 
-/** The layout as the parser compares it: keys and groups in order, and the retired ids. */
+/** The layout as the parser compares it: keys and groups (with their colours) in order, and the retired ids. */
 const shape = (items: readonly AppGroupNode[] | Node[], retired: readonly string[]): string =>
 	JSON.stringify([walkShape(items as readonly AppGroupNode[]), retired]);
 const walkShape = (items: readonly AppGroupNode[]): unknown[] =>
-	items.map((node) => (node.kind === "group" ? [node.id, node.name, walkShape(node.items)] : node.key));
+	items.map((node) =>
+		node.kind === "group" ? [node.id, node.name, node.colour ?? null, walkShape(node.items)] : node.key,
+	);
 
 /** What `list` shows, one line an entry in the file's own form, two spaces a level: the drawer as the company has it,
- * every group (empty ones too, to be tidied) with how many posted apps it holds, and the loose entries the file does not
- * list after the rest; the keys the file lists that the company does not have. */
+ * every group (empty ones too, to be tidied) with how many posted apps it holds and its colour, and the loose entries the
+ * file does not list after the rest; the keys the file lists that the company does not have. */
 function layout(
 	items: readonly Node[],
 	company: Company,
@@ -682,7 +715,7 @@ function layout(
 				lines.push("");
 				const inner = walk(node.items, level + 1);
 				lines[at] =
-					`${"  ".repeat(level)}group ${node.id}: ${node.name} (${inner} ${inner === 1 ? "app" : "apps"})`;
+					`${"  ".repeat(level)}group ${node.id}: ${node.name} (${inner} ${inner === 1 ? "app" : "apps"}${node.colour ? `, ${node.colour}` : ""})`;
 				apps += inner;
 				continue;
 			}

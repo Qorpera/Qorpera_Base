@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v14",
+			schema: "qorpera.hire-overlay/v15",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3238,6 +3238,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 12 November 2026 save_app's description no longer lists the emblems, which are 24 now and would put it past
 	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
 	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again.
+	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
+	// and its description says how to choose them, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3284,9 +3286,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"44e15e5faa6c8d2f7edb15ce7705d9d3357e044b66de6b582d86dc54a5db4e2c",
+		"7869afa1a0852a45dbd8b4b3a6f62a6f2243eb9957c7406aea07c4ac54f08dc9",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"4203ec8d3635bcfb34c5475102b5acffefa4a36a9b0296bdbbe2f40a73571c94",
+		"7921dd4ce842f548ab9a0fc13c9ca4d0ff4ddb9921eafcd7b689c25f9be14249",
 	);
 });
