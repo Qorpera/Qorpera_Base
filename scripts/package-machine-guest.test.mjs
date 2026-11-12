@@ -1588,7 +1588,21 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	);
 	assert.match(files, /\n\t\tif code < 0:\n\t\t\treturn 1, "", f"the desktop's user's side was ended before it finished \(signal \{-code\}\)", fed\n/);
 	assert.match(files, /\n\t\t\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n/);
-	assert.match(files, /\n\t\tpatience = threading\.Timer\(PATIENCE\[words\[0\]\], end\)\n\t\tpatience\.start\(\)\n/);
+	assert.match(files, /\n\t\tpatience = threading\.Timer\(PATIENCE\[words\[0\]\], out_of_patience\)\n\t\tpatience\.start\(\)\n/);
+	// However the account's side ends, all of its group that is left is ended and collected before root goes on
+	// (review r2 F1 of #1712: its `cp`, when another ended the side itself, would else write after the cleanup). The
+	// side's end is waited for without collecting it, so its number is still its group's when the group is signalled;
+	// what it leaves behind is this process's to collect (a subreaper), not init's.
+	assert.match(files, /\n\tctypes\.CDLL\(None, use_errno=True\)\.prctl\(36, 1, 0, 0, 0\)\n/);
+	assert.match(
+		files,
+		/\n\t\t\tos\.waitid\(os\.P_PID, process\.pid, os\.WEXITED \| os\.WNOWAIT\)\n\t\tfinally:\n\t\t\twith turn:\n\t\t\t\tover\.append\(True\)\n\t\t\t\tpatience\.cancel\(\)\n\t\t\t\tend_group\(\)\n\t\t\t\tcode = process\.wait\(\)\n\t\t\t\twhile True:\n\t\t\t\t\ttry:\n\t\t\t\t\t\tos\.waitpid\(-process\.pid, 0\)\n\t\t\t\t\texcept ChildProcessError:\n\t\t\t\t\t\tbreak\n\t\tif failure:\n\t\t\traise failure\n/,
+	);
+	assert.match(files, /\n\t\tdef out_of_patience\(\):\n\t\t\twith turn:\n\t\t\t\tif not over:\n\t\t\t\t\tended\.append\(True\)\n\t\t\t\t\tend_group\(\)\n/);
+	assert.equal(files.match(/process\.wait\(\)/g).length, 1, "the account's side is collected in one place, after its group was ended");
+	// A signal that asks root's side to stop ends it as an error does, so the same happens then.
+	assert.match(files, /\n\tfor number in \(signal\.SIGTERM, signal\.SIGHUP\):\n\t\tsignal\.signal\(number, lambda number, _: sys\.exit\(128 \+ number\)\)\n/);
+	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\tstoppable\(\)\n/);
 	assert.match(files, /\n\t\tif os\.getuid\(\) == 0 or os\.geteuid\(\) == 0:\n\t\t\traise Stop\("the account's side of desktop-files runs as the desktop's user only"\)\n\t\tos\.closerange\(3, 4096\)\n/);
 	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n/);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
@@ -1613,6 +1627,21 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	} finally {
 		spawnSync("chmod", ["-R", "u+rwx", base]);
 		await rm(base, { recursive: true, force: true });
+	}
+	// Root's own side asked to stop (SIGTERM) while the account's side and its `cp`, still to write, are there: it ends
+	// with 143 after both are ended, collected and what was on its way is taken away; nothing appears afterwards.
+	const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+	try {
+		const run = spawnSync(
+			"python3",
+			["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, "stopped"],
+			{ encoding: "utf8" },
+		);
+		assert.equal(run.status, 0, run.stderr);
+		assert.deepEqual(JSON.parse(run.stdout), { ended: 143, calls: ["copy", "tidy"], desk: {} });
+	} finally {
+		spawnSync("chmod", ["-R", "u+rwx", second]);
+		await rm(second, { recursive: true, force: true });
 	}
 	const { top, desk } = cases;
 	const answer = (result) => {
@@ -1729,6 +1758,19 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		calls: ["copy", "tidy"],
 		"new on the desk": [],
 	});
+	// The side gone while its `cp` is still to write (review r2 F1 of #1712): ended by another, ended by its own error,
+	// ended at root's patience. Three seconds later (the `cp` would have written after two) the desk has gained nothing.
+	assert.deepEqual(cases.cut["a copy whose side another ends while its cp is still to write"], {
+		stop: "the desktop's user's side was ended before it finished (signal 9)",
+		code: 1,
+		calls: ["copy", "tidy"],
+		"new on the desk": [],
+	});
+	assert.deepEqual(
+		[cases.cut["a copy whose side ends itself while its cp is still to write"].calls, cases.cut["a copy whose side ends itself while its cp is still to write"]["new on the desk"]],
+		[["copy", "tidy"], []],
+	);
+	assert.deepEqual(cases.cut["a copy at root's patience while its cp is still to write"], { stop: stopped, code: 1, calls: ["copy", "tidy"], "new on the desk": [] });
 	assert.match(cases.cut["a copy that fails half way"].stop, /^the desktop's user cannot read \/everyone\/half, and root does not read it for the desktop: \/everyone can be written by its group or by everyone\. /);
 	assert.deepEqual([cases.cut["a copy that fails half way"].calls, cases.cut["a copy that fails half way"]["new on the desk"]], [["copy", "tidy"], []]);
 	assert.deepEqual(cases.cut["a copy after those"], { answer: ["folder", `${desk}/large`, "large"], calls: ["copy"], "new on the desk": ["large", "large/a.bin"] });
@@ -1805,6 +1847,8 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\tpkill -KILL -u desktop -f "desktop-files account take" || true\n',
 		'\t[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||\n',
 		'\t[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||\n',
+		'\t"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &\n\tfor _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done\n\tpkill -KILL -u desktop -f "desktop-files account copy" || true\n\twait || true\n\tleft=$(pgrep -u desktop -x cp || true)\n\tpkill -CONT -u desktop -x cp || true\n',
+		'\t[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }\n',
 		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
 	])
 		assert.ok(imageScript.includes(line), line);

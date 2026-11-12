@@ -8,6 +8,7 @@ walk, the archive, the pipe, the checks of the answer. What needs a second accou
 reach what only root can) is proved by the image build.
 
   machine-desktop-files.py HELPER BASE cases               prints the cases' results as JSON
+  machine-desktop-files.py HELPER BASE stopped             root's side asked to stop (SIGTERM) while a copy is being made
   machine-desktop-files.py HELPER BASE account ...         the account's side, as the program starts it
   machine-desktop-files.py HELPER BASE account:HOW ...     the same, held up or ended at one point (the cases say where)
 """
@@ -23,6 +24,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 
 sys.dont_write_bytecode = True
@@ -48,6 +50,19 @@ if sys.argv[3].startswith("account"):
 			return result
 
 		m.subprocess.run = held
+	if how in ("copying-then-ended", "copying-then-failed", "copying-then-held"):
+		# Its `cp` is still to begin (it waits two seconds first) when the account's side is ended by another, ends
+		# itself with an error, or is held up: a child that would write after everything was taken away.
+
+		def left_copying(command, **_):
+			subprocess.Popen(["/bin/sh", "-c", 'sleep 2; exec "$@"', "sh", *command], stdin=subprocess.DEVNULL)
+			if how == "copying-then-ended":
+				os.kill(os.getpid(), signal.SIGKILL)
+			if how == "copying-then-failed":
+				os._exit(1)
+			time.sleep(30)
+
+		m.subprocess.run = left_copying
 	if how == "linked-then-held":
 		symlink = os.symlink
 		m.os.symlink = lambda *args: (symlink(*args), time.sleep(30))
@@ -140,6 +155,27 @@ def listing(folder):
 			kind = "link:" + os.readlink(path) if stat.S_ISLNK(status.st_mode) else "folder" if stat.S_ISDIR(status.st_mode) else "file" if stat.S_ISREG(status.st_mode) else "other"
 			found[os.path.relpath(path, folder)] = f"{kind} {stat.S_IMODE(status.st_mode):o}" if kind in ("folder", "file") else kind
 	return found
+
+
+if sys.argv[3] == "stopped":
+	# Root's side is asked to stop while the account's side and its `cp` (still to begin) are there: both are ended
+	# and collected, and what was on its way is taken away, before root's side ends.
+	make("")
+	make("/everyone", 0o1777)
+	make("/everyone/large")
+	write("/everyone/large/a.bin", "a" * 400000)
+	os.makedirs(desk)
+	how = "copying-then-held"
+	m.stoppable()
+	threading.Timer(1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+	try:
+		m.root_open("/everyone/large", True)
+		ended = "it went on"
+	except SystemExit as stop:
+		ended = stop.code
+	time.sleep(3)
+	print(json.dumps({"ended": ended, "calls": calls, "desk": listing(desk)}))
+	sys.exit(0)
 
 
 def take(name, kind, archive):
@@ -311,9 +347,11 @@ write("/everyone/half/a.bin", "a" * 400000)
 write("/everyone/half/b.bin", "what the account cannot read", 0o000)
 
 
-def cut(work):
+def cut(work, later=0):
 	before = listing(desk)
 	result = outcome(work)
+	# What a child left behind would still write, it would have written by then.
+	time.sleep(later)
 	result["new on the desk"] = sorted(set(listing(desk)) - set(before))
 	return result
 
@@ -345,6 +383,14 @@ how = "copied-then-held"
 results["cut"]["a copy the account makes, at root's patience"] = cut(lambda: m.root_open("/everyone/large", True))
 how = "copied-then-ended"
 results["cut"]["a copy the account makes, its process ended by another"] = cut(lambda: m.root_open("/everyone/large", True))
+# The account's side gone while its `cp` is still to write (review r2 F1 of #1712): ended by another, ended by its own
+# error. The child is ended with it and collected before anything is taken away, so nothing appears afterwards.
+how = "copying-then-ended"
+results["cut"]["a copy whose side another ends while its cp is still to write"] = cut(lambda: m.root_open("/everyone/large", True), later=3)
+how = "copying-then-failed"
+results["cut"]["a copy whose side ends itself while its cp is still to write"] = cut(lambda: m.root_open("/everyone/large", True), later=3)
+how = "copying-then-held"
+results["cut"]["a copy at root's patience while its cp is still to write"] = cut(lambda: m.root_open("/everyone/large", True), later=3)
 how = ""
 results["cut"]["a copy that fails half way"] = cut(lambda: m.root_open("/everyone/half", True))
 results["cut"]["a copy after those"] = cut(lambda: m.root_open("/everyone/large", True))
