@@ -1772,6 +1772,8 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(colourOf("group:market")).toBe(colourNameHex("blue"));
 		expect(colourOf("app:brand")).toBe(colourNameHex("blue"));
 		expect(colourOf("app:plan")).toBe(colourNameHex("blue"));
+		// The group's tile is the same one, recoloured in place: the focus the menu gave back stays on it.
+		expect(document.activeElement).toBe(group(element));
 		// A loose app takes one too; Default takes it away again, and with nothing left the document has no colours.
 		menu("app:trips");
 		item(".context-menu", "Colour").click();

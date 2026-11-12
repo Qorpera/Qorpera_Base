@@ -1965,9 +1965,13 @@ function drawInterfaces(
 			const inside = appsIn(group);
 			const count = inside.reduce((sum, key) => sum + (counts.get(drawerKey(key)) ?? 0), 0);
 			const colour = colourOf(tile.key);
-			const model = JSON.stringify([group.id, group.name, count, colour]);
+			// Its colour is set in place, not by drawing it anew: a colour picked from its menu keeps the focus on it
+			// (review r2 F1 on #1694).
+			const model = JSON.stringify([group.id, group.name, count]);
 			const kept = parts.groupRows.get(group.id);
 			element = kept?.shown === model ? kept.element : groupIcon(group.name, count, colour);
+			if (colour) element.style.setProperty("--app-colour", colour);
+			else element.style.removeProperty("--app-colour");
 			groupRows.set(group.id, { shown: model, element });
 			element.dataset.appKey = tile.key;
 			element.classList.toggle("is-open", tile.open);
