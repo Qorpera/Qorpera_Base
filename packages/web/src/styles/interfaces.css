@@ -39,13 +39,10 @@
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
-/* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
- * 2026). The emblem turns white; the selection shows through its cuts. */
-.rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-app.active .interface-emblem { --emblem-ink: #fff; }
-.rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
+/* The open page: its tile in a soft wash of its own colour, its emblem kept in that colour (Jonas, 12 Nov 2026: "the
+ * icons shouldn't turn white when selected"; before, the tile was the selection colour with a white emblem). */
+.rail-app.active, .rail-app.active:hover { background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
-.rail-app.active:focus-visible { outline-color: #fff; }
 /* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
  * make way. Its tile shows no hover while it moves. */
 .rail-apps-grid.is-sorting { cursor: grabbing; }
@@ -62,10 +59,9 @@
 .rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
 .rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
 .rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
-/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"); the
- * open page's stays white on the selection. */
+/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"), the
+ * open page's too; an app in a group is drawn in the group's (12 Nov 2026). */
 .rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }
-.rail-app.active .rail-app-stand .interface-emblem { --emblem-ink: #fff; }
 /* A group: two stacked cards in its first app's colour; open, they fan apart, and its apps follow it in the grid. */
 .group-emblem rect { transform-box: fill-box; transform-origin: center; transition: transform 440ms var(--ease-out); }
 .group-emblem .group-card-back { fill: none; stroke: var(--emblem-ink); stroke-width: 2; }
@@ -360,3 +356,6 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 	.interface-mail .email-draft-heading { flex-direction: column; align-items: flex-start; }
 	.interface-mail .email-draft-row { flex-direction: column; align-items: flex-start; gap: 2px; }
 }
+/* The Colour menu's swatches: a dot in each colour; Default an empty ring. */
+.colour-swatch { width: 14px; height: 14px; margin: 0 2px; border-radius: 50%; background: var(--swatch, currentColor); flex: none; }
+.colour-swatch.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted, currentColor); }

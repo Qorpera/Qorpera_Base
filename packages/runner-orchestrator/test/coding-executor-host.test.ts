@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
+	CODING_GUEST_HELPER_MAX_BYTES,
 	CODING_PACKAGE_CACHE_ENVIRONMENT,
 	type CodingGuestCommandState,
 	type CodingGuestRunRequest,
@@ -1575,6 +1576,50 @@ describe("the host's own configuration", () => {
 });
 
 describe("a freshly started member machine's guest", () => {
+	it("reads each helper whole within the helpers' bound: one past 64 KiB is taken when it is the pin, one past the bound is refused", async () => {
+		// The LXD client's own rule: a read past its bound fails (LXD_INSTANCE_FILE_UNCONFIRMED).
+		const bounded = (f: Awaited<ReturnType<typeof fixture>>) => {
+			const read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+			vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+				const file = await read(project, name, path, limit, signal);
+				if (file.content.length > limit) throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+				return file;
+			});
+		};
+		const helper = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
+		const large = Buffer.alloc(100_000, 0x61);
+		const f = await fixture();
+		f.files.get(helper)!.content = large;
+		bounded(f);
+		const host = new LxdCodingExecutorHost({
+			...f.options,
+			guest: { ...f.options.guest, commandHelperSha256: createHash("sha256").update(large).digest("hex") },
+		});
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const helperReads = vi
+			.mocked(f.client.readInstanceFile)
+			.mock.calls.filter(([, , path]) => path.startsWith("/opt/qorpera-coding/"));
+		expect(new Set(helperReads.map(([, , path]) => path))).toEqual(
+			new Set([
+				helper,
+				"/opt/qorpera-coding/cloud-coding-git-guest.mjs",
+				"/opt/qorpera-coding/cloud-coding-watchdog.mjs",
+				"/opt/qorpera-coding/cloud-coding-storage-guest.mjs",
+			]),
+		);
+		for (const [, , , limit] of helperReads) expect(limit).toBe(CODING_GUEST_HELPER_MAX_BYTES);
+		const over = Buffer.alloc(CODING_GUEST_HELPER_MAX_BYTES + 1, 0x61);
+		const g = await fixture();
+		g.files.get(helper)!.content = over;
+		bounded(g);
+		const refusing = new LxdCodingExecutorHost({
+			...g.options,
+			guest: { ...g.options.guest, commandHelperSha256: createHash("sha256").update(over).digest("hex") },
+		});
+		await expect(refusing.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
+			"LXD_INSTANCE_FILE_UNCONFIRMED",
+		);
+	});
 	it("fails before the turn if the watchdog artifact or timer differs", async () => {
 		const f = await fixture();
 		f.files.get("/opt/qorpera-coding/cloud-coding-watchdog.mjs")!.content = Buffer.from("changed");

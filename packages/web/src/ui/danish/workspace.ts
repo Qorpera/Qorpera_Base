@@ -681,6 +681,8 @@ export const WORKSPACE: Record<string, string> = {
 	"No group": "Ingen gruppe",
 	"Rename group": "Omdøb gruppe",
 	Ungroup: "Opløs gruppe",
+	// The drawer's Colour menu (12 Nov 2026): its first row takes the member's own colour away.
+	Default: "Standard",
 	"Your apps changed in another tab. Try again.": "Dine apps blev ændret i en anden fane. Prøv igen.",
 	"The apps could not be arranged. Try again.": "Dine apps kunne ikke arrangeres. Prøv igen.",
 	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":

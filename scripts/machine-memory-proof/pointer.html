@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>POINTER[loading]</title>
+<body style="margin:0;height:100vh;background:#eef">
+<script>
+// What the pointer did, in the window's title, where the proof reads it: the last press and release in screen pixels,
+// and how many clicks and double-clicks arrived.
+let down = "-", up = "-", clicks = 0, doubles = 0;
+const show = () => { document.title = "POINTER[down=" + down + " up=" + up + " clicks=" + clicks + " doubles=" + doubles + "]"; };
+addEventListener("mousedown", (e) => { down = e.screenX + "," + e.screenY; show(); });
+addEventListener("mouseup", (e) => { up = e.screenX + "," + e.screenY; show(); });
+addEventListener("click", () => { clicks++; show(); });
+addEventListener("dblclick", () => { doubles++; show(); });
+show();
+</script>
