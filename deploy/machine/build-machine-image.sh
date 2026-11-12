@@ -769,7 +769,23 @@ PLANT
 		{ echo "a copy that was cut off left a part of itself on the desktop" >&2; exit 1; }
 	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
 		{ echo "a copy on its way stayed on the desktop: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
-	rm -rf "$mine/large"
+	# The same for a copy the account makes itself, with its cp (review r2 F1 of #1712). The cp is held, the account
+	# side is ended by another, and root has what was on its way taken away. The cp, let go again, must not be there
+	# to write after that: it is ended with its side and collected before anything is taken away.
+	mkdir /tmp/large-links && cp "$mine/large"/*.bin /tmp/large-links/
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done
+	pkill -KILL -u desktop -f "desktop-files account copy" || true
+	wait || true
+	left=$(pgrep -u desktop -x cp || true)
+	pkill -CONT -u desktop -x cp || true
+	sleep 1
+	[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose side was ended left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way came back after it was taken away: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	rm -rf "$mine/large" /tmp/large-links
 	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
 	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
 	rm -rf "$mine" /srv/qorpera-links /tmp/qorpera-links /tmp/site-links

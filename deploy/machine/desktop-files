@@ -310,8 +310,13 @@ def account_command(words):
 def as_account(*words, feed=None):
 	"""Runs this program's account side as the account (account_command), in a session of its own, with `/` as its
 	folder and no descriptor but its three: nothing to read (or the pipe `feed` writes to), and two files in memory
-	for what it says. It is given PATIENCE seconds, then ended with all it started. Answers its exit code, what it
-	printed, what it complained of, and what `feed` answered."""
+	for what it says. It is given PATIENCE seconds. However it ends (by itself, at root's patience, by another's
+	signal, by this program being stopped), everything it started that is still there is ended and collected before
+	this goes on: nothing of it can write any more. Answers its exit code, what it printed, what it complained of,
+	and what `feed` answered."""
+	# What the account's side leaves behind when it ends before its own child (the copying `cp`) becomes this
+	# process's to collect, not init's (PR_SET_CHILD_SUBREAPER).
+	ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
 	out, err = os.memfd_create("answer"), os.memfd_create("complaint")
 	try:
 		process = subprocess.Popen(
@@ -323,16 +328,23 @@ def as_account(*words, feed=None):
 			start_new_session=True,
 			cwd="/",
 		)
-		ended = []
+		# Its number is its group's (a session of its own). The group is only ever signalled while that number is
+		# surely still its own: before the account's side is collected, under this lock.
+		turn, over, ended = threading.Lock(), [], []
 
-		def end():
-			ended.append(True)
+		def end_group():
 			try:
 				os.killpg(process.pid, signal.SIGKILL)
 			except ProcessLookupError:
 				pass
 
-		patience = threading.Timer(PATIENCE[words[0]], end)
+		def out_of_patience():
+			with turn:
+				if not over:
+					ended.append(True)
+					end_group()
+
+		patience = threading.Timer(PATIENCE[words[0]], out_of_patience)
 		patience.start()
 		fed = failure = None
 		try:
@@ -346,9 +358,19 @@ def as_account(*words, feed=None):
 				except Exception as error:
 					# The pipe is closed by now: the other side sees a copy that did not come whole, and keeps nothing.
 					failure = error
-			code = process.wait()
+			# Its end is waited for without collecting it yet.
+			os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
 		finally:
-			patience.cancel()
+			with turn:
+				over.append(True)
+				patience.cancel()
+				end_group()
+				code = process.wait()
+				while True:
+					try:
+						os.waitpid(-process.pid, 0)
+					except ChildProcessError:
+						break
 		if failure:
 			raise failure
 		if ended:
@@ -369,7 +391,9 @@ def as_account(*words, feed=None):
 def staged(work, *words, feed=None, beside=()):
 	"""Has the account do a piece of work that makes something in steps (a copy, a picture). What is not whole yet
 	lies under a name made from a mark picked here. When the work does not end well, the account is asked to take
-	that away again: also when its process was ended, by root's patience or by anything else, and could not."""
+	that away again: also when its process was ended, by root's patience or by anything else, and could not. By then
+	nothing of the first try is left that could write (as_account ends and collects it), so what is taken away
+	stays away."""
 	mark = secrets.token_hex(8)
 	try:
 		done = as_account(work, *words, mark, feed=feed)
@@ -379,6 +403,13 @@ def staged(work, *words, feed=None, beside=()):
 	if done[0] != 0:
 		as_account("tidy", mark, *beside)
 	return done
+
+
+def stoppable():
+	"""A signal that asks this program to stop ends it the way an error does, so that what the account's side had
+	started is ended, collected and taken away first."""
+	for number in (signal.SIGTERM, signal.SIGHUP):
+		signal.signal(number, lambda number, _: sys.exit(128 + number))
 
 
 def answer_of(code, printed, complaint, target):
@@ -739,6 +770,7 @@ def main(words):
 		return
 	if os.geteuid() != 0:
 		raise Stop("desktop-files runs as root, from `desktop`")
+	stoppable()
 	match words:
 		case ["open", "--", target] | ["open", "--copy", "--", target]:
 			opened = root_open(target, words[1] == "--copy")
@@ -764,3 +796,5 @@ if __name__ == "__main__":
 	except OSError as error:
 		print(f"desktop-files: {error}", file=sys.stderr)
 		sys.exit(1)
+	except KeyboardInterrupt:
+		sys.exit(130)
