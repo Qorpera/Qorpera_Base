@@ -734,6 +734,21 @@ PLANT
 	if "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi
 	chmod 0700 "$mine/tree/inner"
 	[[ ! -e /home/desktop/Desktop/tree-2 ]] || { echo "a copy that did not come whole stayed on the desktop" >&2; exit 1; }
+	# A copy that is cut off leaves nothing that is not whole (review r1 F1 of #1712): it is made under a name the
+	# desktop does not show and gets its name in one step. Here the account side is ended by another (as the memory
+	# guard would end it) once a part of a large folder is written: what is then on the desktop under the name is the
+	# whole folder or nothing, and nothing stays on its way, because root has the account take that away.
+	mkdir "$mine/large"
+	for part in a b c; do head -c 100000000 /dev/zero >"$mine/large/$part.bin"; done
+	"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	pkill -KILL -u desktop -f "desktop-files account take" || true
+	wait || true
+	[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||
+		{ echo "a copy that was cut off left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way stayed on the desktop: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	rm -rf "$mine/large"
 	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
 	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
 	rm -rf "$mine" /srv/qorpera-links /tmp/qorpera-links /tmp/site-links

@@ -508,7 +508,10 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
 	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
 	assert.match(files, /\n\t\t\texcept FileExistsError:\n\t\t\t\tif os\.path\.islink\(place\) and os\.readlink\(place\) == path:\n\t\t\t\t\tbreak\n/);
-	assert.match(files, /\n\t\t\tif folder:\n\t\t\t\tos\.mkdir\(place, 0o700\)\n\t\t\telse:\n\t\t\t\tos\.close\(os\.open\(place, os\.O_WRONLY \| os\.O_CREAT \| os\.O_EXCL \| os\.O_CLOEXEC, 0o600\)\)\n\t\t\treturn place\n\t\texcept FileExistsError:\n\t\t\tcontinue\n/);
+	assert.match(
+		files,
+		/\n\tfor candidate in names\(name, folder\):\n\t\tplace = os\.path\.join\(DESK, candidate\)\n\t\tif rename\(-100, os\.fsencode\(on_its_way\), -100, os\.fsencode\(place\), 1\) == 0:\n\t\t\treturn place\n\t\tif ctypes\.get_errno\(\) != errno\.EEXIST:\n\t\t\traise OSError\(/,
+	);
 	for (const line of [
 		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
 		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
@@ -1338,7 +1341,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.equal(files.match(/\b(?:TOP|OWNER) = /g).length, 2, "nothing in the program moves where root's ways start or whose they are");
 	// Every open there is: a folder entered inside the one held, a name taken hold of inside a folder held, what a
 	// hold holds (through the kernel's own name for the descriptor), root's own picture, the picture's place inside
-	// the folder held, and the account's claim of a free name on its own desktop.
+	// the folder held, and the account's new file for a copy on its way on its own desktop.
 	assert.deepEqual(
 		[...files.matchAll(/os\.open\(([^\n]*)/g)].map((match) => match[1]),
 		[
@@ -1352,7 +1355,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 			"name, HOLD, dir_fd=way.fd))",
 			"picture, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)",
 			"name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644, dir_fd=way.fd)",
-			"place, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))",
+			"on_its_way, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)",
 		],
 	);
 	// Root's side looks no name up twice and asks nothing of a path: what a thing is, the descriptor that holds it says
@@ -1377,7 +1380,19 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		/\n\t\t\taccount_command\(words\),\n\t\t\tstdin=subprocess\.PIPE if feed else subprocess\.DEVNULL,\n\t\t\tstdout=out,\n\t\t\tstderr=err,\n\t\t\tclose_fds=True,\n\t\t\tstart_new_session=True,\n\t\t\tcwd="\/",\n\t\t\)\n/,
 	);
 	// Root's wait for it has an end (the account can stop its own process, and `desktop` holds the desktop's lock).
-	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "copy": 900, "take": 900\}\n/);
+	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900\}\n/);
+	// What the account makes in steps lies under a name of its own until it is whole, and root has the account take it
+	// away when the work did not end well, whatever ended it (review r1 F1 of #1712).
+	assert.match(files, /\nSTAGE = "\.qorpera-desktop-copy\."\n/);
+	assert.match(
+		files,
+		/\n\tmark = secrets\.token_hex\(8\)\n\ttry:\n\t\tdone = as_account\(work, \*words, mark, feed=feed\)\n\texcept BaseException:\n\t\tas_account\("tidy", mark, \*beside\)\n\t\traise\n\tif done\[0\] != 0:\n\t\tas_account\("tidy", mark, \*beside\)\n\treturn done\n/,
+	);
+	assert.deepEqual(
+		[...files.matchAll(/(?:staged|as_account)\("(\w+)"/g)].map((match) => `${match[0].split("(")[0]} ${match[1]}`),
+		["as_account tidy", "as_account tidy", "staged take", "staged copy", "as_account place", "staged save"],
+	);
+	assert.match(files, /\n\t\tif code < 0:\n\t\t\treturn 1, "", f"the desktop's user's side was ended before it finished \(signal \{-code\}\)", fed\n/);
 	assert.match(files, /\n\t\t\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n/);
 	assert.match(files, /\n\t\tpatience = threading\.Timer\(PATIENCE\[words\[0\]\], end\)\n\t\tpatience\.start\(\)\n/);
 	assert.match(files, /\n\t\tif os\.getuid\(\) == 0 or os\.geteuid\(\) == 0:\n\t\t\traise Stop\("the account's side of desktop-files runs as the desktop's user only"\)\n\t\tos\.closerange\(3, 4096\)\n/);
@@ -1456,7 +1471,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.match(said, /^1 of its entries are neither file, folder nor link: left out$/m);
 	// A folder in it that others can write stops root in the middle: the name the half copy held is free again (the
 	// account's own copy took it, pipe and all), and nothing of root's sending stayed.
-	assert.deepEqual(cases.archive["a folder others can write"], { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take", "copy"] });
+	assert.deepEqual(cases.archive["a folder others can write"], { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take", "tidy", "copy"] });
 	assert.equal(cases.archive["on the desk"]["tree/pipe"], "other");
 	assert.deepEqual(
 		Object.keys(cases.archive["on the desk"]).filter((name) => !name.startsWith("tree")),
@@ -1489,10 +1504,10 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.deepEqual(cases.account["a link at the end"], {
 		stop: "the desktop's user cannot read /own/hop-file, and root does not read it for the desktop: /own/hop-file is a link. Root copies for the desktop only what lies on a way of folders that root alone can change, with no link on it (under /root, say).",
 		code: 1,
-		calls: ["copy"],
+		calls: ["copy", "tidy"],
 	});
 	assert.match(cases.account["a link in the middle"].stop, /^the desktop's user cannot read \/own\/hop\/hidden\.txt, and root does not read it for the desktop: \/own\/hop is a link, or not a folder\. /);
-	assert.deepEqual(cases.account["a link in the middle"].calls, ["copy"]);
+	assert.deepEqual(cases.account["a link in the middle"].calls, ["copy", "tidy"]);
 	// A link on the desktop: a taken name gets a number, the same link is used again, and what the account cannot read
 	// gets no link.
 	assert.deepEqual(cases.account.place, { answer: ["site", `${top}/everyone/site`, "site-2"], calls: ["place"] });
@@ -1507,6 +1522,32 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	// A copy that did not come whole is not kept, whatever rights its folders came with.
 	assert.deepEqual(cases.take["not whole"], [1, "half could not be copied to the desktop: it did not come whole", true]);
 	assert.deepEqual(cases.take["bad name"], [1, 1]);
+	// Nor is one that was cut off (review r1 F1 of #1712): at root's patience with a part of it written, with all of
+	// it written and no name yet, by the account's process being ended by another, by a file it could not read half
+	// way. Each time the account takes away what was on its way, the desk gains no name, hidden ones included, and
+	// the next copy gets the plain name, not a numbered one.
+	const stopped = "the desktop's user did not finish within 1 seconds, and was stopped";
+	assert.deepEqual(cases.cut["a copy root sends, partly written, at root's patience"], { stop: stopped, code: 1, calls: ["take", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, at root's patience"], { stop: stopped, code: 1, calls: ["copy", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, its process ended by another"], {
+		stop: "the desktop's user's side was ended before it finished (signal 9)",
+		code: 1,
+		calls: ["copy", "tidy"],
+		"new on the desk": [],
+	});
+	assert.match(cases.cut["a copy that fails half way"].stop, /^the desktop's user cannot read \/everyone\/half, and root does not read it for the desktop: \/everyone can be written by its group or by everyone\. /);
+	assert.deepEqual([cases.cut["a copy that fails half way"].calls, cases.cut["a copy that fails half way"]["new on the desk"]], [["copy", "tidy"], []]);
+	assert.deepEqual(cases.cut["a copy after those"], { answer: ["folder", `${desk}/large`, "large"], calls: ["copy"], "new on the desk": ["large", "large/a.bin"] });
+	// A link is made in one step: cut off after it, it is there whole, and the next press for it uses it again.
+	assert.deepEqual(cases.cut["a link, after it was made"], { stop: stopped, code: 1, calls: ["place"], "new on the desk": ["large-2"] });
+	assert.deepEqual(cases.cut["the link again"], { answer: ["folder", `${top}/everyone/large`, "large-2"], calls: ["place"], "new on the desk": [] });
+	// A picture the account saves is written beside its place and put there when whole: cut off before that, no
+	// picture appears, one that was there stays as it was, and nothing is left beside.
+	for (const picture of ["a picture, written and not yet in its place", "a picture over one that was there"]) {
+		assert.match(cases.cut[picture].stop, /^no picture saved at \/everyone\/[a-z/]+\.png: \/everyone can be written by its group or by everyone, so root does not write there, and the desktop's user could not either \(the desktop's user did not finish within 1 seconds, and was stopped\)\. /);
+		assert.deepEqual(cases.cut[picture].calls, ["save", "tidy"]);
+	}
+	assert.deepEqual(cases.cut.pictures, [[], "the picture that was there", []]);
 
 	// `desktop shot`: on a way of root's alone root writes inside the folder it holds, making the folders; never
 	// through a link; elsewhere the account's side saves, and root writes nothing.
@@ -1564,6 +1605,10 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\tdesktop open "$mine/agent.txt" --copy | grep -q "(on the desktop as agent.txt)$" && "$files" open --copy -- "$mine/tree" >/dev/null\n',
 		'\t\t$(readlink /home/desktop/Desktop/tree/to-the-file) == "$secret" && -z $(find /home/desktop/Desktop ! -user desktop) ]] ||\n',
 		'\tif "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi\n',
+		'\t"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &\n',
+		'\tpkill -KILL -u desktop -f "desktop-files account take" || true\n',
+		'\t[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||\n',
+		'\t[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||\n',
 		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
 	])
 		assert.ok(imageScript.includes(line), line);
