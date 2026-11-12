@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { bytes, shown } from "./code-words.ts";
+import { bytes, oneLine, shown } from "./code-words.ts";
 
 /** A repository's website (own code storage, step 4, part C1; STEP4-RELEASES-PLAN.md 5 and 8.1, as STEP4-BUILD.md
  * section 2 replaced them). A repository says in its checks file which folder its checks leave the built site in
@@ -69,15 +69,20 @@ export type CodeSiteProblemCode =
 	| "SITE_FILE_TOO_LARGE"
 	| "SITE_TOO_LARGE"
 	| "SITE_FILE_NAME"
-	| "SITE_HOLDS_SECRET";
+	| "SITE_HOLDS_SECRET"
+	| "SITE_LINKS_FROM_ROOT";
 
-/** What the code made wrong in its site: the file it is about (`SITE_FILE_TOO_LARGE`, `SITE_FILE_NAME`, and
- * `SITE_HOLDS_SECRET` as the collect found it; null when its path holds a secret value), and the secret variable whose
- * value a file or its path holds. A secret found only by the folder's save check names neither. */
+/** What the code made wrong in its site: the file it is about (`SITE_FILE_TOO_LARGE`, `SITE_FILE_NAME`,
+ * `SITE_LINKS_FROM_ROOT`, and `SITE_HOLDS_SECRET` as the collect found it; null when its path holds a secret value or
+ * would not fit whole), the secret variable whose value a file or its path holds, and for `SITE_LINKS_FROM_ROOT` how
+ * many links from the root the file has (null when the file is not named). Never a byte of a file's content: a link
+ * is never named (review round 3 of #1691: any piece our own parser cuts out of a file can be a piece of a value no
+ * mask knows whole). A secret found only by the folder's save check names neither file nor variable. */
 export interface CodeSiteProblem {
 	readonly code: CodeSiteProblemCode;
 	readonly path: string | null;
 	readonly variable: string | null;
+	readonly links?: number | null;
 }
 
 /** What became of a run's site: made (its tree written into the repository's storage and saved, with the recipe it was
@@ -240,6 +245,26 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    review, F1: the transport masks the answer while its paths are still written `\xHH`, so a value with a backslash
  *    or a byte outside printable ASCII passed the mask and came back whole once read). The answer is then
  *    `SITE_HOLDS_SECRET <NAME>` alone, whatever rule the path met first.
+ * 4a. The links from the root (the first live site, 11 Nov: a page that loads `/src/app.js` asks the domain's top for
+ *    it, never its site, which is served at `https://sites.qorpera.com/<slug>/~s<visitor>/`): each `.html` and `.htm`
+ *    file, read with Python's own HTML parser (tags and attributes of any case, values quoted or bare, character
+ *    references decoded; comments, and the text of `script`, `style` and every other element, are no attributes), for
+ *    `href`, `src`, `poster`, `action`, `formaction`, `xlink:href`, `background`, `data` on `object`, each URL of a
+ *    `srcset`, an `imagesrcset` or a `ping`, the URL of a `<meta http-equiv="refresh">`, and the CSS of a `style`
+ *    element or attribute; each `.css` file as CSS. CSS is tokenized as CSS Syntax 3 says, for the tokens that load
+ *    something: comments between any tokens; escapes (a backslash and up to six hex digits with one space after them,
+ *    or a backslash and any other character) decoded in names, strings and URLs, so `u\72l(` is `url(` and
+ *    `@im\70ort` is `@import`; a `url(` token (a bare URL to its `)`, an escaped `)` or quote inside it included; one
+ *    with a space, a quote, a parenthesis or a control inside is a bad URL, which CSS drops); the string of `url("…")`
+ *    and `src("…")`, each string directly inside `image-set(` and `-webkit-image-set(`, and the string right after
+ *    `@import`. Any other string is no link. A value that starts with one `/` once a browser has read it (the spaces
+ *    and controls at its ends and every tab and line break dropped, a backslash taken as a slash) is a link from the
+ *    root; `//host`, a scheme, `#`, `?` and an empty value are not. The first file in C order that has any refuses the
+ *    site: `SITE_LINKS_FROM_ROOT <file> <n>`, n the number of them in that file. **The link itself is never printed**
+ *    (review round 3 of #1691: any piece our own parser cuts out of a file's content can be a piece of a value no mask
+ *    knows whole, however careful the parser), so the reading only decides yes or no, and counts. Scripts and SVG files
+ *    are not read. A file whose path holds a secret value is never named (step 4's rule): `SITE_HOLDS_SECRET <NAME>`
+ *    alone. Each page and style sheet is read once more as text, at most 25 MiB in all, in time linear in its size.
  * 5. Git, with an environment of its own (no variable, configuration or attribute of the session's or of the copy's,
  *    which the repository's own code writes): a new scratch repository `$d/site.git`; the files' exact bytes
  *    (`hash-object --no-filters`, which reads them again), and one tree, all of mode 100644, of the ids of the bytes
@@ -252,10 +277,13 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    more that it was about to; no file at an object's name is ever partial.
  * 7. Three lines: `tree <id>`, `files <n>`, `bytes <n>`.
  * A problem prints one line `<CODE>[ <detail>]` and exits 3, the detail's bytes outside printable ASCII and its
- * backslashes written `\xHH` (lowercase), cut at a whole byte's spelling within 1,000 bytes. Anything that is not the code's fault exits otherwise: 2 for a run
- * folder or a recipe that is not as the host made it, 4 for a file that changed while it was taken or a git command
- * that failed, 1 for anything else Python could not do. */
-const COLLECT_PY = String.raw`import hashlib,os,re,shutil,stat,subprocess,sys
+ * backslashes written `\xHH` (lowercase), at most 1,000 bytes. A detail is printed whole or not at all (review of
+ * #1691, F1: a cut one can carry the start of a value that neither the transport's mask nor the host's knows whole): a
+ * path that does not fit leaves the code alone (or `SITE_HOLDS_SECRET <NAME>`). No detail holds a byte of a file's
+ * content: a path, a variable's name, a count. Anything that is not the code's fault exits otherwise: 2 for a run folder
+ * or a recipe that is not as the host made it, 4 for a file that changed while it was taken or a git command that
+ * failed, 1 for anything else Python could not do. */
+const COLLECT_PY = String.raw`import hashlib,html.parser,os,re,shutil,stat,subprocess,sys
 E=os.environb
 d=E[b"QORPERA_CHECKS_ROOT"]+b"/"+E[b"QORPERA_CHECKS_NAME"]
 w=os.open(d+b"/site.wrote",os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_APPEND,0o644)
@@ -263,24 +291,19 @@ def say(code,detail=b""):
 	os.write(1,code+(b" "+detail if detail else b"")+b"\n")
 	sys.exit(3)
 def esc(p):
-	out=b""
-	for c in p:
-		piece=bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c
-		if len(out)+len(piece)>1000:
-			break
-		out+=piece
-	return out
+	return b"".join(bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c for c in p)
 NAME=re.compile(rb"[A-Za-z_][A-Za-z0-9_]{0,127}")
 SECRETS=[]
 for name in E.get(b"QORPERA_SITE_SECRET_NAMES",b"").split():
 	value=E.get(name) if NAME.fullmatch(name) else None
 	if value is not None and len(value)>=8:
 		SECRETS.append((name,value))
-def named(code,p,variable=b""):
+def named(code,p,variable=b"",count=0):
 	held=[name for name,value in SECRETS if value in p]
 	if held:
 		say(b"SITE_HOLDS_SECRET",variable or held[0])
-	say(code,(variable+b" " if variable else b"")+esc(p))
+	detail=(variable+b" " if variable else b"")+esc(p)+(b" %d"%count if count else b"")
+	say(code,detail if len(detail)<=1000 else variable)
 top=d+b"/src"
 if not stat.S_ISDIR(os.lstat(top).st_mode):
 	sys.exit(2)
@@ -346,6 +369,297 @@ for name,value in SECRETS:
 	for p,content in files:
 		if value in content or value in p:
 			named(b"SITE_HOLDS_SECRET",p,name)
+# Links from the root: a help, so that an agent hears "use relative links" before a site goes out without its design.
+# No security boundary, and nothing depends on it being complete: a spelling it misses leaves the site exactly as it
+# would be without the check. It reads pages and styles as a browser does, and where it must guess, it counts a link.
+BLANK="".join(map(chr,range(33)))
+def rooted(u):
+	t=u.strip(BLANK).replace("\t","").replace("\n","").replace("\r","")
+	t=t[:2].replace("\\","/")+t[2:]
+	return t[:1]=="/" and t[1:2]!="/"
+CSS_ESC=r"\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\r\f])?|[^\n\r\f0-9a-fA-F]|\Z)"
+CSS_NAME=r"(?:[\w\-\u0080-\U0010ffff]|"+CSS_ESC+r")+"
+CSS=re.compile(r"(?P<c>/\*.*?(?:\*/|\Z))|\"(?P<dq>(?:[^\"\\\n]|\\[\s\S]|\\\Z)*)(?P<dqe>\"|\Z)?|'(?P<sq>(?:[^'\\\n]|\\[\s\S]|\\\Z)*)(?P<sqe>'|\Z)?|@(?P<at>"+CSS_NAME+r")|#"+CSS_NAME+r"|(?P<n>"+CSS_NAME+r")(?P<f>\()?|(?P<o>\()|(?P<x>\))|(?P<d>[^\"'@#/()\\\w\-\u0080-\U0010ffff]+)|[\s\S]",re.S)
+WS=re.compile(r"[ \t\n\r\f]*")
+URL=re.compile(r"[ \t\n\r\f]*((?:[^)\"'(\\ \t\n\r\f\x00-\x08\x0b\x0e-\x1f\x7f]|"+CSS_ESC+r")*)[ \t\n\r\f]*")
+BAD=re.compile(r"(?:\\[^\n\r\f]|[^)])*\)?",re.S)
+UNESC=re.compile(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|(\r\n|[\n\r\f])|([\s\S])|(\Z))")
+def unesc(text,end="\ufffd"):
+	def one(m):
+		if m[1]:
+			c=int(m[1],16)
+			return chr(c) if 0<c<=0x10FFFF and not 0xD800<=c<=0xDFFF else "\ufffd"
+		if m[4] is not None:
+			return end
+		return "" if m[2] else m[3]
+	return UNESC.sub(one,text)
+SURROGATE=re.compile("[\ud800-\udfff]")
+def css(text):
+	text=SURROGATE.sub("\ufffd",text.replace("\r\n","\n").replace("\r","\n").replace("\f","\n").replace("\0","\ufffd"))
+	count=0
+	stack=[]
+	importing=False
+	pos=0
+	while pos<len(text):
+		m=CSS.match(text,pos)
+		pos=m.end()
+		kind=m.lastgroup
+		if kind=="c" or (kind=="d" and not m[0].strip(" \t\n\r\f")):
+			continue
+		if kind in ("dqe","sqe"):
+			if importing or (stack and stack[-1]!="("):
+				count+=rooted(unesc(m[kind[:2]],""))
+		elif kind=="f":
+			name=unesc(m["n"]).lower()
+			ahead=WS.match(text,pos).end()
+			if name=="url" and text[ahead:ahead+1] not in ("'",'"'):
+				u=URL.match(text,pos)
+				pos=u.end()
+				if pos==len(text) or text[pos]==")":
+					count+=rooted(unesc(u[1]))
+					pos+=1
+				else:
+					pos=BAD.match(text,pos).end()
+			else:
+				stack.append("u" if name in ("url","src","image-set","-webkit-image-set") else "(")
+		elif kind=="o":
+			stack.append("(")
+		elif kind=="x" and stack:
+			stack.pop()
+		importing=kind=="at" and unesc(m["at"]).lower()=="import"
+	return count
+WSP="\t\n\f\r "
+LOWER=str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")
+def srcset(v):
+	count=0
+	at=0
+	while at<len(v):
+		while at<len(v) and v[at] in WSP+",":
+			at+=1
+		start=at
+		while at<len(v) and v[at] not in WSP:
+			at+=1
+		u=v[start:at]
+		if u.endswith(","):
+			u=u.rstrip(",")
+		else:
+			depth=0
+			while at<len(v):
+				c=v[at]
+				at+=1
+				if c=="(":
+					depth+=1
+				elif c==")" and depth:
+					depth-=1
+				elif c=="," and not depth:
+					break
+		count+=rooted(u)
+	return count
+REFRESH=re.compile(r"[\t\n\f\r ]*[0-9.]+(?=[;,\t\n\f\r ]|\Z)[\t\n\f\r ]*[;,]?[\t\n\f\r ]*(?:url[\t\n\f\r ]*=[\t\n\f\r ]*)?(.*)",re.I|re.S)
+LEADS=("href","src","poster","action","formaction","xlink:href","background")
+RAW=("script","style","xmp","iframe","noembed","noframes","plaintext","textarea","title")
+VOID=set("area base basefont bgsound br col embed frame hr image img input keygen link meta param source track wbr".split())
+BREAKOUT=set("b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small span strong strike sub sup table tt u ul var".split())
+SCRIPT_NEXT=re.compile(r"-+|[<>]")
+DELIMS=("\t","\n","\f","\r"," ","/",">")
+def script_end(raw,i):
+	state=0
+	dashes=0
+	while True:
+		m=SCRIPT_NEXT.search(raw,i)
+		if not m:
+			return -1
+		if m.start()>i:
+			dashes=0
+		i=m.start()
+		if raw[i]=="-":
+			dashes+=m.end()-i
+			i=m.end()
+		elif raw[i]==">":
+			if dashes>=2:
+				state=0
+			dashes=0
+			i+=1
+		elif state==0 and raw.startswith("<!--",i):
+			state=1
+			dashes=2
+			i+=4
+		elif raw[i+1:i+2]=="/" and raw[i+2:i+8].lower()=="script" and raw[i+8:i+9] in DELIMS:
+			if state<2:
+				return i
+			state=1
+			dashes=0
+			i+=8
+		elif state==1 and raw[i+1:i+7].lower()=="script" and raw[i+7:i+8] in DELIMS:
+			state=2
+			dashes=0
+			i+=7
+		else:
+			dashes=0
+			i+=1
+class At(int):
+	def start(self):
+		return int(self)
+class ScriptEnd:
+	def search(self,raw,pos):
+		i=script_end(raw,pos)
+		return None if i<0 else At(i)
+def point(ns,tag,first):
+	if ns=="svg":
+		return tag in ("foreignobject","desc","title")
+	if tag=="annotation-xml":
+		return (first.get("encoding") or "").translate(LOWER) in ("text/html","application/xhtml+xml")
+	return tag in ("mi","mo","mn","ms","mtext")
+class Page(html.parser.HTMLParser):
+	def __init__(self,later=None):
+		super().__init__(convert_charrefs=True)
+		self.links=0
+		self.later=later
+		self.doubt=False
+		self.open=[]
+		self.marks=[]
+		self.names={}
+		self.sheet=None
+		self.opened_foreign=False
+		self._support_cdata=False
+	def node(self):
+		if not self.open:
+			return ("","",True,None)
+		m=self.marks[-1]
+		if m[0]==len(self.open)-1:
+			return (self.open[-1],m[1],m[2],m[3])
+		return (self.open[-1],m[1],False,None)
+	def foreign(self):
+		n=self.node()
+		return not n[2] and n[1]!="html"
+	def pop(self):
+		self.names[self.open.pop()]-=1
+		if self.marks[-1][0]==len(self.open):
+			sheet=self.marks.pop()[3]
+			if sheet is not None:
+				self.links+=css("".join(sheet))
+		if not self.open:
+			self.doubt=False
+	def push(self,tag,ns,pt,sheet):
+		if pt or sheet is not None or not self.marks or self.marks[-1][1]!=ns:
+			self.marks.append((len(self.open),ns,pt,sheet))
+		tag=sys.intern(tag)
+		self.open.append(tag)
+		self.names[tag]=self.names.get(tag,0)+1
+	def breakout(self):
+		while self.foreign():
+			self.pop()
+	def set_cdata_mode(self,elem,**given):
+		if self.opened_foreign:
+			return
+		try:
+			super().set_cdata_mode(elem,**given)
+		except TypeError:
+			super().set_cdata_mode(elem)
+		if self.cdata_elem=="script":
+			self.interesting=ScriptEnd()
+	def parse_comment(self,i,report=True):
+		for close in (">","->"):
+			if self.rawdata.startswith(close,i+4):
+				return i+4+len(close)
+		return super().parse_comment(i,report)
+	def unknown_decl(self,data):
+		if data.startswith("CDATA["):
+			self.handle_data(data[6:])
+			if self.doubt and self.later is not None and ">" in data:
+				self.later.append(data[data.index(">")+1:])
+	def handle_starttag(self,tag,attrs,closed=False):
+		first={}
+		for name,value in attrs:
+			first.setdefault(name,value)
+		if self.foreign() and (tag in BREAKOUT or (tag=="font" and ("color" in first or "face" in first or "size" in first))):
+			self.breakout()
+		cur,ns,pt,_=self.node()
+		if ns=="html":
+			at=self.marks[-2]
+			cur,ns,pt=self.open[at[0]],at[1],True
+		if pt and not (ns=="math" and cur!="annotation-xml" and tag in ("mglyph","malignmark")):
+			ns=tag if tag in ("svg","math") else "html" if self.open else ""
+		elif tag=="svg" and cur=="annotation-xml":
+			ns="svg"
+		self.opened_foreign=ns not in ("","html")
+		for name,value in first.items():
+			if value is None:
+				continue
+			if name in LEADS or (name=="data" and tag=="object"):
+				self.links+=rooted(value)
+			elif name in ("srcset","imagesrcset"):
+				self.links+=srcset(value)
+			elif name=="ping":
+				self.links+=sum(rooted(u) for u in re.split("[\t\n\f\r ]",value))
+			elif name=="style":
+				self.links+=css(value)
+			elif name=="content" and tag=="meta" and (first.get("http-equiv") or "").translate(LOWER)=="refresh":
+				m=REFRESH.match(value)
+				u=m.group(1) if m else ""
+				if u[:1] in ("'",'"'):
+					u=u[1:].split(u[0],1)[0]
+				self.links+=rooted(u)
+		if self.opened_foreign:
+			if not closed:
+				self.push(tag,ns,point(ns,tag,first),[] if ns=="svg" and tag=="style" else None)
+		elif tag in RAW:
+			self.set_cdata_mode(tag,escapable=tag in ("textarea","title"))
+			if tag=="style":
+				self.sheet=[]
+		elif ns and tag not in VOID:
+			self.push(tag,ns,False,None)
+		self._support_cdata=self.node()[1] not in ("","html")
+	def handle_startendtag(self,tag,attrs):
+		self.handle_starttag(tag,attrs,True)
+	def handle_endtag(self,tag):
+		if self.cdata_elem:
+			if self.sheet is not None:
+				self.links+=css("".join(self.sheet))
+				self.sheet=None
+		else:
+			if tag in ("br","p"):
+				self.breakout()
+			if self.names.get(tag):
+				while self.open[-1]!=tag:
+					if self.node()[1]=="html":
+						self.doubt=True
+					self.pop()
+				self.pop()
+		self._support_cdata=self.node()[1] not in ("","html")
+	def handle_data(self,data):
+		if self.cdata_elem:
+			if self.sheet is not None:
+				self.sheet.append(data)
+		elif self.open:
+			sheet=self.node()[3]
+			if sheet is not None:
+				sheet.append(data)
+	def close(self):
+		super().close()
+		while self.open:
+			self.pop()
+		if self.sheet is not None:
+			self.links+=css("".join(self.sheet))
+			self.sheet=None
+for p,content in files:
+	kind=p.rsplit(b".",1)[-1].lower()
+	links=0
+	if kind in (b"html",b"htm"):
+		later=[]
+		page=Page(later)
+		page.feed(content.decode("utf-8","surrogateescape"))
+		page.close()
+		links=page.links
+		for text in later:
+			again=Page()
+			again.feed(text)
+			again.close()
+			links+=again.links
+	elif kind==b"css":
+		links=css(content.decode("utf-8","surrogateescape"))
+	if links:
+		named(b"SITE_LINKS_FROM_ROOT",p,count=links)
 scratch=d+b"/site.git"
 if os.path.islink(scratch) or os.path.isfile(scratch):
 	os.unlink(scratch)
@@ -478,7 +792,7 @@ function unescaped(detail: string): string {
 
 /** The collect's ending, from its exit code and its whole output (stdout and stderr as one, masked): `made` for exit 0
  * and exactly its three lines (a tree's id, 1 to 500 files, at most 25 MiB); a problem for exit 3 and exactly one line
- * of one of the eight codes with the detail its code has, spelled as the collect spells one (`SITE_HOLDS_SECRET` with
+ * of one of the nine codes with the detail its code has, spelled as the collect spells one (`SITE_HOLDS_SECRET` with
  * its variable alone, or the variable and a path); null for anything else, which is not the command's own ending (91
  * included). A path it gives was masked before it was decoded: the host masks it again before it shows it anywhere.
  * Pure. */
@@ -502,9 +816,22 @@ export function codeSiteCollectAnswer(
 		detail = refused[2];
 	if (WITHOUT_DETAIL.includes(code))
 		return detail === undefined ? { problem: { code, path: null, variable: null } } : null;
-	if (detail === undefined || detail.length > 1000 || !DETAIL.test(detail)) return null;
+	// A detail that would not fit whole is left out (review of #1691, F1): the code alone.
+	if (detail === undefined) {
+		if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
+			return { problem: { code, path: null, variable: null } };
+		return code === "SITE_LINKS_FROM_ROOT" ? { problem: { code, path: null, variable: null, links: null } } : null;
+	}
+	if (detail.length > 1000 || !DETAIL.test(detail)) return null;
 	if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
 		return { problem: { code, path: unescaped(detail), variable: null } };
+	// The file, a path of the site (no space in it), then how many links from the root it has; never a link.
+	if (code === "SITE_LINKS_FROM_ROOT") {
+		const parts = /^([^ ]+) ([1-9][0-9]{0,8})$/.exec(detail);
+		return parts
+			? { problem: { code, path: unescaped(parts[1] as string), variable: null, links: Number(parts[2]) } }
+			: null;
+	}
 	if (code !== "SITE_HOLDS_SECRET") return null;
 	// The variable alone: the value is in a path the collect does not name.
 	if (!detail.includes(" ")) return VARIABLE.test(detail) ? { problem: { code, path: null, variable: detail } } : null;
@@ -554,10 +881,20 @@ export function codeSiteReported(collected: CodeSiteCollected | null): Record<st
 }
 
 /** `CODING_CHECKS_SITE_REFUSED`: every check passed, but the site the code left in `folder` cannot go, so nothing went
- * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code). Within 3,500 bytes, as every word of a
- * failed turn: the folder and a path are shown on one line and cut. Pure. */
+ * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code and the links from the root, the ninth,
+ * added once the first live site showed them). Within 3,500 bytes, as every word of a failed turn. A path is shown on
+ * one line and whole, never cut (review of #1691, F1: a cut one can carry the start of a secret value that no mask
+ * knows whole): when the words would pass 3,500 bytes, the path is left out. Pure. */
 export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string): string {
-	const path = shown(problem.path ?? "", 300);
+	const words = refusedWords(problem, folder);
+	return bytes(words) <= MAX_SUMMARY_BYTES ? words : refusedWords({ ...problem, path: null }, folder);
+}
+
+/** The most bytes the executor's words of a failed turn take (code-checks.ts keeps the same bound). */
+const MAX_SUMMARY_BYTES = 3500;
+
+function refusedWords(problem: CodeSiteProblem, folder: string): string {
+	const path = oneLine(problem.path ?? "");
 	let what: string;
 	switch (problem.code) {
 		case "SITE_FOLDER_MISSING":
@@ -592,6 +929,15 @@ export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string)
 						? `holds the value of ${shown(problem.variable, 128)} in one of its files or file names`
 						: `holds the value of ${shown(problem.variable, 128)} in ${path}`;
 			break;
+		case "SITE_LINKS_FROM_ROOT": {
+			const many = problem.path !== null && (problem.links ?? 1) > 1;
+			const where = problem.path === null ? "" : ` in ${path}${many ? ` (${problem.links} of them)` : ""}`;
+			what =
+				`has ${many ? "links that start" : "a link that starts"} with /${where}. A site is served under an address of its ` +
+				"own, never at the top of a domain: link its files with relative links (src/app.js, ../img/logo.png), in its " +
+				'scripts too, which Qorpera does not read, or set your bundler\'s base path (Vite: base: "./")';
+			break;
+		}
 	}
 	const key = problem.code === "SITE_HOLDS_SECRET" ? " A key must never be built into the site." : "";
 	return `Nothing went into main: every check passed, but the site in "${shown(folder, 300)}" ${what}.${key} Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`;

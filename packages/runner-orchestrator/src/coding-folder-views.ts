@@ -2,7 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, unlink } from "node:fs/promises";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { CODING_GUEST, type CodingGuestRequests, isUuid, normalizeUuid, parseClosedRecord } from "@qorpera/contracts";
+import {
+	CODING_GUEST,
+	CODING_GUEST_MOUNT_V2,
+	type CodingGuestRequests,
+	isUuid,
+	normalizeUuid,
+	parseClosedRecord,
+} from "@qorpera/contracts";
 import { CodingControlRefused } from "./coding-executor.ts";
 import {
 	type CodingFolderBoundary,
@@ -183,7 +190,9 @@ export class CodingFolderViews {
 	 * Before a new view, the old one's final boundary saves what it has pending and it closes; with no old view held, a
 	 * boundary saves what the machine's views have pending. A new view is recorded before it is shown, or closed. Resolves
 	 * with the view shown and, when it replaced one the session held, how that one ended: the caller ends a view it means
-	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up. Invalid
+	 * to replace before its attachment does, so one replaced here is a view whose attachment SQL already gave up. It also
+	 * says whether the machine's package caches are ready (`packageCaches`: the agent said so in its mount answer; false
+	 * from an agent from before, which is asked again in v1, or when the agent could not make them). Invalid
 	 * ids, a uid outside the sessions' range or an invalid `until` reject with CODING_FOLDER_VIEW_REQUEST_INVALID before
 	 * anything; a refused open with CodingFolderViewRefused; a machine that must restart first (the node closed the
 	 * session's view, held or new, under its mount; the boundary before a new view answered its reads unproven, or said it
@@ -196,7 +205,7 @@ export class CodingFolderViews {
 		session: CodingFolderViewSession,
 		until: number,
 		signal: AbortSignal,
-	): Promise<{ viewId: string; replaced?: CodingFolderViewEnd }> {
+	): Promise<{ viewId: string; replaced?: CodingFolderViewEnd; packageCaches: boolean }> {
 		const workerId = normalizeUuid(session.workerId);
 		const environmentId = normalizeUuid(session.environmentId);
 		const attachmentToken = normalizeUuid(session.attachmentToken);
@@ -228,7 +237,8 @@ export class CodingFolderViews {
 			});
 		const held = await recorded(this.#held(workerId, deadline));
 		if (held?.machineId === machineId && held.bootId === bootId && held.attachmentToken === attachmentToken) {
-			if ((await this.#mount(asked, held, until, signal, deadline)) === "mounted") return { viewId: held.viewId };
+			const shown = await this.#mount(asked, held, until, signal, deadline);
+			if (shown.mount === "mounted") return { viewId: held.viewId, packageCaches: shown.packageCaches };
 			// The node closed it: what it read may still be in the machine. It stays held, for the restart to end.
 			throw new CodingFolderRestartRequired("VIEW_CLOSED");
 		}
@@ -249,8 +259,11 @@ export class CodingFolderViews {
 		});
 		// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again. One the
 		// node closed under the mount stays held too, for the restart to end.
-		if ((await this.#mount(asked, view, until, signal, deadline)) === "mounted")
-			return replaced ? { viewId: view.viewId, replaced } : { viewId: view.viewId };
+		const shown = await this.#mount(asked, view, until, signal, deadline);
+		if (shown.mount === "mounted")
+			return replaced
+				? { viewId: view.viewId, replaced, packageCaches: shown.packageCaches }
+				: { viewId: view.viewId, packageCaches: shown.packageCaches };
 		throw new CodingFolderRestartRequired("VIEW_CLOSED");
 	}
 
@@ -332,10 +345,12 @@ export class CodingFolderViews {
 		until: number,
 		signal: AbortSignal,
 		deadline: AbortSignal,
-	): Promise<"mounted" | "closed"> {
+	): Promise<{ mount: "mounted" | "closed"; packageCaches: boolean }> {
 		const guest = new LxdCodingGuestClient({ machine: session.machine, client: this.#client });
-		const request: CodingGuestRequests["mount"] = {
-			schema: "qorpera.coding-guest-mount/v1",
+		// Asked in v2, the agent also says whether the machine's package caches are ready; one from before refuses v2 as an
+		// invalid request, having done nothing, and is asked the same in v1, whose answer says nothing of them.
+		let request: CodingGuestRequests["mount"] = {
+			schema: CODING_GUEST_MOUNT_V2,
 			workerId: session.workerId,
 			uid: session.uid,
 			gid: session.uid,
@@ -343,10 +358,18 @@ export class CodingFolderViews {
 		};
 		for (;;) {
 			try {
-				const { mount } = await guest.mount(request, deadline);
-				if (mount !== "unanswered") return mount;
+				const { mount, packageCaches } = await guest.mount(request, deadline);
+				if (mount !== "unanswered") return { mount, packageCaches: packageCaches === true };
 			} catch (error) {
 				if (signal.aborted) throw signal.reason;
+				if (
+					error instanceof CodingGuestRefused &&
+					error.code === "CODING_GUEST_REQUEST_INVALID" &&
+					request.schema === CODING_GUEST_MOUNT_V2
+				) {
+					request = { ...request, schema: "qorpera.coding-guest-mount/v1" };
+					continue;
+				}
 				if (error instanceof CodingGuestRefused && !GUEST_BUSY.has(error.code)) throw error;
 				// A request the client refuses, or an answer from the agent this executor just installed that is not
 				// one: trying again would hide it.

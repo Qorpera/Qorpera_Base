@@ -42,6 +42,89 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
 	usageProcesses: 8192,
 });
 
+/** The machine's package caches (own code storage, step 6, part W): download caches its sessions and Qorpera's checks
+ * share. A machine serves one member, one agent and one repository, and every session user there is root through sudo,
+ * so a cache its sessions share crosses no line that exists. The guest agent makes the folder and one per tool (root,
+ * group `group`, 2775, the group's rwx as access and default ACL entries) at the first mount of each boot, empties whole
+ * tool folders, least recently used first, while they hold more than `limitBytes`, and tmpfiles removes the files
+ * not read, written or changed for `ageDays`, but in a tool's `trees`, which the agent removes whole, at boot, when
+ * nothing in one was used for as long. The executor points each tool at its folder in every session command's and every checks command's
+ * environment (CODING_PACKAGE_CACHE_ENVIRONMENT), over a company value of the same name. Download caches only: no build
+ * cache, and not Go, cargo or mise, whose caches hold configuration or programs. Not yarn 1 either: it makes its cache's
+ * folders with its own umask applied (0755), so another session could read them but not add to them (EACCES in the
+ * image's proof, 12 Nov 2026). pnpm 10 reads `npm_config_store_dir`, pnpm 12 only `pnpm_config_store_dir`: both are
+ * set. The executor sets them only for a machine whose agent said the caches are ready (`packageCaches` in the mount
+ * answer), so a machine whose agent is older, or whose folder could not be made, works as before.
+ *
+ * A tool's own cleanup, run by one session, cannot see what another session's projects (in their 0700 homes) still
+ * use. Playwright's is the one that deletes what is in use: its browser GC treats another user's unreadable install
+ * as gone and removes that user's browsers (seen on node01, 12 Nov 2026), so it is off
+ * (`PLAYWRIGHT_SKIP_BROWSER_GC=1`) and the agent's age of whole trees cleans instead. npm's, pnpm's, pip's and uv's
+ * own cleanups only cost a download again (`lanes/own-code-storage/build6/W.md`). */
+export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
+	root: "/var/cache/qorpera-packages",
+	group: "qorpera-coding",
+	/** 8 GiB, written out: `**` would keep this object in every bundle of contracts, used or not. */
+	limitBytes: 8_589_934_592,
+	/** tmpfiles' age (`<ageDays>d`), and the age of a whole tree. */
+	ageDays: 30,
+	tools: /* @__PURE__ */ Object.freeze<readonly CodingPackageCacheTool[]>([
+		/* @__PURE__ */ Object.freeze({
+			folder: "npm",
+			variables: ["npm_config_cache"],
+			settings: {},
+			trees: ["_npx/*"],
+		}),
+		// pnpm 10 reads npm's name for it; 11 and later only their own. Its global virtual store (off by default) links
+		// projects into the store.
+		/* @__PURE__ */ Object.freeze({
+			folder: "pnpm",
+			variables: ["npm_config_store_dir", "pnpm_config_store_dir"],
+			settings: {},
+			trees: ["v*/links/*"],
+		}),
+		/* @__PURE__ */ Object.freeze({ folder: "pip", variables: ["PIP_CACHE_DIR"], settings: {}, trees: [] }),
+		// uv's unpacked wheels, which venvs link to and which a later install links from, and its own environments.
+		/* @__PURE__ */ Object.freeze({
+			folder: "uv",
+			variables: ["UV_CACHE_DIR"],
+			settings: {},
+			trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
+		}),
+		// Browsers run from here, each a tree.
+		/* @__PURE__ */ Object.freeze({
+			folder: "ms-playwright",
+			variables: ["PLAYWRIGHT_BROWSERS_PATH"],
+			settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
+			trees: ["*"],
+		}),
+	]),
+});
+/** One tool of the machine's package caches. */
+export interface CodingPackageCacheTool {
+	/** Its folder under the root. */
+	readonly folder: string;
+	/** The variables that point the tool at its folder. */
+	readonly variables: readonly string[];
+	/** The rest of what it needs to share its folder: set beside the variables. */
+	readonly settings: Readonly<Record<string, string>>;
+	/** Patterns, below the folder (`*` any one name), of trees the tool runs or links from in place: one missing a part
+	 * is broken, not only smaller. tmpfiles ages none of their files; the agent removes one whole at boot when nothing
+	 * in it was read, written or changed for `ageDays`. */
+	readonly trees: readonly string[];
+}
+/** Each tool's variables and its folder, and its settings, as every session command and every checks command of a
+ * machine whose caches are ready gets them. Every call is marked pure, so a program that does not use it (the coding
+ * guest's four helpers, which must stay within CODING_GUEST_HELPER_MAX_BYTES) bundles none of it. */
+export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze(
+	/* @__PURE__ */ Object.fromEntries(
+		/* @__PURE__ */ CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables, settings }) => [
+			...variables.map((variable) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
+			...Object.entries(settings),
+		]),
+	),
+);
+
 export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "quiesce" | "stop-session" | "status";
 export const CODING_GUEST_VERBS: readonly CodingGuestVerb[] = /* @__PURE__ */ Object.freeze([
 	"mount",
@@ -59,9 +142,12 @@ export interface CodingGuestView {
 	readonly viewId: string;
 	readonly pass: string;
 }
-/** Shows the session's newest view at /run/qorpera-folder/mounts/<worker32>, owned by the session's uid. */
+/** Shows the session's newest view at /run/qorpera-folder/mounts/<worker32>, owned by the session's uid. `v2` (own code
+ * storage, step 6) asks the same and also that the answer say whether the machine's package caches are ready
+ * (`packageCaches`): an agent from before refuses it as an invalid request, having done nothing, and is asked again in
+ * `v1`; an agent asked in `v1` answers exactly as before, so an executor from before reads it. */
 export interface CodingGuestMountRequest {
-	readonly schema: "qorpera.coding-guest-mount/v1";
+	readonly schema: "qorpera.coding-guest-mount/v1" | "qorpera.coding-guest-mount/v2";
 	readonly workerId: string;
 	readonly uid: number;
 	readonly gid: number;
@@ -132,6 +218,9 @@ export interface CodingGuestMountAnswer {
 	readonly viewId: string;
 	/** mounted: the program's mount is up; closed: the node closed or refused the view; unanswered: not yet. */
 	readonly mount: "mounted" | "closed" | "unanswered";
+	/** Only in the answer to a `v2` request: whether the machine's package caches (CODING_PACKAGE_CACHES) are made this
+	 * boot. Read as false when absent. */
+	readonly packageCaches?: boolean;
 }
 /** `run` and `cancel`. */
 export interface CodingGuestCommandAnswer extends CodingGuestCommand {
@@ -243,6 +332,8 @@ const REQUEST_KEYS: Record<CodingGuestVerb, string> = {
 	"stop-session": "schema,workerId",
 	status: "schema,workerId",
 };
+/** The mount request that asks for the package caches' word (CodingGuestMountRequest). */
+export const CODING_GUEST_MOUNT_V2 = "qorpera.coding-guest-mount/v2";
 const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 	mount: "qorpera.coding-guest-mount/v1",
 	run: "qorpera.coding-guest-run/v1",
@@ -271,7 +362,8 @@ export function parseCodingGuestRequest<V extends CodingGuestVerb>(verb: V, valu
 	const error = "Invalid coding guest request";
 	if (!CODING_GUEST_VERBS.includes(verb)) throw new Error(error);
 	const input = object(value, REQUEST_KEYS[verb], error);
-	if (input.schema !== REQUEST_SCHEMAS[verb]) throw new Error(error);
+	if (input.schema !== REQUEST_SCHEMAS[verb] && !(verb === "mount" && input.schema === CODING_GUEST_MOUNT_V2))
+		throw new Error(error);
 	id(input.workerId, error);
 	if ("commandId" in input) id(input.commandId, error);
 	if (verb === "mount" || verb === "run") {
@@ -355,12 +447,19 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 	const workerId = request.workerId;
 	if ((value as Record<string, unknown>).workerId !== workerId) throw new Error(error);
 	if (verb === "mount") {
-		const input = object(value, "mount,schema,viewId,workerId", error);
+		// A v1 answer is exactly the four keys, as before; a v2 request's may also say whether the caches are ready.
+		const word = (request as CodingGuestMountRequest).schema === CODING_GUEST_MOUNT_V2 && "packageCaches" in value;
+		const input = object(
+			value,
+			word ? "mount,packageCaches,schema,viewId,workerId" : "mount,schema,viewId,workerId",
+			error,
+		);
 		if (
 			input.schema !== "qorpera.coding-guest-mounted/v1" ||
 			input.viewId !== (request as CodingGuestMountRequest).view.viewId ||
 			typeof input.mount !== "string" ||
-			!["mounted", "closed", "unanswered"].includes(input.mount)
+			!["mounted", "closed", "unanswered"].includes(input.mount) ||
+			(word && typeof input.packageCaches !== "boolean")
 		)
 			throw new Error(error);
 		return Object.freeze({ ...input }) as never;

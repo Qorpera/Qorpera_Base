@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
 import { withShortDeadline } from "./helpers/short-deadline.ts";
@@ -124,6 +125,44 @@ describe("bounded LXD guest file readback", () => {
 	it.each([0, 65537, 1.5, Infinity])("rejects invalid byte bound %s", async (maximum) => {
 		const value = new LxdUnixClient("/nonexistent/lxd.socket");
 		await expect(value.readInstanceFile("office", "guest", "/run/report", maximum)).rejects.toThrow(
+			/^LXD_INSTANCE_FILE_UNCONFIRMED$/,
+		);
+	});
+	it("reads a coding guest helper past 64 KiB, within the helpers' bound, and nothing else so far", async () => {
+		const helper = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
+		const bytes = Buffer.alloc(100_000, 0x61);
+		let requests = 0;
+		const value = await client((_request, response) => {
+			requests++;
+			response.writeHead(200, { ...headers, "x-lxd-mode": "0444", "content-length": String(bytes.length) });
+			response.end(bytes);
+		});
+		await expect(value.readInstanceFile("coding", "machine", helper, CODING_GUEST_HELPER_MAX_BYTES)).resolves.toEqual(
+			{
+				content: bytes,
+				uid: 0,
+				gid: 0,
+				mode: 0o444,
+			},
+		);
+		expect(requests).toBe(1);
+		// Past the bound, or this bound for any other file: refused before a request.
+		for (const [path, maximum] of [
+			[helper, CODING_GUEST_HELPER_MAX_BYTES + 1],
+			["/opt/qorpera-coding/../secret.mjs", CODING_GUEST_HELPER_MAX_BYTES],
+			["/run/qorpera-coding/observation.json", CODING_GUEST_HELPER_MAX_BYTES],
+			["/opt/qorpera-guest/agent.mjs", CODING_GUEST_HELPER_MAX_BYTES],
+		] as const)
+			await expect(value.readInstanceFile("coding", "machine", path, maximum)).rejects.toThrow(
+				/^LXD_INSTANCE_FILE_UNCONFIRMED$/,
+			);
+		expect(requests).toBe(1);
+		// A helper larger than the bound the caller gave is refused as it streams.
+		const big = await client((_request, response) => {
+			response.writeHead(200, { ...headers, "x-lxd-mode": "0444" });
+			response.end(Buffer.alloc(CODING_GUEST_HELPER_MAX_BYTES + 1));
+		});
+		await expect(big.readInstanceFile("coding", "machine", helper, CODING_GUEST_HELPER_MAX_BYTES)).rejects.toThrow(
 			/^LXD_INSTANCE_FILE_UNCONFIRMED$/,
 		);
 	});
