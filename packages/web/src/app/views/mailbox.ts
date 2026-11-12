@@ -2019,15 +2019,18 @@ function payingAccount(connections: NativeExecutionConnections) {
 	return able.find((item) => item.allowAutonomous === true) ?? able[0];
 }
 
-/** Gives an address to an agent, or to nobody, after any other address that is on its way to one: a new address's own
- * agent waits its turn, and is not lost. */
+/** Gives an address to an agent, or to nobody. With none on its way it starts at once, so its chip waits from the
+ * press on. With one on its way (a new address made meanwhile) it takes its turn after it, and is not lost. */
 function answerWith(
 	page: Page,
 	calls: MailboxManage,
 	target: { readonly address: string; readonly hookId: string },
 	agentId: string | null,
 ): Promise<void> {
-	const turn = (answerings.get(page.ui) ?? Promise.resolve()).then(() => giveAddress(page, calls, target, agentId));
+	const before = page.ui.answering ? answerings.get(page.ui) : undefined;
+	const turn = before
+		? before.then(() => giveAddress(page, calls, target, agentId))
+		: giveAddress(page, calls, target, agentId);
 	answerings.set(page.ui, turn);
 	return turn;
 }
