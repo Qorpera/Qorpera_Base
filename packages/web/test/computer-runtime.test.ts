@@ -7,6 +7,7 @@ import {
 	ComputerPanel,
 	ComputerPanels,
 	INPUT_MAX_AGE_MS,
+	inputSpanTooOld,
 	inputTooOld,
 	KEEP_EVERY_MS,
 	LOOK_EVERY_MS,
@@ -22,7 +23,7 @@ import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-
 import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
-import { DOUBLE_CLICK_MS, machineTexts, TYPE_BATCH_MS } from "../src/ui/machine-screen-view.ts";
+import { DOUBLE_CLICK_MS, inputSpan, joinInputs, machineTexts, TYPE_BATCH_MS } from "../src/ui/machine-screen-view.ts";
 import { fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
 
 /* An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
@@ -3438,6 +3439,229 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					undo();
 					p.dispose();
 				}
+	});
+
+	it("keeps every part's verdict when inputs are joined: a clock set back between them, or set back and forward again (review r5 F1 of #1701)", () => {
+		const at = (wall: number, mono: number) => ({ wall, mono });
+		const first = inputSpan(at(100_000, 1000));
+		// Made after the wall clock was set back 5 s: alone it looks fine, the first part does not.
+		const second = inputSpan(at(95_150, 1150));
+		const now = at(95_300, 1300);
+		expect(inputSpanTooOld(second, now)).toBe(false);
+		expect(inputSpanTooOld(first, now)).toBe(true);
+		expect(inputSpanTooOld(joinInputs(first, second), now)).toBe(true);
+		expect(inputSpanTooOld(joinInputs(second, first), now)).toBe(true);
+		// Set back 5 s, then 6 s on: the wall clock is past every part again, yet it went back since.
+		expect(inputSpanTooOld(first, at(101_300, 1300 + 5000))).toBe(true);
+		// A sleeping laptop whose monotonic clock stopped: the wall clock alone moved on, within the bound.
+		expect(inputSpanTooOld(first, at(119_000, 1005))).toBe(false);
+		// Parts made in order, within the bound: alive, and as old as the oldest.
+		const later = inputSpan(at(110_000, 11_000));
+		expect(inputSpanTooOld(joinInputs(first, later), at(119_000, 20_000))).toBe(false);
+		expect(inputSpanTooOld(joinInputs(first, later), at(120_001, 21_001))).toBe(true);
+	});
+
+	it("drops texts joined behind an outstanding action when the clock was set back between them, shared and private (review r5 F1 of #1701)", async () => {
+		for (const mode of ["shared", "private"] as const) {
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			if (mode === "private") {
+				controlButton(p)!.click();
+				await flush();
+				expect(p.holding, mode).toBe(true);
+			}
+			let open = () => {};
+			s.state.actAnswers.push({
+				hold: new Promise<void>((resolve) => {
+					open = resolve;
+				}),
+				exitCode: 0,
+			});
+			press(canvas(p), 10, 10, { button: 2 });
+			await flush();
+			key(canvas(p), "a");
+			await advance(TYPE_BATCH_MS);
+			// The wall clock is set back 5 s; a second text joins the first in the queue before the click answers.
+			vi.setSystemTime(Date.now() - 5000);
+			key(canvas(p), "b");
+			await advance(TYPE_BATCH_MS);
+			open();
+			await flush();
+			expect
+				.soft(
+					s.acts.map((act) => act.action.type),
+					mode,
+				)
+				.toEqual(["click"]);
+			expect.soft(controls(p)?.textContent, mode).toContain(lost);
+			p.dispose();
+		}
+	});
+
+	it("keeps a part's verdict in the picture's own joins: a text's keys, a wheel burst, a click and its second, a press and its release (review r5 F1 of #1701)", async () => {
+		const wheel = (p: ComputerPanel) =>
+			canvas(p).dispatchEvent(
+				new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 100, clientY: 100, deltaY: 120 }),
+			);
+		const joins: [string, (p: ComputerPanel) => void, (p: ComputerPanel) => void][] = [
+			["a text's keys", (p) => key(canvas(p), "a"), (p) => key(canvas(p), "b")],
+			["a wheel burst", wheel, wheel],
+			["a click and its second", (p) => press(canvas(p), 100, 100), (p) => press(canvas(p), 100, 100)],
+			[
+				"a press and its release",
+				(p) => canvas(p).dispatchEvent(pointer("pointerdown", 100, 100, { button: 2 })),
+				(p) => canvas(p).dispatchEvent(pointer("pointerup", 100, 100, { button: 2 })),
+			],
+		];
+		// The monotonic clock, moved by the test where real time passes (fake timers move only the wall clock).
+		let passed = 0;
+		const real = performance.now.bind(performance);
+		vi.spyOn(performance, "now").mockImplementation(() => real() + passed);
+		const clocks: [string, () => void, () => void][] = [
+			["set back 5 s between them", () => vi.setSystemTime(Date.now() - 5000), () => {}],
+			[
+				"set back 5 s between them, then 6 s pass",
+				() => vi.setSystemTime(Date.now() - 5000),
+				() => {
+					vi.setSystemTime(Date.now() + 6000);
+					passed += 6000;
+				},
+			],
+		];
+		for (const mode of ["shared", "private"] as const)
+			for (const [what, first, second] of joins)
+				for (const [clock, back, on] of clocks) {
+					const name = `${mode}, ${what}, ${clock}`;
+					const { s, p } = await shown();
+					press(canvas(p), 400, 250);
+					await flush();
+					if (mode === "private") {
+						controlButton(p)!.click();
+						await flush();
+					}
+					const sent = () => s.acts.filter((act) => act.url.endsWith("/act"));
+					first(p);
+					back();
+					second(p);
+					on();
+					await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+					await flush();
+					expect.soft(sent(), name).toEqual([]);
+					expect.soft(controls(p)?.textContent, name).toContain(lost);
+					p.dispose();
+				}
+	});
+
+	const note = (p: ComputerPanel) => p.el.querySelector(".machine-screen-control-note")?.textContent ?? "";
+
+	it("tells the member once when sharing ends without their doing while the picture still holds their input, and nothing when they end it (review r5 F2 of #1701)", async () => {
+		const until = () => new Date(Date.now() + 120_000).toISOString();
+		const involuntary: [string, (s: Setup) => void][] = [
+			["an epoch moved on, nothing else", (s) => s.state.epochs.set(machine(1).machineId, 1)],
+			[
+				"another member types privately",
+				(s) => {
+					s.state.machines = [
+						machine(1, {
+							control: { mine: false, name: "Ada", until: until(), epoch: null, seat: null, press: null },
+						}),
+					];
+				},
+			],
+			[
+				"the member types privately in another window",
+				(s) => {
+					s.state.machines = [machine(1, { control: elsewhere() })];
+				},
+			],
+			[
+				"the machine goes to sleep",
+				(s) => {
+					s.state.machines = [machine(1, { state: "stopped" })];
+				},
+			],
+			[
+				"the machine leaves the agent's list",
+				(s) => {
+					s.state.machines = [];
+				},
+			],
+			[
+				"the member becomes a viewer",
+				(s) => {
+					s.state.canTakeOver = false;
+				},
+			],
+		];
+		const held: [string, (p: ComputerPanel) => void][] = [
+			["a text not sent yet", (p) => key(canvas(p), "a")],
+			["a press not let go", (p) => canvas(p).dispatchEvent(pointer("pointerdown", 100, 100))],
+		];
+		for (const [what, end] of involuntary)
+			for (const [kind, hold] of held) {
+				const name = `${what}, ${kind}`;
+				const { s, p } = await shown();
+				press(canvas(p), 400, 250);
+				await flush();
+				hold(p);
+				// The list says so before the picture's batch runs out: no timer fires.
+				end(s);
+				s.hint("machines");
+				await flush();
+				expect.soft(note(p), name).toBe(lost);
+				canvas(p).dispatchEvent(pointer("pointerup", 100, 100));
+				await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+				expect.soft(s.acts, name).toEqual([]);
+				expect.soft(note(p), name).toBe(lost);
+				p.dispose();
+			}
+		// Ended by the member: a switch, Back, Type privately. Nothing is said, and nothing of it goes.
+		const voluntary: [string, (p: ComputerPanel, s: Setup) => Promise<void>][] = [
+			[
+				"a switch",
+				async (p, s) => {
+					s.state.answers.push({ picture: 2 }, { picture: 3 });
+					p.el.querySelector<HTMLButtonElement>(".computer-switcher:not([hidden])")!.click();
+					[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+					await flush();
+				},
+			],
+			[
+				"Back",
+				async (p) => {
+					p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+					await flush();
+				},
+			],
+			[
+				"Type privately",
+				async (p) => {
+					controlButton(p)!.click();
+					await flush();
+				},
+			],
+		];
+		for (const [what, end] of voluntary)
+			for (const [kind, hold] of held) {
+				const name = `${what}, ${kind}`;
+				const s = setup({ machines: [machine(1), machine(2)] });
+				const { p } = await shown(s);
+				press(canvas(p), 400, 250);
+				await flush();
+				hold(p);
+				await end(p, s);
+				canvas(p).dispatchEvent(pointer("pointerup", 100, 100));
+				await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+				expect.soft(note(p), name).toBe("");
+				expect
+					.soft(
+						s.acts.filter((act) => act.action.type === "type"),
+						name,
+					)
+					.toEqual([]);
+				p.dispose();
+			}
 	});
 });
 

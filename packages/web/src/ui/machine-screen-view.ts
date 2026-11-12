@@ -58,10 +58,8 @@ export function machineTexts(text: string): string[] {
 }
 
 /** When the member made an input (review r4 F2 of #1701): the wall clock and the monotonic clock at the event, read
- * there and carried through every buffer here. An action gathered from several events (a text, a wheel burst, a
- * click that waits for its second, a drag) is as old as its first. Both clocks, because neither alone sees every
- * gap: a suspended tab moves both, a sleeping laptop may stop the monotonic clock in some browsers, and a wall clock
- * may be set back. */
+ * there and carried through every buffer here. Both clocks, because neither alone sees every gap: a suspended tab
+ * moves both, a sleeping laptop may stop the monotonic clock in some browsers, and a wall clock may be set back. */
 export interface InputTime {
 	readonly wall: number;
 	readonly mono: number;
@@ -72,10 +70,37 @@ export function inputTime(): InputTime {
 	return { wall: Date.now(), mono: performance.now() };
 }
 
+/** When the parts of one action were made (review r5 F1 of #1701): one event, or several joined (the keys of a text, a
+ * wheel burst, a press and its release, a click and its second, texts joined in a send queue). Joining keeps every
+ * part's verdict: the oldest part by each clock gives its age, the newest by each clock shows a clock gone back since
+ * any part, and the largest wall-minus-monotonic offset shows a wall clock set back since any part even after it came
+ * forward again. So a joined action is too old whenever any of its parts is. */
+export interface InputSpan {
+	readonly oldest: InputTime;
+	readonly newest: InputTime;
+	readonly offset: number;
+}
+
+/** The span of one event made at `time` (now, unless given). */
+export function inputSpan(time: InputTime = inputTime()): InputSpan {
+	return { oldest: time, newest: time, offset: time.wall - time.mono };
+}
+
+/** Two spans as one action's. */
+export function joinInputs(a: InputSpan, b: InputSpan): InputSpan {
+	return {
+		oldest: { wall: Math.min(a.oldest.wall, b.oldest.wall), mono: Math.min(a.oldest.mono, b.oldest.mono) },
+		newest: { wall: Math.max(a.newest.wall, b.newest.wall), mono: Math.max(a.newest.mono, b.newest.mono) },
+		offset: Math.max(a.offset, b.offset),
+	};
+}
+
 /** Where a member's input goes while they hold the desktop: one action at a time, in the screen's own pixels, with
- * when the member made it. */
+ * when the member made its parts. `lost` hears of a press the picture drops unfinished when it is given another input
+ * (review r5 F2 of #1701), so the one who loses it may say so. */
 export interface MachineScreenInput {
-	act(action: MachineDesktopAction, madeAt: InputTime): void;
+	act(action: MachineDesktopAction, made: InputSpan): void;
+	lost?(): void;
 }
 
 /** A decoded picture: what a canvas draws. */
@@ -132,17 +157,17 @@ export class MachineScreenView {
 	readonly #stop = new AbortController();
 	#input: MachineScreenInput | null = null;
 	#inputStop: AbortController | null = null;
-	/** Typed text not sent yet, when its first key was made, and when it goes. */
+	/** Typed text not sent yet, when its keys were made, and when it goes. */
 	#text = "";
-	#textAt: InputTime | undefined;
+	#textAt: InputSpan | undefined;
 	#textTimer: ReturnType<typeof setTimeout> | undefined;
 	/** A single click waiting to see whether a second makes it a double. */
 	#click: {
 		x: number;
 		y: number;
 		at: number;
-		/** When its press was made. */
-		made: InputTime;
+		/** When its press and its release were made. */
+		made: InputSpan;
 		clientX: number;
 		clientY: number;
 		timer: ReturnType<typeof setTimeout>;
@@ -155,10 +180,10 @@ export class MachineScreenView {
 		clientY: number;
 		button: number;
 		moved: boolean;
-		made: InputTime;
+		made: InputSpan;
 	} | null = null;
-	/** A wheel burst: its turns so far, and when the first was made. */
-	#wheel: { delta: number; x: number; y: number; made: InputTime; timer: ReturnType<typeof setTimeout> } | null = null;
+	/** A wheel burst: its turns so far, and when they were made. */
+	#wheel: { delta: number; x: number; y: number; made: InputSpan; timer: ReturnType<typeof setTimeout> } | null = null;
 	#entered = false;
 	#shown = false;
 	/** Each picture's turn: one decoded after a newer one began is dropped. */
@@ -244,7 +269,10 @@ export class MachineScreenView {
 	 * a single click still waiting goes too. */
 	capture(input: MachineScreenInput | null): void {
 		if (input === this.#input) return;
+		// A press not let go yet cannot be finished for the input it began under: it is dropped, and that input hears so.
+		const unfinished = this.#press !== null;
 		this.#flush();
+		if (unfinished) this.#input?.lost?.();
 		this.#inputStop?.abort();
 		this.#inputStop = null;
 		this.#input = input;
@@ -299,8 +327,8 @@ export class MachineScreenView {
 		return { x, y };
 	}
 
-	#act(action: MachineDesktopAction, madeAt: InputTime): void {
-		this.#input?.act(action, madeAt);
+	#act(action: MachineDesktopAction, made: InputSpan): void {
+		this.#input?.act(action, made);
 	}
 
 	#pointerDown(event: PointerEvent): void {
@@ -318,7 +346,7 @@ export class MachineScreenView {
 			clientY: event.clientY,
 			button: event.button,
 			moved: false,
-			made: inputTime(),
+			made: inputSpan(),
 		};
 		try {
 			this.#canvas.setPointerCapture(event.pointerId);
@@ -337,22 +365,21 @@ export class MachineScreenView {
 		const press = this.#press;
 		this.#press = null;
 		if (!press) return;
+		// The action is the press and its release: made over both.
+		const made = joinInputs(press.made, inputSpan());
 		event.stopPropagation();
 		if (press.moved || Math.hypot(event.clientX - press.clientX, event.clientY - press.clientY) > DRAG_PX) {
 			// A drag holds the left button from where it began to where it ends (only within the picture).
 			const to = this.#at(event.clientX, event.clientY);
 			if (press.button === 0 && to) {
 				this.#flush();
-				this.#act({ type: "drag", x: press.x, y: press.y, toX: to.x, toY: to.y }, press.made);
+				this.#act({ type: "drag", x: press.x, y: press.y, toX: to.x, toY: to.y }, made);
 			}
 			return;
 		}
 		if (press.button !== 0) {
 			this.#flush();
-			this.#act(
-				{ type: "click", x: press.x, y: press.y, button: press.button === 2 ? "right" : "middle" },
-				press.made,
-			);
+			this.#act({ type: "click", x: press.x, y: press.y, button: press.button === 2 ? "right" : "middle" }, made);
 			return;
 		}
 		const now = Date.now();
@@ -364,7 +391,8 @@ export class MachineScreenView {
 		) {
 			clearTimeout(click.timer);
 			this.#click = null;
-			this.#act({ type: "double", x: click.x, y: click.y }, click.made);
+			// A double click is both clicks.
+			this.#act({ type: "double", x: click.x, y: click.y }, joinInputs(click.made, made));
 			return;
 		}
 		this.#flush();
@@ -372,7 +400,7 @@ export class MachineScreenView {
 			x: press.x,
 			y: press.y,
 			at: now,
-			made: press.made,
+			made,
 			clientX: event.clientX,
 			clientY: event.clientY,
 			timer: setTimeout(() => this.#flushClick(), DOUBLE_CLICK_MS),
@@ -401,9 +429,10 @@ export class MachineScreenView {
 			this.#wheel.delta += delta;
 			this.#wheel.x = at.x;
 			this.#wheel.y = at.y;
+			this.#wheel.made = joinInputs(this.#wheel.made, inputSpan());
 			return;
 		}
-		this.#wheel = { delta, ...at, made: inputTime(), timer: setTimeout(() => this.#flushWheel(), WHEEL_BATCH_MS) };
+		this.#wheel = { delta, ...at, made: inputSpan(), timer: setTimeout(() => this.#flushWheel(), WHEEL_BATCH_MS) };
 	}
 
 	#flushWheel(): void {
@@ -459,7 +488,7 @@ export class MachineScreenView {
 			alt ? "alt" : null,
 			event.shiftKey && (!printable || command || alt) ? "shift" : null,
 		].filter((part): part is string => part !== null);
-		const made = inputTime();
+		const made = inputSpan();
 		this.#flush();
 		this.#act({ type: "key", keys: [[...modifiers, name].join("+")] }, made);
 	}
@@ -468,10 +497,10 @@ export class MachineScreenView {
 	#typed(text: string): void {
 		const clean = text.replace(CONTROL, "");
 		if (!clean) return;
-		const made = inputTime();
+		const made = inputSpan();
 		this.#flushBesides("text");
-		// The text is as old as its first key.
-		if (!this.#text) this.#textAt = made;
+		// The text is made over all its keys.
+		this.#textAt = this.#text && this.#textAt ? joinInputs(this.#textAt, made) : made;
 		this.#text += clean;
 		clearTimeout(this.#textTimer);
 		if ([...this.#text].length >= TEXT_MAX) this.#flushText();
@@ -494,7 +523,7 @@ export class MachineScreenView {
 		event.preventDefault();
 		event.stopPropagation();
 		if (!text) return;
-		const made = inputTime();
+		const made = inputSpan();
 		this.#flush();
 		for (const part of machineTexts(text)) this.#act({ type: "type", text: part }, made);
 	}

@@ -18,8 +18,10 @@ import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import {
+	type InputSpan,
 	type InputTime,
 	inputTime,
+	joinInputs,
 	type MachineScreenInput,
 	type MachineScreenPicture,
 	MachineScreenView,
@@ -67,6 +69,22 @@ export function inputTooOld(madeAt: InputTime, now: InputTime): boolean {
 		now.mono < madeAt.mono ||
 		now.wall - madeAt.wall > INPUT_MAX_AGE_MS ||
 		now.mono - madeAt.mono > INPUT_MAX_AGE_MS
+	);
+}
+
+/** How far the wall clock may fall behind the monotonic one, against an input's parts, before it counts as set back
+ * (inputSpanTooOld): above the drift of the two clocks over INPUT_MAX_AGE_MS, below any set-back that matters. */
+const CLOCK_SLACK_MS = 1000;
+
+/** Whether an action made of the parts in `made` may no longer be sent (review r5 F1 of #1701): too old whenever ANY
+ * of its parts is (inputTooOld of the oldest and of the newest by each clock), or the wall clock was set back since
+ * any part was made, even if it came forward again since (the wall-minus-monotonic offset fell). Joining two inputs
+ * never makes one that a part of it would not have been. */
+export function inputSpanTooOld(made: InputSpan, now: InputTime): boolean {
+	return (
+		inputTooOld(made.oldest, now) ||
+		inputTooOld(made.newest, now) ||
+		now.wall - now.mono < made.offset - CLOCK_SLACK_MS
 	);
 }
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
@@ -154,16 +172,21 @@ interface SharedInput {
 	readonly queue: QueuedAction[];
 	readonly stop: AbortController;
 	sending: boolean;
+	/** It ended without the member's doing (the predicate turned false: review r5 F2 of #1701), and whether they were told
+	 * that input of it was dropped (once, from its queue or from the picture's buffer); an end they made (a switch, Back,
+	 * Type privately, a close) says nothing. */
+	endedLost: boolean;
+	told: boolean;
 	/** Where the picture gives the input it gathers while this computer is shared: to this computer alone, while this
 	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
 	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
 	readonly input: MachineScreenInput;
 }
 
-/** One input on its way, and when the member made it (INPUT_MAX_AGE_MS: from their event, through every buffer). */
+/** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
 interface QueuedAction {
 	readonly action: MachineDesktopAction;
-	readonly madeAt: InputTime;
+	readonly made: InputSpan;
 }
 
 /** Whether this browser was told once that a member and the agent share a computer (20260930734000). */
@@ -462,10 +485,11 @@ export class ComputerPanel {
 				this.#setExpanded(expanded);
 				// The line that says the computer is shared was said: once is enough (20260930734000).
 				if (!expanded && this.#introShown) this.#introduce = false;
+				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701): the member's own
+				// doing, so nothing is said (review r5 F2), and before the redraw, which would take it for one without it.
+				if (!expanded) this.#endShared();
 				// Input follows the view: the picture takes it only while entered.
 				this.#syncControls();
-				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701).
-				if (!expanded) this.#endShared();
 			},
 			...(options.decode ? { decode: options.decode } : {}),
 		});
@@ -688,8 +712,9 @@ export class ComputerPanel {
 		// (review r2 F4). A take-over still on its way is answered first; what it gets goes back as it comes. As the
 		// company's page goes, the ledger gives everything back itself.
 		this.#wantTakeOver = undefined;
-		this.#released();
+		// The member closes it: shared input goes, unsaid (review r5 F2), before anything redraws.
 		this.#endShared();
+		this.#released();
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
 		this.#stop.abort();
 		this.#poke();
@@ -755,9 +780,11 @@ export class ComputerPanel {
 				// F6, r3 F8, r4 F8).
 				this.#ledger.releaseOthers(this.agentId, machine?.machineId);
 				// Shared input of the last machine's goes no further (20260930734000); the next machine's screen is not seen yet.
+				// A switch of the member's ended it already; a machine gone from the list ends it here, and says so (review r5
+				// F2), as does a word that input was lost before.
 				this.#screenSeen = false;
-				this.#endShared();
-				this.#controlNote.textContent = "";
+				this.#endShared(true);
+				if (!this.#lostShown) this.#controlNote.textContent = "";
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -1023,7 +1050,7 @@ export class ComputerPanel {
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action, madeAt) => this.#enqueue(hold, action, madeAt) },
+			input: { act: (action, made) => this.#enqueue(hold, action, made) },
 		};
 		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
@@ -1100,7 +1127,7 @@ export class ComputerPanel {
 
 	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
 	 * window's, of the computer chosen now (review r2 F1 of #1701). */
-	#enqueue(hold: PageHold, action: MachineDesktopAction, madeAt: InputTime): void {
+	#enqueue(hold: PageHold, action: MachineDesktopAction, made: InputSpan): void {
 		if (
 			this.#hold !== hold ||
 			hold.stop.signal.aborted ||
@@ -1108,21 +1135,31 @@ export class ComputerPanel {
 			this.#pick()?.machineId !== hold.machineId
 		)
 			return;
-		this.#queue(hold, action, madeAt);
+		this.#queue(hold, action, made);
 		void this.#drain(hold);
 	}
 
 	/** One of the member's actions on the desktop they share with the agent (20260930734000), after those on their way:
 	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
 	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
-	#share(shared: SharedInput, action: MachineDesktopAction, madeAt: InputTime): void {
+	#share(shared: SharedInput, action: MachineDesktopAction, made: InputSpan): void {
 		if (this.#shared !== shared || shared.stop.signal.aborted || !this.#sharingOf(shared)) {
-			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701).
+			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701). This
+			// input is dropped with it: said when the member did not end it (review r5 F2).
 			if (this.#shared === shared) this.#endShared(true);
+			this.#toldLost(shared);
 			return;
 		}
-		this.#queue(shared, action, madeAt);
+		this.#queue(shared, action, made);
 		void this.#drain(shared);
+	}
+
+	/** Input of a sharing that ended without the member's doing was dropped: they are told, once (review r5 F2 of #1701). */
+	#toldLost(shared: SharedInput): void {
+		if (!shared.endedLost || shared.told) return;
+		shared.told = true;
+		this.#lostShown = true;
+		this.#controlNote.textContent = t("Your last input did not go through. Try again.");
 	}
 
 	/** The sharing of `machineId`, begun now unless it is on (its picture input is new then). */
@@ -1136,7 +1173,13 @@ export class ComputerPanel {
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action, madeAt) => this.#share(shared, action, madeAt) },
+			endedLost: false,
+			told: false,
+			input: {
+				act: (action, made) => this.#share(shared, action, made),
+				// A press the picture dropped unfinished as this sharing ended.
+				lost: () => this.#toldLost(shared),
+			},
 		};
 		this.#shared = shared;
 		return shared;
@@ -1144,7 +1187,7 @@ export class ComputerPanel {
 
 	/** The action joins its queue; texts typed one after another, not sent yet, go as one. A new input ends the word that
 	 * an earlier one did not go through. */
-	#queue(sender: PageHold | SharedInput, action: MachineDesktopAction, madeAt: InputTime): void {
+	#queue(sender: PageHold | SharedInput, action: MachineDesktopAction, made: InputSpan): void {
 		const last = sender.queue.at(-1);
 		if (
 			last?.action.type === "type" &&
@@ -1152,15 +1195,12 @@ export class ComputerPanel {
 			sender.queue.length > (sender.sending ? 1 : 0) &&
 			[...last.action.text].length + [...action.text].length <= TEXT_MAX
 		)
-			// The joined text is as old as its oldest part, by each clock.
+			// The joined text keeps every part's verdict (review r5 F1 of #1701): too old whenever any part is.
 			sender.queue[sender.queue.length - 1] = {
 				action: { type: "type", text: last.action.text + action.text },
-				madeAt: {
-					wall: Math.min(last.madeAt.wall, madeAt.wall),
-					mono: Math.min(last.madeAt.mono, madeAt.mono),
-				},
+				made: joinInputs(last.made, made),
 			};
-		else sender.queue.push({ action, madeAt });
+		else sender.queue.push({ action, made });
 		if (this.#lostShown) {
 			this.#lostShown = false;
 			this.#controlNote.textContent = "";
@@ -1175,10 +1215,9 @@ export class ComputerPanel {
 		const shared = this.#shared;
 		this.#shared = undefined;
 		if (!shared) return;
-		if (lost && shared.queue.length > 0) {
-			this.#lostShown = true;
-			this.#controlNote.textContent = t("Your last input did not go through. Try again.");
-		}
+		shared.endedLost = lost;
+		// Input waiting in its queue is said lost now; input the picture still holds for it, when the picture hands it over.
+		if (shared.queue.length > 0) this.#toldLost(shared);
 		shared.stop.abort();
 		shared.queue.length = 0;
 	}
@@ -1302,7 +1341,7 @@ export class ComputerPanel {
 				}
 				const item = sender.queue[0] as QueuedAction;
 				const now = inputTime();
-				if (inputTooOld(item.madeAt, now)) {
+				if (inputSpanTooOld(item.made, now)) {
 					drop(t("Your last input did not go through. Try again."));
 					return;
 				}
@@ -1310,8 +1349,8 @@ export class ComputerPanel {
 				// meanwhile (a private hold taken and given back, in any window of the member's) is seen first (review r4 F1).
 				const waited =
 					busySince !== undefined ||
-					now.wall - item.madeAt.wall > BUSY_RETRY_MS ||
-					now.mono - item.madeAt.mono > BUSY_RETRY_MS;
+					now.wall - item.made.oldest.wall > BUSY_RETRY_MS ||
+					now.mono - item.made.oldest.mono > BUSY_RETRY_MS;
 				if (shared && waited && observed !== item) {
 					const fresh = await this.#freshList(sender.stop.signal);
 					if (!current()) continue;
@@ -1491,6 +1530,9 @@ export class ComputerPanel {
 						: null
 				: null,
 		);
+		// Handing the picture another input can drop input it held for a sharing that ended without the member's doing, which
+		// says so (review r5 F2 of #1701): the note shows at once.
+		if (!note && this.#controlNote.textContent !== "") this.#controls.hidden = !picture;
 		if (entering) this.#view?.focusScreen();
 	}
 
