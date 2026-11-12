@@ -50,7 +50,7 @@ const REPOSITORY = { owner: "Acme", name: "Shop" };
 const GITHUB_TOKEN = "gho_fetchCANARY0123456789abcdef";
 const BASIC = `Basic ${Buffer.from(`x-access-token:${GITHUB_TOKEN}`).toString("base64")}`;
 const CANARY = "remote-words-CANARY-91c2";
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const hashOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 const keyrings: CloudSecretKeyring[] = [];
 const services: HttpCloudSecretBrokerService[] = [];
@@ -203,7 +203,7 @@ async function vault(source: { port: number }, options: { proxyPort?: (brokerPor
 			connectorId: "github",
 			credentialName: "access_token",
 			encryptedEnvelopeBase64: envelope.toString("base64"),
-			envelopeSha256: sha256(envelope),
+			envelopeSha256: hashOf(envelope),
 			workerId: request.workerId,
 			repository: { host: "github.com", owner: "Acme", name: "Shop", baseBranch: "main" },
 		};
@@ -334,7 +334,7 @@ describe("an import through the company's GitHub connection (BrokerRepositoryFet
 		const sink = memory();
 		const fetched = await fetchOf(transport, sink);
 		await proveBundle(sink.bytes());
-		expect(sha256(sink.bytes())).toBe(fetched.sha256);
+		expect(hashOf(sink.bytes())).toBe(fetched.sha256);
 
 		const company = f.companyId.toLowerCase();
 		const headers = {

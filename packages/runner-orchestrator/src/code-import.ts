@@ -2,6 +2,7 @@ import {
 	type CloudCodingRepository,
 	folderKey,
 	isUuid,
+	parseClosedRecord,
 	parseCloudCodingRepository,
 	SHA256_HEX_PATTERN,
 } from "@qorpera/contracts";
@@ -1511,23 +1512,19 @@ export function codeImportLook(facts: CodeImportLookFacts): CodeImportLook {
 	return codeImportLookOf(look);
 }
 
-/** A record with exactly these keys (`optional` may be missing), else `error`. */
-function record<R extends string, O extends string = never>(
+/** A record with exactly these keys (`optional` may be missing), else `error`: the shared wire check, with this
+ * module's own error in the place of its message. */
+function closed<R extends string, O extends string = never>(
 	value: unknown,
 	required: readonly R[],
 	optional: readonly O[],
 	error: string,
 ): Record<R, unknown> & Partial<Record<O, unknown>> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
-	const keys = Object.keys(value);
-	if (
-		!required.every((key) => Object.hasOwn(value, key)) ||
-		!keys.every(
-			(key) => (required as readonly string[]).includes(key) || (optional as readonly string[]).includes(key),
-		)
-	)
+	try {
+		return parseClosedRecord(value, error, required, optional) as Record<R, unknown> & Partial<Record<O, unknown>>;
+	} catch {
 		throw new Error(error);
-	return value as Record<R, unknown> & Partial<Record<O, unknown>>;
+	}
 }
 
 const time = (value: unknown) =>
@@ -1540,7 +1537,7 @@ const shownOrNull = (value: unknown) =>
  * Anything else: `INVALID_CODE_IMPORT_LOOK`. */
 export function codeImportLookOf(value: unknown): CodeImportLook {
 	const fail = "INVALID_CODE_IMPORT_LOOK";
-	const look = record(
+	const look = closed(
 		value,
 		[
 			"schema",
@@ -1568,14 +1565,14 @@ export function codeImportLookOf(value: unknown): CodeImportLook {
 		fail,
 	);
 	const pair = (item: unknown, cap: number) => {
-		const { seen, kept } = record(item, ["seen", "kept"], [], fail);
+		const { seen, kept } = closed(item, ["seen", "kept"], [], fail);
 		return whole(seen) && whole(kept) && kept <= seen && kept <= cap;
 	};
-	const biggest = record(look.biggest, ["path", "bytes"], [], fail),
-		lfs = record(look.lfs, ["pointers"], [], fail),
-		turnedDown = record(look.refused, ["code", "paths", "more"], [], fail),
-		secrets = record(look.secrets, ["found", "shown", "scan"], [], fail),
-		scan = record(secrets.scan, ["blobs", "bytes", "all"], [], fail);
+	const biggest = closed(look.biggest, ["path", "bytes"], [], fail),
+		lfs = closed(look.lfs, ["pointers"], [], fail),
+		turnedDown = closed(look.refused, ["code", "paths", "more"], [], fail),
+		secrets = closed(look.secrets, ["found", "shown", "scan"], [], fail),
+		scan = closed(secrets.scan, ["blobs", "bytes", "all"], [], fail);
 	const shown = secrets.shown,
 		paths = turnedDown.paths;
 	if (
@@ -1612,7 +1609,7 @@ export function codeImportLookOf(value: unknown): CodeImportLook {
 		shown.length > CODE_IMPORT_LOOK_SHOWN ||
 		shown.length > secrets.found ||
 		!shown.every((hit) => {
-			const { kind, path, inMain } = record(hit, ["kind", "path", "inMain"], [], fail);
+			const { kind, path, inMain } = closed(hit, ["kind", "path", "inMain"], [], fail);
 			return (
 				(CODE_IMPORT_KEY_KINDS as readonly unknown[]).includes(kind) &&
 				shownOrNull(path) &&
@@ -1690,8 +1687,8 @@ export function codeImportGitHubOf(value: string): { owner: string; name: string
 
 export function codeImportInputOf(value: unknown): CodeImportInput {
 	const fail = "INVALID_CODE_IMPORT_INPUT";
-	const input = record(value, ["from", "via", "look", "maximumBytes"], ["fileSha256"], fail);
-	const from = record(input.from, [], ["github", "file", "branch"], fail);
+	const input = closed(value, ["from", "via", "look", "maximumBytes"], ["fileSha256"], fail);
+	const from = closed(input.from, [], ["github", "file", "branch"], fail);
 	const { via, look, maximumBytes, fileSha256 } = input;
 	const branch = from.branch;
 	// A branch that looks like a key is taken here and refused by the fetch or the read (`IMPORT_BRANCH_NAME`), in words.
@@ -1776,7 +1773,7 @@ const PROGRESS_OWN = ["step", "raw", "kept", "at", "setAside", "built", "relayRe
 const SET_ASIDE = /^code\/_set-aside\/./;
 
 function rawOf(value: unknown, fail: string): CodeImportRaw {
-	const raw = record(value, ["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"], [], fail);
+	const raw = closed(value, ["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"], [], fail);
 	if (
 		typeof raw.name !== "string" ||
 		!CODE_IMPORT_BUNDLE_NAME.test(raw.name) ||
@@ -1804,7 +1801,7 @@ function rawOf(value: unknown, fail: string): CodeImportRaw {
 }
 
 function keptOf(value: unknown, fail: string): CodeImportKept {
-	const kept = record(value, ["name", "sha256", "bytes", "refsSha256", "mainSha", "refs"], [], fail);
+	const kept = closed(value, ["name", "sha256", "bytes", "refsSha256", "mainSha", "refs"], [], fail);
 	if (
 		typeof kept.name !== "string" ||
 		!CODE_BUNDLE_NAME.test(kept.name) ||
@@ -1834,7 +1831,7 @@ function keptOf(value: unknown, fail: string): CodeImportKept {
 export function codeImportProgressOf(value: unknown): CodeImportProgress {
 	const fail = "INVALID_CODE_IMPORT_PROGRESS";
 	if (value === null || value === undefined) return {};
-	const input = record(value, [], [...PROGRESS_OWN, "recorded", "waiting"], fail);
+	const input = closed(value, [], [...PROGRESS_OWN, "recorded", "waiting"], fail);
 	const progress: Record<string, unknown> = {};
 	if (input.step !== undefined) {
 		if (!(CODE_IMPORT_STEPS as readonly unknown[]).includes(input.step)) throw new Error(fail);
@@ -1861,7 +1858,7 @@ export function codeImportProgressOf(value: unknown): CodeImportProgress {
 		progress.relayRefused = input.relayRefused;
 	}
 	if (input.recorded !== undefined) {
-		const recorded = record(input.recorded, ["change", "bundle", "mainSha"], [], fail);
+		const recorded = closed(input.recorded, ["change", "bundle", "mainSha"], [], fail);
 		if (
 			recorded.change !== 1 ||
 			typeof recorded.bundle !== "string" ||
@@ -1915,7 +1912,7 @@ export interface CodeImportRequest {
  * Anything else: `INVALID_CODE_IMPORT_REQUEST` (or its input's, progress's or look's own code). */
 export function codeImportRequestOf(value: unknown): CodeImportRequest {
 	const fail = "INVALID_CODE_IMPORT_REQUEST";
-	const entry = record(
+	const entry = closed(
 		value,
 		[
 			"requestId",
@@ -1987,7 +1984,7 @@ export type CodeImportOutcome = { readonly schema: "qorpera.code-request-outcome
 export function codeImportOutcomeOf(value: unknown): CodeImportOutcome {
 	const fail = "INVALID_CODE_IMPORT_OUTCOME";
 	const schema = "qorpera.code-request-outcome/v1";
-	const head = record(
+	const head = closed(
 		value,
 		["schema", "state"],
 		["result", "change", "mainSha", "bundle", "rawBundle", "setAside", "code"],
@@ -1995,21 +1992,21 @@ export function codeImportOutcomeOf(value: unknown): CodeImportOutcome {
 	);
 	if (head.schema !== schema) throw new Error(fail);
 	if (head.state === "busy") {
-		record(value, ["schema", "state"], [], fail);
+		closed(value, ["schema", "state"], [], fail);
 		return { schema, state: "busy" };
 	}
 	if (head.state === "refused" || head.state === "failed") {
-		const { code } = record(value, ["schema", "state", "code"], [], fail);
+		const { code } = closed(value, ["schema", "state", "code"], [], fail);
 		const pattern = head.state === "refused" ? CODE_IMPORT_REFUSED_CODE : CODE_IMPORT_FAILED_CODE;
 		if (typeof code !== "string" || !pattern.test(code)) throw new Error(fail);
 		return { schema, state: head.state, code };
 	}
 	if (head.state !== "done") throw new Error(fail);
 	if (head.result === "looked") {
-		record(value, ["schema", "state", "result"], [], fail);
+		closed(value, ["schema", "state", "result"], [], fail);
 		return { schema, state: "done", result: "looked" };
 	}
-	const done = record(
+	const done = closed(
 		value,
 		["schema", "state", "result", "change", "mainSha", "bundle", "rawBundle", "setAside"],
 		[],
@@ -2051,7 +2048,7 @@ export interface CodeImportRecord {
 	readonly files: number;
 }
 export function codeImportRecord(value: { bundle: string; mainSha: string; files: number }): CodeImportRecord {
-	const { bundle, mainSha, files } = record(value, ["bundle", "mainSha", "files"], [], "INVALID_CODE_IMPORT_RECORD");
+	const { bundle, mainSha, files } = closed(value, ["bundle", "mainSha", "files"], [], "INVALID_CODE_IMPORT_RECORD");
 	if (
 		typeof bundle !== "string" ||
 		!CODE_BUNDLE_NAME.test(bundle) ||
