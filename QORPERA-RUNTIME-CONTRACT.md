@@ -6420,7 +6420,9 @@ each step. It now leaves the envelope.
      gateways, and an executor's gateways to its peers, learn it per executor from each answer;
    - a company machine's guest helper says `pageBytes` in its answer to the boot's claim (`prepare`), which the
      executor keeps per placement; the coding image's helper (the NAS model) is asked for 16,384.
-   - A smaller page than asked answers a read as well, so old and new parts work in any order.
+   - A smaller page than asked answers a read as well, so old and new parts work in any order. An executor that stops
+     saying what it takes (one rolled back under a running runtime) refuses a larger read once, without the header:
+     the gateway asks that read once more, in the same call, for what the executor takes now.
 4. **What the provider sees.** The descriptions of `machine_run`, `machine_read`, `coding_run_command` and
    `coding_read_command`, and the two read tools' `limit` maximum (32,768). Nothing else.
 

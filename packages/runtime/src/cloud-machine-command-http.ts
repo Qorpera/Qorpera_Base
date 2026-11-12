@@ -746,7 +746,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const transport = options.fetch ?? fetch;
 	const pages = options.pages ?? new CloudCommandPages();
-	const request = async (
+	const send = async (
 		action: "start" | "read" | "cancel",
 		scope: CloudMachineCommandScope,
 		input: unknown,
@@ -814,6 +814,36 @@ export function createHttpCloudMachineCommandGateway(options: {
 			if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
 				throw new CloudMachineCommandUnanswered();
 			throw error instanceof Error && /^[A-Z][A-Z0-9_]{2,60}$/.test(error.message) ? error : new Error(ERROR);
+		}
+	};
+	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. */
+	const request = async (
+		action: "start" | "read" | "cancel",
+		scope: CloudMachineCommandScope,
+		input: unknown,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> => {
+		// What a read may ask the executor for now; nothing for any other call, or a read that does not parse (`send`
+		// refuses it).
+		const limit = (): number => {
+			try {
+				return action === "read" ? Math.min(parseCloudCodingCommandRead(input).limit ?? 4096, pages.of(base)) : 0;
+			} catch {
+				return 0;
+			}
+		};
+		const asked = limit();
+		try {
+			return await send(action, scope, input, signal);
+		} catch (error) {
+			if (
+				error instanceof CloudMachineCommandRefusal ||
+				error instanceof CloudMachineCommandUnanswered ||
+				limit() >= asked
+			)
+				throw error;
+			return send(action, scope, input, signal);
 		}
 	};
 	return Object.freeze<CloudMachineCommandGateway>({

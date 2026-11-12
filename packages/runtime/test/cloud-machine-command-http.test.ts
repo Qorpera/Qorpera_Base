@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CODING_CONTROL_METHODS } from "../../../deploy/coding-worker/control.ts";
@@ -187,6 +188,62 @@ describe("machine command gateway", () => {
 		]);
 		// An executor's own gateway to a peer learns the same way (MachineCommandRouter keeps one memory for its peers).
 		expect(pages.of(url)).toBe(65536);
+	});
+
+	it("asks a read once more, for what the executor takes, when it stopped saying so under this process", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID(),
+			commandId = randomUUID(),
+			inputSha256 = "a".repeat(64),
+			stopped = randomUUID();
+		const limits: unknown[] = [];
+		// This tree's executor first; then one from before keyholes S1 behind the same origin (rolled back): it refuses a
+		// page past 16,384 (403) and answers without the header. A refusal of a machine that stopped (409) stands.
+		let rolledBack = false;
+		const token = randomBytes(32).toString("base64url");
+		const executor = createServer(async (request, reply) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(chunk as Buffer);
+			const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+			limits.push(body.input.limit);
+			const said = rolledBack ? {} : { "x-qorpera-command-page-bytes": "65536" };
+			const [status, answer] =
+				body.scope.machineId === stopped
+					? [409, { code: "MACHINE_NOT_RUNNING" }]
+					: rolledBack && body.input.limit > 16384
+						? [403, { error: "coding_command_unavailable" }]
+						: [200, receiptFor(machineId, commandId, inputSha256)];
+			reply.writeHead(status, { "content-type": "application/json", ...said });
+			reply.end(JSON.stringify(answer));
+		});
+		await new Promise<void>((resolve) => executor.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise((resolve) => executor.close(() => resolve())));
+		const address = executor.address();
+		if (!address || typeof address === "string") throw new Error("no address");
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: `http://127.0.0.1:${address.port}`,
+			token,
+			binding,
+			holder: null,
+			allowLoopback: true,
+			pages: new CloudCommandPages(),
+		});
+		const signal = new AbortController().signal;
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		rolledBack = true;
+		await expect(
+			gateway.read({ machineId: stopped }, { commandId, offset: 0, limit: 31968 }, signal),
+		).rejects.toThrow("MACHINE_NOT_RUNNING");
+		// The 409 above said nothing: the executor takes the legacy page from now on, and is asked for it.
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		expect(limits).toEqual([16384, 31968, 16384]);
+		rolledBack = false;
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		rolledBack = true;
+		await expect(gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal)).resolves.toMatchObject({
+			commandId,
+		});
+		expect(limits).toEqual([16384, 31968, 16384, 16384, 31968, 16384]);
 	});
 
 	it("tells the agent a machine is not running by its code, and hides every other failure", async () => {

@@ -191,6 +191,46 @@ describe("isolated coding command HTTP gateway", () => {
 			{ commandId: f.input.commandId, offset: 0, limit: 16384 },
 		]);
 	});
+	it("asks a read once more, for what the executor takes, when it stopped saying so under this process", async () => {
+		const f = await fixture();
+		const bodies: { input: { limit?: number } }[] = [];
+		// This tree's executor first; then one from before keyholes S1 behind the same origin (rolled back): it refuses a
+		// page past 16,384 (403) and answers without the header. A 403 of this tree's executor says what it takes.
+		let rolledBack = false;
+		const refusedId = randomUUID();
+		const executor = createServer(async (request, reply) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(chunk as Buffer);
+			const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+			bodies.push(body);
+			const said = rolledBack ? {} : { [CLOUD_COMMAND_PAGE_HEADER]: "65536" };
+			const refused = (rolledBack && body.input.limit > 16384) || body.input.commandId === refusedId;
+			reply.writeHead(refused ? 403 : 200, { "content-type": "application/json", ...said });
+			reply.end(JSON.stringify(refused ? { error: "coding_command_unavailable" } : f.receipt));
+		});
+		await new Promise<void>((resolve) => executor.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise((resolve) => executor.close(() => resolve())));
+		const address = executor.address();
+		if (!address || typeof address === "string") throw new Error("no address");
+		const client = createHttpCloudCodingCommandGateway({
+			url: `http://127.0.0.1:${address.port}`,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages: new CloudCommandPages(),
+		});
+		const signal = new AbortController().signal;
+		const commandId = f.input.commandId;
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		// A refusal from an executor that says what it takes stands: no second ask.
+		await expect(client.read(f.scope, { commandId: refusedId, limit: 32768 }, signal)).rejects.toThrow();
+		rolledBack = true;
+		await expect(client.read(f.scope, { commandId, limit: 32768 }, signal)).resolves.toEqual(f.receipt);
+		expect(bodies.map((body) => body.input.limit)).toEqual([16384, 32768, 32768, 32768, 16384]);
+	});
 	it("transports bounded tail requests and rejects ambiguous page cursors before authority", async () => {
 		const f = await fixture();
 		await f.client.read(

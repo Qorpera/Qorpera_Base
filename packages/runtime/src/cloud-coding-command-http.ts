@@ -181,7 +181,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 	const holder = options.holder;
 	const transport = options.fetch ?? fetch;
 	const pages = options.pages ?? new CloudCommandPages();
-	const request = async (
+	const send = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
 		input: CommandInput | CloudCodingCommandRead,
@@ -240,6 +240,31 @@ export function createHttpCloudCodingCommandGateway(options: {
 			);
 		} catch {
 			throw new Error(ERROR);
+		}
+	};
+	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. */
+	const request = async (
+		action: "start" | "read" | "cancel",
+		admittedScope: CloudCodingCommandScope,
+		input: CommandInput | CloudCodingCommandRead,
+		signal: AbortSignal,
+	): Promise<unknown> => {
+		// What a read may ask the executor for now; nothing for any other call, or a read that does not parse (`send`
+		// refuses it).
+		const limit = (): number => {
+			try {
+				return action === "read" ? Math.min(parseCloudCodingCommandRead(input).limit ?? 4096, pages.of(origin)) : 0;
+			} catch {
+				return 0;
+			}
+		};
+		const asked = limit();
+		try {
+			return await send(action, admittedScope, input, signal);
+		} catch (error) {
+			if (limit() >= asked) throw error;
+			return send(action, admittedScope, input, signal);
 		}
 	};
 	return Object.freeze<CloudCodingCommandGateway>({
