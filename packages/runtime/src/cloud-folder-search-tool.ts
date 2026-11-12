@@ -14,6 +14,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
@@ -915,7 +916,12 @@ export function cloudFolderSearchTool(options: {
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			const text = folderSearchText(page, (cursor, carried) => search.seal(cursor, asked, carried));
+			// The text as the model is shown it: the boundary cuts a secret out of every answer (a line of a file may hold a
+			// token), so the release is under the hash of the text after that cut, which is what the context view cites.
+			// The cut only shortens, so the fitted text still fits.
+			const text = redactCloudWebhookSecrets(
+				folderSearchText(page, (cursor, carried) => search.seal(cursor, asked, carried)),
+			);
 			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
 			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");

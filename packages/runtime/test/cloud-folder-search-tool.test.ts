@@ -15,6 +15,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	CloudToolRefusal,
+	redactCloudWebhookSecrets,
 } from "../src/cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "../src/cloud-worker-tools.ts";
 
@@ -211,6 +212,32 @@ describe("company_search", () => {
 		expect(none.value).toBe("No matches here.\n\n0 files searched. Nothing more.");
 		expect(none.companyReadId).toBeUndefined();
 		expect(quiet.releases).toEqual([]);
+	});
+
+	it("releases an answer with a token in a line under the hash of the text the boundary shows, the token cut out", async () => {
+		const token = `ghp_${"A".repeat(36)}`;
+		const n = await node(() =>
+			found({
+				hits: [hit("ops/deploy.md", 2, `the deploy token is ${token}`)],
+				searched: 1,
+				reads: [read("ops/deploy.md")],
+			}),
+		);
+		const { client, releases } = folder();
+		const search = tool(n.path, client);
+		const content = await search.execute(search.parseArguments({ query: "deploy token" }), context());
+		expect(content.value).toBe(
+			"ops/deploy.md:2: the deploy token is ghp_[REDACTED]\n\n1 file searched. Nothing more.",
+		);
+		// The boundary cuts it again (a no-op) and hashes what it shows: the context view cites that hash, which must be
+		// the release's (qorpera_folder_record_context_view refuses any other).
+		expect(redactCloudWebhookSecrets(content.value as string)).toBe(content.value);
+		expect(releases[0]!.sha).toBe(
+			createHash("sha256")
+				.update(content.value as string)
+				.digest("hex"),
+		);
+		expect(content.companyReadId).toBe(releases[0]!.id);
 	});
 
 	it("shows a link found by its name with what it names, exactly, and releases the link's read with the page", async () => {
