@@ -331,9 +331,14 @@ web does not already answer. What the kit adds is that the agent writes one file
   links to `.html` files (a plain page, no manifest), never an app. It keeps a header (the emblem, the name, who made
   it and the password line, Reload, Show in Storage, Close); Escape (in the panel or in the page) closes it. At phone
   width it covers the thread, with Close.
-- **Chat card.** A link `app:<name>` in an agent's message draws as a card in the bubble (emblem, title, about,
-  "App · opens on its own page"), which opens the app's page; once the company's apps are read, the card shows the
-  app's own emblem and line. Wall posters and choice cards draw the same card.
+- **Chat card.** A link `app:<name>` in an agent's message draws as a card that opens the app's page. A message's
+  cards stand in a row of their own under the words' bubble, on the thread and not in the bubble; a sentence that
+  names an app keeps its words, with the name as a link in the words' colour, and gets one card for the app however
+  often it names it. A card in a list's item or a table's cell stays where it is, in the bubble. The card shows an
+  emblem, the title, one line under it and a chevron: drawn plain it has a page's emblem and "App"; once the
+  company's apps are read it shows the app as the drawer does (the member's own icon and colour for it, or its
+  group's colour; an app that is not in the drawer as its manifest says) and the app's `about` in one line, whole
+  on a hover, or "App" where it has none. Wall posters and choice cards draw the same card.
 - **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
