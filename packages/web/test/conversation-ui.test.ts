@@ -234,6 +234,39 @@ describe("conversation UI boundaries", () => {
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("draws a note sent from an app's page as the app's card, with what it is about, above the member's words", () => {
+		const f = setup();
+		const note: TranscriptMessage = {
+			kind: "member",
+			id: id(85),
+			sequence: 1,
+			text: "> app:orders-board#1043 · Lund, A\n\nGet a quote from this one.\nBy Friday.",
+			attachmentCount: 0,
+			authorUserId: userA.id,
+			createdAt: timestamp,
+		};
+		const wall: TranscriptMessage = { ...note, id: id(86), sequence: 2, text: "> Who first?\n\nYoung couples." };
+		f.company
+			.conversation(session.sessionId)
+			.set({ projection: { items: [note, wall], hiddenCount: 0, lastSequence: 2 } });
+		f.view.update();
+		const [sent, answer] = f.view.el.querySelectorAll<HTMLElement>(".message.mine");
+		// The card stands on the thread as a part of its own, above the bubble with the member's words.
+		const parts = [...(sent?.querySelectorAll(":scope > .bubble") ?? [])];
+		expect(parts.map((part) => part.firstElementChild?.className)).toEqual(["app-cards", "text"]);
+		const card = parts[0]?.querySelector<HTMLButtonElement>(".app-cards > button.app-card.is-note");
+		expect(card?.dataset.appName).toBe("orders-board");
+		expect(card?.title).toBe("Open orders-board");
+		expect(card?.querySelector(".app-card-title")?.textContent).toBe("orders-board");
+		expect(card?.querySelector(".app-card-note")?.textContent).toBe("Lund, A");
+		expect(parts[1]?.textContent).toBe("Get a quote from this one.\nBy Friday.");
+		expect(sent?.querySelector(".message-reply")).toBeNull();
+		// A press on it opens the app's own page, as any app's card does (test/application-lifecycle.test.ts).
+		// An answer to a question on the wall is drawn as before.
+		expect(answer?.querySelectorAll(":scope > .bubble")).toHaveLength(1);
+		expect(answer?.querySelector(".message-reply")?.textContent).toBe("Who first?");
+		expect(answer?.querySelector(".app-card")).toBeNull();
+	});
 	it("draws an erased message as (erased), also in place of one already drawn", () => {
 		const f = setup();
 		const member: TranscriptMessage = {

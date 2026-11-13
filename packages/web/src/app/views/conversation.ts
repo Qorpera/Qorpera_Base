@@ -19,7 +19,7 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
-import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
+import { appNoteHeader, replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
@@ -50,7 +50,7 @@ import {
 	renderInterfaceChangeLine,
 } from "../../ui/interface-change-line.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { markdownBubbles } from "../../ui/markdown.ts";
+import { appCard, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
@@ -1864,18 +1864,29 @@ export class ConversationView {
 		];
 	}
 
-	/** A member's message; one that answers a question from the wall shows the question above the member's words. */
-	#memberBody(text: string, quotes: readonly MessageQuote[] = []): HTMLElement {
+	/** A member's message; one that answers a question from the wall shows the question above the member's words. A note
+	 * sent from an app's page (RUNTIME-INTERFACE-APPS.md §5 "tell") opens with the app's card instead, with what the note
+	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
+	 * press on it opens the app. */
+	#memberParts(text: string, quotes: readonly MessageQuote[] = []): HTMLElement[] {
 		const reply = splitReply(text);
-		if (!reply) return h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]));
+		if (!reply) return [h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]))];
 		const shift = [...text.slice(0, reply.start)].length;
 		const own = quotes.map((quote) => ({ ...quote, start: quote.start - shift, end: quote.end - shift }));
-		return h(
-			"div",
-			{ class: "text" },
-			h("span", { class: "message-reply" }, reply.question),
-			...this.#withMentions(reply.text, own),
-		);
+		const note = appNoteHeader(reply.question);
+		if (note)
+			return [
+				h("div", { class: "app-cards" }, appCard(note.app, note.app, note.about)),
+				...(reply.text ? [h("div", { class: "text" }, ...this.#withMentions(reply.text, own))] : []),
+			];
+		return [
+			h(
+				"div",
+				{ class: "text" },
+				h("span", { class: "message-reply" }, reply.question),
+				...this.#withMentions(reply.text, own),
+			),
+		];
 	}
 
 	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
@@ -3346,7 +3357,7 @@ export class ConversationView {
 					: item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [this.#memberBody(item.text, item.quotes)]
+							? this.#memberParts(item.text, item.quotes)
 							: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.

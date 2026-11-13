@@ -35,6 +35,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
+import type { AppTellSource } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -54,6 +55,7 @@ import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
+import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
@@ -322,7 +324,8 @@ export function mountApplication(
 	root.addEventListener("click", onFolderLink);
 	// An app's card in a message names it by its folder; once the company's apps are read it shows the app as the drawer
 	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
-	// hover (ui/markdown.ts draws the card plain, as it has no company).
+	// hover (ui/markdown.ts draws the card plain, as it has no company). The card a note from an app opens with keeps
+	// what the note is about as its line, and takes the app's own name as its title.
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
 		if (!company || !apps) return;
@@ -331,12 +334,17 @@ export function mountApplication(
 			const look = app && appLook(company, app);
 			if (!app?.manifest || !look) continue;
 			const about = app.manifest.about ?? "";
-			const shown = JSON.stringify([look.key, about]);
+			const shown = JSON.stringify([look.key, about, app.manifest.name]);
 			if (card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
 			card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
 			if (look.colour) card.style.setProperty("--app-colour", look.colour);
 			else card.style.removeProperty("--app-colour");
+			if (card.classList.contains("is-note")) {
+				const title = card.querySelector<HTMLElement>(".app-card-title");
+				if (title) title.textContent = app.manifest.name;
+				continue;
+			}
 			const note = card.querySelector<HTMLElement>(".app-card-note");
 			if (!note) continue;
 			note.textContent = about || t("App");
@@ -698,7 +706,10 @@ export function mountApplication(
 								route.profileId !== profile.profileId ||
 								!(
 									(route.section === "chat" && route.id === target) ||
-									(route.section === "new" && startingSession?.sessionId === target)
+									(route.section === "new" && startingSession?.sessionId === target) ||
+									// A note the member sent from elsewhere in the company (an app's page, the Mailbox), on its way:
+									// their press on the bar that named the agent stands for the thread on screen (app/tell-agent.ts).
+									controller.noteOnItsWay(target)
 								)
 							)
 								throw new Error(t("Company access is unavailable."));
@@ -1106,6 +1117,29 @@ export function mountApplication(
 					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
 			};
 		};
+		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
+		// "tell"), written by the member on the bar: their own message in that agent's thread, or the Co-Founder's, on
+		// their own model account for the thread, chosen as the thread chooses it (app/tell-agent.ts).
+		const appNotes = (): AppTellSource => {
+			let accounts: TellAccounts | undefined;
+			return {
+				receiver: (owner) => {
+					const found = noteReceiver(controller, owner);
+					return "agent" in found ? { agentId: found.agent.id } : found;
+				},
+				agent: (agentId) => controller.staffById(agentId),
+				send: (agentId, text) => {
+					accounts ??= createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					);
+					return tellAgent(controller, accounts, agentId, { text, quotes: [] });
+				},
+			};
+		};
 		const panelHost = (beside: boolean): AppPanelHost => ({
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
@@ -1137,6 +1171,7 @@ export function mountApplication(
 			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
 			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
 			current: companyCurrent,
+			tell: appNotes(),
 		});
 		sidePanel = (target) =>
 			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });

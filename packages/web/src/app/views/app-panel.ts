@@ -30,9 +30,9 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
- * - An app's page may ask the member to change something (an answer to such a question, a row of a table): Qorpera
- *   puts each request to the member on a bar above the frame (views/app-ask-bar.ts), and nothing changes without their
- *   yes there. The member's Reload lets an app that was told not now three times ask again. What a page may read and
+ * - An app's page may ask the member to change something (an answer to such a question, a row of a table), or to send
+ *   the agent that owns it a note: Qorpera puts each request to the member on a bar above the frame
+ *   (views/app-ask-bar.ts), and nothing changes or goes without their yes there. The member's Reload lets an app that was told not now three times ask again. What a page may read and
  *   ask for is what its manifest says now, also when the manifest changes under a page that stays as it is; a request
  *   made under an earlier manifest, or by a page since put away, is refused before anything is shown.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
@@ -198,7 +198,7 @@ export class AppPanel {
 			// Above the frame and outside it, in every placement: the bar pushes the page down, and is never over it.
 			this.#ask = new AppAskBar({
 				emblem: () => interfaceEmblem(this.#emblemName, 22),
-				agent: (agentId) => host.questions?.agent(agentId),
+				agent: (agentId) => host.tell?.agent(agentId) ?? host.questions?.agent(agentId),
 				open: (open) => {
 					if (this.#frame) this.#frame.holdEscape = open;
 				},

@@ -1,5 +1,5 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
-import { APP_WRITE_KEPT_TABLES } from "@qorpera/cloud-client/interface-apps";
+import { APP_WRITE_KEPT_TABLES, type AppManifest } from "@qorpera/cloud-client/interface-apps";
 import {
 	csvField,
 	isInterfaceName,
@@ -21,6 +21,8 @@ import {
 } from "../cloud/company-folder-writes.ts";
 import { questionOptions } from "../cloud/interactions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
+import type { HostedStaffAgent } from "../cloud/types.ts";
+import { APP_NOTE_ABOUT_MAX, APP_NOTE_AT, appNoteAbout, appNoteText } from "../cloud/wall-reply.ts";
 import { t } from "../ui/preferences.ts";
 import { rowsLocator, withCell } from "./interface-claims.ts";
 import { type OpenQuestions, questionApps } from "./open-questions.ts";
@@ -37,6 +39,11 @@ import { type OpenQuestions, questionApps } from "./open-questions.ts";
  *   while the row still says what the bar showed; the folder core checks the table's `[write]` rule and the rows as for
  *   any save of the member's. Never a cell that names who holds, owns or does something (a member or an agent), never a
  *   key, never a row taken away.
+ * - A note to the agent that owns the app, about a thing in it (Jonas, 13 November 2026: "you can't act very much
+ *   inside of the interfaces"): the member's own words, typed in a field on the bar that starts with the page's draft,
+ *   sent as the member's own message in that agent's thread (app/tell-agent.ts). The page names only what the note is
+ *   about, which the bar shows as a value, never in its sentences; who hears it is the app's owner, or the Co-Founder,
+ *   never the page's choice.
  * A refusal before the bar is told to the page alone, in English as the bridge's other refusals are. What goes wrong
  * after the member's yes is shown to the member on the bar, in their language, and told to the page in the same words. */
 
@@ -66,19 +73,38 @@ export type AppAsk =
 			/** The row's key as the table reads it; null for a new row. */
 			readonly row: string | null;
 			readonly changes: readonly AppAskChange[];
+	  }
+	| {
+			readonly kind: "tell";
+			/** Who hears the note: the app's owner, or the Co-Founder when it has none at work. */
+			readonly agentId: string;
+			/** The app's name as its manifest says it. */
+			readonly app: string;
+			/** What the note is about, as the page said it, made one plain line (cloud/wall-reply.ts `appNoteAbout`). */
+			readonly about: string;
+			/** The page's draft of the member's words: what the bar's field starts with. */
+			readonly draft: string;
 	  };
 
-/** A request that passed its checks: what to show, and the change to make once the member allowed it. */
-export interface PreparedAsk {
-	readonly ask: AppAsk;
-	readonly perform: () => Promise<void>;
+/** How a note went: sent as the member's message, or waiting in the agent's thread (`href`) for the member to send. */
+export interface AppNoteSent {
+	readonly sent: boolean;
+	readonly href: string;
 }
 
-/** How a request ended. `busy`: another one was on the bar. `quiet`: the member said not now three times in a row, so
- * the app asks no more until they reload it. `gone`: the page it came from was put away, or its manifest changed,
- * before the member chose. */
+/** A request that passed its checks: what to show, and the change to make once the member allowed it. A note sends
+ * `words`, what the bar's field holds when the member allowed it, and says how it went; the others take no words. */
+export interface PreparedAsk {
+	readonly ask: AppAsk;
+	readonly perform: (words: string) => Promise<AppNoteSent | undefined>;
+}
+
+/** How a request ended. `told`: the member sent the note, and it went (`sent`) or waits in the agent's thread. `busy`:
+ * another one was on the bar. `quiet`: the member said not now three times in a row, so the app asks no more until
+ * they reload it. `gone`: the page it came from was put away, or its manifest changed, before the member chose. */
 export type AppGateOutcome =
 	| { readonly outcome: "saved" | "declined" | "busy" | "quiet" | "gone" }
+	| { readonly outcome: "told"; readonly sent: boolean }
 	| { readonly outcome: "failed"; readonly message: string };
 
 /** The member's yes, asked outside the app's frame (views/app-ask-bar.ts): the one way a request becomes a change. */
@@ -86,7 +112,7 @@ export interface AppGate {
 	/** Why no request can be shown now, or null. */
 	readonly closed: () => "busy" | "quiet" | "gone" | null;
 	/** Shows the request and, when the member allows it, makes the change with `perform`. */
-	readonly ask: (ask: AppAsk, perform: () => Promise<void>) => Promise<AppGateOutcome>;
+	readonly ask: (ask: AppAsk, perform: PreparedAsk["perform"]) => Promise<AppGateOutcome>;
 }
 
 /** A request the app is told no to, with the reason its page is given. Nothing was shown and nothing changed. */
@@ -188,6 +214,7 @@ export async function prepareAnswer(
 			// Off the list at once, here and in the dock on the same page; the next read confirms it.
 			source.questions.forget(question.interactionId);
 			questionsRead.delete(source.questions);
+			return undefined;
 		},
 	};
 }
@@ -405,6 +432,66 @@ export async function prepareRow(
 					);
 				if (error instanceof Error && error.message === gone) throw new AppActionRefused(gone);
 				throw error;
+			}
+			return undefined;
+		},
+	};
+}
+
+/* ---- A note to the app's owner --------------------------------------------------------------------------------- */
+
+/** What a note needs of the open company (app/tell-agent.ts): who hears it, and the send. */
+export interface AppTellSource {
+	/** Who hears a note from an app with this owner now: the owner while it is at work, else the Co-Founder; or why no
+	 * note can go, as the page is told it. */
+	readonly receiver: (owner: string | null) => { readonly agentId: string } | { readonly refused: string };
+	/** An agent by its id, for its name and figure on the bar. */
+	readonly agent: (agentId: string) => HostedStaffAgent | undefined;
+	/** Sends `text` to the agent as the member's own message, or leaves it waiting in the agent's thread. */
+	readonly send: (agentId: string, text: string) => Promise<AppNoteSent>;
+}
+
+/** A draft of the member's words a page may give, at most, in characters. */
+export const APP_NOTE_DRAFT_MAX = 280;
+
+const characters = (text: string) => [...text].length;
+
+/** A note to the agent that owns `app`, about a thing in it: `params` is `{about, at, text}`. `about` is what the note is
+ * about, 1 to 60 characters once made one plain line; `at` the thing's id in the app's data, or none; `text` a draft of
+ * the member's words, at most 280 characters, or none. Nothing is read for it: who hears it is the app's owner as the
+ * company has it now, or the Co-Founder. Once the member allowed it, the note goes as their own message: the app, the
+ * thing and what it is about on its first line, then the words the bar's field held. */
+export function prepareTell(
+	source: AppTellSource,
+	app: { readonly name: string; readonly manifest: Pick<AppManifest, "name" | "owner"> },
+	params: Record<string, unknown>,
+): PreparedAsk {
+	const { about, at, text } = params;
+	const said = typeof about === "string" ? appNoteAbout(about) : "";
+	if (said === "" || characters(said) > APP_NOTE_ABOUT_MAX)
+		throw new AppActionRefused(`tell takes about: what the note is about, 1 to ${APP_NOTE_ABOUT_MAX} characters`);
+	if (at !== undefined && at !== null && (typeof at !== "string" || !APP_NOTE_AT.test(at)))
+		throw new AppActionRefused("tell's at is the thing's id: up to 64 letters, digits and _ . : -");
+	if (text !== undefined && text !== null && typeof text !== "string")
+		throw new AppActionRefused("tell's text is a draft of the member's words");
+	const draft = typeof text === "string" ? text : "";
+	if (characters(draft) > APP_NOTE_DRAFT_MAX)
+		throw new AppActionRefused(`tell's text is at most ${APP_NOTE_DRAFT_MAX} characters`);
+	const receiver = source.receiver(app.manifest.owner);
+	if ("refused" in receiver) throw new AppActionRefused(receiver.refused);
+	const thing = typeof at === "string" ? at : null;
+	return {
+		ask: { kind: "tell", agentId: receiver.agentId, app: app.manifest.name, about: said, draft },
+		perform: async (words) => {
+			const own = words.trim();
+			// The bar's Send is off while its field is empty.
+			if (!own) throw new AppActionRefused(t("Write your note first."));
+			try {
+				return await source.send(receiver.agentId, appNoteText(app.name, thing, said, own));
+			} catch (error) {
+				throw new AppActionRefused(
+					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),
+				);
 			}
 		},
 	};

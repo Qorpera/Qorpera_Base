@@ -317,6 +317,14 @@ export const CONVERSATION: Record<string, string> = {
 	"The row changed while you were deciding. Nothing was saved.":
 		"Rækken blev ændret, mens du tog stilling. Intet blev gemt.",
 	"You may not change this table. Nothing was saved.": "Du må ikke ændre denne tabel. Intet blev gemt.",
+	// A note to the app's owner, written on the same bar (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your note to {name}": "Appen vil sende din besked til {name}",
+	"Your note": "Din besked",
+	"Write your note": "Skriv din besked",
+	"Send note": "Send besked",
+	"Your note waits in {name}'s thread": "Din besked venter i tråden med {name}",
+	"Write your note first.": "Skriv din besked først.",
+	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
 	App: "App",
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer

@@ -2,7 +2,7 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome } from "../app-actions.ts";
+import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome, type PreparedAsk } from "../app-actions.ts";
 
 /* The bar an interface app's request is put to the member on (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5 "Writes";
  * security review r1, H3 and L3). An app's page can only ask (app/app-actions.ts); this bar is the member's yes, and
@@ -11,15 +11,19 @@ import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome } from
  * no origin and reaches nothing of this document.
  * - It shows what will be saved in Qorpera's own words: the question and the answer chosen, as the agent's card says
  *   them, or the table, the row and each cell as it is and as it will be. Its sentences hold no text of the app's.
+ * - A note to the app's owner (`tell`) is the member's own words, written in a field of the bar's, which starts with
+ *   the page's draft: what goes is what the field holds when the member sends it, and Send is off while it is empty.
+ *   What the page says the note is about is a value on the bar, never part of its sentences.
  * - Every request is its own bar. Nothing is remembered: there is no "always allow".
  * - A page can time a request to land under a click meant for the page, so the yes button wakes a second after the bar
- *   is on screen, takes only a press that began after it woke, and is never where the focus lands: Not now is. Enter
- *   in the page stays in the page.
+ *   is on screen, takes only a press that began after it woke, and is never where the focus lands: Not now is, or for
+ *   a note the field, which sends nothing (Enter in it is a new line), and where a key held down since before the bar
+ *   came in types nothing. Enter in the page stays in the page. Escape on the bar is Not now.
  * - One bar at a time: while one is open another request is refused at once. After three Not now in a row the app asks
  *   no more until the member reloads it.
  * - However much a request holds, the bar stays within the screen: its lines scroll inside it and both buttons stay
  *   within reach.
- * - The member sees how it went: saved, or why not. */
+ * - The member sees how it went: saved, sent, waiting in the agent's thread (with the way there), or why not. */
 
 export interface AppAskBarHost {
 	/** The app's emblem, drawn afresh. */
@@ -69,7 +73,7 @@ export class AppAskBar implements AppGate {
 		return this.#pending ? "busy" : this.#declines >= ASK_DECLINES_BEFORE_QUIET ? "quiet" : null;
 	}
 
-	ask(ask: AppAsk, perform: () => Promise<void>): Promise<AppGateOutcome> {
+	ask(ask: AppAsk, perform: PreparedAsk["perform"]): Promise<AppGateOutcome> {
 		const closed = this.#disposed ? "gone" : this.closed();
 		if (closed) return Promise.resolve({ outcome: closed });
 		return new Promise((resolve) => {
@@ -125,8 +129,12 @@ export class AppAskBar implements AppGate {
 		if (within) this.el.parentElement?.querySelector<HTMLElement>("iframe")?.focus({ preventScroll: true });
 	}
 
-	#lines(ask: AppAsk): HTMLElement {
-		const line = (label: string, ...value: (Node | string)[]) => [h("dt", null, label), h("dd", null, ...value)];
+	/** The lines under the title; for a note, with the field the member writes it in. */
+	#lines(ask: AppAsk, field: HTMLTextAreaElement | undefined): HTMLElement {
+		const line = (label: Node | string, ...value: (Node | string)[]) => [
+			h("dt", null, label),
+			h("dd", null, ...value),
+		];
 		const cell = (value: string | null) =>
 			value === null
 				? h("span", { class: "app-ask-empty" }, t("empty"))
@@ -137,6 +145,19 @@ export class AppAskBar implements AppGate {
 				{ class: "app-ask-lines" },
 				...line(t("Question"), oneLine(ask.question)),
 				...line(t("Your answer"), oneLine(ask.answers.join(", "))),
+			);
+		if (ask.kind === "tell")
+			return h(
+				"dl",
+				{ class: "app-ask-lines" },
+				// The app's name and the page's words for the thing, each a value of its own.
+				...line(
+					t("About"),
+					h("span", { class: "app-ask-value" }, oneLine(ask.app)),
+					h("span", { class: "app-ask-dot", "aria-hidden": "true" }, " · "),
+					h("span", { class: "app-ask-value" }, ask.about),
+				),
+				...line(h("label", { for: field?.id }, t("Your note")), field ?? ""),
 			);
 		return h(
 			"dl",
@@ -158,40 +179,84 @@ export class AppAskBar implements AppGate {
 		);
 	}
 
-	#show(ask: AppAsk, perform: () => Promise<void>, pending: Pending): void {
+	/** The field a note is written in, with the page's draft. It sends nothing: Enter is a new line in it, and a key held
+	 * down since before the bar came in types nothing (a key pressed here may repeat). */
+	#field(ask: Extract<AppAsk, { kind: "tell" }>): HTMLTextAreaElement {
+		const field = h("textarea", {
+			class: "app-ask-field",
+			id: `${this.#titleId}-note`,
+			rows: "2",
+			placeholder: t("Write your note"),
+			value: ask.draft,
+		});
+		const pressed = new Set<string>();
+		field.addEventListener("keydown", (event) => {
+			if (!event.repeat) pressed.add(event.code);
+			else if (!pressed.has(event.code)) event.preventDefault();
+		});
+		field.addEventListener("keyup", (event) => pressed.delete(event.code));
+		// It grows with what is written, up to its own height (styles/conversation.css), and then scrolls.
+		const fit = () => {
+			field.style.height = "auto";
+			field.style.height = `${field.scrollHeight + field.offsetHeight - field.clientHeight}px`;
+		};
+		field.addEventListener("input", fit);
+		queueMicrotask(fit);
+		return field;
+	}
+
+	#show(ask: AppAsk, perform: PreparedAsk["perform"], pending: Pending): void {
 		this.#clear();
-		const agent = ask.kind === "answer" ? this.#host.agent(ask.agentId) : undefined;
+		const agent = ask.kind === "row" ? undefined : this.#host.agent(ask.agentId);
 		const name = agent?.displayName ?? t("The agent");
 		const title = h(
 			"strong",
 			{ class: "app-ask-title", id: this.#titleId },
 			ask.kind === "answer"
 				? t("This app wants to send your answer to {name}", { name })
-				: ask.add
-					? t("This app wants to add a row to a company table")
-					: t("This app wants to change a row in a company table"),
+				: ask.kind === "tell"
+					? t("This app wants to send your note to {name}", { name })
+					: ask.add
+						? t("This app wants to add a row to a company table")
+						: t("This app wants to change a row in a company table"),
 		);
+		const field = ask.kind === "tell" ? this.#field(ask) : undefined;
 		const later = h("button", { type: "button", class: "app-ask-button" }, t("Not now"));
 		const yes = h(
 			"button",
 			{ type: "button", class: "app-ask-button is-yes", disabled: true },
-			ask.kind === "answer" ? t("Send answer") : ask.add ? t("Add row") : t("Change row"),
+			ask.kind === "answer"
+				? t("Send answer")
+				: ask.kind === "tell"
+					? t("Send note")
+					: ask.add
+						? t("Add row")
+						: t("Change row"),
 		);
 		// The yes button wakes a second after the bar is on a screen the member can see, and takes only a press that
-		// began after that: a click or a key already on its way when the bar came in does nothing.
+		// began after that: a click or a key already on its way when the bar came in does nothing. A note's Send is
+		// awake only while its field holds words, and a press counts only from when it last woke.
+		let woke = false;
 		let awake = Number.POSITIVE_INFINITY;
 		let pressed = -1;
+		const ready = () => {
+			const can = woke && !pending.working && (!field || field.value.trim() !== "");
+			if (can === !yes.disabled) return;
+			yes.disabled = !can;
+			yes.classList.toggle("is-awake", can);
+			if (can) awake = Date.now();
+		};
 		const wake = () => {
 			clearTimeout(this.#timer);
 			if (document.visibilityState === "hidden") return;
 			this.#timer = setTimeout(() => {
-				awake = Date.now();
-				yes.disabled = false;
-				yes.classList.add("is-awake");
+				woke = true;
+				ready();
 			}, ASK_ALLOW_AFTER_MS);
 		};
 		document.addEventListener("visibilitychange", wake);
 		this.#stopWaking = () => document.removeEventListener("visibilitychange", wake);
+		field?.addEventListener("input", ready);
 		yes.addEventListener("pointerdown", (event) => {
 			if ((event as PointerEvent).button === 0) pressed = Date.now();
 		});
@@ -202,7 +267,7 @@ export class AppAskBar implements AppGate {
 		later.addEventListener("keydown", (event) => {
 			if (event.repeat) event.preventDefault();
 		});
-		later.addEventListener("click", () => {
+		const decline = () => {
 			if (this.#pending !== pending || pending.working) return;
 			this.#declines++;
 			pending.settle({ outcome: "declined" });
@@ -215,24 +280,43 @@ export class AppAskBar implements AppGate {
 				),
 				QUIET_MS,
 			);
-		});
+		};
+		later.addEventListener("click", decline);
 		yes.addEventListener("click", () => {
 			if (this.#pending !== pending || pending.working || yes.disabled || pressed < awake) return;
+			const words = field?.value ?? "";
 			pending.working = true;
 			this.#clear();
 			yes.disabled = true;
 			later.disabled = true;
-			yes.textContent = ask.kind === "answer" ? t("Sending…") : t("Saving…");
-			void perform().then(
-				() => {
+			if (field) field.readOnly = true;
+			yes.textContent = ask.kind === "row" ? t("Saving…") : t("Sending…");
+			void perform(words).then(
+				(note) => {
 					this.#declines = 0;
-					pending.settle({ outcome: "saved" });
+					if (ask.kind === "tell" && note && !note.sent) {
+						// It waits in the agent's thread, for the member to send from there: the bar stays until they go there
+						// or close it.
+						pending.settle({ outcome: "told", sent: false });
+						this.#settled(
+							h(
+								"p",
+								{ class: "app-ask-note is-waiting", role: "status" },
+								icon("clock"),
+								t("Your note waits in {name}'s thread", { name }),
+							),
+							null,
+							h("a", { class: "app-ask-button is-go", href: note.href, onclick: () => this.#hide() }, t("Open")),
+						);
+						return;
+					}
+					pending.settle(ask.kind === "tell" ? { outcome: "told", sent: true } : { outcome: "saved" });
 					this.#settled(
 						h(
 							"p",
 							{ class: "app-ask-note is-saved", role: "status" },
 							icon("check"),
-							ask.kind === "answer" ? t("Sent to {name}", { name }) : t("Saved"),
+							ask.kind === "row" ? t("Saved") : t("Sent to {name}", { name }),
 						),
 						SAVED_MS,
 					);
@@ -245,7 +329,7 @@ export class AppAskBar implements AppGate {
 				},
 			);
 		});
-		const lines = this.#lines(ask);
+		const lines = this.#lines(ask, field);
 		replace(
 			this.el,
 			h(
@@ -253,38 +337,54 @@ export class AppAskBar implements AppGate {
 				{ class: "app-ask-figure", "aria-hidden": "true" },
 				ask.kind === "answer"
 					? agentFigure(agent, name, { size: 30, activity: "Waiting", ask: "question" })
-					: this.#host.emblem(),
+					: ask.kind === "tell"
+						? agentFigure(agent, name, { size: 30 })
+						: this.#host.emblem(),
 			),
 			h("div", { class: "app-ask-copy" }, title, lines),
 			h("div", { class: "app-ask-buttons" }, later, yes),
 		);
+		// Escape on the bar is Not now, as anywhere it closes what asks (once: a held Escape says it once).
+		this.el.onkeydown = (event) => {
+			if (event.key !== "Escape" || event.isComposing || event.defaultPrevented) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (!event.repeat) decline();
+		};
 		this.el.hidden = false;
 		this.el.classList.remove("is-settled");
+		this.el.classList.toggle("is-note", ask.kind === "tell");
 		// Lines longer than the bar may be scroll inside it (styles/conversation.css): the keyboard reaches them too.
 		if (lines.scrollHeight > lines.clientHeight) lines.tabIndex = 0;
 		this.#host.open(true);
-		// Out of the page and onto the safe answer, so Enter never allows.
-		later.focus({ preventScroll: true });
+		// Out of the page and onto the safe answer, so Enter never allows: Not now, or a note's own field, at its end.
+		if (field) {
+			field.focus({ preventScroll: true });
+			field.setSelectionRange(field.value.length, field.value.length);
+		} else later.focus({ preventScroll: true });
 		wake();
 	}
 
-	/** The bar once its request is settled: how it went, with a way to put it away, until it goes by itself. A new
-	 * request may take its place at once. */
-	#settled(note: HTMLElement, ms: number): void {
+	/** The bar once its request is settled: how it went, with a way to put it away, until it goes by itself (`ms`; null:
+	 * it stays until the member closes it). A new request may take its place at once. */
+	#settled(note: HTMLElement, ms: number | null, ...ways: HTMLElement[]): void {
 		if (this.#disposed) return;
 		this.#clear();
+		this.el.onkeydown = null;
 		const close = h(
 			"button",
 			{ type: "button", class: "app-ask-button", onclick: () => this.#pending === undefined && this.#hide() },
 			t("Close"),
 		);
 		const within = this.el.contains(document.activeElement);
-		replace(this.el, note, h("div", { class: "app-ask-buttons" }, close));
+		replace(this.el, note, h("div", { class: "app-ask-buttons" }, close, ...ways));
 		this.el.classList.add("is-settled");
+		this.el.classList.remove("is-note");
 		this.#host.open(false);
-		if (within) close.focus({ preventScroll: true });
-		this.#timer = setTimeout(() => {
-			if (this.#pending === undefined) this.#hide();
-		}, ms);
+		if (within) (ways[0] ?? close).focus({ preventScroll: true });
+		if (ms !== null)
+			this.#timer = setTimeout(() => {
+				if (this.#pending === undefined) this.#hide();
+			}, ms);
 	}
 }

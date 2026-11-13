@@ -8,15 +8,24 @@ import type {
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { parseTableFile, type TableFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppActionRefused, type AppAsk, type AppGate, planRowChange } from "../src/app/app-actions.ts";
-import { AppBridge, type AppBridgeHost, type CompanyApp } from "../src/app/interface-apps.ts";
+import {
+	AppActionRefused,
+	type AppAsk,
+	type AppGate,
+	type AppNoteSent,
+	type AppTellSource,
+	planRowChange,
+} from "../src/app/app-actions.ts";
+import { AppBridge, type AppBridgeHost, type CompanyApp, TELL_AGAIN_MS } from "../src/app/interface-apps.ts";
 import type { OpenQuestionsState } from "../src/app/open-questions.ts";
 import { Store } from "../src/app/state.ts";
 import { AppAskBar, ASK_ALLOW_AFTER_MS } from "../src/app/views/app-ask-bar.ts";
 import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
+import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { AppFrame } from "../src/ui/app-frame.ts";
 import { PAGE_ESCAPE, PAGE_READY } from "../src/ui/page-frame.ts";
+import { staff } from "./fixtures.ts";
 
 /* What a member can do from an interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5 "Writes"): the page asks,
  * the bar outside its frame is the member's yes, and the change is the member's own. */
@@ -229,8 +238,9 @@ function memberFolder(files: Record<string, string>) {
 	};
 }
 
-/** A gate that answers as a member would, without a screen: what it was asked, then yes or not now. */
-function gateThat(decide: "allow" | "decline", before?: () => void) {
+/** A gate that answers as a member would, without a screen: what it was asked, then yes or not now. A note goes with
+ * `words`, as the member left them in the bar's field. */
+function gateThat(decide: "allow" | "decline", before?: () => void, words = "") {
 	const asked: AppAsk[] = [];
 	const gate: AppGate = {
 		closed: () => null,
@@ -239,8 +249,8 @@ function gateThat(decide: "allow" | "decline", before?: () => void) {
 			if (decide === "decline") return { outcome: "declined" };
 			before?.();
 			try {
-				await perform();
-				return { outcome: "saved" };
+				const note = await perform(words);
+				return note ? { outcome: "told", sent: note.sent } : { outcome: "saved" };
 			} catch (error) {
 				return { outcome: "failed", message: error instanceof AppActionRefused ? error.message : "failed" };
 			}
@@ -320,7 +330,12 @@ describe("the bridge's requests for a change", () => {
 	};
 	const bridge = (
 		toml: string,
-		parts: { folder?: ReturnType<typeof memberFolder>; gate?: AppGate; questions?: AppBridgeHost["questions"] },
+		parts: {
+			folder?: ReturnType<typeof memberFolder>;
+			gate?: AppGate;
+			questions?: AppBridgeHost["questions"];
+			tell?: AppTellSource;
+		},
 	) => {
 		const folder = parts.folder ?? memberFolder({ [TABLE]: ORDERS, [FILE]: ROWS });
 		return new AppBridge(
@@ -330,6 +345,7 @@ describe("the bridge's requests for a change", () => {
 				writer: () => folder.folder,
 				current: () => {},
 				...(parts.questions ? { questions: parts.questions } : {}),
+				...(parts.tell ? { tell: parts.tell } : {}),
 			},
 			app(toml),
 			crypto.randomUUID(),
@@ -521,6 +537,175 @@ describe("the bridge's requests for a change", () => {
 		).toEqual({ ok: false, error: "No model account is connected for this chat." });
 		expect(questions.forget).not.toHaveBeenCalled();
 	});
+
+	/** Who hears a note and how its send goes, as app/tell-agent.ts answers for the open company. */
+	const notes = (
+		receiver: ReturnType<AppTellSource["receiver"]> = { agentId: AGENT },
+		went: AppNoteSent | Error = { sent: true, href: `#/c/p/staff/${AGENT}` },
+	) => {
+		const source = {
+			receiver: vi.fn((_owner: string | null) => receiver),
+			agent: () => undefined,
+			send: vi.fn(async (_agentId: string, _text: string) => {
+				if (went instanceof Error) throw went;
+				return went;
+			}),
+		} satisfies AppTellSource;
+		return source;
+	};
+	const tell = (params: Record<string, unknown>) => ({ method: "tell", params });
+	const lund = { about: "Lund, A", at: "1043", text: "Get a quote from this one." };
+
+	it("lets any app ask the member to send its owner a note, with no word in writes, and sends what the member wrote", async () => {
+		const source = notes();
+		const { gate, asked } = gateThat("allow", undefined, "  Get two quotes, please.\n");
+		const owned = 'owner = "22222222-2222-4222-8222-222222222222"\n';
+		expect(await bridge(owned, { gate, tell: source }).answer(tell(lund))).toEqual({
+			ok: true,
+			value: { sent: true },
+		});
+		// Who hears it comes from the manifest's owner, never from the page.
+		expect(source.receiver).toHaveBeenCalledWith(AGENT);
+		// The bar shows the page's words only as what the note is about, and its draft only in the member's field.
+		expect(asked).toEqual([
+			{ kind: "tell", agentId: AGENT, app: "Orders", about: "Lund, A", draft: "Get a quote from this one." },
+		]);
+		// What goes is what the field held: the app, the thing and what it is about first, then the member's words.
+		expect(source.send).toHaveBeenCalledExactlyOnceWith(
+			AGENT,
+			"> app:orders-board#1043 · Lund, A\n\nGet two quotes, please.",
+		);
+		// With no thing named, the first line names the app alone; an app with no owner is the receiver's to place.
+		const other = notes();
+		const words = gateThat("allow", undefined, "Why so many?");
+		expect(await bridge("", { gate: words.gate, tell: other }).answer(tell({ about: "Returns" }))).toMatchObject({
+			ok: true,
+		});
+		expect(other.receiver).toHaveBeenCalledWith(null);
+		expect(other.send).toHaveBeenCalledWith(AGENT, "> app:orders-board · Returns\n\nWhy so many?");
+		// Nothing goes where no note can be sent (a Company File page, a test harness).
+		expect(await bridge("", { tell: notes() }).answer(tell(lund))).toEqual({
+			ok: false,
+			error: "Nothing can be sent from this page",
+		});
+		expect(await bridge("", { gate }).answer(tell(lund))).toEqual({
+			ok: false,
+			error: "Nothing can be sent from this page",
+		});
+	});
+
+	it("refuses a note the page shaped wrong before any bar: what it is about, the thing's id, a long draft", async () => {
+		const source = notes();
+		const { gate, asked } = gateThat("allow", undefined, "Yes");
+		const answer = (params: Record<string, unknown>) => bridge("", { gate, tell: source }).answer(tell(params));
+		const about = "tell takes about: what the note is about, 1 to 60 characters";
+		for (const wrong of [{}, { about: "" }, { about: " @«»\n " }, { about: 7 }, { about: "x".repeat(61) }])
+			expect(await answer(wrong)).toEqual({ ok: false, error: about });
+		for (const at of ["not an id", "-first", "x".repeat(65), 1043])
+			expect(await answer({ about: "Lund", at })).toEqual({
+				ok: false,
+				error: "tell's at is the thing's id: up to 64 letters, digits and _ . : -",
+			});
+		expect(await answer({ about: "Lund", text: "x".repeat(281) })).toEqual({
+			ok: false,
+			error: "tell's text is at most 280 characters",
+		});
+		expect(await answer({ about: "Lund", text: ["words"] })).toEqual({
+			ok: false,
+			error: "tell's text is a draft of the member's words",
+		});
+		expect(asked).toEqual([]);
+		expect(source.send).not.toHaveBeenCalled();
+		// At the bounds, and as the frame document hands it over (an absent `at` and `text` come as null).
+		expect(await answer({ about: "é".repeat(60), at: "lane:step.2_b-1", text: "x".repeat(280) })).toMatchObject({
+			ok: true,
+		});
+		expect(await answer({ about: "Lund", at: null, text: null })).toMatchObject({ ok: true });
+		expect(asked.map((ask) => ask.kind === "tell" && ask.draft.length)).toEqual([280, 0]);
+	});
+
+	it("makes what a note is about one line that names nobody, quotes nothing and turns no text around", async () => {
+		const source = notes();
+		const { gate, asked } = gateThat("allow", undefined, "Yes");
+		await bridge("", { gate, tell: source }).answer(
+			tell({ about: "  Ask @Bea\nabout «this»‮\tnow\u0007 ", text: "Hi @Bea «quoted»" }),
+		);
+		expect(asked).toEqual([
+			{ kind: "tell", agentId: AGENT, app: "Orders", about: "Ask Bea about this now", draft: "Hi @Bea «quoted»" },
+		]);
+		expect(source.send).toHaveBeenCalledWith(AGENT, "> app:orders-board · Ask Bea about this now\n\nYes");
+	});
+
+	it("tells the page whether the note went or waits in the agent's thread, and why one did not go", async () => {
+		const answer = (source: AppTellSource, gate: AppGate) => bridge("", { gate, tell: source }).answer(tell(lund));
+		const yes = gateThat("allow", undefined, "Please").gate;
+		expect(await answer(notes(undefined, { sent: false, href: "#/c/p/staff/a" }), yes)).toEqual({
+			ok: true,
+			value: { sent: false, waiting: true },
+		});
+		expect(await answer(notes(undefined, new Error("That agent is no longer at work.")), yes)).toEqual({
+			ok: false,
+			error: "That agent is no longer at work.",
+		});
+		// The Send is off while the field is empty; were it pressed, nothing would go.
+		const empty = notes();
+		expect(await answer(empty, gateThat("allow", undefined, "  \n").gate)).toEqual({
+			ok: false,
+			error: "Write your note first.",
+		});
+		expect(empty.send).not.toHaveBeenCalled();
+		expect(await answer(notes(), gateThat("decline").gate)).toEqual({ ok: false, error: "The member said not now" });
+		// Nobody to hear it, or a member who may not write: refused before any bar.
+		const { gate, asked } = gateThat("allow");
+		expect(await answer(notes({ refused: "The member may not send messages in this company" }), gate)).toEqual({
+			ok: false,
+			error: "The member may not send messages in this company",
+		});
+		expect(asked).toEqual([]);
+		// One request at a time, as for every request.
+		const busy: AppGate = { closed: () => "busy", ask: async () => ({ outcome: "busy" }) };
+		const waiting = notes();
+		expect(await answer(waiting, busy)).toEqual({
+			ok: false,
+			error: "Another request is waiting for the member's answer",
+		});
+		expect(waiting.receiver).not.toHaveBeenCalled();
+	});
+
+	it("costs five calls, and after a sent note refuses the app's next one for ten seconds", async () => {
+		vi.useFakeTimers({ now: Date.parse("2026-11-13T10:00:05Z") });
+		try {
+			const source = notes();
+			const { gate, asked } = gateThat("allow", undefined, "Please");
+			const one = bridge("", { gate, tell: source });
+			expect(await one.answer(tell(lund))).toMatchObject({ ok: true });
+			expect(await one.answer(tell(lund))).toEqual({
+				ok: false,
+				error: "A note was sent from this app a moment ago: ask again in a few seconds",
+			});
+			vi.advanceTimersByTime(TELL_AGAIN_MS - 1);
+			expect(await one.answer(tell(lund))).toMatchObject({ ok: false });
+			vi.advanceTimersByTime(1);
+			expect(await one.answer(tell(lund))).toMatchObject({ ok: true });
+			expect(asked).toHaveLength(2);
+			// A note said not now leaves no pause.
+			const declined = bridge("", { gate: gateThat("decline").gate, tell: notes() });
+			expect(await declined.answer(tell(lund))).toMatchObject({ error: "The member said not now" });
+			expect(await declined.answer(tell(lund))).toMatchObject({ error: "The member said not now" });
+			// Five of the minute's 120 calls each: the 25th in a minute is over the budget, before anything is checked.
+			const many = notes({ refused: "nobody" });
+			const spent = bridge("", { gate, tell: many });
+			for (let call = 1; call <= 24; call++)
+				expect(await spent.answer(tell(lund))).toMatchObject({ error: "nobody" });
+			expect(await spent.answer(tell(lund))).toEqual({
+				ok: false,
+				error: "Too many calls: wait a moment and try again",
+			});
+			expect(many.receiver).toHaveBeenCalledTimes(24);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("the bar a request is put to the member on", () => {
@@ -537,10 +722,10 @@ describe("the bar a request is put to the member on", () => {
 	};
 	let stage: HTMLElement;
 	let open: boolean[];
-	const make = () => {
+	const make = (agent?: HostedStaffAgent) => {
 		const bar = new AppAskBar({
 			emblem: () => document.createElement("span"),
-			agent: () => undefined,
+			agent: () => agent,
 			open: (now) => open.push(now),
 		});
 		stage.prepend(bar.el);
@@ -568,7 +753,7 @@ describe("the bar a request is put to the member on", () => {
 
 	it("says what will be saved, with the focus on Not now and the yes button asleep", () => {
 		const bar = make();
-		void bar.ask(change, async () => {});
+		void bar.ask(change, async () => undefined);
 		expect(bar.el.hidden).toBe(false);
 		expect(bar.el.querySelector(".app-ask-title")?.textContent).toBe(
 			"This app wants to change a row in a company table",
@@ -591,7 +776,7 @@ describe("the bar a request is put to the member on", () => {
 
 	it("takes a yes only from a press that began after the button woke", async () => {
 		const bar = make();
-		const perform = vi.fn(async () => {});
+		const perform = vi.fn(async () => undefined);
 		const outcome = bar.ask(change, perform);
 		const yes = button(bar, "Change row");
 		// A click on its way when the bar came in: the button is asleep.
@@ -614,7 +799,7 @@ describe("the bar a request is put to the member on", () => {
 
 	it("takes a yes from the keyboard only when the key was pressed on the awake button", async () => {
 		const bar = make();
-		const perform = vi.fn(async () => {});
+		const perform = vi.fn(async () => undefined);
 		const outcome = bar.ask(change, perform);
 		const yes = button(bar, "Change row");
 		await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
@@ -629,19 +814,19 @@ describe("the bar a request is put to the member on", () => {
 
 	it("shows one request at a time, and none after three Not now in a row until the member reloads", async () => {
 		const bar = make();
-		const first = bar.ask(change, async () => {});
-		expect(await bar.ask(change, async () => {})).toEqual({ outcome: "busy" });
+		const first = bar.ask(change, async () => undefined);
+		expect(await bar.ask(change, async () => undefined)).toEqual({ outcome: "busy" });
 		button(bar, "Not now").click();
 		expect(await first).toEqual({ outcome: "declined" });
 		expect(bar.el.hidden).toBe(true);
 		for (let round = 2; round <= 3; round++) {
-			const next = bar.ask(change, async () => {});
+			const next = bar.ask(change, async () => undefined);
 			button(bar, "Not now").click();
 			expect(await next).toEqual({ outcome: "declined" });
 		}
 		expect(bar.el.textContent).toContain("This app asked three times");
 		expect(bar.closed()).toBe("quiet");
-		expect(await bar.ask(change, async () => {})).toEqual({ outcome: "quiet" });
+		expect(await bar.ask(change, async () => undefined)).toEqual({ outcome: "quiet" });
 		bar.reset();
 		expect(bar.closed()).toBeNull();
 		expect(bar.el.hidden).toBe(true);
@@ -650,15 +835,15 @@ describe("the bar a request is put to the member on", () => {
 	it("starts the count again after a yes", async () => {
 		const bar = make();
 		for (let round = 1; round <= 2; round++) {
-			const asked = bar.ask(change, async () => {});
+			const asked = bar.ask(change, async () => undefined);
 			button(bar, "Not now").click();
 			await asked;
 		}
-		const allowed = bar.ask(change, async () => {});
+		const allowed = bar.ask(change, async () => undefined);
 		await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
 		press(button(bar, "Change row"));
 		expect(await allowed).toEqual({ outcome: "saved" });
-		const again = bar.ask(change, async () => {});
+		const again = bar.ask(change, async () => undefined);
 		button(bar, "Not now").click();
 		await again;
 		expect(bar.closed()).toBeNull();
@@ -679,7 +864,7 @@ describe("the bar a request is put to the member on", () => {
 			"The row changed while you were deciding. Nothing was saved.",
 		);
 		// A new request takes a settled bar's place at once; the page it came from goes, and it goes unsaved.
-		const perform = vi.fn(async () => {});
+		const perform = vi.fn(async () => undefined);
 		const waiting = bar.ask(change, perform);
 		bar.cancel();
 		expect(await waiting).toEqual({ outcome: "gone" });
@@ -698,7 +883,7 @@ describe("the bar a request is put to the member on", () => {
 				row: "1042",
 				changes: [{ column: "note", before: null, after: "Call first\nshipped_on  empty → 2026-11-10" }],
 			},
-			async () => {},
+			async () => undefined,
 		);
 		expect([...bar.el.querySelectorAll("dt")].map((term) => term.textContent)).toEqual(["Table", "Row", "note"]);
 		expect(bar.el.querySelector("dd:last-child .app-ask-value")?.textContent).toBe(
@@ -710,7 +895,7 @@ describe("the bar a request is put to the member on", () => {
 		const bar = make();
 		void bar.ask(
 			{ kind: "answer", agentId: AGENT, question: "Which launch price?", answers: ["149 kr a month"] },
-			async () => {},
+			async () => undefined,
 		);
 		expect(bar.el.querySelector(".app-ask-title")?.textContent).toBe(
 			"This app wants to send your answer to The agent",
@@ -720,6 +905,155 @@ describe("the bar a request is put to the member on", () => {
 			"149 kr a month",
 		]);
 		expect(button(bar, "Send answer").disabled).toBe(true);
+	});
+
+	describe("a note to the app's owner", () => {
+		const ada: HostedStaffAgent = { ...staff, id: AGENT, displayName: "Ada" };
+		const note = (draft = "Get a quote from this one."): Extract<AppAsk, { kind: "tell" }> => ({
+			kind: "tell",
+			agentId: AGENT,
+			app: "Orders",
+			about: "Lund, A",
+			draft,
+		});
+		const field = (bar: AppAskBar) => bar.el.querySelector<HTMLTextAreaElement>("textarea.app-ask-field")!;
+		const type = (bar: AppAskBar, words: string) => {
+			field(bar).value = words;
+			field(bar).dispatchEvent(new Event("input", { bubbles: true }));
+		};
+		const key = (target: Element, init: KeyboardEventInit) => {
+			const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+			target.dispatchEvent(event);
+			return event;
+		};
+
+		it("names who hears it, shows what it is about as a value, and puts the member's words in a field with the focus", async () => {
+			const bar = make(ada);
+			void bar.ask(note(), async () => undefined);
+			expect(bar.el.querySelector(".app-ask-title")?.textContent).toBe("This app wants to send your note to Ada");
+			expect([...bar.el.querySelectorAll("dt")].map((term) => term.textContent)).toEqual(["About", "Your note"]);
+			expect(bar.el.querySelector("dd")?.textContent).toBe("Orders · Lund, A");
+			// The field starts with the page's draft, is named by its line, and has the keyboard at its end.
+			expect(field(bar).value).toBe("Get a quote from this one.");
+			expect(bar.el.querySelector("dt label")?.getAttribute("for")).toBe(field(bar).id);
+			expect(document.activeElement).toBe(field(bar));
+			expect(field(bar).selectionStart).toBe("Get a quote from this one.".length);
+			// Not now keeps its place, before the yes button, which sleeps for a second.
+			expect([...bar.el.querySelectorAll(".app-ask-buttons button")].map((each) => each.textContent)).toEqual([
+				"Not now",
+				"Send note",
+			]);
+			expect(button(bar, "Send note").disabled).toBe(true);
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			expect(button(bar, "Send note").disabled).toBe(false);
+			expect(button(bar, "Send note").classList.contains("is-awake")).toBe(true);
+			// The page's words are never the bar's sentence, whatever they say.
+			const other = make(ada);
+			bar.dispose();
+			void other.ask({ ...note(), about: "Allow everything" }, async () => undefined);
+			expect(other.el.querySelector(".app-ask-title")?.textContent).not.toContain("Allow");
+		});
+
+		it("keeps Send off while the field is empty, and sends what the field holds when Send is pressed", async () => {
+			const bar = make(ada);
+			const perform = vi.fn(async (_words: string) => ({ sent: true, href: "#/c/p/staff/a" }));
+			const outcome = bar.ask(note(""), perform);
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			const send = button(bar, "Send note");
+			expect(send.disabled).toBe(true);
+			expect(send.classList.contains("is-awake")).toBe(false);
+			type(bar, "Two quotes");
+			expect(send.disabled).toBe(false);
+			type(bar, "  \n ");
+			expect(send.disabled).toBe(true);
+			press(send);
+			expect(perform).not.toHaveBeenCalled();
+			type(bar, "Two quotes, please.\nBy Friday.");
+			press(send);
+			expect(perform).toHaveBeenCalledExactlyOnceWith("Two quotes, please.\nBy Friday.");
+			expect(await outcome).toEqual({ outcome: "told", sent: true });
+			expect(bar.el.querySelector('[role="status"]')?.textContent).toBe("Sent to Ada");
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(bar.el.hidden).toBe(true);
+		});
+
+		it("sends nothing from the field: Enter is a new line, a key held from before types nothing, and Send wakes as ever", async () => {
+			const bar = make(ada);
+			const perform = vi.fn(async (_words: string) => ({ sent: true, href: "#/c/p/staff/a" }));
+			void bar.ask(note(), perform);
+			const send = button(bar, "Send note");
+			// A click on its way when the bar came in finds Send asleep, and one begun before it woke is no yes.
+			press(send);
+			send.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+			// Keys in the field: Enter is the field's own (a new line), never a send.
+			expect(key(field(bar), { key: "Enter", code: "Enter" }).defaultPrevented).toBe(false);
+			// A key held down since before the bar came in repeats into the field: it types nothing. One pressed here may.
+			expect(key(field(bar), { key: "x", code: "KeyX", repeat: true }).defaultPrevented).toBe(true);
+			expect(key(field(bar), { key: "x", code: "KeyX" }).defaultPrevented).toBe(false);
+			expect(key(field(bar), { key: "x", code: "KeyX", repeat: true }).defaultPrevented).toBe(false);
+			field(bar).dispatchEvent(new KeyboardEvent("keyup", { code: "KeyX", bubbles: true }));
+			expect(key(field(bar), { key: "x", code: "KeyX", repeat: true }).defaultPrevented).toBe(true);
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			send.click();
+			key(field(bar), { key: "Enter", code: "Enter" });
+			expect(perform).not.toHaveBeenCalled();
+			press(send);
+			expect(perform).toHaveBeenCalledExactlyOnceWith("Get a quote from this one.");
+			// While it goes, the field and both buttons hold still.
+			expect([field(bar).readOnly, send.disabled, button(bar, "Not now").disabled]).toEqual([true, true, true]);
+		});
+
+		it("takes Escape as Not now, once for a held key, and three in a row quiet the app until it is reloaded", async () => {
+			const bar = make(ada);
+			const perform = vi.fn(async (_words: string) => undefined);
+			const first = bar.ask(note(), perform);
+			// A held Escape (a key from the page, say) says nothing.
+			expect(key(field(bar), { key: "Escape", repeat: true }).defaultPrevented).toBe(true);
+			expect(bar.el.hidden).toBe(false);
+			expect(key(field(bar), { key: "Escape" }).defaultPrevented).toBe(true);
+			expect(await first).toEqual({ outcome: "declined" });
+			expect(bar.el.hidden).toBe(true);
+			const second = bar.ask(note(), perform);
+			button(bar, "Not now").click();
+			expect(await second).toEqual({ outcome: "declined" });
+			const third = bar.ask(note(), perform);
+			key(button(bar, "Not now"), { key: "Escape" });
+			expect(await third).toEqual({ outcome: "declined" });
+			expect(bar.el.textContent).toContain("This app asked three times");
+			expect(await bar.ask(note(), perform)).toEqual({ outcome: "quiet" });
+			expect(perform).not.toHaveBeenCalled();
+			bar.reset();
+			expect(bar.closed()).toBeNull();
+		});
+
+		it("says when the note waits in the agent's thread, with the way there, and stays until the member goes or closes it", async () => {
+			const bar = make(ada);
+			const outcome = bar.ask(note(), async () => ({ sent: false, href: "#/c/p/staff/a" }));
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			press(button(bar, "Send note"));
+			expect(await outcome).toEqual({ outcome: "told", sent: false });
+			expect(bar.el.querySelector('[role="status"]')?.textContent).toBe("Your note waits in Ada's thread");
+			const go = bar.el.querySelector<HTMLAnchorElement>("a.app-ask-button")!;
+			expect([go.textContent, go.getAttribute("data-href")]).toEqual(["Open", "#/c/p/staff/a"]);
+			// The focus was on the bar, and goes to the way there.
+			expect(document.activeElement).toBe(go);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(bar.el.hidden).toBe(false);
+			// A new request may take its place, as after any settled request; Close puts it away.
+			button(bar, "Close").click();
+			expect(bar.el.hidden).toBe(true);
+		});
+
+		it("says why a note did not go, in the member's words", async () => {
+			const bar = make(ada);
+			const outcome = bar.ask(note(), async () => {
+				throw new AppActionRefused("That agent is no longer at work.");
+			});
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			press(button(bar, "Send note"));
+			expect(await outcome).toEqual({ outcome: "failed", message: "That agent is no longer at work." });
+			expect(bar.el.querySelector('[role="alert"]')?.textContent).toBe("That agent is no longer at work.");
+		});
 	});
 });
 

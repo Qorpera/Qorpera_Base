@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CompanyApp, readApps } from "../src/app/interface-apps.ts";
 import { AppPanel, type AppPanelHost } from "../src/app/views/app-panel.ts";
 import { PAGE_CONTENT, PAGE_READY } from "../src/ui/page-frame.ts";
+import { staff } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 
 /* An app's page (views/app-panel.ts) asking for a change, with the frame's side played by hand: the panel puts the
@@ -240,5 +241,70 @@ describe("an app's request and the manifest it was made under", () => {
 		await settle();
 		expect(app.bar().hidden).toBe(true);
 		expect(fake.commits).toEqual([]);
+	});
+});
+
+describe("a note an app's page asks the member to send its owner", () => {
+	const OWNER = "22222222-2222-4222-8222-222222222222";
+	/** The company's side of a note (app/tell-agent.ts): the owner hears it, and each send is kept. */
+	function withNotes(host: AppPanelHost) {
+		const sent: [agentId: string, text: string][] = [];
+		const told = {
+			...host,
+			tell: {
+				receiver: (owner: string | null) => (owner === OWNER ? { agentId: OWNER } : { refused: "Nobody" }),
+				agent: (agentId: string) => (agentId === OWNER ? { ...staff, id: OWNER, displayName: "Ada" } : undefined),
+				send: async (agentId: string, text: string) => {
+					sent.push([agentId, text]);
+					return { sent: true, href: `#/c/x/staff/${agentId}` };
+				},
+			},
+		} satisfies AppPanelHost;
+		return { told, sent };
+	}
+
+	it("needs no word in writes, and sends the member's words as the page's answer waits", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const { told, sent } = withNotes(host);
+		const app = await opened(told);
+		// A draft past its bound never reaches the bar.
+		expect(await app.call("tell", { about: "Lund, A", at: "1043", text: "x".repeat(281) })).toMatchObject({
+			ok: false,
+			error: "tell's text is at most 280 characters",
+		});
+		expect(app.bar().hidden).toBe(true);
+		const note = app.call("tell", { about: "Lund, A", at: "1043", text: "Get a quote" });
+		await app.shown();
+		expect(app.bar().querySelector(".app-ask-title")?.textContent).toBe("This app wants to send your note to Ada");
+		const field = app.bar().querySelector<HTMLTextAreaElement>("textarea")!;
+		expect(document.activeElement).toBe(field);
+		field.value = "Get two quotes, please.";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		const send = [...app.bar().querySelectorAll("button")].find((each) => each.textContent === "Send note")!;
+		await vi.waitFor(() => expect(send.disabled).toBe(false), { timeout: 3000 });
+		send.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+		send.click();
+		expect(await note).toMatchObject({ ok: true, value: { sent: true } });
+		expect(sent).toEqual([[OWNER, "> app:shop#1043 · Lund, A\n\nGet two quotes, please."]]);
+		// The same app asks again at once: refused for a few seconds, with no bar.
+		await vi.waitFor(() => expect(app.bar().querySelector("textarea")).toBeNull());
+		expect(await app.call("tell", { about: "Lund, A" })).toMatchObject({
+			ok: false,
+			error: "A note was sent from this app a moment ago: ask again in a few seconds",
+		});
+	});
+
+	it("puts a note that waits for the member away, unsent, when the page is reloaded", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const { told, sent } = withNotes(host);
+		const app = await opened(told);
+		const note = app.call("tell", { about: "Lund, A", text: "Get a quote" });
+		await app.shown();
+		const reloading = app.panel.reload(true);
+		await app.handed();
+		await reloading;
+		expect(await note).toMatchObject({ ok: false, error: GONE });
+		expect(app.bar().hidden).toBe(true);
+		expect(sent).toEqual([]);
 	});
 });

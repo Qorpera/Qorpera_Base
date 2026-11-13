@@ -1592,7 +1592,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 /* What an app asks the member to change (views/app-ask-bar.ts; RUNTIME-INTERFACE-APPS.md §5): Qorpera's own bar, above
  * the app's frame and never over it, so it pushes the page down and nothing of the page sits under its buttons. It says
- * what will be saved; Not now has the focus, and the yes button wakes a second after the bar is on screen. */
+ * what will be saved, or the field a note to the app's owner is written in; Not now (or that field) has the focus, and
+ * the yes button wakes a second after the bar is on screen. */
 .app-ask {
 	flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
 	padding: 12px 14px; border-bottom: 1px solid var(--border-strong); background: var(--chrome); color: var(--text);
@@ -1617,6 +1618,17 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* The word for an empty cell is Qorpera's, not a value: it is never struck through (an inline-block takes no line from its parent). */
 .app-ask-empty { display: inline-block; color: var(--text-soft); font-style: italic; text-decoration: none; }
 .app-ask-arrow { margin: 0 6px; color: var(--text-muted); }
+.app-ask-dot { color: var(--text-muted); }
+/* A note to the app's owner (`tell`): the member's own words, in a plain field of Qorpera's on the same lines, which
+ * starts with the page's draft and grows with what is written up to a few lines, then scrolls. Its label sits on the
+ * field's first line. A phone's keyboard does not zoom into it. */
+.app-ask-lines dt > label { display: block; padding-top: 7px; font-weight: inherit; }
+.app-ask-field {
+	display: block; width: 100%; min-height: 0; max-height: 8.6em; margin: 0; padding: 6px 10px; resize: none;
+	line-height: 1.4; overflow-y: auto; overflow-wrap: anywhere;
+}
+.app-ask-field::placeholder { color: var(--text-soft); }
+.app-ask-field:read-only { color: var(--text-muted); }
 .app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .app-ask-button {
 	min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
@@ -1629,6 +1641,12 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-button.is-yes { transition: background-color var(--motion-fast), color var(--motion-fast); }
 .app-ask-button.is-yes.is-awake { border-color: transparent; background: var(--text); color: var(--bg); }
 .app-ask-button.is-yes.is-awake:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
+/* The way to where a note waits: a link drawn as the bar's strong button. */
+.app-ask-button.is-go {
+	display: inline-flex; align-items: center; justify-content: center; border-color: transparent;
+	background: var(--text); color: var(--bg); text-decoration: none;
+}
+.app-ask-button.is-go:hover { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
 .app-ask-note {
 	display: flex; flex: 1 1 260px; align-items: center; gap: 8px; min-width: 0; margin: 0; overflow-wrap: anywhere;
 	max-height: min(40vh, 18rem); overflow-y: auto;
@@ -1636,8 +1654,16 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-note .icon { flex: none; width: 16px; height: 16px; }
 .app-ask-note.is-saved .icon { color: var(--ok); }
 .app-ask-note.is-failed { color: var(--danger); }
+.app-ask-note.is-waiting .icon { color: var(--text-muted); }
 @keyframes app-ask-in { from { opacity: 0; transform: translateY(-6px); } }
-@media (max-width: 560px) { .app-ask-buttons { width: 100%; } .app-ask-button { flex: 1; } }
+@media (max-width: 560px) {
+	.app-ask-buttons { width: 100%; }
+	.app-ask-button { flex: 1; }
+	/* On a phone the field takes the bar's whole width, under its label. */
+	.app-ask-lines dd:has(> .app-ask-field) { grid-column: 1 / -1; }
+	.app-ask-lines dt > label { padding-top: 4px; }
+	.app-ask-field { font-size: 16px; }
+}
 @media (prefers-reduced-motion: reduce) { .app-ask { animation: none; } .app-ask-button.is-yes { transition: none; } }
 
 /* The questions dock (views/question-dock.ts; Jonas, 10 November 2026): an agent's open questions about the app on

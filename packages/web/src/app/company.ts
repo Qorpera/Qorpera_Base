@@ -3194,6 +3194,30 @@ export class CompanyController {
 		}
 	}
 
+	/** Notes on their way, by conversation (`sendNote`). */
+	readonly #notes = new Map<string, number>();
+
+	/** Sends a note the member wrote and sent somewhere other than the conversation's own thread (a note from an app's
+	 * page or from the Mailbox, app/tell-agent.ts), as `sendPrompt` sends the thread's own message. A send goes only
+	 * while the conversation is on screen (the app's input writer checks the route, app/application.ts); for a note
+	 * the member's own press, on the bar that named the agent, stands for that, for as long as the note is on its way
+	 * (`noteOnItsWay`). Every other check of a send holds. */
+	async sendNote(sessionId: string, text: string): Promise<boolean> {
+		this.#notes.set(sessionId, (this.#notes.get(sessionId) ?? 0) + 1);
+		try {
+			return await this.sendPrompt(sessionId, text);
+		} finally {
+			const left = (this.#notes.get(sessionId) ?? 1) - 1;
+			if (left > 0) this.#notes.set(sessionId, left);
+			else this.#notes.delete(sessionId);
+		}
+	}
+
+	/** Whether a note to the conversation is on its way (`sendNote`). */
+	noteOnItsWay(sessionId: string): boolean {
+		return this.#notes.has(sessionId);
+	}
+
 	/** While an agent works, the member watches it happen: activity and the open
 	 * conversation are re-read every couple of seconds, easing off after two
 	 * minutes. The watch ends by itself a few seconds after the work does. */

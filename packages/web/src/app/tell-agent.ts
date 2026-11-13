@@ -1,0 +1,131 @@
+import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import type { HostedStaffAgent } from "../cloud/types.ts";
+import { t } from "../ui/preferences.ts";
+import type { CompanyController } from "./company.ts";
+import type { QuotedText } from "./quotes.ts";
+
+/* A member's note to an agent: the member's own message in the agent's shared thread, which starts the agent's run as
+ * any message there does. Two places send one:
+ * - the Mailbox, when an agent is asked to answer or write an email, or to take an address (views/mailbox.ts, through
+ *   CompanyMail.tell), its outside words as quotes;
+ * - an interface app's page, through the bar outside its frame (`qorpera.tell`, app/app-actions.ts;
+ *   deploy/first-node/RUNTIME-INTERFACE-APPS.md §5), to the agent that owns the app.
+ * A note goes from here only into a thread with nothing drafted in it and no answer to a wall question under way, on
+ * the model account the cloud chooses for that thread, as the thread itself chooses it. Otherwise, or when the send
+ * doesn't go (no model account, the cloud refused it), the note waits in that thread's composer for the member to
+ * send. */
+
+/** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
+export type TellAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
+
+/** How a note went: sent, or waiting in the agent's thread (`href`, where it waits). */
+export interface TellResult {
+	readonly sent: boolean;
+	readonly href: string;
+}
+
+/** Sends `note` to the agent as the member's own message. `closed` says the company or its reader went away meanwhile:
+ * then nothing is sent, and what was added waits. Throws when the agent's thread can't be opened or the note can't be
+ * added to its draft. */
+export async function tellAgent(
+	company: CompanyController,
+	accounts: TellAccounts,
+	agentId: string,
+	note: QuotedText,
+	closed: () => boolean = () => company.signal.aborted,
+): Promise<TellResult> {
+	const profileId = company.profile.profileId;
+	const cofounder = agentId === company.cofounderId();
+	const href = cofounder ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
+	let sessionId: string;
+	if (cofounder) {
+		const opened = await company.openCofounderConversation();
+		if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+		sessionId = opened.sessionId;
+	} else {
+		const agent = company.staffById(agentId);
+		if (agent?.employmentStatus !== "active") throw new Error(t("That agent is no longer at work."));
+		sessionId = await company.openStaffConversation(agent);
+	}
+	// What is drafted there decides: the member's own draft as this browser has it and, where drafts are shared, as the
+	// room has it now. Only a note into nothing drafted goes from here. An answer to a question from the agent's wall is
+	// drafted too: a send would put the question in front of the note (cloud/wall-reply.ts `withReply`).
+	const room = company.roomDrafts.room(sessionId);
+	if (room) await room.refresh();
+	if (closed()) return { sent: false, href };
+	const conversation = () => company.conversation(sessionId, false).get();
+	const shared = () => room?.draft(company.userId)?.body ?? "";
+	const before = conversation();
+	const empty =
+		(!room || room.usable()) &&
+		!shared().trim() &&
+		!(before.draft ?? "").trim() &&
+		!before.attachments?.length &&
+		before.answering === undefined &&
+		!before.sending &&
+		!before.retrySend;
+	company.addToDraft(sessionId, note);
+	// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
+	// merged shared draft, an attachment, a wall question picked) leaves it in the composer for the member to send.
+	const intended = conversation().draft ?? "";
+	if (!empty || closed()) return { sent: false, href };
+	await chooseThreadAccount(company, accounts, sessionId);
+	const now = conversation();
+	if (
+		closed() ||
+		now.draft !== intended ||
+		now.attachments?.length ||
+		now.answering !== undefined ||
+		now.sending ||
+		now.retrySend ||
+		![intended, ""].includes(shared())
+	)
+		return { sent: false, href };
+	// Sent from here, not from the thread: the member's press stands for the thread on screen (`sendNote`).
+	const sent = await company.sendNote(sessionId, intended);
+	return { sent, href };
+}
+
+/** Gives the conversation the model account the cloud chooses for it, as its thread does when it opens
+ * (views/session-execution.ts): the conversation's own account, never another one (founder decision 2026-10-04).
+ * A conversation with a message on its way keeps the account that message carries, and one the cloud has no account
+ * for keeps what it has. A choice that fails leaves the send (or an answer) to say what it needed. */
+export async function chooseThreadAccount(
+	company: CompanyController,
+	accounts: TellAccounts,
+	sessionId: string,
+): Promise<void> {
+	const conversation = company.conversation(sessionId, false).get();
+	if (conversation.sending || conversation.retrySend || !accounts.selectSessionAccount) return;
+	const signal = company.signal;
+	try {
+		const connectionId = await accounts.selectSessionAccount(sessionId, signal);
+		if (!connectionId) return;
+		const observed = await accounts.listConnections(signal);
+		const now = company.conversation(sessionId, false).get();
+		if (now.sending || now.retrySend) return;
+		company.setExecutionSponsor(sessionId, observed, connectionId);
+	} catch {
+		// The send still goes, or says what is missing.
+	}
+}
+
+/** Who hears a note from an interface app now (RUNTIME-INTERFACE-APPS.md §5 "tell"): the agent that owns the app, from
+ * its manifest's `owner`, while it is at work; the Co-Founder when the app has no owner or its owner left. Refused, with
+ * the reason a page is told (in English, as the bridge's other refusals), when the member may not write in the company
+ * or there is nobody to hear it. */
+export function noteReceiver(
+	company: CompanyController,
+	owner: string | null,
+): { readonly agent: HostedStaffAgent } | { readonly refused: string } {
+	const state = company.store.get();
+	if (state.accessLost || !state.team?.capabilities.write)
+		return { refused: "The member may not send messages in this company" };
+	const owning = owner === null ? undefined : company.staffById(owner);
+	if (owning?.employmentStatus === "active") return { agent: owning };
+	const cofounder = company.staffById(company.cofounderId());
+	if (cofounder?.employmentStatus === "active") return { agent: cofounder };
+	return {
+		refused: "Nobody can take a note from this app: its owner is not at work, and the company has no Co-Founder",
+	};
+}
