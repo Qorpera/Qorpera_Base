@@ -129,6 +129,9 @@ const MAX_DECODING = 8;
  * go at once and then SKIPS decoding (review r5 F1), and every bitmap of it is closed as it lands. `showing` turns true
  * only when pixels of it have reached the canvas, so until then the window keeps its own pictures.
  */
+/** What an await of a stream's work answers when that stream was dropped while it waited. */
+const GONE: unique symbol = Symbol("the stream is gone");
+
 interface StreamPaint {
 	readonly generation: number;
 	dropped: boolean;
@@ -140,6 +143,11 @@ interface StreamPaint {
 	size: { readonly width: number; readonly height: number } | null;
 	/** This stream's own order: each message waits for the one before it, and for nothing of any other stream. */
 	chain: Promise<void>;
+	/** Settles the moment this stream is dropped. EVERY await of one of its messages is raced against it, so a decode
+	 * that never settles cannot hold that message, or any message behind it, or their callers, past the stream's end
+	 * (the lead's audit of #1746, 13 Nov): the stream's work answers `dropped` at once, whatever it was waiting for. */
+	readonly gone: Promise<typeof GONE>;
+	readonly end: () => void;
 	decoding: number;
 	readonly waiting: (() => void)[];
 	readonly held: Set<{ readonly bytes: number; readonly pixels: number }>;
@@ -861,15 +869,19 @@ export class MachineScreenView {
 		paint.chain = new Promise<void>((resolve) => {
 			ready = resolve;
 		});
-		const decoded = await pictures;
-		await behind;
-		if (paint.dropped || this.#stop.signal.aborted) {
+		// Each wait below ends with the stream: a decode that never settles holds nothing past the drop, neither this
+		// message nor the ones behind it, nor whoever awaits them. Pictures that land later are closed where they land
+		// (`stale()` above); those already decoded were closed by the drop with the job.
+		const decoded = await Promise.race([pictures, paint.gone]);
+		const turn = decoded === GONE ? GONE : await Promise.race([behind, paint.gone]);
+		const url =
+			turn === GONE || message.kind !== "cursor" ? "" : await Promise.race([cursor.catch(() => ""), paint.gone]);
+		if (decoded === GONE || turn === GONE || url === GONE || paint.dropped || this.#stop.signal.aborted) {
 			this.#dispose(job);
 			letGo();
 			ready();
 			return "dropped";
 		}
-		const url = message.kind === "cursor" ? await cursor.catch(() => "") : "";
 		try {
 			return await this.#commit(job, () => {
 				// The live picture's own canvas: the window's pictures are on the other one and are never touched here.
@@ -925,6 +937,10 @@ export class MachineScreenView {
 	#paintFor(): StreamPaint {
 		const paint = this.#paint;
 		if (paint && !paint.dropped && paint.generation === this.#cleared) return paint;
+		let end: () => void = () => {};
+		const gone = new Promise<typeof GONE>((resolve) => {
+			end = () => resolve(GONE);
+		});
 		const made: StreamPaint = {
 			generation: this.#cleared,
 			dropped: false,
@@ -932,6 +948,8 @@ export class MachineScreenView {
 			jobs: new Set(),
 			size: null,
 			chain: Promise.resolve(),
+			gone,
+			end,
 			decoding: 0,
 			waiting: [],
 			held: new Set(),
@@ -953,8 +971,11 @@ export class MachineScreenView {
 		paint.size = null;
 		if (paint.showing) this.#handBack();
 		else this.#streamCanvas.hidden = true;
-		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped.
+		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped: a later
+		// message starts on a settled chain, and every message already waiting — on a decode, on the one before it, on
+		// its pointer shape — answers now, because each of those awaits is raced against the stream's end.
 		paint.chain = Promise.resolve();
+		paint.end();
 		// What its jobs had already decoded is closed now, not left behind a sibling that may never finish.
 		for (const job of paint.jobs) this.#dispose(job);
 		paint.jobs.clear();

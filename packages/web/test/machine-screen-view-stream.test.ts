@@ -219,8 +219,9 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(await screen.stream({ kind: "rects", rects: [area("new", 0, 0, 10, 10)] })).toBe("drawn");
 		expect(drawn).toEqual([["new", 0, 0]]);
 		expect(screen.streaming).toBe(true);
-		// The stalled ones never resolve; nothing of them is counted against the replacement.
-		expect(await Promise.race([Promise.all(old), Promise.resolve("still stuck")])).toBe("still stuck");
+		// Their decodes stay stalled for ever, yet each of their messages has answered `dropped`: ending the stream
+		// reaches every await of it (the lead's audit, 13 Nov). Nothing of them is counted against the replacement.
+		expect(await Promise.all(old)).toEqual(Array(8).fill("dropped"));
 		expect(screen.pending.decoding).toBeLessThanOrEqual(1);
 	});
 
@@ -273,8 +274,36 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		await vi.waitFor(() => expect(closed("done")).toBe(1));
 		// Nothing more was decoded: the waiter was let go and then skipped its decode, never started it.
 		expect(decode.mock.calls.length).toBe(8);
-		// The stalled ones stay stalled to the end.
-		expect(await Promise.race([Promise.all(waiting), Promise.resolve("still stuck")])).toBe("still stuck");
+		// The stalled decodes stay stalled to the end, and still every message of the dropped stream has answered.
+		expect(await Promise.all(waiting)).toEqual(Array(8).fill("dropped"));
+		expect(decode.mock.calls.length).toBe(8);
+	});
+
+	it("lets every suspended message of a dropped stream answer at once, however its decodes stand (the lead's audit of #1746, 13 Nov)", async () => {
+		const { screen, area, decode, closed } = view();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		// One message whose decode never settles, and three after it, which decode at once and wait their turn behind it.
+		const first = screen.stream({ kind: "rects", rects: [area("never", 0, 0, 10, 10, new Promise(() => {}))] });
+		const later = [1, 2, 3].map((n) =>
+			screen.stream({ kind: "rects", rects: [area(`later-${n}`, n * 10, 0, 10, 10)] }),
+		);
+		await vi.waitFor(() => expect(decode.mock.calls.length).toBe(4));
+		// The three have decoded (only the never-settling one still holds a decoding turn); none can go on.
+		await vi.waitFor(() =>
+			expect(screen.pending).toEqual({
+				messages: 4,
+				bytes: "never".length + 3 * "later-1".length,
+				pixels: 4 * 100,
+				decoding: 1,
+			}),
+		);
+		expect(await Promise.race([...later, Promise.resolve("waiting")])).toBe("waiting");
+		// The stream is dropped: all four answer at once, the decode that never settles notwithstanding.
+		screen.streamEnded();
+		expect(await Promise.all([first, ...later])).toEqual(["dropped", "dropped", "dropped", "dropped"]);
+		// What the later ones had decoded is closed, each exactly once, and the stream holds nothing any more.
+		expect([1, 2, 3].map((n) => closed(`later-${n}`))).toEqual([1, 1, 1]);
+		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
 	});
 
 	it("gives the window's own pictures and the live picture a canvas each: neither ever writes where the other draws (review r6 of #1746)", async () => {
