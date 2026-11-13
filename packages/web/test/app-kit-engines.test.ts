@@ -408,8 +408,8 @@ describe("each data kit's note to the app's owner", () => {
 		readonly name: string;
 		readonly ask?: unknown;
 	}
-	/** Each kit's data with one thing in it, how a member opens the thing's detail and what then shows, what the note
-	 * is about and which thing it names, and an id the kit keeps that the call's pattern does not take. */
+	/** Each kit's data with one thing in it, how a member opens the thing's detail, what then shows and how it closes,
+	 * what the note is about and which thing it names, and an id the kit keeps that the call's pattern does not take. */
 	const KIT_THING: Readonly<
 		Record<
 			Kit,
@@ -417,6 +417,7 @@ describe("each data kit's note to the app's owner", () => {
 				readonly data: (thing: Thing, words: unknown) => string;
 				readonly open: (thing: Thing) => void;
 				readonly shown: string;
+				readonly close: () => void;
 				readonly about: (thing: Thing) => string;
 				readonly at: (thing: Thing) => string;
 				readonly odd: string;
@@ -450,6 +451,8 @@ describe("each data kit's note to the app's owner", () => {
 				}),
 			open: () => press(".mk-label"),
 			shown: ".mk-tip.mk-on",
+			// a second tap on the label closes its note
+			close: () => press(".mk-label"),
 			about: (thing) => `${thing.name} · 40 kr`,
 			at: (thing) => thing.id,
 			odd: "_price",
@@ -465,6 +468,7 @@ describe("each data kit's note to the app's owner", () => {
 				}),
 			open: (thing) => press(`.bk-item[data-id="${thing.id}"]`),
 			shown: ".bk-sheet.is-open",
+			close: () => press(".bk-sheet .bk-x"),
 			about: (thing) => thing.name,
 			at: (thing) => thing.id,
 			odd: "two words",
@@ -480,6 +484,7 @@ describe("each data kit's note to the app's owner", () => {
 				}),
 			open: (thing) => press(`.pk-node[data-key="n:${thing.id}:look"]`),
 			shown: ".pk-sheet",
+			close: () => press(".pk-sheet .pk-x"),
 			about: (thing) => `Look · ${thing.name}`,
 			at: (thing) => `${thing.id}:look`,
 			odd: "two words",
@@ -495,6 +500,7 @@ describe("each data kit's note to the app's owner", () => {
 				}),
 			open: (thing) => press(`.ok-strip button[data-id="${thing.id}"]`),
 			shown: ".ok-note.open",
+			close: () => press(".ok-close"),
 			about: (thing) => thing.name,
 			at: (thing) => thing.id,
 			odd: "two words",
@@ -546,7 +552,43 @@ describe("each data kit's note to the app's owner", () => {
 		},
 	);
 
-	it.each(KITS)("of %s shows why a note did not go, and keeps its button for another press", async (kit) => {
+	it.each(KITS)("of %s says for a few seconds why a note did not go, and keeps its button", async (kit) => {
+		const thing = KIT_THING[kit];
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
+			throw new Error("The member said not now.");
+		});
+		await open(kit, thing.data(LYS, WORDS), undefined, tell);
+		thing.open(LYS);
+		const why = document.querySelector(WHY);
+		expect(why?.textContent).toBe("");
+		expect(why?.getAttribute("aria-live")).toBe("polite");
+		button()?.click();
+		await settle();
+		// The bridge's sentence, read out, in the line that was there empty: nothing moves for it.
+		expect(document.querySelector(WHY)).toBe(why);
+		expect(why?.textContent).toBe("The member said not now.");
+		expect(button()?.textContent).toBe("Ask Ida");
+		expect(button()?.hasAttribute("aria-disabled")).toBe(false);
+		// Most often it is the member's own "not now" of a moment ago: it goes by itself after six seconds.
+		await settle(5900);
+		expect(why?.textContent).toBe("The member said not now.");
+		await settle(100);
+		expect(why?.textContent).toBe("");
+		// Refused again and pressed again, it goes at once; the note then waits in the agent's thread, as done as one
+		// that went.
+		button()?.click();
+		await settle();
+		expect(why?.textContent).toBe("The member said not now.");
+		tell.mockResolvedValueOnce({ sent: false, waiting: true });
+		button()?.click();
+		expect(why?.textContent).toBe("");
+		await settle();
+		expect(tell).toHaveBeenCalledTimes(3);
+		expect(button()?.textContent).toBe("Sent to Ida");
+		expect(why?.textContent).toBe("");
+	});
+
+	it.each(KITS)("of %s takes the reason a note did not go away at once when the detail closes", async (kit) => {
 		const thing = KIT_THING[kit];
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
 			throw new Error("The member said not now.");
@@ -556,15 +598,13 @@ describe("each data kit's note to the app's owner", () => {
 		button()?.click();
 		await settle();
 		expect(document.querySelector(WHY)?.textContent).toBe("The member said not now.");
-		expect(button()?.textContent).toBe("Ask Ida");
-		expect(button()?.hasAttribute("aria-disabled")).toBe(false);
-		// Pressed again, the note waits in the agent's thread: as done as a note that went.
-		tell.mockResolvedValueOnce({ sent: false, waiting: true });
-		button()?.click();
-		await settle();
-		expect(tell).toHaveBeenCalledTimes(2);
+		thing.close();
+		expect(document.querySelector(thing.shown)).toBeNull();
+		for (const line of document.querySelectorAll(WHY)) expect(line.textContent).toBe("");
+		// Opened again before the six seconds are up, the thing shows its button and no reason.
+		thing.open(LYS);
 		expect(document.querySelector(WHY)?.textContent).toBe("");
-		expect(button()?.textContent).toBe("Sent to Ida");
+		expect(button()?.textContent).toBe("Ask Ida");
 	});
 
 	it.each(KITS)(

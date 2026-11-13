@@ -191,8 +191,10 @@ a.pk-row:hover .go{color:var(--q-accent)}
 .pk-tip a:hover{background:var(--q-surface)}
 .pk-sheet.dock{position:fixed;left:12px;right:12px;bottom:12px;top:auto;width:auto;max-height:62vh;overflow:auto}
 /* a note to the app's owner, at the foot of a step's sheet */
-/* the reason a note did not go stands beside the button where there is room, so the sheet keeps its height */
-.pk-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0}
+/* the reason a note did not go stands quietly beside the button, over a cell that holds no height of its own, so
+   nothing moves when it comes and goes */
+.pk-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:12px;margin:6px 0}
+.pk-tell-c{position:relative;align-self:stretch}
 .pk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:inherit;font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
 .pk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
 .pk-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
@@ -202,9 +204,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 .pk-tell-b.pk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
 .pk-tell-b.pk-told.pk-bare{padding:0}
 .pk-tell-b.pk-told svg{color:var(--q-good)}
-.pk-tell-why{flex:1 1 140px;margin:0;font-size:13px;line-height:1.4;color:var(--q-muted)}
-.pk-tell-why:empty{display:none}
-.pk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.pk-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--q-muted)}
 /* motion */
 @keyframes pk-pulse{0%{transform:scale(1);opacity:.6}70%,100%{transform:scale(1.75);opacity:0}}
 @keyframes pk-sheet{from{opacity:0;transform:translateY(4px)}}
@@ -285,6 +285,17 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
 	const TOLD = new Map();
+	// the timer that takes a thing's reason away again
+	const QUIET = new Map();
+	// a closed detail keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of document.querySelectorAll(".pk-tell-b")) if (x.__tell) x.__tell.paint();
+	}
 	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
 	// what a note is about, as one line of at most 60 characters, cut at a word
 	function noteAbout(...parts) {
@@ -307,8 +318,13 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		if (!canTell() || !about) return null;
 		const at = TELL_AT.test(id || "") ? id : null;
 		const key = `${at || ""}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
 		const b = el("button", "pk-tell-b", { type: "button" });
-		const why = el("p", "pk-tell-why", { role: "status" });
+		const why = el("p", "pk-tell-why", { role: "status", "aria-live": "polite" });
 		const paint = () => {
 			const st = TOLD.get(key) || {};
 			const label = st.done ? words.told : words.tell;
@@ -334,7 +350,10 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			if (at) note.at = at;
 			if (ask) note.text = ask;
 			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
 				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
 				for (const x of document.querySelectorAll(".pk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
 			};
 			settle({ busy: true });
@@ -346,7 +365,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			}
 		});
 		paint();
-		return el("div", "pk-tell", null, [b, why]);
+		return el("div", "pk-tell", null, [b, el("div", "pk-tell-c", null, why)]);
 	}
 
 	// ---------------------------------------------------------------- the data
@@ -1385,6 +1404,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	function closeSheet(refocus) {
 		const was = ui.open;
 		ui.open = null;
+		hushTold();
 		if (sheetEl) sheetEl.remove();
 		sheetEl = null;
 		if (!mapEl) return;

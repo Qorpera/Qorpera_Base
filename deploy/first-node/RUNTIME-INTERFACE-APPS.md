@@ -397,8 +397,10 @@ call the web does not already answer.
   sent only where it fits the call's pattern; `text` the thing's `ask` (a draft, at most 40 characters). The data's
   `words.tell` is the button's label, written by the agent naming itself ("Spørg Luna"), and `words.told` what it
   says once the note went or waits in the thread; without `tell` the button is a speech-bubble mark with an English
-  name for screen readers. A refusal shows its reason beside the button, which stays. The button is drawn only
-  where the page's `qorpera` has `tell`: an older web, and the page opened outside Qorpera, show none.
+  name for screen readers. A refusal (most often the member's own "Not now") shows the bridge's sentence quietly
+  beside the button, read out and moving nothing, for six seconds, or until the next press or the detail closes; the
+  button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
+  outside Qorpera, show none.
 - **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
   shows. How the page looks stays the agent's to check on a machine.
 

@@ -302,9 +302,10 @@ body{margin:0}
 .bk-light .bk-x{top:var(--pad);right:var(--pad);background:var(--q-surface);box-shadow:inset 0 0 0 1px var(--hair)}
 @media (max-width:640px){.bk-wall{columns:2 140px;column-gap:10px}.bk-tile{margin-bottom:10px}.bk-tov{opacity:1;transform:none;padding:22px 10px 9px}.bk-tnote{display:none}.bk-nav{top:auto;bottom:var(--pad)}}
 
-/* a note to the app's owner, at the foot of a thing's detail: the reason a note did not go stands beside the button
-   where there is room, so the foot keeps its height */
-.bk-tell{--tk:var(--q-text);display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:22px}
+/* a note to the app's owner, at the foot of a thing's detail: the reason a note did not go stands quietly beside the
+   button, over a cell that holds no height of its own, so nothing moves when it comes and goes */
+.bk-tell{--tk:var(--q-text);display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:14px;margin-top:22px}
+.bk-tell-c{position:relative;align-self:stretch}
 .bk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border-radius:999px;font-size:14px;font-weight:550;line-height:1.2;color:var(--tk);background:color-mix(in srgb,var(--tk) 7%,transparent);transition:background .2s,opacity .2s}
 .bk-tell-b:hover{background:color-mix(in srgb,var(--tk) 12%,transparent)}
 .bk-tell-b.is-bare{padding:0}
@@ -314,13 +315,12 @@ body{margin:0}
 .bk-tell-b.is-told{background:none;color:color-mix(in srgb,var(--tk) 66%,transparent);cursor:default;padding-left:4px}
 .bk-tell-b.is-told.is-bare{padding:0}
 .bk-tell-b.is-told svg{color:var(--q-good)}
-.bk-tell-why{flex:1 1 150px;margin:0;max-width:40ch;font-size:13px;line-height:1.4;color:color-mix(in srgb,var(--tk) 70%,transparent)}
-.bk-tell-why:empty{display:none}
-.bk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.bk-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:color-mix(in srgb,var(--tk) 64%,transparent)}
 .bk-world .bk-tell{--tk:var(--ink);margin-top:0}
 .bk-act .bk-tell{align-self:stretch;margin-top:4px}
-.bk-light .bk-tell{justify-content:center;margin-top:0}
-.bk-light .bk-tell-why{flex:0 1 auto}
+.bk-light .bk-tell{width:min(560px,100%);grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);margin-top:0}
+.bk-light .bk-tell-b{grid-column:2}
+.bk-light .bk-tell-c{grid-column:3}
 .bk-light.has-tell figure>img,.bk-light.has-tell figure>.bk-ph{max-height:calc(100vh - 230px)}
 
 @media (prefers-reduced-motion:reduce){
@@ -604,6 +604,17 @@ body{margin:0}
 	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 	/** Each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go). */
 	const TOLD = new Map();
+	/** The timer that takes a thing's reason away again. */
+	const QUIET = new Map();
+	/** A closed detail keeps no reason: it is gone at once. */
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".bk-tell-b")) if (x.__tell) x.__tell.paint();
+	}
 	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
 	/** What a note is about, as one line of at most 60 characters, cut at a word. */
 	function noteAbout(...parts) {
@@ -622,8 +633,13 @@ body{margin:0}
 		if (!canTell() || !about) return null;
 		const at = TELL_AT.test(id || "") ? id : null;
 		const key = `${at || ""}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
 		const b = h("button", "bk-tell-b", { type: "button" });
-		const why = h("p", "bk-tell-why", { role: "status" });
+		const why = h("p", "bk-tell-why", { role: "status", "aria-live": "polite" });
 		const paint = () => {
 			const st = TOLD.get(key) || {};
 			const label = st.done ? WORDS.told : WORDS.tell;
@@ -647,7 +663,10 @@ body{margin:0}
 			if (at) note.at = at;
 			if (ask) note.text = ask;
 			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
 				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
 				for (const el of D.querySelectorAll(".bk-tell-b")) if (el.__tell && el.__tell.key === key) el.__tell.paint();
 			};
 			settle({ busy: true });
@@ -659,7 +678,7 @@ body{margin:0}
 			}
 		});
 		paint();
-		return h("div", "bk-tell", null, b, why);
+		return h("div", "bk-tell", null, b, h("div", "bk-tell-c", null, why));
 	}
 
 	/* ---------------------------------------------------------------- data */
@@ -1106,6 +1125,7 @@ body{margin:0}
 			if (!S.open) return;
 			const id = S.open;
 			S.open = null;
+			hushTold();
 			sheet.classList.remove("is-open");
 			sheet.setAttribute("aria-hidden", "true");
 			root.classList.remove("has-sheet");
@@ -1639,6 +1659,7 @@ body{margin:0}
 		}
 		function closeWorld() {
 			if (!world) return;
+			hushTold();
 			const id = world.id;
 			world.remove();
 			world = null;
@@ -1727,6 +1748,7 @@ body{margin:0}
 		}
 		function hide() {
 			if (!light) return;
+			hushTold();
 			light.remove();
 			light = null;
 			if (tiles[at]) tiles[at].focus({ preventScroll: true });

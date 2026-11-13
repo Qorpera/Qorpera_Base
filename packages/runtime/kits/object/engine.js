@@ -109,9 +109,11 @@ body{margin:0}
 .ok-note p{margin:5px 0 0;font-size:15px;line-height:1.45;color:var(--q-text)}
 .ok-close{position:absolute;right:6px;top:6px;width:40px;height:40px;border:0;background:none;border-radius:12px;color:var(--q-muted);cursor:pointer;display:grid;place-items:center}
 .ok-close:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 6%,transparent)}
-/* a note to the app's owner, at the foot of a part's note: the reason a note did not go stands beside the button where
-   there is room, so the note (anchored by its foot on a wide screen) keeps its height */
-.ok-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:10px}
+/* a note to the app's owner, at the foot of a part's note: the reason a note did not go stands quietly beside the
+   button, over a cell that holds no height of its own, so the note (anchored by its foot on a wide screen) keeps its
+   height when it comes and goes */
+.ok-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:14px;margin-top:10px}
+.ok-tell-c{position:relative;align-self:stretch}
 .ok .ok-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
 .ok .ok-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
 .ok .ok-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
@@ -121,9 +123,7 @@ body{margin:0}
 .ok .ok-tell-b.ok-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
 .ok .ok-tell-b.ok-told.ok-bare{padding:0}
 .ok .ok-tell-b.ok-told svg{color:var(--q-good)}
-.ok-note .ok-tell-why{flex:1 1 120px;margin:0;font-size:13px;line-height:1.35;color:var(--q-muted)}
-.ok-tell-why:empty{display:none}
-.ok-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.ok-note .ok-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--q-muted)}
 .ok-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;font-size:13px;color:var(--q-muted);white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .6s ease}
 .ok.in .ok-hint.show{opacity:1}
 .ok-below{display:flex;flex-direction:column;align-items:center;gap:clamp(10px,1.8vh,20px)}
@@ -165,6 +165,17 @@ body{margin:0}
 	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
 	const TOLD = new Map();
+	// the timer that takes a thing's reason away again
+	const QUIET = new Map();
+	// a closed detail keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell) x.__tell.paint();
+	}
 	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
 	// what a note is about, as one line of at most 60 characters, cut at a word
 	function noteAbout(...parts) {
@@ -187,8 +198,13 @@ body{margin:0}
 		if (!canTell() || !about) return null;
 		const at = TELL_AT.test(id || "") ? id : null;
 		const key = `${at || ""}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
 		const b = h("button", "ok-tell-b", { type: "button" });
-		const why = h("p", "ok-tell-why", { role: "status" });
+		const why = h("p", "ok-tell-why", { role: "status", "aria-live": "polite" });
 		const paint = () => {
 			const st = TOLD.get(key) || {};
 			const label = st.done ? words.told : words.tell;
@@ -214,7 +230,10 @@ body{margin:0}
 			if (at) note.at = at;
 			if (ask) note.text = ask;
 			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
 				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
 				for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
 			};
 			settle({ busy: true });
@@ -226,7 +245,7 @@ body{margin:0}
 			}
 		});
 		paint();
-		return h("div", "ok-tell", null, [b, why]);
+		return h("div", "ok-tell", null, [b, h("div", "ok-tell-c", null, why)]);
 	}
 
 	// ------------------------------------------------------------------ data
@@ -1045,6 +1064,7 @@ body{margin:0}
 		const part = S.sel ? V().parts.find((p) => p.id === S.sel) : null;
 		if (!part) {
 			R.note.classList.remove("open");
+			hushTold();
 			return;
 		}
 		const head = h("div", "ok-note-h", null, [markOf(part.state), h("span", null, null, part.name)]);

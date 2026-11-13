@@ -274,6 +274,17 @@
 	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
 	const TOLD = new Map();
+	// the timer that takes a thing's reason away again
+	const QUIET = new Map();
+	// a closed detail keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".mk-tell-b")) if (x.__tell) x.__tell.paint();
+	}
 	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
 	// what a note is about, as one line of at most 60 characters, cut at a word
 	function noteAbout(...parts) {
@@ -296,10 +307,16 @@
 		if (!canTell() || !about) return null;
 		const at = TELL_AT.test(id || "") ? id : null;
 		const key = `${at || ""}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
 		const b = h("button", "mk-tell-b");
 		b.type = "button";
 		const why = h("p", "mk-tell-why");
 		why.setAttribute("role", "status");
+		why.setAttribute("aria-live", "polite");
 		const paint = () => {
 			const st = TOLD.get(key) || {};
 			const label = st.done ? M.words.told : M.words.tell;
@@ -325,7 +342,10 @@
 			if (at) note.at = at;
 			if (ask) note.text = ask;
 			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
 				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
 				for (const x of D.querySelectorAll(".mk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
 			};
 			settle({ busy: true });
@@ -337,7 +357,7 @@
 			}
 		});
 		paint();
-		return h("div", "mk-tell", [b, why]);
+		return h("div", "mk-tell", [b, h("div", "mk-tell-c", why)]);
 	}
 
 	// ---------- the data, made safe
@@ -767,8 +787,13 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk-tip.mk-note{transform:translate(0,6px);font-size:14px}
 .mk-tip.mk-note.mk-on{pointer-events:auto}
 .mk-tip.mk-note:has(.mk-tell){padding:7px}
+/* room beside the button for the reason a note did not go: a tip with only the button widens to the right for it */
+.mk-tip.mk-note:has(.mk-tip-txt):has(.mk-tell),.mk-tip.mk-note:has(.mk-tell-why:not(:empty)){width:280px}
 .mk-tip:has(.mk-tell) .mk-tip-txt{padding:2px 4px 0}
-.mk-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+/* the reason a note did not go stands quietly beside the button, over a cell that holds no height of its own, so
+   nothing moves when it comes and goes */
+.mk-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:12px}
+.mk-tell-c{position:relative;align-self:stretch}
 .mk-tip-txt+.mk-tell{margin-top:8px}
 .mk-tell-b{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:550 14px/1.2 var(--q-font);cursor:pointer;transition:background .2s,opacity .2s}
 .mk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
@@ -779,9 +804,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk-tell-b.mk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
 .mk-tell-b.mk-told.mk-bare{padding:0}
 .mk-tell-b.mk-told svg{color:var(--q-good)}
-.mk-tell-why{flex:1 1 130px;margin:0 4px 0 0;font-size:13px;line-height:1.4;color:var(--q-muted)}
-.mk-tell-why:empty{display:none}
-.mk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.mk-tell-why{position:absolute;left:0;right:4px;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--q-muted)}
 .mk-tip b{font-weight:620;font-variant-numeric:tabular-nums}
 .mk-tip span{display:block;color:var(--q-muted)}
 .mk-top{grid-area:top;display:flex;align-items:flex-end;gap:0 24px;min-width:0}
@@ -1909,6 +1932,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	}
 	function hideTip() {
 		if (!ui || !ui.tip) return;
+		hushTold();
 		ui.tip.classList.remove("mk-on");
 		if (ui.noteFor) ui.noteFor.setAttribute("aria-expanded", "false");
 		ui.tipFor = null;
