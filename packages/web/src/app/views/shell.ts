@@ -2947,7 +2947,6 @@ function groupColourMenu(company: CompanyController, parts: RailParts, id: strin
 		panel: () =>
 			appLookPanel(
 				() => ({
-					title: name,
 					ink:
 						parts.appsGrid
 							.querySelector<HTMLElement>(`[data-app-key="${key}"]`)
@@ -2992,7 +2991,6 @@ function lookMenu(company: CompanyController, parts: RailParts, key: string, nam
 						? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
 						: undefined;
 					return {
-						title: name,
 						ink: tileOf()?.style.getPropertyValue("--app-colour") || undefined,
 						colour: {
 							chosen: layout?.colours?.[colourKey] ?? null,

@@ -30,7 +30,6 @@ export const COLOUR_LABELS: Readonly<Record<AgentColour, string>> = {
 };
 
 export interface AppLookState {
-	readonly title: string;
 	/** The colour the app's emblems are drawn in now, as a CSS colour (undefined: the text's). */
 	readonly ink: string | undefined;
 	readonly colour: {
@@ -87,6 +86,8 @@ export function appLookPanel(
 				picture,
 			);
 		const { colour, emblem, made } = state;
+		// Colours alone (a group's): a narrower panel, the two rows of colours filling it.
+		el.classList.toggle("is-colours", !emblem);
 		const builtIn = (name: string) =>
 			choice(
 				t(EMBLEM_LABELS[name] ?? name),
@@ -96,7 +97,6 @@ export function appLookPanel(
 			);
 		replace(
 			el,
-			h("div", { class: "app-look-title" }, state.title),
 			h(
 				"div",
 				{ class: "app-look-label" },
@@ -129,13 +129,6 @@ export function appLookPanel(
 					}),
 				),
 			),
-			colour.group
-				? h(
-						"p",
-						{ class: "app-look-note" },
-						t("Apps in {group} take its colour, so this changes all of them.", { group: colour.group }),
-					)
-				: null,
 			...(emblem
 				? [
 						made ? h("div", { class: "app-look-label" }, t("Made for this app")) : null,
