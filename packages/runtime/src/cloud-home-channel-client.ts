@@ -42,12 +42,28 @@ export function createCloudHomeChannel(options: {
 	return {
 		open: async (input, signal) => {
 			signal.throwIfAborted();
-			// One deadline over the whole of it: the connection, the upgrade and the handshake (review round 1, F11).
-			// A peer that accepts and says nothing cannot hold a run's turn, and a stopped run drops it at once.
-			const deadline = AbortSignal.any([signal, AbortSignal.timeout(CLOUD_HOME_CHANNEL_OPEN_MS)]);
+			// One deadline over the whole of the opening: the connection, the upgrade and the handshake (review round
+			// 1, F11). A peer that accepts and says nothing cannot hold a run's turn, and a stopped run drops it at
+			// once. It ends when the channel is open, deliberately: a deadline left on the request would destroy the
+			// channel from under a run that is working on its machine (the request owns the socket it upgraded).
+			const limit = new AbortController();
+			const timer = setTimeout(() => limit.abort(new Error("the ingress did not answer")), CLOUD_HOME_CHANNEL_OPEN_MS);
+			const stopped = (): void => limit.abort(new Error("stopped"));
+			signal.addEventListener("abort", stopped, { once: true });
+			const deadline = limit.signal;
+			const done = (): void => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", stopped);
+			};
+			try {
+				return await openChannel();
+			} finally {
+				done();
+			}
+
+			async function openChannel(): Promise<CloudCodexHomeStream> {
 			const open = base.protocol === "https:" ? httpsRequest : httpRequest;
 			const connection = open({
-				signal: deadline,
 				protocol: base.protocol,
 				hostname: base.hostname,
 				port: base.port,
@@ -61,19 +77,29 @@ export function createCloudHomeChannel(options: {
 				},
 			});
 			const socket = await new Promise<Socket>((resolve, reject) => {
-				// `signal` above ends the request itself; this says so in the host's own words.
-				const abort = (): void => fail("stopped");
-				deadline.addEventListener("abort", abort, { once: true });
-				connection.once("close", () => deadline.removeEventListener("abort", abort));
 				// The cause stays in this host's journal: the model is told the home is unavailable, never why in the
 				// ingress's own words, and never an address.
-				const fail = (why: string): void => reject(new Error(`${ERROR}: ${why}`));
-				connection.once("error", (error) => fail(String((error as NodeJS.ErrnoException)?.code ?? "unreachable")));
-				connection.once("response", (answer) => {
+				const fail = (why: string): void => {
 					connection.destroy();
+					reject(new Error(`${ERROR}: ${why}`));
+				};
+				// Until the upgrade, the deadline ends the request itself; after it, nothing of the opening holds the
+				// socket, which is the channel from then on.
+				const abort = (): void => fail(String((deadline.reason as Error)?.message ?? "stopped"));
+				deadline.addEventListener("abort", abort, { once: true });
+				const settled = (): void => deadline.removeEventListener("abort", abort);
+				connection.once("error", (error) => {
+					settled();
+					fail(String((error as NodeJS.ErrnoException)?.code ?? "unreachable"));
+				});
+				connection.once("response", (answer) => {
+					settled();
 					fail(`refused ${answer.statusCode ?? 0} ${String(answer.headers["x-qorpera-home"] ?? "")}`.trim());
 				});
-				connection.once("upgrade", (_answer, upgraded) => resolve(upgraded as Socket));
+				connection.once("upgrade", (_answer, upgraded) => {
+					settled();
+					resolve(upgraded as Socket);
+				});
 				connection.end();
 			});
 			socket.on("error", () => undefined);
@@ -110,6 +136,7 @@ export function createCloudHomeChannel(options: {
 					socket.destroy();
 				},
 			} satisfies CloudCodexHomeStream;
+			}
 		},
 	};
 }

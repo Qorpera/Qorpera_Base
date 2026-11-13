@@ -827,6 +827,10 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 	} catch (error) {
 		const logs = readLogs(logDir);
 		process.stdout.write(`scenario ${name} failed: ${error?.stack ?? error}\n`);
+		// What the host itself saw, which a failed run never printed before: why a channel would not open, and how
+		// much went each way.
+		record.homeCause = state.homes?.map((home) => ({ cause: home.cause ?? null, failure: home.failure ?? null, counts: home.counts })) ?? [];
+		process.stdout.write(`home: ${JSON.stringify(record.homeCause)}; reviews ${state.reviews.length}; exec lines ${state.exec.length}\n`);
 		for (const refusal of db.refusals) process.stdout.write(`refused ${refusal.slice(0, 400)}\n`);
 		process.stdout.write(`codex stderr (last 3000):\n${logs.codexStderr.slice(-3000)}\n`);
 		process.stdout.write(`machine stderr (last 3000):\n${logs.machineStderr.slice(-3000)}\n`);

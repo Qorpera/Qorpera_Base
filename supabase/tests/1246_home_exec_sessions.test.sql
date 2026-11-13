@@ -9,7 +9,7 @@
 --    machine it names, the run, its agent and the member it works for; the same session id again answers the same row,
 --    and no second row is written. A stopped machine is refused MACHINE_NOT_RUNNING in words the model can act on.
 -- 3. A session belongs to one run and one boot: another run's binding cannot take that session id (42501), a run has
---    one open a boot (HOME_SESSION_OPEN), and after a restart on the same disk the session of the boot before is
+--    one open a boot (a run that comes back supersedes its own), and after a restart on the same disk the session of the boot before is
 --    refused HOME_SESSION_ENDED while the run opens its own on the new boot.
 -- 4. A closed session stays closed: the close answers it, a second close answers the same, and the authority refuses
 --    it afterwards. With the switch off again, even an open session's authority is refused.
@@ -213,24 +213,35 @@ begin
 	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_session, v_other) in ('42501','22023'),
 		'3: another run cannot take this session: ' || pg_temp.h1_try('home-a', v_session, v_other));
 	perform pg_temp.base_assert(jsonb_array_length(pg_temp.h1_sessions(v_session)) = 1, '3: still one row');
-	-- One channel at a time on one boot: a second session id while this run's is open is refused in words, not as a
-	-- row clash.
-	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_second) = 'HOME_SESSION_OPEN',
-		'3: a run has one open session a boot: ' || pg_temp.h1_try('home-a', v_second));
-	perform pg_temp.base_assert(jsonb_array_length(pg_temp.h1_sessions(v_second)) = 0, '3: and no row for the second');
+	-- One open session a run a boot. The run comes back with a session id of its own (its host was killed and nothing
+	-- closed the row): it is given its home, and its own earlier session is closed as superseded, so no row has to be
+	-- cleaned up by hand and the run is never shut out of its home (review round 1, F10).
+	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_second) = 'authorized',
+		'3: a run that comes back gets its home: ' || pg_temp.h1_try('home-a', v_second));
+	perform pg_temp.base_assert(pg_temp.h1_sessions(v_second) #> '{0,closed}' = 'false'::jsonb
+		and pg_temp.h1_sessions(v_session) #> '{0,closed}' = 'true'::jsonb,
+		'3: the earlier one is closed: ' || pg_temp.h1_sessions(v_session)::text);
+	perform pg_temp.base_assert((select count(*) from public.qorpera_company_home_sessions
+		where run_id = (pg_temp.h1_binding() ->> 'runId')::uuid and closed_at is null) = 1,
+		'3: exactly one open session for the run');
+	-- The superseded one is over for good: asked again it is refused in words, not reopened.
+	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_session) = 'HOME_SESSION_ENDED',
+		'3: the superseded session is over: ' || pg_temp.h1_try('home-a', v_session));
 	-- The machine is restarted on the same disk: a new boot of the same placement. The session of the boot before is
 	-- refused in words, because its home went with that boot (review round 1, F4).
 	perform pg_temp.h1_up('home-a', extensions.gen_random_uuid());
 	perform pg_temp.base_assert((pg_temp.h1_placement('home-a')).boot_id::text
 		is distinct from current_setting('qorpera_test.h1_boot'), '3: the machine rebooted on the same disk');
-	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_session) = 'HOME_SESSION_ENDED',
-		'3: a session of the boot before is refused in words: ' || pg_temp.h1_try('home-a', v_session));
-	-- The same run opens a session of its own on the new boot, with the old one still open on the old boot.
+	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_second) = 'HOME_SESSION_ENDED',
+		'3: a session of the boot before is refused in words: ' || pg_temp.h1_try('home-a', v_second));
+	-- The same run opens a session of its own on the new boot; the one from the boot before stays as it was.
 	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_third) = 'authorized',
 		'3: the run opens a session on the new boot: ' || pg_temp.h1_try('home-a', v_third));
 	perform pg_temp.base_assert(pg_temp.h1_sessions(v_third) #>> '{0,boot}' = (pg_temp.h1_placement('home-a')).boot_id::text
-		and pg_temp.h1_sessions(v_session) #>> '{0,boot}' = current_setting('qorpera_test.h1_boot'),
+		and pg_temp.h1_sessions(v_second) #>> '{0,boot}' = current_setting('qorpera_test.h1_boot'),
 		'3: each session keeps its own boot');
+	-- The run's open session from here on is the one on this boot.
+	perform set_config('qorpera_test.h1_session', v_third::text, false);
 end $$;
 
 -- 4. Closing ------------------------------------------------------------------------------------------------------------

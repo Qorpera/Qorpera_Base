@@ -1,6 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+	CLOUD_HOME_LOST,
 	CLOUD_HOME_NO_RECORD,
+	CLOUD_HOME_UNAVAILABLE,
+	CloudCodexHome,
+	type CloudCodexHomeStream,
 	CloudCodexHomeSteps,
 	describeCloudHomeAction,
 } from "@qorpera/runtime/cloud-codex-home";
@@ -167,5 +175,116 @@ describe("the channel's own reader", () => {
 			for await (const _line of cloudHomeChannelLines(chunks())) break;
 		};
 		await expect(read()).rejects.toThrow(/too large/i);
+	});
+});
+
+/** A machine's side of the channel this test drives by hand: what was written to it, and when its lines end. */
+function fakeMachine() {
+	const written: string[] = [];
+	let end: () => void = () => undefined;
+	const ended = new Promise<void>((resolve) => {
+		end = resolve;
+	});
+	const stream: CloudCodexHomeStream = {
+		write: (line) => {
+			written.push(line);
+		},
+		lines: (async function* lines() {
+			await ended;
+		})(),
+		close: async () => {
+			end();
+		},
+	};
+	return { written, end, stream };
+}
+
+/** Codex's side: connect to the home's socket, send lines, read the lines it answers with. */
+function slotSide(path: string) {
+	const socket = createConnection(path);
+	const lines: string[] = [];
+	let rest = "";
+	socket.on("data", (chunk) => {
+		rest += chunk.toString("utf8");
+		let at = rest.indexOf("\n");
+		while (at >= 0) {
+			lines.push(rest.slice(0, at));
+			rest = rest.slice(at + 1);
+			at = rest.indexOf("\n");
+		}
+	});
+	socket.on("error", () => undefined);
+	const ready = new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+	const next = async (): Promise<string> => {
+		for (let waited = 0; waited < 200; waited++) {
+			const line = lines.shift();
+			if (line !== undefined) return line;
+			await new Promise((done) => setTimeout(done, 25));
+		}
+		throw new Error("the home answered nothing");
+	};
+	return { socket, ready, next };
+}
+
+describe("what the model is told when its home is not there", () => {
+	it("answers every request in words when the channel cannot be opened, instead of a dead turn", async () => {
+		const root = await mkdtemp(join(tmpdir(), "home-unavailable-"));
+		const home = new CloudCodexHome({
+			channel: {
+				open: async () => {
+					throw new Error("the ingress refused the session");
+				},
+			},
+			sessionId: randomUUID(),
+			machine: MACHINE,
+			signal: new AbortController().signal,
+		});
+		try {
+			await home.listen(root);
+			const slot = slotSide(home.socketPath);
+			await slot.ready;
+			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
+			const answer = JSON.parse(await slot.next()) as { id: number; error: { message: string } };
+			expect(answer.id).toBe(1);
+			expect(answer.error.message).toBe(CLOUD_HOME_UNAVAILABLE);
+			// And again, so a model that tries twice is told twice rather than left waiting.
+			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "fs/readFile", params: {} })}\n`);
+			expect(JSON.parse(await slot.next()).error.message).toBe(CLOUD_HOME_UNAVAILABLE);
+			expect(home.failure).toBe(CLOUD_HOME_UNAVAILABLE);
+			slot.socket.destroy();
+		} finally {
+			await home.close();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("tells the model its machine was lost mid-command, and that part of it may have happened", async () => {
+		const root = await mkdtemp(join(tmpdir(), "home-lost-"));
+		const machine = fakeMachine();
+		const home = new CloudCodexHome({
+			channel: { open: async () => machine.stream },
+			sessionId: randomUUID(),
+			machine: MACHINE,
+			signal: new AbortController().signal,
+		});
+		try {
+			await home.listen(root);
+			const slot = slotSide(home.socketPath);
+			await slot.ready;
+			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "fs/readFile", params: { path: "file:///company/a" } })}\n`);
+			for (let waited = 0; waited < 100 && machine.written.length === 0; waited++)
+				await new Promise((done) => setTimeout(done, 25));
+			expect(machine.written).toHaveLength(1);
+			// The machine goes while that request is out there.
+			machine.end();
+			const answer = JSON.parse(await slot.next()) as { id: number; error: { message: string } };
+			expect(answer.id).toBe(7);
+			expect(answer.error.message).toBe(CLOUD_HOME_LOST);
+			expect(home.counts.lost).toBe(1);
+			slot.socket.destroy();
+		} finally {
+			await home.close();
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

@@ -59,6 +59,11 @@ const REVIEWED_METHODS: ReadonlyMap<string, "command" | "change"> = new Map([
 ]);
 /** How much of an action's words the card and the reviewer read; the digest still covers the whole of it. */
 const CLOUD_HOME_SUMMARY_CHARS = 2000;
+/** What the model is told when its home was lost while it was working on it: plain words, and what to do about it. */
+export const CLOUD_HOME_LOST =
+	"HOME_LOST: the connection to this agent's machine broke while that was running there, so there is no answer to it. Part of it may have happened on the machine. Look at the machine's own state before doing it again, or use the company's own tools.";
+/** An answer from the machine, read from the head of its line: which request of the model's it belongs to. */
+const ANSWER_ID = /^\{(?:"jsonrpc":"[^"]{1,16}",)?"id":(\d{1,20}|"[^"]{1,128}")/;
 /** What the model is told when the run's work log could not keep the record an action must leave behind. */
 export const CLOUD_HOME_NO_RECORD =
 	"WORK_LOG_UNAVAILABLE: this agent's work log could not keep a record of that action, so it did not happen on the machine. Try again.";
@@ -197,8 +202,28 @@ export class CloudCodexHomeSteps {
 }
 
 /** Keeps the newest entries only: a turn of thousands cannot grow these without bound. */
-function remember(store: Map<string, unknown>, limit: number): void {
+function remember(
+	store: { size: number; delete(key: string): boolean; keys(): IterableIterator<string> },
+	limit: number,
+): void {
 	while (store.size > limit) store.delete(store.keys().next().value as string);
+}
+
+/**
+ * One line from the model's Codex that this host answers itself, because there is no machine to forward it to: the
+ * same JSON-RPC error a refused action gets, so Codex hands the model words instead of a tool that never answers.
+ * A notification (no id) is answered with nothing, as the machine would answer it with nothing.
+ */
+function refusalLine(line: string, words: string): string | undefined {
+	let id: unknown;
+	try {
+		const value: unknown = JSON.parse(line);
+		if (value && typeof value === "object" && !Array.isArray(value)) id = (value as Record<string, unknown>).id;
+	} catch {
+		return undefined;
+	}
+	if (typeof id !== "string" && typeof id !== "number") return undefined;
+	return JSON.stringify({ id, error: { code: -32010, message: words } });
 }
 
 /** A request's bytes, as the action records them: never the bytes themselves, always their size and digest. */
@@ -292,8 +317,12 @@ export class CloudCodexHome {
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
-	/** Counted from the run, for the report: lines each way, actions reviewed, actions the review stopped. */
-	readonly counts = { toMachine: 0, fromMachine: 0, reviewed: 0, declined: 0, unrecorded: 0, connections: 0 };
+	/** Counted from the run, for the report: lines each way, actions reviewed, actions the review stopped, requests
+	 * that lost their machine mid-command. */
+	readonly counts = { toMachine: 0, fromMachine: 0, reviewed: 0, declined: 0, unrecorded: 0, connections: 0, lost: 0 };
+	/** The requests forwarded to the machine that it has not answered yet, by the id Codex gave them: if the machine
+	 * goes while they are out there, each is answered in words instead of waiting for an answer that cannot come. */
+	readonly #waiting = new Set<string>();
 	/** The model's call the machine is working on now: a patch's file changes belong to it. */
 	#call?: string;
 	/** Whether a channel was ever opened, so the run closes only a session the executor really made. */
@@ -414,12 +443,13 @@ export class CloudCodexHome {
 		try {
 			stream = await this.#channel.open({ sessionId: this.#sessionId, machineId: this.#machine.id }, this.#signal);
 		} catch (error) {
-			// The model asked for its home and there is none: say so in words, on the next line it reads, and let its
-			// turn go on with the company's own tools. The cause is the host's own (a refusal of the ingress, a channel
-			// that would not open); it is kept for this host's journal, never shown to the model or the provider.
+			// The model asked for its home and there is none. It is told so in words, as an answer to each thing it
+			// asks, and its turn goes on with the company's own tools; a socket shut in its face would leave it with a
+			// dead turn. The cause is the host's own (a refusal of the ingress, a channel that would not open); it is
+			// kept for this host's journal, never shown to the model or the provider.
 			this.#failure ??= CLOUD_HOME_UNAVAILABLE;
 			this.cause ??= String((error as Error)?.message ?? error).slice(0, 200);
-			client.destroy();
+			await this.#refuse(client, CLOUD_HOME_UNAVAILABLE);
 			return;
 		}
 		this.#opened = true;
@@ -428,22 +458,34 @@ export class CloudCodexHome {
 			void stream.close();
 		};
 		this.#signal.addEventListener("abort", stop, { once: true });
-		// Either side ending ends the other (review round 1, F3): a machine whose exec-server closed leaves nothing
-		// waiting in the slot, and a slot whose Codex went leaves no process running on the machine.
+		// The machine's side ending ends what it was doing, in words: every request of the model's that is still out
+		// there is answered that the machine was lost mid-command (review round 1, F3, and the lead's question of
+		// 13 Nov 2026), and everything it asks after that is answered that its home cannot be reached. The other
+		// direction still ends the channel: a slot whose Codex went leaves no process running on the machine.
+		let lost = false;
 		const fromMachine = (async () => {
 			try {
 				for await (const line of stream.lines) {
 					this.counts.fromMachine++;
+					this.#answered(line);
 					if (!client.writable) break;
 					client.write(`${line}\n`);
 				}
 			} finally {
-				client.destroy();
+				lost = true;
+				for (const id of this.#waiting) {
+					if (!client.writable) break;
+					this.counts.lost++;
+					client.write(`${JSON.stringify({ id: JSON.parse(id) as JsonValue, error: { code: -32010, message: CLOUD_HOME_LOST } })}\n`);
+				}
+				this.#waiting.clear();
+				this.#failure ??= CLOUD_HOME_LOST;
 			}
 		})();
 		try {
 			for await (const line of cloudHomeChannelLines(client)) {
-				const answered = await this.#forward(line, stream);
+				// Once the machine is gone nothing is forwarded: the model is told, request by request, and goes on.
+				const answered = lost ? refusalLine(line, CLOUD_HOME_UNAVAILABLE) : await this.#forward(line, stream);
 				if (answered !== undefined && client.writable) client.write(`${answered}\n`);
 			}
 		} finally {
@@ -452,6 +494,27 @@ export class CloudCodexHome {
 			await fromMachine.catch(() => undefined);
 			client.destroy();
 		}
+	}
+
+	/** A home that could not be opened at all: every request on this connection is answered in words, until Codex
+	 * closes it. Nothing is forwarded, because there is nothing to forward it to. */
+	async #refuse(client: Socket, words: string): Promise<void> {
+		try {
+			for await (const line of cloudHomeChannelLines(client)) {
+				const answered = refusalLine(line, words);
+				if (answered !== undefined && client.writable) client.write(`${answered}\n`);
+			}
+		} catch {
+			// A connection that breaks while it is being refused needs nothing more.
+		} finally {
+			client.destroy();
+		}
+	}
+
+	/** The machine answered this line: that request is no longer waiting (its id, as the line carries it). */
+	#answered(line: string): void {
+		const id = ANSWER_ID.exec(line.slice(0, 200));
+		if (id?.[1]) this.#waiting.delete(id[1]);
 	}
 
 	/**
@@ -490,6 +553,9 @@ export class CloudCodexHome {
 				if (refusal !== undefined) return JSON.stringify({ id, error: { code: -32600, message: refusal } });
 			}
 		}
+		// Out there until the machine answers it: if the machine goes first, this is what gets the words instead.
+		if (typeof id === "string" || typeof id === "number") this.#waiting.add(JSON.stringify(id));
+		remember(this.#waiting, MAX_OPEN_CALLS);
 		this.counts.toMachine++;
 		stream.write(line);
 		return undefined;

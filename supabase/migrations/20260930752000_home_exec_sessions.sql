@@ -93,7 +93,7 @@ create table public.qorpera_company_home_sessions (
 	folder_window_id uuid,
 	opened_at timestamptz not null default clock_timestamp(),
 	closed_at timestamptz,
-	close_reason text check (close_reason is null or close_reason in ('ended','stopped','lost','boot_ended')),
+	close_reason text check (close_reason is null or close_reason in ('ended','stopped','lost','boot_ended','superseded')),
 	check ((closed_at is null) = (close_reason is null))
 );
 comment on table public.qorpera_company_home_sessions is
@@ -152,12 +152,15 @@ begin
 		return jsonb_build_object('schema','qorpera.home-session-authority/v1','state','refused','reason','HOME_SESSION_ENDED',
 			'machine',v_machine.name,'closeReason',v_session.close_reason); end if;
 	if v_session.id is null then
-		-- One channel per run on one boot: a second id while the first is open is refused in words, never as a clash.
-		if exists (select 1 from public.qorpera_company_home_sessions open_session
-			where open_session.placement_id = v_placement.id and open_session.boot_id = v_placement.boot_id
-				and open_session.run_id = (p_binding ->> 'runId')::uuid and open_session.closed_at is null) then
-			return jsonb_build_object('schema','qorpera.home-session-authority/v1','state','refused','reason','HOME_SESSION_OPEN',
-				'machine',v_machine.name); end if;
+		-- One channel per run on one boot. A run comes back here with a session id of its own only when its last host
+		-- is gone (its slot was killed, its node restarted): nothing closed that row, and a refusal would shut the run
+		-- out of its home for the rest of the boot. Its own earlier session is closed here as superseded, so the run
+		-- always has exactly one open session and no row has to be cleaned up by hand (review round 1, F4 and F10).
+		-- Another run's session is refused above and is never taken.
+		update public.qorpera_company_home_sessions superseded
+		set closed_at = clock_timestamp(), close_reason = 'superseded'
+		where superseded.placement_id = v_placement.id and superseded.boot_id = v_placement.boot_id
+			and superseded.run_id = (p_binding ->> 'runId')::uuid and superseded.closed_at is null;
 		insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id, staff_agent_id,
 			requested_by_user_id)
 		values (p_session_id, v_machine.id, v_placement.id, v_placement.boot_id, (p_binding ->> 'runId')::uuid,

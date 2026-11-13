@@ -13,7 +13,7 @@ import type { CloudNativeToolBinding } from "../../packages/runtime/src/cloud-na
 export type HomeSessionAuthority = CloudHomeSessionAuthorized & { readonly bootId: string; readonly runId: string };
 export type HomeSessionAnswer = HomeSessionAuthority | { readonly state: "refused"; readonly reason: string };
 
-const REFUSALS = new Set(["MACHINE_NOT_RUNNING", "HOME_SESSION_ENDED", "HOME_SESSION_OPEN"]);
+const REFUSALS = new Set(["MACHINE_NOT_RUNNING", "HOME_SESSION_ENDED"]);
 
 function text(value: unknown, pattern?: RegExp): string {
 	if (typeof value !== "string" || value.length < 1 || value.length > 200 || (pattern && !pattern.test(value)))
