@@ -45,8 +45,12 @@ $$;
 reset role;
 do $$
 begin
+	-- After organize_apps, not next to it: a later migration that anchors on the same line (20260930750000, the company
+	-- data tools) puts its own names between the two, whichever of them is applied first.
 	if strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		$q$/* 20260930726000 */'organize_apps',/* 20260930746000 */'make_picture',$q$) = 0 then
+			$q$/* 20260930746000 */'make_picture',$q$)
+		<= strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
+			$q$/* 20260930726000 */'organize_apps',$q$) then
 		raise exception '2: the observations'' list does not name make_picture after organize_apps'; end if;
 	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
