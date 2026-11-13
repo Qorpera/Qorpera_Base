@@ -27,7 +27,7 @@ import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
-import type { InteractionCardApp } from "../ui/interaction-card.ts";
+import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -43,7 +43,7 @@ import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import { type CompanyApp, CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -100,6 +100,20 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
+
+/** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
+ * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
+function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): InteractionCardApp | undefined {
+	const found = apps?.find((app) => app.name === name);
+	const manifest = found?.manifest;
+	return manifest
+		? {
+				title: manifest.name,
+				emblem: manifest.emblem,
+				cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
+			}
+		: undefined;
+}
 
 export function mountApplication(
 	root: HTMLElement,
@@ -327,9 +341,13 @@ export function mountApplication(
 	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
 	// hover (ui/markdown.ts draws the card plain, as it has no company). The card a note from an app opens with keeps
 	// what the note is about as its line, and takes the app's own name as its title.
+	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
+	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
+	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
 		if (!company || !apps) return;
+		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
 			const app = apps.find((entry) => entry.name === card.dataset.appName);
 			const look = app && appLook(company, app);
@@ -1253,19 +1271,9 @@ export function mountApplication(
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
 		}
-		// An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
-		// company's apps as last read. Undefined while they have not been read, or when no such app is there.
-		const cardApp = (name: string): InteractionCardApp | undefined => {
-			const found = companyApps?.apps.find((app) => app.name === name);
-			const manifest = found?.manifest;
-			return manifest
-				? {
-						title: manifest.name,
-						emblem: manifest.emblem,
-						cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
-					}
-				: undefined;
-		};
+		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
+		// were read is brought up to date by decorateAppCards.
+		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(

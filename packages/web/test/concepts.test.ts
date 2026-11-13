@@ -11,7 +11,7 @@ import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
-import { DEFAULT, STORAGE_KEY } from "../src/ui/rail-layout.ts";
+import { COMPACT, DEFAULT, MIN, STORAGE_KEY } from "../src/ui/rail-layout.ts";
 import { folderFake } from "./folder-fake.ts";
 
 /* The Concepts viewer (views/concepts.ts): which questions its dock shows, and that its side panel is the company
@@ -184,5 +184,22 @@ describe("the Concepts viewer's side panel", () => {
 		const resized = company().open("koncepter");
 		await settle();
 		expect(resized.el.style.getPropertyValue("--concepts-width")).toBe("320px");
+	});
+
+	it("is never a compact rail's strip, and folds on its own", async () => {
+		// The member made the company rail compact: it keeps that strip's width, and no expanded width beside it.
+		localStorage.setItem(STORAGE_KEY, String(COMPACT));
+		const view = company().open("koncepter");
+		await settle();
+		expect(view.el.style.getPropertyValue("--concepts-width")).toBe(`${DEFAULT}px`);
+		expect(DEFAULT).toBeGreaterThanOrEqual(MIN);
+		expect(view.el.classList.contains("is-collapsed")).toBe(false);
+		// Folding the panel and opening it again gives the same width back: the rail's preference is not the panel's fold.
+		view.el.querySelector<HTMLButtonElement>(".concepts-collapse")?.click();
+		expect(view.el.classList.contains("is-collapsed")).toBe(true);
+		view.el.querySelector<HTMLButtonElement>(".concepts-collapse")?.click();
+		expect(view.el.classList.contains("is-collapsed")).toBe(false);
+		expect(view.el.style.getPropertyValue("--concepts-width")).toBe(`${DEFAULT}px`);
+		expect(localStorage.getItem(STORAGE_KEY)).toBe(String(COMPACT));
 	});
 });

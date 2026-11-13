@@ -1,7 +1,7 @@
 import { h, icon, linkHref, replace, setLinkHref } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
-import { railWidth } from "../../ui/rail-layout.ts";
+import { expandedRailWidth } from "../../ui/rail-layout.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
@@ -17,10 +17,11 @@ import { QuestionDock } from "./question-dock.ts";
  *   but the side panel, edge to edge, with nothing of Qorpera's around it: no header, no border, no inset and no band
  *   behind it (AppPanel's "concept" placement; Jonas, 13 November 2026: "I would try and minimize the
  *   borders/framing around the visual we are just trying to show"). The panel is the only furniture.
- * - The side panel stands in the company rail's place and is the rail: its width (ui/rail-layout.ts `railWidth`, the
- *   member's own choice there), its surface, its rows, its hover and its selection (Jonas, 13 November 2026: "polish
- *   it to match the style and width of the regular sidepanel"). It has the way back to the company, the concepts
- *   (cover or emblem, title, `about`, who made it) and, for the open one, Reload and Show in Storage.
+ * - The side panel stands in the company rail's place and is the rail: its width (ui/rail-layout.ts
+ *   `expandedRailWidth`, the member's own choice for the expanded rail, never a compact rail's strip), its surface,
+ *   its rows, its hover and its selection (Jonas, 13 November 2026: "polish it to match the style and width of the
+ *   regular sidepanel"). It has the way back to the company, the concepts (cover or emblem, title, `about`, who made
+ *   it) and, for the open one, Reload and Show in Storage.
  * - Whose the open concept is and that Qorpera never asks for passwords in it stand in a strip of the side panel that
  *   never folds away: under the list, along the folded strip, and under the phone's top bar (security review r1, H2,
  *   and #1539 round 1: a page that draws a sign-in can't pass for Qorpera's own).
@@ -250,9 +251,10 @@ export class ConceptsView {
 		return this.#asked === undefined ? concepts[0] : concepts.find((concept) => concept.name === this.#asked);
 	}
 
-	/** The panel takes the rail's width, drawn at the app's scale as the rail's own is (ui/rail-layout.ts). */
+	/** The panel takes the expanded rail's width, drawn at the app's scale as the rail's own is (ui/rail-layout.ts): a
+	 * compact rail's strip never makes the open panel that narrow, and folding stays the panel's own. */
 	#widen(): void {
-		this.el.style.setProperty("--concepts-width", `${railWidth() * uiScale()}px`);
+		this.el.style.setProperty("--concepts-width", `${expandedRailWidth() * uiScale()}px`);
 	}
 
 	#setCollapsed(collapsed: boolean): void {

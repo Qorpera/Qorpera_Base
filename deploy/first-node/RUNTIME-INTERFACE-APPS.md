@@ -440,9 +440,10 @@ app's screenshot by someone other than its maker.
 - **Concepts viewer.** `#/c/<profileId>/concepts[/<name>]` shows the company's concepts (`concept = true`): the open
   one's frame fills the stage, edge to edge, with nothing of Qorpera's around it — no header, no border, no inset and
   no band (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). The
-  only furniture is the side panel, which stands where the company rail stands and is the rail: the member's own rail
-  width, its surface, its rows, its hover and its selection (Jonas, 13 November 2026: "match the style and width of
-  the regular sidepanel"). It holds the way back, each concept (cover or emblem, title, `about`, who made it), Reload
+  only furniture is the side panel, which stands where the company rail stands and is the rail: the member's own
+  width for the expanded rail (a compact rail's strip is no width for it: the rail's default stands in, and the
+  panel's own fold stays its own), its surface, its rows, its hover and its selection (Jonas, 13 November 2026:
+  "match the style and width of the regular sidepanel"). It holds the way back, each concept (cover or emblem, title, `about`, who made it), Reload
   and Show in Storage for the open one, and the strip that says whose the concept is and that Qorpera never asks for
   passwords there (§7 H2). It folds to the compact rail's strip; at phone width it is a top bar with a menu.
 - **Questions dock.** The agents' open question cards stand over the corner of an app's page or the Concepts viewer's
@@ -450,8 +451,8 @@ app's screenshot by someone other than its maker.
   waiting and "<Agent> asks you" — and the card below is the question alone: its title, body, app links, options and
   Skip, with nothing else over it (Jonas, 13 November 2026: "In the question box I would also simplify and remove
   'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'"). In the Concepts viewer a card shows on the
-  page of the concept it asks about and on no other; one that points at no concept, or at one that is gone, shows on
-  none and waits in its agent's thread.
+  page of the concept it asks about and on no other, also while it stands answered for a moment; one that points at
+  no concept, or at one that is gone, shows on none and waits in its agent's thread.
 - **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
@@ -552,6 +553,8 @@ Rules:
   company's folder, or `app:<name>`, which shows that app's `cover`, or its own emblem beside its own title, never
   its folder name. An option with no preview, or whose picture cannot be read, draws no preview at all: an empty
   frame is no preview (Jonas, 13 November 2026, on his company's question: the previews "do not load their visual").
+  A card drawn before the company's apps are read gets the app's preview once they are, and follows a change to the
+  app, in place: a pick and an answer being typed stay.
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.

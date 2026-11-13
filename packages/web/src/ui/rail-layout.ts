@@ -23,15 +23,17 @@ function cap(): number {
 	return Math.max(MIN, Math.floor((window.innerWidth * MAX_SHARE) / uiScale()));
 }
 
-/** The width the member chose for the rail, or this size's default; never more than the window allows. In design
- * pixels, so a reader outside the stylesheets multiplies by `uiScale()`. The Concepts viewer's side panel reads it
- * too, so that panel is the rail's width wherever the member set it (Jonas, 13 November 2026: the Concepts side panel
- * should "match the style and width of the regular sidepanel"). */
-export function railWidth(): number {
+/** The width the member chose for the rail when it is expanded, or this size's default; never more than the window
+ * allows, never less than MIN. A compact rail's strip is no expanded width, and the rail keeps no other width beside
+ * it, so the default stands in for it. In design pixels, so a reader outside the stylesheets multiplies by
+ * `uiScale()`. The Concepts viewer's side panel reads it, so that panel is the rail's width wherever the member set it
+ * (Jonas, 13 November 2026: the Concepts side panel should "match the style and width of the regular sidepanel"); the
+ * panel's own fold is its own (review r1 of #1763, F2). */
+export function expandedRailWidth(): number {
 	let preferred: number | undefined;
 	try {
 		const stored = Number(localStorage.getItem(STORAGE_KEY));
-		if (Number.isFinite(stored) && (stored === COMPACT || stored >= MIN)) preferred = stored;
+		if (Number.isFinite(stored) && stored >= MIN) preferred = stored;
 	} catch {
 		/* Browser storage is optional. */
 	}

@@ -5,7 +5,7 @@ import { answersInteraction } from "../src/app/company.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
-import { renderInteractionCard } from "../src/ui/interaction-card.ts";
+import { type InteractionCardApp, refreshAppPreviews, renderInteractionCard } from "../src/ui/interaction-card.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
 const ID = "44444444-4444-4444-8444-000000000593";
@@ -579,6 +579,65 @@ describe("a visual choice", () => {
 		// The cover could not be read: the frame goes rather than stand empty.
 		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture")).toHaveLength(0));
 		expect(card.textContent).toContain("Noget skal ændres");
+	});
+
+	it("brings an app's preview in once the company's apps are read, keeping the answer being given", async () => {
+		// The card is drawn before the company's apps are read (review r1 of #1763, F1).
+		let known: Record<string, InteractionCardApp> = {};
+		const apps = (name: string) => known[name];
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					multiSelect: true,
+					allowCustom: true,
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Den anden", value: "anden", preview: "app:bundle-demo" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			context({ image, app: apps, inThread: true }),
+		);
+		const titles = () => [...card.querySelectorAll(".choice-apps .app-card-title")].map((title) => title.textContent);
+		expect(card.querySelectorAll(".choice-picture")).toHaveLength(0);
+		expect(titles()).toEqual(["saml-concepts", "bundle-demo"]);
+		// The member picks an option and starts on an answer of their own.
+		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		boxes[1]?.click();
+		const field = card.querySelector<HTMLInputElement>(".interaction-field");
+		if (!field) throw new Error("no field");
+		field.value = "Lidt varmere lys";
+		// Then the apps are read.
+		known = {
+			"saml-concepts": { title: "Entirely you", emblem: "page", cover: "apps/saml-concepts/cover.png" },
+			"bundle-demo": { title: "The bundle demo", emblem: "star", cover: null },
+		};
+		refreshAppPreviews(card, apps, image);
+		await vi.waitFor(() => expect(boxes[0]?.querySelector(".choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		expect(boxes[1]?.querySelector(".choice-app-name")?.textContent).toBe("The bundle demo");
+		expect(boxes[2]?.querySelector(".choice-picture")).toBeNull();
+		expect(titles()).toEqual(["Entirely you", "The bundle demo"]);
+		// In place: the same boxes, the pick and the words as they were.
+		expect([...card.querySelectorAll(".choice-box")]).toEqual(boxes);
+		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(card.querySelector(".interaction-field")).toBe(field);
+		expect(field.value).toBe("Lidt varmere lys");
+		// Nothing is drawn again while the apps stay as they are; a change to one is followed.
+		const cover = boxes[0]?.querySelector(".choice-picture");
+		refreshAppPreviews(card, apps, image);
+		expect(boxes[0]?.querySelector(".choice-picture")).toBe(cover);
+		known = { ...known, "saml-concepts": { title: "Entirely you", emblem: "page", cover: null } };
+		refreshAppPreviews(card, apps, image);
+		expect(boxes[0]?.querySelectorAll(".choice-picture")).toHaveLength(1);
+		expect(boxes[0]?.querySelector(".choice-app-name")?.textContent).toBe("Entirely you");
+		expect(field.value).toBe("Lidt varmere lys");
+		created.mockRestore();
 	});
 
 	it("links an app once when several options show it", () => {

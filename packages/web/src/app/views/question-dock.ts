@@ -107,15 +107,16 @@ export class QuestionDock {
 		this.el.remove();
 	}
 
-	/** The cards this dock shows, newest first: the open ones that point here and those answered here, still held. */
+	/** The cards this dock shows, newest first: the open ones that point here and those answered here, still held. A
+	 * held card points here too, or it is not shown: the Concepts viewer's dock follows the concept that is open, and a
+	 * card answered on another concept's page stays off this one while it is held (review r1 of #1763, F3). */
 	#cards(): OpenQuestion[] {
-		const listed = this.#host.questions.store
-			.get()
-			.questions.filter((question) => this.#match(questionApps(question.request)));
+		const here = (question: OpenQuestion) => this.#match(questionApps(question.request));
+		const listed = this.#host.questions.store.get().questions.filter(here);
 		const ids = new Set(listed.map((question) => question.interactionId));
 		const held = [...this.#held.values()]
 			.map((entry) => entry.question)
-			.filter((question) => !ids.has(question.interactionId));
+			.filter((question) => !ids.has(question.interactionId) && here(question));
 		return [...listed, ...held].sort((a, b) =>
 			a.createdAt === b.createdAt
 				? a.interactionId.localeCompare(b.interactionId)
@@ -163,6 +164,8 @@ export class QuestionDock {
 			this.el.hidden || this.#shownKey === "" || !this.#shownKey.startsWith(`["${current.interactionId}"`);
 		this.#shownKey = key;
 		this.el.hidden = false;
+		// Another card comes up while the last one flies off (the member went to another concept): it does not fly.
+		if (fresh) this.el.classList.remove("is-flying");
 		this.el.classList.toggle("is-folded", this.#folded);
 		this.el.classList.toggle("is-answered", Boolean(answer));
 		replace(
@@ -316,7 +319,8 @@ export class QuestionDock {
 		this.#draw();
 	}
 
-	/** A card answered here stays answered on screen a moment, then flies off and the next comes up. */
+	/** A card answered here stays answered on screen a moment, then flies off and the next comes up. Only the card on
+	 * screen flies: one held while the member went to another concept just goes, and the card there stays put. */
 	#hold(question: OpenQuestion, answer: InteractionAnswer): void {
 		this.#held.set(question.interactionId, { question, answer });
 		this.#timers.set(
@@ -330,7 +334,7 @@ export class QuestionDock {
 					this.#shownKey = "";
 					this.#draw();
 				};
-				if (reducedMotion() || this.el.hidden) return go();
+				if (reducedMotion() || this.el.hidden || this.#current !== question.interactionId) return go();
 				this.el.classList.add("is-flying");
 				setTimeout(() => {
 					this.el.classList.remove("is-flying");

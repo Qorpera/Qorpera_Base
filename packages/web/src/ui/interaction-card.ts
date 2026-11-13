@@ -132,11 +132,21 @@ function picture(read: NonNullable<InteractionCardContext["image"]>, path: strin
 	return shown;
 }
 
+type PictureReader = NonNullable<InteractionCardContext["image"]>;
+type AppReader = NonNullable<InteractionCardContext["app"]>;
+
+/** What an app preview shows of the app, to tell whether it is still what the company's apps say: "" for no app. */
+const appShown = (app: InteractionCardApp | undefined) =>
+	app ? JSON.stringify([app.title, app.emblem, app.cover]) : "";
+
 /** The picture area of a visual choice: the picture the agent made, or, for a preview that names an app, that app's
  * cover, or its emblem beside its title. Null when there is nothing to show (Jonas, 13 November 2026, on a question's
  * options: the previews "do not load their visual"): an empty grey frame is no preview, so none is drawn. */
-function choicePicture(preview: string, context: InteractionCardContext): HTMLElement | null {
-	const read = context.image;
+function choicePicture(
+	preview: string,
+	apps: AppReader | undefined,
+	read: PictureReader | undefined,
+): HTMLElement | null {
 	const shown = (path: string) => {
 		if (!read) return null;
 		const box = h("span", { class: "choice-picture is-loading", "aria-hidden": "true" });
@@ -152,7 +162,7 @@ function choicePicture(preview: string, context: InteractionCardContext): HTMLEl
 	if (named === undefined) return shown(preview);
 	// An app the company has: its cover is a picture of the folder like any other, and with none the app stands for
 	// itself, by its own emblem and title. An app that is not there has nothing to show.
-	const app = isInterfaceName(named) ? context.app?.(named) : undefined;
+	const app = isInterfaceName(named) ? apps?.(named) : undefined;
 	if (!app) return null;
 	const cover = app.cover ? shown(app.cover) : null;
 	return (
@@ -177,6 +187,8 @@ function visualChoices(
 	multi = false,
 ): HTMLElement {
 	const boxes = options.map((option) => {
+		// A box that previews an app says which, and what of it it shows: refreshAppPreviews brings it up to date.
+		const app = appPreviewName(option.preview);
 		const box = h(
 			"button",
 			{
@@ -185,9 +197,10 @@ function visualChoices(
 				...(pick ? {} : { disabled: true }),
 				...(pick && multi ? { "aria-pressed": String(chosen.has(option.value)) } : {}),
 				...(busy ? { "aria-disabled": "true" } : {}),
+				...(app ? { dataset: { previewApp: app, previewShown: appShown(context.app?.(app)) } } : {}),
 			},
 			// An option with no preview draws no preview: a box of its own, with its label, and nothing above it.
-			option.preview ? choicePicture(option.preview, context) : null,
+			option.preview ? choicePicture(option.preview, context.app, context.image) : null,
 			h("strong", { class: "choice-label" }, option.label),
 			option.description ? h("span", { class: "choice-description" }, option.description) : null,
 		) as HTMLButtonElement;
@@ -200,11 +213,7 @@ function visualChoices(
 	// An app's option opens the app's own page from its link: the box itself picks. Each app once, however many of the
 	// options show it (two headlines in one concept).
 	const apps = [
-		...new Set(
-			options
-				.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
-				.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? "")),
-		),
+		...new Set(options.map((option) => appPreviewName(option.preview)).filter((name) => name !== undefined)),
 	];
 	const grid = h(
 		"div",
@@ -226,6 +235,36 @@ function visualChoices(
 	// Set through the style object: the page's CSP takes no inline style attribute.
 	grid.style.setProperty("--choices", String(Math.min(options.length, 3)));
 	return grid;
+}
+
+/** The app an option's preview names (`app:<name>`, a name an app may have), or undefined. */
+function appPreviewName(preview: string | undefined): string | undefined {
+	const name = /^app:(.+)$/.exec(preview ?? "")?.[1];
+	return name !== undefined && isInterfaceName(name) ? name : undefined;
+}
+
+/** Brings every question card under `root` up to the company's apps as they are now (review r1 of #1763, F1): a card
+ * drawn before the apps were read showed no preview for an option that names an app, and kept none. Each such option
+ * gets the app's cover, or its emblem and title, once the apps are read or when they change, and the app's card under
+ * the options its title. Only those parts change, in place: the card itself, a picked option and an answer being
+ * typed stay as they are. Called by app/application.ts after each read of the company's apps and each change on its
+ * page, as the cards of apps in messages are brought up to date. */
+export function refreshAppPreviews(root: ParentNode, apps: AppReader, read?: PictureReader): void {
+	for (const box of root.querySelectorAll<HTMLElement>(".choice-box[data-preview-app]")) {
+		const name = box.dataset.previewApp ?? "";
+		const shown = appShown(apps(name));
+		if (box.dataset.previewShown === shown) continue;
+		box.dataset.previewShown = shown;
+		for (const old of box.querySelectorAll(":scope > .choice-picture")) old.remove();
+		const picture = choicePicture(`app:${name}`, apps, read);
+		if (picture) box.prepend(picture);
+	}
+	for (const card of root.querySelectorAll<HTMLElement>(".choice-apps .app-card[data-app-name]")) {
+		const name = card.dataset.appName ?? "";
+		const title = card.querySelector(".app-card-title");
+		const text = apps(name)?.title ?? name;
+		if (title && title.textContent !== text) title.textContent = text;
+	}
 }
 
 export interface InteractionCardItem {
