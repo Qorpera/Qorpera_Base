@@ -54,6 +54,7 @@ import {
 	prepareAnswer,
 	prepareRow,
 	prepareTell,
+	restoreTell,
 } from "./app-actions.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -835,13 +836,36 @@ export class AppBridge {
 			if (error instanceof AppActionRefused) return refuse(error.message);
 			throw error;
 		}
-		const result = await gate.ask(prepared.ask, prepared.perform);
+		const result = await gate.ask(
+			prepared.ask,
+			call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
+			prepared.keep,
+		);
 		if ("message" in result) return refuse(result.message);
-		if (result.outcome === "told") {
-			told.set(this.#key, Date.now());
+		if (result.outcome === "told")
 			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
-		}
 		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
+	}
+
+	/** A note's send, with the app's pause after it counted from when the note went or was left waiting in its thread:
+	 * there, not when the bar hears of it, as the bar may be put away (the member left the app) while the note goes. */
+	#told(perform: PreparedAsk["perform"]): PreparedAsk["perform"] {
+		return async (words) => {
+			const went = await perform(words);
+			if (went && !went.held) told.set(this.#key, Date.now());
+			return went;
+		};
+	}
+
+	/** A note held for this app while its thread could not take it (app/app-actions.ts `HeldNote`), on the bar again
+	 * when the app's page is shown: the member's words as they left them, sent as any note is. Nothing when none is
+	 * held, or when the bar has a request already. */
+	async restore(): Promise<void> {
+		const tell = this.#host.tell;
+		const gate = this.#gate;
+		if (!tell || !gate || gate.closed()) return;
+		const prepared = restoreTell(tell, this.#app);
+		if (prepared) await gate.ask(prepared.ask, this.#told(prepared.perform), prepared.keep);
 	}
 
 	/** Each agent's todos, as their files' first heading and status say. */

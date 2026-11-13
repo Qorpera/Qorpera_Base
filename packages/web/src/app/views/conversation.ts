@@ -479,7 +479,7 @@ export class ConversationView {
 				this.#answeringItem = item;
 				// Enter was for the question before this one.
 				this.#sendSoon = undefined;
-				company.conversation(sessionId).set({ answering: replyQuestion(question) });
+				company.setAnswering(sessionId, replyQuestion(question));
 				this.#composer.focus();
 			},
 		});
@@ -514,7 +514,7 @@ export class ConversationView {
 				if (this.#mentionKey(event)) return;
 				if (this.#skills.keydown(event)) return;
 				if (event.key === "Escape" && !event.isComposing && this.#answerShown) {
-					company.conversation(sessionId).set({ answering: undefined });
+					company.setAnswering(sessionId, undefined);
 					return;
 				}
 				if (matchesKey(event, "accept") && !event.shiftKey) {
@@ -738,7 +738,7 @@ export class ConversationView {
 				"aria-label": t("Stop answering"),
 				title: t("Stop answering"),
 				onclick: () => {
-					company.conversation(sessionId).set({ answering: undefined });
+					company.setAnswering(sessionId, undefined);
 					this.#composer.focus();
 				},
 			},

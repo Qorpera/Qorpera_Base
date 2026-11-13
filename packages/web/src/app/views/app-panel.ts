@@ -32,7 +32,8 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
  * - An app's page may ask the member to change something (an answer to such a question, a row of a table), or to send
  *   the agent that owns it a note: Qorpera puts each request to the member on a bar above the frame
- *   (views/app-ask-bar.ts), and nothing changes or goes without their yes there. The member's Reload lets an app that was told not now three times ask again. What a page may read and
+ *   (views/app-ask-bar.ts), and nothing changes or goes without their yes there. A note its agent's thread could not
+ *   take is kept for the app, and is on the bar again, with the member's words, whenever the app's page is shown. The member's Reload lets an app that was told not now three times ask again. What a page may read and
  *   ask for is what its manifest says now, also when the manifest changes under a page that stays as it is; a request
  *   made under an earlier manifest, or by a page since put away, is refused before anything is shown.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
@@ -387,7 +388,8 @@ export class AppPanel {
 				this.#lifetime.signal,
 				bar && {
 					closed: () => (live() ? bar.closed() : "gone"),
-					ask: (ask, perform) => (live() ? bar.ask(ask, perform) : Promise.resolve({ outcome: "gone" as const })),
+					ask: (ask, perform, keep) =>
+						live() ? bar.ask(ask, perform, keep) : Promise.resolve({ outcome: "gone" as const }),
 				},
 				(link) => this.#follow(link),
 			),
@@ -510,5 +512,7 @@ export class AppPanel {
 			if (++loads === 2) opening.remove();
 		});
 		replace(this.#body, frame.frame, opening);
+		// A note held for the app while its thread could not take it is on the bar again, with the member's words.
+		void this.#serving?.bridge.restore();
 	}
 }

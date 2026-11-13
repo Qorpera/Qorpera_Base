@@ -1,5 +1,6 @@
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
+import { appNoteLead, splitAppNote } from "../cloud/wall-reply.ts";
 import { t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { QuotedText } from "./quotes.ts";
@@ -10,8 +11,10 @@ import type { QuotedText } from "./quotes.ts";
  *   CompanyMail.tell), its outside words as quotes;
  * - an interface app's page, through the bar outside its frame (`qorpera.tell`, app/app-actions.ts;
  *   deploy/first-node/RUNTIME-INTERFACE-APPS.md §5), to the agent that owns the app. Its first line, the app and what
- *   it is about (`header`), is never part of the draft: the draft answers it as a draft answers a wall question
- *   (`answering`), the composer shows it above the field, and the send puts it first (cloud/wall-reply.ts).
+ *   it is about (`header`), is never in the composer: the draft answers it as a draft answers a wall question
+ *   (`answering`), the composer shows it above the field, and the send puts it first (cloud/wall-reply.ts). Where the
+ *   draft is saved and shared it is the text's first line (app/company.ts' room hooks), so a reload, another tab or
+ *   another member's client has it with the words.
  * A note goes from here only into a thread with nothing drafted in it and no answer to a wall question under way, on
  * the model account the cloud chooses for that thread, as the thread itself chooses it. Otherwise, or when the send
  * doesn't go (no model account, the cloud refused it), the note waits in that thread's composer for the member to
@@ -63,13 +66,20 @@ export async function tellAgent(
 	const room = company.roomDrafts.room(sessionId);
 	if (room) await room.refresh();
 	if (closed()) return { sent: false, href };
+	// The draft as the room has it, here too: what it answers comes with it (an app's line, which a reload or another
+	// tab left there), before anything is read from it.
+	company.roomDrafts.follow(sessionId);
 	const conversation = () => company.conversation(sessionId, false).get();
 	const shared = () => room?.draft(company.userId)?.body ?? "";
 	const before = conversation();
 	const header = note.header;
-	// One message answers one line: a draft that answers something already, or a message on its way (whose send
-	// clears what its draft answers) or waiting to be tried again (with what it answered), takes no app's note.
-	if (header !== undefined && (before.answering !== undefined || before.sending || before.retrySend))
+	// One message answers one line: a draft that answers something already (here, or in the room's text), or a message
+	// on its way (whose send clears what its draft answers) or waiting to be tried again (with what it answered), takes
+	// no app's note.
+	if (
+		header !== undefined &&
+		(before.answering !== undefined || splitAppNote(shared()) || before.sending || before.retrySend)
+	)
 		return { sent: false, href, held: true };
 	const empty =
 		(!room || room.usable()) &&
@@ -79,11 +89,18 @@ export async function tellAgent(
 		before.answering === undefined &&
 		!before.sending &&
 		!before.retrySend;
-	company.addToDraft(sessionId, note);
+	// The app's line first, so the draft is shared with it from its first write (app/company.ts' room hooks).
 	if (header !== undefined) company.conversation(sessionId, false).set({ answering: header });
+	try {
+		company.addToDraft(sessionId, note);
+	} catch (error) {
+		if (header !== undefined) company.setAnswering(sessionId, undefined);
+		throw error;
+	}
 	// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
 	// merged shared draft, an attachment, a wall question picked) leaves it in the composer for the member to send.
 	const intended = conversation().draft ?? "";
+	const shareable = (header === undefined ? "" : appNoteLead(header)) + intended;
 	if (!empty || closed()) return { sent: false, href };
 	await chooseThreadAccount(company, accounts, sessionId);
 	const now = conversation();
@@ -94,7 +111,7 @@ export async function tellAgent(
 		now.answering !== header ||
 		now.sending ||
 		now.retrySend ||
-		![intended, ""].includes(shared())
+		![shareable, ""].includes(shared())
 	)
 		return { sent: false, href };
 	// Sent from here, not from the thread: the member's press stands for the thread on screen (`sendNote`).

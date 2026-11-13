@@ -513,6 +513,9 @@ export interface RoomDraftsHooks {
 	quotes(sessionId: string): readonly MessageQuote[];
 	/** The draft holds a quote's words with one of their marks gone. */
 	broken(sessionId: string): boolean;
+	/** How much of a draft's text, at its start, its composer does not show (an app note's line, app/tell-agent.ts), in
+	 * UTF-16 units: the composer's caret and changes are counted after it. */
+	lead(text: string): number;
 	setDraft(sessionId: string, text: string, quotes: readonly MessageQuote[]): void;
 }
 
@@ -615,6 +618,13 @@ export class RoomDrafts {
 		if (room) this.#own(sessionId, room)?.changed();
 	}
 
+	/** Take the member's own draft in this conversation as the room has it now into the conversation, also where no
+	 * view of it is open (a note from elsewhere, app/tell-agent.ts, reads the draft before it adds to it). */
+	follow(sessionId: string): void {
+		const room = this.room(sessionId);
+		if (room) this.#own(sessionId, room);
+	}
+
 	/** The member pressed Send with `text`. Other members' words arriving meanwhile are kept apart. */
 	sending(sessionId: string): void {
 		if (this.room(sessionId)) this.#sending.set(sessionId, []);
@@ -701,11 +711,19 @@ export class RoomDrafts {
 				text: () => this.#hooks.draft(sessionId),
 				quotes: () => this.#hooks.quotes(sessionId),
 				broken: () => this.#hooks.broken(sessionId),
-				caret: () => this.#editors.get(sessionId)?.caret(),
+				caret: () => {
+					const caret = this.#editors.get(sessionId)?.caret();
+					return caret === undefined ? undefined : caret + this.#hooks.lead(this.#hooks.draft(sessionId));
+				},
 				busy: () => this.#editors.get(sessionId)?.busy() ?? false,
 				show: (text, edit, quotes) => {
-					this.#sending.get(sessionId)?.push(edit);
-					for (const listener of this.#shown.get(sessionId) ?? []) listener(text, edit);
+					// The composer shows the draft after its lead: it, and a send on its way, hear what changed there.
+					const before = this.#hooks.draft(sessionId);
+					const from = this.#hooks.lead(before);
+					const to = this.#hooks.lead(text);
+					const shown = from === 0 && to === 0 ? edit : diffText(before.slice(from), text.slice(to));
+					this.#sending.get(sessionId)?.push(shown);
+					for (const listener of this.#shown.get(sessionId) ?? []) listener(text.slice(to), shown);
 					this.#hooks.setDraft(sessionId, text, quotes);
 				},
 				gone: () => {},

@@ -75,7 +75,7 @@ export class AppAskBar implements AppGate {
 		return this.#pending ? "busy" : this.#declines >= ASK_DECLINES_BEFORE_QUIET ? "quiet" : null;
 	}
 
-	ask(ask: AppAsk, perform: PreparedAsk["perform"]): Promise<AppGateOutcome> {
+	ask(ask: AppAsk, perform: PreparedAsk["perform"], keep?: PreparedAsk["keep"]): Promise<AppGateOutcome> {
 		const closed = this.#disposed ? "gone" : this.closed();
 		if (closed) return Promise.resolve({ outcome: closed });
 		return new Promise((resolve) => {
@@ -87,7 +87,7 @@ export class AppAskBar implements AppGate {
 				working: false,
 			};
 			this.#pending = pending;
-			this.#show(ask, perform, pending);
+			this.#show(ask, perform, pending, keep);
 		});
 	}
 
@@ -207,7 +207,7 @@ export class AppAskBar implements AppGate {
 		return field;
 	}
 
-	#show(ask: AppAsk, perform: PreparedAsk["perform"], pending: Pending): void {
+	#show(ask: AppAsk, perform: PreparedAsk["perform"], pending: Pending, keep?: PreparedAsk["keep"]): void {
 		this.#clear();
 		const agent = ask.kind === "row" ? undefined : this.#host.agent(ask.agentId);
 		const name = agent?.displayName ?? t("The agent");
@@ -259,6 +259,12 @@ export class AppAskBar implements AppGate {
 		document.addEventListener("visibilitychange", wake);
 		this.#stopWaking = () => document.removeEventListener("visibilitychange", wake);
 		field?.addEventListener("input", ready);
+		// A note its thread could not take is kept for the app with the member's words as they write them, so going to
+		// the thread to look (the held line's Open) loses nothing: the app's bar shows it again on the way back.
+		let holding = ask.kind === "tell" && ask.held === true;
+		field?.addEventListener("input", () => {
+			if (holding) keep?.(field.value);
+		});
 		yes.addEventListener("pointerdown", (event) => {
 			if ((event as PointerEvent).button === 0) pressed = Date.now();
 		});
@@ -271,6 +277,7 @@ export class AppAskBar implements AppGate {
 		});
 		const decline = () => {
 			if (this.#pending !== pending || pending.working) return;
+			if (holding) keep?.(undefined);
 			this.#declines++;
 			pending.settle({ outcome: "declined" });
 			if (this.#declines < ASK_DECLINES_BEFORE_QUIET) return this.#hide();
@@ -297,6 +304,7 @@ export class AppAskBar implements AppGate {
 				(note) => {
 					this.#declines = 0;
 					if (ask.kind === "tell" && note?.held) {
+						holding = true;
 						// Not added to the thread, whose draft answers something else already: the note stays here with its words,
 						// and Send tries again once that is sent or cleared there.
 						pending.working = false;

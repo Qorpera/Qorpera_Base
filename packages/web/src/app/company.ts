@@ -68,7 +68,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import type { WaitingKind, WaitingWork } from "../cloud/waiting-work.ts";
-import { withReply } from "../cloud/wall-reply.ts";
+import { appNoteHeader, appNoteLead, splitAppNote, withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
@@ -658,19 +658,47 @@ export class CompanyController {
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
 		this.#userId = userId;
+		// A note from an app that waits in a thread (app/tell-agent.ts) answers its app's line, which the composer shows
+		// above the field and never in it (`answering`). Wherever the draft is saved and shared, the line is its text's
+		// first line (cloud/wall-reply.ts `appNoteLead`), so a reload, another tab and another member's client have it
+		// with the words: it is put in front of the draft for the room, and taken out of the room's text again here.
+		const lead = (sessionId: string) => {
+			const answering = this.conversation(sessionId, false).get().answering;
+			return answering !== undefined && appNoteHeader(answering) ? appNoteLead(answering) : "";
+		};
+		const shift = (quotes: readonly MessageQuote[], by: number) =>
+			quotes.map((quote) => ({ ...quote, start: quote.start + by, end: quote.end + by }));
 		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
-			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
-			quotes: (sessionId) => this.draftQuotes(sessionId),
+			draft: (sessionId) => lead(sessionId) + (this.conversation(sessionId).get().draft ?? ""),
+			quotes: (sessionId) => shift(this.draftQuotes(sessionId), [...lead(sessionId)].length),
 			broken: (sessionId) => this.draftBroken(sessionId),
+			lead: (text) => splitAppNote(text)?.lead.length ?? 0,
 			// The merged draft's quotes take their words over: a record kept here never outlives the email its
 			// words now come from (another tab removed one quote and quoted the same words from another email).
 			setDraft: (sessionId, text, quotes) =>
-				this.conversation(sessionId).set((state) => ({
-					draft: text,
-					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
-					...draftReplaced(state),
-				})),
+				this.conversation(sessionId).set((state) => {
+					const note = splitAppNote(text);
+					const draft = note ? note.rest : text;
+					const by = note ? [...note.lead].length : 0;
+					const own = shift(
+						quotes.filter((quote) => quote.start >= by),
+						-by,
+					);
+					// The room's text says what the draft answers now: an app's line it opens with, or none any more
+					// (another tab sent the note, or left the app out). A wall question is this browser's alone.
+					const answering = note
+						? { answering: note.line }
+						: state.answering !== undefined && appNoteHeader(state.answering)
+							? { answering: undefined }
+							: {};
+					return {
+						draft,
+						quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], draft, own),
+						...answering,
+						...draftReplaced(state),
+					};
+				}),
 		});
 		this.#writeInput =
 			writeInput ??
@@ -3024,6 +3052,14 @@ export class CompanyController {
 			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
 		store.set((now) => ({ draft: next.text, quoteRecords: next.records, ...draftReplaced(now) }));
 		// A shared draft shares it at once, as if the member had typed it.
+		this.roomDrafts.input(sessionId);
+	}
+
+	/** What the conversation's draft answers: a question from the agent's wall, an app's line (a note from an app's
+	 * page, app/tell-agent.ts), or nothing. An app's line is part of the draft where it is shared, so it is shared at
+	 * once, as the draft's text would be. */
+	setAnswering(sessionId: string, answering: string | undefined): void {
+		this.conversation(sessionId, false).set({ answering });
 		this.roomDrafts.input(sessionId);
 	}
 

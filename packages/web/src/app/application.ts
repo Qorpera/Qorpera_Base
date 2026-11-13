@@ -35,7 +35,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
-import type { AppTellSource } from "./app-actions.ts";
+import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -476,6 +476,9 @@ export function mountApplication(
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
+	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
+	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
+	const heldNotes = new WeakMap<CompanyController, Map<string, HeldNote>>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -1129,6 +1132,16 @@ export function mountApplication(
 					return "agent" in found ? { agentId: found.agent.id } : found;
 				},
 				agent: (agentId) => controller.staffById(agentId),
+				held: (app) => heldNotes.get(controller)?.get(app),
+				hold: (app, note) => {
+					let notes = heldNotes.get(controller);
+					if (!notes) {
+						notes = new Map();
+						heldNotes.set(controller, notes);
+					}
+					if (note) notes.set(app, note);
+					else notes.delete(app);
+				},
 				send: (agentId, note) => {
 					accounts ??= createWebNativeSubscription(
 						cloud,

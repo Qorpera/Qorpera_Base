@@ -14,6 +14,7 @@ import {
 	type AppGate,
 	type AppNoteSent,
 	type AppTellSource,
+	type HeldNote,
 	planRowChange,
 } from "../src/app/app-actions.ts";
 import { AppBridge, type AppBridgeHost, type CompanyApp, TELL_AGAIN_MS } from "../src/app/interface-apps.ts";
@@ -543,6 +544,7 @@ describe("the bridge's requests for a change", () => {
 		receiver: ReturnType<AppTellSource["receiver"]> = { agentId: AGENT },
 		went: AppNoteSent | Error = { sent: true, href: `#/c/p/staff/${AGENT}` },
 	) => {
+		const kept = new Map<string, HeldNote>();
 		const source = {
 			receiver: vi.fn((_owner: string | null) => receiver),
 			agent: () => undefined,
@@ -550,7 +552,13 @@ describe("the bridge's requests for a change", () => {
 				if (went instanceof Error) throw went;
 				return went;
 			}),
-		} satisfies AppTellSource;
+			held: (app: string) => kept.get(app),
+			hold: (app: string, note: HeldNote | undefined) => {
+				if (note) kept.set(app, note);
+				else kept.delete(app);
+			},
+			kept,
+		} satisfies AppTellSource & { kept: Map<string, HeldNote> };
 		return source;
 	};
 	const tell = (params: Record<string, unknown>) => ({ method: "tell", params });
@@ -674,6 +682,35 @@ describe("the bridge's requests for a change", () => {
 			error: "Another request is waiting for the member's answer",
 		});
 		expect(waiting.receiver).not.toHaveBeenCalled();
+	});
+
+	it("keeps a note its thread can't take for the app, with the member's words, until a note with its line went", async () => {
+		const source = notes(undefined, { sent: false, href: "#/c/p/staff/a", held: true });
+		const { gate } = gateThat("allow", undefined, "Two quotes");
+		expect(await bridge("", { gate, tell: source }).answer(tell(lund))).toEqual({
+			ok: true,
+			value: { sent: false, waiting: true },
+		});
+		expect(source.kept.get("orders-board")).toEqual({
+			agentId: AGENT,
+			app: "Orders",
+			about: "Lund, A",
+			header: "app:orders-board#1043 · Lund, A",
+			words: "Two quotes",
+		});
+		// A held note leaves the app no pause: it went nowhere.
+		const again = bridge("", { gate: gateThat("allow", undefined, "Still two").gate, tell: source });
+		source.send.mockResolvedValueOnce({ sent: false, href: "#/c/p/staff/a", held: true });
+		expect(await again.answer(tell(lund))).toMatchObject({ ok: true });
+		expect(source.kept.get("orders-board")?.words).toBe("Still two");
+		// Another thing's note going leaves it kept; the same note going lets it go.
+		source.send.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
+		expect(await again.answer(tell({ about: "Hansen", at: "1042" }))).toMatchObject({ value: { sent: true } });
+		expect(source.kept.has("orders-board")).toBe(true);
+		source.send.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
+		const later = bridge("", { gate: gateThat("allow", undefined, "Now").gate, tell: source });
+		expect(await later.answer(tell(lund))).toMatchObject({ value: { sent: true } });
+		expect(source.kept.has("orders-board")).toBe(false);
 	});
 
 	it("costs five calls, and after a sent note refuses the app's next one for ten seconds", async () => {
@@ -1053,9 +1090,12 @@ describe("the bar a request is put to the member on", () => {
 			const perform = vi
 				.fn(async (_words: string): Promise<AppNoteSent> => ({ sent: false, href: "#/c/p/staff/a", held: true }))
 				.mockResolvedValueOnce({ sent: false, href: "#/c/p/staff/a", held: true });
-			const outcome = bar.ask(note(), perform);
+			const keep = vi.fn((_words: string | undefined) => {});
+			const outcome = bar.ask(note(), perform, keep);
 			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
 			type(bar, "Two quotes, please.");
+			// Nothing is kept before the thread has said it can't take the note.
+			expect(keep).not.toHaveBeenCalled();
 			press(button(bar, "Send note"));
 			await vi.advanceTimersByTimeAsync(0);
 			// Still asking: the words as the member left them, both buttons back, and why, with Open.
@@ -1070,11 +1110,29 @@ describe("the bar a request is put to the member on", () => {
 			expect(held.querySelector("a")?.getAttribute("data-href")).toBe("#/c/p/staff/a");
 			expect(document.activeElement).toBe(field(bar));
 			expect(bar.closed()).toBe("busy");
+			// From here on the words are kept for the app as the member changes them, so going to look loses nothing.
+			type(bar, "Two quotes, please. By Friday.");
+			expect(keep).toHaveBeenLastCalledWith("Two quotes, please. By Friday.");
 			// Once the thread is free, the next press sends it.
 			perform.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
 			press(button(bar, "Send note"));
 			expect(await outcome).toEqual({ outcome: "told", sent: true });
-			expect(perform.mock.calls.map((call) => call[0])).toEqual(["Two quotes, please.", "Two quotes, please."]);
+			expect(perform.mock.calls.map((call) => call[0])).toEqual([
+				"Two quotes, please.",
+				"Two quotes, please. By Friday.",
+			]);
+		});
+
+		it("shows a kept note with the member's words, and lets it go on Not now", async () => {
+			const bar = make(ada);
+			const keep = vi.fn((_words: string | undefined) => {});
+			const outcome = bar.ask({ ...note("My own words"), held: true }, async () => undefined, keep);
+			expect(field(bar).value).toBe("My own words");
+			type(bar, "My own words, changed");
+			expect(keep).toHaveBeenLastCalledWith("My own words, changed");
+			button(bar, "Not now").click();
+			expect(keep).toHaveBeenLastCalledWith(undefined);
+			expect(await outcome).toEqual({ outcome: "declined" });
 		});
 
 		it("says why a note did not go, in the member's words", async () => {

@@ -62,3 +62,18 @@ export function appNoteHeader(line: string): { app: string; at: string | null; a
 	if (app === undefined || (match[2] !== undefined && !APP_NOTE_AT.test(match[2]))) return undefined;
 	return { app, at: match[2] ?? null, about: match[3] as string };
 }
+
+/** How a draft carries the line an app's note answers wherever it is saved and shared (the room's shared draft,
+ * app/room-drafts.ts): as the text's first line, quoted, then an empty line, as the message will open. */
+export function appNoteLead(line: string): string {
+	return `> ${line}\n\n`;
+}
+
+/** A draft's text that opens with an app note's line: the line, its lead as written, and the rest; undefined when the
+ * text opens with none. */
+export function splitAppNote(text: string): { line: string; lead: string; rest: string } | undefined {
+	const match = /^> ([^\n]+)\n\n/.exec(text);
+	const line = match?.[1];
+	if (!match || line === undefined || !appNoteHeader(line)) return undefined;
+	return { line, lead: match[0], rest: text.slice(match[0].length) };
+}

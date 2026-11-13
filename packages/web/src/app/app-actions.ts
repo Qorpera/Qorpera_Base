@@ -82,8 +82,11 @@ export type AppAsk =
 			readonly app: string;
 			/** What the note is about, as the page said it, made one plain line (cloud/wall-reply.ts `appNoteAbout`). */
 			readonly about: string;
-			/** The page's draft of the member's words: what the bar's field starts with. */
+			/** The page's draft of the member's words: what the bar's field starts with. For a note kept from before
+			 * (`held`), the member's own words as they left them. */
 			readonly draft: string;
+			/** A note its thread could not take, kept for the app until it is sent or let go (`HeldNote`). */
+			readonly held?: true;
 	  };
 
 /** How a note went: sent as the member's message, or waiting in the agent's thread (`href`) for the member to send, or
@@ -100,6 +103,9 @@ export interface AppNoteSent {
 export interface PreparedAsk {
 	readonly ask: AppAsk;
 	readonly perform: (words: string) => Promise<AppNoteSent | undefined>;
+	/** A note held on the bar (its thread could not take it): keeps the member's words as they are now for the app,
+	 * so they outlive the bar (the member went to the thread to look), or lets them go (`undefined`: not now). */
+	readonly keep?: (words: string | undefined) => void;
 }
 
 /** How a request ended. `told`: the member sent the note, and it went (`sent`) or waits in the agent's thread. `busy`:
@@ -114,8 +120,9 @@ export type AppGateOutcome =
 export interface AppGate {
 	/** Why no request can be shown now, or null. */
 	readonly closed: () => "busy" | "quiet" | "gone" | null;
-	/** Shows the request and, when the member allows it, makes the change with `perform`. */
-	readonly ask: (ask: AppAsk, perform: PreparedAsk["perform"]) => Promise<AppGateOutcome>;
+	/** Shows the request and, when the member allows it, makes the change with `perform`; `keep` keeps a held note's
+	 * words. */
+	readonly ask: (ask: AppAsk, perform: PreparedAsk["perform"], keep?: PreparedAsk["keep"]) => Promise<AppGateOutcome>;
 }
 
 /** A request the app is told no to, with the reason its page is given. Nothing was shown and nothing changed. */
@@ -443,6 +450,18 @@ export async function prepareRow(
 
 /* ---- A note to the app's owner --------------------------------------------------------------------------------- */
 
+/** A note its thread could not take now (its draft answers something else already), kept for its app by the company
+ * until it is sent or the member lets it go: the app's bar shows it again when the member comes back to the app. */
+export interface HeldNote {
+	readonly agentId: string;
+	/** The app's name as its manifest says it, what the note is about, and the line it answers (`appNoteLine`). */
+	readonly app: string;
+	readonly about: string;
+	readonly header: string;
+	/** The member's words as they last left them on the bar. */
+	readonly words: string;
+}
+
 /** What a note needs of the open company (app/tell-agent.ts): who hears it, and the send. */
 export interface AppTellSource {
 	/** Who hears a note from an app with this owner now: the owner while it is at work, else the Co-Founder; or why no
@@ -453,6 +472,9 @@ export interface AppTellSource {
 	/** Sends the member's words to the agent as their own message, under the line the note answers (`header`, the app
 	 * and what it is about), or leaves them waiting in the agent's thread. */
 	readonly send: (agentId: string, note: { readonly header: string; readonly text: string }) => Promise<AppNoteSent>;
+	/** The note held for an app (by its folder's name), and keeping one, or letting it go (`undefined`). */
+	readonly held: (app: string) => HeldNote | undefined;
+	readonly hold: (app: string, note: HeldNote | undefined) => void;
 }
 
 /** A draft of the member's words a page may give, at most, in characters. */
@@ -484,19 +506,53 @@ export function prepareTell(
 	const receiver = source.receiver(app.manifest.owner);
 	if ("refused" in receiver) throw new AppActionRefused(receiver.refused);
 	const thing = typeof at === "string" ? at : null;
+	const held = {
+		agentId: receiver.agentId,
+		app: app.manifest.name,
+		about: said,
+		header: appNoteLine(app.name, thing, said),
+	};
 	return {
 		ask: { kind: "tell", agentId: receiver.agentId, app: app.manifest.name, about: said, draft },
+		...noteSending(source, app.name, held),
+	};
+}
+
+/** The note held for `app`, as the bar shows it again when the member comes back to the app: their words in the
+ * field, sent as any note is. Undefined when none is held. */
+export function restoreTell(source: AppTellSource, app: { readonly name: string }): PreparedAsk | undefined {
+	const held = source.held(app.name);
+	if (!held) return undefined;
+	return {
+		ask: { kind: "tell", agentId: held.agentId, app: held.app, about: held.about, draft: held.words, held: true },
+		...noteSending(source, app.name, held),
+	};
+}
+
+/** A note's send and keeping, for the app with the folder `app`: the member's words go under the note's line; a note
+ * its thread can't take now is kept for the app with those words, and once it went or waits there it is let go. */
+function noteSending(
+	source: AppTellSource,
+	app: string,
+	note: Omit<HeldNote, "words">,
+): Pick<PreparedAsk, "perform" | "keep"> {
+	return {
 		perform: async (words) => {
 			const own = words.trim();
 			// The bar's Send is off while its field is empty.
 			if (!own) throw new AppActionRefused(t("Write your note first."));
+			let went: AppNoteSent;
 			try {
-				return await source.send(receiver.agentId, { header: appNoteLine(app.name, thing, said), text: own });
+				went = await source.send(note.agentId, { header: note.header, text: own });
 			} catch (error) {
 				throw new AppActionRefused(
 					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),
 				);
 			}
+			if (went.held) source.hold(app, { ...note, words });
+			else if (source.held(app)?.header === note.header) source.hold(app, undefined);
+			return went;
 		},
+		keep: (words) => source.hold(app, words === undefined ? undefined : { ...note, words }),
 	};
 }
