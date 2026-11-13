@@ -17,12 +17,15 @@
 --   and the same member by the same kind of run (a worker's access, or none), a task machine (an always-on ask makes a
 --   new machine), the same cpus and memory and at least the disk asked; and free: running, stopping or stopped (not in
 --   line or starting for someone), no run waiting for it, no command running, no busy program for 90 s, no member
---   holding or sharing its desktop, and no run still going that started it, took it again, ran a command on it or acted
---   on its screen. The one of the asked name comes first, then a running one, then the latest used. It keeps its name and
---   its starter (the folder mount and its read checks stay its starter's, which this rule makes the asker's own); its
---   purpose becomes the new one; reused_by_receipt_id holds the start's receipt, so a replay answers that machine; the
---   answer says `reused`. The idle rule decides as before when it sleeps (an hour unused) and when it is removed (30
---   days asleep). Desktops, coding machines, always-on machines and a member's start are as they were.
+--   holding or sharing its desktop, and no run still going that started it, asked for it by machine_start (a wake by
+--   name or a start that took it again: taken_by_run_id, the latest, and every such completed start's receipt), ran a
+--   command on it or acted on its screen. The one of the asked name comes first, then a running one, then the latest
+--   used. It is locked, then looked at again in a statement of its own (a command's authority locks the machine, not the
+--   company's machines, so one authorized meanwhile is seen). It keeps its name and its starter (the folder mount and its
+--   read checks stay its starter's, which this rule makes the asker's own); its purpose becomes the new one;
+--   reused_by_receipt_id holds the start's receipt, so a replay answers that machine; the answer says `reused`. The idle
+--   rule decides as before when it sleeps (an hour unused) and when it is removed (30 days asleep). Desktops, coding
+--   machines, always-on machines and a member's start are as they were.
 -- Every new or patched body names this migration (20260930747000), for the deploy guards.
 set local lock_timeout = '3s';
 
@@ -53,61 +56,90 @@ end $$;
 
 -- 1. The start that took a machine again --------------------------------------------------------------------------------
 
-alter table public.qorpera_company_machines add column reused_by_receipt_id uuid;
+alter table public.qorpera_company_machines add column reused_by_receipt_id uuid, add column taken_by_run_id uuid;
 comment on column public.qorpera_company_machines.reused_by_receipt_id is
 	'20260930747000: the latest machine_start that took this machine again as the agent''s own free machine; a replay answers it.';
+comment on column public.qorpera_company_machines.taken_by_run_id is
+	'20260930747000: the run of the latest machine_start that asked for this machine (a wake by name, or taken again).';
 create unique index qorpera_company_machines_reused_by_receipt on public.qorpera_company_machines (reused_by_receipt_id)
 	where reused_by_receipt_id is not null;
 
 -- 2. The agent's own free machine of the asked size -----------------------------------------------------------------------
 
--- The machine a new task machine of p_args (machine_start's arguments: name, purpose, cpus, memoryGiB, diskGiB, lifetime)
--- is, for the run p_run_id of p_identity (its tool authority's identity), locked; or none. Internal: the caller holds the
--- company's machines lock (one start or wake at a time), so no other start takes the same machine.
+-- Whether p_machine is one a new task machine of p_args (machine_start's arguments: name, purpose, cpus, memoryGiB,
+-- diskGiB, lifetime) may be, for a run of p_identity (its tool authority's identity) whose worker access is p_access (null
+-- for a run that is no worker): it fits, and it is free. Stable: it sees what the statement that calls it sees.
+create function public.qorpera_company_machine_takeable(p_machine public.qorpera_company_machines, p_identity jsonb, p_args jsonb,
+	p_access text)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930747000
+	select p_args ->> 'lifetime' = 'task' and p_args ? 'name'
+		and p_machine.profile_id = (p_identity ->> 'companyId')::uuid and p_machine.environment_id = (p_identity ->> 'environmentId')::uuid
+		and p_machine.removed_at is null and p_machine.desired_state <> 'deleted' and p_machine.lifetime = 'task'
+		and p_machine.started_by_staff_agent_id = (p_identity ->> 'staffAgentId')::uuid
+		and p_machine.requested_by_user_id = (p_identity ->> 'requesterUserId')::uuid
+		and (public.qorpera_run_worker(p_machine.started_by_run_id)).access is not distinct from p_access
+		and p_machine.cpus = (p_args ->> 'cpus')::integer and p_machine.memory_bytes = (p_args ->> 'memoryGiB')::bigint * 1073741824
+		and p_machine.disk_bytes >= (p_args ->> 'diskGiB')::bigint * 1073741824
+		-- Free: nobody is starting it or waiting for it, nothing runs or keeps it busy, no member is at its desktop.
+		and public.qorpera_company_machine_state(p_machine) in ('running', 'stopping', 'stopped')
+		and cardinality(p_machine.notify_run_ids) = 0
+		and not coalesce(p_machine.busy_at > clock_timestamp() - interval '90 seconds', false)
+		and not coalesce(p_machine.desktop_member_until > clock_timestamp(), false)
+		and not coalesce(p_machine.desktop_shared_at > clock_timestamp() - interval '10 minutes', false)
+		and not exists (select 1 from public.qorpera_company_machine_commands command
+			where command.machine_id = p_machine.id and command.ended_at is null)
+		-- No run that still goes (its job queued or leased, the asking run too) started it, asked for it by machine_start, ran
+		-- a command on it or acted on its screen: that run may come back to it.
+		and not exists (select 1 from (
+				select p_machine.started_by_run_id as run_id
+				union all
+				select p_machine.taken_by_run_id
+				union all
+				select receipt.run_id from public.qorpera_run_operation_receipts receipt where receipt.id = p_machine.reused_by_receipt_id
+				union all
+				select command.run_id from public.qorpera_company_machine_commands command where command.machine_id = p_machine.id
+				union all
+				select screen.run_id from public.qorpera_company_machine_screen_runs screen
+				join public.qorpera_company_machine_placements placement on placement.id = screen.placement_id
+				where placement.machine_id = p_machine.id) used
+			join public.qorpera_execution_runs run on run.id = used.run_id
+			join public.qorpera_runner_jobs job on job.id = run.job_id
+			where job.status in ('queued', 'leased'))
+		-- Nor any completed machine_start of a run that still goes that answered this machine (an earlier asker's, when a
+		-- later one is taken_by_run_id).
+		and not exists (select 1 from public.qorpera_runner_jobs job
+			join public.qorpera_execution_runs run on run.job_id = job.id
+			join public.qorpera_run_operation_receipts receipt on receipt.run_id = run.id
+			where job.status in ('queued', 'leased') and run.profile_id = p_machine.profile_id
+				and receipt.logical_operation_key like 'machine_start:%' and receipt.status = 'completed'
+				and receipt.result #>> '{machine,machineId}' = p_machine.id::text)
+$$;
+revoke all on function public.qorpera_company_machine_takeable(public.qorpera_company_machines, jsonb, jsonb, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- The agent's own machine a new task machine of p_args is, for the run p_run_id of p_identity, locked; or none. Internal:
+-- the caller holds the company's machines lock (one start or wake at a time), so no other start takes the same machine.
+-- A command's authority, a member's hold of the desktop and the executor lock a machine without that lock: each candidate
+-- is locked first and looked at again in a statement of its own, which sees what such a transaction committed.
 create function public.qorpera_company_machine_reusable(p_identity jsonb, p_run_id uuid, p_args jsonb)
 returns public.qorpera_company_machines language plpgsql security definer set search_path = '' as $$
-declare v_machine public.qorpera_company_machines%rowtype;
+declare v_machine public.qorpera_company_machines%rowtype; v_id uuid;
 	v_access text := (public.qorpera_run_worker(p_run_id)).access;
 begin
 	-- 20260930747000
 	if p_args ->> 'lifetime' is distinct from 'task' or not p_args ? 'name' then return null; end if;
-	select machine.* into v_machine from public.qorpera_company_machines machine
-	where machine.profile_id = (p_identity ->> 'companyId')::uuid and machine.environment_id = (p_identity ->> 'environmentId')::uuid
-		and machine.removed_at is null and machine.desired_state <> 'deleted' and machine.lifetime = 'task'
-		and machine.started_by_staff_agent_id = (p_identity ->> 'staffAgentId')::uuid
-		and machine.requested_by_user_id = (p_identity ->> 'requesterUserId')::uuid
-		and (public.qorpera_run_worker(machine.started_by_run_id)).access is not distinct from v_access
-		and machine.cpus = (p_args ->> 'cpus')::integer and machine.memory_bytes = (p_args ->> 'memoryGiB')::bigint * 1073741824
-		and machine.disk_bytes >= (p_args ->> 'diskGiB')::bigint * 1073741824
-		-- Free: nobody is starting it or waiting for it, nothing runs or keeps it busy, no member is at its desktop.
-		and public.qorpera_company_machine_state(machine) in ('running', 'stopping', 'stopped')
-		and cardinality(machine.notify_run_ids) = 0
-		and not coalesce(machine.busy_at > clock_timestamp() - interval '90 seconds', false)
-		and not coalesce(machine.desktop_member_until > clock_timestamp(), false)
-		and not coalesce(machine.desktop_shared_at > clock_timestamp() - interval '10 minutes', false)
-		and not exists (select 1 from public.qorpera_company_machine_commands command
-			where command.machine_id = machine.id and command.ended_at is null)
-		-- No run that still goes (its job queued or leased, this one too) started it, took it again, ran a command on it or
-		-- acted on its screen: that run may come back to it.
-		and not exists (select 1 from (
-				select machine.started_by_run_id as run_id
-				union all
-				select receipt.run_id from public.qorpera_run_operation_receipts receipt where receipt.id = machine.reused_by_receipt_id
-				union all
-				select command.run_id from public.qorpera_company_machine_commands command where command.machine_id = machine.id
-				union all
-				select screen.run_id from public.qorpera_company_machine_screen_runs screen
-				join public.qorpera_company_machine_placements placement on placement.id = screen.placement_id
-				where placement.machine_id = machine.id) used
-			join public.qorpera_execution_runs run on run.id = used.run_id
-			join public.qorpera_runner_jobs job on job.id = run.job_id
-			where job.status in ('queued', 'leased'))
-	order by machine.name = p_args ->> 'name' desc, public.qorpera_company_machine_state(machine) = 'running' desc,
-		machine.last_used_at desc, machine.id
-	limit 1
-	for update of machine;
-	if not found then return null; end if;
-	return v_machine;
+	for v_id in select machine.id from public.qorpera_company_machines machine
+		where machine.profile_id = (p_identity ->> 'companyId')::uuid and machine.removed_at is null
+			and public.qorpera_company_machine_takeable(machine, p_identity, p_args, v_access)
+		order by machine.name = p_args ->> 'name' desc, public.qorpera_company_machine_state(machine) = 'running' desc,
+			machine.last_used_at desc, machine.id loop
+		select * into v_machine from public.qorpera_company_machines where id = v_id for update;
+		if (select public.qorpera_company_machine_takeable(machine, p_identity, p_args, v_access)
+			from public.qorpera_company_machines machine where machine.id = v_id) then
+			return v_machine; end if;
+	end loop;
+	return null;
 end $$;
 revoke all on function public.qorpera_company_machine_reusable(jsonb, uuid, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
@@ -141,6 +173,11 @@ do $$ begin execute pg_temp.machine_ready_patched(
 	if (v_machine.id is null and v_args ? 'machine') or v_reused then
 		if not v_reused then
 			v_machine := public.qorpera_company_machine_named((v_identity ->> 'companyId')::uuid, v_args ->> 'machine'); end if;$new$,
+	$old$			last_used_at = clock_timestamp() where id = v_machine.id returning * into v_machine;$old$,
+	$new$			last_used_at = clock_timestamp(),
+			-- 20260930747000: the run asked for it (a wake by name, or taken again): it is that run's while the run goes.
+			taken_by_run_id = v_receipt.run_id
+		where id = v_machine.id returning * into v_machine;$new$,
 	$old$	return jsonb_build_object('schema','qorpera.machine-start/v1','machine',public.qorpera_company_machine_view(v_machine));$old$,
 	$new$	return jsonb_build_object('schema','qorpera.machine-start/v1','machine',public.qorpera_company_machine_view(v_machine))
 		-- 20260930747000: what the agent is told when it got its own machine again, in place of a new one.

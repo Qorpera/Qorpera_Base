@@ -10,9 +10,12 @@
 --    receipt answers the same machine; one taken by a live run is not taken again; with none free, a new machine as before.
 -- 3. What fits: the same agent, member, size (at least the disk), task (an always-on ask makes a new machine); what is free:
 --    not deleting, not starting for someone, no command running, no busy program, no member holding or sharing its
---    desktop, and no run that still goes started it, ran a command on it or acted on its screen (a run that ended does not
+--    desktop, and no run that still goes started it, asked for it by machine_start (a wake by name too: the latest asker,
+--    and every completed start that named it), ran a command on it or acted on its screen (a run that ended does not
 --    count); the asked name first, a running one before an asleep one; a taken name of no free machine is refused as before.
--- 4. The helper is internal (no API role), the column is there, and both patched bodies carry the marker.
+-- 4. The helpers are internal (no API role), the columns are there, and every new or patched body carries the marker.
+-- 5. Two connections: a command's authority that locks the machine and commits while a start that found it free waits
+--    for its lock: the start looks again and takes the next machine (review r1 F1). What the test committed is removed.
 
 select pg_temp.base_claims('service_role');
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'b1-ack') \g /dev/null
@@ -282,6 +285,7 @@ end $$;
 select set_config('qorpera_test.b1_cmd', extensions.gen_random_uuid()::text, true) \g /dev/null
 do $$
 declare v_command uuid := current_setting('qorpera_test.b1_cmd')::uuid; v_bob uuid := current_setting('qorpera_test.b1_bob')::uuid;
+	v jsonb;
 begin
 	perform pg_temp.b1_add('run-free', interval '30 days');
 	update public.qorpera_company_machines set desired_state = 'running', desired_by = 'agent', wanted_at = clock_timestamp()
@@ -318,6 +322,25 @@ begin
 	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'bob-started', '3: a screen action of a run that still goes');
 	delete from public.qorpera_company_machine_screen_runs where run_id = pg_temp.b1_run();
 	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'run-free', '3: and without it');
+	-- She asks for it by name (a wake of a running machine: no word to tell, as a worker's wake never has one): it is her
+	-- run's while her run goes, before any command (review r1 F2).
+	v := pg_temp.b1_start('wake-run-free', jsonb_build_object('machine', 'run-free'));
+	perform pg_temp.base_assert(v #>> '{machine,name}' = 'run-free' and not v ? 'reused'
+		and (pg_temp.b1_machine('run-free')).taken_by_run_id = pg_temp.b1_run()
+		and (pg_temp.b1_machine('run-free')).notify_run_ids = '{}', '3: her wake by name: ' || v::text);
+	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'bob-started', '3: a wake by name of a run that still goes');
+	-- A later wake by Bob's run (which ended): her completed wake still names it.
+	perform pg_temp.b1_shift('run-free', format('taken_by_run_id = %L', v_bob));
+	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'bob-started', '3: an earlier wake of a run that still goes');
+	-- Her wake as if its answer were not kept yet (its receipt names no machine): taken_by_run_id alone.
+	set local session_replication_role = replica;
+	update public.qorpera_run_operation_receipts set result = '{"schema":"qorpera.machine-start/v1"}'
+	where run_id = pg_temp.b1_run() and logical_operation_key = 'machine_start:wake-run-free';
+	set local session_replication_role = origin;
+	perform pg_temp.b1_shift('run-free', 'taken_by_run_id = ' || quote_literal(pg_temp.b1_run()));
+	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'bob-started', '3: taken by a run that still goes');
+	perform pg_temp.b1_shift('run-free', 'taken_by_run_id = null');
+	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'run-free', '3: free again');
 end $$;
 
 -- 2. machine_start takes them, one start at a time ---------------------------------------------------------------------------
@@ -358,10 +381,7 @@ begin
 	perform pg_temp.base_assert(v #>> '{machine,name}' = 'brand-new' and not v ? 'reused'
 		and (pg_temp.b1_machine('brand-new')).reused_by_receipt_id is null
 		and (select count(*) from public.qorpera_company_machines) = v_count + 1, '2: a new machine: ' || v::text);
-	-- An always-on ask makes a new machine even when one is free (free-old, made free again as the rows say).
-	update public.qorpera_company_machines set reused_by_receipt_id = null, notify_run_ids = '{}', desired_state = 'stopped'
-	where name = 'free-old';
-	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'free-old', '2: free-old free again');
+	-- An always-on ask makes a new machine (section 3: it takes none even when one is free).
 	v := pg_temp.b1_start('reuse-9', pg_temp.b1_new('server', 2, 'always-on'));
 	perform pg_temp.base_assert(v #>> '{machine,name}' = 'server' and not v ? 'reused', '2: always-on is new: ' || v::text);
 end $$;
@@ -376,10 +396,158 @@ begin
 	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)'::regprocedure),
 			'20260930747000') > 0
 		and strpos(pg_get_functiondef('public.qorpera_native_machine_manage(jsonb,jsonb)'::regprocedure), '20260930747000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)'::regprocedure), '20260930747000') > 0,
+		and strpos(pg_get_functiondef('public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)'::regprocedure), '20260930747000') > 0
+		and strpos(pg_get_functiondef('public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)'::regprocedure),
+			'20260930747000') > 0,
 		'4: the markers');
-	perform pg_temp.base_assert(exists (select 1 from pg_attribute where attrelid = 'public.qorpera_company_machines'::regclass
-		and attname = 'reused_by_receipt_id' and not attisdropped), '4: the column');
+	perform pg_temp.base_assert(not has_function_privilege('anon',
+			'public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)', 'execute')
+		and not has_function_privilege('authenticated',
+			'public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)', 'execute')
+		and not has_function_privilege('service_role',
+			'public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)', 'execute'),
+		'4: the predicate is internal');
+	perform pg_temp.base_assert((select count(*) from pg_attribute where attrelid = 'public.qorpera_company_machines'::regclass
+		and attname in ('reused_by_receipt_id', 'taken_by_run_id') and not attisdropped) = 2, '4: the columns');
 end $$;
 
-rollback;
+-- 5. A command authorized while a start looks (two connections; review r1 F1) -----------------------------------------------
+
+-- A command's authority locks the machine, not the company's machines, so it can commit while a start that found the
+-- machine free waits for the machine's lock: the start looks at it again once it holds it. Row and lock waits show only
+-- across connections, so what this test made is committed here and removed again at the end, with 1223's harness (1203's,
+-- 1106's, 467's and 674's): the test refuses to run beside other connections to this database. First Alice's run ends and
+-- a new run of hers starts (her post, materialized and leased as 924's), so the earlier run's uses count no more: run-free
+-- (running, Bob's ended command on it) is free and comes first, then build-1 (running too, used longer ago).
+do $$
+declare v_bob uuid := current_setting('qorpera_test.b1_bob')::uuid; v_wakes jsonb; v_pass jsonb;
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null
+	where id = (select job_id from public.qorpera_execution_runs where id = pg_temp.b1_run());
+	set local session_replication_role = origin;
+	v_wakes := pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000030', 'Another task.');
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 1, '5: her next run: ' || v_pass::text);
+	perform set_config('qorpera_test.base_binding', pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid)::text, true);
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_public_send(pg_temp.b1_binding(), 'progress', 'b1-ack-2');
+	perform pg_temp.b1_shift('run-free', 'taken_by_run_id = null, reused_by_receipt_id = null');
+	perform pg_temp.b1_shift('build-1', 'last_used_at = clock_timestamp() - interval ''40 days''');
+	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('race')) = 'run-free', '5: run-free first for her new run');
+	-- The start the second connection sends: its receipt begun here (committed with the rest).
+	perform set_config('qorpera_test.b1_race_receipt', extensions.gen_random_uuid()::text, false);
+	perform set_config('qorpera_test.b1_race_envelope', pg_temp.b1_start_envelope('race', pg_temp.b1_new('race')), false);
+	perform public.qorpera_begin_native_tool_operation(pg_temp.b1_binding(), current_setting('qorpera_test.b1_race_receipt')::uuid,
+		'machine_start:race', encode(extensions.digest(convert_to(current_setting('qorpera_test.b1_race_envelope'), 'UTF8'), 'sha256'), 'hex'),
+		repeat('9', 64), false);
+	perform set_config('qorpera_test.b1_race_binding', pg_temp.b1_binding()::text, false);
+	perform set_config('qorpera_test.b1_race_placement', (pg_temp.b1_placement('run-free')).id::text, false);
+	perform set_config('qorpera_test.b1_race_machine', (pg_temp.b1_machine('run-free')).id::text, false);
+	perform set_config('qorpera_test.b1_race_bob', v_bob::text, false);
+end $$;
+
+select set_config('qorpera_test.b1_first_xid', xid(pg_current_xact_id())::text, false);
+select dblink_connect('b1_holder', 'dbname=' || current_database());
+select dblink_connect('b1_poll', 'dbname=' || current_database());
+select set_config('qorpera_test.b1_' || name || '_pid', pid::text, false)
+from unnest(array['holder','poll']) name, lateral dblink('b1_' || name, 'select pg_backend_pid()') as backend(pid integer);
+create function pg_temp.b1_alone_in_database() returns void language plpgsql as $$
+begin
+	if exists (select 1 from pg_catalog.pg_stat_activity activity where activity.datname = current_database()
+		and activity.backend_type = 'client backend' and activity.pid <> pg_backend_pid()
+		and activity.pid::text not in (current_setting('qorpera_test.b1_holder_pid'), current_setting('qorpera_test.b1_poll_pid'))) then
+		raise exception 'The machine race test needs the database to itself: another connection is open'; end if;
+end
+$$;
+select pg_temp.b1_alone_in_database();
+create temporary table b1_counts as select * from dblink('b1_holder', $$
+	select format('%I.%I', namespace.nspname, class.relname),
+		(xpath('/row/n/text()', query_to_xml(format('select count(*) as n from %I.%I', namespace.nspname, class.relname), false, true, '')))[1]::text::bigint
+	from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+	where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)'
+$$) as counted(table_name text, row_count bigint);
+create temporary table b1_rows (table_name text, row_value jsonb);
+do $$
+declare v_table text; v_expected bigint; v_untouched bigint; v_first xid := current_setting('qorpera_test.b1_first_xid')::xid;
+begin
+	for v_table, v_expected in select table_name, row_count from pg_temp.b1_counts loop
+		execute format('select count(*) from %s where age(xmin) > age(%L::xid)', v_table, v_first) into v_untouched;
+		if v_untouched <> v_expected then
+			insert into pg_temp.b1_rows select v_table, kept.row_value
+			from dblink('b1_holder', format('select to_jsonb(kept) from %s kept', v_table)) as kept(row_value jsonb);
+		end if;
+	end loop;
+end $$;
+commit;
+
+-- The holder authorizes a command on run-free as qorpera_authorize_machine_command does (the machine's row locked, then the
+-- command's row), Bob's ended run's, and keeps its transaction open; the other connection's start (her new run's, as the
+-- service role) waits for the machine's lock; then the holder commits.
+select dblink_exec('b1_poll', format('set request.jwt.claims = %L', '{"role":"service_role"}'));
+create function pg_temp.b1_race() returns jsonb language plpgsql as $$
+declare v_holder integer := current_setting('qorpera_test.b1_holder_pid')::integer;
+	v_poll integer := current_setting('qorpera_test.b1_poll_pid')::integer; v_waited boolean := false; v_answer text;
+	v_call text := format('select public.qorpera_native_machine_start(%L::jsonb, %L, %L, %L::uuid, %L)::text',
+		current_setting('qorpera_test.b1_race_binding'), current_setting('qorpera_test.b1_race_envelope'), 'begin',
+		current_setting('qorpera_test.b1_race_receipt'), repeat('9', 64));
+begin
+	perform dblink_exec('b1_holder', 'begin');
+	perform 1 from dblink('b1_holder', format('select 1 from public.qorpera_company_machines where id = %L for update',
+		current_setting('qorpera_test.b1_race_machine'))) as locked(one integer);
+	perform dblink_exec('b1_holder', format('insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id,
+		placement_id, command_head, notify, requested_by_user_id) values (extensions.gen_random_uuid(), %L, %L,
+		%L, %L, %L, false, %L)', current_setting('qorpera_test.b1_race_machine'), current_setting('qorpera_test.b1_race_bob'),
+		'92400000-0000-4000-8000-000000000031', current_setting('qorpera_test.b1_race_placement'), 'npm test',
+		'92400000-0000-4000-8000-000000000001'));
+	perform dblink_send_query('b1_poll', v_call);
+	for attempt in 1..400 loop
+		v_waited := v_holder = any(pg_blocking_pids(v_poll));
+		exit when v_waited or dblink_is_busy('b1_poll') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	perform dblink_exec('b1_holder', 'commit');
+	select answer into v_answer from dblink_get_result('b1_poll') as call(answer text);
+	perform * from dblink_get_result('b1_poll', false) as call(answer text);
+	return jsonb_build_object('waited', v_waited, 'answer', v_answer::jsonb);
+end $$;
+do $$
+declare v_race jsonb;
+begin
+	v_race := pg_temp.b1_race();
+	perform pg_temp.base_assert((v_race ->> 'waited')::boolean and v_race #>> '{answer,machine,name}' = 'build-1'
+			and v_race #>> '{answer,reused}' like '%build-1%',
+		'5: the start waited for the command''s authority and took build-1, not run-free with its command running: ' || v_race::text);
+end $$;
+
+-- At the end: remove what the test committed, as 1223, 1203, 1106, 467 and 674 do.
+do $$
+declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.b1_first_xid')::xid;
+begin
+	perform pg_temp.b1_alone_in_database();
+	perform dblink_disconnect(name) from unnest(array['b1_holder','b1_poll']) name;
+	perform set_config('session_replication_role', 'replica', true);
+	for v_table in select format('%I.%I', namespace.nspname, class.relname)
+		from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+		where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)' loop
+		execute format('delete from %s where age(xmin) <= age(%L::xid)', v_table, v_first);
+	end loop;
+	for v_table in select distinct table_name from pg_temp.b1_rows loop
+		select string_agg(quote_ident(attribute.attname), ',' order by attribute.attnum) into v_columns
+		from pg_catalog.pg_attribute attribute where attribute.attrelid = v_table::regclass and attribute.attnum > 0
+			and not attribute.attisdropped and attribute.attgenerated = '';
+		execute format('insert into %1$s (%2$s) overriding system value select %2$s from (select (jsonb_populate_record(null::%1$s, kept.row_value)).*
+			from pg_temp.b1_rows kept where kept.table_name = %3$L
+				and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)) restored', v_table, v_columns, v_table);
+		execute format('select count(*) from pg_temp.b1_rows kept where kept.table_name = %2$L
+			and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)', v_table, v_table) into v_count;
+		if v_count > 0 then v_wrong := v_wrong || format('%s: %s rows not restored as they were', v_table, v_count); end if;
+	end loop;
+	for v_table, v_expected in select table_name, row_count from pg_temp.b1_counts loop
+		execute format('select count(*) from %s', v_table) into v_count;
+		if v_count <> v_expected then
+			v_wrong := v_wrong || format('%s %s/%s', v_table, v_count, v_expected); end if;
+	end loop;
+	if cardinality(v_wrong) > 0 then raise exception 'Machine race test cleanup left other row counts: %', v_wrong; end if;
+end $$;
