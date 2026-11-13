@@ -274,7 +274,7 @@ const SCREEN_REFUSED: Readonly<Record<CloudMachineScreenRefusalCode, string>> = 
 	SCREEN_ACTION_TAKEN:
 		"this action was taken on the machine before and is never taken twice: look (no action) to see what came of it",
 	DESKTOP_BUSY:
-		"another run is acting on this desktop right now, so this action did not run: look, then act again with a new operationKey",
+		"another run or a member is acting on this desktop right now, so this action did not run: look, then act again with a new operationKey",
 	DESKTOP_MEMBER_IN_CONTROL: MEMBER_IN_CONTROL,
 	DESKTOP_MACHINE_TOO_SMALL:
 		"this machine is too small for a desktop: start a desktop computer (machine_start with desktop true)",
@@ -1244,6 +1244,9 @@ export function cloudMachineTools(options: {
 		if (header.started) value.started = true;
 		if (answer.heldBack !== undefined)
 			value.heldBack = `${answer.heldBack}; the picture and the titles stay on the machine: look again`;
+		// 20260930734000: members share the screen with the agent; one of them used it since the agent was last told.
+		if (answer.memberTouched !== undefined)
+			value.memberTouched = `${[...answer.memberTouched.name].slice(0, 80).join("")} used this screen ${answer.memberTouched.secondsAgo} seconds ago (members can use it with you): what you saw before may have changed, so ${image ? "go by this picture" : "look again"} before you act`;
 		value.activeWindow = header.activeWindow;
 		const windows = [...header.windows];
 		let more = header.moreWindows;

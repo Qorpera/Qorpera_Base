@@ -32,6 +32,8 @@ import {
 	lxdCompanyMachineName,
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
+import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./company-machine-figure.ts";
+import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
@@ -387,6 +389,12 @@ const BOOT_USABLE = ["/usr/bin/systemctl", "is-active", "--quiet", "basic.target
 /** How long a new boot waits to be usable, counted from when its agent first answered, before it is marked running all the
  * same (a boot that never gets there runs as it always did). */
 const BOOT_USABLE_GRACE_MS = 60000;
+/** How long one write of a word the machine's desktop reads (its starter's figure, its company's time zone) may take,
+ * and how often it is tried on one boot (#desktopWord). Each is only a look: a machine's start never waits longer for
+ * them, and a machine that does not take one (an image from before the desktop's look has no folder for it) is left
+ * alone after these tries. */
+const DESKTOP_WORD_MS = 2000;
+const DESKTOP_WORD_TRIES = 3;
 /** How often a starting boot's looks may ask for a pass. */
 const STARTING_WAKES = 3;
 /** The least time between passes, however many wakes come. */
@@ -509,6 +517,8 @@ export interface CompanyMachineHostOptions {
 	memberTypeTimeoutMs?: number;
 	/** How long a member's start may take on the machine (default 22 s): the tests' own shorter one. */
 	memberStartTimeoutMs?: number;
+	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
+	desktopWordTimeoutMs?: number;
 	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -535,6 +545,12 @@ export interface CompanyMachineEntry {
 	sleepDue: boolean;
 	stopDue: boolean;
 	removeDue: boolean;
+	/** Who the machine was started by, with what every client draws that agent's figure from (20260930737000): read
+	 * only by companyMachineDesktopFigure, which trusts none of it. Absent from an SQL before that migration. */
+	starter?: unknown;
+	/** The company's time zone, null while it is not known (20260930739000): read only by
+	 * companyMachineDesktopTimeZone, which trusts none of it. Absent from an SQL before that migration. */
+	timeZone?: unknown;
 }
 export interface CompanyMachineOutcome {
 	/** null for admission, which is not one placement's step. */
@@ -645,6 +661,9 @@ export interface CompanyMachineMemberAct {
 	/** The seat the action was begun in, and its member: the fence is asked again once the desktop is held (round 23). */
 	seat: number;
 	userId: string;
+	/** A shared action (20260930734000): begun with no hold of the member's, at the lease generation `seat` (0 or more).
+	 * The fence then names no member: a private hold by anyone since, the member's own too, stops it. */
+	shared?: boolean;
 }
 /** The action ran (`exitCode`: `desktop`'s, null when it was killed at its deadline), or why it did not: the desktop is
  * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
@@ -942,6 +961,12 @@ export class LxdCompanyMachineHost {
 	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
 	 * busy since SQL last took that. */
 	readonly #guests = new Map<string, { bootId: string; sample: IdleRuleSample; busy: boolean }>();
+	/** Per placement and file: the word last written into the machine for its desktop, the boot it was written on, whether
+	 * the write went through and how often it was tried (#desktopWord). */
+	readonly #desktopWords = new Map<
+		string,
+		Map<string, { bootId: string; word: string; written: boolean; tries: number }>
+	>();
 	/** When this process first saw the placement started and its guest not yet answering, and the placement as SQL last
 	 * listed it. */
 	readonly #starting = new Map<
@@ -1213,6 +1238,59 @@ export class LxdCompanyMachineHost {
 		starting.failing = true;
 		throw error;
 	}
+	/** What the machine's desktop reads of whose it is, each written into the machine as one word in root's file: the
+	 * figure of the agent the machine was started by (COMPANY_MACHINE_DESKTOP_FIGURE; SQL names the starter since
+	 * 20260930737000) and its company's time zone (COMPANY_MACHINE_DESKTOP_TIME_ZONE; SQL names it since 20260930739000,
+	 * once a member's browser has handed one in). When a boot becomes usable, before SQL is told it runs, so the words
+	 * are there before anybody can start the desktop; and on a later pass when one changed or this process never wrote
+	 * it (the desktop follows the figure while it runs, and takes the time zone at its next start). The two go side by
+	 * side, so a start waits DESKTOP_WORD_MS at most for both. */
+	async #desktop(e: CompanyMachineEntry, bootId: string, signal: AbortSignal): Promise<void> {
+		await Promise.all([
+			this.#desktopWord(e, bootId, COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure(e.starter), signal),
+			this.#desktopWord(
+				e,
+				bootId,
+				COMPANY_MACHINE_DESKTOP_TIME_ZONE,
+				companyMachineDesktopTimeZone(e.timeZone),
+				signal,
+			),
+		]);
+	}
+	/** One word for the machine's desktop, written to `path` (root's, 0644, the word and a line end); nothing for no
+	 * word. It is only a look. Nothing here fails or holds a step: a write that fails, or takes longer than
+	 * DESKTOP_WORD_MS, is left (the desktop then shows its neutral backdrop, or its clock stays on UTC), and a later pass
+	 * tries again, DESKTOP_WORD_TRIES times at most for one boot and word. */
+	async #desktopWord(
+		e: CompanyMachineEntry,
+		bootId: string,
+		path: string,
+		word: string | undefined,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!word) return;
+		const words = this.#desktopWords.get(e.placementId) ?? new Map();
+		this.#desktopWords.set(e.placementId, words);
+		const known = words.get(path);
+		const same = known?.bootId === bootId && known.word === word ? known : undefined;
+		if (same && (same.written || same.tries >= DESKTOP_WORD_TRIES)) return;
+		const { project, name } = this.#plan(e);
+		let written = false;
+		try {
+			await this.#options.client.pushInstanceFile(
+				project,
+				name,
+				path,
+				`${word}\n`,
+				0o644,
+				AbortSignal.any([signal, AbortSignal.timeout(this.#options.desktopWordTimeoutMs ?? DESKTOP_WORD_MS)]),
+			);
+			written = true;
+		} catch {
+			// Left for a later pass: the machine starts and runs all the same.
+		}
+		words.set(path, { bootId, word, written, tries: (same?.tries ?? 0) + 1 });
+	}
 	/** A started guest: its helper is the packaged one, this boot is claimed
 	 * for the machine, SQL knows it runs, and its lease is renewed. */
 	async #guest(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
@@ -1297,6 +1375,9 @@ export class LxdCompanyMachineHost {
 				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
 				await folder.restarted(e.placementId, checked).catch(() => undefined);
 			}
+			// The desktop's figure and time zone are in the machine before SQL says the boot runs: nobody starts a desktop
+			// earlier.
+			await this.#desktop(e, bootId, signal);
 			const marked = record(
 				await this.#custody(e, "qorpera_mark_company_machine_running", signal, { p_boot_id: bootId }),
 				"COMPANY_MACHINE_RUNNING_INVALID",
@@ -1327,7 +1408,9 @@ export class LxdCompanyMachineHost {
 				folder: await this.#settle(e, f, helperSha256, signal),
 			};
 		}
-		// A running machine of this boot: its folder settled, how its commands ended, and whether it is busy.
+		// A running machine of this boot: its desktop's figure and time zone when one changed (or this process never
+		// wrote it), its folder settled, how its commands ended, and whether it is busy.
+		await this.#desktop(e, bootId, signal);
 		let settled: string | undefined;
 		let f: BootFolder | undefined;
 		if (folder) {
@@ -1899,6 +1982,7 @@ export class LxdCompanyMachineHost {
 		this.#guests.delete(e.placementId);
 		this.#starting.delete(e.placementId);
 		this.#folders.delete(e.placementId);
+		this.#desktopWords.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
 		for (const key of this.#endings.keys()) if (key.startsWith(`${e.placementId}/`)) this.#endings.delete(key);
@@ -2711,10 +2795,12 @@ export class LxdCompanyMachineHost {
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE");
 		const verb = act.action?.type;
 		const text = act.action?.text;
+		const shared = act.shared === true;
 		if (
 			![act.placementId, act.bootId, act.actionId, act.userId].every((id) => UUID.test(id)) ||
+			(act.shared !== undefined && typeof act.shared !== "boolean") ||
 			!Number.isSafeInteger(act.seat) ||
-			act.seat < 1 ||
+			act.seat < (shared ? 0 : 1) ||
 			typeof verb !== "string" ||
 			!SCREEN_VERBS.includes(verb) ||
 			verb === "open" ||
@@ -2725,17 +2811,19 @@ export class LxdCompanyMachineHost {
 		const pasted = typeof text === "string" && PASTED.test(text);
 		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
 		// Holding the desktop, the action's seat is asked again (round 23 of #1661): an action authorized before a hand-back
-		// never runs after it, nor after a clear of the clipboard recorded since. Nothing ran: the desktop is free again.
+		// never runs after it, nor after a clear of the clipboard recorded since. A shared one (20260930734000) is asked as
+		// an agent's action is, with no member: the generation it was begun at must stand and no one may hold the desktop
+		// privately, so a take-over since stops it here. Nothing ran: the desktop is free again.
 		let seated: boolean;
 		try {
-			seated = await this.#pictureAllowed(act.placementId, act.seat, act.userId, signal);
+			seated = await this.#pictureAllowed(act.placementId, act.seat, shared ? null : act.userId, signal);
 		} catch (error) {
 			this.#releaseDesktop(act.placementId, true);
 			throw error;
 		}
 		if (!seated) {
 			this.#releaseDesktop(act.placementId, true);
-			return { refused: "DESKTOP_CONTROL_ENDED" };
+			return { refused: shared ? "DESKTOP_MEMBER_IN_CONTROL" : "DESKTOP_CONTROL_ENDED" };
 		}
 		let ended = false;
 		try {

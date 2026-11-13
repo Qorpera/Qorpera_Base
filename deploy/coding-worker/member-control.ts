@@ -26,6 +26,17 @@ const ACT_REFUSED = new Set([
 	"DESKTOP_MEMBER_IN_CONTROL",
 	"DESKTOP_CONTROL_ENDED",
 ]);
+/** What the begin of a shared action answers one it refuses (20260930734000): anyone's private hold of the desktop, a
+ * machine with no desktop, one member's actions too fast, and, for input made under a lease generation
+ * (20260930738000), a private hold since it was made. */
+const SHARE_REFUSED = new Set([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_ACTIONS_TOO_FAST",
+	"DESKTOP_HELD_SINCE",
+]);
 /** What the begin of a start answers one it refuses (20260930714000). */
 const START_REFUSED = new Set([
 	"MACHINE_NOT_RUNNING",
@@ -34,9 +45,10 @@ const START_REFUSED = new Set([
 	"DESKTOP_START_TOO_SOON",
 ]);
 
-/** The member's side of a look at a desktop (20260930712000), of an action on one they hold (20260930713000) and of a
- * start of one (20260930714000): exactly three calls, qorpera_member_machine_screen_begin,
- * qorpera_member_machine_desktop_act_begin and qorpera_member_machine_desktop_start_begin, made as the member with
+/** The member's side of a look at a desktop (20260930712000), of an action on one they hold (20260930713000) or share
+ * with the agent (20260930734000) and of a start of one (20260930714000): exactly four calls,
+ * qorpera_member_machine_screen_begin, qorpera_member_machine_desktop_act_begin,
+ * qorpera_member_machine_desktop_share_begin and qorpera_member_machine_desktop_start_begin, made as the member with
  * their own bearer token and the project's publishable key, to the executor's fixed project origin. The database checks
  * the token (PostgREST, auth.uid()); this client only passes it on. The token is never logged, stored or put in an
  * error: every failure is a fixed code. A typed text never goes here: the action's begin carries its length alone. */
@@ -130,6 +142,46 @@ export class MemberMachineScreenControl {
 			answer.state === "refused" && typeof answer.reason === "string" && ACT_REFUSED.has(answer.reason))
 			throw new CloudMemberMachineActRefusal(answer.reason as CloudMemberMachineActRefusalCode);
 		throw new Error("MEMBER_ACT_BEGIN_INVALID");
+	}
+	/** Begins one shared action as the member (qorpera_member_machine_desktop_share_begin, 20260930734000): on the desktop
+	 * they share with the agent, with no hold of theirs, recorded without any text (cloudMemberMachineActRecord). With the
+	 * lease generation the input was made under (20260930738000) it goes to the begin that takes it (`p_generation`), which
+	 * refuses it once someone held the desktop privately since (DESKTOP_HELD_SINCE); without one (a page before it) to the
+	 * begin that takes none, as before. Its single-use id, or the refusal the window acts on (anyone's private hold among
+	 * them). Sign-in and forbidden as for a look. */
+	async share(
+		token: string,
+		share: { companyId: string; machineId: string; action: MachineScreenAction; generation?: number },
+		signal: AbortSignal,
+	): Promise<string> {
+		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
+		if (
+			!UUID.test(share.companyId) ||
+			!UUID.test(share.machineId) ||
+			share.action.type === "open" ||
+			(share.generation !== undefined && (!Number.isSafeInteger(share.generation) || share.generation < 0))
+		)
+			throw new Error("MEMBER_SHARE_BEGIN_INVALID");
+		const answer = await this.#call(
+			token,
+			"qorpera_member_machine_desktop_share_begin",
+			{
+				p_profile_id: share.companyId,
+				p_machine_id: share.machineId,
+				p_action: cloudMemberMachineActRecord(share.action),
+				...(share.generation === undefined ? {} : { p_generation: share.generation }),
+			},
+			"MEMBER_SHARE_BEGIN",
+			signal,
+		);
+		const keys = Object.keys(answer).sort().join();
+		if (answer.schema === "qorpera.member-machine-desktop-act/v1" && keys === "actionId,schema,state" &&
+			answer.state === "ok" && typeof answer.actionId === "string" && UUID.test(answer.actionId))
+			return answer.actionId;
+		if (answer.schema === "qorpera.member-machine-desktop-act/v1" && keys === "reason,schema,state" &&
+			answer.state === "refused" && typeof answer.reason === "string" && SHARE_REFUSED.has(answer.reason))
+			throw new CloudMemberMachineActRefusal(answer.reason as CloudMemberMachineActRefusalCode);
+		throw new Error("MEMBER_SHARE_BEGIN_INVALID");
 	}
 	/** Begins a start of the desktop as the member (qorpera_member_machine_desktop_start_begin, 20260930714000): its
 	 * single-use id, or the refusal the window acts on. Sign-in and forbidden as for a look. */
