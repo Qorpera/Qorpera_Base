@@ -5,6 +5,9 @@
 
 const NAME = /^[a-z_][a-z0-9_]*/;
 const DOLLAR_TAG = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/;
+// A character a name of PostgreSQL's may hold after its first: a `$` right after one is part of the name (`a$b`), not
+// a dollar quote or a `$1`.
+const NAME_PART = /[A-Za-z0-9_$\u0080-￿]/;
 
 /** Parameters a file may name, at most. */
 export const MAX_PARAMETERS = 16;
@@ -64,7 +67,7 @@ export function readStatement(text) {
 				at = scan;
 			} else if (char === "'" || char === '"') {
 				// An E'…' string also takes a backslash before a quote; a plain one and a quoted name double the quote.
-				const escapes = char === "'" && /[eE]$/.test(text.slice(0, at)) && !/[A-Za-z0-9_$][eE]$/.test(text.slice(0, at));
+				const escapes = char === "'" && /[eE]/.test(text[at - 1] ?? "") && !NAME_PART.test(text[at - 2] ?? "");
 				let scan = at + 1;
 				for (;;) {
 					if (scan >= text.length) return { ok: false, problem: char === "'" ? "A string is not closed" : "A quoted name is not closed" };
@@ -75,6 +78,9 @@ export function readStatement(text) {
 				}
 				keep(text.slice(at, scan + 1), true);
 				at = scan + 1;
+			} else if (char === "$" && NAME_PART.test(text[at - 1] ?? "")) {
+				keep(char, true);
+				at++;
 			} else if (char === "$") {
 				const tag = DOLLAR_TAG.exec(text.slice(at));
 				if (tag) {

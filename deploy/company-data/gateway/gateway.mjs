@@ -3,7 +3,7 @@
 // own token, which proves the member may read them and gives each file's hash. It uses a file's text only when its
 // hash is the folder's. It holds no service key and no login to the platform's database.
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import http from "node:http";
 import pg from "pg";
 import { readStatement, VIEWER } from "./sql-text.mjs";
@@ -13,12 +13,25 @@ export const FILE_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const STEP_NAME = /^[0-9]{3}-[a-z0-9]+(-[a-z0-9]+)*$/;
 const ENVIRONMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
+/** A database folder's own login: the company's database, then o (owner), w (write) or r (read) and the folder's number. */
+const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
+/** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
+const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1 };
+/** Connections a company's database takes, all logins together. */
+const COMPANY_CONNECTIONS = 12;
+
+/** The password of a database folder's login: derived from the gateway's folder key and never stored. */
+export function folderPassword(folderKey, role) {
+	return createHmac("sha256", Buffer.from(folderKey, "hex")).update(role).digest("base64url");
+}
 
 export const LIMITS = Object.freeze({
 	/** A question from an interface. */
 	questionMs: 2_000,
 	questionRows: 2_000,
 	questionBytes: 256 * 1024,
+	/** A named change. */
+	changeMs: 5_000,
 	/** A step: its own time, and its wait for a lock. */
 	stepMs: 60_000,
 	stepLockMs: 5_000,
@@ -33,11 +46,14 @@ export const LIMITS = Object.freeze({
 	watchAgainMs: 500,
 	/** How long a member's folder read is kept. */
 	proofMs: 10_000,
-	/** Connections a company database takes. */
-	connections: 8,
 	/** A request's body. */
 	bodyBytes: 1024 * 1024,
+	/** A company's database, all its rows: at this size its steps stop applying, and its questions still answer. */
+	companyBytes: 1024 ** 3,
 });
+
+/** How long past its door's limit the watcher lets a statement run before it ends it. */
+const OVERRUN_MS = 2_000;
 
 class Refusal extends Error {
 	constructor(status, message, extra = {}) {
@@ -51,6 +67,8 @@ const refuse = (status, message, extra) => {
 };
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+const amount = (bytes) =>
+	bytes % 1024 ** 3 === 0 ? `${bytes / 1024 ** 3} GiB` : bytes % 1024 ** 2 === 0 ? `${bytes / 1024 ** 2} MiB` : `${bytes} bytes`;
 const quoted = (name) => `"${name.replace(/"/g, '""')}"`;
 
 /** A company's database in the store: `c_` and the 32 hex digits of its folder's id. */
@@ -178,34 +196,73 @@ export class Gateway {
 	#texts = new Map();
 	#folders = new Map();
 	#listeners = new Map();
+	/** Company databases the watcher last found at their size limit. */
+	#full = new Set();
 	#closed = false;
 
-	/** `store`: { host, port, logins: { admin, owner, write, read, watch } }, each login a password. */
+	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
+	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). */
 	constructor({ store, platform, limits = LIMITS }) {
 		this.#store = store;
 		this.#platform = platform;
 		this.#limits = limits;
 	}
 
-	#pool(database, door) {
-		const key = `${door}:${database}`;
-		let pool = this.#pools.get(key);
-		if (!pool) {
-			pool = new pg.Pool({
+	/** Where a login's password comes from: the gateway's three logins have their own, a folder's login has a derived one. */
+	#password(user) {
+		if (FOLDER_LOGIN.test(user)) return folderPassword(this.#store.logins.folderKey, user);
+		return this.#store.logins[user.slice("qorpera_data_".length)];
+	}
+
+	/** Connections as one login to one database. A question or a step runs on its database folder's own login, so the
+	 * session is a member of nothing and can switch to no other role. Each folder's logins have their own connections,
+	 * so a company with many folders can reach its database's connection limit with connections that only wait: then
+	 * the idle ones of its other logins are given back and the call tries again. */
+	#pool(database, user) {
+		const key = `${user}@${database}`;
+		let door = this.#pools.get(key);
+		if (!door) {
+			const kind = FOLDER_LOGIN.exec(user)?.[1];
+			const pool = new pg.Pool({
 				host: this.#store.host,
 				port: this.#store.port,
-				user: `qorpera_data_${door}`,
-				password: this.#store.logins[door],
+				user,
+				password: this.#password(user),
 				database,
-				max: door === "read" ? 3 : door === "write" ? 2 : 1,
-				idleTimeoutMillis: 5_000,
+				max: POOL_SIZE[kind ?? user],
+				// A step's login holds one connection, and steps are rare: it is given back soon.
+				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
 				connectionTimeoutMillis: 5_000,
-				application_name: `qorpera-data-gateway ${door}`,
+				application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 			});
 			pool.on("error", () => undefined);
-			this.#pools.set(key, pool);
+			const roomy = async (work) => {
+				for (let attempt = 0; ; attempt++) {
+					try {
+						return await work();
+					} catch (error) {
+						if (error?.code !== "53300" || attempt === 3) throw error;
+						await this.#makeRoom(database, key);
+						await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+					}
+				}
+			};
+			door = { pool, query: (...args) => roomy(() => pool.query(...args)), connect: () => roomy(() => pool.connect()) };
+			this.#pools.set(key, door);
 		}
-		return pool;
+		return door;
+	}
+
+	/** Gives back every connection of a database that only waits, but the asking login's own. */
+	async #makeRoom(database, asking) {
+		const ending = [];
+		for (const [key, { pool }] of this.#pools) {
+			if (key === asking || !key.endsWith(`@${database}`) || pool.totalCount === 0 || pool.idleCount < pool.totalCount || pool.waitingCount > 0)
+				continue;
+			this.#pools.delete(key);
+			ending.push(pool.end().catch(() => undefined));
+		}
+		await Promise.all(ending);
 	}
 
 	/** The files the member may read now, each `{ sha256, bytes }` or null; kept for a few seconds per member and path. */
@@ -237,7 +294,7 @@ export class Gateway {
 		let text = null;
 		const given = supplied?.[hash];
 		if (typeof given === "string" && Buffer.byteLength(given) <= maximum && sha256(given) === hash) text = given;
-		const pool = this.#pool(database, "read");
+		const pool = this.#pool(database, "qorpera_data_keeper");
 		if (text === null) {
 			const row = await pool.query("select text from qorpera_data.texts where sha256 = $1", [hash]).catch((error) => {
 				throw storeProblem(error);
@@ -261,7 +318,7 @@ export class Gateway {
 		const key = `${database}/${name}`;
 		const kept = this.#folders.get(key);
 		if (kept !== undefined) return kept;
-		const row = await this.#pool(database, "read")
+		const row = await this.#pool(database, "qorpera_data_keeper")
 			.query("select n from qorpera_data.databases where name = $1", [name])
 			.catch((error) => {
 				throw storeProblem(error);
@@ -308,7 +365,7 @@ export class Gateway {
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. */
 	async #ask(ready) {
-		const client = await this.#pool(ready.database, "read")
+		const client = await this.#pool(ready.database, `${ready.database}_r${ready.n}`)
 			.connect()
 			.catch((error) => {
 				throw storeProblem(error);
@@ -316,7 +373,7 @@ export class Gateway {
 		try {
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${this.#limits.questionMs}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}; set local role ${quoted(`${ready.database}_r${ready.n}`)}`,
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
 			);
 			// As a subquery, so only something that gives rows runs, and no more rows than the answer may hold are made.
 			const result = await client.query({
@@ -333,7 +390,7 @@ export class Gateway {
 			let more = result.rows.length > this.#limits.questionRows;
 			for (const row of result.rows.slice(0, this.#limits.questionRows)) {
 				const made = row.map((value, index) => shaped(value, result.fields[index].dataTypeID));
-				bytes += JSON.stringify(made).length + 1;
+				bytes += Buffer.byteLength(JSON.stringify(made)) + 1;
 				if (bytes > this.#limits.questionBytes) {
 					more = true;
 					break;
@@ -365,8 +422,8 @@ export class Gateway {
 			const client = new pg.Client({
 				host: this.#store.host,
 				port: this.#store.port,
-				user: "qorpera_data_read",
-				password: this.#store.logins.read,
+				user: "qorpera_data_keeper",
+				password: this.#store.logins.keeper,
 				database,
 				application_name: "qorpera-data-gateway listen",
 			});
@@ -462,36 +519,43 @@ export class Gateway {
 
 	/** Makes the company's database, once, as a copy of the template. */
 	async #ensureCompany(database) {
-		const admin = this.#pool("postgres", "admin");
+		const admin = this.#pool("postgres", "qorpera_data_admin");
 		const exists = await admin.query("select 1 from pg_database where datname = $1", [database]);
 		if (exists.rowCount > 0) return;
 		try {
-			await admin.query(`create database ${quoted(database)} template qorpera_company_template connection limit ${this.#limits.connections}`);
+			await admin.query(`create database ${quoted(database)} template qorpera_company_template connection limit ${COMPANY_CONNECTIONS}`);
 		} catch (error) {
 			if (error.code !== "42P04") throw storeProblem(error);
 		}
-		await admin.query(`revoke all on database ${quoted(database)} from public`);
+		// What a statement may use, whichever folder's login runs it. A login cannot lift its temp file limit.
 		await admin.query(
-			`grant connect on database ${quoted(database)} to qorpera_data_owner, qorpera_data_write, qorpera_data_read, qorpera_data_watch`,
+			`alter database ${quoted(database)} set temp_file_limit = '256MB'; alter database ${quoted(database)} set work_mem = '16MB'; ` +
+				`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0`,
 		);
+		await admin.query(`revoke all on database ${quoted(database)} from public`);
+		await admin.query(`grant connect on database ${quoted(database)} to qorpera_data_keeper, qorpera_data_watch`);
 	}
 
 	/** Makes a database folder's schema and its three roles, once. */
 	async #ensureFolder(database, name) {
 		const known = await this.#folder(database, name).catch(() => null);
 		if (known !== null) return known;
-		const client = await this.#pool(database, "admin").connect();
+		const client = await this.#pool(database, "qorpera_data_admin").connect();
 		try {
 			await client.query("begin");
 			await client.query("select pg_advisory_xact_lock(hashtext('qorpera_data.databases'))");
 			await client.query("insert into qorpera_data.databases (name) values ($1) on conflict (name) do nothing", [name]);
 			const n = (await client.query("select n from qorpera_data.databases where name = $1", [name])).rows[0].n;
 			const [owner, write, read] = ["o", "w", "r"].map((kind) => quoted(`${database}_${kind}${n}`));
-			for (const role of [owner, write, read]) {
-				const has = await client.query("select 1 from pg_roles where rolname = $1", [role.slice(1, -1)]);
-				if (has.rowCount === 0) await client.query(`create role ${role} nologin`);
+			// Each logs in on its own, with a password derived from the folder key, and is a member of nothing: no other
+			// login is a member of it either, but the admin, which made it and hands it its schema.
+			for (const [role, limit] of [[owner, POOL_SIZE.o], [write, POOL_SIZE.w], [read, POOL_SIZE.r]]) {
+				const name = role.slice(1, -1);
+				const has = await client.query("select 1 from pg_roles where rolname = $1", [name]);
+				const options = `login noinherit connection limit ${limit} password '${this.#password(name)}'`;
+				await client.query(has.rowCount === 0 ? `create role ${role} ${options}` : `alter role ${role} ${options}`);
 			}
-			await client.query(`grant ${owner} to qorpera_data_owner; grant ${write} to qorpera_data_write; grant ${read} to qorpera_data_read`);
+			await client.query(`grant connect on database ${quoted(database)} to ${owner}, ${write}, ${read}`);
 			const schema = quoted(name);
 			await client.query(`create schema if not exists ${schema} authorization ${owner}`);
 			await client.query(`grant usage on schema ${schema} to ${write}, ${read}`);
@@ -520,6 +584,8 @@ export class Gateway {
 		const root = `data/${name}`;
 		const proof = (await this.#proven(caller, environmentId, [`${root}/database.toml`])).get(`${root}/database.toml`);
 		if (!proof) refuse(404, `No database ${name} that you may read: it needs ${root}/database.toml`);
+		if (this.#full.has(companyDatabase(environmentId)))
+			refuse(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: delete rows or ask for more room`);
 		const listed = await this.#platform.memberList(caller.token, environmentId, `${root}/tables`, this.#limits.steps + 1);
 		if (listed.length > this.#limits.steps) refuse(400, `A database holds at most ${this.#limits.steps} steps`);
 		const files = listed.filter((file) => file.name.endsWith(".sql"));
@@ -537,9 +603,9 @@ export class Gateway {
 		await this.#ensureCompany(database);
 		await this.#ensureFolder(database, name);
 		const n = await this.#folder(database, name);
-		const owner = this.#pool(database, "owner");
+		const keeper = this.#pool(database, "qorpera_data_keeper");
 		const applied = new Map(
-			(await owner.query("select name, sha256 from qorpera_data.steps where database = $1", [name])).rows.map((row) => [row.name, row.sha256]),
+			(await keeper.query("select name, sha256 from qorpera_data.steps where database = $1", [name])).rows.map((row) => [row.name, row.sha256]),
 		);
 		const results = [];
 		const live = new Map(steps.map((step) => [step.name, step.sha256]));
@@ -574,11 +640,11 @@ export class Gateway {
 
 	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing. */
 	async #step(database, name, n, step, text) {
-		const client = await this.#pool(database, "owner").connect();
+		const client = await this.#pool(database, `${database}_o${n}`).connect();
 		try {
 			await client.query(
 				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
-					`set local search_path = ${quoted(name)}; set local role ${quoted(`${database}_o${n}`)}`,
+					`set local search_path = ${quoted(name)}`,
 			);
 			try {
 				await client.query({ text: "select qorpera_data.run_step($1)", values: [text], queryMode: "extended" });
@@ -592,7 +658,6 @@ export class Gateway {
 					...told.extra,
 				};
 			}
-			await client.query("set local role none");
 			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
 			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [name])).rows;
 			if (unwatched.length > 0) {
@@ -632,7 +697,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) return { database: name, applied: [], tables: [] };
-		const pool = this.#pool(database, "read");
+		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns, size] = await Promise.all([
 			pool.query("select name, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
@@ -657,6 +722,34 @@ export class Gateway {
 			tables: [...tables.values()],
 			companyBytes: Number(size.rows[0].bytes),
 		};
+	}
+
+	/** The watcher (§3), one look with `qorpera_data_watch`. It ends any statement of a database folder's login that
+	 * has run longer than its door's limit and a margin: a limit a login could lift for itself is backed here. It reads every company database's size, and a company at its limit gets no more steps until it
+	 * makes room; its questions still answer. */
+	async watchOnce() {
+		const watch = this.#pool("postgres", "qorpera_data_watch");
+		try {
+			const ended = await watch.query(
+				`select a.pid, a.usename::text as login, a.datname::text as database, pg_catalog.pg_cancel_backend(a.pid) as ended
+				from pg_catalog.pg_stat_activity a
+				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_[owr][0-9]+$'
+				and clock_timestamp() - a.query_start > make_interval(secs => (case substring(a.usename from '_([owr])[0-9]+$')
+					when 'r' then $1::float8 when 'w' then $2::float8 when 'o' then $3::float8
+				end + $4::float8) / 1000)`,
+				[this.#limits.questionMs, this.#limits.changeMs, this.#limits.stepMs, OVERRUN_MS],
+			);
+			const sizes = await watch.query(
+				"select datname::text as database, pg_catalog.pg_database_size(oid) as bytes from pg_catalog.pg_database where datname ~ '^c_[0-9a-f]{32}$'",
+			);
+			this.#full = new Set(sizes.rows.filter((row) => Number(row.bytes) >= this.#limits.companyBytes).map((row) => row.database));
+			return {
+				ended: ended.rows.filter((row) => row.ended).map((row) => ({ pid: row.pid, login: row.login, database: row.database })),
+				full: [...this.#full],
+			};
+		} catch (error) {
+			throw storeProblem(error);
+		}
 	}
 
 	/** A member's request, begun as that member. */
@@ -706,9 +799,27 @@ export class Gateway {
 			await listener.client.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
-		await Promise.all([...this.#pools.values()].map((pool) => pool.end().catch(() => undefined)));
+		await Promise.all([...this.#pools.values()].map(({ pool }) => pool.end().catch(() => undefined)));
 		this.#pools.clear();
 	}
+}
+
+/** The watcher's timer: one look every `everyMs`, never two at once. Gives the function that stops it. */
+export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefined } = {}) {
+	let looking = false;
+	const timer = setInterval(async () => {
+		if (looking) return;
+		looking = true;
+		try {
+			await gateway.watchOnce();
+		} catch (error) {
+			failed(error);
+		} finally {
+			looking = false;
+		}
+	}, everyMs);
+	timer.unref();
+	return () => clearInterval(timer);
 }
 
 /** The gateway's HTTP side: JSON in, JSON out, loopback. */
