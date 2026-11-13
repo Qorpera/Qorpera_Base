@@ -769,6 +769,21 @@ describe("answering in a thread", () => {
 		expect(controller.conversation(session.sessionId).get().draft).toContain("Answer kindly.");
 	});
 
+	it("leaves a note waiting in the agent's thread while the member answers a question on its wall there", async () => {
+		// The note goes the way an app's note goes (app/tell-agent.ts): a send would put the wall's question in front of it.
+		const { main, controller } = await mailbox((mail) => {
+			mail.threads = [summary(1, { state: "handled" })];
+		});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		controller.conversation(session.sessionId).set({ answering: "Who first?" });
+		await answerAs(main, "Ada", "Answer kindly.");
+		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
+		expect(send).not.toHaveBeenCalled();
+		const waiting = controller.conversation(session.sessionId).get();
+		expect([waiting.answering, waiting.draft?.includes("Answer kindly.")]).toEqual(["Who first?", true]);
+	});
+
 	it("keeps an answer with its thread while the member reads elsewhere, until it is sent or let go", async () => {
 		const { main } = await mailbox((mail) => {
 			mail.threads = [summary(1), summary(2)];

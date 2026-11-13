@@ -104,6 +104,8 @@ export interface MemberAgentMachineControl {
 	 * press made when that press's answer was lost; never authority. Null for another member's. */
 	press: string | null;
 }
+/** The most names of others using a shared desktop that a list read takes (the newest first, as SQL orders them). */
+const OTHERS_SHOWN = 50;
 /** A take-over's answer (migration 20260930713000): the caller holds the desktop until `until`, in the seat `seat`
  * (F26: everything done as holder names it beside the epoch), or why not. */
 export type MemberDesktopHold =
@@ -409,11 +411,10 @@ export class CloudMemberCompanyComputerClient {
 				(row.screenAgentName !== null && !text(row.screenAgentName, 160)) ||
 				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room") ||
 				(row.epoch !== undefined && !epochOf(row.epoch)) ||
-				// The other members using the shared desktop (20260930734000); absent before shared control.
+				// The other members using the shared desktop (20260930734000); absent before shared control. Only the first 50
+				// are taken (#1723 r1 F1: a list from before 20260930744000 has no limit): a longer one never fails the read.
 				(row.others !== undefined &&
-					(!Array.isArray(row.others) ||
-						row.others.length > 50 ||
-						!row.others.every((name) => text(name, 256)))) ||
+					(!Array.isArray(row.others) || !row.others.slice(0, OTHERS_SHOWN).every((name) => text(name, 256)))) ||
 				// The desktop's lease generation (20260930738000); absent (or null) for a viewer and before it.
 				(row.generation !== undefined && row.generation !== null && !epochOf(row.generation))
 			)
@@ -455,7 +456,7 @@ export class CloudMemberCompanyComputerClient {
 				waitingFor: row.waitingFor as "hours" | "room" | null,
 				control,
 				epoch: epochOf(row.epoch) ? row.epoch : 0,
-				others: Array.isArray(row.others) ? [...(row.others as string[])] : [],
+				others: Array.isArray(row.others) ? (row.others.slice(0, OTHERS_SHOWN) as string[]) : [],
 				generation: epochOf(row.generation) ? row.generation : null,
 			};
 		});

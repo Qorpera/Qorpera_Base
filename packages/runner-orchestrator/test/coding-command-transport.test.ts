@@ -202,6 +202,11 @@ describe("fixed coding guest transport", () => {
 			"4",
 		]);
 		expect(f.client.readInstanceFile.mock.calls.some((call) => /read-page-[0-9]+\.json$/.test(call[2]))).toBe(true);
+		// The guest helper of the coding image says nothing of its pages: it is asked for the legacy 16,384 at most, and its
+		// page answers the larger read (keyholes S1).
+		f.client.execInstance.mockClear();
+		await f.transport.read(f.scope, { commandId: f.input.commandId, offset: 3, limit: 40000 }, f.signal);
+		expect(f.client.execInstance.mock.calls[0][2].slice(5)).toEqual(["3", "16384"]);
 		f.client.execInstance.mockClear();
 		await expect(f.transport.read(f.scope, { commandId: f.input.commandId, offset: -1 }, f.signal)).rejects.toThrow();
 		expect(f.client.execInstance).not.toHaveBeenCalled();

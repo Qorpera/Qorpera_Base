@@ -25,6 +25,7 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	CodeWorktreeNamesRefused,
 	exportCodeBranch,
 	landCodeBranch,
 	retireCodeWorktrees,
@@ -383,7 +384,7 @@ describe("CodeHostRepositories", () => {
 		expect(names.message).toBe("CODE_HOST_NAMES_DIFFER_BY_CASE");
 		expect(names.cause).toBeInstanceOf(CodeHostRefusal);
 		expect(names.summary).toMatch(
-			/^The change was not landed, and nothing changed on main: it holds names in one folder that differ only by upper and lower case: .*"Cart\.js".*Rename them so that each is its own name, commit and finish again\.$/,
+			/^The change was not landed, and nothing changed on main: it holds names in one folder that differ only by upper and lower case: .*"Cart\.js".*Rename them so that each is its own name, commit and finish again\. \[code=CODING_LAND_NAMES_REFUSED\]$/,
 		);
 		expect(names.summary).toContain('"cart.js"');
 		// Nothing landed: main is where the start left it.
@@ -421,7 +422,7 @@ describe("CodeHostRepositories", () => {
 		});
 		// The 256-byte name (over 200 bytes) and the key are counted, never named.
 		expect(refused.summary).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
@@ -557,6 +558,174 @@ describe("CodeHostRepositories", () => {
 		await expect(f.repositories.prepare(f.session, signal())).resolves.toEqual({
 			cwd: `/company/code/qorpera/example/worktrees/${f.workerId}`,
 		});
+	});
+
+	it("a follow-up whose branch holds names the company folder does not take says a follow-up will not help and how a new session carries the work, having written nothing (item 5)", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha },
+			admin = join(f.companyRoot, "code/qorpera/example/repo.git/worktrees", f.workerId),
+			branch = `qorpera/coding/${f.workerId}`;
+		await f.repositories.prepare(session, signal());
+		// The session's branch gets names as git takes them (by plumbing, or a merge of a line of work that held them), a
+		// name too long for a disk among them, and one that looks like a key; then its worktree's files go.
+		const blob = await f.git(f.tree, "rev-parse", `${await f.commit(f.tree, "ok.txt")}:ok.txt`);
+		for (const path of ["bad.", "x /file", "n".repeat(256), "AKIAQORPERATESTKEY01."])
+			await f.git(f.tree, "update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+		await f.git(f.tree, "commit", "--quiet", "-m", "names");
+		const head = await f.git(f.tree, "rev-parse", "HEAD");
+		await rm(f.tree, { recursive: true });
+		const left = (await readdir(admin)).sort();
+		const failed = await f.repositories.prepare(session, signal()).catch((caught: unknown) => caught);
+		expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+		expect(failed).toMatchObject({ message: "CODE_HOST_NAMES_FOLDER_REFUSES" });
+		expect((failed as CodingWorkspaceFailed).cause).toBeInstanceOf(CodeWorktreeNamesRefused);
+		expect((failed as CodingWorkspaceFailed).cause).toMatchObject({
+			code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+			paths: ["AKIAQORPERATESTKEY01.", "bad.", "n".repeat(256), "x "],
+			of: "branch",
+		});
+		// The 256-byte name (over 200 bytes) and the key are counted, never named.
+		expect((failed as CodingWorkspaceFailed).summary).toBe(
+			`The session's workspace could not be made again: its branch holds file or folder names the company folder does not take ("bad.", "x " and 2 more), so a follow-up will not help. Archive this session with manage_worker, action archive, and start a new one on the repository: the work stays on branch ${branch}, where the new session reads each file with git show ${branch}:<path> and saves it under a name the folder takes. [code=CODE_HOST_NAMES_FOLDER_REFUSES]`,
+		);
+		expect((failed as CodingWorkspaceFailed).summary).not.toContain("tries again");
+		// Nothing written: no worktree, git's folder for it as it was, and the work on the branch.
+		expect(await exists(f.tree)).toBe(false);
+		expect((await readdir(admin)).sort()).toEqual(left);
+		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
+		expect(await f.git(repo, "rev-parse", `refs/heads/${branch}`)).toBe(head);
+		expect(await f.git(repo, "show", `${branch}:bad.`)).toBe("ok.txt");
+		// And the same at every follow-up.
+		await expect(f.repositories.prepare(session, signal())).rejects.toMatchObject({
+			message: "CODE_HOST_NAMES_FOLDER_REFUSES",
+		});
+	});
+
+	it("a session whose GitHub base branch holds names the company folder does not take says a member must rename them on GitHub (item 6)", async () => {
+		const f = await fixture();
+		const head = await f.upstream("bad.");
+		const session = { ...f.session, baseSha: head, claim: { ...f.session.claim, baseSha: head } };
+		const failed = await f.repositories.prepare(session, signal()).catch((caught: unknown) => caught);
+		expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+		expect(failed).toMatchObject({ message: "CODE_HOST_NAMES_FOLDER_REFUSES" });
+		expect((failed as CodingWorkspaceFailed).cause).toMatchObject({ paths: ["bad."] });
+		expect((failed as CodingWorkspaceFailed).cause).not.toBeInstanceOf(CodeWorktreeNamesRefused);
+		expect((failed as CodingWorkspaceFailed).summary).toBe(
+			`GitHub's main of qorpera/example holds file or folder names the company folder does not take ("bad."), so no coding session can open it here and a follow-up will not help. A member must rename them on GitHub first. [code=CODE_HOST_NAMES_FOLDER_REFUSES]`,
+		);
+		expect(await exists(join(f.companyRoot, "code/qorpera/example/repo.git"))).toBe(false);
+		expect(await exists(f.tree)).toBe(false);
+	});
+
+	it("says in words of their own what every names refusal and a file too large ask, and keeps a follow-up's try for every other failure", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "Example", baseBranch: "main" };
+		const own = { ...f.session, claim: { ...f.session.claim, repository: kept } };
+		const github = {
+			...f.session,
+			claim: { ...f.session.claim, repository: { ...REPOSITORY, owner: "Qorpera", name: "Example" } },
+		};
+		const branch = `qorpera/coding/${f.workerId}`;
+		const words = async (session: CodingFolderRepositorySession, error: Error) => {
+			if (session.claim.repository.host === "qorpera") vi.mocked(addCodeWorktree).mockRejectedValueOnce(error);
+			else vi.mocked(attachCodeSession).mockRejectedValueOnce(error);
+			const failed = await f.repositories.prepare(session, signal()).catch((caught: unknown) => caught);
+			expect(failed).toBeInstanceOf(CodingWorkspaceFailed);
+			expect((failed as CodingWorkspaceFailed).cause).toBe(error);
+			return (failed as CodingWorkspaceFailed).summary;
+		};
+		const again = (held: string, then: string, code: string) =>
+			`The session's workspace could not be made again: its branch holds ${held}, so a follow-up will not help. Archive this session with manage_worker, action archive, and start a new one on the repository: the work stays on branch ${branch}, where the new session reads each file with git show ${branch}:<path> and ${then}. [code=${code}]`;
+		const onGitHub = (held: string, fix: string, code: string) =>
+			`GitHub's main of Qorpera/Example holds ${held}, so no coding session can open it here and a follow-up will not help. A member must ${fix} on GitHub first. [code=${code}]`;
+		const renamed = "saves it under a name the folder takes";
+		for (const session of [own, github]) {
+			// The session's own branch, on either host.
+			expect(
+				await words(session, new CodeWorktreeNamesRefused("CODE_HOST_FILE_TOO_LARGE", ["big.bin"], "branch")),
+			).toBe(
+				again(
+					'files larger than 256 MiB, which Qorpera does not take ("big.bin")',
+					"leaves the files over 256 MiB out",
+					"CODE_HOST_FILE_TOO_LARGE",
+				),
+			);
+			expect(
+				await words(
+					session,
+					new CodeWorktreeNamesRefused("CODE_HOST_NAMES_DIFFER_BY_CASE", ["Cart.js", "cart.js"], "branch"),
+				),
+			).toBe(
+				again(
+					'names in one folder that differ only by upper and lower case ("Cart.js", "cart.js")',
+					renamed,
+					"CODE_HOST_NAMES_DIFFER_BY_CASE",
+				),
+			);
+			for (const code of ["CODE_HOST_NAMES_NOT_UTF8", "CODE_HOST_NAMES_NOT_NFC"])
+				expect(await words(session, new CodeWorktreeNamesRefused(code, ["café.txt"], "branch"))).toBe(
+					again(
+						'file names that are not plain Unicode text (UTF-8, in its composed form NFC) ("café.txt")',
+						renamed,
+						code,
+					),
+				);
+		}
+		// GitHub's base branch: the seed's refusal, or a new worktree's at GitHub's base.
+		for (const error of [
+			new CodeHostRefusal("CODE_HOST_FILE_TOO_LARGE", ["big.bin"]),
+			new CodeWorktreeNamesRefused("CODE_HOST_FILE_TOO_LARGE", ["big.bin"], "base"),
+		])
+			expect(await words(github, error)).toBe(
+				onGitHub(
+					'files larger than 256 MiB, which Qorpera does not take ("big.bin")',
+					"take them out",
+					"CODE_HOST_FILE_TOO_LARGE",
+				),
+			);
+		expect(await words(github, new CodeHostRefusal("CODE_HOST_NAMES_DIFFER_BY_CASE", ["A.ts", "a.ts"]))).toBe(
+			onGitHub(
+				'names in one folder that differ only by upper and lower case ("A.ts", "a.ts")',
+				"rename them",
+				"CODE_HOST_NAMES_DIFFER_BY_CASE",
+			),
+		);
+		// Paths named as a landing's refusal names them: twenty at most, the rest counted; none shown, counted alone.
+		const many = Array.from({ length: 25 }, (_, at) => `f${at}.`);
+		expect(await words(github, new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", many))).toBe(
+			onGitHub(
+				`file or folder names the company folder does not take (${many
+					.slice(0, 20)
+					.map((path) => `"${path}"`)
+					.join(", ")} and 5 more)`,
+				"rename them",
+				"CODE_HOST_NAMES_FOLDER_REFUSES",
+			),
+		);
+		expect(await words(github, new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", ["n".repeat(256)]))).toContain(
+			"names the company folder does not take (1 path not named here), so",
+		);
+		// A new worktree at the default branch of a repository kept in Qorpera: no session can open it.
+		expect(
+			await words(own, new CodeWorktreeNamesRefused("CODE_HOST_NAMES_FOLDER_REFUSES", ["deep/path"], "base")),
+		).toBe(
+			"The session's workspace could not be made: where a session's workspace holds them, main holds file or folder names the company folder does not take (\"deep/path\"), so no coding session can open this repository and a follow-up will not help. Say so in your report. [code=CODE_HOST_NAMES_FOLDER_REFUSES]",
+		);
+		// Every other refusal and failure: a follow-up tries again, as before.
+		for (const error of [
+			new CodeHostRefusal("CODE_HOST_SEED_HEADS", ["refs/heads/main"]),
+			new CodeHostRefusal("CODE_HOST_LINK", ["code/qorpera"]),
+			new CodeHostRefusal("CODE_HOST_WORKTREE_INCOMPLETE", ["code/qorpera/example/worktrees/x"]),
+			new CodeHostJobFailure("CODE_HOST_NAMES_LISTING", "not a refusal"),
+			new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE"),
+		])
+			for (const session of [own, github])
+				expect(await words(session, error)).toBe(
+					`Making the session's copy of the code failed. The workspace is kept; a follow-up tries again. [code=${error.code}]`,
+				);
 	});
 
 	it("asks the session's authority once its job's turn comes and once its steps are done, before the job publishes", async () => {

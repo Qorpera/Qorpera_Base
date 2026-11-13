@@ -23,6 +23,7 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	CodeWorktreeNamesRefused,
 	codeAreaPath,
 	exportCodeBranch,
 	landCodeBranch,
@@ -48,6 +49,8 @@ export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
 /** What the member and the agent read when the code host could not make the session's worktree (its code follows). */
 const CODE_COPY_FAILED =
 	"Making the session's copy of the code failed. The workspace is kept; a follow-up tries again.";
+/** The code host's refusal of a file too large for a repository it keeps; its refusals of names are `CODE_HOST_NAMES_*`. */
+const TOO_LARGE = "CODE_HOST_FILE_TOO_LARGE";
 /** What they read when the code host could not make or read a repository kept in Qorpera. */
 const CODE_START_FAILED = "Opening the company's repository failed. Nothing was changed; a follow-up tries again.";
 /** And when its folder already holds a copy of a GitHub repository. */
@@ -129,7 +132,8 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 
 	/** A job that failed at one of its steps or was refused by rule (the code host's own error, which names its code)
 	 * fails the turn at once with that code (CodingWorkspaceFailed): what the code host said stays with it, as its cause,
-	 * for the executor's log. */
+	 * for the executor's log. Names the code host or the company folder refuses, and a file too large, are refused the
+	 * same way at every follow-up: their words say so, and what to do instead (`namesRefused`). */
 	async prepare(session: CodingFolderRepositorySession, signal: AbortSignal): Promise<{ cwd: string }> {
 		const { repository, workerId } = session.claim;
 		try {
@@ -147,9 +151,11 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			});
 		} catch (error) {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
-			throw new CodingWorkspaceFailed(error.code, error.code === RESTORING ? CODE_RESTORING : CODE_COPY_FAILED, {
-				cause: error,
-			});
+			throw new CodingWorkspaceFailed(
+				error.code,
+				error.code === RESTORING ? CODE_RESTORING : (namesRefused(session, error) ?? CODE_COPY_FAILED),
+				{ cause: error },
+			);
 		}
 		return { cwd: `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(repository)}/worktrees/${workerId}` };
 	}
@@ -567,6 +573,57 @@ function named(session: CodingFolderRepositorySession): Record<string, unknown> 
 		workerId,
 		sequence,
 	};
+}
+
+/** Paths as the words of a refused workspace name them: as the import's look shows a path (`codeImportShown`: one over
+ * 200 bytes, key-like or with a control character is only counted), quoted, the first twenty within 2,000 bytes, then
+ * how many more, as a landing's refusal names them. */
+function namedPaths(paths: readonly string[]): string {
+	const shown: string[] = [];
+	let used = 0;
+	for (const path of paths
+		.map((path) => codeImportShown(path))
+		.filter((path) => path !== null)
+		.slice(0, 20)) {
+		const quoted = JSON.stringify(path);
+		used += Buffer.byteLength(quoted) + 2;
+		if (used > 2000) break;
+		shown.push(quoted);
+	}
+	const more = paths.length - shown.length;
+	if (!shown.length) return `${more} ${more === 1 ? "path" : "paths"} not named here`;
+	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
+}
+
+/** The words of a session's workspace refused for the names of what it would hold, or for a file too large (the code
+ * host's `CODE_HOST_NAMES_*`, `CODE_HOST_FILE_TOO_LARGE`), or undefined for any other failure. The same names are
+ * refused the same way at every follow-up, so the words never say one tries again. Whose names they are says what to
+ * do: the session's own branch (its worktree made again, `CodeWorktreeNamesRefused`) is carried into a new session;
+ * GitHub's default branch (a seed, or a new worktree at GitHub's base) is a member's to fix on GitHub; the default
+ * branch of a repository kept in Qorpera can be fixed by no session. */
+function namesRefused(
+	session: CodingFolderRepositorySession,
+	error: CodeHostJobFailure | CodeHostRefusal,
+): string | undefined {
+	if (!(error instanceof CodeHostRefusal) || !(error.code.startsWith("CODE_HOST_NAMES_") || error.code === TOO_LARGE))
+		return undefined;
+	const { repository, workerId } = session.claim;
+	const large = error.code === TOO_LARGE;
+	const what = large
+		? "files larger than 256 MiB, which Qorpera does not take"
+		: error.code === "CODE_HOST_NAMES_DIFFER_BY_CASE"
+			? "names in one folder that differ only by upper and lower case"
+			: error.code === "CODE_HOST_NAMES_NOT_UTF8" || error.code === "CODE_HOST_NAMES_NOT_NFC"
+				? "file names that are not plain Unicode text (UTF-8, in its composed form NFC)"
+				: "file or folder names the company folder does not take";
+	const held = `${what}${error.paths.length ? ` (${namedPaths(error.paths)})` : ""}`;
+	if (error instanceof CodeWorktreeNamesRefused && error.of === "branch") {
+		const branch = `qorpera/coding/${workerId}`;
+		return `The session's workspace could not be made again: its branch holds ${held}, so a follow-up will not help. Archive this session with manage_worker, action archive, and start a new one on the repository: the work stays on branch ${branch}, where the new session reads each file with git show ${branch}:<path> and ${large ? "leaves the files over 256 MiB out" : "saves it under a name the folder takes"}.`;
+	}
+	if (repository.host === "github.com")
+		return `GitHub's ${repository.baseBranch} of ${repository.owner}/${repository.name} holds ${held}, so no coding session can open it here and a follow-up will not help. A member must ${large ? "take them out" : "rename them"} on GitHub first.`;
+	return `The session's workspace could not be made: where a session's workspace holds them, ${repository.baseBranch} holds ${held}, so no coding session can open this repository and a follow-up will not help. Say so in your report.`;
 }
 
 /** What the kernel is told of a landing, from what the job answered, with what the repository's checks said of a

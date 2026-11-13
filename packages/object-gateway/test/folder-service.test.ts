@@ -21,7 +21,7 @@ import {
 	parseRead,
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
-import { FolderService } from "../src/folder-service/service.ts";
+import { FolderService, type FolderServiceOptions } from "../src/folder-service/service.ts";
 import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 import {
 	BRIDGE,
@@ -161,6 +161,7 @@ async function serve(
 	core: FakeCore,
 	root: string,
 	now?: () => number,
+	options: Partial<FolderServiceOptions> = {},
 ): Promise<{ service: FolderService; path: string }> {
 	const lines: string[] = [];
 	const service = new FolderService({
@@ -169,6 +170,7 @@ async function serve(
 		grants: grants(),
 		log: (line) => lines.push(line),
 		...(now ? { now } : {}),
+		...options,
 	});
 	const server: Server = createFolderServer(service, (line) => lines.push(line));
 	const path = join(await tempdir(), "service.sock");
@@ -846,15 +848,16 @@ describe("run box views", () => {
 	const BOX_PASS = "boxpass_0123456789-abcdefghijklmnopqrstuvwx";
 	const EXEC: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
 
-	async function box(clock?: {
-		now: number;
-	}): Promise<{ core: FakeCore; service: FolderService; path: string; root: string }> {
+	async function box(
+		clock?: { now: number },
+		options: Partial<FolderServiceOptions> = {},
+	): Promise<{ core: FakeCore; service: FolderService; path: string; root: string }> {
 		const root = await tempdir();
 		const core = new FakeCore();
 		if (clock) core.now = () => clock.now;
 		core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
 		core.openView(VIEW, BOX_PASS);
-		return { core, root, ...(await serve(core, root, clock ? () => clock.now : undefined)) };
+		return { core, root, ...(await serve(core, root, clock ? () => clock.now : undefined, options)) };
 	}
 
 	it("opens a core view for the execution host only, with its own pass, and renews its lease while connected", async () => {
@@ -1047,6 +1050,243 @@ describe("run box views", () => {
 		expect((await operator.hello("io")).kind).toBe(Kind.helloOk);
 		operator.send(Kind.search, search);
 		expect((await operator.json()).body.code).toBe("BAD_REQUEST");
+	});
+
+	it("says in its hello it speaks search version 2, and answers one with context, a pattern, files and a find", async () => {
+		const { path } = await box();
+		const io = await Client.open(path);
+		const hello = await io.hello("io", BOX_PASS, EXEC, VIEW);
+		expect(hello.kind).toBe(Kind.helloOk);
+		expect(hello.body.search).toEqual({ version: 2, regex: true });
+		const ask = {
+			version: 2,
+			query: "PL.N",
+			regex: true,
+			path: "",
+			glob: null,
+			namesOnly: false,
+			filesOnly: false,
+			caseSensitive: false,
+			context: 1,
+			after: null,
+		};
+		io.send(Kind.search, ask);
+		expect((await io.json()).body).toEqual({
+			hits: [
+				{
+					path: "docs/plan.md",
+					kind: "file",
+					line: 1,
+					text: "the plan",
+					version: v(1),
+					offset: 0,
+					before: [],
+					after: [],
+					from: 0,
+				},
+			],
+			files: [],
+			searched: 1,
+			binary: 0,
+			unreadable: 0,
+			longLines: 0,
+			reads: [
+				{ path: "docs", kind: "folder", version: v(1) },
+				{ path: "docs/plan.md", kind: "file", version: v(1) },
+			],
+			next: null,
+		});
+		io.send(Kind.search, { ...ask, context: 0, filesOnly: true });
+		expect((await io.json()).body).toMatchObject({
+			hits: [],
+			files: [{ path: "docs/plan.md", version: v(1), count: 1 }],
+		});
+		// A pattern this search does not run is answered with why, and the connection goes on.
+		io.send(Kind.search, { ...ask, query: "(a)\\1" });
+		expect((await io.json()).body).toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringMatching(/^REGEX_BACKREFERENCE: /),
+		});
+		io.send(Kind.search, { ...ask, query: null, regex: false, context: 0, namesOnly: true, glob: "*.md" });
+		expect((await io.json()).body).toMatchObject({ hits: [{ path: "docs/plan.md", line: 0 }], next: null });
+		// A version 1 search is answered as before, without the new parts.
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect(Object.keys((await io.json()).body).sort()).toEqual([
+			"binary",
+			"hits",
+			"next",
+			"reads",
+			"searched",
+			"unreadable",
+		]);
+		// An operator mount's hello says nothing of search.
+		const operator = await Client.open(path);
+		expect((await operator.hello("io")).body.search).toBeUndefined();
+	});
+
+	it("runs a few search pages at once on the node and the rest in turn, and keeps run views within the paths they may hold", async () => {
+		const root = await tempdir();
+		const core = new FakeCore();
+		core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
+		core.openView(VIEW, BOX_PASS);
+		const objects = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		const read = objects.read.bind(objects);
+		let open!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		let reads = 0;
+		objects.read = async (...args) => {
+			reads++;
+			await gate;
+			return read(...args);
+		};
+		const { path } = await serve(core, root, undefined, { objects, searchRunning: 1 });
+		const search = { query: "plan", path: "", glob: null, namesOnly: false, caseSensitive: false, after: null };
+		const first = await Client.open(path);
+		await first.hello("io", BOX_PASS, EXEC, VIEW);
+		const second = await Client.open(path);
+		await second.hello("io", BOX_PASS, EXEC, VIEW);
+		first.send(Kind.search, search);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const asked = reads;
+		expect(asked).toBeGreaterThan(0);
+		second.send(Kind.search, search);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		// The second page waits its turn: it has read nothing.
+		expect(reads).toBe(asked);
+		open();
+		expect((await first.json()).body).toMatchObject({ hits: [{ path: "docs/plan.md" }] });
+		expect((await second.json()).body).toMatchObject({ hits: [{ path: "docs/plan.md" }] });
+		expect(reads).toBeGreaterThan(asked);
+		// A run view whose tree would take the node's run views past their paths is refused, with why.
+		const small = await box(undefined, { searchPaths: 1 });
+		const refused = await Client.open(small.path);
+		expect((await refused.hello("io", BOX_PASS, EXEC, VIEW)).body).toMatchObject({
+			code: "UNAVAILABLE",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+		const room = await box(undefined, { searchPaths: 2 });
+		const served = await Client.open(room.path);
+		expect((await served.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+	});
+
+	it("closes a run view whose feed grows it past the paths the node's run views may hold, at the page that does", async () => {
+		const { core, service, path, root } = await box(undefined, { searchPaths: 3 });
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		// Three change sets, a feed page each: the second takes the view to four paths, and no third page is asked.
+		core.feedPage = 1;
+		for (const [n, name] of ["a", "b", "c"].entries())
+			core.write(await storeFile(root, `docs/${name}.md`, name, n + 2));
+		const calls = core.feedCalls;
+		await service.poll();
+		await service.settled();
+		expect(core.feedCalls - calls).toBe(2);
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+	});
+
+	it("closes a run view a feed page grew past the bound before an access change, though the listing again fails", async () => {
+		const { core, service, path, root } = await box(undefined, { searchPaths: 2 });
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		// One page: a new path (three in all), then an access change; the listing again would fail at its first page.
+		core.write(await storeFile(root, "docs/more.md", "more", 2));
+		core.authority(() => false);
+		const failing = Promise.reject(new Error("The core did not answer"));
+		failing.catch(() => undefined);
+		core.listGate = failing;
+		await service.poll();
+		await service.settled();
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+	});
+
+	it("counts a run view's trees while they are listed: distinct views at once, a listing again, and hellos that join", async () => {
+		const VIEW2 = "3a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4e";
+		const PASS2 = "boxpass_9876543210-abcdefghijklmnopqrstuvwx";
+		// Two views of four paths each (listed two a page), where the node's run views may hold six: one is served.
+		const root = await tempdir();
+		const core = new FakeCore();
+		core.seed([
+			folder("docs"),
+			await storeFile(root, "docs/a.md", "a", 1),
+			await storeFile(root, "docs/b.md", "b", 2),
+			await storeFile(root, "docs/plan.md", "the plan", 3),
+		]);
+		core.openView(VIEW, BOX_PASS);
+		core.openView(VIEW2, PASS2);
+		let open!: () => void;
+		core.listGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const { path } = await serve(core, root, undefined, { searchPaths: 6 });
+		const first = await Client.open(path);
+		const second = await Client.open(path);
+		const answers = Promise.all([first.hello("io", BOX_PASS, EXEC, VIEW), second.hello("io", PASS2, EXEC, VIEW2)]);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		open();
+		const bodies = (await answers).map((a) => (a.kind === Kind.helloOk ? "served" : (a.body.message as string)));
+		expect(bodies.filter((b) => b === "served")).toHaveLength(1);
+		expect(bodies.filter((b) => b.startsWith("SEARCH_FULL: "))).toHaveLength(1);
+		// A listing again holds the old tree and the new one at once: a view of two paths where three fit is closed by it.
+		const clock = { now: Date.now() };
+		const again = await box(clock, { searchPaths: 3, reloadMs: 1_000 });
+		const io = await Client.open(again.path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		clock.now += 2_000;
+		await again.service.poll();
+		await again.service.settled();
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+		// Two hellos at once on a view too large for the node: neither is served, the one that joined while it was
+		// listed included.
+		const small = await box(undefined, { searchPaths: 1 });
+		const a = await Client.open(small.path);
+		const b = await Client.open(small.path);
+		for (const answer of await Promise.all([
+			a.hello("io", BOX_PASS, EXEC, VIEW),
+			b.hello("io", BOX_PASS, EXEC, VIEW),
+		]))
+			expect(answer.body).toMatchObject({ code: "UNAVAILABLE", message: expect.stringMatching(/^SEARCH_FULL: /) });
 	});
 
 	it("answers a search on a view the core ended VIEW_CLOSED, so the run opens another", async () => {

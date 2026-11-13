@@ -1,9 +1,9 @@
 import { folderKey } from "@qorpera/contracts";
 
 /** The company folder's rules for the names of a repository's files, which git takes and the folder does not: what the
- * import's look (code-host-import.ts) and a session's landing (code-host-jobs.ts, `landCodeBranch`) ask of every path
- * they would put in a repository's `main/` (own code storage, step 6). Here, with no import of either, so both ask the
- * same rule. */
+ * import's look (code-host-import.ts), a session's landing, a session's worktree and a seed from GitHub (code-host-jobs.ts:
+ * `landCodeBranch`, `addCodeWorktree`, `seedCodeArea`) ask of every path they would put in the place (own code storage,
+ * step 6). Here, with no import of either file, so all ask the same rule. */
 
 /** A control character as the folder's rule and the import look's display read it: C0, DEL, C1 and the line and
  * paragraph separators. */
@@ -39,13 +39,24 @@ export function codeImportFolderPathValid(path: string): boolean {
  * `crates/qorpera-folder/src/proto.rs`). Neither the folder's SQL rule nor `codeImportFolderPathValid` asks this. */
 export const CODE_FOLDER_NAME_BYTES = 255;
 
+/** Where any coding session's worktree holds a repository's files, for a check that is no one session's own: a session's
+ * worktree is `worktrees/<workerId>`, and every session's id is a UUID of 36 characters, so this one, the nil UUID's,
+ * is as long as every session's. A path the folder takes here it takes in every session's worktree, and in `main/`,
+ * which is 42 bytes shorter: what the place's default branch holds, every session can check out. */
+export const CODE_FOLDER_ANY_SESSION = "worktrees/00000000-0000-0000-0000-000000000000";
+
 /** The paths of a tree (`ls-tree -r -t`'s records, a folder before what is in it) that the company folder would refuse
- * where they stand in the repository's `main/`, `<area>/main/<path>` (`area` is the place, `code/<owner>/<name>`):
- * `codeImportFolderPathValid` there, and at most `CODE_FOLDER_NAME_BYTES` for each name. git takes such names and
- * `Run.checkNames` asks none of these, so without this the folder would refuse main/'s whole change set only once it
- * was written. Each is named at the highest entry that breaks the rule: what is below a refused folder is not named
- * again. */
-export function codeFolderRefuses(area: string, records: readonly { type: string; path: Buffer }[]): string[] {
+ * where they stand in the place, `<area>/<under>/<path>` (`area` is the place, `code/<owner>/<name>`; `under` is
+ * `main`, the default, or a session's worktree, `worktrees/<workerId>`, or `CODE_FOLDER_ANY_SESSION` for every
+ * session's): `codeImportFolderPathValid` there, and at most `CODE_FOLDER_NAME_BYTES` for each name. git takes such
+ * names and `Run.checkNames` asks none of these, so without this the folder would refuse the checkout's whole change set
+ * only once it was written. Each is named at the highest entry that breaks the rule: what is below a refused folder is
+ * not named again. */
+export function codeFolderRefuses(
+	area: string,
+	records: readonly { type: string; path: Buffer }[],
+	under = "main",
+): string[] {
 	const refused: string[] = [],
 		below = new Set<string>();
 	for (const record of records) {
@@ -56,7 +67,7 @@ export function codeFolderRefuses(area: string, records: readonly { type: string
 			continue;
 		}
 		if (
-			codeImportFolderPathValid(`${area}/main/${path}`) &&
+			codeImportFolderPathValid(`${area}/${under}/${path}`) &&
 			path.split("/").every((part) => utf8(part) <= CODE_FOLDER_NAME_BYTES)
 		)
 			continue;
