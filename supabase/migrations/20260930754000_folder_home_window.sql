@@ -540,11 +540,57 @@ revoke all on function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb) to service_role;
 
--- G2: the three are listed for the native host with scope folder, so the run's own box may make them for its own run.
+-- 5. The window on the session's row ------------------------------------------------------------------------------------
+
+-- The relay opens the window before it starts the session (20260930752000), and names it on the session's row once the
+-- session is authorized, so what arrives from that session can be read back to its window. Both are the same run's,
+-- the same machine and the same boot. Sent again with the same ids it changes nothing; a session that already names
+-- another window is refused.
+create function public.qorpera_folder_home_window_bind(p_environment_id uuid, p_actor jsonb, p_request jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_file public.qorpera_company_files%rowtype; v_view public.qorpera_folder_views%rowtype;
+	v_session public.qorpera_company_home_sessions%rowtype; -- 20260930754000
+begin
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if jsonb_typeof(p_actor) is distinct from 'object' or p_actor ->> 'kind' is distinct from 'run'
+		or p_actor - array['kind','runId','jobId','runnerId','assignmentId'] <> '{}'::jsonb
+		or jsonb_typeof(p_request) is distinct from 'object' or p_request - array['viewId','sessionId'] <> '{}'::jsonb
+		or exists (select 1 from unnest(array['viewId','sessionId']) f(name)
+			where coalesce(p_request ->> f.name, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
+		raise exception 'Folder window binding is invalid' using errcode = '22023'; end if;
+	select * into v_file from public.qorpera_company_files where environment_id = p_environment_id;
+	if not found or v_file.core <> 'folder-v2' then
+		raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
+	-- The window, FOR KEY SHARE: closing and superseding it (FOR UPDATE) wait for this binding.
+	select * into v_view from public.qorpera_folder_views where id = (p_request ->> 'viewId')::uuid
+		and environment_id = p_environment_id and kind = 'home_window' and state = 'open'
+		and run_id = (p_actor ->> 'runId')::uuid for key share;
+	if not found or not public.qorpera_folder_view_valid(v_view) then
+		raise exception 'Folder view has ended' using errcode = '42501'; end if;
+	select * into v_session from public.qorpera_company_home_sessions where id = (p_request ->> 'sessionId')::uuid
+		and run_id = (p_actor ->> 'runId')::uuid and closed_at is null for update;
+	if not found or v_session.machine_id is distinct from v_view.company_machine_id
+		or v_session.placement_id is distinct from v_view.placement_id
+		or v_session.boot_id is distinct from v_view.boot_id then
+		raise exception 'Home session is not this window''s' using errcode = '42501'; end if;
+	if v_session.folder_window_id is not null and v_session.folder_window_id is distinct from v_view.id then
+		raise exception 'Home session names another window' using errcode = '42501'; end if;
+	update public.qorpera_company_home_sessions set folder_window_id = v_view.id
+	where id = v_session.id and folder_window_id is null;
+	return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','bound','viewId',v_view.id,
+		'sessionId',v_session.id);
+end $$;
+revoke all on function public.qorpera_folder_home_window_bind(uuid, jsonb, jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_folder_home_window_bind(uuid, jsonb, jsonb) to service_role;
+
+-- G2: the four are listed for the native host with scope folder, so the run's own box may make them for its own run.
 insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_folder_home_window_open', 'folder'),
 	('qorpera_folder_home_call_open', 'folder'),
-	('qorpera_folder_home_call_end', 'folder');
+	('qorpera_folder_home_call_end', 'folder'),
+	('qorpera_folder_home_window_bind', 'folder');
 
 -- The patched and new functions may have a private owner in production: it reaches what their text uses. Row locks need
 -- UPDATE as well as SELECT.
@@ -558,9 +604,20 @@ do $$ declare v_owner name; begin
 		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure,
 		'public.qorpera_folder_home_window_open(uuid,jsonb,jsonb)'::regprocedure,
 		'public.qorpera_folder_home_call_open(uuid,jsonb,jsonb)'::regprocedure,
-		'public.qorpera_folder_home_call_end(uuid,jsonb,jsonb)'::regprocedure)) loop
+		'public.qorpera_folder_home_call_end(uuid,jsonb,jsonb)'::regprocedure,
+		'public.qorpera_folder_home_window_bind(uuid,jsonb,jsonb)'::regprocedure)) loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Home window function has an API owner'; end if;
+	end loop;
+	-- The binding reads the window and writes the session's row (20260930752000).
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_home_window_bind(uuid,jsonb,jsonb)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant select on public.qorpera_company_files, public.qorpera_folder_views to %I', v_owner);
+			execute format('grant select, update on public.qorpera_company_home_sessions to %I', v_owner);
+			execute format('grant execute on function '
+				'public.qorpera_folder_view_valid(public.qorpera_folder_views) to %I', v_owner);
+		end if;
 	end loop;
 	-- The window's valid check reads the run's job; the commit and the open read the calls and the machine rows.
 	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (

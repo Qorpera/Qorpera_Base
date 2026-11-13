@@ -30,6 +30,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_home_window_open",
 	"qorpera_folder_home_call_open",
 	"qorpera_folder_home_call_end",
+	"qorpera_folder_home_window_bind",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
@@ -142,6 +143,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_home_window_open",
 			"qorpera_folder_home_call_open",
 			"qorpera_folder_home_call_end",
+			"qorpera_folder_home_window_bind",
 			// Staging a folder-v2 file's bytes (core C1d).
 			"qorpera_folder_open_upload",
 			"qorpera_folder_seal_upload",

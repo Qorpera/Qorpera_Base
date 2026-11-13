@@ -15,6 +15,7 @@ const CALL = "ca110001-0000-4a00-8b00-000000000001";
 function folderThat(answer: CloudCompanyFolderHomeWindow) {
 	const opened: { viewId: string; callId: string; commandHead: string }[] = [];
 	const ended: { viewId: string; callId: string }[] = [];
+	const bound: { viewId: string; sessionId: string }[] = [];
 	const folder: CloudHomeWindowFolder = {
 		openHomeWindow: async () => answer,
 		openHomeCall: async (request) => {
@@ -24,13 +25,16 @@ function folderThat(answer: CloudCompanyFolderHomeWindow) {
 			ended.push(request);
 			return true;
 		},
+		bindHomeWindow: async (request) => {
+			bound.push(request);
+		},
 	};
-	return { folder, opened, ended };
+	return { folder, opened, ended, bound };
 }
 
 describe("the run's window on its home", () => {
 	it("opens the window and keeps a call on it under the call's own receipt", async () => {
-		const { folder, opened, ended } = folderThat({
+		const { folder, opened, ended, bound } = folderThat({
 			state: "open",
 			viewId: VIEW,
 			pass: PASS,
@@ -46,6 +50,10 @@ describe("the run's window on its home", () => {
 		await answer.window.endCall(CALL, AbortSignal.timeout(5_000));
 		expect(opened).toEqual([{ viewId: VIEW, callId: CALL, commandHead: "npm test --silent" }]);
 		expect(ended).toEqual([{ viewId: VIEW, callId: CALL }]);
+		// The session the relay then opens names this window on its own row (20260930752000).
+		const SESSION = "5e550001-0000-4a00-8b00-000000000001";
+		await answer.window.bindSession(SESSION, AbortSignal.timeout(5_000));
+		expect(bound).toEqual([{ viewId: VIEW, sessionId: SESSION }]);
 	});
 
 	it("tells the model in plain words when the home gives no window, and starts no session", async () => {
@@ -72,6 +80,7 @@ describe("the run's window on its home", () => {
 			},
 			openHomeCall: async () => undefined,
 			endHomeCall: async () => true,
+			bindHomeWindow: async () => undefined,
 		});
 		for (const code of ["42883", "42501", "PGRST202"]) {
 			const error = Object.assign(new Error("refused"), { code });

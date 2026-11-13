@@ -401,7 +401,54 @@ begin
 end $$;
 
 
--- 7. A test machine's own credits are untouched: a machine command still credits a unit on the company-wide view, and
+-- 7. The window is named on the home session's row (20260930752000, builder A's table): the relay binds it once the
+-- session is authorized. Both are the same run's, the same machine and the same boot.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hw-bind');
+	m2 uuid := pg_temp.machine(v, 'hw-bind-other'); a jsonb := pg_temp.place(m); a2 jsonb := pg_temp.place(m2);
+	s jsonb; s2 jsonb; r jsonb; one uuid := extensions.gen_random_uuid(); other uuid := extensions.gen_random_uuid();
+begin
+	s := pg_temp.hw_open(a, v);
+	s2 := pg_temp.hw_open(a2, v);
+	-- The sessions the relay opens, as 20260930752000's authority writes them.
+	set local session_replication_role = replica;
+	insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id, staff_agent_id,
+		requested_by_user_id)
+	select one, m, (a ->> 'placementId')::uuid, (a ->> 'bootId')::uuid, r.id, r.staff_agent_id, r.requested_by_user_id
+	from public.qorpera_execution_runs r where r.id = (v ->> 'runId')::uuid;
+	insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id, staff_agent_id,
+		requested_by_user_id)
+	select other, m2, (a2 ->> 'placementId')::uuid, (a2 ->> 'bootId')::uuid, r.id, r.staff_agent_id,
+		r.requested_by_user_id
+	from public.qorpera_execution_runs r where r.id = (v ->> 'runId')::uuid;
+	set local session_replication_role = origin;
+	-- A session of another machine is not this window's.
+	perform pg_temp.refused(format('select public.qorpera_folder_home_window_bind(%L, %L, %L)',
+		'63200000-0000-4000-8000-000000000020', v, jsonb_build_object('viewId', s ->> 'viewId', 'sessionId', other)),
+		'42501', 'Home session is not this window''s');
+	-- Another run's binding of this window is refused as an ended view: the window is not that run's.
+	perform pg_temp.refused(format('select public.qorpera_folder_home_window_bind(%L, %L, %L)',
+		'63200000-0000-4000-8000-000000000020', v2, jsonb_build_object('viewId', s ->> 'viewId', 'sessionId', one)),
+		'42501', 'Folder view has ended');
+	-- Its own: the row names the window, and binding again changes nothing.
+	r := public.qorpera_folder_home_window_bind('63200000-0000-4000-8000-000000000020', v,
+		jsonb_build_object('viewId', s ->> 'viewId', 'sessionId', one));
+	if r ->> 'state' is distinct from 'bound'
+		or (select folder_window_id from public.qorpera_company_home_sessions where id = one)
+			is distinct from (s ->> 'viewId')::uuid then
+		raise exception 'The window is not named on its session: %', r; end if;
+	perform public.qorpera_folder_home_window_bind('63200000-0000-4000-8000-000000000020', v,
+		jsonb_build_object('viewId', s ->> 'viewId', 'sessionId', one));
+	-- A session that already names a window takes no other, not even the window that superseded it on the same disk.
+	s := pg_temp.hw_open(a, v);
+	perform pg_temp.refused(format('select public.qorpera_folder_home_window_bind(%L, %L, %L)',
+		'63200000-0000-4000-8000-000000000020', v, jsonb_build_object('viewId', s ->> 'viewId', 'sessionId', one)),
+		'42501', 'Home session names another window');
+end $$;
+
+
+-- 8. A test machine's own credits are untouched: a machine command still credits a unit on the company-wide view, and
 -- the commit still lists it.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hw-regression');

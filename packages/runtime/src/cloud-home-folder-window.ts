@@ -5,6 +5,7 @@ export interface CloudHomeWindowFolder {
 	openHomeWindow(machineId: string, signal: AbortSignal): Promise<CloudCompanyFolderHomeWindow>;
 	openHomeCall(request: { viewId: string; callId: string; commandHead: string }, signal: AbortSignal): Promise<void>;
 	endHomeCall(request: { viewId: string; callId: string }, signal: AbortSignal): Promise<boolean>;
+	bindHomeWindow(request: { viewId: string; sessionId: string }, signal: AbortSignal): Promise<void>;
 }
 
 /**
@@ -35,6 +36,12 @@ export class CloudHomeFolderWindow {
 		this.machineId = window.machineId;
 		this.placementId = window.placementId;
 		this.bootId = window.bootId;
+	}
+
+	/** Names this window on the home session's row once the relay has the session (20260930752000), so what arrives
+	 * from that session can be read back to the window it was opened for. Said again it changes nothing. */
+	async bindSession(sessionId: string, signal: AbortSignal): Promise<void> {
+		await this.#folder.bindHomeWindow({ viewId: this.viewId, sessionId }, signal);
 	}
 
 	/** The call's own receipt is open on the window: what the window saves until `endCall` is credited to it. The call id

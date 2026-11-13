@@ -78,6 +78,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_home_window_open"
 	| "qorpera_folder_home_call_open"
 	| "qorpera_folder_home_call_end"
+	| "qorpera_folder_home_window_bind"
 	// Staging a folder-v2 file's bytes (core C1d).
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"

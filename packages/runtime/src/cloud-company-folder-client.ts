@@ -1538,6 +1538,25 @@ export class CloudCompanyFolderClient {
 			invalid();
 	}
 
+	/** Names the run's window on its home session's row (`qorpera_folder_home_window_bind`, 20260930754000), once the
+	 * session is authorized (migration 20260930752000): both are the same run's, the same machine and the same boot, so
+	 * what arrives from the session can be read back to the window it was opened for. Sent again it changes nothing. */
+	async bindHomeWindow(request: { viewId: string; sessionId: string }, signal: AbortSignal): Promise<void> {
+		const input = record(await this.#once("qorpera_folder_home_window_bind", { p_request: request }, signal), [
+			"schema",
+			"state",
+			"viewId",
+			"sessionId",
+		]);
+		if (
+			input.schema !== "qorpera.folder-home-window/v1" ||
+			input.state !== "bound" ||
+			input.viewId !== request.viewId ||
+			input.sessionId !== request.sessionId
+		)
+			invalid();
+	}
+
 	/** Ends a native call on the run's window (`qorpera_folder_home_call_end`, 20260930754000): what the window saves
 	 * from then on no longer carries it. Sent again it changes nothing. Whether this call ended it. */
 	async endHomeCall(request: { viewId: string; callId: string }, signal: AbortSignal): Promise<boolean> {

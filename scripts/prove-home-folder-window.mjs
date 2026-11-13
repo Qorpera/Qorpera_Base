@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { ENVIRONMENT, finish, pass, proveCompanyRun, textObjects } from "./prove-company-run.mjs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ENVIRONMENT, finish, pass, proveCompanyRun, repositoryRoot, textObjects } from "./prove-company-run.mjs";
 
 // The agent's home, slice 3 (migration 20260930754000): a folder window per run. End to end, through the real patched
 // Codex and a migrated database (scripts/prove-company-run.mjs says what is real and what stands in):
@@ -173,6 +175,33 @@ await finish(
 			assert.equal(read("home-locked/l.txt", actor(window)).found, false);
 			assert.equal(read("home-locked/l.txt", actor(wide)).found, false);
 			pass("the window reads the run's own folder; the company-wide view reads the root and the rules alone");
+
+			// 2b. The session the relay opens names the window on its own row (20260930752000), so what arrives from the
+			// session can be read back to the window it was opened for.
+			const session = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+			service(`set local session_replication_role = replica;
+				insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id,
+					staff_agent_id, requested_by_user_id)
+				select '${session}', '${HOME}', '${homePlace}', p.boot_id, r.id, r.staff_agent_id, r.requested_by_user_id
+				from public.qorpera_company_machine_placements p, public.qorpera_execution_runs r
+				where p.id = '${homePlace}' and r.id = '${runId}';
+				select to_jsonb(1)::text`);
+			await window.bindSession(session, signal());
+			assert.equal(
+				db.json(`select to_jsonb((select folder_window_id from public.qorpera_company_home_sessions
+					where id = '${session}'))::text`),
+				window.viewId,
+			);
+			pass("the home session's row names the run's window");
+
+			// 2c. The model's own file tools run as the machine's agent account, never as root, and the mount is checked
+			// by the kernel: the machine's mount unit therefore gives the virtual files to that account. A real mount
+			// cannot run here, so the unit is read instead.
+			const unit = readFileSync(join(repositoryRoot, "deploy/machine/qorpera-machine-folder.service"), "utf8");
+			assert.match(unit, /--allow-other yes \$QORPERA_FOLDER_OWNER/);
+			assert.match(unit, /id -u qorpera-agent/);
+			assert.match(unit, /--owner-uid %s --owner-gid %s/);
+			pass("the home's mount gives the company folder to the agent's own account, not to root");
 
 			// 3. A read released under the window is recorded as that run's read.
 			const release = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
