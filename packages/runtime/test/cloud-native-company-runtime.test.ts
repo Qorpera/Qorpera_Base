@@ -1104,6 +1104,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// A picture the agent makes, on a Codex login's run (20260930746000).
+				"make_picture",
 				"company_account",
 				"ask_member",
 				"create_group_chat",
@@ -2537,7 +2539,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
+it("gives a company conversation's run the machine tools with notify, and a start that waits up to a minute", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2547,10 +2549,10 @@ it("gives a company conversation's run the machine tools with notify, and a wait
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	// agent-box B1: it waits in place while its machine starts, by default, for a minute at most; 0 asks for no wait.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
 		type: "integer",
-		minimum: 1,
+		minimum: 0,
 		maximum: 60,
 	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
@@ -3298,6 +3300,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on each tree where that
 	// change meets master's own: agent names by work, the kits that draw an interface app, and company databases
 	// (13 November 2026).
+	// The same day make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again,
+	// measured on the tree with the kits, the company databases and the answer-first change.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3310,6 +3314,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"make_picture",
 		"update_wall",
 		"data_describe",
 		"data_apply",
@@ -3347,9 +3352,29 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"700640c2cc32578c5eec7c87463623df96d00468f480d083acff6ff62e641e6e",
+		"bc02e489616219d76dbc05b9ea1d8035dca33f088d8b3a4dd85d91a10529e787",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"49a82824f7c686687678525a3d59444e8a132adb0d39fe1c25d4802461cd32ea",
+		"7ef848f3244c2e9048dbc0c97f4b8f6173eacc1328b6be053fdfe3af0622dbcb",
 	);
+});
+
+it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {
+	const codex = await fixture("company-runtime");
+	await codex.runtime.execute(codex.request, codex.identityRoot, new AbortController().signal);
+	const offered = JSON.parse(await readFile(codex.evidence, "utf8")).threadParameters.dynamicTools[0].tools;
+	expect(offered.map((tool: { name: string }) => tool.name)).toContain("make_picture");
+	await rm(codex.identityRoot, { recursive: true, force: true });
+	await rm(codex.companyRoot, { recursive: true, force: true });
+	// A plan run's identity root holds the plan's token and an empty Codex home.
+	const plan = await fixture("company-runtime");
+	await rm(join(plan.identityRoot, "codex", "auth.json"));
+	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
+	await writeFile(join(plan.identityRoot, "chatgpt-plan", "access-token"), "plan-access-1", { mode: 0o600 });
+	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
+	const names = JSON.parse(await readFile(plan.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
+		(tool: { name: string }) => tool.name,
+	);
+	expect(names).toContain("save_app");
+	expect(names).not.toContain("make_picture");
 });

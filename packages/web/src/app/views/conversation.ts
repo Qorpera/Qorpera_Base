@@ -2987,6 +2987,7 @@ export class ConversationView {
 								viewerId: this.#company.userId,
 								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
+								...(this.#actions.folderApp ? { app: this.#actions.folderApp } : {}),
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
 									// looks are let in again (20260930713000).

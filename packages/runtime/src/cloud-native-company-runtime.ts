@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -43,6 +45,7 @@ import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
 import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
+import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
@@ -72,7 +75,7 @@ import {
 } from "./cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
-import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
@@ -100,6 +103,7 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { CloudRunLogGone } from "./cloud-run-log.ts";
@@ -162,6 +166,17 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 		Object.entries(expected).some(([key, value]) => (answer as Record<string, unknown>)[key] !== value)
 	)
 		throw new Error("Native execution admission was not confirmed");
+}
+
+/** Whether an identity root is a ChatGPT plan run's: its host wrote the plan's token directory there. Anything but a
+ * clear absence counts as one, so a run is never offered pictures it cannot make. */
+async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
+	try {
+		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ENOENT";
+	}
 }
 
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
@@ -802,6 +817,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const offlineShells = new Set<string>();
 				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
+				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
+				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
+				// the session reads it.
+				const pictures = (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -841,6 +860,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					opening,
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
+					...(pictures ? { pictures } : {}),
 					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -970,6 +990,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 									// Interface apps: pages the agent makes to show members its work (5 November 2026).
 									...cloudAppTools({ folder: folder.client, operations, identity }),
+									// A picture the agent makes, saved in the folder as a write is (20260930746000).
+									...(pictures
+										? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
+										: []),
 									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
 									// run of the agent; a worker reports to its agent instead.
 									...(identity.audienceKind === "company" && !work.isWorker

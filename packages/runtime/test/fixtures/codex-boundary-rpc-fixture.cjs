@@ -1,6 +1,6 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, truncateSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -207,6 +207,41 @@ const voiceReopen = mode === "voice-reopen" || mode === "voice-reopen-refused";
 let voiceLateSent;
 const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
 
+// A picture call (cloud-picture-channel.ts): a side thread with Codex's image tool on, whose one turn makes one picture,
+// saved where Codex 0.155.1 keeps it. The agent's turn waits meanwhile, until the test lets it end.
+const pictureMode = mode.startsWith("picture");
+const pictureThreadId = "thread_picture";
+const pictureTurnId = "turn_picture";
+const pictureItemId = "ig_1";
+// followUp: the host's answer to the turn's request after a failed generation, whose text output reaches the fence.
+const pictureEvidence = { threads: [], prewarm: null, turn: null, composed: null, followUp: null, interrupts: [], refused: null, savedPath: null };
+// Written whole and renamed into place: a test reads it while later messages are still being recorded, and must never
+// read half a line.
+const pictureWrite = () => {
+	writeFileSync(`${evidencePath}.writing`, JSON.stringify({ ...pictureEvidence, mainThread: threadParameters, configuration }));
+	renameSync(`${evidencePath}.writing`, evidencePath);
+};
+// The one-pixel PNG of Codex's own image tests.
+const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
+const pictureItem = (patch) => ({ type: "imageGeneration", id: pictureItemId, status: "completed", revisedPrompt: "a red apple", result: "", failure: null, ...patch });
+/** Saves the picture as Codex does (under its canonical home), or elsewhere, and says it is done. */
+const pictureSave = (at, itemId = pictureItemId) => {
+	const home = realpathSync(process.env.CODEX_HOME);
+	const folder = join(home, "generated_images", at.threadId);
+	mkdirSync(folder, { recursive: true });
+	let saved = join(folder, `${itemId}.png`);
+	if (mode === "picture-outside") saved = join(home, "outside.png");
+	writeFileSync(saved, mode === "picture-not-png" ? "PRIVATE_NOT_A_PNG" : tinyPng);
+	// Past the bound: the file says so by its size alone.
+	if (mode === "picture-large") truncateSync(saved, 12 * 1024 * 1024 + 1);
+	if (itemId === pictureItemId) pictureEvidence.savedPath = saved;
+	else pictureEvidence.secondPath = saved;
+	pictureWrite();
+	// The picture model's own prompt argument, which nothing in Codex bounds: 40 KiB of it, in characters of two bytes.
+	const revised = mode === "picture-long-revised" ? { revisedPrompt: "é".repeat(20 * 1024) } : {};
+	write({ method: "item/completed", params: { ...at, item: pictureItem({ id: itemId, savedPath: saved, transparentBackground: true, ...revised }), completedAtMs: 1 } });
+};
+
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
 }
@@ -412,6 +447,79 @@ async function handle(message) {
 	} else if (message.id === "voice_request") {
 		voiceEvidence.refused = message;
 		voiceWrite();
+	} else if (message.method === "thread/start" && pictureMode && threadParameters) {
+		pictureEvidence.threads.push(message.params);
+		if (mode === "picture-thread-refused") {
+			pictureWrite();
+			write({ id: message.id, error: { code: -32600, message: "PRIVATE_CONFIG_ERROR" } });
+			return;
+		}
+		const id = pictureEvidence.threads.length === 1 ? pictureThreadId : `${pictureThreadId}_${pictureEvidence.threads.length}`;
+		// Codex prewarms a new thread in the background: the picture thread's lands on the fence while it starts.
+		pictureEvidence.prewarm = await fence([], { threadId: id, turnId: "", purpose: "prewarm" });
+		pictureWrite();
+		write({ id: message.id, result: { thread: { id } } });
+	} else if (message.method === "turn/start" && pictureMode && message.params.threadId.startsWith(pictureThreadId)) {
+		const at = { threadId: message.params.threadId, turnId: pictureTurnId };
+		pictureEvidence.turn = message.params;
+		pictureWrite();
+		if (mode === "picture-turn-refused") {
+			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_ERROR" } });
+			return;
+		}
+		write({ id: message.id, result: { turn: { id: pictureTurnId } } });
+		write({ method: "turn/started", params: { threadId: at.threadId, turn: { id: pictureTurnId } } });
+		pictureEvidence.composed = await compose(at);
+		await fence([], at);
+		// The model's words on the picture's thread reach no one.
+		write({ method: "item/agentMessage/delta", params: { ...at, delta: "PRIVATE_PICTURE_CANARY" } });
+		if (mode === "picture-request")
+			write({ id: "picture_request", method: "item/tool/call", params: { ...at, callId: "picture_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
+		// What Codex says of the member's plan, without a thread: a sign-in's update, or a rate-limit update's plan.
+		if (mode === "picture-free" || mode === "picture-pro")
+			write({ method: "account/updated", params: { authMode: "chatgpt", planType: mode === "picture-free" ? "free" : "pro" } });
+		if (mode === "picture-free-limits")
+			write({ method: "account/rateLimits/updated", params: { rateLimits: { limitId: "codex", planType: "free", primary: null, secondary: null } } });
+		if (mode === "picture-silent" || mode === "picture-free" || mode === "picture-pro" || mode === "picture-free-limits") {
+			// The model draws nothing: its turn ends with words alone.
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "completed", error: null } } });
+			return;
+		}
+		if (mode === "picture-usage-limit") {
+			nativeError("usageLimitExceeded", false, at);
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			return;
+		}
+		write({ method: "item/started", params: { ...at, item: pictureItem({ status: "in_progress", revisedPrompt: null }), startedAtMs: 1 } });
+		if (mode === "picture-started") {
+			// The tool was called, and its turn ends without the picture.
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			return;
+		}
+		// The generation never ends (picture-slow), or ends only after the call gave up on it (picture-late).
+		if (mode === "picture-slow" || mode === "picture-late") return;
+		if (mode === "picture-limit" || mode === "picture-refused") {
+			write({ method: "item/completed", params: { ...at, item: pictureItem({ status: "failed", failure: mode === "picture-limit" ? { type: "usageLimitExceeded", limitId: "image_gen", resetsAt: 1763049600 } : null }), completedAtMs: 1 } });
+			// The tool's failure goes back to the model as text, which reaches the fence and gets nothing; the pinned fence
+			// then fails the turn inside Codex.
+			pictureEvidence.followUp = await fence([{ kind: "function_call_output", callId: "imagegen_call", output: "image generation failed: PRIVATE_IMAGES_ERROR" }], at);
+			pictureWrite();
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "Cloud result boundary unavailable" } } } });
+			return;
+		}
+		pictureSave(at);
+		// The model draws a second picture in the same turn: the call took the first.
+		if (mode === "picture-twice") pictureSave(at, "ig_2");
+	} else if (message.method === "turn/interrupt" && pictureMode && message.params.threadId.startsWith(pictureThreadId)) {
+		pictureEvidence.interrupts.push(message.params);
+		pictureWrite();
+		write({ id: message.id, result: {} });
+		// A picture finished after its call ended: Codex saves it all the same.
+		if (mode === "picture-late") pictureSave({ threadId: message.params.threadId, turnId: message.params.turnId });
+		write({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId, status: "interrupted", error: null } } });
+	} else if (message.id === "picture_request") {
+		pictureEvidence.refused = message;
+		pictureWrite();
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -634,6 +742,12 @@ async function handle(message) {
 			if (voiceMode) {
 				// A voice call is placed while the agent's turn is open; the test ends the turn.
 				writeFileSync(`${evidencePath}.voice-ready`, "");
+				while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			if (pictureMode) {
+				// So is a picture call.
+				pictureWrite();
+				writeFileSync(`${evidencePath}.picture-ready`, "");
 				while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
 			}
 			// Just under the 1 MiB wire limit: one line over many pipe reads, split inside 3-byte characters.

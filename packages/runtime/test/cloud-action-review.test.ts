@@ -217,6 +217,17 @@ describe("which calls are reviewed", () => {
 		["data_describe", {}, "read"],
 		["data_query", { database: "shop", sql: "select 1" }, "read"],
 		["data_apply", { database: "shop" }, "internal"],
+		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
+		[
+			"make_picture",
+			{ operationKey: "k", path: "pictures/mug.png", prompt: "A mug", expectedVersion: null },
+			"internal",
+		],
+		[
+			"make_picture",
+			{ operationKey: "k", path: "apps/sales/mug.png", prompt: "A mug", expectedVersion: null, foreignOwner: true },
+			"delegation",
+		],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
