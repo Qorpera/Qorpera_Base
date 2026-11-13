@@ -1,0 +1,5 @@
+# What a machine never gets: `git archive` of the kit leaves these out (kit.test.mjs checks it). The drill's platform
+# stand-in takes any token, so it must never run beside a real store.
+/drill.mjs export-ignore
+/drill export-ignore
+/kit.test.mjs export-ignore
