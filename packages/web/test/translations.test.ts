@@ -74,6 +74,21 @@ describe("Danish interface text", () => {
 		).toBe(
 			"Sessionen kunne ikke starte: koden har en fil, der er for stor til, at Qorpera kan gemme den. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
 		);
+		// A landing refused for its files (migration 20260930743000).
+		expect(
+			DANISH[
+				"The change was not saved: it holds file names that Qorpera cannot keep. The agent has been told to rename them and try again."
+			],
+		).toBe(
+			"Ændringen blev ikke gemt: den har filnavne, som Qorpera ikke kan gemme. Agenten har fået besked om at omdøbe dem og prøve igen.",
+		);
+		expect(
+			DANISH[
+				"The change was not saved: it holds a file that is too large for Qorpera to keep. The agent has been told to take it out and try again."
+			],
+		).toBe(
+			"Ændringen blev ikke gemt: den har en fil, der er for stor til, at Qorpera kan gemme den. Agenten har fået besked om at tage den ud og prøve igen.",
+		);
 	});
 
 	it("has Danish for every key written in the code", () => {

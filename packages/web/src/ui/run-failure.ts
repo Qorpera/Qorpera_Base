@@ -323,6 +323,15 @@ const CODING_NAMES_REFUSED = phrase(
 const CODING_FILE_TOO_LARGE = phrase(
 	"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next.",
 );
+/** A change the code host refused at its landing for the same reasons (migration 20260930743000): the turn ran, and its
+ * change was not saved. The executor's own codes for it (CODING_LAND_*), not the code host's, tell the two apart; the
+ * agent's words say what to rename or take out. */
+const CODING_LAND_NAMES_REFUSED = phrase(
+	"The change was not saved: it holds file names that Qorpera cannot keep. The agent has been told to rename them and try again.",
+);
+const CODING_LAND_FILE_TOO_LARGE = phrase(
+	"The change was not saved: it holds a file that is too large for Qorpera to keep. The agent has been told to take it out and try again.",
+);
 
 function codingNamesReason(code: string | undefined): string | undefined {
 	switch (code) {
@@ -333,6 +342,10 @@ function codingNamesReason(code: string | undefined): string | undefined {
 			return CODING_NAMES_REFUSED;
 		case "CODE_HOST_FILE_TOO_LARGE":
 			return CODING_FILE_TOO_LARGE;
+		case "CODING_LAND_NAMES_REFUSED":
+			return CODING_LAND_NAMES_REFUSED;
+		case "CODING_LAND_FILE_TOO_LARGE":
+			return CODING_LAND_FILE_TOO_LARGE;
 	}
 	return undefined;
 }
@@ -350,8 +363,9 @@ export interface CodingUsageLimit {
  * executor's summary, which carries the run's last error and its fixed code;
  * both name machinery, so neither is ever shown as it is. A turn the kernel says
  * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan;
- * a change that did not go in for its checks says only that it was not saved, and a
- * session whose workspace was refused for its files only that it could not start. */
+ * a change that did not go in for its checks says only that it was not saved, a
+ * session whose workspace was refused for its files only that it could not start,
+ * and a landing refused for them only that the change was not saved. */
 export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}, code?: string): string {
 	if (limit.usageLimit === true)
 		return limit.paidByChatgptPlan === true && limit.mine === true
@@ -365,9 +379,11 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 	const checks =
 		codingChecksReason(code) ?? codingChecksReason(reason?.match(/\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$/)?.[1]);
 	if (checks) return t(checks);
-	// The session's workspace was refused for its files' names or a file's size (part N's codes): the same way.
+	// The session's workspace was refused for its files' names or a file's size (part N's codes), or a landing was
+	// (20260930743000's codes): the same way.
 	const names =
-		codingNamesReason(code) ?? codingNamesReason(reason?.match(/\[code=(CODE_HOST_[A-Z0-9_]{1,40})\]\s*$/)?.[1]);
+		codingNamesReason(code) ??
+		codingNamesReason(reason?.match(/\[code=((?:CODE_HOST|CODING_LAND)_[A-Z0-9_]{1,40})\]\s*$/)?.[1]);
 	if (names) return t(names);
 	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
 	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a

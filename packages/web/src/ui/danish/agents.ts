@@ -311,6 +311,11 @@ export const AGENTS: Record<string, string> = {
 		"Sessionen kunne ikke starte: koden har filnavne, som Qorpera ikke kan gemme. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
 	"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next.":
 		"Sessionen kunne ikke starte: koden har en fil, der er for stor til, at Qorpera kan gemme den. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
+	// A landing refused for its files (migration 20260930743000).
+	"The change was not saved: it holds file names that Qorpera cannot keep. The agent has been told to rename them and try again.":
+		"Ændringen blev ikke gemt: den har filnavne, som Qorpera ikke kan gemme. Agenten har fået besked om at omdøbe dem og prøve igen.",
+	"The change was not saved: it holds a file that is too large for Qorpera to keep. The agent has been told to take it out and try again.":
+		"Ændringen blev ikke gemt: den har en fil, der er for stor til, at Qorpera kan gemme den. Agenten har fået besked om at tage den ud og prøve igen.",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
 	"{count} artifact": "{count} artefakt",
