@@ -653,13 +653,17 @@ describe("company_search", () => {
 		expect(n.searches).toEqual([
 			{ query: "a", path: "", glob: null, namesOnly: true, caseSensitive: false, after: null },
 		]);
-		// A node of search 2 without the linear engine takes no pattern.
+		// A node of search 2 without the linear engine (the unit as it ships since v240) takes no pattern, and the
+		// description says so before the model asks: a pattern only where the search runs them.
 		const plain = await node(() => found({}), { version: 2, regex: false });
 		const p = tool(plain.path, folder().client);
 		await expect(p.execute(p.parseArguments({ query: "a+", regex: true }), context())).rejects.toThrow(
-			/^REGEX_OFF: /,
+			/^REGEX_OFF: this node's folder search runs no regular expressions yet; search for text$/,
 		);
 		expect(plain.searches).toEqual([]);
+		expect(p.description).toContain(
+			"if the folder's search runs them; REGEX_OFF means it does not, so search for text.",
+		);
 	});
 
 	it("says what the node said of a pattern it does not run, or of being full, and keeps the connection", async () => {

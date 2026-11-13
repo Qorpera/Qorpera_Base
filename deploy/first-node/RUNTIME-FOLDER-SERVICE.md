@@ -384,9 +384,15 @@ service, so the execution host stays small:
     after it up to the next hit, each its first 200 characters: no line is shown twice. A page that ends at a hit, or
     out of time, goes on from the first of the lines a next hit would show before it (`from`), and a page out of time
     stops only once that moves the search on, so pages show the same lines around each hit as one long page would.
-  - **Regular expressions.** RE2's kind, every step linear, run by V8's linear-time engine (the `l` flag), which the
-    unit turns on with `--enable-experimental-regexp-engine` (without it the hello says `regex: false` and a pattern
-    is refused). That engine refuses what it cannot run in linear time (a count above 16, counts inside counts) and
+  - **Regular expressions.** RE2's kind, every step linear, run by V8's linear-time engine (the `l` flag), which node
+    runs only when started with `--enable-experimental-regexp-engine`. **Off as the unit ships** (v240, 13 Nov 2026:
+    the engine is the founder's open choice): the unit starts node without the flag, so the hello says `regex: false`,
+    the runtime refuses a pattern in words (`REGEX_OFF`, nothing sent), and the service refuses one too if asked. **The
+    one change that turns patterns on:** the unit's line
+    `ExecStart=/usr/bin/node --jitless --enable-experimental-regexp-engine /opt/qorpera-folder-service/qorpera-folder-service.cjs`
+    and its pin `EXPECTED_SERVICE_UNIT_SHA256` in `install-folder-service.sh` moved to it (`scripts/package-folder-service.test.mjs`
+    checks both states), then a folder service roll; nothing else changes (the tool, the runtime and the protocol
+    already take it). That engine refuses what it cannot run in linear time (a count above 16, counts inside counts) and
     has no case folding, so `regex.ts` reads each pattern first: it refuses back-references, lookaround, inline flags,
     `\p` classes, POSIX classes and unknown escapes, with a coded message that says what to change (`REGEX_…: …`,
     as `BAD_REQUEST`), and for a search that is not case-sensitive it lowercases the pattern's letters and adds each
@@ -462,8 +468,8 @@ service, so the execution host stays small:
     start it and name it, and the folder service to admit a run view from that VM by its project and name pattern (a
     new admission rule, with its own review): a slice of its own.
   - **Releasing search version 2.** The folder service on each node first, while no company machine runs on the node
-    (a restart of the service ends its machines' mounts: wait or pause them as on 11 Nov), with the unit's new flag;
-    then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
+    (a restart of the service ends its machines' mounts: wait or pause them as on 11 Nov), its unit unchanged
+    (patterns off, above); then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
     not); then each node's shared execution service, after the hello check above (its new default turns search on
     unless the host's environment says `off`). Any order works for what is live: an old runtime asks version 1 of a
     new service, and a new runtime asks only version 1's parts of an old one, saying so for the rest.

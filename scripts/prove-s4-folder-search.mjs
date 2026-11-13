@@ -29,8 +29,9 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 //   fence), says it is part of the answer and where to go on, and the calls that follow its cursors show every hit
 //   exactly once, in order; with context lines, files only, a find by glob, names and patterns too;
 // - read rights: a folder shared with another agent only is never searched, shown, counted or released;
-// - patterns: with the unit's flag a hostile pattern runs in linear time; without it (the switch off) a pattern is
-//   refused in plain words, by the runtime and by the node, and everything else works;
+// - patterns: off as the unit ships (no --enable-experimental-regexp-engine): a pattern is refused in plain words, by
+//   the runtime and by the node, and everything else works; with the flag added to the unit's line (the one change
+//   that turns them on) a hostile pattern runs in linear time;
 // - both orders of a roll: a new runtime over the old folder service (version 1: text and names, the rest refused in
 //   plain words) and back; an old runtime over the new folder service, answered exactly as the old one answers it;
 // - what is stored: each answer's context view, its release (under the hash of exactly the text shown, also when the
@@ -39,7 +40,7 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // Real: the migrated database and its functions; SQL test 924's company, run and lease; a resource shared with Bob only;
 // the runtime's run session, boundary, fence, search tool, folder client, run log; the patched Codex app-server; the
 // folder service (FolderService, its server, its core client, its object reader) in child processes under the unit's
-// node flags. Stand-ins: PostgREST (one psql call per function, as the service role), the vsock bridge and the slot's
+// node flags (as committed, and with the pattern flag added). Stand-ins: PostgREST (one psql call per function, as the service role), the vsock bridge and the slot's
 // relay (one socket that writes the bridge's first frame naming the execution host, then carries bytes both ways, as
 // they do), the object gateway's byte route for the run log's blocks (bytes in memory, confirmed with the core), and the
 // model provider (a scripted loopback Responses server). Not covered: systemd, vsock, a node, a real model.
@@ -694,7 +695,7 @@ function* searches(old) {
 			envelope = yield { label, args: { ...args, cursor: cursorIn(envelope) } };
 		}
 	};
-	// The new folder service with its unit's flags (patterns on).
+	// The new folder service as its unit ships: node without the pattern engine's flag (patterns off, v240).
 	yield* paged("invoice", { query: "invoice", path: "docs" });
 	yield* paged("web", { query: "invoice", path: "docs/web" });
 	yield* paged("context", { query: "invoice", path: "docs/f00", context: 2 });
@@ -702,16 +703,15 @@ function* searches(old) {
 	yield { label: "find", args: { glob: "**/*.csv", path: "docs" } };
 	yield { label: "names", args: { query: "plan", names_only: true, path: "docs" } };
 	yield { label: "zebra", args: { query: "zebra", path: "docs" } };
+	yield { label: "off-pattern", args: { query: "invoice \\d", regex: true, path: "docs/f00" } };
+	// The same service with the flag added to its unit's line: the one change that turns patterns on.
+	yield { restart: "on" };
 	yield* paged("pattern", { query: "invoice 1-\\d+-(4|8) ", regex: true, path: "docs/f01" });
 	yield { label: "hostile-1", args: { query: "(a|aa)*(a*)*b", regex: true, path: "hostile" } };
 	yield { label: "hostile-2", args: { query: "^(a+)+$", regex: true, path: "hostile" } };
 	yield { label: "long-pattern", args: { query: "needle", regex: true, path: "docs/long" } };
 	yield { label: "long-text", args: { query: "needle", path: "docs/long" } };
 	yield { label: "backreference", args: { query: "(in)voice \\1", regex: true, path: "docs/f00" } };
-	// The same service started without the pattern engine's flag: the switch off.
-	yield { restart: "off" };
-	yield { label: "off-pattern", args: { query: "invoice \\d", regex: true, path: "docs/f00" } };
-	yield { label: "off-text", args: { query: "zebra", path: "docs" } };
 	if (old) {
 		// The old folder service (a roll back, or a node not rolled yet).
 		yield { restart: "old" };
@@ -720,8 +720,8 @@ function* searches(old) {
 		yield { label: "old-find", args: { glob: "**/*.csv", path: "docs" } };
 		yield { label: "old-pattern", args: { query: "invoice", regex: true, path: "docs/f00" } };
 	}
-	// The new one again (the roll forward).
-	yield { restart: "on" };
+	// The new one as it ships again (the roll forward).
+	yield { restart: "off" };
 	yield { label: "again", args: { query: "invoice", path: "docs/f00/note-000.md", context: 1 } };
 	// Last: an answer the boundary cuts a secret out of, cited by the next request's context view.
 	yield { label: "token", args: { query: "deploy token", path: "notes" } };
@@ -925,7 +925,7 @@ async function main() {
 	const logs = {};
 	const children = [];
 	const bridges = [];
-	const state = { plan: searches(Boolean(oldTree)), started: false, calls: [], agent: 0, compactor: 0, phase: "on", trace };
+	const state = { plan: searches(Boolean(oldTree)), started: false, calls: [], agent: 0, compactor: 0, phase: "off", trace };
 	const server = provider(state);
 	const rest = postgrestServer(db);
 	try {
@@ -981,11 +981,12 @@ async function main() {
 		// 2. The node: the folder services as their units run them, behind one relay.
 		await new Promise((done) => rest.listen(0, "127.0.0.1", done));
 		const restPort = rest.address().port;
+		// Patterns off as the unit ships; the one change that turns them on adds the engine's flag to its line.
 		const newFlags = unitFlags(repositoryRoot);
-		assert(newFlags.includes(REGEX_FLAG), `the unit starts node with ${REGEX_FLAG}: ${newFlags.join(" ")}`);
+		assert(!newFlags.includes(REGEX_FLAG), `the unit starts node without ${REGEX_FLAG}: ${newFlags.join(" ")}`);
 		const services = {
-			on: { tree: repositoryRoot, flags: newFlags },
-			off: { tree: repositoryRoot, flags: newFlags.filter((flag) => flag !== REGEX_FLAG) },
+			off: { tree: repositoryRoot, flags: newFlags },
+			on: { tree: repositoryRoot, flags: [...newFlags, REGEX_FLAG] },
 			...(oldTree ? { old: { tree: oldTree, flags: unitFlags(oldTree) } } : {}),
 		};
 		await bundleHost(repositoryRoot, join(scratch, "fs-new.cjs"));
@@ -1010,7 +1011,7 @@ async function main() {
 			bridges.push(bridge);
 			return bridge;
 		};
-		state.bridge = relay("on");
+		state.bridge = relay("off");
 		await state.bridge.listen(join(scratch, "relay.sock"));
 		process.stdout.write(
 			`Folder services: ${Object.entries(services).map(([name, s]) => `${name} (${s.tree === repositoryRoot ? "this tree" : "old tree"}, node ${s.flags.join(" ")})`).join("; ")}\n`,
@@ -1062,8 +1063,11 @@ async function main() {
 		assert(schema.properties.context?.type === "integer");
 		assert(!(schema.required ?? []).includes("query"), "query is no longer required");
 		assert(definition.description.includes("context adds up to 5 lines") && definition.description.includes("about 30 KiB"));
+		assert(definition.description.includes("if the folder's search runs them; REGEX_OFF means it does not, so search for text."));
 		process.stdout.write(`company_search as Codex sent it: ${JSON.stringify(definition)}\n`);
-		pass("the provider's first request carries company_search's new definition (regex, context, files_only; query optional; the limits in its words)");
+		pass(
+			"the provider's first request carries company_search's new definition (regex, context, files_only; query optional; the limits in its words; a pattern only where the search runs them, REGEX_OFF otherwise)",
+		);
 
 		// Every answer reached the model whole: one envelope of at most 32 KiB, never cut by the fence.
 		for (const call of calls) {
@@ -1174,7 +1178,17 @@ async function main() {
 		assert.deepEqual(zebra, ["docs/zebra.md:1: A zebra crossing."]);
 		pass("a find by glob alone lists docs/data's two CSV files; names and text find only what the run may read (no docs/restricted/hidden.csv, plan.md or zebra line)");
 
-		// Patterns, the unit's flag on.
+		// Patterns off, as the unit ships: everything above ran on it, and a pattern is refused in words.
+		const offLabels = ["invoice", "web", "context", "files", "find", "names", "zebra", "off-pattern"];
+		assert(offLabels.every((name) => label(name).every((call) => call.phase === "off")));
+		const offPattern = refused(label("off-pattern")[0], "REGEX_OFF");
+		pass(
+			`patterns off as committed (the unit's node has no ${REGEX_FLAG}): the checks above ran on it, and a pattern is refused in words ("${offPattern}")`,
+		);
+
+		// Patterns on: the same service with the flag added to its unit's line, the run reconnected to it.
+		const onLabels = ["pattern", "hostile-1", "hostile-2", "long-pattern", "long-text", "backreference"];
+		assert(onLabels.every((name) => label(name).every((call) => call.phase === "on")));
 		const pattern = label("pattern");
 		const patternTruth = expectedHits(files, "docs/f01", (line) => line.toLowerCase().search(/invoice 1-\d+-(4|8) /));
 		assert.deepEqual(hitsOf(pattern), patternTruth);
@@ -1198,11 +1212,6 @@ async function main() {
 		const backreference = refused(label("backreference")[0], "REGEX_BACKREFERENCE");
 		pass(`a pattern RE2 does not take is refused in words: "${backreference}"`);
 
-		// The switch off: the same service without the flag.
-		const offPattern = refused(label("off-pattern")[0], "REGEX_OFF");
-		assert.deepEqual(hitsOf(label("off-text")), ["docs/zebra.md:1: A zebra crossing."]);
-		pass(`switch off (no ${REGEX_FLAG}): the run, reconnected to the restarted service, is refused a pattern in words ("${offPattern}"), and text search works`);
-
 		// The old folder service, and back.
 		if (oldTree) {
 			const oldInvoice = label("old-invoice");
@@ -1214,9 +1223,9 @@ async function main() {
 			);
 		}
 		const again = label("again");
-		assert.equal(again[0].phase, "on");
+		assert.equal(again[0].phase, "off");
 		assert(answerLines(ok(again[0]), docPaths).lines.some((l) => l.kind === "context"));
-		pass("the new folder service again (roll forward): the run reconnects and context lines are back");
+		pass("the new folder service as it ships again (roll forward): the run reconnects and context lines are back");
 
 		// The token: cut out by the boundary, and still cited.
 		const token = envelopeOf(label("token")[0]);
@@ -1341,7 +1350,7 @@ async function main() {
 			];
 			const cursorOfText = (text) => /More: call again with cursor ([A-Za-z0-9_-]{16})$/.exec(text)?.[1];
 			const answers = {};
-			for (const name of ["old", "on"]) {
+			for (const name of ["old", "off"]) {
 				const { folder } = folderClient(old, db, binding, run.identity, logObjects);
 				const search = new old.CloudFolderSearch({ socketPath: join(scratch, `relay-${name}.sock`), folder, environmentId: ENV });
 				const tool = old.cloudFolderSearchTool({ search, folder, runId: binding.runId });
@@ -1359,13 +1368,13 @@ async function main() {
 			}
 			const same = (list) => list.map((pages) => pages.map((a) => `${a.ok}|${a.text.replace(/cursor [A-Za-z0-9_-]{16}$/, "cursor <token>")}`));
 			assert(answers.old.flat().every((a) => a.ok && a.companyReadId), "the old runtime's answers from the old service are released and cited");
-			assert.deepEqual(same(answers.on), same(answers.old));
+			assert.deepEqual(same(answers.off), same(answers.old));
 			assert.deepEqual(
 				answers.old[0].flatMap((a) => answerLines(a.text, allPaths).lines.filter((l) => l.kind === "hit").map((l) => l.line)),
 				f00,
 			);
 			pass(
-				`old runtime (the old release's search tool), new folder service: all ${answers.on.flat().length} answers (${answers.old[0].length} pages of version 1 for docs/f00) equal the old service's, text for text (cursors aside), and are released and cited`,
+				`old runtime (the old release's search tool), new folder service: all ${answers.off.flat().length} answers (${answers.old[0].length} pages of version 1 for docs/f00) equal the old service's, text for text (cursors aside), and are released and cited`,
 			);
 		}
 

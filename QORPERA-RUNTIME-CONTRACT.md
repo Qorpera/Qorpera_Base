@@ -6500,8 +6500,9 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    folder service, so its catalog has no `company_search` (never a failed run); giving it one is a slice of its own
    (runner image, LXD provider and the folder service's admission).
 2. **What it finds.** Literal text, or with `regex` a regular expression of RE2's kind (no back-references, no
-   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine;
-   `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
+   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine, where
+   the node's folder service runs that engine (off as it first ships, 13 Nov 2026: a pattern is then refused in words,
+   `REGEX_OFF`; which engine is the founder's choice); `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
    number of matching lines, and a `glob` without a `query` lists every path it matches. `names_only` is as before.
 3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
    asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result

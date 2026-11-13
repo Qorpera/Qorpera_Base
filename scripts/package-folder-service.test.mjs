@@ -63,22 +63,26 @@ test("packages the folder service, the folder program, the units and the install
 		const checked = spawnSync(process.execPath, ["--check", join(destination, "qorpera-folder-service.cjs")], { encoding: "utf8" });
 		assert.equal(checked.status, 0, checked.stderr);
 		// Outside systemd it refuses to start. It loads under the unit's flags (--jitless: no WebAssembly) to get there.
-		const unitFlags = ["--jitless", "--enable-experimental-regexp-engine"];
+		const unitFlags = ["--jitless"];
 		const unconfigured = spawnSync(process.execPath, [...unitFlags, join(destination, "qorpera-folder-service.cjs")], {
 			encoding: "utf8",
 			env: { PATH: process.env.PATH },
 		});
 		assert.notEqual(unconfigured.status, 0);
 		assert.match(unconfigured.stderr, /CREDENTIALS_DIRECTORY is not set/);
-		// Under them node runs the search's regular expressions on V8's linear-time engine (keyholes S4), and refuses
-		// what that engine cannot run in linear time.
-		const linear = spawnSync(
-			process.execPath,
-			[...unitFlags, "-e", 'console.log(new RegExp("^(a|aa)*b$", "lm").test("a".repeat(40000)), (() => { try { new RegExp("(a)\\\\1", "l"); return "taken"; } catch { return "refused"; } })())'],
-			{ encoding: "utf8" },
-		);
-		assert.equal(linear.status, 0, linear.stderr);
-		assert.equal(linear.stdout.trim(), "false refused");
+		// Patterns are off as the unit ships (keyholes S4, v240: the engine is the founder's open choice): under its flags
+		// node has no linear-time engine, so the search's hello says `regex: false` and a pattern is refused in words.
+		// The one change that turns them on is --enable-experimental-regexp-engine on the unit's ExecStart line (and its
+		// pin, EXPECTED_SERVICE_UNIT_SHA256): with it node runs V8's linear-time engine and refuses what that engine
+		// cannot run in linear time.
+		const probe =
+			'let off; try { new RegExp("a", "l"); off = "on"; } catch { off = "off"; } if (off === "off") console.log("off"); else console.log(off, new RegExp("^(a|aa)*b$", "lm").test("a".repeat(40000)), (() => { try { new RegExp("(a)\\\\1", "l"); return "taken"; } catch { return "refused"; } })())';
+		const off = spawnSync(process.execPath, [...unitFlags, "-e", probe], { encoding: "utf8" });
+		assert.equal(off.status, 0, off.stderr);
+		assert.equal(off.stdout.trim(), "off");
+		const on = spawnSync(process.execPath, [...unitFlags, "--enable-experimental-regexp-engine", "-e", probe], { encoding: "utf8" });
+		assert.equal(on.status, 0, on.stderr);
+		assert.equal(on.stdout.trim(), "on false refused");
 
 		// The installers' pins are the units' hashes.
 		const pins = {
@@ -105,10 +109,8 @@ test("packages the folder service, the folder program, the units and the install
 		for (const line of ["ProtectSystem=strict", "NoNewPrivileges=yes", "LimitCORE=0", "CapabilityBoundingSet=", "MemoryDenyWriteExecute=yes"])
 			assert.match(service, new RegExp(`^${line}$`, "m"));
 		assert.match(service, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
-		assert.match(
-			service,
-			/^ExecStart=\/usr\/bin\/node --jitless --enable-experimental-regexp-engine \/opt\/qorpera-folder-service\/qorpera-folder-service\.cjs$/m,
-		);
+		// Patterns off as committed: no --enable-experimental-regexp-engine (above).
+		assert.match(service, /^ExecStart=\/usr\/bin\/node --jitless \/opt\/qorpera-folder-service\/qorpera-folder-service\.cjs$/m);
 		assert.ok(!/SupplementaryGroups/.test(service), "the service never holds LXD's group");
 		assert.match(service, /^StartLimitIntervalSec=0$/m);
 		assert.match(service, /^LoadCredential=qorpera-supabase-service-key:\/etc\/qorpera-folder-service\/supabase-key$/m);

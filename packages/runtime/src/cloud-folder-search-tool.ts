@@ -777,7 +777,8 @@ export function cloudFolderSearchTool(options: {
 		description:
 			"Search the company folder like rg: the lines of its text files that contain query, as path:line: text. Only " +
 			"what you may read is searched. Literal text, not case-sensitive unless you say; with regex, query is a " +
-			"regular expression (RE2: no back-references or lookaround, counts up to 16). context adds up to 5 lines " +
+			"regular expression (RE2: no back-references or lookaround, counts up to 16) if the folder's search runs " +
+			"them; REGEX_OFF means it does not, so search for text. context adds up to 5 lines " +
 			"before and after each hit (path-line- text); files_only lists just the matching files, path: matching lines. " +
 			'names_only searches the names of files, folders and links instead (a link as path -> "what it names"; a ' +
 			"link is never searched through); a glob with no query lists every path it matches. One call searches for " +
