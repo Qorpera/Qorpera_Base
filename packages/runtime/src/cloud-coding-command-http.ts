@@ -592,14 +592,18 @@ export class HttpCloudCodingCommandService {
 						if (controller.signal.aborted) throw new Error(ERROR);
 						begin();
 						if (!reply.write(cloudMemberMachineStreamFrame(1, message)))
+							// Waiting for the asking executor to drain ends with this request too: nothing of it waits past
+							// the stream's end (review r2 F3 of #1746).
 							await new Promise<void>((resolve) => {
 								const done = () => {
 									reply.off("drain", done);
 									reply.off("close", done);
+									controller.signal.removeEventListener("abort", done);
 									resolve();
 								};
 								reply.once("drain", done);
 								reply.once("close", done);
+								controller.signal.addEventListener("abort", done, { once: true });
 							});
 					},
 				};

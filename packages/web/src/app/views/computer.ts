@@ -2119,7 +2119,10 @@ export class ComputerPanel {
 		if (!view || this.#stream !== stream || stream.stop.signal.aborted) return;
 		this.#streamLive(stream, true);
 		void view.stream(message).then((drawn) => {
-			if (drawn || this.#stream !== stream) return;
+			// Work the picture discarded (it was cleared, or this stream ended while the area decoded) is no fault of the
+			// stream: a renewal reuses this PageStream, so taking it for a failure would end the socket that replaced it
+			// (review r2 F4 of #1746). Only a picture that could not be drawn ends it.
+			if (drawn !== "failed" || this.#stream !== stream) return;
 			this.#streamAfter = Date.now() + STREAM_PAUSE_MS;
 			this.#endStream(stream);
 		});

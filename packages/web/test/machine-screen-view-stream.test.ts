@@ -53,7 +53,7 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		const slow = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		expect(await screen.stream({ kind: "size", width: 1600, height: 1000 })).toBe(true);
+		expect(await screen.stream({ kind: "size", width: 1600, height: 1000 })).toBe("drawn");
 		expect([canvas.width, canvas.height]).toEqual([1600, 1000]);
 		// The first message's area decodes late: the second message still draws after it.
 		const first = screen.stream({ kind: "rects", rects: [area("whole", 0, 0, 1600, 1000, slow)] });
@@ -61,7 +61,7 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		await Promise.resolve();
 		expect(drawn).toEqual([]);
 		release();
-		expect(await Promise.all([first, second])).toEqual([true, true]);
+		expect(await Promise.all([first, second])).toEqual(["drawn", "drawn"]);
 		expect(drawn).toEqual([
 			["whole", 0, 0],
 			["a", 10, 20],
@@ -75,10 +75,10 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		await screen.stream({ kind: "size", width: 100, height: 100 });
 		expect(
 			await screen.stream({ kind: "rects", rects: [area("fits", 0, 0, 10, 10), area("off", 95, 0, 10, 10)] }),
-		).toBe(false);
+		).toBe("failed");
 		const wrong = area("wrong", 0, 0, 10, 10);
 		wrong.png = new Blob(["unknown"]);
-		expect(await screen.stream({ kind: "rects", rects: [wrong] })).toBe(false);
+		expect(await screen.stream({ kind: "rects", rects: [wrong] })).toBe("failed");
 		expect(drawn).toEqual([]);
 		let release: () => void = () => {};
 		const slow = new Promise<void>((resolve) => {
@@ -87,7 +87,8 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		const late = screen.stream({ kind: "rects", rects: [area("late", 0, 0, 10, 10, slow)] });
 		screen.clear();
 		release();
-		expect(await late).toBe(false);
+		// Cleared while it decoded: discarded work, not a failure (review r2 F4 of #1746).
+		expect(await late).toBe("dropped");
 		expect(drawn).toEqual([]);
 		expect(screen.shown).toBe(false);
 	});
@@ -104,21 +105,38 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		screen.streamEnded();
 		expect(await screen.show(new Blob(["look"], { type: "image/png" }))).toBe(false);
 		release();
-		expect(await late).toBe(false);
+		expect(await late).toBe("dropped");
 		expect(drawn).toEqual([]);
 		// A pointer shape still being read when it ended paints nothing either.
 		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
 		screen.capture({ act: vi.fn() });
 		const shape = screen.stream({ kind: "cursor", hotX: 1, hotY: 1, width: 16, height: 16, png });
 		screen.streamEnded();
-		expect(await shape).toBe(false);
+		expect(await shape).toBe("dropped");
 		expect(canvasOf(screen).style.cursor).toBe("");
+	});
+
+	it("a draw discarded at a renewal is not a failure: the window keeps the stream that replaced it (review r2 F4 of #1746)", async () => {
+		const { screen, area, drawn } = view();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		let release: () => void = () => {};
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const pending = screen.stream({ kind: "rects", rects: [area("before", 0, 0, 10, 10, slow)] });
+		// The pass ran out: that socket ended and the window opened another on the new pass, which draws at once.
+		screen.streamEnded();
+		expect(await screen.stream({ kind: "rects", rects: [area("after", 20, 20, 10, 10)] })).toBe("drawn");
+		release();
+		// The old area finishing now is dropped, never "failed", so the window does not end the new socket.
+		expect(await pending).toBe("dropped");
+		expect(drawn).toEqual([["after", 20, 20]]);
 	});
 
 	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {
 		const { screen, canvas } = view();
 		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
-		await screen.stream({ kind: "cursor", hotX: 3, hotY: 4, width: 16, height: 16, png });
+		expect(await screen.stream({ kind: "cursor", hotX: 3, hotY: 4, width: 16, height: 16, png })).toBe("drawn");
 		expect(canvas.style.cursor).toBe("");
 		screen.capture({ act: vi.fn() });
 		expect(canvas.style.cursor).toMatch(/^url\("data:image\/png;base64,iVBORw=="\) 3 4, default$/);

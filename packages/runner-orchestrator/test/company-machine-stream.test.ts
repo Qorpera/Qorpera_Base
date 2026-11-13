@@ -544,6 +544,42 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect(sink.messages.some((message) => message.type === STREAM_CURSOR)).toBe(false);
 	});
 
+	it("bounds what the queues hold in ENTRIES, not only in bytes: empty updates and piled-up requests (review r2 F1 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		// A member whose cycles never answer: everything the guest sends stays in the ring for it.
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringEntries: 8 });
+		const watching = stream.watch(async () => "pending", sinkOf(), new AbortController().signal);
+		await settle();
+		// 200 updates of no areas at all: each weighs nothing and still costs an entry.
+		const empty = Buffer.alloc(4);
+		for (let n = 0; n < 200; n++) desktop.send(empty);
+		await settle();
+		expect(stream.held).toEqual({ ring: 8, outbox: expect.any(Number) });
+		// The guest stops reading its socket: the requests the reader answers with pile up, bounded too, and a
+		// whole-screen request is never the one dropped.
+		expect(stream.held.outbox).toBeLessThanOrEqual(64);
+		for (let n = 0; n < 500; n++) desktop.send(empty);
+		await settle();
+		expect(stream.held.ring).toBe(8);
+		expect(stream.held.outbox).toBeLessThanOrEqual(64);
+		// A guest that changes the screen's size again and again makes whole-screen requests, which are never dropped for
+		// being worthless: they are bounded all the same (twice the bound, then the oldest goes).
+		const resize = (width: number, height: number) => {
+			const head = Buffer.alloc(12);
+			head.writeUInt16BE(width, 4);
+			head.writeUInt16BE(height, 6);
+			head.writeInt32BE(-223, 8);
+			desktop.send(update(head));
+		};
+		for (let n = 0; n < 500; n++) resize(64 + (n % 8), 40 + (n % 8));
+		await settle();
+		expect(stream.held.outbox).toBeLessThanOrEqual(128);
+		expect(stream.held.ring).toBe(8);
+		// The relay's end lets that member go.
+		desktop.end(95);
+		expect(await watching).toBe("DESKTOP_NOT_RUNNING");
+	});
+
 	it("lets cancelling interrupt a send the member's browser is not reading, and sends nothing after it (review r1 F3 of #1746)", async () => {
 		const desktop = fakeDesktop();
 		const ended = vi.fn();

@@ -202,8 +202,11 @@ export class MachineScreenView {
 	/** Each picture's turn: one decoded after a newer one began is dropped. */
 	#turn = 0;
 	/** The live picture's draws (20260930745000), one after another in the order they came, and how many times the
-	 * picture was cleared: a draw that waited past a clear draws nothing. */
+	 * picture was cleared or a stream ended: a draw that waited past that draws nothing. The chain belongs to one
+	 * generation (`#drawingFor`): once the generation moves, the next draw starts a chain of its own, so a replacement
+	 * stream's pictures never wait behind an area of the old one that may never finish decoding (review r2 of #1746). */
 	#drawing: Promise<unknown> = Promise.resolve();
+	#drawingFor = 0;
 	#cleared = 0;
 	/** The live picture's pointer shape (a data URL and its hot spot), shown over the picture while it takes input. */
 	#cursor = "";
@@ -630,9 +633,11 @@ export class MachineScreenView {
 
 	/** One message of the desktop's live picture (20260930745000), drawn after those before it: the screen's size (what
 	 * was drawn goes), changed areas at their places, the pointer's shape. A picture of a look still being decoded is
-	 * dropped (the stream's is newer). Resolves false when it could not be drawn (an area that does not decode, or does
-	 * not fit the screen): the stream is then of no use, and the window falls back to its looks. */
-	stream(message: MachineStreamMessage): Promise<boolean> {
+	 * dropped (the stream's is newer). Answers `"drawn"`, `"dropped"` (the picture was cleared or the stream ended while
+	 * it decoded: discarded work, no fault of the stream) or `"failed"` (an area that does not decode, or does not fit
+	 * the screen: that stream is of no use). The caller must tell the last two apart, or a draw discarded at a renewal
+	 * would end the stream that replaced it (review r2 F4 of #1746). */
+	stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed"> {
 		this.#turn++;
 		const cleared = this.#cleared;
 		const decode = this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob));
@@ -649,26 +654,29 @@ export class MachineScreenView {
 					)
 				: Promise.resolve([]);
 		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
-		const drawn = this.#drawing.then(async () => {
+		// Work of an older generation is discarded, so nothing of this one waits for it.
+		const behind = this.#drawingFor === cleared ? this.#drawing : Promise.resolve();
+		this.#drawingFor = cleared;
+		const drawn = behind.then(async () => {
 			const decoded = await pictures;
 			const close = () => {
 				for (const each of decoded) each?.picture.close?.();
 			};
 			if (this.#cleared !== cleared || this.#stop.signal.aborted) {
 				close();
-				return false;
+				return "dropped";
 			}
 			if (message.kind === "size") {
 				if (this.#canvas.width !== message.width) this.#canvas.width = message.width;
 				if (this.#canvas.height !== message.height) this.#canvas.height = message.height;
-				return true;
+				return "drawn";
 			}
 			if (message.kind === "cursor") {
 				const url = await cursor.catch(() => "");
-				if (this.#cleared !== cleared) return false;
+				if (this.#cleared !== cleared) return "dropped";
 				this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
 				this.#showCursor();
-				return true;
+				return "drawn";
 			}
 			const fits = (rect: MachineStreamRect, picture: MachineScreenPicture) =>
 				picture.width === rect.width &&
@@ -677,7 +685,7 @@ export class MachineScreenView {
 				rect.y + rect.height <= this.#canvas.height;
 			if (decoded.some((each) => each === null || !fits(each.rect, each.picture))) {
 				close();
-				return false;
+				return "failed";
 			}
 			const context = this.#canvas.getContext("2d");
 			for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
@@ -686,10 +694,10 @@ export class MachineScreenView {
 			this.el.hidden = false;
 			this.#enter.disabled = false;
 			this.live();
-			return true;
+			return "drawn";
 		});
-		this.#drawing = drawn.catch(() => false);
-		return drawn.catch(() => false);
+		this.#drawing = drawn.catch(() => "failed" as const);
+		return drawn.catch(() => "failed" as const);
 	}
 
 	/**

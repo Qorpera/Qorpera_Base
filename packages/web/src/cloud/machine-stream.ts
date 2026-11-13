@@ -15,9 +15,10 @@
 export const MACHINE_STREAM_PROTOCOL = "qorpera.machine-stream.v1";
 /** The largest screen side the machine's node streams. */
 const MAX_SIDE = 4096;
-/** At most this many areas in one message, and bytes in one (the executor's bound is 4 MiB, the peer's 16 MiB). */
+/** At most this many areas in one message, and bytes in one: what the machine's node can build at most (8 MiB), so the
+ * page never holds more than one such message while it decodes it. */
 const MAX_RECTS = 0xffff;
-const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024 + 1024;
 /** A pointer shape larger than this is not one (X's cursors are at most 64 px; the browser takes at most 128). */
 const MAX_CURSOR_SIDE = 128;
 /** The stream answers its first message within this, or it is given up (a door that is off, a ticket refused). */

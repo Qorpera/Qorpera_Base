@@ -3130,6 +3130,46 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		expect(f.host.memberStream).not.toHaveBeenCalled();
 	});
 
+	it("gives up a peer's send the moment the stream is cancelled, and sends nothing after it (review r2 F3 of #1746)", async () => {
+		const f = fixture("mx-c");
+		// The machine's node keeps sending; the member's browser answers pings but never reads.
+		f.peer(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							const frame = (payload: Buffer) => {
+								const head = Buffer.alloc(5);
+								head[0] = 1;
+								head.writeUInt32BE(payload.byteLength, 1);
+								return Buffer.concat([head, payload]);
+							};
+							for (let n = 0; n < 5; n++) controller.enqueue(frame(Buffer.from(`picture ${n}`)));
+							// The request stays open, as a real one does while the desktop is watched.
+						},
+					}),
+					{ headers: { "content-type": "application/octet-stream" } },
+				),
+		);
+		let blocked = 0;
+		const sink = {
+			send: vi.fn(async () => {
+				blocked++;
+				await new Promise<void>(() => {});
+			}),
+		};
+		const stop = new AbortController();
+		const sold = (await f.ticket()) as { ticket: string };
+		const run = f.router.admitMemberStream(sold.ticket, f.origin);
+		const ending = run!(sink, stop.signal);
+		await vi.waitFor(() => expect(blocked).toBe(1));
+		// The pass ends (or the member closes it): the peer's own await is let go at once, and nothing more is sent.
+		stop.abort();
+		expect(await ending).toBe("closed");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(sink.send).toHaveBeenCalledTimes(1);
+	});
+
 	it("serves a peer's stream from the pass it reads itself, of the hold named, over the peer listener, until the asking executor closes it", async () => {
 		const a = fixture("mx-a");
 		const token = randomBytes(32).toString("base64url");

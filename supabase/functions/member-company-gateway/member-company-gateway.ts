@@ -38,6 +38,11 @@ const POINTER_PREFLIGHT_SECONDS = 600;
 const MEMBER_TOKEN_ALGORITHMS: ReadonlySet<string> = new Set(["HS256", "ES256", "RS256"]);
 const MEMBER_ID = new RegExp(`^${UUID}$`);
 
+/** Two issuers that differ only by a trailing slash are the same one (a deployment may write it either way). */
+function same(claimed: unknown, issuer: string): boolean {
+	return typeof claimed === "string" && claimed.replace(/\/$/, "") === issuer.replace(/\/$/, "");
+}
+
 /** One part of a token: base64url of a JSON object, or undefined. */
 function tokenPart(segment: string): Record<string, unknown> | undefined {
 	if (!/^[A-Za-z0-9_-]{2,4096}$/.test(segment)) return undefined;
@@ -60,11 +65,11 @@ function tokenPart(segment: string): Record<string, unknown> | undefined {
  * algorithms, and the claims of a signed-in member: role and audience `authenticated`, a user id, and an expiry still
  * ahead. The project's publishable (anon) key, a service key, an expired token or any other string is no member's.
  *
- * `issuer` is checked only when the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): it is the auth service's own
- * `API_EXTERNAL_URL` plus `/auth/v1`, which lives in the stack's environment and not in this repo, so only the
- * deployment can tell it and nothing here derives it (review r1 F2 of #1746: deriving it from `SUPABASE_URL`, the
- * address the functions reach the stack at, would have refused every real member token). Unnamed, every other check
- * still holds and no issuer is assumed.
+ * `issuer` is checked only when the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): the string the auth service
+ * itself puts in `iss`, copied unchanged from the stack's own environment (on the pinned self-hosted configuration,
+ * `API_EXTERNAL_URL` as it stands, with nothing appended: review r2 F2 of #1746). Nothing here derives it, and no shape
+ * of it is assumed; deriving it from `SUPABASE_URL`, the address the functions reach the stack at, would have refused
+ * every real member token (review r1 F2). Unnamed, every other check still holds.
  *
  * The signature is not checked here (no key, no call out): the executor has the database (PostgREST) check it before
  * any SQL runs for a pass's begin, and a move or a live picture's ticket is matched in the executor's memory against
@@ -83,7 +88,7 @@ export function memberTokenShaped(authorization: string, issuer: string | undefi
 	return (
 		claims.role === "authenticated" &&
 		(audience === "authenticated" || (Array.isArray(audience) && audience.includes("authenticated"))) &&
-		(issuer === undefined || claims.iss === issuer) &&
+		(issuer === undefined || same(claims.iss, issuer)) &&
 		typeof claims.sub === "string" &&
 		MEMBER_ID.test(claims.sub) &&
 		Number.isSafeInteger(claims.exp) &&

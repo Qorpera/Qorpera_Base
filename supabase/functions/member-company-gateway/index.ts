@@ -26,20 +26,29 @@ async function memberSignedIn(authorization: string, signal: AbortSignal): Promi
 }
 
 /**
- * The auth service's own issuer, when this deployment names it: `QORPERA_MEMBER_TOKEN_ISSUER`, set to exactly what the
- * auth service puts in a token's `iss`, which is its own `API_EXTERNAL_URL` plus `/auth/v1`. That string lives in the
- * stack's own environment, not in this repo: the operator reads it there at the release and sets this. (Our own
- * `deploy/sites/envoy-front-sites.yaml` fixes the public API *host*, `api.qorpera.com`, whose `/auth/v1/` prefix routes
- * to the api gateway; the host is not by itself the issuer.) It is never `SUPABASE_URL`, the address the functions reach
- * the stack at on the compose network, which no token carries: taking that for the issuer would refuse every real
- * member token (review r1 F2 of #1746). Unset, the pointer route still serves and only the issuer goes unchecked.
+ * The auth service's own issuer, when this deployment names it: `QORPERA_MEMBER_TOKEN_ISSUER`, set to exactly the
+ * string the auth service puts in a token's `iss`, copied unchanged from the stack's own environment — on the pinned
+ * self-hosted configuration that is `API_EXTERNAL_URL` **as it stands, with nothing appended** (review r2 F2 of #1746).
+ * Nothing here derives it, and this repo states no value: the operator copies what the auth service has. It is never
+ * `SUPABASE_URL`, the address the functions reach the stack at on the compose network, which no token carries: taking
+ * that for the issuer would refuse every real member token (review r1 F2). Unset, the pointer route still serves and
+ * only the issuer goes unchecked.
  */
 function memberTokenIssuer(): string | undefined {
 	const issuer = Deno.env.get("QORPERA_MEMBER_TOKEN_ISSUER");
 	if (!issuer) return undefined;
+	// Whatever the auth service states, with or without a path (`https://host` and `https://host/auth/v1` are both
+	// real issuers on different configurations): an exact https URL, nothing guessed and no path demanded.
 	const url = new URL(issuer);
-	if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || issuer !== `${url.origin}${url.pathname}`)
-		throw new Error("QORPERA_MEMBER_TOKEN_ISSUER must be the exact https issuer URL");
+	if (
+		url.protocol !== "https:" ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		issuer.replace(/\/$/, "") !== `${url.origin}${url.pathname}`.replace(/\/$/, "")
+	)
+		throw new Error("QORPERA_MEMBER_TOKEN_ISSUER must be the exact https issuer the auth service states");
 	return issuer;
 }
 

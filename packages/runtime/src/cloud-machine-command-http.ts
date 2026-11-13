@@ -586,8 +586,9 @@ export function cloudMemberMachineStreamFrame(kind: 1 | 2, payload: Buffer): Buf
 	head.writeUInt32BE(payload.byteLength, 1);
 	return Buffer.concat([head, payload]);
 }
-/** The largest message of a stream (a batch of changed areas). */
-const STREAM_MESSAGE_BYTES = 16 * 1024 * 1024;
+/** The largest message of a stream (a batch of changed areas): what the host itself can build (8 MiB) and nothing
+ * more, so the peer reader holds at most one such frame plus one chunk (review r2 F1 of #1746). */
+const STREAM_MESSAGE_BYTES = 8 * 1024 * 1024 + 1024;
 
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
@@ -1203,6 +1204,29 @@ export function createHttpCloudMachineCommandGateway(options: {
 	});
 }
 
+/** Sends one of a desktop's messages to a member's sink and gives up the moment `signal` aborts: a browser that stops
+ * reading while it still answers pings must hold neither this peer request, nor the admission slot, nor the socket past
+ * the pass's end (review r2 F3 of #1746). The message may still be on its way; nothing after it is sent. */
+async function sendOrAbort(
+	sink: { send(message: Buffer): Promise<void> },
+	message: Buffer,
+	signal: AbortSignal,
+): Promise<void> {
+	if (signal.aborted) throw new Error("MEMBER_MACHINE_STREAM_CANCELLED");
+	let give: () => void = () => {};
+	const stopped = new Promise<never>((_, reject) => {
+		give = () => reject(new Error("MEMBER_MACHINE_STREAM_CANCELLED"));
+		signal.addEventListener("abort", give, { once: true });
+	});
+	// Handled by the race below; nothing is left unhandled when the send wins.
+	stopped.catch(() => {});
+	try {
+		await Promise.race([sink.send(message), stopped]);
+	} finally {
+		signal.removeEventListener("abort", give);
+	}
+}
+
 /** A member's look sent to the executor of the machine's node (20260930712000), on its peer listener with the peer
  * token: sent once, never again (the use it carries is served once), and its refusal comes back as the same refusal. */
 export function createHttpMemberMachineScreenPeer(options: {
@@ -1451,8 +1475,11 @@ export function createHttpMemberMachineScreenPeer(options: {
 							const reason = payload.toString("utf8");
 							return /^[A-Za-z_]{1,64}$/.test(reason) ? reason : "STREAM_UNAVAILABLE";
 						}
-						// The member's browser takes it before the next is read: a slow one slows this, nothing else.
-						await sink.send(payload);
+						// The member's browser takes it before the next is read: a slow one slows this, nothing else. One
+						// that stops reading while it still answers pings holds nothing once the stream is cancelled:
+						// the send gives up with the signal, and nothing after it is sent (review r2 F3 of #1746).
+						if (signal.aborted) return "closed";
+						await sendOrAbort(sink, payload, signal);
 					}
 				}
 			} catch {

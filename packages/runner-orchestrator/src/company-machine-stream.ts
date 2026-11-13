@@ -533,6 +533,9 @@ export interface DesktopStreamOptions {
 	/** Changed areas kept for members whose cycles lag, in raw bytes; past it the oldest go and those members get the
 	 * whole screen anew (64 MiB). */
 	ringBytes?: number;
+	/** How many updates the ring keeps at most, whatever they weigh (4096): an update of no areas at all costs no bytes
+	 * but one entry, and a member whose cycles lag must not let a guest pile up entries (review r2 F1 of #1746). */
+	ringEntries?: number;
 	/** At most one cycle a member this often (34 ms: at most 30 updates a second, the accepted design's bound), and
 	 * none while nothing changed. Each cycle is one read-only SQL call for that member. */
 	cycleEveryMs?: number;
@@ -559,14 +562,43 @@ interface Watcher {
 	wake: () => void;
 }
 
-/** What to send the VNC server: the handshake's answers and the three messages, in order, until it is closed. */
+/** At most this many messages wait for the VNC server at once: the reader answers one update with one request, so a
+ * guest that stops reading its socket can otherwise pile them up without bound (review r2 F1 of #1746). Past it the
+ * oldest requests are dropped, since only the newest matters (a whole-screen request is kept whatever happens). */
+const MAX_OUTBOX_ITEMS = 64;
+
+/** What to send the VNC server: the handshake's answers and the three messages, in order, until it is closed. A guest
+ * that does not read them holds at most MAX_OUTBOX_ITEMS. */
 class Outbox {
 	readonly #items: Buffer[] = [];
 	#wake: () => void = () => {};
 	#closed = false;
+	/** How many messages were dropped because the server stopped reading (for the stream's own checks). */
+	#dropped = 0;
+	get dropped(): number {
+		return this.#dropped;
+	}
+	get waiting(): number {
+		return this.#items.length;
+	}
 	push(message: Buffer): void {
 		if (this.#closed) return;
 		this.#items.push(message);
+		// The server is not reading: every incremental update request but the newest is worthless, so the oldest of them
+		// go. A whole-screen request (the first byte 3 with `incremental` 0) is never dropped: a member may be waiting
+		// for exactly that picture.
+		while (this.#items.length > MAX_OUTBOX_ITEMS) {
+			const at = this.#items.findIndex((item) => item.length === 10 && item[0] === 3 && item[1] === 1);
+			if (at < 0) break;
+			this.#items.splice(at, 1);
+			this.#dropped++;
+		}
+		// Even messages that are never dropped for being worthless (a whole-screen request after every size change a
+		// guest cares to send) are bounded: past twice the bound the oldest goes, whatever it is.
+		while (this.#items.length > 2 * MAX_OUTBOX_ITEMS) {
+			this.#items.shift();
+			this.#dropped++;
+		}
 		this.#wake();
 	}
 	close(): void {
@@ -636,6 +668,9 @@ function covers(outer: RfbRect, inner: RfbRect): boolean {
 }
 
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+/** How many updates the ring keeps at most (review r2 F1 of #1746): an empty update weighs nothing and still costs an
+ * entry, so bytes alone bound nothing. At 30 updates a second this is over two minutes of a lagging member's cycles. */
+const MAX_RING_ENTRIES = 4096;
 /** At most 30 updates a second for a member (the accepted design, 05:15Z): a hover shows one cycle after it was drawn,
  * not up to one pace later (100 ms on the real machine's run 3). */
 const STREAM_CYCLE_EVERY_MS = 34;
@@ -672,6 +707,12 @@ export class DesktopStream {
 	/** Why it ended, or null while it lives. */
 	get ended(): string | null {
 		return this.#ended;
+	}
+
+	/** What the stream holds right now, in entries: the ring's updates and the messages waiting for the VNC server.
+	 * Both are bounded whatever the guest sends (review r2 F1 of #1746); read by the tests and by nothing else. */
+	get held(): { readonly ring: number; readonly outbox: number } {
+		return { ring: this.#ring.length, outbox: this.#outbox.waiting };
 	}
 
 	/** Streams the desktop to `sink`, released by `release`, until `signal` aborts, a cycle ends it, or the relay ends:
@@ -784,9 +825,14 @@ export class DesktopStream {
 			update.rects.reduce((sum, rect) => sum + rect.pixels.byteLength, 0) + (update.cursor?.pixels.byteLength ?? 0);
 		this.#ring.push({ seq: ++this.#seq, rects: update.rects, cursor: update.cursor, size: update.size, bytes });
 		this.#ringBytes += bytes;
-		// Over the ring's bound: the oldest go, and every member who had not been sent them gets the whole screen anew.
+		// Over the ring's bound, in bytes or in entries: the oldest go, and every member who had not been sent them gets
+		// the whole screen anew.
 		let dropped = 0;
-		while (this.#ringBytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) && this.#ring.length > 1) {
+		while (
+			(this.#ringBytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) ||
+				this.#ring.length > (this.#options.ringEntries ?? MAX_RING_ENTRIES)) &&
+			this.#ring.length > 1
+		) {
 			const old = this.#ring.shift() as StreamUpdate;
 			this.#ringBytes -= old.bytes;
 			dropped = old.seq;

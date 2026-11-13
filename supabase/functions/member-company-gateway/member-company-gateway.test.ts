@@ -11,7 +11,9 @@ const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
 const commit = `/v1/member-folder-commits/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
-const issuer = "https://project.supabase.co/auth/v1";
+/** The issuer as a stack states it: the pinned self-hosted configuration issues with `API_EXTERNAL_URL` unchanged, so
+ * a real one often has no path at all (review r2 F2 of #1746). Both shapes are tested below. */
+const issuer = "https://project.supabase.co";
 const NOW = Date.parse("2026-11-13T10:00:00Z");
 /** A token as the project's auth service issues it (its signature is the database's to check, not the bridge's). */
 function jwt(claims: Record<string, unknown> = {}, header: Record<string, unknown> = { alg: "ES256", typ: "JWT" }) {
@@ -788,7 +790,9 @@ describe("public member Company File gateway", () => {
 		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, undefined, NOW / 1000), true);
 		// The other routes keep their own checks.
 		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, issuer, NOW / 1000), true);
-		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "https://project.supabase.co", NOW / 1000), false);
+		// A trailing slash either way is the same issuer; another host is not.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, `${issuer}/`, NOW / 1000), true);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "https://other.supabase.co", NOW / 1000), false);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);
@@ -1023,7 +1027,7 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 				SUPABASE_URL: "http://api-gw:8000",
 				SUPABASE_ANON_KEY: "synthetic-anon-key",
 				QORPERA_MEMBER_GATEWAY_UPSTREAM_URL: upstreamUrl,
-				QORPERA_MEMBER_TOKEN_ISSUER: "https://api.qorpera.com/auth/v1",
+				QORPERA_MEMBER_TOKEN_ISSUER: "https://api.example",
 				...change,
 			}).filter(([, value]) => value !== undefined),
 		) as Record<string, string>;
@@ -1049,7 +1053,7 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 		deployment();
 		// A token of the public issuer passes the bridge's own check and is forwarded (the upstream is unreachable here,
 		// so the answer is the gateway's own 503 for a destination it could not reach, never 401).
-		const member = await pointer(live({ iss: "https://api.qorpera.com/auth/v1" }));
+		const member = await pointer(live({ iss: "https://api.example" }));
 		assert.notEqual(member.status, 401);
 		assert.deepEqual(await member.json(), { error: "The computer is unavailable just now." });
 		// The internal transport address is no issuer: a token claiming it is refused when an issuer is named.
@@ -1062,16 +1066,23 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 
 	it("serves the route when no issuer is named, and refuses a setting that is not an exact https issuer", async () => {
 		deployment({ QORPERA_MEMBER_TOKEN_ISSUER: undefined });
-		const member = await pointer(live({ iss: "https://api.qorpera.com/auth/v1" }));
+		const member = await pointer(live({ iss: "https://api.example" }));
 		assert.notEqual(member.status, 401);
 		// Still nobody's token, and still not an expired one.
 		assert.equal((await pointer("member.jwt.token")).status, 401);
 		assert.equal((await pointer(jwt({ exp: NOW / 1000 - 1 }))).status, 401);
+		// An issuer with a path and one without are both taken as the stack states them; only a string that is no exact
+		// https URL is refused (review r2 F2: nothing demands `/auth/v1`).
+		for (const good of ["https://api.example", "https://api.example/", "https://api.example/auth/v1"]) {
+			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: good });
+			const taken = await pointer(live({ iss: good.replace(/\/$/, "") }));
+			assert.notEqual(taken.status, 401, good);
+		}
 		for (const value of [
-			"http://api.qorpera.com/auth/v1",
-			"https://api.qorpera.com/auth/v1?x=1",
-			"https://api.qorpera.com/auth/v1#x",
-			"https://user:pass@api.qorpera.com/auth/v1",
+			"http://api.example/auth/v1",
+			"https://api.example/auth/v1?x=1",
+			"https://api.example/auth/v1#x",
+			"https://user:pass@api.example/auth/v1",
 		]) {
 			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: value });
 			await assert.rejects(async () => await pointer(live()), /exact https issuer/, value);
