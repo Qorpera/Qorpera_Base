@@ -5,10 +5,13 @@
 #   tls.sh server CA_DIR OUT NAME...  OUT/server.key, OUT/server.crt and OUT/ca.crt for every name clients dial (IPv4
 #                                     or a lowercase DNS name: the primary's and the standby's, so a take-over needs
 #                                     no new cert); 825 days. Run it again to renew: the same CA, so the pin stays.
-# The key is root's with group postgres (999 in the pinned image) and mode 0640, which PostgreSQL takes for a key
-# owned by root. Prints file names, counts and dates only.
+#   tls.sh door CA_DIR OUT NAME...    OUT/door.key and OUT/door.crt for the gateway's run door (README.md, "The run
+#                                     door"): the names the nodes' provider hosts dial; 825 days, the same CA.
+# The server's key is root's with group postgres (999 in the pinned image) and mode 0640, which PostgreSQL takes for a
+# key owned by root. The run door's key is the gateway's user's (65534), 0400. Prints file names, counts and dates only.
 set -euo pipefail
 PG_GID=999
+NOBODY=65534
 die() {
 	echo "tls: $*" >&2
 	exit 1
@@ -59,43 +62,55 @@ make_ca() {
 	echo "tls: CA made, valid until $(until_date "$dir/ca.crt")"
 }
 
-make_server() {
-	local ca=${1:?server CA_DIR OUT NAME...} out=${2:?server CA_DIR OUT NAME...} n c sans=()
-	shift 2
-	[ $# -gt 0 ] || die "server: give every name clients dial"
-	[ -s "$ca/ca.key" ] && [ -s "$ca/ca.crt" ] || die "server: no CA in $ca"
+# make_cert KIND CA_DIR OUT NAME...: KIND server (OUT/server.*, for PostgreSQL) or door (OUT/door.*, for the run door).
+make_cert() {
+	local kind=$1 ca=${2:?$1 CA_DIR OUT NAME...} out=${3:?$1 CA_DIR OUT NAME...} n c sans=() base
+	shift 3
+	base=$out/$kind
+	[ $# -gt 0 ] || die "$kind: give every name clients dial"
+	[ -s "$ca/ca.key" ] && [ -s "$ca/ca.crt" ] || die "$kind: no CA in $ca"
 	for n in "$@"; do
 		if [[ $n =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
 			sans+=("IP:$n")
 		elif [ ${#n} -le 253 ] && [[ $n =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$ ]]; then
 			sans+=("DNS:$n")
 		else
-			die "server: a name is IPv4 or a lowercase DNS name"
+			die "$kind: a name is IPv4 or a lowercase DNS name"
 		fi
 	done
-	install -d -m 0750 -o 0 -g "$PG_GID" "$out"
+	if [ "$kind" = server ]; then
+		install -d -m 0750 -o 0 -g "$PG_GID" "$out"
+	else
+		install -d -m 0500 -o "$NOBODY" -g "$NOBODY" "$out"
+	fi
 	c=$(mktemp)
 	cnf "${sans[@]}" >"$c"
-	(umask 077 && ossl "server key" genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/server.key.new")
-	ossl "server request" req -new -config "$c" -key "$out/server.key.new" -subj "/CN=company data store" -out "$out/server.csr"
-	ossl "server cert" x509 -req -in "$out/server.csr" -CA "$ca/ca.crt" -CAkey "$ca/ca.key" \
-		-set_serial "0x$(openssl rand -hex 16)" -extfile "$c" -extensions server_ext -days 825 -sha256 -out "$out/server.crt.new"
-	rm -f "$c" "$out/server.csr"
-	openssl verify -CAfile "$ca/ca.crt" "$out/server.crt.new" >/dev/null 2>&1 || die "server: the new cert does not verify"
-	chown "0:$PG_GID" "$out/server.key.new"
-	chmod 0640 "$out/server.key.new"
-	chmod 0644 "$out/server.crt.new"
-	install -m 0644 "$ca/ca.crt" "$out/ca.crt"
-	mv "$out/server.key.new" "$out/server.key"
-	mv "$out/server.crt.new" "$out/server.crt"
-	echo "tls: server cert made for ${#sans[@]} names, valid until $(until_date "$out/server.crt")"
+	(umask 077 && ossl "$kind key" genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$base.key.new")
+	ossl "$kind request" req -new -config "$c" -key "$base.key.new" -subj "/CN=company data store" -out "$base.csr"
+	ossl "$kind cert" x509 -req -in "$base.csr" -CA "$ca/ca.crt" -CAkey "$ca/ca.key" \
+		-set_serial "0x$(openssl rand -hex 16)" -extfile "$c" -extensions server_ext -days 825 -sha256 -out "$base.crt.new"
+	rm -f "$c" "$base.csr"
+	openssl verify -CAfile "$ca/ca.crt" "$base.crt.new" >/dev/null 2>&1 || die "$kind: the new cert does not verify"
+	if [ "$kind" = server ]; then
+		chown "0:$PG_GID" "$base.key.new"
+		chmod 0640 "$base.key.new"
+		chmod 0644 "$base.crt.new"
+		install -m 0644 "$ca/ca.crt" "$out/ca.crt"
+	else
+		chown "$NOBODY:$NOBODY" "$base.key.new" "$base.crt.new"
+		chmod 0400 "$base.key.new"
+		chmod 0444 "$base.crt.new"
+	fi
+	mv "$base.key.new" "$base.key"
+	mv "$base.crt.new" "$base.crt"
+	echo "tls: $kind cert made for ${#sans[@]} names, valid until $(until_date "$base.crt")"
 }
 
 case ${1:-} in
 ca) shift && make_ca "$@" ;;
-server) shift && make_server "$@" ;;
+server | door) make_cert "$@" ;;
 *)
-	sed -n '2,9p' "$0"
+	sed -n '2,11p' "$0"
 	exit 2
 	;;
 esac
