@@ -384,7 +384,11 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		// At its computer; with something waiting on the member it becomes that symbol now and then, as a writing
 		// figure does, so the ask is never out of sight for long.
 		const asked = entry.ask ? writingAsk(elapsed, entry.ask) : undefined;
-		act = asked && asked.body !== REST ? asked : atComputer(entry, atComputerFrame(elapsed, clock.seed, false));
+		// The ask's own act whenever it shows anything: the symbol (also held at rest) or the hops into and out of it.
+		act =
+			asked && (asked.symbol || asked.body !== REST)
+				? asked
+				: atComputer(entry, atComputerFrame(elapsed, clock.seed, false));
 		if (entry.ask) for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {

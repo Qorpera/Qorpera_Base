@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { localTime, pose } from "../public/assets/avatars/status-2d-v1/motion.mjs";
+import { writingAsk } from "../src/ui/figure-acts.ts";
 import { type FigureArtwork, type FigureMotion, loadFigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";
 import { deferred, settle } from "./fixtures.ts";
 
@@ -302,6 +303,62 @@ describe("2D studio playback in the shell", () => {
 		show([approval]);
 		expect(bangStem()).toBe(true);
 		expect(frames.size).toBe(0);
+	});
+	it("shows the ask's symbol at its computer in every frame writingAsk shows it, and the lit figure in every other (review r4 F1)", async () => {
+		const symbolDrawn = (ask: "question" | "bang") =>
+			ask === "question"
+				? vi.mocked(context.arc!).mock.calls.some((call) => call[0] === 50.5 && call[2] === 9.3)
+				: vi.mocked(context.roundRect!).mock.calls.some((call) => call[0] === 41.25 && call[2] === 17.5);
+		const lit = () => vi.mocked(context.createRadialGradient!).mock.calls.length > 0;
+		const step = 1000 / 60;
+		for (const ask of ["question", "bang"] as const) {
+			const host = mount("AtComputer", `cycle-${ask}`, { ask });
+			await settle();
+			show([host]);
+			// What the figure shows now, as its last paint left it.
+			let shown: "symbol" | "figure" | undefined;
+			let t = 0;
+			const checked = { symbol: 0, figure: 0 };
+			// One whole cycle of the ask and a little more: spell, hop in, hold (at rest too), hop out.
+			for (let frame = 0; frame < 10.5 * 60; frame++) {
+				vi.mocked(context.arc!).mockClear();
+				vi.mocked(context.roundRect!).mockClear();
+				vi.mocked(context.createRadialGradient!).mockClear();
+				advance(step);
+				t += step / 1000;
+				if (symbolDrawn(ask)) shown = "symbol";
+				else if (lit() || vi.mocked(context.drawImage!).mock.calls.length) shown = "figure";
+				vi.mocked(context.drawImage!).mockClear();
+				const expected = writingAsk(t, ask).symbol ? "symbol" : "figure";
+				// A frame on either side of a change may land on the other side of it.
+				const near = [-2, -1, 1, 2].some(
+					(n) => (writingAsk(t + (n * step) / 1000, ask).symbol ? "symbol" : "figure") !== expected,
+				);
+				if (near || shown === undefined) continue;
+				expect({ t: t.toFixed(3), shown }).toEqual({ t: t.toFixed(3), shown: expected });
+				checked[expected]++;
+			}
+			// The cycle had both, and the symbol's hold at rest (about 6.2 to 8.5 s in) was among them.
+			expect(checked.symbol).toBeGreaterThan(120);
+			expect(checked.figure).toBeGreaterThan(240);
+			show([host], false);
+		}
+		// No motion: the symbol alone, for a question and an approval, and nothing scheduled.
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		advance(1000);
+		for (const ask of ["question", "bang"] as const) {
+			const host = mount("AtComputer", `still-${ask}`, { ask });
+			await settle();
+			vi.mocked(context.arc!).mockClear();
+			vi.mocked(context.roundRect!).mockClear();
+			vi.mocked(context.createRadialGradient!).mockClear();
+			show([host]);
+			expect(symbolDrawn(ask)).toBe(true);
+			expect(lit()).toBe(false);
+			expect(frames.size).toBe(0);
+			show([host], false);
+		}
 	});
 	it("shows a figure that was out of view none of the effects it missed", async () => {
 		// The effects are elements with an animation each; here an animation never ends, so they can be counted.
