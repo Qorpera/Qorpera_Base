@@ -517,6 +517,47 @@ it("ends a run whose work log's folder was deleted with that error, after its cl
 	expect(w.order).toEqual(["log", "lines"]);
 });
 
+// The answer first (the 2026-11-13 amendment, proposed): a usage limit the provider met after the run's answer is kept
+// on the error a deleted work log ends the run with, for its caller to record.
+it("keeps a usage limit met after the answer on the deleted-log error its closing finds", async () => {
+	const f = fixture();
+	const w = workLog(f.binding.runId);
+	// The log's folder is found deleted only when the run closes its log, after the answer.
+	w.log.close.mockImplementationOnce(async () => {
+		w.order.push("log");
+		w.log.gone = true;
+	});
+	const send: CloudNativeTool = {
+		name: "send_message",
+		description: "Public send",
+		source: "runtime",
+		inputSchema: {
+			type: "object",
+			properties: { idempotencyKey: { type: "string" }, text: { type: "string" }, phase: { type: "string" } },
+			additionalProperties: false,
+		},
+		parseArguments: (value) => value,
+		execute: async (value) => ({
+			kind: "text",
+			value: JSON.stringify({ messageId: "m1" }),
+			completesTurn: (value as { phase?: string }).phase === "final",
+		}),
+	};
+	const error = await f
+		.start({
+			command: [process.execPath, rpcFixture, "final-send-then-limit", f.evidence],
+			tools: () => ({ ...f.tools(), tools: [send], runLog: w.runLog }),
+		})
+		.catch((caught: unknown) => caught);
+	expect(error).toBeInstanceOf(CloudRunLogGone);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({
+		stage: "codex-turn-completion",
+		category: "authority_unavailable",
+		usageSignal: "usage_limit",
+	});
+	expect(w.order).toEqual(["log", "lines"]);
+});
+
 it("commits a failed run's finished steps, but not a stopped run's", async () => {
 	const f = fixture();
 	const w = workLog(f.binding.runId);

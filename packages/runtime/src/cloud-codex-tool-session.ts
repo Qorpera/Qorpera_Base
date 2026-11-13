@@ -3045,11 +3045,14 @@ export async function runCloudCodexToolSession(options: {
 		};
 	} catch (error) {
 		rpc.finishObservations(false, signal);
+		// A stopped run keeps only a usage limit the provider met after its answer (the 2026-11-13 amendment): that one
+		// was met before the stop.
 		if (signal.aborted)
 			throw tagNativeRuntimeFailure(
 				new Error("Native boundary execution stopped"),
 				stage,
 				cloudRuntimeErrorCategory(error, signal),
+				rpc.afterAnswerUsageSignal,
 			);
 		throw tagNativeRuntimeFailure(
 			error,

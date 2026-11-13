@@ -1223,11 +1223,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							);
 						});
 				});
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
+				// after it can lose it.
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
-				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
-				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment).
-				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
