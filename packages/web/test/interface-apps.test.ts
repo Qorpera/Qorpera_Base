@@ -1057,6 +1057,87 @@ describe("the company's databases on an app's page", () => {
 		expect(await start("shop/q8")).toEqual({ ok: false, error: "A page watches at most 8 questions at once" });
 	});
 
+	it("hands a page no answer larger than it may get, counted as the page gets it, and keeps no watch for one", async () => {
+		// Under 1 MiB from the gateway, over it once each row repeats its long column name.
+		const wide = "c".repeat(200);
+		const big = result(
+			"big",
+			Array.from({ length: 6000 }, () => [1]),
+			[wide],
+		);
+		expect(JSON.stringify(big).length).toBeLessThan(1024 * 1024);
+		const words =
+			"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
+		const answers: Record<string, Answer> = {};
+		for (let index = 0; index < 9; index++) answers[`big${index}`] = big;
+		const { bridge, calls, data } = setup(answers);
+		const on = page();
+		expect(await bridge(on).answer(query("shop/big0"))).toEqual({ ok: false, error: words });
+		// Nine first answers too large, one after another: none keeps a place, so the page's 8 are all still free.
+		for (let index = 0; index < 9; index++) {
+			const refused = bridge(on).answer(watch(`shop/big${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await refused, `watch ${index}`).toEqual({ ok: false, error: words });
+		}
+		expect(data.questions).toBe(0);
+		for (let index = 0; index < 8; index++) {
+			const started = bridge(on).answer(watch(`shop/q${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await started).toMatchObject({ ok: true });
+		}
+		// A later answer too large is not sent: the watch ends and gives its place back, and the page keeps what it has.
+		const other = page();
+		const started = bridge(other).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(600);
+		const id = ((await started) as { value: { watch: number } }).value.watch;
+		expect(data.questions).toBe(9);
+		const call = calls.at(-1)!;
+		const index = call.watches.findIndex((one) => one.question === "sales");
+		call.answer({ changed: [{ index, answer: big }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(other.sent).toEqual([]);
+		expect(data.questions).toBe(8);
+		expect(await bridge(other).answer({ method: "unwatch", params: { watch: id } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls.at(-1)?.watches.map((one) => one.question)).not.toContain("sales");
+	});
+
+	it("keeps every parameter as given, `__proto__` and `constructor` too, and one question for any order", async () => {
+		const { bridge, asked, calls, data } = setup();
+		const given = JSON.parse('{"__proto__":"x","constructor":"y","since":"2026-11-01"}') as Record<string, unknown>;
+		expect(Object.hasOwn(given, "__proto__")).toBe(true);
+		expect(await bridge(page()).answer(query("shop/sales", given))).toMatchObject({ ok: true });
+		const sentParams = asked[0]!.params;
+		expect(Object.getPrototypeOf(sentParams)).toBe(Object.prototype);
+		expect(Object.keys(sentParams)).toEqual(["__proto__", "constructor", "since"]);
+		expect(JSON.stringify(sentParams)).toBe('{"__proto__":"x","constructor":"y","since":"2026-11-01"}');
+		// Through a watch, into the held call's body, the same.
+		const a = page();
+		const first = bridge(a).answer(watch("shop/sales", given));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toMatchObject({ ok: true });
+		expect(JSON.stringify(calls.at(-1)?.watches[0]?.params)).toBe(
+			'{"__proto__":"x","constructor":"y","since":"2026-11-01"}',
+		);
+		// A watch with no parameters is another question, not this one.
+		const plain = bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await plain).toMatchObject({ ok: true });
+		expect(data.questions).toBe(2);
+		// The same parameters in another order are one question.
+		const b = page();
+		const ab = bridge(b).answer(watch("shop/by-status", { a: 1, b: 2 }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await ab).toMatchObject({ ok: true });
+		const before = asked.length;
+		expect(await bridge(b).answer(watch("shop/by-status", { b: 2, a: 1 }))).toMatchObject({ ok: true });
+		expect(asked).toHaveLength(before);
+		expect(data.questions).toBe(3);
+	});
+
 	it("waits 2 s, 5 s, then 10 s after a call that failed, and tells no page", async () => {
 		const { bridge, calls } = setup();
 		const a = page();

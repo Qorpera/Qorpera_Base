@@ -87,6 +87,13 @@ describe("a member's questions to the company's databases", () => {
 			redirect: "error",
 		});
 		expect(call?.body).toEqual(asked);
+		// Parameters named `__proto__` and `constructor` reach the gateway as given.
+		const odd = fakeFetch([[200, answer]]);
+		const params = JSON.parse('{"__proto__":"x","constructor":"y"}') as Record<string, string>;
+		await client(odd.fetch).data.query({ database: "shop", question: "sales-since", params }, signal());
+		expect(String(odd.sent[0]?.init.body)).toBe(
+			'{"database":"shop","question":"sales-since","params":{"__proto__":"x","constructor":"y"}}',
+		);
 	});
 
 	it("sends a question's text when the gateway asks for it, and only the right one", async () => {

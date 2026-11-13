@@ -865,11 +865,24 @@ export class AppBridge {
 		const asked = appDataQuestion(call.params);
 		if (typeof asked === "string") return refuse(asked);
 		try {
-			if (call.method === "query") return { ok: true, value: pageAnswer(await data.query(asked, this.#signal)) };
+			if (call.method === "query") {
+				const shown = fittedAnswer(await data.query(asked, this.#signal));
+				return shown ? { ok: true, value: shown } : refuse(ANSWER_TOO_LARGE);
+			}
 			const page = this.#page?.();
 			if (!page || page.signal.aborted) return refuse("This page can't watch the company's databases");
-			const started = await data.watch(page.signal, asked, (watch, answer) => page.send(watch, pageAnswer(answer)));
-			return { ok: true, value: { watch: started.watch, answer: pageAnswer(started.answer) } };
+			// A later answer too large for the page is not sent: the watch ends there, its place is given back, and the
+			// page keeps the last answer it was sent.
+			const started = await data.watch(page.signal, asked, (watch, answer) => {
+				const shown = fittedAnswer(answer);
+				if (shown) page.send(watch, shown);
+				else data.unwatch(page.signal, watch);
+			});
+			const shown = fittedAnswer(started.answer);
+			if (shown) return { ok: true, value: { watch: started.watch, answer: shown } };
+			// A first answer too large: no watch is kept, and the page is told why.
+			data.unwatch(page.signal, started.watch);
+			return refuse(ANSWER_TOO_LARGE);
 		} catch (error) {
 			if (error instanceof CloudMemberDataError || error instanceof AppDataRefused) return refuse(error.message);
 			throw error;
@@ -929,7 +942,7 @@ export function appDataQuestion(params: Record<string, unknown>): CloudMemberDat
 	const given = params.params ?? {};
 	if (typeof given !== "object" || given === null || Array.isArray(given))
 		return "A question's parameters are named values";
-	const values: Record<string, string | number | boolean | null> = {};
+	const values: [string, string | number | boolean | null][] = [];
 	const entries = Object.entries(given);
 	if (entries.length > MAX_DATA_PARAMS) return `A question takes at most ${MAX_DATA_PARAMS} parameters`;
 	for (const [key, value] of entries) {
@@ -944,27 +957,43 @@ export function appDataQuestion(params: Record<string, unknown>): CloudMemberDat
 			)
 		)
 			return `:${key} is short text, a number, true, false or null`;
-		values[key] = value;
+		values.push([key, value]);
 	}
-	return { database, question, params: values };
+	// Own properties, each made as given: a parameter named `__proto__` or `constructor` stays a parameter.
+	return { database, question, params: Object.fromEntries(values) };
 }
 
 /** An answer as a page gets it, rows as objects by column name as `table` gives them: `{ columns, rows, more, asOf }`.
  * The etag stays here. Two columns of one name: the later one's value stands in the row, and `columns` names both.
  * `Object.fromEntries` makes each name an own property, so a column named `__proto__` or `constructor` is a plain key
  * and changes no prototype; the page gets a copy of it anyway. */
-export function pageAnswer(answer: CloudMemberDataAnswer): {
-	columns: string[];
-	rows: Record<string, unknown>[];
-	more: boolean;
-	asOf: string;
-} {
+export function pageAnswer(answer: CloudMemberDataAnswer): PageDataAnswer {
 	return {
 		columns: [...answer.columns],
 		rows: answer.rows.map((row) => Object.fromEntries(answer.columns.map((column, index) => [column, row[index]]))),
 		more: answer.more,
 		asOf: answer.asOf,
 	};
+}
+
+export interface PageDataAnswer {
+	columns: string[];
+	rows: Record<string, unknown>[];
+	more: boolean;
+	asOf: string;
+}
+
+/** An answer a page may be handed, at most, as JSON in the shape the page gets (rows as objects, each repeating its
+ * column names): under the bridge's 1 MiB for any answer, with room for a watch's id around it. */
+const DATA_ANSWER_CHARS = MAX_ANSWER_BYTES - 1024;
+const ANSWER_TOO_LARGE =
+	"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
+
+/** The answer as the page gets it, or null when that is too large: the one check for a question's answer, a watch's
+ * first answer and each later one. */
+export function fittedAnswer(answer: CloudMemberDataAnswer): PageDataAnswer | null {
+	const shown = pageAnswer(answer);
+	return JSON.stringify(shown).length > DATA_ANSWER_CHARS ? null : shown;
 }
 
 /** What the company's watches need of the member's client of its databases (CloudMemberData). */
@@ -1066,7 +1095,14 @@ export class CompanyData {
 		push: (watch: number, answer: CloudMemberDataAnswer) => void,
 	): Promise<{ watch: number; answer: CloudMemberDataAnswer }> {
 		if (this.#signal.aborted || page.aborted) throw new AppDataRefused("This page was put away");
-		const key = JSON.stringify([asked.database, asked.question, Object.entries(asked.params).sort()]);
+		// Own keys in a fixed order: `{a, b}` and `{b, a}` are one question.
+		const key = JSON.stringify([
+			asked.database,
+			asked.question,
+			Object.keys(asked.params)
+				.sort()
+				.map((name) => [name, asked.params[name]]),
+		]);
 		let watchers = this.#pages.get(page);
 		if ((watchers?.size ?? 0) >= PAGE_WATCHES)
 			throw new AppDataRefused(`A page watches at most ${PAGE_WATCHES} questions at once`);
