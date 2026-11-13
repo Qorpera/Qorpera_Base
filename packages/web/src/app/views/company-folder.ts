@@ -21,6 +21,7 @@ import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
 import { CodeDownload } from "./code-download.ts";
+import { CodeImport } from "./code-import.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
@@ -251,6 +252,8 @@ export class CompanyFolderBrowser {
 	#downloads?: WebFileDownloads;
 	/** "Download the code", on a repository's folder; absent where the product has no calls for it. */
 	#code?: CodeDownload;
+	/** "Bring code in", in the code's folders, and what a folder under code/ is (code-import.ts); beside #code. */
+	#import?: CodeImport;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -453,6 +456,14 @@ export class CompanyFolderBrowser {
 				folder: () => client,
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
 			});
+		if (calls && this.#code)
+			this.#import ??= new CodeImport({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				code: this.#code,
+				open: (path) => this.reveal(path),
+			});
 		replace(
 			this.#documents,
 			this.#crumbs,
@@ -461,8 +472,11 @@ export class CompanyFolderBrowser {
 				{ class: "storage-toolbar" },
 				this.#title,
 				this.#code?.button ?? null,
+				this.#import?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
+			// What the folder is or how an import stands, then what a download did.
+			this.#import?.line ?? null,
 			this.#code?.line ?? null,
 			h(
 				"div",
@@ -667,6 +681,7 @@ export class CompanyFolderBrowser {
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
 		this.#code?.enter(dir);
+		this.#import?.enter(dir);
 		this.#drawList(!append);
 		if (jumped) await this.#refreshOpened();
 	}

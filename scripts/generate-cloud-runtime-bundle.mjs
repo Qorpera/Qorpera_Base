@@ -7,22 +7,22 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929023799_runtime_bundle_activation_v237.sql";
-const activationVersion = 237;
-const previousActivationVersion = 236;
-const previousActivationSha256 = "0e3330110af78bcbaf3bec6a7296c63fe686d5f4d2d5b10d3e156f689c6dd6a4";
-// This release's own migrations, which its activation requires before it registers the bundle (v237): one entry per
+const activation = "supabase/migrations/20260929023899_runtime_bundle_activation_v238.sql";
+const activationVersion = 238;
+const previousActivationVersion = 237;
+const previousActivationSha256 = "add9838a8cc68e9a4a1e93b017f78d7a71944351788de78c89cc2e3c14cda7b3";
+// This release's own migrations, which its activation requires before it registers the bundle (v238): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v238 replaces these entries with the migrations v238 brings (or an empty list). v237's
-// entries are not repeated there: v238's activation already requires v237 active with its exact digest, which on a
+// version lines, when it sets them: v239 replaces these entries with the migrations v239 brings (or an empty list). v238's
+// entries are not repeated there: v239's activation already requires v238 active with its exact digest, which on a
 // database past 20260930534000 only this activation sets, after these guards. An entry sorting before the activation file
 // is checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
 // order reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930733000_result_fence_32k",
-		"one tool result up to 32 KiB: this bundle's runs record context views and run-log steps with results over 8 KiB",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_folder_record_context_view(uuid,jsonb,jsonb)') and strpos(prosrc, '20260930733000') > 0)",
+		"20260930736000_code_import",
+		"existing code brought into Qorpera from GitHub or a file: this bundle's agents ask for an import (manage_code bring_in) through the two calls this migration adds",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_code_requests_claim(text,text,integer,text[])') and strpos(prosrc, '20260930736000') > 0)",
 	],
 ]);
 const activationRequiresSql = activationRequires
