@@ -598,7 +598,11 @@ as they change them (`HeldNote`), so following Open loses nothing: whenever the 
 manifest changes under a page that stays, the note is on its bar with those words. While a send of it is on its way it
 is kept as that and shows on no bar, so a member who leaves and comes back meanwhile can't send it twice; held again,
 it is back on the bar of the app's page on screen, whichever page sent it; once it went or waits in the thread it is
-let go, if it is still the note that was sent. The member saying not now to it lets it go too. The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`);
+let go, if it is still the note that was sent. The member saying not now to it lets it go too. An app sends one note
+at a time: while one is on its way, the page's next `tell` is refused before any bar ("A note from this app is on its
+way: ask again in a moment"). One note is kept for an app: a note about another thing that is sent while one is kept
+and on no bar (its send failed, or its page was put away) takes the place while it goes; held too, it keeps the place
+with its words; went or waiting in its thread, it gives the place back to the note it stood in for. The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`);
 they have no line of their own, so they wait after a wall answer under way rather than be sent under its question.
 
 A wall question being answered is still this browser's alone (`answering`, not in the shared text): a reload or
@@ -606,9 +610,10 @@ another tab finds the answer's words without the question. Fencing it the same w
 question from words the member quoted themself, so it is left as it was.
 
 **The page's answer.** `{sent: true}` when the note went, `{sent: false, waiting: true}` when it waits in the
-agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the member says not now, when another request waits,
-when the app was told not now three times, when the page or its manifest went away first, and when the note cannot be
-sent (the thread cannot be opened, or its agent left meanwhile). The page learns nothing of the thread.
+agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the
+member says not now, when another request waits, when a note from the app is still on its way, when the app was told
+not now three times, when the page or its manifest went away first, and when the note cannot be sent (the thread
+cannot be opened, or its agent left meanwhile). The page learns nothing of the thread.
 
 **Budget.** A note costs five calls of the app's budget, as a change does. After a note was sent from an app (or left
 waiting in the thread by the member's press), the app's next `tell` is refused for ten seconds ("A note was sent from
@@ -709,7 +714,7 @@ changing a value, and the first that any app may make. What a page can and canno
 | a page changing something | nothing in the company changes: the note is a message in a thread the member could write in anyway, under the same send (write right, open conversation, the member's own model account) |
 | a send from a page that is not the thread | the input writer's check that the thread is on screen lets a note (or Generate icon's ask) through only for its own conversation and only while it is on its way (`sendNote`, started by the member's press); the company still open, the same member, the write right, the open conversation and its room are checked as for any send |
 | a page's line standing apart from the words it heads | a waiting note's line is its shared draft's first line, so it is saved, shared and restored with the words (a reload, another tab, another member's client); every check that a draft answers something reads the room's text as well as this browser's, so a second note never joins a first under its own line |
-| a page losing the member's words | a note its thread can't take stays on the bar and is kept for the app, with the member's words as they change them, until it went or they said not now; the bar shows it again whenever the app's page is shown or a new bridge serves it; a send of it on its way shows on no bar (no second Send), and its end lets go only the entry it sent |
+| a page losing the member's words | a note its thread can't take stays on the bar and is kept for the app, with the member's words as they change them, until it went or they said not now; the bar shows it again whenever the app's page is shown or a new bridge serves it; a send of it on its way shows on no bar (no second Send), and its end lets go only the entry it sent; an app sends one note at a time, and a note about another thing takes the kept place only when it is held too |
 | quoted words losing their fence under the hidden line | the composer and a send on its way hear the merge's own quote-whole edit, cut at the line; a re-made edit is used only where the line changed across a kept span |
 | a page faking quoted outside content | `«` and `»` are taken out of `about`, and a note carries no quote records, so nothing of it is ever drawn or sent as a quote (`cloud/quotes.ts`) |
 

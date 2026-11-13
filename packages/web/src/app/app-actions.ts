@@ -474,10 +474,11 @@ export interface AppTellSource {
 	/** Sends the member's words to the agent as their own message, under the line the note answers (`header`, the app
 	 * and what it is about), or leaves them waiting in the agent's thread. */
 	readonly send: (agentId: string, note: { readonly header: string; readonly text: string }) => Promise<AppNoteSent>;
-	/** The note held for an app (by its folder's name), and keeping one, or letting it go (`undefined`). A note held
-	 * again after it was on its way is told to the app's page on screen (`listen`), whichever page sent it. */
+	/** The note held for an app (by its folder's name), and keeping one, or letting it go (`undefined`). With `back`, a
+	 * note that was on its way and is held again: the app's page on screen hears it (`listen`), whichever page sent
+	 * it. */
 	readonly held: (app: string) => HeldNote | undefined;
-	readonly hold: (app: string, note: HeldNote | undefined) => void;
+	readonly hold: (app: string, note: HeldNote | undefined, back?: boolean) => void;
 	/** The app's page on screen hears that its held note is back; one page an app, the latest; the answer stops it. */
 	readonly listen: (app: string, back: () => void) => () => void;
 }
@@ -508,6 +509,9 @@ export function prepareTell(
 	const draft = typeof text === "string" ? text : "";
 	if (characters(draft) > APP_NOTE_DRAFT_MAX)
 		throw new AppActionRefused(`tell's text is at most ${APP_NOTE_DRAFT_MAX} characters`);
+	// One note at a time an app: the one on its way is kept for the app until it went or is held again.
+	if (source.held(app.name)?.sending)
+		throw new AppActionRefused("A note from this app is on its way: ask again in a moment");
 	const receiver = source.receiver(app.manifest.owner);
 	if ("refused" in receiver) throw new AppActionRefused(receiver.refused);
 	const thing = typeof at === "string" ? at : null;
@@ -548,29 +552,33 @@ function noteSending(
 			const own = words.trim();
 			// The bar's Send is off while its field is empty.
 			if (!own) throw new AppActionRefused(t("Write your note first."));
-			// Kept for the app as on its way, so no other bar shows it meanwhile (the member left the app and came back):
-			// this note's own entry, or none. A note of another thing kept for the app stays as it is.
+			// An app sends one note at a time: this one is kept for the app as on its way, so no bar shows it meanwhile
+			// (the member left the app and came back) and the app's page is told to wait (`prepareTell`). A note about
+			// another thing kept for the app (its bar was let go: its send failed, or the page was put away) gives way
+			// while this one goes, and is kept again after, unless this one is held in its place.
 			const kept = source.held(app);
+			const other = kept !== undefined && kept.header !== note.header ? kept : undefined;
 			const going: HeldNote = { ...note, words, sending: true };
-			const tracked = kept === undefined || kept.header === note.header;
-			if (tracked) source.hold(app, going);
+			source.hold(app, going);
 			// What becomes of it is this send's to say only while the entry is still the one it made.
-			const settle = (next: HeldNote | undefined) => {
-				if (tracked && source.held(app) === going) source.hold(app, next);
+			const settle = (next: HeldNote | undefined, back = false) => {
+				if (source.held(app) === going) source.hold(app, next, back);
 			};
 			let went: AppNoteSent;
 			try {
 				went = await source.send(note.agentId, { header: note.header, text: own });
 			} catch (error) {
-				// It did not go: a note that was kept stays kept, with these words; a new one is not kept.
-				settle(kept === undefined ? undefined : { ...note, words });
+				// It did not go: a note that was kept stays kept, with these words, for when the app's page is next shown
+				// (the bar says why now); a new one is not kept.
+				settle(other ?? (kept === undefined ? undefined : { ...note, words }));
 				throw new AppActionRefused(
 					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),
 				);
 			}
 			// Held again: kept with its words, and back on the bar of the app's page on screen. Went, or waits in the
-			// thread: let go.
-			settle(went.held ? { ...note, words } : undefined);
+			// thread: let go, and the other note it stood in for is kept again.
+			if (went.held) settle({ ...note, words }, true);
+			else settle(other);
 			return went;
 		},
 		keep: (words) => source.hold(app, words === undefined ? undefined : { ...note, words }),

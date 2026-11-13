@@ -1144,13 +1144,13 @@ export function mountApplication(
 				},
 				agent: (agentId) => controller.staffById(agentId),
 				held: (app) => kept().notes.get(app),
-				// A note that was on its way and is held again is back for the app's page on screen, whichever sent it.
-				hold: (app, note) => {
+				// A note that was on its way and is held again is back for the app's page on screen, whichever sent it. Any
+				// other kept note comes back when the app's page is next shown.
+				hold: (app, note, isBack) => {
 					const { notes, back } = kept();
-					const was = notes.get(app);
 					if (note) notes.set(app, note);
 					else notes.delete(app);
-					if (was?.sending && note && !note.sending) back.get(app)?.();
+					if (note && isBack) back.get(app)?.();
 				},
 				listen: (app, listener) => {
 					const { back } = kept();

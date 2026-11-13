@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppNoteSent, HeldNote } from "../src/app/app-actions.ts";
-import { type CompanyApp, readApps } from "../src/app/interface-apps.ts";
+import { type CompanyApp, readApps, TELL_AGAIN_MS } from "../src/app/interface-apps.ts";
 import { AppPanel, type AppPanelHost } from "../src/app/views/app-panel.ts";
 import { PAGE_CONTENT, PAGE_READY } from "../src/ui/page-frame.ts";
 import { staff } from "./fixtures.ts";
@@ -266,11 +266,10 @@ describe("a note an app's page asks the member to send its owner", () => {
 				},
 				held: (app: string) => held.get(app),
 				// As the company keeps them (app/application.ts): one on its way and held again is back on the page.
-				hold: (app: string, note: HeldNote | undefined) => {
-					const was = held.get(app);
+				hold: (app: string, note: HeldNote | undefined, isBack?: boolean) => {
 					if (note) held.set(app, note);
 					else held.delete(app);
-					if (was?.sending && note && !note.sending) back.get(app)?.();
+					if (note && isBack) back.get(app)?.();
 				},
 				listen: (app: string, listener: () => void) => {
 					back.set(app, listener);
@@ -423,6 +422,95 @@ describe("a note an app's page asks the member to send its owner", () => {
 		expect(notes.held.size).toBe(0);
 		expect(again.bar().hidden).toBe(true);
 		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Kept words, again", "Kept words, again"]);
+	});
+
+	it("asks no second note while one from the app is on its way, and takes it once that one went (#1739 r3, F1)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		let deliver = (_went: AppNoteSent) => {};
+		notes.next(
+			() =>
+				new Promise<AppNoteSent>((resolve) => {
+					deliver = resolve;
+				}),
+		);
+		const app = await opened(notes.told);
+		void app.call("tell", { about: "Lund, A", text: "Get a quote" });
+		await app.shown();
+		await pressSend(app.bar());
+		await vi.waitFor(() => expect(notes.sent).toHaveLength(1));
+		// The member leaves and comes back while it goes; the page asks about another thing: one note at a time.
+		app.panel.dispose();
+		const back = await opened(notes.told);
+		await settle();
+		expect(back.bar().hidden).toBe(true);
+		expect(await back.call("tell", { about: "Hansen", text: "And this one" })).toMatchObject({
+			ok: false,
+			error: "A note from this app is on its way: ask again in a moment",
+		});
+		expect(back.bar().hidden).toBe(true);
+		deliver({ sent: true, href: `#/c/x/staff/${OWNER}` });
+		await settle();
+		expect(notes.held.size).toBe(0);
+		// Once it went, and its pause is over, the other thing's note is on the bar.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + TELL_AGAIN_MS);
+		void back.call("tell", { about: "Hansen", text: "And this one" });
+		await back.shown();
+		expect(back.bar().querySelector("dd")?.textContent).toBe("Shop · Hansen");
+		expect(back.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("And this one");
+	});
+
+	it("lets another thing's note take the place of a kept note no bar shows, when that one is held too (#1739 r3, F1)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		const kept = { agentId: OWNER, app: "Shop", about: "Lund, A", header: "app:shop · Lund, A", words: "Kept words" };
+		notes.held.set("shop", kept);
+		// The kept note's send fails: the bar says why, and it is kept again, on no bar now.
+		notes.next(async () => {
+			throw new Error("Ada's thread can't be opened now.");
+		});
+		const app = await opened(notes.told);
+		await app.shown();
+		await pressSend(app.bar());
+		await vi.waitFor(() =>
+			expect(app.bar().querySelector('[role="alert"]')?.textContent).toBe("Ada's thread can't be opened now."),
+		);
+		expect(notes.held.get("shop")).toEqual(kept);
+		// The page asks about another thing, and its thread can't take that either: it is kept in the place, words and
+		// all, so following Open loses nothing.
+		notes.next(async () => ({ sent: false, href: `#/c/x/staff/${OWNER}`, held: true }));
+		void app.call("tell", { about: "Hansen", at: "1042", text: "And this one" });
+		await vi.waitFor(() => expect(app.bar().querySelector("textarea")?.value).toBe("And this one"));
+		await pressSend(app.bar());
+		await vi.waitFor(() => expect(app.bar().querySelector<HTMLElement>(".app-ask-held")?.hidden).toBe(false));
+		expect(notes.held.get("shop")).toEqual({
+			agentId: OWNER,
+			app: "Shop",
+			about: "Hansen",
+			header: "app:shop#1042 · Hansen",
+			words: "And this one",
+		});
+	});
+
+	it("keeps a kept note no bar shows again once another thing's note went in its place (#1739 r3, F1)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		const kept = { agentId: OWNER, app: "Shop", about: "Lund, A", header: "app:shop · Lund, A", words: "Kept words" };
+		notes.held.set("shop", kept);
+		notes.next(async () => {
+			throw new Error("Ada's thread can't be opened now.");
+		});
+		const app = await opened(notes.told);
+		await app.shown();
+		await pressSend(app.bar());
+		await vi.waitFor(() => expect(app.bar().querySelector('[role="alert"]')).not.toBeNull());
+		notes.next(async () => ({ sent: true, href: `#/c/x/staff/${OWNER}` }));
+		void app.call("tell", { about: "Hansen", text: "And this one" });
+		await vi.waitFor(() => expect(app.bar().querySelector("textarea")?.value).toBe("And this one"));
+		await pressSend(app.bar());
+		await vi.waitFor(() => expect(app.bar().textContent).toContain("Sent to Ada"));
+		expect(notes.held.get("shop")).toEqual(kept);
+		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Kept words", "And this one"]);
 	});
 
 	it("puts a kept note back on the bar when the app's manifest changes under a page that stays (#1739 r2, F3)", async () => {
