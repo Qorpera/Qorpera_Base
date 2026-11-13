@@ -7,6 +7,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	CLOUD_MACHINE_GUEST_PATHS,
 	type CloudCodingCommandRead,
 	type CloudMachineCommandReceipt,
@@ -217,12 +218,14 @@ async function identity(ports: MachineGuestPorts): Promise<Identity> {
 
 /** The executor claims this boot for its machine: the machine's id and the
  * executor's generation for this boot. Claiming again in the same boot keeps
- * the machine and only moves the generation forward. */
+ * the machine and only moves the generation forward. The answer also says what
+ * this helper takes for a page of a command's log (keyholes S1): the executor
+ * asks it for no more, and asks a helper that does not say for the legacy 16,384. */
 export async function prepareMachineGuest(
 	machineId: string,
 	generation: number,
 	ports: MachineGuestPorts = {},
-): Promise<Identity> {
+): Promise<Identity & { pageBytes: number }> {
 	requireRoot(ports);
 	uuid(machineId);
 	if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("MACHINE_GUEST_GENERATION_INVALID");
@@ -245,7 +248,7 @@ export async function prepareMachineGuest(
 		generation: Math.max(generation, prior?.generation ?? 0),
 	};
 	await writeJson(r.identity, next, 0o644);
-	return next;
+	return { ...next, pageBytes: CLOUD_CODING_COMMAND_PAGE_BYTES };
 }
 
 /** The executor renews the lease every pass. Its length is long on purpose:

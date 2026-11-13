@@ -123,7 +123,7 @@ describe("retained coding command log pages", () => {
 		await expect(readCodingCommandLog({ ...f, read: { ...f.read, offset: 3 } })).rejects.toThrow(
 			"OFFSET_UNAVAILABLE",
 		);
-		for (const patch of [{ offset: -1 }, { limit: 3 }, { tail: true, offset: 0 }, { offset: 1.5 }, { limit: 16385 }])
+		for (const patch of [{ offset: -1 }, { limit: 3 }, { tail: true, offset: 0 }, { offset: 1.5 }, { limit: 65537 }])
 			expect(() => parseCloudCodingCommandRead({ ...f.read, ...patch })).toThrow();
 		const receipt = {
 			schema: "qorpera.coding-command-result/v2",

@@ -112,9 +112,11 @@ async function fixture(
 		memberTypeTimeoutMs?: number;
 		desktopWordTimeoutMs?: number;
 		now?: () => number;
+		/** What the guest's helper says at its claim it takes for a page (keyholes S1); a helper from before says nothing. */
+		guestPageBytes?: number;
 	} = {},
 ) {
-	const { folder: withFolder, ...pins } = options;
+	const { folder: withFolder, guestPageBytes, ...pins } = options;
 	state.controlPath = await realpath(await mkdtemp(join(tmpdir(), "company-machine-host-")));
 	await chmod(state.controlPath, 0o700);
 	roots.push(state.controlPath);
@@ -323,7 +325,13 @@ async function fixture(
 			replies.set(
 				nonce,
 				action === "prepare"
-					? { schema: "qorpera.machine-guest/v1", machineId: args[0], bootId: boot, generation: Number(args[1]) }
+					? {
+							schema: "qorpera.machine-guest/v1",
+							machineId: args[0],
+							bootId: boot,
+							generation: Number(args[1]),
+							...(guestPageBytes === undefined ? {} : { pageBytes: guestPageBytes }),
+						}
 					: action === "refresh-lease"
 						? {
 								schema: "qorpera.machine-guest-lease-receipt/v1",
@@ -1154,6 +1162,33 @@ describe("company machine host", () => {
 			),
 		).rejects.toThrow("COMPANY_MACHINE_COMMAND_INVALID");
 		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["read", commandId, "tail", "100"]);
+	});
+
+	it("asks a guest for no more of a page than its helper said at its claim, the legacy 16,384 until it says (keyholes S1)", async () => {
+		for (const [said, asked] of [
+			[undefined, "16384"],
+			[65536, "40000"],
+			[20000, "20000"],
+		] as const) {
+			const f = await fixture(said === undefined ? {} : { guestPageBytes: said });
+			const commandId = randomUUID();
+			const read = async (tail: boolean) => {
+				await f.host.command(
+					{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64) },
+					{
+						action: "read",
+						read: tail ? { commandId, tail, limit: 40000 } : { commandId, offset: 0, limit: 40000 },
+					},
+					f.signal,
+				);
+				return f.client.execInstance.mock.calls.at(-1)?.[2].slice(3);
+			};
+			// Before the executor claimed the boot, it knows nothing of the helper.
+			expect(await read(false)).toEqual(["read", commandId, "0", "16384"]);
+			await f.host.pass(f.signal);
+			expect(await read(false)).toEqual(["read", commandId, "0", asked]);
+			expect(await read(true)).toEqual(["read", commandId, "tail", asked]);
+		}
 	});
 });
 
