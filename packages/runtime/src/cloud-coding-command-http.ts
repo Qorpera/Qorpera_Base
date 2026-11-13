@@ -592,13 +592,16 @@ export class HttpCloudCodingCommandService {
 					send: async (message: Buffer | readonly Buffer[]) => {
 						if (controller.signal.aborted) throw new Error(ERROR);
 						begin();
-						// The head and the picture's pieces as their own writes: the picture's bytes are never copied here.
+						// The head and the picture's pieces (at most DESKTOP_STREAM_MESSAGE_PIECES, 34) as writes in one, corked:
+						// the picture's bytes are never copied here.
 						const pieces = Buffer.isBuffer(message) ? [message] : message;
 						let length = 0;
 						for (const piece of pieces) length += piece.byteLength;
+						reply.cork();
 						reply.write(cloudMemberMachineStreamFrameHead(1, length));
 						let room = true;
 						for (const piece of pieces) room = reply.write(piece);
+						reply.uncork();
 						if (!room)
 							// Waiting for the asking executor to drain ends with this request too: nothing of it waits past
 							// the stream's end (review r2 F3 of #1746).

@@ -1,19 +1,27 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Duplex } from "node:stream";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RFB_VERSION, STREAM_RECTS, STREAM_SIZE } from "../src/company-machine-stream.ts";
 import {
+	DESKTOP_STREAM_BLOCK_BYTES,
+	DESKTOP_STREAM_DRIP_MS,
 	DESKTOP_STREAM_GUARD_MS,
 	DESKTOP_STREAM_MEMBERS,
+	DESKTOP_STREAM_MESSAGE_BYTES,
+	DESKTOP_STREAM_MESSAGE_PIECES,
 	DESKTOP_STREAM_ROLE,
+	DESKTOP_STREAM_SECOND_UNITS,
+	DESKTOP_STREAM_TURN_BYTES,
+	DESKTOP_STREAM_TURN_UNITS,
 	type DesktopRelaySpec,
+	type DesktopStreamTurn,
 	InstanceDesktop,
 } from "../src/company-machine-stream-process.ts";
+import { message, plan } from "./fixtures/desktop-stream-plan.ts";
 
 // A desktop's live picture watched in a process of its own (the lead's decision after review r11 of #1746): the
 // executor's side speaks frames with an instance it never trusts, and holds it back by not reading. Here each
@@ -61,7 +69,7 @@ async function instances(program: string) {
 		started,
 		watched: (name: string, options: Partial<ConstructorParameters<typeof InstanceDesktop>[3]> = {}) => {
 			let endings = 0;
-			const desktop = new InstanceDesktop(createConnection({ path }), spec(name), () => endings++, {
+			const desktop = new InstanceDesktop(path, spec(name), () => endings++, {
 				version: "test-version",
 				...options,
 			});
@@ -69,6 +77,45 @@ async function instances(program: string) {
 			return { desktop, endings: () => endings };
 		},
 	};
+}
+
+/** An instance the test plays itself, on a socket of its own: what it writes, the test writes. One that does not read
+ * takes nothing main writes. */
+async function played(reads: boolean) {
+	const dir = mkdtempSync(join(tmpdir(), "desktop-stream-played-"));
+	const path = join(dir, "played.sock");
+	let joined: (socket: Socket) => void = () => {};
+	const connected = new Promise<Socket>((resolve) => {
+		joined = resolve;
+	});
+	const sockets: Socket[] = [];
+	const server = createServer({ pauseOnConnect: !reads }, (socket: Socket) => {
+		socket.on("error", () => {});
+		sockets.push(socket);
+		joined(socket);
+	});
+	await new Promise<void>((resolve) => server.listen(path, () => resolve()));
+	cleanups.push(() => {
+		for (const socket of sockets) socket.destroy();
+		server.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+	return { path, write: async (bytes: Buffer) => void (await connected).write(bytes) };
+}
+
+/** Every turn within its budget: the units checked before each (a frame's pieces may pass it by one frame's worth), the
+ * bytes (a read may pass it by one read), what is held, and the wall time of main's work for it. */
+function withinBudget(turns: readonly DesktopStreamTurn[]): void {
+	expect(turns.length).toBeGreaterThan(0);
+	for (const turn of turns) {
+		expect(turn.units).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_UNITS + DESKTOP_STREAM_MESSAGE_PIECES + 1);
+		expect(turn.bytes).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_BYTES + DESKTOP_STREAM_BLOCK_BYTES);
+		expect(turn.heldBlocks).toBeLessThanOrEqual(
+			Math.ceil(DESKTOP_STREAM_MESSAGE_BYTES / DESKTOP_STREAM_BLOCK_BYTES) + 3,
+		);
+		expect(turn.heldBytes).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_BYTES + 9 + DESKTOP_STREAM_BLOCK_BYTES);
+		expect(turn.ms).toBeLessThan(25);
+	}
 }
 
 /** A release the test answers, cycle by cycle. */
@@ -86,9 +133,12 @@ function gate() {
 /** A sink that keeps what it was sent (joined from its pieces): each message's type and its areas' first colours. */
 function sinkOf() {
 	const messages: Buffer[] = [];
+	const pieces: number[] = [];
 	return {
 		messages,
+		pieces,
 		send: vi.fn(async (message: Buffer | readonly Buffer[]) => {
+			pieces.push(Buffer.isBuffer(message) ? 1 : message.length);
 			messages.push(Buffer.isBuffer(message) ? Buffer.from(message) : Buffer.concat(message as Buffer[]));
 		}),
 		types: () => messages.map((message) => message[0]),
@@ -355,39 +405,52 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 			expect(desktop.cause).toBe(cause);
 		});
 
-	it("ends an instance that never lets go of members it was told to let go of, past the few a correct one has on its way", async () => {
+	it("refuses a newcomer STREAM_BUSY, and ends nothing, while as many members let go of as may wait for their DONE have not had it", async () => {
 		const { watched } = await instances(fixture("-hostile"));
 		const { desktop } = watched("nodone");
-		const stays = desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
-		for (let n = 0; n < 17 && desktop.ended === null; n++) {
+		void desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
+		const answers: string[] = [];
+		for (let n = 0; n < 16; n++) {
 			const leaving = new AbortController();
-			void desktop.watch(async () => "pending", sinkOf(), leaving.signal);
+			const left = desktop.watch(async () => "pending", sinkOf(), leaving.signal);
 			await sleep(10);
 			leaving.abort();
+			answers.push(await left);
 		}
-		expect(await stays).toBe("STREAM_UNAVAILABLE");
-		expect(desktop.cause).toBe("members it was told to let go of and did not");
+		expect(answers).toEqual(Array.from({ length: 16 }, () => "closed"));
+		// Sixteen let go of and no DONE yet (a correct instance whose loop is held could be there): a delay, not an end.
+		expect(await desktop.watch(async () => "pending", sinkOf(), new AbortController().signal)).toBe("STREAM_BUSY");
+		expect(desktop.ended).toBeNull();
 	});
 
 	it("ends an instance that does not read what it is sent, past MAX_UNREAD_BYTES waiting in main", async () => {
-		// A connection whose far end takes nothing: whatever main writes waits in it.
-		const connection = new Duplex({ read() {}, write() {} });
-		const desktop = new InstanceDesktop(connection, spec("deaf"), () => {}, {
+		// The instance played by the test, on a socket it never reads: whatever main writes waits.
+		const instance = await played(false);
+		const desktop = new InstanceDesktop(instance.path, spec("deaf"), () => {}, {
 			version: "test-version",
 			maxUnreadBytes: 1024,
 			releaseGapMs: 0,
 		});
-		const ending = desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
-		connection.push(frameOf(16, 0));
-		// It asks and asks, never reading the verdicts: each is written, and waits.
-		for (let n = 0; n < 200 && desktop.ended === null; n++) {
-			connection.push(frameOf(17, 1));
-			await new Promise((resolve) => setImmediate(resolve));
+		cleanups.push(() => desktop.close());
+		let asked = 0;
+		const ending = desktop.watch(
+			async () => {
+				asked++;
+				return "pending";
+			},
+			sinkOf(),
+			new AbortController().signal,
+		);
+		await instance.write(frameOf(16, 0));
+		// It asks and asks, never reading the verdicts: each is written, and waits (in the kernel's buffer, then in main).
+		for (let n = 0; n < 20_000 && desktop.ended === null; n++) {
+			const before = asked;
+			await instance.write(frameOf(17, 1));
+			while (asked === before && desktop.ended === null) await new Promise((resolve) => setImmediate(resolve));
 		}
 		expect(await ending).toBe("STREAM_UNAVAILABLE");
 		expect(desktop.cause).toBe("it does not read what it is sent");
-		expect(connection.writableLength).toBeLessThan(2048);
-	});
+	}, 60_000);
 
 	it("never ends an instance for main's own lateness: a pong already in the socket is read first", async () => {
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -397,50 +460,124 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 				clock += ms;
 				vi.advanceTimersByTime(ms);
 			};
-			const late = new Duplex({
-				read() {},
-				write(_chunk, _encoding, done) {
-					done();
-				},
-			});
-			const desktop = new InstanceDesktop(late, spec("late"), () => {}, {
+			const late = await played(true);
+			const desktop = new InstanceDesktop(late.path, spec("late"), () => {}, {
 				version: "test-version",
 				now: () => clock,
 			});
+			cleanups.push(() => desktop.close());
 			void desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
-			late.push(frameOf(16, 0));
+			await late.write(frameOf(16, 0));
+			await sleep(50);
 			// The first ping at 5 s; then main's own loop is held 20 s, and its next tick comes 15 s late, with the pong
 			// waiting in the socket.
 			ticks(5000);
 			clock += 15_000;
 			ticks(5000);
 			expect(desktop.ended).toBeNull();
-			late.push(frameOf(21, 0));
-			await new Promise((resolve) => setImmediate(resolve));
+			await late.write(frameOf(21, 0));
+			await sleep(50);
 			ticks(5000);
 			expect(desktop.ended).toBeNull();
 			// And one that does not answer while main reads on time is ended at 15 s.
-			const silent = new Duplex({
-				read() {},
-				write(_chunk, _encoding, done) {
-					done();
-				},
-			});
-			const quiet = new InstanceDesktop(silent, spec("quiet"), () => {}, {
+			const silent = await played(true);
+			const quiet = new InstanceDesktop(silent.path, spec("quiet"), () => {}, {
 				version: "test-version",
 				now: () => clock,
 			});
+			cleanups.push(() => quiet.close());
 			void quiet.watch(async () => "pending", sinkOf(), new AbortController().signal);
-			silent.push(frameOf(16, 0));
+			await silent.write(frameOf(16, 0));
+			await sleep(50);
 			for (let n = 0; n < 4; n++) ticks(5000);
 			expect(quiet.ended).toBeNull();
 			ticks(5000);
 			expect(quiet.cause).toBe("no answer to its pings");
-			desktop.close();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
+
+	it("takes a largest message a byte a write through to a sink within every turn's budget, holding a few blocks, the loop free (the reviewer's scenario)", async () => {
+		const turns: DesktopStreamTurn[] = [];
+		const { watched } = await instances(fixture("-pieces"));
+		const { desktop } = watched("fragment", { observe: (turn) => turns.push(turn) });
+		const sink = sinkOf();
+		const result = await mainLoopWhile(async () => {
+			void desktop.watch(async () => "ok", sink, new AbortController().signal);
+			await vi.waitFor(() => expect(sink.messages).toHaveLength(1), { timeout: 60_000, interval: 50 });
+		});
+		expect(sink.messages[0]!.equals(message(1, 0, DESKTOP_STREAM_MESSAGE_BYTES))).toBe(true);
+		expect(Math.max(...sink.pieces)).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_PIECES);
+		withinBudget(turns);
+		expect(result.longest).toBeLessThan(50);
+		expect(desktop.ended).toBeNull();
+	}, 90_000);
+
+	for (const seed of [11, 4242, 90_210])
+		it(`stands guard over main's side of the connection: seeded random frames in random pieces, with long runs of 1-byte pieces (seed ${seed})`, async () => {
+			const turns: DesktopStreamTurn[] = [];
+			const { watched } = await instances(fixture("-pieces"));
+			const { desktop } = watched(`random:${seed}`, { observe: (turn) => turns.push(turn) });
+			const cycles = plan(seed, 3, 3);
+			const sinks = cycles.map(() => sinkOf());
+			const result = await mainLoopWhile(async () => {
+				for (const sink of sinks) void desktop.watch(async () => "ok", sink, new AbortController().signal);
+				await vi.waitFor(
+					() =>
+						expect(sinks.map((sink) => sink.messages.length)).toEqual(
+							cycles.map((member) => member.flat().length),
+						),
+					{ timeout: 90_000, interval: 50 },
+				);
+			});
+			// Every message arrived whole and in order, each in at most DESKTOP_STREAM_MESSAGE_PIECES pieces.
+			cycles.forEach((member, n) => {
+				member.flat().forEach((size, index) => {
+					expect(sinks[n]!.messages[index]!.equals(message(n + 1, index, size))).toBe(true);
+				});
+				expect(Math.max(...sinks[n]!.pieces)).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_PIECES);
+			});
+			withinBudget(turns);
+			expect(result.longest).toBeLessThan(50);
+			expect(desktop.ended).toBeNull();
+		}, 120_000);
+
+	it("takes no more than its budget a second from an instance offering every small send the protocol allows, the loop free, nothing ended", async () => {
+		const turns: (DesktopStreamTurn & { at: number })[] = [];
+		const { watched } = await instances(fixture("-pieces"));
+		const { desktop } = watched("smallflood", { observe: (turn) => turns.push({ ...turn, at: performance.now() }) });
+		const sinks = Array.from({ length: 8 }, () => sinkOf());
+		const began = performance.now();
+		const result = await mainLoopWhile(async () => {
+			for (const sink of sinks) void desktop.watch(async () => "ok", sink, new AbortController().signal);
+			await sleep(3000);
+		});
+		const seconds = (performance.now() - began) / 1000;
+		const units = turns.reduce((sum, turn) => sum + turn.units, 0);
+		// At most the budget for every second begun, and the sends went on all along (each a write to a member's sink).
+		expect(units).toBeLessThanOrEqual((Math.ceil(seconds) + 1) * DESKTOP_STREAM_SECOND_UNITS);
+		expect(sinks.reduce((sum, sink) => sum + sink.messages.length, 0)).toBeGreaterThan(1000);
+		withinBudget(turns);
+		expect(result.longest).toBeLessThan(50);
+		expect(desktop.ended).toBeNull();
+	}, 30_000);
+
+	it("reads a drip a few times a second at most: a byte a write costs main no more than 1000 / DESKTOP_STREAM_DRIP_MS reads a second", async () => {
+		const turns: DesktopStreamTurn[] = [];
+		const { watched } = await instances(fixture("-pieces"));
+		const { desktop } = watched("drip", { observe: (turn) => turns.push(turn) });
+		void desktop.watch(async () => "ok", sinkOf(), new AbortController().signal);
+		await sleep(500);
+		const from = turns.length;
+		const began = performance.now();
+		await sleep(2000);
+		const seconds = (performance.now() - began) / 1000;
+		const reads = turns.slice(from).reduce((sum, turn) => sum + turn.reads, 0);
+		expect(reads).toBeGreaterThan(50);
+		expect(reads / seconds).toBeLessThanOrEqual(1000 / DESKTOP_STREAM_DRIP_MS + 20);
+		expect(desktop.ended).toBeNull();
+	}, 30_000);
 
 	it("smokes the units as the release does: another version refused, its own taken and ended by its relay; a unit of another file named", async () => {
 		const smoke = new URL("../../../deploy/coding-worker/desktop-stream-smoke.mjs", import.meta.url).pathname;

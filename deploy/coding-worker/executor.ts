@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
-import { createConnection, Socket } from "node:net";
+import { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
@@ -505,7 +505,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// the configuration, members' live pictures are refused here.
 		...(config.desktopStreams ? {
 			desktopStreams: (spec: DesktopRelaySpec, ended: () => void) => new InstanceDesktop(
-				createConnection({ path: (config.desktopStreams as { socket: string }).socket }), spec, ended, { version: programVersion }),
+				(config.desktopStreams as { socket: string }).socket, spec, ended, { version: programVersion }),
 		} : {}),
 	}) : undefined;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).

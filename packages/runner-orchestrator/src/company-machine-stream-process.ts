@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createConnection, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { Worker } from "node:worker_threads";
 import {
@@ -20,18 +21,31 @@ import {
 //
 // The executor's side (InstanceDesktop) speaks with it over that one connection in frames: a 9-byte header (u32 payload
 // length, u8 type, u32 member), then the payload. Main parses a header in constant time and never scans a payload: of a
-// stream message (SEND, at most DESKTOP_STREAM_MESSAGE_BYTES) it reads the first byte, the kind, and hands the bytes on
-// as the pieces they came in; every other payload is at most CONTROL_BYTES. Main's bounds are held by NOT READING: the
-// connection is paused after every piece and read again only when main is ready for the next frame (a turn's budget,
-// a member's next release not yet due), so the kernel's socket buffer holds the instance back. Every frame main reads
-// belongs to a step main asked for or allowed, or it ends the instance; main is bounded in both directions (what it
-// reads, and what it has written that the instance has not read). The instance is ended only for what a correct one
-// never does.
+// stream message (SEND, at most DESKTOP_STREAM_MESSAGE_BYTES) it reads the first byte, the kind; every other payload is
+// at most CONTROL_BYTES.
+//
+// THE INVARIANT (the lead's, review r12 of #1746): WHATEVER AN INSTANCE SENDS, MAIN SPENDS AT MOST A FIXED BUDGET OF
+// WORK ON ITS CONNECTION PER TURN AND PER SECOND, AND HOLDS AT MOST A FIXED NUMBER OF BYTES AND OF OBJECTS FOR IT.
+// - Every unit of main's work for a connection is charged in ONE place (InstanceDesktop's #charge): a read (one piece
+//   taken from the socket; its bytes too, each copied once into its block), a frame taken, a piece handed to a sink.
+// - Budgets: per turn of main's loop, across everything main does for the connection in that turn (TURN_UNITS,
+//   TURN_BYTES), and per second (SECOND_UNITS, SECOND_BYTES), checked before every unit. When one is spent main stops
+//   reading the connection (the socket paused: nothing is read ahead) until the next turn or the next second; the time
+//   counts as main not reading, for the pong. Nothing is ended for it: the instance's frames wait in the kernel.
+// - A read that brought little (under DRIP_BYTES) and completed no frame is not followed by another read at once: the
+//   next waits DRIP_MS, and the kernel's buffer gathers what was written meanwhile, so a byte-a-read drip costs main at
+//   most 1000 / DRIP_MS reads a second.
+// - Held: what was read is copied into blocks of DESKTOP_STREAM_BLOCK_BYTES (FrameQueue): at most the frame being
+//   completed and one read, 35 blocks; a frame of n bytes is at most ceil(n / DESKTOP_STREAM_BLOCK_BYTES) + 1 pieces, so
+//   a message handed to a sink is at most DESKTOP_STREAM_MESSAGE_PIECES (34).
+// Every frame main reads belongs to a step main asked for or allowed, or it ends the instance; what main has written
+// that the instance has not read is bounded too (MAX_UNREAD_BYTES). The instance is ended only for what a correct one
+// never does; everything else a correct one could do is a delay.
 //
 // What main holds for its instances at the worst: each member's sink one message it was handed (8 desktops x 8 members
-// x DESKTOP_STREAM_MESSAGE_BYTES = 128 MiB, the listener's to send), each connection the frame being read and the
-// pieces of one read (8 x (2 MiB + 1 KiB + 64 KiB), 17 MiB), and what waits to be written to an instance that does not
-// read (8 x MAX_UNREAD_BYTES, 8 MiB): about 153 MiB, in the executor's 2 GiB.
+// x DESKTOP_STREAM_MESSAGE_BYTES = 128 MiB, the listener's to send), each connection its read buffer and at most 35
+// blocks (8 x 36 x 64 KiB, 18 MiB), and what waits to be written to an instance that does not read (8 x
+// MAX_UNREAD_BYTES, 8 MiB): about 154 MiB, in the executor's 2 GiB.
 //
 //   main -> instance  HELLO {protocol, version, spec}   first, once: a program of another version is refused
 //                     WATCH m, UNWATCH m
@@ -74,10 +88,34 @@ const CONTROL_BYTES = 256;
 /** The largest frame main sends (HELLO with the relay's spec), and how soon an instance must have it. */
 const HELLO_BYTES = 64 * 1024;
 const HELLO_WITHIN_MS = 10_000;
-/** What main takes from one instance in one turn of its event loop; past either, the rest waits for the next turn,
- * unread. Eight members' release, send and done, a pong and an end are 26 frames. */
-export const DESKTOP_STREAM_TURN_FRAMES = 32;
-const TURN_BYTES = 4 * 1024 * 1024;
+/** Bytes read off a connection are copied into blocks of this size (one read is at most this). */
+export const DESKTOP_STREAM_BLOCK_BYTES = 64 * 1024;
+/** The most pieces a message handed to a sink has: ceil(DESKTOP_STREAM_MESSAGE_BYTES / block) + 1 = 34. */
+export const DESKTOP_STREAM_MESSAGE_PIECES = Math.ceil(DESKTOP_STREAM_MESSAGE_BYTES / DESKTOP_STREAM_BLOCK_BYTES) + 1;
+/** What main does for one connection in one turn of its loop, at most (then the rest waits for the next turn): 256
+ * units, about a millisecond (a frame's dispatch or a piece's write is a few microseconds), and 4 MiB of reads copied
+ * (a fraction of a millisecond). */
+export const DESKTOP_STREAM_TURN_UNITS = 256;
+const TURN_UNITS = DESKTOP_STREAM_TURN_UNITS;
+export const DESKTOP_STREAM_TURN_BYTES = 4 * 1024 * 1024;
+const TURN_BYTES = DESKTOP_STREAM_TURN_BYTES;
+/** What main does for one connection in one second, at most. Bytes: 32 MiB (the lead's decision: the live picture is for
+ * watching work, not video; his host proof measured 36 MB a second a member on full-screen noise, which then updates
+ * more slowly, and nothing ends). Units: what a correct instance with 8 members needs a second is at most about 7,000:
+ * each member's cycles at most 30 a second, each a RELEASE and its small messages (a size, a small batch, a pointer
+ * shape: 3 frames of 1 or 2 pieces), 8 x 30 x 4 = 960 frames and about 1,500 pieces; under the byte budget at most 32
+ * batches of 1 MiB, 32 frames and 576 pieces; a read for each frame at the most and 512 reads of a full block: about
+ * 1,000 + 2,100 + 1,500 + 600 + 1,000 = 6,200 units, with the DONEs and pongs about 7,000. SECOND_UNITS, 20,000, is about
+ * three times that; past it main only waits. */
+export const DESKTOP_STREAM_SECOND_UNITS = 20_000;
+const SECOND_UNITS = DESKTOP_STREAM_SECOND_UNITS;
+export const DESKTOP_STREAM_SECOND_BYTES = 32 * 1024 * 1024;
+const SECOND_BYTES = DESKTOP_STREAM_SECOND_BYTES;
+/** A read under this that completes no frame is a drip: the next read waits DRIP_MS (a correct instance's frames come in
+ * large reads, or reads that complete them). */
+const DRIP_BYTES = 4096;
+export const DESKTOP_STREAM_DRIP_MS = 5;
+const DRIP_MS = DESKTOP_STREAM_DRIP_MS;
 /** At most this many members watch one desktop (the live-picture listener's own cap is 8 a machine). */
 export const DESKTOP_STREAM_MEMBERS = 8;
 /** What main may have written to an instance that it has not read, past the kernel's socket buffer (about 200 KB on
@@ -86,8 +124,9 @@ export const DESKTOP_STREAM_MEMBERS = 8;
  * at most about 50 KB a second (each member's verdicts no more often than every 25 ms, a SENT for each of its sends,
  * a ping every 5 s), so 1 MiB waiting is far past any correct instance, and still small in the executor's 2 GiB. */
 const MAX_UNREAD_BYTES = 1024 * 1024;
-/** Members that left on main's side and whose DONE has not come yet: a correct instance answers an UNWATCH at once,
- * so at most the members that left within one hold of its loop (8 at a time, and as many joining and leaving again). */
+/** Members that left on main's side and whose DONE has not come yet: a correct instance answers an UNWATCH at once, but
+ * its loop may be held (its guard allows 5 s) while members join and leave fast. At this many, a newcomer is refused
+ * STREAM_BUSY until DONEs come: the set is bounded by construction, and nobody is ended for it. */
 const MAX_LEAVING = 2 * DESKTOP_STREAM_MEMBERS;
 /** What ONE ok lets through to a member: one cycle's messages, which DesktopStream's #send makes from the member's
  * window of the ring. The window's raw pixels are at most the ring's bound, 64 MiB, or one update when that is larger
@@ -151,35 +190,62 @@ interface Frame {
 	readonly type: number;
 	readonly member: number;
 	readonly length: number;
-	/** The payload as the pieces it came in (views, never copied), or one buffer. */
+	/** The payload as views of the blocks it was copied into: at most ceil(length / DESKTOP_STREAM_BLOCK_BYTES) + 1. */
 	readonly pieces: readonly Buffer[];
 }
 class FrameError extends Error {}
 
 /**
- * Frames read off the pieces a connection gives, in order. A header is checked as soon as its 9 bytes are here — its
- * type known and its length within that type's bound — before any of its payload is waited for. A payload is never
- * looked into here: it is handed on as views of the pieces it came in (a small control payload, joined, is at most
- * CONTROL_BYTES).
+ * Frames read off a connection, in order. Every byte read is copied once, as it comes, into blocks of
+ * DESKTOP_STREAM_BLOCK_BYTES (one read of the connection fills at most two), so however small the pieces a connection
+ * gives, what is held is a few blocks, never one object a piece: a frame of n bytes is taken as at most
+ * ceil(n / DESKTOP_STREAM_BLOCK_BYTES) + 1 views. Blocks are taken from a head index and let go as they are used up,
+ * the array compacted once most of it is behind the head; nothing is shifted one by one. A header is checked as soon as
+ * its 9 bytes are here (its type known, its length within that type's bound), before any of its payload is waited for;
+ * a payload is never looked into.
  */
-class FrameReader {
-	readonly #pieces: Buffer[] = [];
+class FrameQueue {
+	readonly #blocks: (Buffer | undefined)[] = [];
+	#head = 0;
+	#offset = 0;
+	/** How much of the last block is written: a full one means the next byte starts a new block. */
+	#fill = DESKTOP_STREAM_BLOCK_BYTES;
 	#length = 0;
 	#header: { type: number; member: number; length: number } | null = null;
 	readonly #limit: (type: number) => number;
 	constructor(limit: (type: number) => number) {
 		this.#limit = limit;
 	}
-	push(piece: Buffer): void {
-		if (piece.byteLength === 0) return;
-		this.#pieces.push(piece);
-		this.#length += piece.byteLength;
+	/** Bytes held (read and not yet taken). */
+	get bytes(): number {
+		return this.#length;
+	}
+	/** Blocks held. */
+	get blocks(): number {
+		return this.#blocks.length - this.#head;
+	}
+	/** Copies the first `size` bytes of `from` in, block by block. */
+	append(from: Uint8Array, size: number): void {
+		let at = 0;
+		while (at < size) {
+			if (this.#fill === DESKTOP_STREAM_BLOCK_BYTES) {
+				this.#blocks.push(Buffer.allocUnsafeSlow(DESKTOP_STREAM_BLOCK_BYTES));
+				this.#fill = 0;
+			}
+			const block = this.#blocks[this.#blocks.length - 1] as Buffer;
+			const part = Math.min(size - at, DESKTOP_STREAM_BLOCK_BYTES - this.#fill);
+			block.set(from.subarray(at, at + part), this.#fill);
+			this.#fill += part;
+			at += part;
+		}
+		this.#length += size;
 	}
 	/** The next whole frame, or null while more bytes are needed; throws FrameError for a header no frame may have. */
 	next(): Frame | null {
 		if (!this.#header) {
 			if (this.#length < DESKTOP_STREAM_HEADER_BYTES) return null;
-			const bytes = Buffer.concat(this.#take(DESKTOP_STREAM_HEADER_BYTES), DESKTOP_STREAM_HEADER_BYTES);
+			const pieces = this.#take(DESKTOP_STREAM_HEADER_BYTES);
+			const bytes = pieces.length === 1 ? (pieces[0] as Buffer) : Buffer.concat(pieces, DESKTOP_STREAM_HEADER_BYTES);
 			const header = { length: bytes.readUInt32BE(0), type: bytes[4] as number, member: bytes.readUInt32BE(5) };
 			const limit = this.#limit(header.type);
 			if (limit < 0) throw new FrameError("a frame of no known type");
@@ -191,23 +257,29 @@ class FrameReader {
 		this.#header = null;
 		return { ...header, pieces: header.length === 0 ? [] : this.#take(header.length) };
 	}
-	/** The next `size` bytes as views of the pieces they are in. */
+	/** The next `size` bytes (all here) as views of the blocks they are in. */
 	#take(size: number): Buffer[] {
 		const out: Buffer[] = [];
 		let left = size;
 		while (left > 0) {
-			const first = this.#pieces[0] as Buffer;
-			if (first.byteLength <= left) {
-				out.push(first);
-				this.#pieces.shift();
-				left -= first.byteLength;
-			} else {
-				out.push(first.subarray(0, left));
-				this.#pieces[0] = first.subarray(left);
-				left = 0;
+			const end = this.#head === this.#blocks.length - 1 ? this.#fill : DESKTOP_STREAM_BLOCK_BYTES;
+			if (this.#offset === end) {
+				// Used up (bytes are past it, so it is not the block being filled): let go.
+				this.#blocks[this.#head] = undefined;
+				this.#head++;
+				this.#offset = 0;
+				continue;
 			}
+			const part = Math.min(end - this.#offset, left);
+			out.push((this.#blocks[this.#head] as Buffer).subarray(this.#offset, this.#offset + part));
+			this.#offset += part;
+			left -= part;
 		}
 		this.#length -= size;
+		if (this.#head > 64 && this.#head * 2 > this.#blocks.length) {
+			this.#blocks.splice(0, this.#head);
+			this.#head = 0;
+		}
 		return out;
 	}
 }
@@ -235,16 +307,34 @@ interface Member {
  * instance broke the protocol. */
 const HOLD = Symbol("hold");
 
+/** One turn of main's loop, or one second, of work for one connection: its units and bytes (see the top of the file). */
+interface Spent {
+	units: number;
+	bytes: number;
+}
+/** What one turn of main's loop spent on a connection, for the tests' look: its units and bytes, its reads, the time
+ * main's own work for it took, and what it held at the turn's end. */
+export interface DesktopStreamTurn {
+	readonly units: number;
+	readonly bytes: number;
+	readonly reads: number;
+	/** Reads that brought little and completed no frame: each made the next read wait DRIP_MS. */
+	readonly drips: number;
+	readonly ms: number;
+	readonly heldBytes: number;
+	readonly heldBlocks: number;
+}
+
 /** The executor's side of one desktop's instance (see the top of this file). */
 export class InstanceDesktop implements WatchedDesktop {
-	readonly #connection: Duplex;
+	readonly #connection: Socket;
 	readonly #members = new Map<number, Member>();
 	readonly #onEnded: () => void;
 	readonly #now: () => number;
 	readonly #pongWithinMs: number;
 	readonly #maxMembers: number;
 	readonly #releaseGapMs: number;
-	readonly #reader = new FrameReader((type) => {
+	readonly #queue = new FrameQueue((type) => {
 		if (type === F.send) return DESKTOP_STREAM_MESSAGE_BYTES;
 		if (type === F.done || type === F.ended) return CONTROL_BYTES;
 		if (type === F.ready || type === F.release || type === F.pong) return 0;
@@ -256,14 +346,20 @@ export class InstanceDesktop implements WatchedDesktop {
 	 * it: at most one RELEASE or one SEND a correct instance can have on its way when it reads the UNWATCH. */
 	readonly #leaving = new Map<number, { frames: number }>();
 	readonly #maxUnreadBytes: number;
+	readonly #observe: ((turn: DesktopStreamTurn) => void) | undefined;
 	#reason: string | null = null;
 	#cause: string | null = null;
 	#ready = false;
 	#nextId = 1;
 	/** A release that came before it was due, held unread with everything after it. */
 	#held: Frame | null = null;
-	#timer: ReturnType<typeof setTimeout> | null = null;
-	#scheduled = false;
+	/** While the connection is not being read, the one wake that reads it again. */
+	#wake: { readonly clear: () => void } | null = null;
+	/** This turn's work (null until something is charged in it) and this second's. */
+	#turn: (Spent & { reads: number; drips: number; ms: number }) | null = null;
+	#second: Spent & { start: number } = { start: Number.NEGATIVE_INFINITY, units: 0, bytes: 0 };
+	/** Frames taken so far: a read that took none and brought little is a drip. */
+	#taken = 0;
 	/** The ping waiting for its pong, and how long main itself was not reading since it was sent. */
 	#ping: { sentAt: number; notReading: number } | null = null;
 	#stalledSince: number | null = null;
@@ -271,7 +367,7 @@ export class InstanceDesktop implements WatchedDesktop {
 	#lastTick: number;
 
 	constructor(
-		connection: Duplex,
+		socket: string,
 		spec: DesktopRelaySpec,
 		onEnded: () => void,
 		options: {
@@ -282,34 +378,39 @@ export class InstanceDesktop implements WatchedDesktop {
 			readonly releaseGapMs?: number;
 			/** MAX_UNREAD_BYTES, for the tests. */
 			readonly maxUnreadBytes?: number;
+			/** Called at the end of every turn something was charged in, for the tests. */
+			readonly observe?: (turn: DesktopStreamTurn) => void;
 			readonly now?: () => number;
 		},
 	) {
-		this.#connection = connection;
 		this.#onEnded = onEnded;
 		this.#now = options.now ?? Date.now;
 		this.#pongWithinMs = options.pongWithinMs ?? 15_000;
 		this.#maxMembers = options.maxMembers ?? DESKTOP_STREAM_MEMBERS;
 		this.#releaseGapMs = options.releaseGapMs ?? RELEASE_GAP_MS;
 		this.#maxUnreadBytes = options.maxUnreadBytes ?? MAX_UNREAD_BYTES;
+		this.#observe = options.observe;
 		this.#pingEveryMs = options.pingEveryMs ?? 5000;
 		this.#lastTick = this.#now();
-		connection.on("data", (piece: Buffer) => {
-			// Every piece pauses the connection: it is read again only when main is ready for the next frame.
-			connection.pause();
-			this.#reader.push(piece);
-			if (!this.#scheduled && !this.#timer) this.#pump();
+		// Every read lands in one buffer of this connection's own and is handed here; returning false stops reading at
+		// once (nothing is read ahead while main waits).
+		this.#connection = createConnection({
+			path: socket,
+			onread: {
+				buffer: Buffer.allocUnsafe(DESKTOP_STREAM_BLOCK_BYTES),
+				callback: (size: number, buffer: Uint8Array) => this.#onRead(size, buffer),
+			},
 		});
-		connection.on("error", (error: Error & { code?: string }) =>
+		this.#connection.on("error", (error: Error & { code?: string }) =>
 			this.#fail(this.#ready ? "its connection failed" : `no way to an instance (${error.code ?? error.name})`),
 		);
-		connection.on("close", () =>
+		this.#connection.on("close", () =>
 			this.#fail(
 				this.#ready ? "its process ended" : "closed before it was ready (the socket's cap, or a failed start)",
 			),
 		);
 		writeFrame(
-			connection,
+			this.#connection,
 			F.hello,
 			0,
 			Buffer.from(JSON.stringify({ protocol: DESKTOP_STREAM_PROTOCOL, version: options.version, spec })),
@@ -335,16 +436,15 @@ export class InstanceDesktop implements WatchedDesktop {
 	watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string> {
 		if (this.#reason) return Promise.resolve(this.#reason);
 		if (signal.aborted) return Promise.resolve("closed");
-		if (this.#members.size >= this.#maxMembers) return Promise.resolve("STREAM_BUSY");
+		// Full, or as many members let go of as may wait for their DONE (a correct instance whose loop is held): a delay,
+		// never an end.
+		if (this.#members.size >= this.#maxMembers || this.#leaving.size >= MAX_LEAVING)
+			return Promise.resolve("STREAM_BUSY");
 		const id = this.#nextId++;
 		return new Promise<string>((resolve) => {
 			const onAbort = () => {
 				// Left on this side: the instance may still have one frame of it on the way, then its DONE.
 				if (this.#leave(id, "closed")) this.#leaving.set(id, { frames: 1 });
-				if (this.#leaving.size > MAX_LEAVING) {
-					this.#fail("members it was told to let go of and did not");
-					return;
-				}
 				this.#write(F.unwatch, id);
 			};
 			this.#members.set(id, {
@@ -390,58 +490,128 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#write(F.ping, 0);
 	}
 
-	/** Reads frames while main is ready for them: at most a turn's budget, and never past a release not yet due. */
-	#pump(): void {
-		this.#scheduled = false;
-		this.#timer = null;
-		if (this.#reason) return;
-		const now = this.#now();
-		if (this.#stalledSince !== null) {
-			if (this.#ping) this.#ping.notReading += now - this.#stalledSince;
-			this.#stalledSince = null;
+	/** THE one place main's work for this connection is charged: a read (a unit, and its bytes, each copied once into its
+	 * block), a frame taken (a unit), a piece handed to a sink (a unit). */
+	#charge(units: number, bytes: number): void {
+		if (!this.#turn) {
+			const turn = { units: 0, bytes: 0, reads: 0, drips: 0, ms: 0 };
+			this.#turn = turn;
+			// The turn ends after this turn's reads and wakes (the check phase of the loop): its budget with it.
+			setImmediate(() => {
+				this.#turn = null;
+				this.#observe?.({ ...turn, heldBytes: this.#queue.bytes, heldBlocks: this.#queue.blocks });
+			});
 		}
-		let frames = 0;
-		let bytes = 0;
+		this.#turn.units += units;
+		this.#turn.bytes += bytes;
+		this.#second.units += units;
+		this.#second.bytes += bytes;
+	}
+	/** Whether this turn's budget and this second's both have room left: checked before every unit. */
+	#room(): boolean {
+		const now = this.#now();
+		if (now - this.#second.start >= 1000) this.#second = { start: now, units: 0, bytes: 0 };
+		const turn = this.#turn;
+		return (
+			(turn === null || (turn.units < TURN_UNITS && turn.bytes < TURN_BYTES)) &&
+			this.#second.units < SECOND_UNITS &&
+			this.#second.bytes < SECOND_BYTES
+		);
+	}
+
+	/** One read of the connection (its bytes in `buffer`): charged, copied into the queue, and the frames it completed
+	 * taken while there is budget. Answers whether to read again at once. */
+	#onRead(size: number, buffer: Uint8Array): boolean {
+		if (this.#reason) return false;
+		const began = performance.now();
+		this.#charge(1, size);
+		(this.#turn as { reads: number }).reads++;
+		this.#queue.append(buffer, size);
+		const taken = this.#taken;
+		let more = this.#drain();
+		if (more && size < DRIP_BYTES && this.#taken === taken) {
+			// It brought little and completed no frame: the next read waits DRIP_MS, and the kernel gathers meanwhile.
+			(this.#turn as { drips: number }).drips++;
+			this.#pause(DRIP_MS);
+			more = false;
+		} else if (more && !this.#room()) {
+			this.#pause();
+			more = false;
+		}
+		if (this.#turn) this.#turn.ms += performance.now() - began;
+		return more;
+	}
+
+	/** Takes frames while there is budget: true when it wants more bytes and may read them now; false when it stopped
+	 * (a wake is set, or it ended). */
+	#drain(): boolean {
 		for (;;) {
-			if (frames >= DESKTOP_STREAM_TURN_FRAMES || bytes >= TURN_BYTES) {
-				// The turn's budget is spent: the rest waits, unread, for the next turn.
-				this.#stalledSince = now;
-				this.#scheduled = true;
-				setImmediate(() => this.#pump());
-				return;
+			if (this.#reason) return false;
+			if (!this.#room()) {
+				this.#pause();
+				return false;
 			}
 			let frame = this.#held;
-			if (!frame) {
+			if (frame === null) {
 				try {
-					frame = this.#reader.next();
+					frame = this.#queue.next();
 				} catch (error) {
 					this.#fail(error instanceof FrameError ? error.message : "a frame main could not read");
-					return;
+					return false;
 				}
-				if (!frame) {
-					// More bytes are needed, and main is ready for them.
-					this.#connection.resume();
-					return;
-				}
+				if (frame === null) return true;
 			}
-			this.#held = null;
-			frames++;
-			bytes += DESKTOP_STREAM_HEADER_BYTES + frame.length;
+			const now = this.#now();
 			const outcome = this.#take(frame, now);
 			if (outcome === HOLD) {
 				// A release before it is due: it and everything after it wait, unread, until it is.
-				const member = this.#members.get(frame.member) as Member;
 				this.#held = frame;
-				this.#stalledSince = now;
-				this.#timer = setTimeout(() => this.#pump(), Math.max(1, member.lastAsked + this.#releaseGapMs - now));
-				return;
+				const member = this.#members.get(frame.member) as Member;
+				this.#pause(Math.max(1, member.lastAsked + this.#releaseGapMs - now));
+				return false;
 			}
+			this.#held = null;
+			this.#charge(1 + (frame.type === F.send ? frame.pieces.length : 0), 0);
+			this.#taken++;
 			if (outcome) {
 				this.#fail(outcome);
-				return;
+				return false;
 			}
-			if (this.#reason) return;
 		}
+	}
+
+	/** Not reading: until `ms` from now, or until the budget has room again (the next turn, or the next second). The time
+	 * counts as main not reading, for the pong. */
+	#pause(ms?: number): void {
+		if (this.#stalledSince === null) this.#stalledSince = this.#now();
+		if (this.#wake) return;
+		const now = this.#now();
+		let wait = ms;
+		if (wait === undefined && (this.#second.units >= SECOND_UNITS || this.#second.bytes >= SECOND_BYTES))
+			wait = Math.max(1, this.#second.start + 1000 - now);
+		if (wait === undefined) {
+			const handle = setImmediate(() => this.#go());
+			this.#wake = { clear: () => clearImmediate(handle) };
+		} else {
+			const handle = setTimeout(() => this.#go(), wait);
+			this.#wake = { clear: () => clearTimeout(handle) };
+		}
+	}
+
+	/** A wake: takes what waits, then reads again if there is budget. */
+	#go(): void {
+		this.#wake = null;
+		if (this.#reason) return;
+		const began = performance.now();
+		if (this.#stalledSince !== null) {
+			if (this.#ping) this.#ping.notReading += this.#now() - this.#stalledSince;
+			this.#stalledSince = null;
+		}
+		if (this.#drain()) {
+			if (this.#room()) this.#connection.resume();
+			else this.#pause();
+		}
+		if (this.#turn) this.#turn.ms += performance.now() - began;
 	}
 
 	/** Acts on one frame: what the instance broke, HOLD, or null when it kept to the protocol. */
@@ -554,7 +724,8 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#reason = reason;
 		this.#cause = cause;
 		clearInterval(this.#pinger);
-		if (this.#timer) clearTimeout(this.#timer);
+		this.#wake?.clear();
+		this.#wake = null;
 		this.#held = null;
 		for (const [id, member] of this.#members) {
 			this.#members.delete(id);
@@ -608,7 +779,7 @@ export function runDesktopStreamInstance(options: {
 	});
 	guard.unref();
 	setInterval(() => Atomics.add(beat, 0, 1), BEAT_EVERY_MS).unref();
-	const reader = new FrameReader((type) => {
+	const reader = new FrameQueue((type) => {
 		if (type === F.hello) return HELLO_BYTES;
 		if (type === F.verdict) return CONTROL_BYTES;
 		if (type === F.sent) return 1;
@@ -752,7 +923,7 @@ export function runDesktopStreamInstance(options: {
 		}
 	};
 	connection.on("data", (piece: Buffer) => {
-		reader.push(piece);
+		reader.append(piece, piece.byteLength);
 		for (;;) {
 			let frame: Frame | null;
 			try {

@@ -280,7 +280,8 @@ export class CloudMemberMachineStreamListener {
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
 				if (ended || socket.destroyed) throw new Error("MEMBER_MACHINE_STREAM_CLOSED");
-				// The head and the picture's pieces as writes in one: the picture's bytes are never copied here.
+				// The head and the picture's pieces (at most 34: a desktop's instance's message as main read it) as writes in one,
+				// corked: the picture's bytes are never copied here.
 				const pieces = Buffer.isBuffer(message) ? [message] : message;
 				let length = 0;
 				for (const piece of pieces) length += piece.byteLength;
