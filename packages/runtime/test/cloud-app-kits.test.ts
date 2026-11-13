@@ -8,6 +8,7 @@ import {
 	KIT_ENGINE_JS,
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
+	KIT_LIVE_QUESTIONS,
 	kitBindings,
 	kitDataFile,
 	kitMedia,
@@ -701,6 +702,12 @@ it("finds the questions a kit's data names exactly as the page's script does", a
 		{ a: deep(10) },
 		{ a: deep(11) },
 		{ a: deep(12) },
+		// The same params in another order are the same question.
+		{
+			a: { query: "shop/sales", params: { since: 1, until: 2 } },
+			b: { query: "shop/sales", params: { until: 2, since: 1 } },
+			c: { query: "shop/sales", params: { until: 3, since: 1 } },
+		},
 	];
 	for (const sample of samples) {
 		// The page asks once for each question it finds; a watch the bridge refuses lets it go on at once.
@@ -716,6 +723,68 @@ it("finds the questions a kit's data names exactly as the page's script does", a
 	}
 	expect(kitBindings(samples[2])).toHaveLength(2);
 	expect(kitBindings(samples[3])).toEqual([]);
+	expect(kitBindings(samples[9])).toHaveLength(2);
+	// Five questions, each named with its params in both orders, are five, not past what a page keeps live.
+	const twice = {
+		...MODEL,
+		groups: [
+			{
+				label: "Sales",
+				inputs: Array.from({ length: 10 }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: {
+						query: `shop/q${n % 5}`,
+						params: n < 5 ? { since: 1, until: 2 } : { until: 2, since: 1 },
+					},
+				})),
+			},
+		],
+	};
+	expect(kitBindings(twice)).toHaveLength(5);
+	expect(kitNotes("model", twice, () => true)).toEqual([]);
+});
+
+it("stops the watches the data no longer names before it starts new ones, within a bridge's limit", async () => {
+	// A bridge that keeps at most eight watches at once, and refuses a ninth.
+	const open = new Set<string>();
+	const watch = vi.fn(
+		(name: string, _params: unknown, listener: (answer: unknown) => void, failed: (error: Error) => void) => {
+			if (open.size >= KIT_LIVE_QUESTIONS) {
+				queueMicrotask(() => failed(new Error("Too many watches.")));
+				return () => undefined;
+			}
+			open.add(name);
+			queueMicrotask(() => listener({ columns: ["n"], rows: [{ n: 7 }], more: false, asOf: "" }));
+			return () => {
+				open.delete(name);
+			};
+		},
+	);
+	const asking = (first: number) => ({
+		...MODEL,
+		groups: [
+			{
+				label: "Numbers",
+				inputs: Array.from({ length: KIT_LIVE_QUESTIONS }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: { query: `shop/q${first + n}` },
+				})),
+			},
+		],
+	});
+	let data = asking(0);
+	const { kit } = openPage(data, { read: async () => JSON.stringify(data), watch, onChange() {} });
+	expect(inputs(await kit.load()).every(({ value }) => value === 7)).toBe(true);
+	// The data now names eight other questions: the eight old watches go first, and the new ones all answer.
+	data = asking(KIT_LIVE_QUESTIONS);
+	expect(inputs(await kit.load()).map(({ value, state }) => [value, state])).toEqual(
+		Array.from({ length: KIT_LIVE_QUESTIONS }, () => [7, "known"]),
+	);
+	expect([...open].sort()).toEqual(
+		Array.from({ length: KIT_LIVE_QUESTIONS }, (_, n) => `shop/q${KIT_LIVE_QUESTIONS + n}`).sort(),
+	);
 });
 
 it("tells the maker when the data names more questions than a page keeps live", () => {

@@ -473,6 +473,38 @@ describe("the model kit's engine with live values", () => {
 		expect(shown("Visits")).toEqual(["4200", "known"]);
 	});
 
+	it("keeps a read that ends while the member drags, and shows it when they let go", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const { qorpera } = await openLive("model", orders, db);
+		let release: () => void = () => undefined;
+		qorpera.read.mockImplementationOnce(
+			() =>
+				new Promise<string>((done) => {
+					release = () => done(JSON.stringify(orders));
+				}),
+		);
+		// A value moves and the page reads; the member takes the slider before the read ends.
+		db.set("shop/month", { orders: 360 });
+		db.set("shop/visits", { visits: 4300 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		const range = document.querySelector<HTMLInputElement>('.mk-range[aria-label="Orders"]') as HTMLInputElement;
+		range.dispatchEvent(new Event("pointerdown"));
+		slide("Orders", 500);
+		release();
+		await settle();
+		expect(range.isConnected).toBe(true);
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		expect(shown("Visits")).toEqual(["4200", "known"]);
+		// Let go: what was read shows, with no read again.
+		range.dispatchEvent(new Event("pointerup"));
+		await settle(1500);
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		expect(shown("Visits")).toEqual(["4300", "known"]);
+	});
+
 	it("neither stops nor moves a slider being dragged when a value moves, and keeps an open note open", async () => {
 		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
 		const noted = structuredClone(orders);

@@ -122,7 +122,10 @@ const KIT_LIVE_VALUES = [
 	// One watch for each question with its params. A failed answer is no answer: the last good one stays. A watch that
 	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again
 	// (once, however many values share it).
-	'const ask=(b)=>{const p=b.params&&typeof b.params==="object"?b.params:{},key=JSON.stringify([b.query,p]);let w=asks.get(key);',
+	// A question's key: its name and its params, in the order of their names (kitBindings keys it the same way).
+	'const prm=(b)=>b.params&&typeof b.params==="object"?b.params:{};',
+	"const keyOf=(b)=>{const p=prm(b);return JSON.stringify([b.query,Object.keys(p).sort().map((k)=>[k,p[k]])])};",
+	"const ask=(b,key)=>{const p=prm(b);let w=asks.get(key);",
 	"if(!w){w={dead:1};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}const dead=()=>{w.dead=1;w.ready()};",
 	"if(w.dead&&!w.used){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
 	"w.a=a;w.ready();if(s!==w.s){w.s=s;tell()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
@@ -134,10 +137,12 @@ const KIT_LIVE_VALUES = [
 	'const found=[],ws=[],on=typeof q.watch==="function";let data=null;',
 	'try{if(typeof text==="string"&&text.includes("query")){data=JSON.parse(text);walk(data,null,null,"",found,0)}}catch(e){}',
 	// The first answers get a few seconds; what has not answered by then comes through onLive.
-	"waiting++;let t=0;try{for(const w of asks.values())w.used=0;if(on)for(const f of found)ws.push(ask(f.b));",
+	// The watches the data no longer names stop before new ones start, so a bridge's limit on watches has room for them.
+	"const keys=found.map((f)=>keyOf(f.b)),want=new Set(on?keys:[]);",
+	'for(const[key,w]of asks)if(!want.has(key)){asks.delete(key);try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
+	"waiting++;let t=0;try{for(const w of asks.values())w.used=0;if(on)found.forEach((f,i)=>ws.push(ask(f.b,keys[i])));",
 	"if(ws.some((w)=>!w.a))await Promise.race([Promise.all(ws.map((w)=>w.first)),new Promise((r)=>{t=setTimeout(r,3000)})]);",
 	"}finally{waiting--;clearTimeout(t)}",
-	'for(const[key,w]of asks)if(!w.used){asks.delete(key);try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
 	"const now=new Map(),moved=[];found.forEach((f,i)=>{let v=null;const a=on&&ws[i].a,r=a&&a.rows[0];",
 	'if(r&&typeof r==="object")v=num(r[typeof f.b.column==="string"?f.b.column:Array.isArray(a.columns)&&a.columns.length?a.columns[0]:Object.keys(r)[0]]);',
 	'else if(!on)v=num(f.b.example);f.h[f.k]=v;if(f.s)f.h.state=v===null?"unknown":on?"known":"assumed";',
@@ -169,8 +174,19 @@ export function kitBindings(data: unknown): string[] {
 			typeof object.query === "string" &&
 			Object.keys(object).every((key) => KIT_BINDING_KEYS.has(key))
 		) {
-			const params = typeof object.params === "object" && object.params !== null ? object.params : {};
-			found.add(JSON.stringify([object.query, params]));
+			const params = (typeof object.params === "object" && object.params !== null ? object.params : {}) as Record<
+				string,
+				unknown
+			>;
+			// The page's key for a question: its params in the order of their names, so an order makes no other question.
+			found.add(
+				JSON.stringify([
+					object.query,
+					Object.keys(params)
+						.sort()
+						.map((key) => [key, params[key]]),
+				]),
+			);
 			return;
 		}
 		for (const item of Object.values(object)) walk(item, depth + 1);

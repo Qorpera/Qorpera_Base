@@ -2206,6 +2206,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	let pending = 0;
 	async function load() {
 		lastLoad = Date.now();
+		// this read is the newest: a result held for a drag, or a read planned for later, gives way to it
+		clearTimeout(pending);
 		if (ui && ui.dragging) {
 			clearTimeout(pending);
 			pending = setTimeout(load, 1500);
@@ -2224,6 +2226,15 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			quiet();
 			clearTimeout(pending);
 			pending = setTimeout(load, 10000);
+			return;
+		}
+		show(text);
+	}
+	function show(text) {
+		// the member took hold of a slider while the read ran: keep what was read, and show it when they let go
+		if (ui && ui.dragging) {
+			clearTimeout(pending);
+			pending = setTimeout(() => show(text), 1500);
 			return;
 		}
 		if (text === lastText) return;
