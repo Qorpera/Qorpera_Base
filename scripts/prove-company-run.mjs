@@ -70,7 +70,7 @@ async function bundle(scratch) {
 
 /** The database through psql, as the service role. A function's arguments are typed as it declares them, as PostgREST
  * types a JSON body's fields; an error names its SQLSTATE, as PostgREST's `code` does. */
-class Database {
+export class Database {
 	#run;
 	#signatures = new Map();
 	calls = [];
@@ -180,7 +180,7 @@ function postgrestStatus(code) {
 }
 
 /** PostgREST in front of the database, for the runtime's HttpCloudCompanyPathControl. */
-function postgrestFetch(db) {
+export function postgrestFetch(db) {
 	return async (input, init = {}) => {
 		const url = new URL(String(input));
 		const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]+)$/.exec(url.pathname);
@@ -198,7 +198,7 @@ function postgrestFetch(db) {
  * on any one object); with both busy, or its object already in flight, it answers 503, as the gateway does for an
  * object with no Storage copy yet (one just written). `lane` counts the gets, the most in flight at once, and those
  * answered busy. */
-function gatewayFetch(db, objects, lane) {
+export function gatewayFetch(db, objects, lane) {
 	return async (input, init = {}) => {
 		const url = new URL(String(input));
 		const route = /^\/v1\/folder-objects\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(url.pathname);
@@ -249,7 +249,7 @@ function gatewayFetch(db, objects, lane) {
 }
 
 /** The run's control plane as the native provider service makes its calls (cloud-native-provider-service.ts). */
-function controlPlane(db) {
+export function controlPlane(db) {
 	return {
 		describeToolAuthority: async (binding) => db.direct("qorpera_describe_native_tool_authority", { p_binding: binding }),
 		beginToolOperation: async (binding, input) =>
@@ -589,7 +589,7 @@ export async function proveCompanyRun({
 
 /** The run's log as stored: every step's index row, and every block read back through the folder's own read (the shared
  * parser on its bytes, memory-run-files.ts), its lines parsed. */
-async function runLog(code, db, run, runId) {
+export async function runLog(code, db, run, runId) {
 	const index = db.json(`select coalesce(jsonb_agg(jsonb_build_object('j', s.j, 'tool', s.tool, 'call', s.call_id,
 			'finished', s.finished, 'narrow', s.narrow, 'releases', s.releases) order by s.j), '[]')::text
 		from public.qorpera_memory_run_steps s where s.run_id = '${runId}'`);
