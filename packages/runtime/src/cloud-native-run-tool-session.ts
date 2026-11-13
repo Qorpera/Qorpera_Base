@@ -5,6 +5,7 @@ import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
 	type CloudCodexOpening,
+	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -135,7 +136,7 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
 	try {
@@ -366,9 +367,15 @@ export async function runCloudNativeRunToolSession(options: {
 				await assertActive(signal);
 			},
 		});
-		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5).
+		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5). A
+		// usage limit the provider met after the run's answer stays the login's to record (the 2026-11-13 amendment).
 		if (runLog?.log.gone)
-			throw tagNativeRuntimeFailure(new CloudRunLogGone(), "codex-turn-completion", "authority_unavailable");
+			throw tagNativeRuntimeFailure(
+				new CloudRunLogGone(),
+				"codex-turn-completion",
+				"authority_unavailable",
+				result.usageSignal ?? null,
+			);
 	} catch (error) {
 		executionFailed = true;
 		throw error;
@@ -392,6 +399,11 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		}
 	}
-	if (cleanupError) throw cleanupError;
+	// A usage limit the provider met after the run's answer stays the login's to record, also when cleanup failed after
+	// it (the 2026-11-13 amendment).
+	if (cleanupError)
+		throw result?.usageSignal
+			? tagNativeRuntimeFailure(cleanupError, "native-tools", "unknown", result.usageSignal)
+			: cleanupError;
 	return result;
 }
