@@ -471,6 +471,59 @@ describe("what the model is told when its home is not there", () => {
 	});
 });
 
+describe("a line typed into a running shell, whose request names no call", () => {
+	it("is the step of the write_stdin released next, and a refused one is told and kept too", async () => {
+		const machine = fakeMachine();
+		const { steps, log } = runLog();
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				steps: new CloudCodexHomeSteps(log),
+				review: {
+					check: async (action) =>
+						action.summary.startsWith("bad")
+							? { run: false, text: "REVIEW_DENIED: not this line." }
+							: { run: true },
+				},
+			},
+			async (home, slot) => {
+				slot.send({
+					id: 1,
+					method: "process/start",
+					params: {
+						processId: "5",
+						argv: ["/bin/bash", "-lc", "cat"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-s" },
+					},
+				});
+				await until(() => machine.written.length === 1);
+				home.released("call-s", "env-s", true);
+				slot.send({ id: 2, method: "process/write", params: { processId: "5", chunk: base64("good\n") } });
+				await until(() => machine.written.length === 2);
+				expect(home.noteFor("call-w")).toBeUndefined();
+				home.released("call-w", "env-w", true);
+				const typed = steps.find((step) => step.tool === "write_stdin");
+				expect(typed?.result).toBe("env-w");
+				expect(JSON.parse(typed?.argumentsText ?? "{}")).toEqual({ chars: "good\n", into: "cat" });
+				slot.send({ id: 3, method: "process/write", params: { processId: "5", chunk: base64("bad\n") } });
+				expect(((await slot.next()).error as { message: string }).message).toBe("REVIEW_DENIED: not this line.");
+				expect(home.noteFor("call-x")).toBe("REVIEW_DENIED: not this line.");
+				home.released("call-x", "env-x", true);
+				expect(steps.filter((step) => step.tool === "write_stdin").map((step) => [step.call, step.result])).toEqual(
+					[
+						[typed?.call, "env-w"],
+						["call-x", "env-x"],
+					],
+				);
+				// A release of a tool of ours never takes a typed line's step.
+				home.released("call-ours", "env-ours", false);
+				expect(steps).toHaveLength(3);
+			},
+		);
+	});
+});
+
 describe("the review at the host", () => {
 	it("reviews a patch once for all its files and forwards them after it, and stops a command it declines", async () => {
 		const machine = fakeMachine();

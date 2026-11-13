@@ -441,6 +441,11 @@ export class CloudCodexHomeSteps {
 		this.#log = log;
 	}
 
+	/** Whether a call has a step still waiting for its output. */
+	has(callId: string): boolean {
+		return this.#open.has(callId);
+	}
+
 	/** The step for this action, committed before it runs. Throws when the log cannot take it. */
 	async open(action: CloudCodexHomeAction, signal: AbortSignal): Promise<void> {
 		if (this.#open.has(action.callId)) return;
@@ -595,6 +600,14 @@ export class CloudCodexHome {
 	/** What this host knows of a call of the model's that may never act on the machine (Codex announced it, or the
 	 * review refused it): the step it is kept as, should it end without one. */
 	readonly #known = new Map<string, CloudCodexHomeAction["step"]>();
+	/** Lines typed into a running shell, in order, whose requests name no call of the model's (the pinned Codex's
+	 * `process/write` names none): each belongs to the next of Codex's own calls released that this host has no other
+	 * word of, which is the `write_stdin` that typed it. */
+	readonly #unbound: {
+		readonly hostId: string;
+		readonly refusal?: string;
+		readonly step: CloudCodexHomeAction["step"];
+	}[] = [];
 	/** The model's processes, by the id Codex gave each: what a write into one is typed into. */
 	readonly #processes = new Map<string, { readonly command: string; readonly cwd: string; readonly callId: string }>();
 	/** The model's patches in progress, by call, as Codex announced them; a file change belongs to the one that names
@@ -647,14 +660,27 @@ export class CloudCodexHome {
 	noteFor(callId: string): string | undefined {
 		const note = this.#notes.get(callId);
 		this.#notes.delete(callId);
-		return note ?? (this.#reached.has(callId) ? undefined : this.#down);
+		if (note) return note;
+		if (this.#reached.has(callId)) return undefined;
+		if (!this.#known.has(callId) && !this.#steps?.has(callId) && this.#unbound[0]?.refusal)
+			return this.#unbound[0].refusal;
+		return this.#down;
 	}
 
-	/** The result fence released this call's output: its step keeps the exact envelope the model got. */
-	released(callId: string, envelope: string): void {
+	/** The result fence released this call's output (`native`: one of Codex's own, not a tool of ours): its step keeps
+	 * the exact envelope the model got. */
+	released(callId: string, envelope: string, native = true): void {
 		const known = this.#known.get(callId);
 		this.#known.delete(callId);
-		this.#steps?.finish(callId, envelope, known);
+		if (!native || known || this.#steps?.has(callId)) {
+			this.#steps?.finish(callId, envelope, known);
+			return;
+		}
+		// A call this host has no word of: the `write_stdin` that typed the oldest line still waiting for its output.
+		const typed = this.#unbound.shift();
+		if (!typed) return;
+		if (typed.refusal !== undefined) this.#steps?.finish(callId, envelope, typed.step);
+		else this.#steps?.finish(typed.hostId, envelope);
 	}
 
 	/** This host's words for one call of the model's, when it knows the call. */
@@ -1011,7 +1037,13 @@ export class CloudCodexHome {
 		const running = processId ? this.#processes.get(processId) : undefined;
 		if (method === "process/write") {
 			const action = cloudHomeStdinAction(this.#machine, params, running, callId);
-			return action ? { refusal: await this.#admit(action), callId } : { callId: named ?? running?.callId };
+			if (!action) return { callId: named ?? running?.callId };
+			const refusal = await this.#admit(action);
+			if (!named) {
+				this.#unbound.push({ hostId: callId, ...(refusal === undefined ? {} : { refusal }), step: action.step });
+				if (this.#unbound.length > 64) this.#unbound.shift();
+			}
+			return { refusal, callId };
 		}
 		if (method.startsWith("process/")) return { callId: named ?? running?.callId };
 		if (!method.startsWith("fs/") || FS_READS.has(method)) return { callId: named };

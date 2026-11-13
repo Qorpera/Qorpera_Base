@@ -292,7 +292,8 @@ export interface CloudNativeActionReview {
  * first in that call's output, and the release that finishes the call's step with the envelope the model got. */
 export interface CloudNativeHomeRelease {
 	noteFor(callId: string): string | undefined;
-	released(callId: string, envelope: string): void;
+	/** `native`: the output is Codex's own tool's, not one this host issued for a tool of ours. */
+	released(callId: string, envelope: string, native: boolean): void;
 }
 
 export interface CloudToolResult {
@@ -780,7 +781,7 @@ export class CloudNativeToolBoundary {
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			// The first release of one of Codex's own calls: its step keeps the exact envelope the model is shown. A
 			// later request carrying the same output is a replay above, which finishes nothing twice.
-			this.#home?.released(input.callId, output);
+			this.#home?.released(input.callId, output, !issued);
 			return release({ kind: input.kind, callId: input.callId, output, ...image });
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
