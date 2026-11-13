@@ -397,13 +397,13 @@ describe("the site key (own code storage, step 4)", () => {
 
 	it("says the name rule, and which part a name breaks, whole in the refusal the session reads (step 5)", () => {
 		const rule =
-			"Must be 3 to 48 of a-z, 0-9 and '-', start and end with a letter or a digit, never have two hyphens in a row, never end in -preview or hold qorpera, and not be a name Qorpera keeps (such as api, app, www, docs or shop)";
+			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login)";
 		for (const [name, broken] of [
 			["Gift", ""],
 			["gift--message", " This one has two hyphens in a row."],
 			["gift-preview", " This one ends in -preview."],
-			["qorpera-gift", " This one holds qorpera."],
-			["shop", " This one is a name Qorpera keeps."],
+			["qorpera-gift", " This one contains qorpera."],
+			["shop", " This one is a reserved name."],
 		] as const) {
 			const refused = withSite({ folder: "dist", name });
 			const message = `${rule}.${broken} Pick another, or leave name out.`;

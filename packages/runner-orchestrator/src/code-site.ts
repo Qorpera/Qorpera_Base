@@ -119,22 +119,25 @@ export function codeSiteNameValid(name: string): boolean {
 	return codeSiteNameRefusal(name) === null;
 }
 
+/** The name rule in one sentence, as every refusal of a site's name says it: the kernel's SITE_NAME_INVALID of
+ * publish_site, share_app and unpublish_site (`qorpera_site_name_words()`, migration 20260930756000), the runtime's for a
+ * slug of the wrong shape, and this executor's for a checks file's `site.name`, byte for byte (code-site.test.ts reads
+ * the migration's text). */
+export const CODE_SITE_NAME_RULE =
+	"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).";
+
 /** What is wrong with a site's name, as the checks file's refusal says it to the session (at most 300 bytes, which the
- * refusal's words show whole): the rule, which part of it the name breaks, and what to do; null for a name that is
- * one. Never the name itself: the session knows what it wrote. */
+ * refusal's words show whole): the rule (`CODE_SITE_NAME_RULE`), which part of it the name breaks, and what to do; null
+ * for a name that is one. Never the name itself: the session knows what it wrote. */
 export function codeSiteNameRefusal(name: string): string | null {
 	let broken: string;
 	if (!NAME.test(name)) broken = "";
 	else if (name.includes("--")) broken = " This one has two hyphens in a row.";
 	else if (name.endsWith("-preview")) broken = " This one ends in -preview.";
-	else if (name.includes("qorpera")) broken = " This one holds qorpera.";
-	else if (RESERVED.has(name)) broken = " This one is a name Qorpera keeps.";
+	else if (name.includes("qorpera")) broken = " This one contains qorpera.";
+	else if (RESERVED.has(name)) broken = " This one is a reserved name.";
 	else return null;
-	return (
-		"Must be 3 to 48 of a-z, 0-9 and '-', start and end with a letter or a digit, never have two hyphens in a row, " +
-		`never end in -preview or hold qorpera, and not be a name Qorpera keeps (such as api, app, www, docs or shop).${broken} ` +
-		"Pick another, or leave name out."
-	);
+	return `${CODE_SITE_NAME_RULE}${broken} Pick another, or leave name out.`;
 }
 
 /** Whether a character is one the kernel's `[[:cntrl:]]` takes as a control under a UTF-8 locale: C0, DEL, C1 and the

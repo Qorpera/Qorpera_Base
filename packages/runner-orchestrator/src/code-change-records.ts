@@ -679,6 +679,9 @@ export interface CodeChangeReleases {
 	ready?: unknown;
 	/** `{change}`: the change due in What's new whose site is not ready yet, between its landing and the upload. */
 	preparing?: unknown;
+	/** `{reason}`: Qorpera took the repository's site down (step 5.1, an operator's takedown); the kernel then sends
+	 * nothing live and no link, and the list says so in place of what is live. */
+	takenDown?: unknown;
 }
 
 /** A time as the kernel sends one (a `timestamptz` in JSON): a day, a time and its offset. */
@@ -718,6 +721,17 @@ function liveLine(live: unknown): string | undefined {
 	const name = (typeof by === "string" && words(by, 200)) || "a member";
 	const link = siteLink(url) ? ` ${url}` : "";
 	return `Live: version ${version}${back ? " again" : ""}, made at change ${change}, since ${minute(since)}; ${name} ${back ? "went back" : "said go"}.${link}`;
+}
+
+/** The line in place of what is live while Qorpera has the site taken down (step 5.1): the words an agent reads when it
+ * would publish to such a site, with the operator's reason as one line of words, and no link; undefined when the
+ * kernel does not say so. */
+function takenDownLine(takenDown: unknown): string | undefined {
+	if (!isRecord(takenDown) || typeof takenDown.reason !== "string") return undefined;
+	const reason = words(takenDown.reason, 300);
+	return reason
+		? `Live: nothing. This site was taken down by Qorpera (${reason}) and cannot be published until Qorpera restores it. Tell a member of the company.`
+		: undefined;
 }
 
 /** The line of what is ready in What's new: undefined when there is none to write. */
@@ -813,9 +827,12 @@ export function codeChangeIndexText(
 	now: number = Date.now(),
 ): string {
 	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
-	const site = [liveLine(head.live), readyLine(head.ready), preparingLine(head.preparing)].filter(
-		(line) => line !== undefined,
-	);
+	// A site Qorpera took down: that line in place of what is live, whatever else the kernel says of it (never a link).
+	const site = [
+		takenDownLine(head.takenDown) ?? liveLine(head.live),
+		readyLine(head.ready),
+		preparingLine(head.preparing),
+	].filter((line) => line !== undefined);
 	const opening = [restoreLine(newest, now), importedLine(head.imported, now)].filter((line) => line !== undefined);
 	return `${[
 		`# Changes in ${words(`${repository.owner}/${repository.name}`, 200)}`,
@@ -1030,6 +1047,7 @@ function filesOf(
 						ready: index.ready,
 						imported: index.imported,
 						preparing: index.preparing,
+						takenDown: index.takenDown,
 					},
 	};
 }
@@ -1310,6 +1328,7 @@ export class CodeChangeRecords {
 						ready: due.index.ready,
 						imported: due.index.imported,
 						preparing: due.index.preparing,
+						takenDown: due.index.takenDown,
 					},
 					this.#now(),
 				)

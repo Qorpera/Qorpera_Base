@@ -32,6 +32,7 @@ import {
 	CODE_SITE_MAX_FILES,
 	CODE_SITE_MAX_FOLDERS,
 	CODE_SITE_MAX_PATH_BYTES,
+	CODE_SITE_NAME_RULE,
 	CODE_SITE_PATH,
 	CODE_SITE_RESERVED_NAMES,
 	type CodeSiteProblem,
@@ -186,9 +187,26 @@ describe("the site's rules, as the database's", () => {
 			expect(kept.migration, clause).toContain(clause);
 	});
 
+	it("says the rule in the kernel's one sentence, byte for byte (migration 20260930756000's qorpera_site_name_words)", () => {
+		// The lead's words (13 Nov 2026, the cross-check's seam 2), the same on every path that refuses a name.
+		expect(CODE_SITE_NAME_RULE).toBe(
+			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).",
+		);
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		const words =
+			/create function public\.qorpera_site_name_words\(\)[^\n]*\n\t-- 20260930756000\n\tselect '((?:[^']|'')*)'::text\n\$\$;/.exec(
+				migration,
+			)?.[1];
+		expect(words?.replaceAll("''", "'")).toBe(CODE_SITE_NAME_RULE);
+		// And every refusal of a name in that migration says it.
+		expect(migration.split("'SITE_NAME_INVALID: ' || public.qorpera_site_name_words()").length - 1).toBe(5);
+	});
+
 	it("says which part of the rule a name breaks, within the 300 bytes a refusal shows whole", () => {
-		const rule =
-			"Must be 3 to 48 of a-z, 0-9 and '-', start and end with a letter or a digit, never have two hyphens in a row, never end in -preview or hold qorpera, and not be a name Qorpera keeps (such as api, app, www, docs or shop).";
+		const rule = CODE_SITE_NAME_RULE;
 		const after = " Pick another, or leave name out.";
 		for (const [name, broken] of [
 			["ab", ""],
@@ -197,11 +215,11 @@ describe("the site's rules, as the database's", () => {
 			["a--b", " This one has two hyphens in a row."],
 			["shop--preview", " This one has two hyphens in a row."],
 			["shop-preview", " This one ends in -preview."],
-			["qorpera-shop", " This one holds qorpera."],
-			["shopqorpera", " This one holds qorpera."],
-			["qorpera", " This one holds qorpera."],
-			["shop", " This one is a name Qorpera keeps."],
-			["well-known", " This one is a name Qorpera keeps."],
+			["qorpera-shop", " This one contains qorpera."],
+			["shopqorpera", " This one contains qorpera."],
+			["qorpera", " This one contains qorpera."],
+			["shop", " This one is a reserved name."],
+			["well-known", " This one is a reserved name."],
 		] as const) {
 			const words = codeSiteNameRefusal(name);
 			expect(words, name).toBe(`${rule}${broken}${after}`);

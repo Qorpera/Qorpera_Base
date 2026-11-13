@@ -1241,6 +1241,51 @@ describe("codeChangeIndexText: a site's own host and what is being prepared (ste
 		);
 	});
 
+	it("says a site Qorpera took down in place of what is live, never with its link, as migration 20260930756000 sends it", () => {
+		const down =
+			"Live: nothing. This site was taken down by Qorpera (Phishing, confirmed.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		// The kernel sends nothing live then (no link), and no preparing; what is ready stays.
+		expect(
+			codeChangeIndexText(SHOP, LINES, {
+				live: null,
+				ready: { change: 16 },
+				preparing: null,
+				takenDown: { reason: "Phishing, confirmed." },
+			}),
+		).toBe(text(HEADING, "", down, "Ready in What's new: change 16.", "", ...LIST));
+		// Whatever else it says of the site: that line, and no link.
+		const said = codeChangeIndexText(SHOP, LINES, {
+			live: LIVE,
+			ready: null,
+			takenDown: { reason: "Phishing, confirmed." },
+		});
+		expect(said.split("\n")[2]).toBe(down);
+		expect(said).not.toContain("https://");
+		// The reason is the operator's one line, kept to words.
+		expect(
+			codeChangeIndexText(SHOP, LINES, { takenDown: { reason: "[x](http://evil.example) *now*" } }).split("\n")[2],
+		).toBe(
+			"Live: nothing. This site was taken down by Qorpera (\\[x\\](http://evil.example) \\*now\\*) and cannot be published until Qorpera restores it. Tell a member of the company.",
+		);
+		// A takedown it cannot read is no line: the list as before.
+		for (const takenDown of [undefined, null, "down", {}, { reason: "" }, { reason: 7 }])
+			expect(
+				codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, takenDown }),
+				JSON.stringify(takenDown),
+			).toBe(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null }));
+		// The migration sends it so: the reason, hosts on or off; nothing live then.
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		expect(migration).toContain(
+			"then jsonb_build_object('takenDown', jsonb_build_object('reason', public.qorpera_site_down_reason(p_repository.site_id)))",
+		);
+		expect(migration).toContain(
+			"and public.qorpera_site_down_reason(p_repository.site_id) is null then jsonb_build_object('version'",
+		);
+	});
+
 	it("links exactly the own hosts of the one host list (SQL test 1252) on the Live line, and none of its other hosts", () => {
 		const unlinked = "Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go.";
 		const list = oneHostList();
@@ -2867,6 +2912,37 @@ describe("CodeChangeRecords", () => {
 		const signal = new AbortController().signal;
 		await inside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
 		expect(inside.wrote[0]?.index).toBe(t.wrote[0]?.index);
+		// A site Qorpera took down: the kernel's takenDown reaches the list, in a pass and inside a job, and no link.
+		const downed = setup();
+		downed.kernel.changes = [];
+		downed.kernel.index = {
+			version: 6,
+			lines,
+			live: null,
+			ready: { change: 16 },
+			takenDown: { reason: "Reported." },
+		};
+		await expect(downed.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		const downText = text(
+			"# Changes in qorpera/shop",
+			"",
+			"Live: nothing. This site was taken down by Qorpera (Reported.) and cannot be published until Qorpera restores it. Tell a member of the company.",
+			"Ready in What's new: change 16.",
+			"",
+			listed,
+		);
+		expect(downed.wrote[0]?.index).toBe(downText);
+		const downInside = setup();
+		downInside.kernel.changes = [];
+		downInside.kernel.index = {
+			version: 6,
+			lines,
+			live: null,
+			ready: { change: 16 },
+			takenDown: { reason: "Reported." },
+		};
+		await downInside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
+		expect(downInside.wrote[0]?.index).toBe(downText);
 		// While hosts are off the kernel sends no such key, and null once the site is ready: the list as before.
 		for (const preparing of [undefined, null]) {
 			const off = setup();
