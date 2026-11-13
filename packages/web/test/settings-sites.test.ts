@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type SitesAccess, SitesView, shownLink } from "../src/app/views/settings-sites.ts";
+import { type SitesAccess, SitesView, SUPPORT_ADDRESS, shownLink } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type CompanySite,
@@ -15,7 +15,7 @@ import {
 } from "../src/cloud/sites.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { deferred, id, settle, timestamp } from "./fixtures.ts";
+import { deferred, id, oneHostList, settle, timestamp } from "./fixtures.ts";
 
 const ORIGIN = "https://sites.qorpera.com";
 const PASSWORD = "k7mq-x2pa-9fhd";
@@ -1119,11 +1119,30 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 			await said(REASON);
 			expect(rowOf(shop.id)?.querySelector(".site-state")?.textContent).toBe("Taget ned");
 			expect(rowOf(shop.id)?.querySelector(".site-down")?.textContent).toBe(
-				"Qorpera har taget siden ned: It asked visitors for bank passwords. Skriv til support@qorpera.com, hvis du mener, det er forkert.",
+				"Qorpera har taget hjemmesiden ned: It asked visitors for bank passwords. Skriv til support@qorpera.com, hvis du mener, det er forkert.",
 			);
 		} finally {
 			setLanguagePreference("system");
 		}
+	});
+
+	it("names the address to write to from one constant, the only place the web writes it", () => {
+		expect(SUPPORT_ADDRESS).toBe("support@qorpera.com");
+		const files = (dir: string): string[] =>
+			readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+				entry.isDirectory()
+					? files(join(dir, entry.name))
+					: entry.name.endsWith(".ts")
+						? [join(dir, entry.name)]
+						: [],
+			);
+		const written = files(resolve("src")).flatMap((path) =>
+			readFileSync(path, "utf8").includes("support@qorpera.com") ? [path.slice(resolve("src").length + 1)] : [],
+		);
+		expect(written).toEqual(["app/views/settings-sites.ts"]);
+		expect(
+			readFileSync(resolve("src/app/views/settings-sites.ts"), "utf8").split("support@qorpera.com"),
+		).toHaveLength(2);
 	});
 });
 
@@ -1352,6 +1371,56 @@ describe("sites client", () => {
 		// Upper case anywhere in the host is not the link the kernel writes.
 		for (const url of ["https://SHOP.qorpera.com/", "https://Shop.qorpera.com/", "https://shop.QORPERA.com/"])
 			expect(() => site("shop", url), url).toThrow("Invalid site.");
+	});
+
+	it("reads the access answer migration 20260930756000 gives, from its text", async () => {
+		const migration = readFileSync(resolve("../../supabase/migrations/20260930756000_site_hosts.sql"), "utf8");
+		const start = migration.indexOf("create function public.qorpera_company_site_access(");
+		const body = migration.slice(start, migration.indexOf("\nend $$;", start));
+		expect(body.slice(0, body.indexOf(")") + 1)).toBe(
+			"create function public.qorpera_company_site_access(p_profile_id uuid)",
+		);
+		for (const written of [
+			"jsonb_build_object('schema', 'qorpera.company-site-access/v1', 'hosts', public.qorpera_site_hosts_on(),",
+			"'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id,",
+			"'takenDown', case when site.taken_down_at is not null",
+			"then jsonb_build_object('at', site.taken_down_at, 'reason', site.taken_down_reason) end)",
+		])
+			expect(body).toContain(written);
+		// A reason is one line of 1 to 300 characters.
+		expect(migration).toContain(
+			"char_length(taken_down_reason) between 1 and 300 and taken_down_reason !~ '[[:cntrl:]]'",
+		);
+		// The call as the web makes it, and an answer of exactly those keys (a time as PostgreSQL writes it in JSON).
+		const at = "2026-11-13T19:00:00.123456+00:00";
+		const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({
+			schema: "qorpera.company-site-access/v1",
+			hosts: true,
+			sites: [
+				{ siteId: shop.id, takenDown: { at, reason: "Spam" } },
+				{ siteId: draft.id, takenDown: null },
+			],
+		}));
+		const access = await createWebSites({ rpc } as unknown as Cloud, { profileId: id(10) }).access();
+		expect(rpc.mock.calls).toEqual([["qorpera_company_site_access", { p_profile_id: id(10) }]]);
+		expect([...access.takenDown]).toEqual([[shop.id, { at, reason: "Spam" }]]);
+	});
+
+	it("takes as a website's link exactly the own hosts of the one host list (SQL test 1252), each for its own site", () => {
+		const list = oneHostList();
+		const slugs = [...new Set(list.map((entry) => entry.slug).filter(Boolean))];
+		for (const { host, slug, scope, verdict } of list) {
+			// A name the rule refuses (verdict name) never reaches the web: the kernel makes no site of it, and migration
+			// 20260930756000 refuses to run while one is stored. The parse reads the link's shape and the row's own slug.
+			if (verdict === "name") continue;
+			const url = `https://${host}/`;
+			for (const named of slugs) {
+				const label = `${url} for ${named}`;
+				if (verdict === "taken" && scope === "site" && named === slug)
+					expect(parseCompanySite(row({ slug: named, url })).url, label).toBe(url);
+				else expect(() => parseCompanySite(row({ slug: named, url })), label).toThrow("Invalid site.");
+			}
+		}
 	});
 
 	it("reads and draws today's answers exactly as before: websites on the sites host, app links at their own", async () => {

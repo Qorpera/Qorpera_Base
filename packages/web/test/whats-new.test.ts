@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
@@ -20,6 +22,7 @@ import {
 	deferred,
 	fixture,
 	id,
+	oneHostList,
 	profileA,
 	session,
 	settle,
@@ -138,6 +141,7 @@ interface Setup {
 	goBack?: (shown: unknown) => Promise<CodeReleaseAnswer>;
 	openPreview?: (shown: unknown) => Promise<SitePreviewAnswer>;
 	image?: (path: string) => Promise<Blob | null>;
+	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 }
 
 /** Look first's one-time ticket, as the kernel makes one (43 characters), and its link on the shop's next host. */
@@ -166,7 +170,11 @@ async function page(reads: CodeReleases[], options: Setup = {}) {
 				path === "missing.png" ? null : new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" })),
 	);
 	const listed = vi.fn();
-	const view = new WhatsNewView(controller, client, controller.signal, { image, listed });
+	const view = new WhatsNewView(controller, client, controller.signal, {
+		image,
+		listed,
+		...(options.takenDown ? { takenDown: options.takenDown } : {}),
+	});
 	cleanup.push(() => view.dispose());
 	document.body.append(view.el);
 	await settle();
@@ -1274,7 +1282,9 @@ describe("What's new: Look first (own code storage step 5.1)", () => {
 		expect(labels(actions(view))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
 		press(block(view), "Se den først");
 		await settle();
-		expect(lookLine(view)).toBe("Qorpera har taget siden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.");
+		expect(lookLine(view)).toBe(
+			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+		);
 		const words: [() => Promise<SitePreviewAnswer>, string][] = [
 			[lost, "Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen."],
 			[
@@ -1301,6 +1311,76 @@ describe("What's new: Look first (own code storage step 5.1)", () => {
 });
 
 describe("What's new: Look first's link and a refused write (step 5.1)", () => {
+	it("takes as Look first's link exactly the next hosts of the one host list (SQL test 1252), each for its own site", () => {
+		const answer = (url: string) => ({ schema: "qorpera.site-preview/v1", state: "open", url });
+		const list = oneHostList();
+		const slugs = [...new Set(list.map((entry) => entry.slug).filter(Boolean))];
+		for (const { host, slug, scope, verdict } of list) {
+			// A name the rule refuses (verdict name) has no site, so the kernel opens no Look first for it.
+			if (verdict === "name") continue;
+			const url = `https://${host}/.qorpera/enter?t=${TICKET}`;
+			for (const drawn of slugs) {
+				const label = `${url} for ${drawn}`;
+				if (verdict === "taken" && scope === "next" && drawn === slug)
+					expect(parseSitePreviewAnswer(answer(url), drawn), label).toEqual({ state: "open", url });
+				else expect(() => parseSitePreviewAnswer(answer(url), drawn), label).toThrow(CloudShapeError);
+			}
+		}
+	});
+
+	it("reads every answer migration 20260930756000 gives Look first, Put it live and Go back, from its text", async () => {
+		const migration = readFileSync(resolve("../../supabase/migrations/20260930756000_site_hosts.sql"), "utf8");
+		const start = migration.indexOf("create function public.qorpera_open_site_preview(");
+		const body = migration.slice(start, migration.indexOf("\nend $$;", start));
+		// The call, with exactly its arguments.
+		expect(body.slice(0, body.indexOf(")") + 1)).toBe(
+			"create function public.qorpera_open_site_preview(p_profile_id uuid, p_owner text, p_name text, p_change integer)",
+		);
+		const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({
+			schema: "qorpera.site-preview/v1",
+			state: "off",
+		}));
+		await codeReleaseCalls({ rpc } as unknown as Cloud, id(10)).openPreview(
+			"company",
+			"shop",
+			{ change: 17, slug: "wristband-shop" },
+			new AbortController().signal,
+		);
+		expect(rpc.mock.calls).toEqual([
+			["qorpera_open_site_preview", { p_profile_id: id(10), p_owner: "company", p_name: "shop", p_change: 17 }],
+		]);
+		// Its schema and every state it answers.
+		expect(body).toContain("c_schema constant text := 'qorpera.site-preview/v1'");
+		const states = [...body.matchAll(/jsonb_build_object\('schema', c_schema, 'state', '(\w+)'/g)].map(
+			(match) => match[1],
+		);
+		expect([...new Set(states)].sort()).toEqual(["gone", "moved", "off", "open"]);
+		for (const state of ["gone", "moved", "off"] as const)
+			expect(parseSitePreviewAnswer({ schema: "qorpera.site-preview/v1", state }, "wristband-shop")).toEqual({
+				state,
+			});
+		// The link: the site's own next host, and a ticket of 43 (qorpera_site_new_secret: 32 random bytes, base64url).
+		expect(body).toContain("'state', 'open', 'url', 'https://' || v_site.slug || '--next.'");
+		expect(body).toContain("|| '/.qorpera/enter?t=' || v_ticket");
+		expect(body).toContain("v_ticket := public.qorpera_site_new_secret();");
+		expect(
+			parseSitePreviewAnswer({ schema: "qorpera.site-preview/v1", state: "open", url: NEXT }, "wristband-shop"),
+		).toEqual({
+			state: "open",
+			url: NEXT,
+		});
+		// Put it live and Go back refused for a site taken down, and preview only while hosts are on.
+		const refusals = [
+			...migration.matchAll(
+				/return '(\{"schema":"qorpera\.code-release\/v1","state":"refused","code":"[A-Z_]+"\})'::jsonb;/g,
+			),
+		].map((match) => match[1] ?? "");
+		expect(refusals).toHaveLength(2);
+		for (const refusal of refusals)
+			expect(parseCodeReleaseAnswer(JSON.parse(refusal))).toEqual({ state: "refused", code: "SITE_TAKEN_DOWN" });
+		expect(migration).toContain("then jsonb_build_object('preview', v_role in ('owner','admin'))");
+	});
+
 	it("reads Look first's answer: exactly the site's next host with a one-time ticket, nothing else", () => {
 		const answer = (extra: Record<string, unknown>) => ({ schema: "qorpera.site-preview/v1", ...extra });
 		expect(parseSitePreviewAnswer(answer({ state: "open", url: NEXT }), "wristband-shop")).toEqual({
@@ -1411,7 +1491,80 @@ describe("What's new: Look first's link and a refused write (step 5.1)", () => {
 		press(block(danish.view), "Sæt live");
 		await settle();
 		expect(block(danish.view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
-			"Det blev ikke sat live: Qorpera har taget siden ned. Intet er ændret.",
+			"Det blev ikke sat live: Qorpera har taget hjemmesiden ned. Intet er ændret.",
 		);
+	});
+});
+
+describe("What's new: a site Qorpera took down (step 5.1)", () => {
+	const DOWN = "Qorpera took this site down, so it can't be opened. See why in Sites.";
+	const openLink = (view: WhatsNewView) =>
+		[...block(view).querySelectorAll<HTMLAnchorElement>("a.site-button")].find((link) =>
+			link.textContent?.includes("Open the site"),
+		);
+
+	it("offers no link to a site Qorpera took down, and says so to every member", async () => {
+		for (const role of ["owner", "contributor"] as const) {
+			const takenDown = vi.fn(async () => new Set(["wristband-shop"]));
+			const { view } = await page([releasesOf([shop()], role === "owner")], { role, takenDown });
+			expect(takenDown).toHaveBeenCalledTimes(1);
+			expect(openLink(view), role).toBeUndefined();
+			expect(block(view).querySelector('a[href*="sites.qorpera.com"]'), role).toBeNull();
+			expect(text(block(view)), role).toContain(DOWN);
+			// No password to share either: the Sites page has none to show for it.
+			expect(text(block(view)), role).not.toContain("The password is in Sites.");
+			// What is live and ready is still said; putting a version live is the kernel's to refuse.
+			expect(text(block(view)), role).toContain("Live now");
+			if (role === "owner") expect(labels(block(view))).toContain("Put it live");
+			plain(block(view));
+			view.dispose();
+		}
+	});
+
+	it("draws the page as before without the read, with a read that fails, and with no site taken down", async () => {
+		for (const takenDown of [
+			undefined,
+			async () => {
+				throw new CloudRpcError("x", { message: "Could not find the function", code: "PGRST202" }, 404);
+			},
+			async () => new Set<string>(),
+			async () => new Set(["another-shop"]),
+		]) {
+			const { view } = await page([releasesOf([shop()])], takenDown ? { takenDown } : {});
+			expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
+			expect(text(block(view))).not.toContain(DOWN);
+			expect(text(block(view))).toContain("The password is in Sites.");
+			view.dispose();
+		}
+	});
+
+	it("keeps what the last read said when one fails, and shows the link again once the site is back", async () => {
+		const answers: (ReadonlySet<string> | Error)[] = [new Set(["wristband-shop"]), new Error("no answer"), new Set()];
+		const takenDown = vi.fn(async () => {
+			const next = answers.shift();
+			if (next instanceof Error) throw next;
+			return next ?? new Set<string>();
+		});
+		const { view } = await page([releasesOf([shop()])], { takenDown });
+		expect(openLink(view)).toBeUndefined();
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(takenDown).toHaveBeenCalledTimes(2);
+		expect(openLink(view)).toBeUndefined();
+		expect(text(block(view))).toContain(DOWN);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(takenDown).toHaveBeenCalledTimes(3);
+		expect(openLink(view)?.href).toBe("https://sites.qorpera.com/wristband-shop/");
+		expect(text(block(view))).not.toContain(DOWN);
+	});
+
+	it("says it in Danish", async () => {
+		setLanguagePreference("da");
+		const { view } = await page([releasesOf([shop()])], { takenDown: async () => new Set(["wristband-shop"]) });
+		expect(text(block(view))).toContain(
+			"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+		);
+		expect(openLink(view)).toBeUndefined();
 	});
 });

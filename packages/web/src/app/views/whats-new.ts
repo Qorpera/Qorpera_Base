@@ -33,6 +33,9 @@ import { siteEmblem } from "./settings-sites.ts";
  * kernel before step 5.1, or with hosts off, draws the page as before. The tab opens blank within the press with its way
  * back to this window cut; the one-time link the kernel answers is used once, there, and kept nowhere. Any other
  * answer closes the tab and says why in its own words.
+ *
+ * A site Qorpera took down (step 5.1) answers a "gone" page on every address, so its live row offers no link to it and
+ * says so instead (the names of such sites, read beside the page with `takenDown`; without it, as before).
  */
 
 export interface WhatsNewOptions {
@@ -40,6 +43,9 @@ export interface WhatsNewOptions {
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** Told after each read and after Not yet: the apps drawer's entry and its badge follow. */
 	listed?: (releases: CodeReleases) => void;
+	/** The names (slugs) of the company's sites Qorpera took down (step 5.1), read beside each read of the page. A kernel
+	 * without the read fails it: the page then keeps what the last read that answered said (none before one did). */
+	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 }
 
 /** The changes a member quieted with Not yet, by the token of what the page showed, per member and company. */
@@ -177,6 +183,9 @@ export class WhatsNewView {
 	readonly #lifetime = new AbortController();
 	readonly #image: WhatsNewOptions["image"];
 	readonly #listed: (releases: CodeReleases) => void;
+	readonly #readTakenDown: WhatsNewOptions["takenDown"];
+	/** The sites Qorpera took down, by name, as the last read that answered said: no link to one. */
+	#takenDown: ReadonlySet<string> = new Set();
 	#releases: CodeReleases | undefined;
 	#loading = true;
 	#error: string | undefined;
@@ -214,6 +223,7 @@ export class WhatsNewView {
 		this.#client = client;
 		this.#image = options.image;
 		this.#listed = options.listed ?? (() => {});
+		this.#readTakenDown = options.takenDown;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -258,8 +268,12 @@ export class WhatsNewView {
 	async #read(): Promise<void> {
 		const read = ++this.#started;
 		try {
+			// Which sites Qorpera took down, read beside the page and drawn with it (no live row shows a dead link first).
+			const down = this.#readTakenDown?.(this.#lifetime.signal).catch(() => undefined);
 			const releases = await this.#client.list(this.#lifetime.signal);
+			const takenDown = await down;
 			if (this.#lifetime.signal.aborted) return;
+			if (takenDown) this.#takenDown = takenDown;
 			this.#releases = releases;
 			this.#lookOff = false;
 			this.#error = undefined;
@@ -581,7 +595,9 @@ export class WhatsNewView {
 	 * the password is, and the site's link and Go back as pill buttons. */
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean): HTMLElement {
 		const live = site.live;
-		const shown = live && site.site ? site.site : undefined;
+		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it, and no password to share.
+		const down = Boolean(live && site.site && this.#takenDown.has(site.site.slug));
+		const shown = live && site.site && !down ? site.site : undefined;
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
 		if (live && site.back && can) {
@@ -606,6 +622,13 @@ export class WhatsNewView {
 					{ class: "site-head" },
 					h("strong", { class: "site-name" }, live ? t("Live now") : t("Not live yet")),
 					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
+					down
+						? h(
+								"span",
+								{ class: "site-meta" },
+								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
+							)
+						: null,
 					// The password is read where it is kept: only owners and admins can see it there.
 					shown && can
 						? h(

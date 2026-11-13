@@ -2275,6 +2275,14 @@ export function mountApplication(
 									whatsNew: whatsNewEntry(controller, read),
 									siteVersions: liveVersions(read),
 								}),
+							// The sites Qorpera took down (step 5.1): no link to one. The list is read only when one is.
+							takenDown: async (signal) => {
+								const sites = createWebSites(cloud, controller.profile);
+								const access = await sites.access(signal);
+								if (!access.takenDown.size) return new Set<string>();
+								const list = await sites.list(signal);
+								return new Set(list.filter((site) => access.takenDown.has(site.id)).map((site) => site.slug));
+							},
 						},
 					);
 					whatsNewPage = {

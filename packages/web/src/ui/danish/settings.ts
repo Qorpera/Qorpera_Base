@@ -462,8 +462,8 @@ export const SETTINGS: Record<string, string> = {
 		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
-	"Qorpera took this site down: {reason}. Write to support@qorpera.com if you think this is wrong.":
-		"Qorpera har taget siden ned: {reason}. Skriv til support@qorpera.com, hvis du mener, det er forkert.",
+	"Qorpera took this site down: {reason}.": "Qorpera har taget hjemmesiden ned: {reason}.",
+	"Write to {address} if you think this is wrong.": "Skriv til {address}, hvis du mener, det er forkert.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",
@@ -528,10 +528,10 @@ export const SETTINGS: Record<string, string> = {
 	"The next version could not be opened: Qorpera could not be reached. Try again.":
 		"Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen.",
 	"Qorpera took this site down, so it can't be opened. See why in Sites.":
-		"Qorpera har taget siden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+		"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
 	"Only founders and admins can look at a version before it goes live.":
 		"Kun stiftere og administratorer kan se en version, før den går live.",
-	"Qorpera took this site down": "Qorpera har taget siden ned",
+	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",
