@@ -44,6 +44,13 @@ create table qorpera_data.step_effects (
 );
 create index on qorpera_data.step_effects (txid);
 
+-- Transactions whose effects the gateway has read: from then on nothing in them may destroy data, also at commit. No
+-- company role writes it, and nothing takes a transaction out of it.
+create table qorpera_data.sealed (
+	txid bigint primary key default txid_current(),
+	sealed_at timestamptz not null default now()
+);
+
 -- The gateway's keeper reads its records as itself and keeps texts; the admin makes folders. The gateway checks
 -- every kept text against its hash again.
 grant select on qorpera_data.databases, qorpera_data.steps to qorpera_data_keeper;
@@ -62,9 +69,15 @@ create function qorpera_data.rows_gone() returns trigger language plpgsql securi
 declare v_rows bigint;
 begin
 	if tg_op = 'TRUNCATE' then
+		if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+			raise exception 'A step may not destroy data after it was checked: % was emptied', tg_table_schema || '.' || tg_table_name;
+		end if;
 		insert into qorpera_data.step_effects (kind, object) values ('emptied table', tg_table_schema || '.' || tg_table_name);
 	else
 		select count(*) into v_rows from gone;
+		if v_rows > 0 and exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+			raise exception 'A step may not destroy data after it was checked: rows of % were deleted', tg_table_schema || '.' || tg_table_name;
+		end if;
 		if v_rows > 0 then
 			insert into qorpera_data.step_effects (kind, object, rows)
 			values ('deleted rows', tg_table_schema || '.' || tg_table_name, v_rows);
@@ -83,7 +96,11 @@ create trigger qorpera_rows_gone after delete on qorpera_data.model referencing 
 create trigger qorpera_emptied before truncate on qorpera_data.model
 	for each statement execute function qorpera_data.rows_gone();
 
--- A dropped table, column or schema is recorded. Dropping one of Qorpera's triggers is refused.
+-- A dropped table, column or schema is recorded. A table or a column is recorded whether the statement named it or it
+-- went with something else (a column whose type or domain was dropped with cascade, a table of a dropped schema, a
+-- partition). A schema only when it was named: its tables are each recorded. What holds no rows of the company's own is
+-- left: a view, a materialized view (its rows are computed from tables), a sequence (a counter), an index, a type.
+-- Dropping one of Qorpera's triggers is refused.
 create function qorpera_data.dropped() returns event_trigger language plpgsql security definer set search_path = '' as $$
 declare gone record;
 begin
@@ -92,7 +109,10 @@ begin
 			raise exception 'Qorpera''s trigger % cannot be dropped', gone.object_identity;
 		end if;
 		if gone.object_type in ('table', 'table column', 'schema') and gone.schema_name is distinct from 'qorpera_data'
-			and (gone.original or gone.object_type = 'table') then
+			and (gone.original or gone.object_type in ('table', 'table column')) then
+			if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+				raise exception 'A step may not destroy data after it was checked: % was dropped', gone.object_identity;
+			end if;
 			insert into qorpera_data.step_effects (kind, object) values ('dropped ' || gone.object_type, gone.object_identity);
 		end if;
 	end loop;
@@ -163,6 +183,15 @@ end $$;
 create event trigger qorpera_new_table on ddl_command_end when tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
 	execute function qorpera_data.new_table();
 
+-- Seals the current transaction, one way, and gives what it destroyed so far: what destroys data after this aborts
+-- the transaction, also at its commit.
+create function qorpera_data.seal() returns table (kind text, object text, rows bigint)
+language plpgsql security definer set search_path = '' as $$
+begin
+	insert into qorpera_data.sealed (txid) values (txid_current()) on conflict (txid) do nothing;
+	return query select e.kind, e.object, e.rows from qorpera_data.step_effects e where e.txid = txid_current() order by 1, 2;
+end $$;
+
 -- What the current transaction destroyed, for the gateway after it ran a step.
 create function qorpera_data.effects() returns table (kind text, object text, rows bigint)
 language sql stable security definer set search_path = '' as $$
@@ -204,7 +233,7 @@ begin
 end $$;
 
 -- None of these shows or does anything a folder's own login may not.
-grant execute on function qorpera_data.effects(), qorpera_data.unwatched(text), qorpera_data.apply_step(text),
+grant execute on function qorpera_data.effects(), qorpera_data.seal(), qorpera_data.unwatched(text), qorpera_data.apply_step(text),
 	qorpera_data.record_step(text, text, text) to public;
 
 -- A login with CREATEDB may copy a database marked as a template; nobody connects to it afterwards.
