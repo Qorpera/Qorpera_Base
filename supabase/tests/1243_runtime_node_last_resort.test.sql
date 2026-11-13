@@ -457,9 +457,11 @@ rollback to savepoint pull_disk_spare;
 select pg_temp.lr_spare(false) \g /dev/null
 select pg_temp.lr_expect(pg_temp.lr_pull_for('c', current_setting('qorpera_test.lr_waiting')::uuid), '[] on nothing',
 	'(iii) Flag off: node C admits nothing in this pass');
-select pg_temp.base_assert((select retired_at is not null from public.qorpera_company_machine_placements
+-- 20260930757000 (agent-box slice 5): a regular node too gives a sleeping disk up only for a machine no node takes now;
+-- node A could take this one, so node C keeps the stopped machine's disk (before: it gave the disk up).
+select pg_temp.base_assert((select retired_at is null from public.qorpera_company_machine_placements
 		where id = current_setting('qorpera_test.lr_placement')::uuid),
-	'(iii) but gives the disk up for it, as today');
+	'(iii) Flag off: node C keeps the disk too, node A could take the waiting machine (20260930757000)');
 rollback to savepoint pull_disk;
 
 -- 7. Coding: a member's new coding machine (the executor pick) and a company's executor (its enrollment).
