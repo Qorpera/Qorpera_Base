@@ -342,6 +342,31 @@ describe("an HTML page's frame", () => {
 			expect(ownLink(place), JSON.stringify(place)).toBe(false);
 	});
 
+	it("hands an app's page a note to its owner as one more call that only asks, its parts as plain values", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));
+		const source = /\n\t\t\ttell: (freeze\(\(note\) => \{[\s\S]*?\n\t\t\t\}\)),\n/.exec(api)?.[1];
+		expect(source).toBeDefined();
+		const calls: [string, unknown][] = [];
+		const tell = new Function("freeze", "call", `return ${source};`)(
+			Object.freeze,
+			(method: string, params: unknown) => {
+				calls.push([method, params]);
+				return Promise.resolve();
+			},
+		) as (note?: unknown) => Promise<unknown>;
+		void tell({ about: "Lund, A", at: 1043, text: "Get a quote", to: "someone else" });
+		void tell({ about: "Lund" });
+		void tell("Lund");
+		void tell(null);
+		expect(calls).toEqual([
+			["tell", { about: "Lund, A", at: "1043", text: "Get a quote" }],
+			["tell", { about: "Lund", at: null, text: null }],
+			["tell", { about: "", at: null, text: null }],
+			["tell", { about: "", at: null, text: null }],
+		]);
+	});
+
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {
 		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
 		const guarded = (text: string) => {

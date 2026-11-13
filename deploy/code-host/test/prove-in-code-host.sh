@@ -359,6 +359,76 @@ SCAN
 pass "an import's jobs: the sweep, the strict check's message id and what it only warns of, the refs plan's two transactions, the facts' formats, the scan's lists"
 pass "C1's key scan in this image: offsets and kinds alone, each offset its value's place, every kind found, a stop after its time, the 64 KiB bound"
 
+# The look's measure of the other lines of work (code-host-import.ts): each command run by the measure's script
+# (CODE_HOST_IMPORT_MEASURE, word for word: runner-orchestrator's code-host-import test pins the text below) under
+# timeout, what it said handed out only within its bound. One walk gives each line's changes main lacks and main's it
+# lacks (for-each-ref --stdin with %(ahead-behind:<main>)), one counts the changes outside main, each once (rev-list
+# --count --stdin with ^<main>); a line's tree is whole within its bound or only "over", a command that does not end
+# is stopped after its time, and git's own end is the script's, with nothing handed out.
+MEASURE_SCRIPT=$(
+	cat <<'MEASURE'
+seconds=$1 bound=$2 out=$3 status=$4
+shift 4
+{ timeout -k 10 "$seconds" "$@"; echo "$?" >"$status"; } | head -c "$((bound + 1))" >"$out" || exit 1
+read -r ended <"$status" || exit 1
+size=$(stat -c %s -- "$out") || exit 1
+if [ "$size" -gt "$bound" ]; then echo over; exit 0; fi
+[ "$ended" -eq 0 ] || exit "$ended"
+echo ok
+exec cat -- "$out"
+MEASURE
+)
+(
+	export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME=/nonexistent LC_ALL=C
+	export GIT_AUTHOR_NAME=q GIT_AUTHOR_EMAIL=q@q GIT_COMMITTER_NAME=q GIT_COMMITTER_EMAIL=q@q
+	export PATH=/usr/local/bin:/usr/bin:/bin
+	T=$(mktemp -d -p /var/lib/qorpera-code-host)
+	W="$T/w"
+	git init -q -b main "$W"
+	change() {
+		echo "$1" >"$W/$1.txt"
+		git -C "$W" add -A
+		git -C "$W" commit -q -m "$1"
+	}
+	change one
+	ONE=$(git -C "$W" rev-parse HEAD)
+	git -C "$W" switch -q -c a
+	change a1
+	change a2
+	git -C "$W" switch -q -c b
+	change b1
+	git -C "$W" switch -q main
+	change two
+	git -C "$W" branch old "$ONE"
+	G="$W/.git"
+	MAIN=$(git --git-dir="$G" rev-parse main)
+	measure() { /bin/sh -c "$MEASURE_SCRIPT" sh "$@"; }
+	# Each line's changes main lacks and main's it lacks, in one walk; a name asked that is not there is not answered.
+	SAID=$(printf 'refs/heads/a\nrefs/heads/b\nrefs/heads/old\nrefs/heads/gone\n' |
+		measure 300 1048576 "$T/out" "$T/status" git --no-replace-objects --git-dir="$G" for-each-ref --stdin \
+			"--format=%(refname)%00%(ahead-behind:$MAIN)" | tr '\0\n' '|;')
+	[[ $SAID == "ok;refs/heads/a|2 1;refs/heads/b|3 1;refs/heads/old|0 1;" ]]
+	# The changes outside main, each once: a's two are b's too.
+	SAID=$(printf '%s\n%s\n^%s\n' "$(git --git-dir="$G" rev-parse a)" "$(git --git-dir="$G" rev-parse b)" "$MAIN" |
+		measure 300 64 "$T/out" "$T/status" git --no-replace-objects --git-dir="$G" rev-list --count --stdin | tr '\n' ';')
+	[[ $SAID == "ok;3;" ]]
+	# A line's tree: whole within its bound, and over it only "over".
+	TREE=$(measure 300 1048576 "$T/out" "$T/status" git --no-replace-objects --git-dir="$G" ls-tree -r -t -l -z \
+		--full-tree b | tr '\0' '\n')
+	[[ $(head -n 1 <<<"$TREE") == ok && $(grep -c -e $'\t' <<<"$TREE") == 4 ]]
+	[[ $(measure 300 100 "$T/out" "$T/status" git --no-replace-objects --git-dir="$G" ls-tree -r -t -l -z --full-tree b) == over ]]
+	# A command that does not end is stopped after its time; git's own end is the script's; nothing is handed out.
+	STATUS=0
+	OUT=$(measure 1 64 "$T/out" "$T/status" sleep 30) || STATUS=$?
+	[[ $STATUS == 124 && -z $OUT ]]
+	STATUS=0
+	OUT=$(measure 300 64 "$T/out" "$T/status" git --no-replace-objects --git-dir="$G" rev-list --count nothing 2>/dev/null) ||
+		STATUS=$?
+	[[ $STATUS == 128 && -z $OUT ]]
+	rm -rf "$T"
+)
+pass "the look's measure of other lines of work: what main lacks and what a line lacks in one walk, the changes outside main once, a tree within its bound or over, a stop after its time"
+
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"
 [[ $(stat -c "%a %u %g" "$FOLDER") == "555 0 0" ]] || fail "the folder program is not root's 0555"

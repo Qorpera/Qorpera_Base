@@ -105,6 +105,46 @@ export type MachineStartAnswer =
 	| { readonly kind: "started" | "running" }
 	| { readonly kind: "refused"; readonly code: MachineStartRefusal };
 
+/** Why a member's pointer does not move (20260930744000, the executor's 409 codes): as an action's (the machine not
+ * running, a disk the member may not see, too small, someone typing privately, someone who did since the window knew,
+ * the member's own private hold ended, the screen off, a restart, an image that cannot), and a pass that ran out or is
+ * not held (POINTER_PASS_ENDED: begin another). */
+export type MachinePointerRefusal =
+	| "MACHINE_NOT_RUNNING"
+	| "MACHINE_NEEDS_COMPANY_VIEW"
+	| "DESKTOP_MACHINE_TOO_SMALL"
+	| "DESKTOP_MEMBER_IN_CONTROL"
+	| "DESKTOP_HELD_SINCE"
+	| "DESKTOP_CONTROL_ENDED"
+	| "DESKTOP_NOT_RUNNING"
+	| "MACHINE_BOOT_CHANGED"
+	| "MACHINE_IMAGE_WITHOUT_SCREEN"
+	| "POINTER_PASS_ENDED";
+const POINTER_REFUSALS: ReadonlySet<string> = new Set<MachinePointerRefusal>([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_HELD_SINCE",
+	"DESKTOP_CONTROL_ENDED",
+	"DESKTOP_NOT_RUNNING",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"POINTER_PASS_ENDED",
+]);
+/** A pointer pass's begin (shared at the lease generation the window knows, or on the member's own private hold), or one
+ * move on a pass, in the screen's own pixels. */
+export type MachinePointerRequest =
+	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
+	| { readonly pass: string; readonly x: number; readonly y: number };
+/** A pass (its id and what is left of it), a move's end (`moved` false: dropped, never queued), why not, or no pointer
+ * route at all (`unavailable`: a bridge or an executor from before 20260930744000; the window then keeps today's way). */
+export type MachinePointerAnswer =
+	| { readonly kind: "pass"; readonly pass: string; readonly milliseconds: number }
+	| { readonly kind: "moved"; readonly moved: boolean }
+	| { readonly kind: "refused"; readonly code: MachinePointerRefusal }
+	| { readonly kind: "unavailable" };
+
 /** One look: a new picture and its etag, the picture the member already has, or why there is none. */
 export type MachineScreenLook =
 	| { readonly kind: "picture"; readonly png: Blob; readonly etag: string }
@@ -141,6 +181,8 @@ export interface WebMachineScreens {
 		hold: { epoch: number; seat: number } | { generation: number } | null,
 		signal: AbortSignal,
 	): Promise<MachineActAnswer>;
+	/** The member's pointer (20260930744000): a pass's begin, or one move on it. Nothing typed is ever in it. */
+	pointer(machineId: string, request: MachinePointerRequest, signal: AbortSignal): Promise<MachinePointerAnswer>;
 	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
 	 * is `{}` (what to open there is for later). */
 	start(machineId: string, signal: AbortSignal): Promise<MachineStartAnswer>;
@@ -148,6 +190,11 @@ export interface WebMachineScreens {
 
 /** The executor answers within 30 s; this covers the bridge on the way there and back. */
 const TIMEOUT_MS = 35_000;
+/** A pointer move is worth little once a newer one exists: the window gives up on one after this (a pass's begin too). */
+const POINTER_TIMEOUT_MS = 5_000;
+/** A pointer position within the largest screen (3840 x 2160). */
+const POINTER_MAX_X = 3839;
+const POINTER_MAX_Y = 2159;
 /** A picture of a screen is at most 8 MiB, as the machine's node checks it. */
 const MAX_PICTURE_BYTES = 8 * 1024 * 1024;
 const ETAG = /^"([0-9a-f]{64})"$/;
@@ -290,6 +337,84 @@ export function createWebMachineScreens(options: {
 					return { kind: "done", exitCode: exit as number | null };
 				},
 				TIMEOUT_MS,
+				signal,
+			);
+		},
+		pointer: (machineId, request, signal) => {
+			const whole = (value: number) => Number.isSafeInteger(value) && value >= 0;
+			const valid =
+				"begin" in request
+					? "generation" in request.begin
+						? whole(request.begin.generation)
+						: whole(request.begin.epoch) && whole(request.begin.seat)
+					: UUID_PATTERN.test(request.pass) &&
+						whole(request.x) &&
+						whole(request.y) &&
+						request.x <= POINTER_MAX_X &&
+						request.y <= POINTER_MAX_Y;
+			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId) || !valid)
+				return Promise.reject(new MachineScreenError("Invalid machine pointer"));
+			return withCloudDeadline(
+				async (requestSignal) => {
+					const origin = new URL(options.objectGatewayUrl).origin;
+					const token = await options.accessToken(requestSignal);
+					const url = options.route(
+						`${origin}/v1/member-machine-screens/${options.companyId.toLowerCase()}/${machineId.toLowerCase()}/pointer`,
+					);
+					const response = await options.fetch(url, {
+						method: "POST",
+						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+						body: JSON.stringify(
+							"begin" in request ? { begin: request.begin } : { pass: request.pass, x: request.x, y: request.y },
+						),
+						signal: requestSignal,
+						redirect: "error",
+						cache: "no-store",
+						credentials: "omit",
+					});
+					// A bridge or an executor before 20260930744000 has no such route (404), or not for this method (405), or
+					// takes no such body (400): no pointer, quietly.
+					if ([400, 404, 405].includes(response.status)) {
+						void response.body?.cancel().catch(() => undefined);
+						return { kind: "unavailable" };
+					}
+					if (response.status !== 200 && response.status !== 409) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new MachineScreenError(`Machine pointer is unavailable (${response.status})`, response.status);
+					}
+					let answer: Record<string, unknown> | null;
+					try {
+						answer = JSON.parse(
+							new TextDecoder("utf-8", { fatal: true }).decode(
+								await readBoundedCloudResponse(response, 4096, requestSignal),
+							),
+						) as Record<string, unknown>;
+					} catch {
+						answer = null;
+					}
+					if (response.status === 409) {
+						if (typeof answer?.code !== "string" || !POINTER_REFUSALS.has(answer.code))
+							throw new MachineScreenError("Invalid machine pointer answer", 409);
+						return { kind: "refused", code: answer.code as MachinePointerRefusal };
+					}
+					if (answer?.schema !== "qorpera.member-machine-pointer/v1")
+						throw new MachineScreenError("Invalid machine pointer answer");
+					const keys = Object.keys(answer).sort().join();
+					if (
+						"begin" in request &&
+						keys === "milliseconds,pass,schema" &&
+						typeof answer.pass === "string" &&
+						UUID_PATTERN.test(answer.pass) &&
+						Number.isSafeInteger(answer.milliseconds) &&
+						(answer.milliseconds as number) >= 0 &&
+						(answer.milliseconds as number) <= 10_000
+					)
+						return { kind: "pass", pass: answer.pass, milliseconds: answer.milliseconds as number };
+					if (!("begin" in request) && keys === "moved,schema" && typeof answer.moved === "boolean")
+						return { kind: "moved", moved: answer.moved };
+					throw new MachineScreenError("Invalid machine pointer answer");
+				},
+				POINTER_TIMEOUT_MS,
 				signal,
 			);
 		},

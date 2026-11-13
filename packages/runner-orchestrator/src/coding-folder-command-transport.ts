@@ -46,6 +46,9 @@ const BUDGET_MS = 25_000;
 /** A first page, as the NAS transport answers a start and a cancel. */
 const FIRST_PAGE = { offset: 0, limit: 4096 } as const;
 const MAX_RECORD_BYTES = 65_536;
+/** The most a page's output takes as JSON writes it, as the guests' pages (readCodingCommandLog): a page of up to 64 KiB
+ * of output (keyholes S1) stays well inside the command service's 128 KiB answer, however its characters escape. */
+const PAGE_ESCAPED_BYTES = 60_000;
 const PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const UNPROTECTED = "CODING_COMMAND_CUSTODY_UNPROTECTED";
 const INVALID = "CODING_COMMAND_CUSTODY_INVALID";
@@ -363,8 +366,8 @@ async function keepOutput(folder: string, at: number, bytes: Buffer): Promise<vo
 }
 
 /** A page of output.log, as the runtime's readCodingCommandLog pages a command's log: raw-byte offsets, at most
- * `limit` bytes of UTF-8 output, and a page that never ends inside a character while more may follow. The log is the
- * first `progress.logBytes` bytes of the file. */
+ * `limit` bytes of UTF-8 output and PAGE_ESCAPED_BYTES of it escaped, and a page that never ends inside a character
+ * while more may follow. The log is the first `progress.logBytes` bytes of the file. */
 async function readPage(
 	folder: string,
 	progress: Progress,
@@ -415,8 +418,9 @@ async function readPage(
 	}
 	let cursor = offset - base,
 		bytes = 0,
+		escapedBytes = 0,
 		output = "";
-	const tailParts: { rawBytes: number; text: string; bytes: number }[] = [];
+	const tailParts: { rawBytes: number; text: string; bytes: number; escapedBytes: number }[] = [];
 	while (cursor < buffer.length) {
 		const lead = buffer[cursor],
 			expected =
@@ -431,17 +435,20 @@ async function readPage(
 			break;
 		const n = width(cursor),
 			part = new TextDecoder("utf8", { ignoreBOM: true }).decode(buffer.subarray(cursor, cursor + n)),
-			size = Buffer.byteLength(part);
-		if (bytes + size > limit && !read.tail) break;
+			size = Buffer.byteLength(part),
+			escapedSize = Buffer.byteLength(JSON.stringify(part)) - 2;
+		if ((bytes + size > limit || escapedBytes + escapedSize > PAGE_ESCAPED_BYTES) && !read.tail) break;
 		output += part;
 		bytes += size;
+		escapedBytes += escapedSize;
 		cursor += n;
-		if (read.tail) tailParts.push({ rawBytes: n, text: part, bytes: size });
+		if (read.tail) tailParts.push({ rawBytes: n, text: part, bytes: size, escapedBytes: escapedSize });
 	}
 	let removedCharacters = 0;
 	for (const part of tailParts) {
-		if (bytes <= limit) break;
+		if (bytes <= limit && escapedBytes <= PAGE_ESCAPED_BYTES) break;
 		bytes -= part.bytes;
+		escapedBytes -= part.escapedBytes;
 		offset += part.rawBytes;
 		removedCharacters += part.text.length;
 	}

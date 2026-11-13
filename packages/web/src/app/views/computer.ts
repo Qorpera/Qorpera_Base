@@ -8,6 +8,7 @@ import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type {
 	MachineActAnswer,
 	MachineDesktopAction,
+	MachinePointerAnswer,
 	MachineScreenLook,
 	MachineStartAnswer,
 } from "../../cloud/machine-screens.ts";
@@ -31,6 +32,7 @@ import {
 } from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { ComputerByItself } from "./computer-by-itself.ts";
 import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
 
 /** The least time from one look's start to the next while the picture changes or the member acts on it: a look takes
@@ -49,6 +51,29 @@ export const KEEP_EVERY_MS = 60_000;
  * hold it 11 s past an end that was not clean) before it is dropped. */
 const BUSY_GIVE_UP_MS = 15_000;
 const BUSY_RETRY_MS = 1000;
+/** The member's pointer (20260930744000): at most one move every this long (30 a second, the executor's bound), one in
+ * flight, the newest position replacing one not sent yet. */
+const POINTER_EVERY_MS = 34;
+/** A pointer pass is begun again when less than this is left of it (it lasts 10 s). */
+const POINTER_RENEW_MS = 2500;
+/** At most one pass's begin this often on a hold or a sharing: a begin is SQL's (two calls and the pass's row), so one that
+ * failed (no answer, a pass gone again at once) is asked again after this, never at the pointer's pace or in a loop. */
+const POINTER_BEGIN_EVERY_MS = 1000;
+/** While the member's pointer moved in the last POINTER_MOVING_MS, the window does not back off: it looks every
+ * LOOK_EVERY_MS, the database's own least time between a member's looks (400 ms) and a margin, so a hover shows within
+ * one look and none is refused SCREEN_TOO_SOON (review r1 F5 of #1733). */
+const POINTER_MOVING_MS = 1000;
+/** A pass the executor may still hold ends, on every node, by its answer's time plus its milliseconds and this. */
+const POINTER_PASS_MARGIN_MS = 1000;
+/** After a refusal that a desktop coming back ends (the screen off, a restart, the machine asleep), no new pass for this
+ * long; the member's next move after it begins one (review r1 F4 of #1733). Never a loop: only a move asks again. */
+const POINTER_PAUSE_MS = 3000;
+/** The refusals POINTER_PAUSE_MS waits out; every other one ends that hold's or sharing's pointer. */
+const POINTER_PASSING: ReadonlySet<string> = new Set([
+	"DESKTOP_NOT_RUNNING",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_NOT_RUNNING",
+]);
 /** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
  * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
  * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
@@ -183,6 +208,8 @@ interface PageHold {
 	/** Where the picture gives the input it gathers under this hold: to this hold alone, while it is the page's (review r2
 	 * F1 of #1701: what the picture still gathers when the hold ends goes nowhere, never out shared). */
 	readonly input: MachineScreenInput;
+	/** The member's pointer under this hold (20260930744000): on a private pass of its own epoch and seat. */
+	readonly pointer: PointerLane;
 }
 
 /** The member's input on the desktop they share with the agent (20260930734000): its machine, the input not answered yet,
@@ -211,6 +238,41 @@ interface SharedInput {
 	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
 	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
 	readonly input: MachineScreenInput;
+	/** The member's pointer while this computer is shared (20260930744000): on a shared pass of this sharing's generation. */
+	readonly pointer: PointerLane;
+}
+
+/** The member's pointer under a hold or a sharing (20260930744000): the pass it moves on (from the executor, for 10 s:
+ * when to begin another, and by when no node holds it any more), the newest position not sent yet (a newer one replaces
+ * it: never a queue), whether a request is on its way, the move on its way (`moving`: an action waits for its answer),
+ * until when an action waits for a move whose answer never came (`unsure`: its pass has ended everywhere by then, so it
+ * can no longer land after the action), until when a desktop that went away is waited out (`paused`), when the last move
+ * and the last begin went, and whether this hold's or sharing's pointer is done for (a refusal that a new pass would only
+ * repeat). */
+interface PointerLane {
+	pass: { readonly id: string; readonly until: number; readonly endsBy: number } | null;
+	pending: { readonly x: number; readonly y: number } | null;
+	inFlight: boolean;
+	moving: Promise<void> | null;
+	unsure: number;
+	paused: number;
+	sentAt: number;
+	begunAt: number;
+	done: boolean;
+}
+
+function pointerLane(): PointerLane {
+	return {
+		pass: null,
+		pending: null,
+		inFlight: false,
+		moving: null,
+		unsure: Number.NEGATIVE_INFINITY,
+		paused: Number.NEGATIVE_INFINITY,
+		sentAt: Number.NEGATIVE_INFINITY,
+		begunAt: Number.NEGATIVE_INFINITY,
+		done: false,
+	};
 }
 
 /** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
@@ -342,6 +404,10 @@ export class ComputerPanel {
 	#listStale = true;
 	/** List reads begun so far, and the shared senders waiting for one begun after a moment (#freshList). */
 	#listReads = 0;
+	/** The member's pointer (20260930744000): the last time a move went through (the window looks sooner while it moves),
+	 * and whether the page has no pointer route (a bridge or an executor from before it: today's way, quietly). */
+	#movedAt = Number.NEGATIVE_INFINITY;
+	#pointerOff = false;
 	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
 	 * until one begun after it has answered, with the generation that stands now. */
 	#heldSince: number | undefined;
@@ -423,6 +489,10 @@ export class ComputerPanel {
 	 * yet, a click waiting for its second, a wheel turn, a press) to the input it gathered it for, which takes it only
 	 * while that is still the window's (review r2 F1 of #1701). */
 	#shared: SharedInput | undefined;
+	/** The member acted on this window (claim): it is theirs, never the rule's (20260930742000). */
+	#members = false;
+	/** The window is closing by the rule's own close (closeByRule): nothing is given back. */
+	#quiet = false;
 	/** The first time this browser shares a computer, the large view says so in one quiet line, until it goes back. */
 	#introduce = !sharedSeen();
 	#introShown = false;
@@ -480,6 +550,9 @@ export class ComputerPanel {
 			this.#closeButton,
 		);
 		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
+		// Any touch of the window is the member's act on it (20260930742000), seen before the window's own handlers.
+		for (const event of ["pointerdown", "keydown", "wheel", "click", "focusin"] as const)
+			this.el.addEventListener(event, () => this.claim(), { capture: true, passive: true, signal });
 		// The drag also marks pointer focus on the panel, which keeps the hover controls down after a press.
 		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
@@ -533,6 +606,7 @@ export class ComputerPanel {
 			mount: this.#body,
 			title: this.#titleText(),
 			onExpandedChange: (expanded) => {
+				if (expanded) this.claim();
 				this.#setExpanded(expanded);
 				// The line that says the computer is shared was said: once is enough (20260930734000).
 				if (!expanded && this.#introShown) this.#introduce = false;
@@ -612,14 +686,18 @@ export class ComputerPanel {
 			this.#quicken();
 		});
 		if (unsubscribe) signal.addEventListener("abort", unsubscribe, { once: true });
-		// The member's click opened it: the first list read decides what starts (OPEN_STARTS).
-		if (open.asked) this.#ask = { before: this.#listReads, at: Date.now() };
+		// The member's click opened it: the first list read decides what starts (OPEN_STARTS). It is theirs.
+		if (open.asked) {
+			this.claim();
+			this.#ask = { before: this.#listReads, at: Date.now() };
+		}
 		void this.#loop(computer, signal).catch(() => undefined);
 	}
 
 	/** The member's own click asked for this computer again (the window stands open, or shows again in a thread): the
 	 * first list read begun after it decides what starts (OPEN_STARTS), as at a first open. */
 	ask(): void {
+		this.claim();
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		this.#ask = { before: this.#listReads, at: Date.now() };
 		this.#wakeFailed = undefined;
@@ -674,6 +752,7 @@ export class ComputerPanel {
 	/** Take the desktop over (the window's Take over, or the agent's take-over card): at once when the window shows a
 	 * running desktop, or as soon as it does. */
 	takeOver(): void {
+		this.claim();
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		// Shared input on its way goes no further: what comes next is private (review r1 F1 of #1701).
 		this.#endShared();
@@ -725,6 +804,7 @@ export class ComputerPanel {
 	 * growing waits, never renews the hold and never takes it up again from the list (review r1 F4, F5; r2). A hold never
 	 * given back ends by itself in 5 minutes. */
 	handBack(): Promise<boolean> {
+		this.claim();
 		this.#wantTakeOver = undefined;
 		this.#released();
 		// A hold of the member's the window shows from elsewhere is owed from this click, at the epoch the list gave: its
@@ -776,11 +856,40 @@ export class ComputerPanel {
 	}
 
 	focus(): void {
+		this.claim();
 		this.el.focus();
+	}
+
+	/** The member's act on this window (20260930742000), from inside it (a press, a key, a wheel, an input, a button) or
+	 * from outside (the agent's card's Computer, Take over and I'm done, the take-over card): set at the act, before any
+	 * request goes, and never cleared. A window the rule opened by itself (computer-by-itself.ts) is the member's from
+	 * then on: the rule never closes it, whatever answer comes, or none. */
+	claim(): void {
+		this.#members = true;
+	}
+
+	/** Whether the rule that opened this window by itself may close it now: nothing of the member's is alive in it (no
+	 * act of theirs ever, so no request of theirs in flight; no hold; no large view). */
+	get closableByRule(): boolean {
+		return !this.#members && !this.holding && !this.el.classList.contains("is-entered") && !this.#stop.signal.aborted;
+	}
+
+	/** The rule's own close (20260930742000): only takes the window away. It does nothing unless closableByRule, and it
+	 * never gives a desktop back or calls off a request (there is none of the member's): the ledger is not asked. */
+	closeByRule(): boolean {
+		if (!this.closableByRule) return false;
+		this.#quiet = true;
+		this.dispose();
+		return true;
 	}
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
+		// The rule's close (closeByRule): nothing of the member's is here to give back or end; only the window goes.
+		if (this.#quiet) {
+			this.#teardown();
+			return;
+		}
 		// The window closes: what the member may hold of the agent's desktops goes back through the company's ledger, which
 		// outlives the window, asks again until the database confirms, and keeps the take-over card waiting till then
 		// (review r2 F4). A take-over still on its way is answered first; what it gets goes back as it comes. As the
@@ -790,11 +899,21 @@ export class ComputerPanel {
 		this.#endShared();
 		this.#released();
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
+		this.#teardown();
+	}
+
+	/** Everything the window runs ends, on both of its closes (the member's and the rule's): its signal (every listener,
+	 * the loop and its waits, the hints, the holds' subscription, the drag), its timers, the picture's view and the
+	 * scene. Never the release ledger: the member's close asks that first, the rule's never needs it. */
+	#teardown(): void {
 		this.#stop.abort();
 		this.#poke();
 		this.#close = () => {};
 		this.#view?.dispose();
 		clearTimeout(this.#settleTimer);
+		this.#settleTimer = undefined;
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = undefined;
 		this.#scene.dispose();
 		this.el.style.removeProperty("animation");
 		leave(this.el, "is-closing", () => {
@@ -908,7 +1027,10 @@ export class ComputerPanel {
 				continue;
 			}
 			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
-			const due = this.#lastLook + this.#delay;
+			// While the member's pointer moves, the window does not back off, so a hover shows within a look (20260930744000).
+			const delay =
+				Date.now() - this.#movedAt < POINTER_MOVING_MS ? Math.min(this.#delay, LOOK_EVERY_MS) : this.#delay;
+			const due = this.#lastLook + delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
 				continue;
@@ -1139,7 +1261,11 @@ export class ComputerPanel {
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action, made) => this.#enqueue(hold, action, made) },
+			input: {
+				act: (action, made) => this.#enqueue(hold, action, made),
+				point: (at) => this.#point(hold, at),
+			},
+			pointer: pointerLane(),
 		};
 		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
@@ -1217,6 +1343,7 @@ export class ComputerPanel {
 	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
 	 * window's, of the computer chosen now (review r2 F1 of #1701). */
 	#enqueue(hold: PageHold, action: MachineDesktopAction, made: InputSpan): void {
+		this.claim();
 		if (
 			this.#hold !== hold ||
 			hold.stop.signal.aborted ||
@@ -1232,6 +1359,7 @@ export class ComputerPanel {
 	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
 	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
 	#share(shared: SharedInput, action: MachineDesktopAction, made: InputSpan): void {
+		this.claim();
 		if (this.#shared !== shared || shared.stop.signal.aborted || !this.#sharingOf(shared)) {
 			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701). This
 			// input is dropped with it: said when the member did not end it (review r5 F2).
@@ -1269,7 +1397,9 @@ export class ComputerPanel {
 				act: (action, made) => this.#share(shared, action, made),
 				// A press the picture dropped unfinished as this sharing ended.
 				lost: () => this.#toldLost(shared),
+				point: (at) => this.#point(shared, at),
 			},
+			pointer: pointerLane(),
 		};
 		this.#shared = shared;
 		return shared;
@@ -1291,6 +1421,8 @@ export class ComputerPanel {
 				made: joinInputs(last.made, made),
 			};
 		else sender.queue.push({ action, made });
+		// An action moves the pointer where it acts: a move not sent yet goes nowhere (20260930744000).
+		sender.pointer.pending = null;
 		if (this.#lostShown) {
 			this.#lostShown = false;
 			this.#controlNote.textContent = "";
@@ -1460,6 +1592,9 @@ export class ComputerPanel {
 					continue;
 				}
 				observed = undefined;
+				// A move of this hold's or sharing's on its way goes first (review r1 F1 of #1733); after a wait, everything above
+				// is checked again.
+				if (!(await this.#pointerSettled(sender))) continue;
 				let answer: MachineActAnswer | undefined;
 				try {
 					answer = await computer.screens.act(
@@ -1539,7 +1674,184 @@ export class ComputerPanel {
 			}
 		} finally {
 			sender.sending = false;
+			// Moves wait while actions go (20260930744000): once the queue is empty, the newest position goes.
+			void this.#pumpPointer(sender);
 		}
+	}
+
+	/** Where the member's own pointer is over the picture (20260930744000), for the hold or the sharing it was gathered
+	 * for, while that is the window's: the newest position replaces one not sent yet. Null (it left the picture) sends
+	 * nothing more. */
+	#point(sender: PageHold | SharedInput, at: { readonly x: number; readonly y: number } | null): void {
+		const lane = sender.pointer;
+		if (!at || lane.done || this.#pointerOff || sender.stop.signal.aborted || !this.#pointerCurrent(sender)) {
+			lane.pending = null;
+			return;
+		}
+		lane.pending = { x: at.x, y: at.y };
+		void this.#pumpPointer(sender);
+	}
+
+	/** Whether this hold or sharing is the window's own now, as for its actions. */
+	#pointerCurrent(sender: PageHold | SharedInput): boolean {
+		return "seat" in sender
+			? this.#hold === sender && this.#current(sender) && this.#pick()?.machineId === sender.machineId
+			: this.#sharingOf(sender);
+	}
+
+	/**
+	 * Sends the member's pointer (20260930744000): one request at a time, at most one move every POINTER_EVERY_MS, the
+	 * newest position only, never while an action of the same hold or sharing waits or goes (an action moves the pointer
+	 * where it acts). It begins a pass first (shared: the sharing's generation; private: the hold's epoch and seat) and
+	 * again before it runs out. A route that is not there (a bridge or an executor from before 20260930744000) turns the
+	 * pointer off for the page, quietly: the window keeps today's way, the desktop's pointer drawn in its pictures. A
+	 * refusal is told as an action's would be where it means the same; the pointer of that hold or sharing is then done.
+	 */
+	async #pumpPointer(sender: PageHold | SharedInput): Promise<void> {
+		const lane = sender.pointer;
+		const computer = this.#computer;
+		if (!computer || lane.inFlight || !lane.pending || lane.done || this.#pointerOff) return;
+		if (sender.queue.length > 0 || sender.sending || !this.#pointerCurrent(sender)) return;
+		// A desktop that went away is waited out: the position goes nowhere, and a move after the pause asks again.
+		if (Date.now() < lane.paused) {
+			lane.pending = null;
+			return;
+		}
+		const hold = "seat" in sender ? sender : undefined;
+		const begins = !lane.pass || lane.pass.until - Date.now() < POINTER_RENEW_MS;
+		const wait = begins
+			? lane.begunAt + POINTER_BEGIN_EVERY_MS - Date.now()
+			: lane.sentAt + POINTER_EVERY_MS - Date.now();
+		if (wait > 0) {
+			lane.inFlight = true;
+			await new Promise((resolve) => setTimeout(resolve, wait));
+			lane.inFlight = false;
+			void this.#pumpPointer(sender);
+			return;
+		}
+		lane.inFlight = true;
+		try {
+			if (begins || !lane.pass) {
+				const shared = hold ? undefined : (sender as SharedInput);
+				const begin = hold
+					? { epoch: hold.epoch, seat: hold.seat }
+					: shared?.generation !== null && shared?.generation !== undefined
+						? { generation: shared.generation }
+						: null;
+				// A database before 20260930738000 names no generation: no pass for this sharing.
+				if (!begin) {
+					lane.done = true;
+					return;
+				}
+				const began = Date.now();
+				lane.begunAt = began;
+				const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
+				if (answer.kind === "pass")
+					lane.pass = {
+						id: answer.pass,
+						until: began + answer.milliseconds,
+						endsBy: Date.now() + answer.milliseconds + POINTER_PASS_MARGIN_MS,
+					};
+				else {
+					// No pass: the position waits for none; the member's next move brings the next one.
+					lane.pending = null;
+					this.#pointerRefused(sender, answer);
+				}
+				return;
+			}
+			const at = lane.pending;
+			const pass = lane.pass;
+			lane.pending = null;
+			lane.sentAt = Date.now();
+			// An action of this hold or sharing waits for this move's answer (review r1 F1 of #1733): what the executor
+			// answered it took in that order, so the action comes after it.
+			let moved: () => void = () => {};
+			lane.moving = new Promise<void>((resolve) => {
+				moved = resolve;
+			});
+			try {
+				const answer = await computer.screens.pointer(
+					sender.machineId,
+					{ pass: pass.id, x: at.x, y: at.y },
+					sender.stop.signal,
+				);
+				if (answer.kind === "moved") {
+					// The window does not back off while the pointer moves, so a hover shows within a look.
+					this.#movedAt = Date.now();
+					if (this.#delay > LOOK_EVERY_MS) this.#quicken();
+				} else this.#pointerRefused(sender, answer);
+			} catch (error) {
+				// No answer: the move may still land. Its pass is not used again, and an action waits until that pass has
+				// ended on every node, so the move can no longer come after it.
+				lane.unsure = Math.max(lane.unsure, pass.endsBy);
+				if (lane.pass === pass) lane.pass = null;
+				throw error;
+			} finally {
+				lane.moving = null;
+				moved();
+			}
+		} catch {
+			// No answer (the network, a slow bridge): the newest position goes with the next move. After a begin that got
+			// none, nothing is asked again until the member's next move (and then at most once a second): never in a loop.
+			if (begins) lane.pending = null;
+		} finally {
+			lane.inFlight = false;
+			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
+		}
+	}
+
+	/** Whether the hold's or sharing's pointer let its next action go at once: a move on its way is waited for (its answer
+	 * puts it before the action), and a move whose answer never came until its pass has ended everywhere. False when it
+	 * waited (the caller checks again what may have changed meanwhile). */
+	async #pointerSettled(sender: PageHold | SharedInput): Promise<boolean> {
+		const lane = sender.pointer;
+		let settled = true;
+		while (lane.moving) {
+			settled = false;
+			await lane.moving;
+		}
+		const unsure = lane.unsure - Date.now();
+		if (unsure > 0) {
+			settled = false;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, unsure);
+				sender.stop.signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+		}
+		return settled;
+	}
+
+	/** A pointer request that did not move the pointer. */
+	#pointerRefused(sender: PageHold | SharedInput, answer: MachinePointerAnswer): void {
+		const lane = sender.pointer;
+		lane.pass = null;
+		if (answer.kind === "unavailable") {
+			// No pointer route anywhere on the way: the page keeps today's way, quietly.
+			this.#pointerOff = true;
+			lane.pending = null;
+			return;
+		}
+		if (answer.kind !== "refused" || answer.code === "POINTER_PASS_ENDED") return;
+		lane.pending = null;
+		// The desktop went away for now (off, restarting, asleep): its pointer comes back with it, after a pause.
+		if (POINTER_PASSING.has(answer.code)) {
+			lane.paused = Date.now() + POINTER_PAUSE_MS;
+			this.#quicken();
+			return;
+		}
+		lane.done = true;
+		// Someone took the desktop since this sharing's generation, unseen: as an action's refusal, no sharing until a list
+		// read begun now names the generation that stands (20260930738000).
+		if (answer.code === "DESKTOP_HELD_SINCE" && !("seat" in sender)) this.#heldSince = this.#listReads;
+		this.#listStale = true;
+		this.#quicken();
 	}
 
 	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at
@@ -1746,6 +2058,7 @@ export class ComputerPanel {
 	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
 	 * again; the list says where it stands. */
 	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
+		this.claim();
 		if (this.#waking) return;
 		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
 		this.#startEnded = undefined;
@@ -1964,6 +2277,7 @@ export class ComputerPanel {
 
 	/** The state's own button: wake the machine, keep watching, or try again. */
 	async #act(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
+		this.claim();
 		const state = this.#loading.dataset.state;
 		this.#touched();
 		if (state === "paused") {
@@ -2004,6 +2318,7 @@ export class ComputerPanel {
 	 * The wish is this page's, for that computer: it ends at its picture, a refusal, a close, a switch, or WANT_ON_MS. Never
 	 * on open: a computer costs hours, so it takes a press. */
 	async #startComputer(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
+		this.claim();
 		const chosen = this.#chosen;
 		this.#making = true;
 		this.#startRefused = undefined;
@@ -2073,6 +2388,7 @@ export class ComputerPanel {
 	 * its way up, keeps it, and the next look tells. Nothing of it touches the window once the member chose another
 	 * machine or closed it. */
 	async #turnOn(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
+		this.claim();
 		if (this.#turningOn) return;
 		this.#turningOn = true;
 		this.#startedAt = Date.now();
@@ -2214,6 +2530,14 @@ export class ComputerPanel {
  */
 export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
+	/** When a window shows by itself in its agent's thread, and goes again (20260930742000). */
+	readonly byItself = new ComputerByItself({
+		current: (agentId) => {
+			const panel = this.#panels.get(agentId);
+			return panel ? { el: panel.el, theirs: !panel.closableByRule } : undefined;
+		},
+		close: (agentId) => this.closeByRule(agentId),
+	});
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #options: ComputerPanelOptions;
@@ -2232,7 +2556,15 @@ export class ComputerPanels {
 	 * or not (a closed window's hand-back is still the ledger's). True once nothing of the agent's is held; false while
 	 * something is not confirmed (asked again meanwhile; the lease ends by itself in 5 minutes). */
 	releaseAgent(agentId: string): Promise<boolean> {
+		// The take-over card's I'm done: the member's act on the agent's window (20260930742000).
+		this.#panels.get(agentId)?.claim();
 		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId, "handed_back", true);
+	}
+
+	/** Whether the member has a computer's large view open, or types privately on one (holds its desktop), in any of
+	 * the company's windows: no window shows by itself then (20260930742000). */
+	busy(): boolean {
+		return [...this.#panels.values()].some((panel) => panel.el.classList.contains("is-entered") || panel.holding);
 	}
 
 	/** The panel a thread left open for this agent, if any. */
@@ -2258,9 +2590,21 @@ export class ComputerPanels {
 		return panel;
 	}
 
+	/** The rule's close of a window it opened by itself (computer-by-itself.ts): only when the window says nothing of the
+	 * member's is alive in it; never gives anything back. Whether it closed. */
+	closeByRule(agentId: string): boolean {
+		const panel = this.#panels.get(agentId);
+		if (!panel?.closeByRule()) return false;
+		this.byItself.released(agentId);
+		this.#panels.delete(agentId);
+		return true;
+	}
+
 	/** End the agent's panel. */
 	close(agentId: string): void {
 		const panel = this.#panels.get(agentId);
+		// Whatever closes it, the window that showed by itself is no longer the rule's (20260930742000).
+		this.byItself.released(agentId);
 		this.#panels.delete(agentId);
 		panel?.dispose();
 	}
@@ -2270,6 +2614,7 @@ export class ComputerPanels {
 	dispose(): void {
 		this.#signal?.removeEventListener("abort", this.#onAbort);
 		this.#holds.leave();
+		this.byItself.dispose();
 		for (const agentId of [...this.#panels.keys()]) this.close(agentId);
 	}
 }
