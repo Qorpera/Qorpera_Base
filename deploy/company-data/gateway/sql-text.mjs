@@ -35,6 +35,9 @@ export function readStatement(text) {
 	let sql = "";
 	let last = -1; // where the last character outside comments and white space sits in `sql`
 	let ended = false; // a semicolon was seen, with nothing after it yet
+	// Parentheses outside strings, names, dollar quotes and comments must close in order: a statement the gateway
+	// wraps in its own parentheses cannot close the gateway's.
+	let depth = 0;
 	const keep = (piece, counts) => {
 		if (counts && ended) throw new Error("more");
 		sql += piece;
@@ -115,6 +118,8 @@ export function readStatement(text) {
 				at++;
 			} else {
 				keep(char, !/\s/.test(char));
+				if (char === "(") depth++;
+				if (char === ")" && --depth < 0) return { ok: false, problem: "A parenthesis is closed that was not opened" };
 				at++;
 			}
 		}
@@ -122,5 +127,6 @@ export function readStatement(text) {
 		return { ok: false, problem: "The file holds more than one statement: write one" };
 	}
 	if (last < 0) return { ok: false, problem: "The file holds no statement" };
+	if (depth > 0) return { ok: false, problem: "A parenthesis is not closed" };
 	return { ok: true, sql: sql.trimEnd(), parameters, words };
 }

@@ -113,6 +113,19 @@ select 'Customer ' || n, 100 + (n % 7) * 25, case when n % 5 = 0 then 'shipped' 
 from generate_series(1, 240) n;
 `;
 const COUNT = "-- How many orders there are.\nselect count(*) as orders from orders;\n";
+/** Every name a question's statement in the gateway has used for its own: aliases, CTEs and added columns. */
+const NAMES = [
+	"qorpera_asked",
+	"qorpera_inner",
+	"qorpera_sized",
+	"qorpera_made",
+	"qorpera_answer",
+	"qorpera_at",
+	"qorpera_bytes_so_far",
+	"qorpera_rows_made",
+	"qorpera_bytes",
+	"qorpera_rows",
+];
 put(ENV_A, {
 	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
 	"data/shop/tables/001-orders.sql": ORDERS,
@@ -137,6 +150,11 @@ select 9007199254740993::bigint as big, 42::bigint as small, 7::int as whole, 1.
 	"data/shop/queries/huge.sql": "select repeat('x', 1048576) as text from generate_series(1, 8);\n",
 	"data/shop/queries/huge-first.sql": "select repeat('x', 1048576) as text union all select 'small';\n",
 	"data/shop/queries/none.sql": "select n from generate_series(1, 0) n;\n",
+	// Columns named like the names the gateway's statement uses, the old ones and the ones it has now.
+	"data/shop/queries/shadow.sql": "select '' as qorpera_asked, repeat('x', 1048576) as payload;\n",
+	"data/shop/queries/names.sql": `select ${NAMES.map((name, index) => `${index + 1} as ${name}`).join(", ")} from generate_series(1, 100);\n`,
+	"data/shop/queries/names-wide.sql":
+		"select repeat('x', 300) as qorpera_bytes_so_far, 1 as qorpera_rows_made, n - n + 1 as qorpera_at from generate_series(1, 40) n;\n",
 	"data/shop/queries/slow.sql": "select pg_sleep(5) as waited;\n",
 	"data/shop/queries/nap.sql": "select pg_sleep(0.2) as napped, :k::int as k;\n",
 	"data/shop/queries/stubborn.sql": "select stubborn() as never;\n",
@@ -501,6 +519,29 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.equal(gateway.taken.bytes - before, 0);
 		const none = await ask(viewer, "query", { database: "shop", question: "none" });
 		assert.deepEqual([none.value.rows, none.value.more, none.value.columns], [[], false, ["n"]]);
+	});
+
+	it("counts a question's size by its whole row, whatever its columns are named", async () => {
+		// A column named like the gateway's own words cannot stand for the whole row: 1 MiB still never comes over.
+		const before = gateway.taken.bytes;
+		const shadow = await ask(viewer, "query", { database: "shop", question: "shadow" });
+		assert.equal(shadow.status, 200, JSON.stringify(shadow.value).slice(0, 200));
+		assert.deepEqual([shadow.value.rows, shadow.value.more, shadow.value.columns], [[], true, ["qorpera_asked", "payload"]]);
+		assert.equal(gateway.taken.bytes - before, 0);
+		// Columns named like every name the gateway adds: the question answers its own values, and the limits hold.
+		const names = await ask(viewer, "query", { database: "shop", question: "names" });
+		assert.equal(names.status, 200, JSON.stringify(names.value).slice(0, 300));
+		assert.deepEqual(names.value.columns, NAMES);
+		assert.equal(names.value.rows.length, LIMITS_HERE.questionRows);
+		assert.deepEqual(names.value.rows[0], NAMES.map((_, index) => index + 1));
+		assert.equal(names.value.more, true);
+		const wide = await ask(viewer, "query", { database: "shop", question: "names-wide" });
+		assert.equal(wide.status, 200, JSON.stringify(wide.value).slice(0, 300));
+		assert.deepEqual(wide.value.columns, ["qorpera_bytes_so_far", "qorpera_rows_made", "qorpera_at"]);
+		assert.equal(wide.value.more, true);
+		assert.ok(wide.value.rows.length > 0 && wide.value.rows.length < 40);
+		assert.deepEqual(wide.value.rows[0].slice(1), [1, 1]);
+		assert.ok(Buffer.byteLength(JSON.stringify(wide.value.rows)) <= LIMITS_HERE.questionBytes);
 	});
 
 	// ---- steps that must not land
