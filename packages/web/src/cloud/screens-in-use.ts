@@ -3,7 +3,7 @@ import { array, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
 
 /* Which of the company's agents use their desktop computers now (migration 20260930742000): an agent that looked at or
  * acted on its desktop's screen itself within the database's window, on a machine that runs and no member holds
- * privately. The rail shows such a working agent "at its computer", and its thread shows the computer by itself. A
+ * privately. The rail shows such a working agent "using its computer", and its thread shows the computer by itself. A
  * cloud before the migration answers the read as missing (CloudRpcError.missing): the web then shows neither. */
 
 export const SCREENS_IN_USE_SCHEMA = "qorpera.company-screens-in-use/v1";

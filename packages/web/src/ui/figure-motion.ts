@@ -1,12 +1,6 @@
 import type { Activity as MotionActivity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
-import {
-	type AtComputerFrame,
-	atComputerFrame,
-	atComputerLight,
-	atComputerSeed,
-	hexChannels,
-} from "./at-computer-motion.ts";
+import { type AtComputerFrame, atComputerFrame, atComputerLight, atComputerSeed } from "./at-computer-motion.ts";
 import { alignRegion, boxCanvas, bucketOf, level, type Region, reduce } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 import type { WorkingSchedule } from "./working-sequence.ts";
@@ -418,7 +412,7 @@ function paint(entry: LiveMotion): void {
 			ctx.fill();
 		}
 	ctx.globalAlpha = 1;
-	if (desk) deskLight(ctx, canvas, entry, desk, side);
+	if (desk) deskLight(ctx, canvas, desk, side);
 	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, true, step.strokes);
 	else if (!step) strokes(ctx, p.strokes, true, entry.side);
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -436,11 +430,10 @@ let lightCanvas: HTMLCanvasElement | undefined;
 function deskLight(
 	ctx: CanvasRenderingContext2D,
 	canvas: HTMLCanvasElement,
-	entry: LiveMotion,
 	desk: AtComputerFrame,
 	side: number,
 ): void {
-	const [r, g, b] = atComputerLight(entry.shown, desk);
+	const [r, g, b] = atComputerLight(desk);
 	const dark = document.documentElement.dataset.theme === "dark";
 	const s = desk.strength;
 	lightCanvas ??= document.createElement("canvas");
@@ -470,9 +463,8 @@ function deskLight(
 	ctx.translate(50, 97);
 	ctx.scale(1, 0.16);
 	const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
-	const [pr, pg, pb] = dark ? [r, g, b] : hexChannels(entry.shown);
-	pool.addColorStop(0, `rgba(${pr},${pg},${pb},${(dark ? 0.55 : 0.32) * s})`);
-	pool.addColorStop(1, `rgba(${pr},${pg},${pb},0)`);
+	pool.addColorStop(0, `rgba(${r},${g},${b},${(dark ? 0.55 : 0.5) * s})`);
+	pool.addColorStop(1, `rgba(${r},${g},${b},0)`);
 	ctx.fillStyle = pool;
 	ctx.beginPath();
 	ctx.arc(0, 0, 36, 0, Math.PI * 2);

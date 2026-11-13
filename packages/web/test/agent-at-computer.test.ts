@@ -15,7 +15,7 @@ import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 /* An agent at its desktop computer (Jonas, 13 Nov 2026; 20260930742000): the database says which agents use their
- * computers now; the rail shows such a working agent "at its computer", and its thread shows the computer's window by
+ * computers now; the rail shows such a working agent "using its computer", and its thread shows the computer's window by
  * itself, once per stretch of use. */
 
 const cleanup: (() => void)[] = [];
@@ -258,8 +258,8 @@ describe("the rail", () => {
 		const f = rail();
 		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
 		f.draw();
-		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("At its computer");
-		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · At its computer`);
+		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Using its computer");
+		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Using its computer`);
 		expect(f.motion.mock.calls.some((call) => call[4]?.activity === "AtComputer")).toBe(true);
 		// The working disc stays: it works.
 		expect(f.row().querySelector(".rail-row-status")).not.toBeNull();
@@ -270,7 +270,7 @@ describe("the rail", () => {
 		const f = rail();
 		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
 		f.draw();
-		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Ved sin computer");
+		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Bruger sin computer");
 		expect(untranslated()).toEqual([]);
 	});
 });

@@ -1,6 +1,7 @@
-/* "At its computer" (20260930742000; Jonas, 13 Nov 2026: "an animation the avatar could do in the sidepanel to
+/* "Using its computer" (20260930742000; Jonas, 13 Nov 2026: "an animation the avatar could do in the sidepanel to
  * indicate it. like it's gaming"): the agent's figure while it uses its desktop computer. Lit from below
- * and in front by a screen whose light steps softly through a few tints of the agent's own colour; the eyes dart in
+ * and in front by a screen whose cool light steps through a few blue-whites, with now and then a short flash of a game's
+ * or a video's colour; the eyes dart in
  * quick short moves with a rare blink, as when one plays or reads fast; now and then a small lean toward the screen.
  *
  * Everything is a function of the clock and a seed, so every view of one agent agrees, and the figure is repainted only
@@ -21,7 +22,7 @@ export interface AtComputerFrame {
 	face: [AtComputerFace, AtComputerFace];
 	/** 0..1: how far the figure leans toward the screen. */
 	lean: number;
-	/** The light's tint: from tint `from` to tint `to` by `mix` (indices into atComputerTints). */
+	/** The light's colour: from `from` to `to` by `mix` (indices into SCREEN_LIGHTS). */
 	from: number;
 	to: number;
 	mix: number;
@@ -108,18 +109,34 @@ function scheduleFor(seed: number): Schedule {
 	const leans: Pulse[] = [];
 	for (let at = between(3, 6); at < LOOP_S - 3; at += between(8, 13)) leans.push({ at, length: between(1.6, 2.4) });
 	const lights: Light[] = [];
+	// A screen's light: it steps through the cool tints, and now and then a short flash of a game's or a video's colour.
 	let tint = 0;
-	for (let at = 0; at < LOOP_S; at += between(0.18, 0.7)) {
-		tint = (tint + 1 + Math.floor(rnd() * (atComputerTints.length - 1))) % atComputerTints.length;
-		lights.push({ at, tint, strength: between(0.5, 1) });
+	for (let at = 0; at < LOOP_S; ) {
+		if (rnd() < FLASH_SHARE) {
+			lights.push({ at, tint: COOL + Math.floor(rnd() * (SCREEN_LIGHTS.length - COOL)), strength: 1 });
+			at += between(0.1, 0.22);
+		}
+		tint = (tint + 1 + Math.floor(rnd() * (COOL - 1))) % COOL;
+		lights.push({ at, tint, strength: between(0.6, 1) });
+		at += between(0.25, 0.8);
 	}
 	schedule = { gazes, blinks, leans, lights };
 	schedules.set(seed, schedule);
 	return schedule;
 }
 
-/** How much of the agent's colour each tint keeps (the rest is white): the screen's light is the agent's own. */
-export const atComputerTints = [0.8, 0.45, 1, 0.6] as const;
+/** A screen's light: three cool blue-whites (the first COOL), then the colours a game or a video flashes now and then. */
+export const SCREEN_LIGHTS: readonly (readonly [number, number, number])[] = [
+	[176, 214, 255],
+	[214, 234, 255],
+	[150, 196, 255],
+	[255, 120, 214],
+	[120, 255, 176],
+	[255, 206, 110],
+];
+const COOL = 3;
+/** About one change in eight is a flash. */
+const FLASH_SHARE = 0.12;
 
 const ease = (u: number) => 1 - (1 - u) ** 3;
 const smooth = (u: number) => u * u * (3 - 2 * u);
@@ -177,15 +194,9 @@ export function atComputerFrame(seconds: number, seed: number, reduced: boolean)
 	};
 }
 
-/** A `#rrggbb` colour's channels (a grey for anything else). */
-export function hexChannels(hex: string): [number, number, number] {
-	const value = /^#[\da-f]{6}$/i.test(hex) ? Number.parseInt(hex.slice(1, 7), 16) : 0x777777;
-	return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-}
-
-/** The light's colour now: the agent's colour mixed toward white by the two tints. */
-export function atComputerLight(color: string, frame: AtComputerFrame): [number, number, number] {
-	const base = /^#[\da-f]{6}$/i.test(color) ? hexChannels(color) : ([255, 255, 255] as [number, number, number]);
-	const keep = atComputerTints[frame.from]! + (atComputerTints[frame.to]! - atComputerTints[frame.from]!) * frame.mix;
-	return base.map((c) => Math.round(255 + (c - 255) * keep)) as [number, number, number];
+/** The screen's light now: between its two colours by the frame's mix. */
+export function atComputerLight(frame: AtComputerFrame): [number, number, number] {
+	const from = SCREEN_LIGHTS[frame.from]!,
+		to = SCREEN_LIGHTS[frame.to]!;
+	return from.map((c, index) => Math.round(c + (to[index]! - c) * frame.mix)) as [number, number, number];
 }

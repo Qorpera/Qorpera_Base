@@ -140,7 +140,7 @@ export const CONVERSATION: Record<string, string> = {
 	// Agent states (ui/agent-activity.ts)
 	Working: "Arbejder",
 	Writing: "Skriver",
-	"At its computer": "Ved sin computer",
+	"Using its computer": "Bruger sin computer",
 	"Needs you": "Venter på dig",
 	// The rail when an agent's work waits on the member (app/views/shell.ts)
 	"Stopped: {what}": "Stoppet: {what}",
@@ -148,7 +148,7 @@ export const CONVERSATION: Record<string, string> = {
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
-	"{name} is at its computer": "{name} sidder ved sin computer",
+	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
 	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",

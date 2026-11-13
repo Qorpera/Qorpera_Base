@@ -20,8 +20,8 @@ export const AGENT_LOOK: Record<AgentState, AgentLook> = {
 	// Working, and using its desktop computer now (20260930742000): the figure is lit by its screen.
 	computer: {
 		figure: "AtComputer",
-		line: phrase("At its computer"),
-		caption: phrase("{name} is at its computer"),
+		line: phrase("Using its computer"),
+		caption: phrase("{name} is using its computer"),
 		disc: "working",
 	},
 	decision: { figure: "Waiting", line: phrase("Needs you") },

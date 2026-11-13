@@ -571,7 +571,7 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 				: now === "writing"
 					? t("Writing")
 					: now === "computer"
-						? t("At its computer")
+						? t("Using its computer")
 						: t("Working");
 			return [
 				{
