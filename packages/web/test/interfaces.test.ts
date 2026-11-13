@@ -1643,11 +1643,31 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			}
 			vi.advanceTimersByTime(400);
 			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
-			// Folded and let finish: they go once their folds end.
+			// Folded, opened again and folded again at once: the first fold's end leaves the second alone (review F1, round 2).
 			group(element).click();
+			vi.advanceTimersByTime(100);
+			group(element).click();
+			group(element).click();
+			const second = animations.filter(
+				(entry) =>
+					entry.frames.at(-1)?.scale === "0.2" && !into.includes(entry) && entry.cancel.mock.calls.length === 0,
+			);
+			expect(second.map((entry) => name(entry.element))).toEqual(["Brand", "Plan"]);
+			vi.advanceTimersByTime(300);
 			expect(element.querySelectorAll(".rail-app.is-folding")).toHaveLength(2);
-			vi.advanceTimersByTime(400);
+			expect(second.every((entry) => entry.cancel.mock.calls.length === 0)).toBe(true);
+			// Its own end takes the tiles away and cancels the folds, so the same tiles stand whole when the group opens
+			// again later.
+			vi.advanceTimersByTime(200);
 			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
+			for (const entry of second) {
+				expect(entry.cancel).toHaveBeenCalledOnce();
+				expect(entry.element.isConnected).toBe(false);
+			}
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
+				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
 		} finally {
 			vi.useRealTimers();
 			boxes.mockRestore();

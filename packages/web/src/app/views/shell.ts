@@ -2126,9 +2126,18 @@ function groupIcon(name: string, count: number, colour: string | undefined): HTM
 	return tile;
 }
 
-/** Each tile going back into a folding group, and its animation: a tile that comes back meanwhile (the group opened
- * again) loses it, so it stands whole again (review F1 on #1729). */
-const foldingTiles = new WeakMap<HTMLElement, Animation>();
+/** Each tile on its way out of the drawer, and its fold into a group if it has one. The drawer draws a tile it shows
+ * again with the same element, so a tile that comes back, or goes at the end of its way out, loses its fold (`fill`
+ * holds the fold's end, small and clear, until cancelled), and only the latest way out ends one (review F1 on #1729). */
+const leavingTiles = new WeakMap<HTMLElement, { readonly fold?: Animation }>();
+
+/** A tile out of its way out: whole again, in the grid's flow, its fold cancelled. */
+function unleave(element: HTMLElement): void {
+	leavingTiles.get(element)?.fold?.cancel();
+	leavingTiles.delete(element);
+	element.classList.remove("is-leaving", "is-folding");
+	for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+}
 
 /** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
  * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
@@ -2143,13 +2152,7 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		: undefined;
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
-	for (const element of drawn)
-		if (element.classList.contains("is-leaving")) {
-			element.classList.remove("is-leaving", "is-folding");
-			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
-			foldingTiles.get(element)?.cancel();
-			foldingTiles.delete(element);
-		}
+	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
 	reconcile(grid, drawn);
 	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
 	// collapsing").
@@ -2197,6 +2200,7 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.width = `${was.width}px`;
 		grid.append(element);
 		let ms = 240;
+		let fold: Animation | undefined;
 		if (into) {
 			// Into the group's tile: each app shrinks and goes back behind it, a moment after the one nearer it.
 			const from = centre(element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was);
@@ -2204,7 +2208,7 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 			const dy = into.y - from.y;
 			const delay = Math.min(turn.get(element) ?? 0, 6) * 18;
 			element.classList.add("is-folding");
-			const fold = element.animate(
+			fold = element.animate(
 				[
 					{ translate: "0 0", scale: "1", opacity: 1 },
 					{ opacity: 1, offset: 0.4 },
@@ -2212,13 +2216,15 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				],
 				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
 			);
-			foldingTiles.set(element, fold);
 			ms = 340 + delay + 20;
 		}
+		const leave = { fold };
+		leavingTiles.set(element, leave);
 		setTimeout(() => {
-			if (!element.classList.contains("is-leaving")) return;
+			// Come back meanwhile, or gone again on a newer way out: not this one's to end.
+			if (leavingTiles.get(element) !== leave) return;
 			element.remove();
-			foldingTiles.delete(element);
+			unleave(element);
 		}, ms);
 	}
 }
