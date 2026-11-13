@@ -7,39 +7,18 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929023999_runtime_bundle_activation_v239.sql";
-const activationVersion = 239;
-const previousActivationVersion = 238;
-const previousActivationSha256 = "45b2e6f499205057658aa0ecea26df84412cda19721bd835b71341ef88177be0";
-// This release's own migrations, which its activation requires before it registers the bundle (v239): one entry per
+const activation = "supabase/migrations/20260929024099_runtime_bundle_activation_v240.sql";
+const activationVersion = 240;
+const previousActivationVersion = 239;
+const previousActivationSha256 = "0c3013cd760d3e5fd6afd31c3403b15ef2a9f42d90241c850d44a8992fe9a296";
+// This release's own migrations, which its activation requires before it registers the bundle (v240: none): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v240 replaces these entries with the migrations v240 brings (or an empty list). v239's
-// entries are not repeated there: v240's activation already requires v239 active with its exact digest, which on a
+// version lines, when it sets them: v241 replaces these entries with the migrations v241 brings (or an empty list). v240's
+// entries are not repeated there: v241's activation already requires v240 active with its exact digest, which on a
 // database past 20260930534000 only this activation sets, after these guards. An entry sorting before the activation file
 // is checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
 // order reaches it only after the activation (as with the guards in the activation's text below).
-const activationRequires = Object.freeze([
-	[
-		"20260930734000_machine_shared_control",
-		"shared control: this bundle's machine_screen reads memberTouched, which the agent's screen read answers and the executor tells through qorpera_machine_desktop_shared_told",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)') and strpos(prosrc, '20260930734000') > 0)",
-	],
-	[
-		"20260930737000_machine_desktop_figure",
-		"the agent's figure word: the executor this release moves reads `starter` from its machine list; it rides in this release's migrate, before this switch",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_list_executor_machines(text,text)') and strpos(prosrc, '20260930737000') > 0)",
-	],
-	[
-		"20260930738000_machine_shared_generation",
-		"the lease generation of a shared action: the executor this release moves reads the four-argument begin's rows; it rides in this release's migrate, before this switch",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb,bigint)') and strpos(prosrc, '20260930738000') > 0)",
-	],
-	[
-		"20260930739000_company_time_zone",
-		"the company's time zone: the executor this release moves reads `timeZone` from its machine list; it rides in this release's migrate, before this switch",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_ensure_company_time_zone(uuid,text)') and strpos(prosrc, '20260930739000') > 0)",
-	],
-]);
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
