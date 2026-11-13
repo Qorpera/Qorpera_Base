@@ -25,9 +25,14 @@ import { ENVIRONMENT, finish, pass, proveCompanyRun, repositoryRoot } from "./pr
 //   other company's that slept longest, not her recent one), only it; alice-old's row says when; then it runs.
 // - Take-again: her next task machine of alice-old's size is alice-recent, which kept its disk; the one after is alice-old,
 //   whose answer says its disk was freed and that it starts empty, and it runs on a new disk that says so too.
+// - Many disks (the coordinator's word after review of #1773): 300 more machines asleep on the node, every LXD read as slow
+//   as node 2's slowest (5.1 ms a disk, 7.0 ms the pool, measured 13 Nov 19:09Z). After a restart the executor's first
+//   report reads them all well within its time; the next reads only the awake disks (the sleeping ones' reads are kept);
+//   one that just fell asleep is read again; and the kernel's room is right after each.
 // Real: as the harness says, plus the runtime's machine tools (a conversation's), every kernel function they and the
 // executor call (start, status, the disk report, admission, custody, mark running, release), the executor's own LXD
-// client read of the pool (LxdUnixClient.readStoragePoolUse) and its own report (companyMachineDiskReport). Stand-ins:
+// client (LxdUnixClient's two reads) and its own reader (CompanyMachineDiskReader, which keeps sleeping disks' reads and
+// reads the pool last). Stand-ins:
 // the executor's process (its pass, made by these calls in its order: report, admission, its steps), LXD (an HTTP server
 // on a Unix socket answering the two reads as node 2's LXD 6.9 did, its figures the proof's) and the machine (a boot is
 // the guest's mark). Not covered: a real VM, LXD's own deletion, a real model.
@@ -41,6 +46,9 @@ const RESERVE = Math.floor(POOL_TOTAL / 5);
 const OTHER = "12530000-0000-4000-8000-000000000010";
 const OTHER_ENVIRONMENT = "12530000-0000-4000-8000-000000000020";
 const NODE = "d0000000-0000-4000-8000-000000000410";
+// Node 2's slowest LXD reads, 13 Nov 19:09Z (lanes/agent-box-20261113/home/node-time-reads.out): a disk's /state, the pool.
+const SLOWEST_DISK_MS = 5.1;
+const SLOWEST_POOL_MS = 7.0;
 
 const SETUP = `
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'dk-ack') \\g /dev/null
@@ -81,6 +89,17 @@ begin
 	perform dk_proof.custody(p_id, 'delete');
 	return (select public.qorpera_release_company_machine(p.id, p.owner, public.qorpera_company_machine_binding_text(p.binding),
 		p.machine_id_sha256) from dk_proof.placement(p_id) p);
+end $$;
+-- A running machine of this node falls asleep now (the kernel's idle stop, the executor's power-off).
+create function dk_proof.sleep_now(p_name text) returns void language plpgsql as $$
+declare v_placement uuid := (select (public.qorpera_company_machine_placement(m.id)).id from public.qorpera_company_machines m
+	where m.name = p_name and m.removed_at is null);
+begin
+	perform public.qorpera_set_company_machine_desired((select m from public.qorpera_company_machines m where m.name = p_name
+		and m.removed_at is null), 'stopped', 'kernel');
+	perform dk_proof.custody(v_placement, 'stop');
+	perform public.qorpera_suspend_company_machine(p.id, p.owner, public.qorpera_company_machine_binding_text(p.binding),
+		p.machine_id_sha256) from dk_proof.placement(v_placement) p;
 end $$;
 -- A machine that ran on this node and sleeps on its disk, asleep and last used p_ago ago.
 create function dk_proof.asleep(p_name text, p_profile uuid, p_environment uuid, p_ago interval) returns void language plpgsql as $$
@@ -156,7 +175,7 @@ async function executorCode() {
 			contents: [
 				'export {LxdUnixClient} from "./packages/runner-orchestrator/src/lxd-client.ts";',
 				'export {lxdCompanyMachineName} from "./packages/runner-orchestrator/src/company-machine.ts";',
-				'export {companyMachineDiskReport} from "./packages/runner-orchestrator/src/company-machine-disk.ts";',
+				'export {CompanyMachineDiskReader, COMPANY_MACHINE_DISK_READ_BUDGET_MS} from "./packages/runner-orchestrator/src/company-machine-disk.ts";',
 			].join("\n"),
 		},
 		platform: "node",
@@ -175,10 +194,13 @@ async function fakeLxd(lxd, scratch) {
 	const server = createServer((request, response) => {
 		const url = request.url ?? "";
 		lxd.requests.push(url);
-		const reply = (status, body) => {
+		const now = (status, body) => {
 			response.writeHead(status, { "content-type": "application/json" });
 			response.end(JSON.stringify(body));
 		};
+		// As slow as node 2's slowest reads, when asked.
+		const reply = (status, body) =>
+			lxd.slow ? setTimeout(() => now(status, body), url.endsWith("/resources") ? SLOWEST_POOL_MS : SLOWEST_DISK_MS) : now(status, body);
 		if (url === "/1.0/storage-pools/machines/resources")
 			return reply(200, {
 				type: "sync",
@@ -200,7 +222,18 @@ async function fakeLxd(lxd, scratch) {
 	return { server, socket };
 }
 
-const proof = { db: null, executor: null, lxd: null, socket: null, reports: [], deleted: [], starts: [], passes: 0, waking: new Map() };
+const proof = {
+	db: null,
+	executor: null,
+	reader: null,
+	lxd: null,
+	socket: null,
+	reports: [],
+	deleted: [],
+	starts: [],
+	passes: 0,
+	waking: new Map(),
+};
 
 /** SQL as the service role (the executor's own calls). Its last line. */
 const service = (sql) =>
@@ -223,21 +256,30 @@ const ownOf = (machine) => {
 
 /** One pass of the executor, in its order: the disk report (LXD's read, the report), admission, then its steps (a
  * retired placement's VM and disk deleted, then released; a placed machine booted). */
-async function executorPass() {
-	proof.passes++;
+/** The executor's disk report: its reader over the listed placements (the awake disks and the sleeping ones it keeps no
+ * read of, then the pool), then the kernel's call, as the host's #startDiskReport makes it. */
+async function executorReport() {
 	const listed = JSON.parse(service("select dk_proof.list()::text;"));
-	const named = new Map(listed.map((e) => [nameOf(e.placementId), e.placementId]));
-	const use = await new proof.executor.LxdUnixClient(proof.socket).readStoragePoolUse(
-		"machines",
-		[...named.keys()].map((name) => ({ project: "machines", name })),
-		AbortSignal.timeout(5000),
+	const began = Date.now();
+	const reading = await proof.reader.read(
+		listed.map((e) => ({ placementId: e.placementId, project: "machines", name: nameOf(e.placementId), asleepSince: e.asleepSince })),
+		AbortSignal.timeout(20000),
 	);
-	const report = proof.executor.companyMachineDiskReport("machines", use, named);
+	const readMs = Date.now() - began;
 	const recorded = JSON.parse(
-		service(`select public.qorpera_report_executor_disk('mx-dk', repeat('c', 64), $dk$${JSON.stringify(report)}$dk$::jsonb)::text;`),
+		service(
+			`select public.qorpera_report_executor_disk('mx-dk', repeat('c', 64), $dk$${JSON.stringify(reading.report)}$dk$::jsonb)::text;`,
+		),
 	);
 	assert.equal(recorded.state, "recorded", JSON.stringify(recorded));
-	proof.reports.push({ report, roomBytes: recorded.roomBytes });
+	const entry = { report: reading.report, roomBytes: recorded.roomBytes, reads: reading.reads, fromKept: reading.fromKept, unknown: reading.unknown, readMs, listed };
+	proof.reports.push(entry);
+	return entry;
+}
+
+async function executorPass() {
+	proof.passes++;
+	await executorReport();
 	service("select dk_proof.observe();");
 	for (let i = 0; i < 8; i++)
 		if (service("select public.qorpera_admit_executor_machines('mx-dk', repeat('c', 64), 16)::text;") === "[]") break;
@@ -302,8 +344,8 @@ const START = (key, name, cpus) => ({
 const CALLS = [
 	// 0: full on paper, real room: a new machine of another size than her sleeping ones (none to take again).
 	() => START("dk-market", "market-data", 2),
-	// 1: real pressure: an agent's data on two sleeping disks, and the pool so full that 25 GiB are left above the reserve
-	// with market-data awake (its 40 GiB could all still be written).
+	// 1: real pressure: the pool so full that 25 GiB are left above the reserve with market-data awake (its 40 GiB could all
+	// still be written).
 	() => {
 		// What the first start left: every disk deleted so far, and each sleeping machine's placements and freed time.
 		proof.afterFirst = {
@@ -313,9 +355,6 @@ const CALLS = [
 						where p.machine_id = m.id and p.retired_at is not null)))::text
 				from public.qorpera_company_machines m where m.name in ('alice-old', 'alice-recent', 'other-old') and m.removed_at is null`),
 		};
-		proof.lxd.own.set(ownOf("alice-old"), 30 * GIB);
-		proof.lxd.own.set(ownOf("other-old"), 20 * GIB);
-		proof.lxd.own.set(ownOf("alice-recent"), 1 * GIB);
 		proof.lxd.own.set(ownOf("market-data"), 0);
 		proof.lxd.used = POOL_TOTAL - RESERVE - 40 * GIB - 25 * GIB;
 		return START("dk-second", "second-job", 2);
@@ -338,6 +377,9 @@ await finish(
 		proof.lxd = { total: POOL_TOTAL, used: POOL_USED, own: new Map(), requests: [] };
 		const lxd = await fakeLxd(proof.lxd, executor.scratch);
 		proof.socket = lxd.socket;
+		const reader = () =>
+			new proof.executor.CompanyMachineDiskReader({ client: new proof.executor.LxdUnixClient(proof.socket), pool: "machines" });
+		proof.reader = reader();
 		try {
 			await proveCompanyRun({
 				name: "qorpera_prove_disk_kept",
@@ -347,10 +389,11 @@ await finish(
 				calls: CALLS,
 				moreTools(code, { db, binding, identity, operations, paths }) {
 					proof.db = db;
-					// The sleeping disks as node 2's LXD gave them (about 30 MiB each of their own).
-					proof.lxd.own.set(ownOf("other-old"), 33388032);
-					proof.lxd.own.set(ownOf("alice-old"), 30721536);
-					proof.lxd.own.set(ownOf("alice-recent"), 31457280);
+					// What the sleeping disks hold: the agents' data on two of them (written before they slept: a sleeping disk
+					// cannot change), and alice-recent 1 GiB.
+					proof.lxd.own.set(ownOf("other-old"), 20 * GIB);
+					proof.lxd.own.set(ownOf("alice-old"), 30 * GIB);
+					proof.lxd.own.set(ownOf("alice-recent"), 1 * GIB);
 					proof.paper = db.json(`select jsonb_build_object('budget', e.disk_bytes, 'claimed',
 						public.qorpera_machine_executor_disk_used(e.owner))::text from public.qorpera_machine_executors e where e.owner = 'mx-dk'`);
 					const tools = code.cloudMachineTools({ binding, identity, control: paths, operations, gateway });
@@ -370,7 +413,7 @@ await finish(
 								},
 					);
 				},
-				async check({ db, outputs, state, log }) {
+				async check({ db, binding, outputs, state, log }) {
 					const machine = (name) =>
 						db.json(`select coalesce((select to_jsonb(m) from public.qorpera_company_machines m where m.name = '${name}'
 							and m.removed_at is null), 'null')::text`);
@@ -496,7 +539,64 @@ await finish(
 						`the executor's own LXD read and report: ${proof.passes} passes, ${proof.reports.length} reports recorded, ${proof.lxd.requests.length} LXD reads; the kernel keeps the latest (${(stored.used_bytes / GIB).toFixed(1)} of ${(stored.total_bytes / GIB).toFixed(1)} GiB used)`,
 					);
 
-					// 6. The run's work log keeps every call.
+					// 6. Many disks: 300 more machines asleep here (another company's, for 10 days), each read as slowly as node 2's
+					// slowest; then the executor restarts (nothing kept).
+					service(`select set_config('qorpera_test.base_binding', $dk$${JSON.stringify(binding)}$dk$, true) \\g /dev/null
+						delete from public.qorpera_machine_executor_disks where owner = 'mx-dk';
+						select public.qorpera_configure_machine_executor('mx-dk', repeat('c', 64), true,
+							(select policy from public.qorpera_machine_executors where owner = 'mx-dk'), 20000::bigint * 1073741824);
+						select count(dk_proof.asleep('bulk-' || i, '${OTHER}', '${OTHER_ENVIRONMENT}', interval '10 days'))
+						from generate_series(1, 300) i;
+						select public.qorpera_configure_machine_executor('mx-dk', repeat('c', 64), true,
+							(select policy from public.qorpera_machine_executors where owner = 'mx-dk'), 120::bigint * 1073741824);`);
+					for (const e of JSON.parse(service("select dk_proof.list()::text;"))) {
+						const disk = nameOf(e.placementId);
+						if (!proof.lxd.own.has(disk)) {
+							proof.lxd.own.set(disk, 31457280);
+							proof.lxd.used += 31457280;
+						}
+					}
+					proof.lxd.slow = true;
+					proof.reader = reader();
+					/** The kernel's room as the rule says it, from the report it holds and the executor's list. */
+					const expectedRoom = (entry) => {
+						const held = db.json(`select jsonb_build_object('reportedAt', reported_at, 'total', total_bytes, 'used', used_bytes)::text
+							from public.qorpera_machine_executor_disks where owner = 'mx-dk'`);
+						const cutoff = Date.parse(held.reportedAt) - 30_000;
+						let growth = 0;
+						for (const e of JSON.parse(service("select dk_proof.list()::text;"))) {
+							if (e.asleepSince !== null && Date.parse(e.asleepSince) <= cutoff) continue;
+							growth += Math.max(e.binding.rootDiskBytes - (entry.report.placements[e.placementId] ?? 0), 0);
+						}
+						return held.total - held.used - Math.floor(held.total / 5) - growth;
+					};
+					const room = () => Number(db.query("select public.qorpera_machine_executor_disk_room('mx-dk')"));
+					const listedNow = JSON.parse(service("select dk_proof.list()::text;"));
+					const awakeNow = listedNow.filter((e) => e.asleepSince === null).length;
+					const restarted = await executorReport();
+					assert.equal(restarted.unknown, 0, JSON.stringify({ reads: restarted.reads, unknown: restarted.unknown }));
+					assert.equal(restarted.reads, listedNow.length);
+					assert(restarted.readMs < proof.executor.COMPANY_MACHINE_DISK_READ_BUDGET_MS, `${restarted.readMs} ms`);
+					assert.equal(room(), expectedRoom(restarted));
+					const nextReport = await executorReport();
+					assert.equal(nextReport.reads, awakeNow, JSON.stringify({ reads: nextReport.reads, awakeNow }));
+					assert.equal(nextReport.unknown, 0);
+					assert.equal(nextReport.fromKept, listedNow.length - awakeNow);
+					assert.equal(room(), expectedRoom(nextReport));
+					// market-data falls asleep now: the next report reads it again (too soon to keep), and holds its growth.
+					service("select dk_proof.sleep_now('market-data');");
+					const asleepNow = await executorReport();
+					assert.equal(asleepNow.reads, awakeNow, "the awake ones less market-data, and market-data once more");
+					assert.equal(room(), expectedRoom(asleepNow));
+					const marketData = JSON.parse(service("select dk_proof.list()::text;")).find((e) => e.placementId === JSON.parse(
+						db.query(`select to_json((public.qorpera_company_machine_placement(m.id)).id)::text from public.qorpera_company_machines m
+							where m.name = 'market-data' and m.removed_at is null`)));
+					assert(marketData?.asleepSince, "market-data sleeps");
+					pass(
+						`many disks: ${listedNow.length} placements (${listedNow.length - awakeNow} asleep), every LXD read as slow as node 2's slowest (${SLOWEST_DISK_MS} ms a disk, ${SLOWEST_POOL_MS} ms the pool): after a restart the first report read all ${restarted.reads} disks in ${restarted.readMs} ms (its budget ${proof.executor.COMPANY_MACHINE_DISK_READ_BUDGET_MS} ms), none unknown; the next read ${nextReport.reads} (the awake ones) in ${nextReport.readMs} ms and named ${nextReport.fromKept} from kept reads; with market-data just asleep the next read ${asleepNow.reads} (it again, not kept yet); the kernel's room matched the rule after each (${(room() / GIB).toFixed(1)} GiB now)`,
+					);
+
+					// 7. The run's work log keeps every call.
 					assert.deepEqual(
 						log.index.map((step) => step.tool),
 						["machine_start", "machine_start", "machine_start", "machine_start"],

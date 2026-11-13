@@ -339,20 +339,18 @@ export interface LxdInstanceDeviceUpdateClient {
 	listCustomStorageVolumes(project: string, pool: string, signal: AbortSignal): Promise<LxdStorageVolumeRecord[]>;
 }
 
-/** A storage pool's real use as LXD counts it (`lxc storage info`), and what each named virtual machine's disk holds of
- * its own (`lxc list -c D`): a thin clone holds only what was written to it. */
-export interface LxdStoragePoolUse {
+/** A storage pool's own figures as LXD counts them (`lxc storage info`). */
+export interface LxdStoragePoolSpace {
 	totalBytes: number;
 	usedBytes: number;
-	/** By instance name; one LXD does not have, or whose use it does not give, is left out (its use is not known). */
-	volumes: ReadonlyMap<string, number>;
 }
+/** The two reads of an executor's disk report (20260930757000): what one virtual machine's disk holds of its own
+ * (`lxc list -c D`; a thin clone holds only what was written to it), and the pool's own figures. The caller decides the
+ * order (the disks first, the pool last) and how many disks it reads. */
 export interface LxdStoragePoolUseClient {
-	readStoragePoolUse(
-		pool: string,
-		volumes: readonly { project: string; name: string }[],
-		signal: AbortSignal,
-	): Promise<LxdStoragePoolUse>;
+	/** The disk's own use, or undefined when LXD has no such disk (404) or gives no use for it. */
+	readStorageVolumeUse(pool: string, project: string, name: string, signal: AbortSignal): Promise<number | undefined>;
+	readStoragePoolSpace(pool: string, signal: AbortSignal): Promise<LxdStoragePoolSpace>;
 }
 
 /** Submission and observation are separate so an office provider can persist
@@ -1971,41 +1969,37 @@ export class LxdUnixClient
 		return volumes.map(storageVolume);
 	}
 
-	/** Each named virtual machine's disk volume's own use (`/state`), one request at a time, each within 5 s, then the
-	 * pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them). The pool is read
-	 * last, so what a machine writes while the disks are read is in the pool's used bytes and not credited to its disk:
-	 * the room a report gives is never more than there is (review r1 F2 of #1773). A pool whose figures are missing or not
-	 * whole byte counts fails the read; a volume LXD does not have (404) or whose use it does not give is left out, so its
-	 * use stays unknown. */
-	async readStoragePoolUse(
+	/** One virtual machine disk volume's own use (`/state`), within 5 s: undefined when LXD has no such volume (404) or
+	 * gives no whole byte count for it. Measured on node 2 (LXD 6.9, 13 Nov 2026): 4.5 ms (median, 5.1 worst) for a
+	 * stopped machine's disk, 3.8 ms (4.0) for a running one's. */
+	async readStorageVolumeUse(
 		pool: string,
-		volumes: readonly { project: string; name: string }[],
+		project: string,
+		name: string,
 		signal: AbortSignal,
-	): Promise<LxdStoragePoolUse> {
-		if (
-			!INSTANCE_NAME.test(pool) ||
-			volumes.length > 1024 ||
-			volumes.some((volume) => !INSTANCE_NAME.test(volume.project) || !INSTANCE_NAME.test(volume.name))
-		)
+	): Promise<number | undefined> {
+		if (!INSTANCE_NAME.test(pool) || !INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name))
 			throw new Error("LXD storage scope is invalid");
-		const use = new Map<string, number>();
-		for (const volume of volumes) {
-			signal.throwIfAborted();
-			const result = await this.#request(
-				"GET",
-				projectPath(
-					`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(volume.name)}/state`,
-					volume.project,
-				),
-				undefined,
-				AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-			);
-			if (result.status < 200 || result.status >= 300) continue;
-			const state = envelopeMetadata(result);
-			const usage = state && typeof state === "object" ? (state as Record<string, unknown>).usage : undefined;
-			const used = usage && typeof usage === "object" ? (usage as Record<string, unknown>).used : undefined;
-			if (typeof used === "number" && Number.isSafeInteger(used) && used >= 0) use.set(volume.name, used);
-		}
+		const result = await this.#request(
+			"GET",
+			projectPath(
+				`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(name)}/state`,
+				project,
+			),
+			undefined,
+			AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+		);
+		if (result.status < 200 || result.status >= 300) return undefined;
+		const state = envelopeMetadata(result);
+		const usage = state && typeof state === "object" ? (state as Record<string, unknown>).usage : undefined;
+		const used = usage && typeof usage === "object" ? (usage as Record<string, unknown>).used : undefined;
+		return typeof used === "number" && Number.isSafeInteger(used) && used >= 0 ? used : undefined;
+	}
+
+	/** The pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them), within 5 s; a
+	 * pool whose figures are missing or not whole byte counts fails the read. Measured on node 2: 5.9 ms (7.0 worst). */
+	async readStoragePoolSpace(pool: string, signal: AbortSignal): Promise<LxdStoragePoolSpace> {
+		if (!INSTANCE_NAME.test(pool)) throw new Error("LXD storage scope is invalid");
 		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
 		const space = record(resources.space, "LXD storage pool space");
 		const totalBytes = space.total;
@@ -2020,8 +2014,7 @@ export class LxdUnixClient
 			usedBytes > totalBytes
 		)
 			throw new Error("LXD storage pool use is invalid");
-		for (const [name, used] of use) if (used > totalBytes) use.delete(name);
-		return { totalBytes, usedBytes, volumes: use };
+		return { totalBytes, usedBytes };
 	}
 
 	async createStorageVolume(

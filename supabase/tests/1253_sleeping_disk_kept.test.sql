@@ -359,6 +359,17 @@ begin
 	v_count := pg_temp.d_admit();
 	perform pg_temp.base_assert(v_count = 0 and pg_temp.d_freed(array['a-new','b-old']) = ''
 		and pg_temp.d_view('n3') ->> 'state' = 'waiting', '3: n3 waits in line, nothing is given away: ' || pg_temp.d_view('n3')::text);
+	-- A report that names no disk at all (its reads ran out of time; taken back after): the awake n1 and n2 count whole,
+	-- and no sleeping disk of unknown use is given away, though 20 GiB are short.
+	begin
+		perform pg_temp.d_report(1000, 700, '{}');
+		v := to_jsonb(pg_temp.d_room());
+		v_count := pg_temp.d_admit();
+		v := v || to_jsonb(pg_temp.d_freed(array['a-new','b-old']));
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v = jsonb_build_array(pg_temp.g(20), ''), '3: a report that names nothing: ' || v::text);
 	-- 20 GiB of room, need 20: b-old would make it, but its use is not in the report: it is never given for room.
 	perform pg_temp.d_report(1000, 700, '{"a-new":1,"n1":0,"n2":0}');
 	v_count := pg_temp.d_admit();

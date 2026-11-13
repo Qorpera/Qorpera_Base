@@ -951,26 +951,41 @@ describe("company machine host", () => {
 		]);
 	});
 
-	it("reports its pool's real use before admission, at most every 30 s, and goes on without it (20260930757000)", async () => {
-		let clock = 1_000_000;
+	it("reports its pool's real use beside the passes, at most every 30 s, keeps a sleeping disk's read, and goes on without it (20260930757000)", async () => {
+		let clock = Date.parse("2026-11-13T20:00:00Z");
 		const f = await fixture({ now: () => clock });
-		const reads: { pool: string; volumes: readonly { project: string; name: string }[] }[] = [];
-		const answers: (Error | { totalBytes: number; usedBytes: number; volumes: Map<string, number> })[] = [];
+		const reads: string[] = [];
+		let gate: Promise<void> | undefined;
+		let poolFails = false;
 		Object.assign(f.client, {
-			readStoragePoolUse: vi.fn(async (pool: string, volumes: readonly { project: string; name: string }[]) => {
-				reads.push({ pool, volumes: structuredClone(volumes) });
-				const next = answers.shift();
-				if (next === undefined || next instanceof Error) throw next ?? new Error("no answer");
-				return next;
+			readStorageVolumeUse: vi.fn(async (pool: string, project: string, name: string) => {
+				reads.push(`${pool}/${project}/${name}`);
+				return 4096;
+			}),
+			readStoragePoolSpace: vi.fn(async (pool: string) => {
+				await gate;
+				reads.push(`pool:${pool}`);
+				if (poolFails) throw new Error("LXD storage pool use is invalid");
+				return { totalBytes: 1_000_000, usedBytes: 400 };
 			}),
 		});
+		// A new process: with both reads it reports.
+		f.restart();
 		const reports = () =>
 			f.calls.filter((call) => call.method === "qorpera_report_executor_disk").map((call) => call.args);
-		// The first pass reads before admission, and before it listed anything: the pool alone.
-		answers.push({ totalBytes: 1000, usedBytes: 400, volumes: new Map() });
+		// The first pass starts the report and does not wait for it: LXD held up holds up no admission.
+		let open: () => void = () => {};
+		gate = new Promise<void>((done) => {
+			open = done;
+		});
 		await f.host.pass(f.signal);
-		expect(reads).toEqual([{ pool: "machines", volumes: [] }]);
-		expect(f.methods().slice(0, 2)).toEqual(["qorpera_report_executor_disk", "qorpera_admit_executor_machines"]);
+		expect(f.methods()).toContain("qorpera_admit_executor_machines");
+		expect(reports()).toEqual([]);
+		open();
+		await f.host.settled();
+		gate = undefined;
+		// Nothing was listed yet: the pool alone.
+		expect(reads).toEqual(["pool:machines"]);
 		expect(reports()).toEqual([
 			{
 				p_owner: "mx-a",
@@ -978,7 +993,7 @@ describe("company machine host", () => {
 				p_report: {
 					schema: "qorpera.machine-executor-disk/v1",
 					pool: "machines",
-					totalBytes: 1000,
+					totalBytes: 1_000_000,
 					usedBytes: 400,
 					placements: {},
 				},
@@ -987,38 +1002,54 @@ describe("company machine host", () => {
 		// Within 30 s: nothing is read.
 		clock += 29_999;
 		await f.host.pass(f.signal);
+		await f.host.settled();
 		expect(reads).toHaveLength(1);
-		// Then each listed placement's disk too, by its own name; what LXD gives of another name is left out.
+		// Then the listed placement's disk, by its own name, and the pool last.
+		const disk = `machines/machines/${lxdCompanyMachineName(id(6))}`;
 		clock += 1;
-		const name = lxdCompanyMachineName(id(6));
-		answers.push({
-			totalBytes: 1000,
-			usedBytes: 401,
-			volumes: new Map([
-				[name, 4096],
-				["qorpera-machine-other", 1],
-			]),
-		});
 		await f.host.pass(f.signal);
-		expect(reads.at(-1)).toEqual({ pool: "machines", volumes: [{ project: "machines", name }] });
-		expect(reports().at(-1)).toMatchObject({ p_report: { usedBytes: 401, placements: { [id(6)]: 4096 } } });
-		// LXD fails: no report, and the pass goes on as ever; so when the kernel's call fails.
+		await f.host.settled();
+		expect(reads.slice(1)).toEqual([disk, "pool:machines"]);
+		expect(reports().at(-1)).toMatchObject({ p_report: { placements: { [id(6)]: 4096 } } });
+		// It sleeps (for a day, as the list says): read once more and kept; after that only the pool is read, and the
+		// report still names it.
+		Object.assign(f.entry, { asleepSince: new Date(clock - 86400_000).toISOString() });
+		await f.host.pass(f.signal);
 		clock += 30_000;
-		answers.push(new Error("LXD storage pool use is invalid"));
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads.slice(3)).toEqual([disk, "pool:machines"]);
+		clock += 30_000;
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads.slice(5)).toEqual(["pool:machines"]);
+		expect(reports().at(-1)).toMatchObject({ p_report: { placements: { [id(6)]: 4096 } } });
+		// LXD fails: no report, and the passes go on as ever; so when the kernel's call fails.
 		const before = reports().length;
-		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
-		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
-		expect(reports()).toHaveLength(before);
+		poolFails = true;
 		clock += 30_000;
-		answers.push({ totalBytes: 1000, usedBytes: 402, volumes: new Map() });
-		f.busy.add("qorpera_report_executor_disk");
+		Object.assign(f.entry, { asleepSince: null, runningAt: new Date().toISOString(), bootId: f.boot });
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
-		expect(f.methods().filter((method) => method === "qorpera_admit_executor_machines").length).toBeGreaterThan(4);
+		await f.host.settled();
+		expect(reports()).toHaveLength(before);
+		poolFails = false;
+		f.busy.add("qorpera_report_executor_disk");
+		clock += 30_000;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.settled();
+		expect(reports()).toHaveLength(before + 1);
 	});
 
-	it("reports nothing without LXD's pool read, as before 20260930757000", async () => {
+	it("reports nothing without LXD's two reads, as before 20260930757000", async () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(f.methods()).not.toContain("qorpera_report_executor_disk");
+		// One of the two is not enough.
+		Object.assign(f.client, { readStoragePoolSpace: vi.fn(async () => ({ totalBytes: 1000, usedBytes: 400 })) });
+		f.restart();
+		await f.host.pass(f.signal);
+		await f.host.settled();
 		expect(f.methods()).not.toContain("qorpera_report_executor_disk");
 	});
 
