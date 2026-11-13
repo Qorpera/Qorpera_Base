@@ -29,6 +29,7 @@ import {
 } from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { ComputerByItself } from "./computer-by-itself.ts";
 import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
 
 /** The least time from one look's start to the next while the picture changes or the member acts on it: a look takes
@@ -2034,6 +2035,8 @@ export class ComputerPanel {
  */
 export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
+	/** When a window shows by itself in its agent's thread, and goes again (20260930742000). */
+	readonly byItself = new ComputerByItself({ close: (agentId) => this.close(agentId) });
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #options: ComputerPanelOptions;
@@ -2053,6 +2056,12 @@ export class ComputerPanels {
 	 * something is not confirmed (asked again meanwhile; the lease ends by itself in 5 minutes). */
 	releaseAgent(agentId: string): Promise<boolean> {
 		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId, "handed_back", true);
+	}
+
+	/** Whether the member has a computer's large view open, or types privately on one (holds its desktop), in any of
+	 * the company's windows: no window shows by itself then (20260930742000). */
+	busy(): boolean {
+		return [...this.#panels.values()].some((panel) => panel.el.classList.contains("is-entered") || panel.holding);
 	}
 
 	/** The panel a thread left open for this agent, if any. */
@@ -2086,6 +2095,7 @@ export class ComputerPanels {
 	dispose(): void {
 		this.#signal?.removeEventListener("abort", this.#onAbort);
 		this.#holds.leave();
+		this.byItself.dispose();
 		for (const agentId of [...this.#panels.keys()]) this.close(agentId);
 	}
 }

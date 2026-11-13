@@ -94,6 +94,7 @@ import {
 	type RoomDraftWrite,
 	subscribeRoomDrafts,
 } from "./room-drafts.ts";
+import { listScreensInUse, type ScreensInUse } from "./screens-in-use.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
 import type {
@@ -519,6 +520,11 @@ export class CloudApi {
 	 * answer, by agent (20260930723000). */
 	listWaitingWork(profileId: string): Promise<WaitingWork[]> {
 		return listWaitingWork(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** Which agents use their desktop computers now (20260930742000). */
+	listScreensInUse(profileId: string): Promise<ScreensInUse> {
+		return listScreensInUse(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */

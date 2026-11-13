@@ -36,7 +36,7 @@ import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui
 import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
-import { CompanyController } from "./company.ts";
+import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
@@ -1106,7 +1106,7 @@ export function mountApplication(
 						return {
 							name: agent.displayName,
 							role: agent.role,
-							working: now === "working" || now === "writing",
+							working: agentWorks(now),
 						};
 					}),
 			readApps: () => companyApps?.read() ?? Promise.resolve([]),

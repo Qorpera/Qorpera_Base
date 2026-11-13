@@ -1,10 +1,18 @@
-import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
+import type { Activity as MotionActivity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+import {
+	type AtComputerFrame,
+	atComputerFrame,
+	atComputerLight,
+	atComputerSeed,
+	hexChannels,
+} from "./at-computer-motion.ts";
 import { alignRegion, boxCanvas, bucketOf, level, type Region, reduce } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 import type { WorkingSchedule } from "./working-sequence.ts";
 
-export type { Activity };
+/** The studio's activities, and "AtComputer": the agent uses its desktop computer (20260930742000). */
+export type Activity = MotionActivity | "AtComputer";
 
 export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
@@ -84,6 +92,8 @@ interface LiveMotion {
 	side: number;
 	/** This figure's eye boxes by level (figure-levels boxCanvas). */
 	boxes: Map<number, HTMLCanvasElement>;
+	/** The at-computer schedule's seed (the identity's). */
+	seed: number;
 }
 
 /* On the dark theme a figure takes its dark-surface shade from the approved
@@ -207,13 +217,17 @@ function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], fr
 // silhouette; recorded eyes keep one fixed transform across the entire face.
 let eyesCanvas: HTMLCanvasElement | undefined;
 function paint(entry: LiveMotion): void {
-	const { canvas, artwork, activity } = entry;
+	const { canvas, artwork } = entry;
+	const atComputer = entry.activity === "AtComputer";
+	// At the computer the figure stands as Idle has settled, and its own frame moves the eyes, the lean and the light.
+	const activity: MotionActivity = atComputer ? "Idle" : (entry.activity as MotionActivity);
 	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, recordedEyesBox, stepKey, timelines, workingStep } =
 		motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
-	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
-	const recorded = ["Idle", "Working", "Waiting"].includes(activity);
+	const elapsed = atComputer || reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
+	const desk = atComputer ? atComputerFrame(entry.clock.elapsed, entry.seed, reduced) : undefined;
+	const recorded = !atComputer && ["Idle", "Working", "Waiting"].includes(activity);
 	// Working plays the agent's own order of recorded pieces; the reduced
 	// still keeps the studio's frame at one second.
 	const step = activity === "Working" && !reduced ? workingStep(entry.clock.schedule!, elapsed) : undefined;
@@ -222,7 +236,7 @@ function paint(entry: LiveMotion): void {
 		: Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
 	const clip = step?.clip ?? activity;
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
-	const key = `${side}:${step ? stepKey(step) : sample}:${reduced}`;
+	const key = desk ? `${side}:${desk.key}:${entry.shown}` : `${side}:${step ? stepKey(step) : sample}:${reduced}`;
 	if (entry.painted === key) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
@@ -235,7 +249,13 @@ function paint(entry: LiveMotion): void {
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, side, side);
 	ctx.scale(side / 100, side / 100);
-	const p = pose(activity, elapsed, { reduced });
+	const p = pose(activity, elapsed, { reduced: reduced || atComputer });
+	if (desk) {
+		p.face = desk.face.map((face) => ({ ...face, y: face.y + 0.12 * desk.lean }));
+		p.scaleX *= 1 + 0.03 * desk.lean;
+		p.scaleY *= 1 - 0.035 * desk.lean;
+		p.y += 1.8 * desk.lean;
+	}
 	const asset = surfaces.get(entry.id + entry.shown)!;
 	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, false, step.strokes);
 	else if (!step) strokes(ctx, p.strokes, false, entry.side);
@@ -389,6 +409,7 @@ function paint(entry: LiveMotion): void {
 			ctx.fill();
 		}
 	ctx.globalAlpha = 1;
+	if (desk) deskLight(ctx, canvas, entry, desk, side);
 	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, true, step.strokes);
 	else if (!step) strokes(ctx, p.strokes, true, entry.side);
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -398,6 +419,55 @@ function paint(entry: LiveMotion): void {
 	// Only on the first paint: rewriting an unchanged attribute every frame still costs a style check.
 	if (canvas.hidden) canvas.hidden = false;
 	if (!entry.fallback.hidden) entry.fallback.hidden = true;
+}
+
+/** The screen's light: a glow from below and in front, laid over the figure as light (screen blend, on the figure
+ * only), and a soft pool of it under the figure. */
+let lightCanvas: HTMLCanvasElement | undefined;
+function deskLight(
+	ctx: CanvasRenderingContext2D,
+	canvas: HTMLCanvasElement,
+	entry: LiveMotion,
+	desk: AtComputerFrame,
+	side: number,
+): void {
+	const [r, g, b] = atComputerLight(entry.shown, desk);
+	const dark = document.documentElement.dataset.theme === "dark";
+	const s = desk.strength;
+	lightCanvas ??= document.createElement("canvas");
+	if (lightCanvas.width !== side) lightCanvas.width = lightCanvas.height = side;
+	const lc = lightCanvas.getContext("2d")!;
+	lc.setTransform(1, 0, 0, 1, 0, 0);
+	lc.globalCompositeOperation = "source-over";
+	lc.clearRect(0, 0, side, side);
+	lc.setTransform(side / 100, 0, 0, side / 100, 0, 0);
+	const glow = lc.createRadialGradient(50, 112, 6, 50, 112, 82);
+	glow.addColorStop(0, `rgba(${r},${g},${b},${1 * s})`);
+	glow.addColorStop(0.45, `rgba(${r},${g},${b},${0.7 * s})`);
+	glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
+	lc.fillStyle = glow;
+	lc.fillRect(0, 0, 100, 100);
+	lc.setTransform(1, 0, 0, 1, 0, 0);
+	lc.globalCompositeOperation = "destination-in";
+	lc.drawImage(canvas, 0, 0);
+	ctx.save();
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	ctx.globalCompositeOperation = "screen";
+	ctx.drawImage(lightCanvas, 0, 0);
+	// The pool of light the screen throws under the figure, behind it.
+	ctx.globalCompositeOperation = "destination-over";
+	ctx.setTransform(side / 100, 0, 0, side / 100, 0, 0);
+	ctx.translate(50, 97);
+	ctx.scale(1, 0.16);
+	const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
+	const [pr, pg, pb] = dark ? [r, g, b] : hexChannels(entry.shown);
+	pool.addColorStop(0, `rgba(${pr},${pg},${pb},${(dark ? 0.55 : 0.32) * s})`);
+	pool.addColorStop(1, `rgba(${pr},${pg},${pb},0)`);
+	ctx.fillStyle = pool;
+	ctx.beginPath();
+	ctx.arc(0, 0, 36, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.restore();
 }
 
 /** Repaint a ready figure whose shown colour the theme has changed. */
@@ -417,6 +487,7 @@ function recolor(entry: LiveMotion): void {
 function moving(entry: LiveMotion): boolean {
 	if (!motion || entry.still || media?.matches) return false;
 	const { timelines } = motion;
+	if (entry.activity === "AtComputer") return true;
 	const duration = timelines[entry.activity].end - timelines[entry.activity].start;
 	return entry.activity === "Working" || entry.activity === "Thinking" || entry.clock.elapsed < duration;
 }
@@ -481,6 +552,7 @@ export function mountFigureMotion(
 		painted: "",
 		side: 36,
 		boxes: new Map(),
+		seed: atComputerSeed(options.identity ?? id),
 	};
 	live.add(entry);
 	if (!lifetime) {
@@ -553,7 +625,7 @@ export function mountFigureMotion(
 		prepare(entry),
 		loadFigureMotion().then((loaded) =>
 			Promise.all([
-				loaded.loadRecordedMotion(activity, base()),
+				loaded.loadRecordedMotion(activity as MotionActivity, base()),
 				// Working borrows the Waiting clip's sideways glance between turns.
 				activity === "Working" ? loaded.loadRecordedMotion("Waiting", base()) : undefined,
 			]),
