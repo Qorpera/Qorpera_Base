@@ -282,7 +282,7 @@ grant anon, authenticated, service_role to authenticator;`);
 	const described = await call(viewer, "describe", { database: "shop" });
 	check("the database is there as its files say", described.value.tables?.map((table) => table.name).join() === "order_totals,orders" && described.value.applied?.length === 2, JSON.stringify(described.value).slice(0, 300));
 	const store = companyDatabase(ENV);
-	const triggers = await withAdmin(store, (db) => db.query("select count(*)::int as n from pg_trigger where tgname like 'qorpera_%' and not tgisinternal"));
+	const triggers = await withAdmin(store, (db) => db.query("select count(*)::int as n from pg_trigger where tgrelid = 'shop.orders'::regclass and tgname like 'qorpera_%' and not tgisinternal"));
 	check("the new table carries Qorpera's three triggers", triggers.rows[0].n === 3, `${triggers.rows[0].n}`);
 
 	// ---- questions, with the viewer's own rights
