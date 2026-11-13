@@ -73,98 +73,95 @@ begin
 	return null;
 end $$;
 
--- What is wrong with Qorpera's triggers on a table, one line each. A trigger named qorpera_* or calling one of
--- Qorpera's trigger functions must be one of the three, exactly as watch_new_tables makes it, and switched on (for
--- origin or always). That a trigger is missing is unwatched()'s to say: the three are made one after another.
-create function qorpera_data.trigger_problems(p_table oid) returns setof text
-language sql stable security definer set search_path = '' as $$
-	select problem from (
-		select t.tgname::text || case
-			when w.name is null then ' is not one of Qorpera''s triggers'
-			when t.tgenabled not in ('O', 'A') then ' is switched off'
-			when t.tgfoid <> w.fn or t.tgtype <> w.events or t.tgoldtable is distinct from w.old_table or t.tgnewtable is not null
-				or t.tgqual is not null or t.tgnargs <> 0 or cardinality(t.tgattr::int2[]) <> 0 then ' was replaced'
-		end as problem
-		from pg_catalog.pg_trigger t
-		left join (values
-			('qorpera_changed'::name, 'qorpera_data.changed()'::pg_catalog.regprocedure::oid, 60::int2, null::name),
-			('qorpera_emptied', 'qorpera_data.rows_gone()'::pg_catalog.regprocedure::oid, 34, null),
-			('qorpera_rows_gone', 'qorpera_data.rows_gone()'::pg_catalog.regprocedure::oid, 8, 'gone')
-		) w(name, fn, events, old_table) on w.name = t.tgname
-		where t.tgrelid = p_table and not t.tgisinternal
-			and (t.tgname like 'qorpera\_%' or t.tgfoid in ('qorpera_data.changed()'::pg_catalog.regprocedure, 'qorpera_data.rows_gone()'::pg_catalog.regprocedure))
-	) found
-	where problem is not null
-	order by 1
-$$;
+-- Qorpera's three triggers as they must stand on every table: a model table carries them, and every table's
+-- triggers named qorpera_ must be the same as the model's. (As the proof deploy/company-data/proof/p3.mjs has it.)
+create table qorpera_data.model ();
+create trigger qorpera_changed after insert or update or delete or truncate on qorpera_data.model
+	for each statement execute function qorpera_data.changed();
+create trigger qorpera_rows_gone after delete on qorpera_data.model referencing old table as gone
+	for each statement execute function qorpera_data.rows_gone();
+create trigger qorpera_emptied before truncate on qorpera_data.model
+	for each statement execute function qorpera_data.rows_gone();
 
--- Records a dropped table, column or schema. Refuses at once to drop one of Qorpera's triggers.
+-- A dropped table, column or schema is recorded. Dropping one of Qorpera's triggers is refused.
 create function qorpera_data.dropped() returns event_trigger language plpgsql security definer set search_path = '' as $$
-declare v_gone record;
+declare gone record;
 begin
-	for v_gone in select * from pg_event_trigger_dropped_objects() where not is_temporary
-		and schema_name is distinct from 'qorpera_data' and schema_name is distinct from 'pg_toast'
-	loop
-		if v_gone.original and v_gone.object_type = 'trigger' and v_gone.object_identity like 'qorpera\_%' then
-			raise exception 'A step may not remove Qorpera''s triggers: %', v_gone.object_identity;
-		elsif v_gone.object_type = 'table' or (v_gone.original and v_gone.object_type in ('table column', 'schema')) then
-			insert into qorpera_data.step_effects (kind, object) values ('dropped ' || v_gone.object_type, v_gone.object_identity);
+	for gone in select * from pg_event_trigger_dropped_objects() where not is_temporary loop
+		if gone.object_type = 'trigger' and gone.original and gone.object_identity like 'qorpera\_% on %' then
+			raise exception 'Qorpera''s trigger % cannot be dropped', gone.object_identity;
+		end if;
+		if gone.object_type in ('table', 'table column', 'schema') and gone.schema_name is distinct from 'qorpera_data'
+			and (gone.original or gone.object_type = 'table') then
+			insert into qorpera_data.step_effects (kind, object) values ('dropped ' || gone.object_type, gone.object_identity);
 		end if;
 	end loop;
 end $$;
-
--- Puts the triggers on every new table of a company, whoever makes it.
-create function qorpera_data.watch_new_tables() returns event_trigger language plpgsql security definer set search_path = '' as $$
-declare v_made record;
-begin
-	for v_made in select * from pg_event_trigger_ddl_commands() where command_tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
-		and object_type = 'table' and schema_name not in ('qorpera_data', 'pg_catalog', 'information_schema')
-		and schema_name not like 'pg\_temp%'
-	loop
-		execute format('create trigger qorpera_changed after insert or update or delete or truncate on %s
-			for each statement execute function qorpera_data.changed()', v_made.object_identity);
-		execute format('create trigger qorpera_emptied before truncate on %s
-			for each statement execute function qorpera_data.rows_gone()', v_made.object_identity);
-		begin
-			execute format('create trigger qorpera_rows_gone after delete on %s referencing old table as gone
-				for each statement execute function qorpera_data.rows_gone()', v_made.object_identity);
-		exception when feature_not_supported or wrong_object_type then
-			-- A partitioned table takes no trigger with a transition table: its deletes are counted on its parts.
-			null;
-		end;
-	end loop;
-end $$;
-
--- Refuses, the moment it happens, a command that switches off, replaces or renames one of Qorpera's triggers, makes a
--- trigger of its own named like them, or makes a table that is not kept logged: an unlogged table's rows are in no
--- backup. Temporary tables are left alone.
-create function qorpera_data.guard() returns event_trigger language plpgsql security definer set search_path = '' as $$
-declare v_table oid; v_problem text;
-begin
-	for v_table in
-		select distinct case when c.classid = 'pg_catalog.pg_trigger'::pg_catalog.regclass
-			then (select t.tgrelid from pg_catalog.pg_trigger t where t.oid = c.objid) else c.objid end
-		from pg_event_trigger_ddl_commands() c
-		where c.classid in ('pg_catalog.pg_class'::pg_catalog.regclass, 'pg_catalog.pg_trigger'::pg_catalog.regclass)
-			and c.schema_name is distinct from 'qorpera_data'
-	loop
-		continue when v_table is null;
-		if exists (select 1 from pg_catalog.pg_class r where r.oid = v_table and r.relkind in ('r', 'p') and r.relpersistence = 'u') then
-			raise exception 'A table of a company''s database is kept logged: an unlogged table''s rows are in no backup';
-		end if;
-		select p into v_problem from qorpera_data.trigger_problems(v_table) p limit 1;
-		if v_problem is not null then
-			raise exception 'A step may not switch off or replace Qorpera''s triggers: %', v_problem;
-		end if;
-	end loop;
-end $$;
-
 create event trigger qorpera_dropped on sql_drop execute function qorpera_data.dropped();
-create event trigger qorpera_watch_new_tables on ddl_command_end
-	when tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') execute function qorpera_data.watch_new_tables();
-create event trigger qorpera_guard on ddl_command_end
-	when tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO', 'ALTER TABLE', 'CREATE TRIGGER', 'ALTER TRIGGER')
+
+-- After a statement that changes a table or a trigger: every table it touched must still carry Qorpera's three
+-- triggers as the model has them, enabled as origin or always, and must be kept logged.
+create function qorpera_data.guard() returns event_trigger language plpgsql security definer set search_path = '' as $$
+declare touched record; wrong record; kept int;
+begin
+	for touched in
+		select distinct c.oid::regclass as tab, c.relpersistence, d.command_tag
+		from pg_event_trigger_ddl_commands() d
+		join pg_catalog.pg_class c on c.oid = case when d.classid = 'pg_catalog.pg_trigger'::regclass
+			then (select t.tgrelid from pg_catalog.pg_trigger t where t.oid = d.objid) else d.objid end
+		where d.classid in ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_trigger'::regclass)
+			and c.relkind in ('r', 'p') and c.relpersistence <> 't' and c.relnamespace <> 'qorpera_data'::regnamespace
+	loop
+		if touched.relpersistence <> 'p' then
+			raise exception 'Qorpera keeps every table logged: % is not', touched.tab;
+		end if;
+		for wrong in
+			select t.tgname from pg_catalog.pg_trigger t
+			left join pg_catalog.pg_trigger m on m.tgrelid = 'qorpera_data.model'::regclass and m.tgname = t.tgname
+			where t.tgrelid = touched.tab and not t.tgisinternal and t.tgname like 'qorpera\_%'
+				and (m.oid is null or t.tgenabled not in ('O', 'A')
+					or (t.tgfoid, t.tgtype, t.tgoldtable, t.tgnewtable, t.tgqual is null, t.tgattr::text, t.tgargs, t.tgconstraint)
+						is distinct from (m.tgfoid, m.tgtype, m.tgoldtable, m.tgnewtable, true, m.tgattr::text, m.tgargs, m.tgconstraint))
+		loop
+			raise exception 'Qorpera''s trigger % on % must stay as Qorpera made it', wrong.tgname, touched.tab;
+		end loop;
+		-- While a new table gets its triggers one by one, the first ones stand alone: so not for CREATE TRIGGER.
+		if touched.command_tag <> 'CREATE TRIGGER' then
+			select count(*) into kept from pg_catalog.pg_trigger t
+				join pg_catalog.pg_trigger m on m.tgrelid = 'qorpera_data.model'::regclass and m.tgname = t.tgname
+				where t.tgrelid = touched.tab;
+			if kept < 3 then
+				raise exception 'Qorpera''s triggers on % are missing', touched.tab;
+			end if;
+		end if;
+	end loop;
+end $$;
+create event trigger qorpera_guard on ddl_command_end when tag in ('ALTER TABLE', 'CREATE TRIGGER', 'ALTER TRIGGER')
 	execute function qorpera_data.guard();
+
+-- Every new table gets the three triggers, whoever makes it. A table that is not kept logged is refused.
+create function qorpera_data.new_table() returns event_trigger language plpgsql security definer set search_path = '' as $$
+declare made record;
+begin
+	for made in
+		select distinct c.oid::regclass as tab, c.relpersistence from pg_event_trigger_ddl_commands() d
+		join pg_catalog.pg_class c on c.oid = d.objid
+		where d.classid = 'pg_catalog.pg_class'::regclass and c.relkind in ('r', 'p') and c.relpersistence <> 't'
+			and c.relnamespace <> 'qorpera_data'::regnamespace
+	loop
+		if made.relpersistence <> 'p' then
+			raise exception 'Qorpera keeps every table logged: % is not', made.tab;
+		end if;
+		execute format('create trigger qorpera_changed after insert or update or delete or truncate on %s
+			for each statement execute function qorpera_data.changed()', made.tab);
+		execute format('create trigger qorpera_rows_gone after delete on %s referencing old table as gone
+			for each statement execute function qorpera_data.rows_gone()', made.tab);
+		execute format('create trigger qorpera_emptied before truncate on %s
+			for each statement execute function qorpera_data.rows_gone()', made.tab);
+	end loop;
+end $$;
+create event trigger qorpera_new_table on ddl_command_end when tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
+	execute function qorpera_data.new_table();
 
 -- What the current transaction destroyed, for the gateway after it ran a step.
 create function qorpera_data.effects() returns table (kind text, object text, rows bigint)
@@ -172,30 +169,27 @@ language sql stable security definer set search_path = '' as $$
 	select e.kind, e.object, e.rows from qorpera_data.step_effects e where e.txid = txid_current() order by 1, 2
 $$;
 
--- An ordinary table of a schema that lacks one of Qorpera's triggers, or whose triggers are not as Qorpera made them:
--- a step may not leave any.
+-- A table of a schema that lacks one of Qorpera's triggers, or whose trigger is not as the model's: a step may not
+-- leave any. The guard refuses these the moment they happen; this is the check at the end of a step.
 create function qorpera_data.unwatched(p_schema text) returns table (table_name text, problem text)
 language sql stable security definer set search_path = '' as $$
-	select c.relname::text, 'is missing ' || wanted.name
+	select c.relname::text, case when t.oid is null then 'is missing ' else 'has a changed ' end || m.tgname
 	from pg_catalog.pg_class c
 	join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = p_schema
-	cross join (values ('qorpera_changed'), ('qorpera_emptied'), ('qorpera_rows_gone')) wanted(name)
-	left join pg_catalog.pg_trigger t on t.tgrelid = c.oid and t.tgname = wanted.name and not t.tgisinternal
-	where c.relkind = 'r' and not c.relispartition and t.oid is null
-	union all
-	select c.relname::text, problem
-	from pg_catalog.pg_class c
-	join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = p_schema
-	cross join lateral qorpera_data.trigger_problems(c.oid) problem
-	where c.relkind in ('r', 'p')
+	join pg_catalog.pg_trigger m on m.tgrelid = 'qorpera_data.model'::regclass
+	left join pg_catalog.pg_trigger t on t.tgrelid = c.oid and t.tgname = m.tgname
+	where c.relkind in ('r', 'p') and c.relpersistence <> 't'
+		and (t.oid is null or t.tgenabled not in ('O', 'A')
+			or (t.tgfoid, t.tgtype, t.tgoldtable, t.tgnewtable, t.tgqual is null, t.tgattr::text, t.tgargs, t.tgconstraint)
+				is distinct from (m.tgfoid, m.tgtype, m.tgoldtable, m.tgnewtable, true, m.tgattr::text, m.tgargs, m.tgconstraint))
 	order by 1, 2
 $$;
 
--- Runs a step's text. Inside a function a step cannot end or begin a transaction, so what it does stays in the
+-- A step runs inside a function, so it cannot end the transaction and go on outside it: what it does stays in the
 -- gateway's one transaction until the gateway has read what it destroyed.
-create function qorpera_data.run_step(p_text text) returns void language plpgsql as $$
+create function qorpera_data.apply_step(step text) returns void language plpgsql as $$
 begin
-	execute p_text;
+	execute step;
 end $$;
 
 -- Records a step as applied, in the transaction that ran it. Only the database folder's own owner login records its
@@ -210,7 +204,7 @@ begin
 end $$;
 
 -- None of these shows or does anything a folder's own login may not.
-grant execute on function qorpera_data.effects(), qorpera_data.unwatched(text), qorpera_data.run_step(text),
+grant execute on function qorpera_data.effects(), qorpera_data.unwatched(text), qorpera_data.apply_step(text),
 	qorpera_data.record_step(text, text, text) to public;
 
 -- A login with CREATEDB may copy a database marked as a template; nobody connects to it afterwards.

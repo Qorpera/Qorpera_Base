@@ -18,7 +18,7 @@ const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
 const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1 };
 /** Connections a company's database takes, all logins together. */
-const COMPANY_CONNECTIONS = 12;
+const COMPANY_CONNECTIONS = 24;
 
 /** The password of a database folder's login: derived from the gateway's folder key and never stored. */
 export function folderPassword(folderKey, role) {
@@ -199,6 +199,8 @@ export class Gateway {
 	/** Company databases the watcher last found at their size limit. */
 	#full = new Set();
 	#closed = false;
+	/** What questions have taken from the store so far: rows, and the characters of their values. */
+	taken = { rows: 0, bytes: 0 };
 
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
 	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). */
@@ -375,21 +377,44 @@ export class Gateway {
 				`begin transaction read only; set local statement_timeout = ${this.#limits.questionMs}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
 			);
-			// As a subquery, so only something that gives rows runs, and no more rows than the answer may hold are made.
+			// As a subquery, so only something that gives rows runs. No more rows than the answer may hold are made, and
+			// the store itself stops handing rows over once they pass the answer's size: a question whose rows are huge
+			// cannot fill the gateway's memory. Each row carries the bytes so far and how many rows were made.
 			const result = await client.query({
-				text: `select * from (\n${ready.sql}\n) qorpera_answer limit ${this.#limits.questionRows + 1}`,
+				text:
+					`select * from (select qorpera_answer.*, ` +
+					`sum(octet_length(qorpera_answer::text)) over (rows between unbounded preceding and current row) as qorpera_bytes_so_far, ` +
+					`count(*) over () as qorpera_rows_made ` +
+					`from (select * from (\n${ready.sql}\n) qorpera_asked limit ${this.#limits.questionRows + 1}) qorpera_answer) qorpera_sized ` +
+					`where qorpera_bytes_so_far <= ${this.#limits.questionBytes}`,
 				values: ready.values,
 				rowMode: "array",
 				queryMode: "extended",
 				types: TEXT_TYPES,
 			});
+			const width = result.fields.length - 2;
+			const fields = result.fields.slice(0, width);
+			for (const row of result.rows) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
+			this.taken.rows += result.rows.length;
+			let more;
+			if (result.rows.length === 0) {
+				// No row came over: the question has none, or its first row alone is past the answer's size.
+				const any = await client.query({
+					text: `select exists (select 1 from (\n${ready.sql}\n) qorpera_asked) as any`,
+					values: ready.values,
+					queryMode: "extended",
+				});
+				more = any.rows[0].any === true;
+			} else {
+				const made = Number(result.rows[0][width + 1]);
+				more = made > this.#limits.questionRows || result.rows.length < Math.min(made, this.#limits.questionRows);
+			}
 			await client.query("rollback");
-			const columns = result.fields.map((field) => field.name);
+			const columns = fields.map((field) => field.name);
 			const rows = [];
 			let bytes = 0;
-			let more = result.rows.length > this.#limits.questionRows;
 			for (const row of result.rows.slice(0, this.#limits.questionRows)) {
-				const made = row.map((value, index) => shaped(value, result.fields[index].dataTypeID));
+				const made = row.slice(0, width).map((value, index) => shaped(value, fields[index].dataTypeID));
 				bytes += Buffer.byteLength(JSON.stringify(made)) + 1;
 				if (bytes > this.#limits.questionBytes) {
 					more = true;
@@ -647,7 +672,7 @@ export class Gateway {
 					`set local search_path = ${quoted(name)}`,
 			);
 			try {
-				await client.query({ text: "select qorpera_data.run_step($1)", values: [text], queryMode: "extended" });
+				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
 			} catch (error) {
 				await client.query("rollback").catch(() => undefined);
 				const told = storeProblem(error);

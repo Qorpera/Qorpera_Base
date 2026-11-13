@@ -28,7 +28,7 @@ psql -d qorpera_company_template -v ON_ERROR_STOP=1 -f store/template.sql
 | `qorpera_data_keeper` | the gateway's own records in each company's database, and its LISTEN; never runs a company's SQL |
 | `qorpera_data_watch` | reads sizes and running statements, and ends what runs too long |
 
-A company's database is `c_` and the 32 hex digits of its folder's id, with a connection limit of 12, a temp file
+A company's database is `c_` and the 32 hex digits of its folder's id, with a connection limit of 24, a temp file
 limit of 256 MB, `work_mem` 16 MB and no parallel workers. Each database folder is one schema in it, with three
 logins of its own: `<db>_o<n>` runs its steps, `<db>_w<n>` its changes, `<db>_r<n>` its questions. Each is a member of
 nothing, so no statement can switch to another folder's role. Their passwords are derived from the gateway's folder
