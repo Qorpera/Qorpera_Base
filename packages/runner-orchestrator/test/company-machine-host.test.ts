@@ -5437,19 +5437,22 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		// Three desktops at once: one at a time, 500 ms apart.
 		const asked = [100, 101, 102].map((n) => f.host.memberStream(stream({ placementId: id(n) }), sinkOf(), f.signal));
 		expect(await Promise.all(asked)).toEqual(["closed", "closed", "closed"]);
-		expect(made.map((one) => one.spec.name)).toEqual([100, 101, 102].map((n) => lxdCompanyMachineName(id(n))));
+		// Each started once, in whichever order their waits ended, 500 ms apart.
+		expect(made.map((one) => one.spec.name).sort()).toEqual([100, 101, 102].map((n) => lxdCompanyMachineName(id(n))));
 		expect((made[1]!.at - made[0]!.at) / 100).toBeGreaterThanOrEqual(4.5);
 		expect((made[2]!.at - made[1]!.at) / 100).toBeGreaterThanOrEqual(4.5);
 		// The first desktop again, its instance ended: no sooner than 2 s after its last start.
-		made[0]!.desktop.ended = "idle";
-		made[0]!.ended();
+		const first = made.find((one) => one.spec.name === lxdCompanyMachineName(id(100)))!;
+		first.desktop.ended = "idle";
+		first.ended();
 		expect(await f.host.memberStream(stream({ placementId: id(100) }), sinkOf(), f.signal)).toBe("closed");
 		expect(made).toHaveLength(4);
-		expect(made[3]!.at - made[0]!.at).toBeGreaterThanOrEqual(1990);
+		expect(made[3]!.at - first.at).toBeGreaterThanOrEqual(1990);
 		expect(Date.now() - began).toBeLessThan(5000);
 		// A member who leaves while waiting is not started at all.
-		made[1]!.desktop.ended = "idle";
-		made[1]!.ended();
+		const second = made.find((one) => one.spec.name === lxdCompanyMachineName(id(101)))!;
+		second.desktop.ended = "idle";
+		second.ended();
 		const leaving = new AbortController();
 		const left = f.host.memberStream(stream({ placementId: id(101) }), sinkOf(), leaving.signal);
 		leaving.abort();
