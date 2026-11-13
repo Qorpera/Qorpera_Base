@@ -2053,7 +2053,8 @@ machine.
   `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
   `404.html` with 404, a site taken down answers 410, and private and next answers carry
   `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
-  `no-transform`. Service worker scripts are refused (404) on every site host.
+  `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
+  host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),

@@ -243,42 +243,111 @@ end $$;
 
 -- 3. A site host --------------------------------------------------------------------------------------------------------
 do $$
-declare v_host text; v_pattern text := public.qorpera_site_host_pattern('qorpera.com'); v jsonb;
+declare v_host text; v_pattern text := public.qorpera_site_host_pattern('qorpera.com'); v jsonb; v_slug text; v_scope text;
+	v_verdict text;
 begin
-	perform pg_temp.base_assert(v_pattern = '^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$', 'the one regex: ' || v_pattern);
+	perform pg_temp.base_assert(v_pattern ='^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$', 'the one regex: ' || v_pattern);
 	-- The first draft's regex took --next into the slug (greedy): why the parse is by label.
 	perform pg_temp.base_assert(substring('shop--next.qorpera.com' from '^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])(--next)?\.qorpera\.com$')
 		= 'shop--next', 'the greedy regex');
 	-- No domain: no site host.
 	perform pg_temp.base_assert(public.qorpera_site_host('look-shop.qorpera.com') is null, 'no domain, no host');
 	perform pg_temp.sh_hosts('qorpera.com', false);
-	-- Each host, and what it is.
-	for v_host, v in select pair.host, pair.parsed::jsonb from (values
-		('look-shop.qorpera.com', '{"slug":"look-shop","scope":"site"}'),
-		('webshop--next.qorpera.com', '{"slug":"webshop","scope":"next"}'),
-		-- (shop is a reserved name, so shop--next is no site's next host.)
-		('shop--next.qorpera.com', null),
-		(repeat('a', 48) || '.qorpera.com', jsonb_build_object('slug', repeat('a', 48), 'scope', 'site')::text),
-		(repeat('a', 48) || '--next.qorpera.com', jsonb_build_object('slug', repeat('a', 48), 'scope', 'next')::text),
-		('shop-next.qorpera.com', '{"slug":"shop-next","scope":"site"}'),
-		('shop-next--next.qorpera.com', '{"slug":"shop-next","scope":"next"}'),
-		('a1-b2.qorpera.com', '{"slug":"a1-b2","scope":"site"}'),
-		-- Not a site host: too long or short, two hyphens, --next alone or twice, another level or domain, a platform
-		-- name, an app link's host, qorpera in it, an IDN, upper case (callers lower-case first).
-		(repeat('a', 49) || '.qorpera.com', null), (repeat('a', 49) || '--next.qorpera.com', null),
-		('ab.qorpera.com', null), ('ab--next.qorpera.com', null), ('a--b.qorpera.com', null), ('--next.qorpera.com', null),
-		('-next.qorpera.com', null), ('shop---next.qorpera.com', null), ('shop--next--next.qorpera.com', null),
-		('a.look-shop.qorpera.com', null), ('qorpera.com', null), ('.qorpera.com', null), ('look-shop.qorpera.com.evil.test', null),
-		('look-shop.evil.test', null), ('lookqorpera.com', null), ('look-shop.qorpera.co', null), ('look-shop.qorpera.com.', null),
-		('api.qorpera.com', null), ('sites.qorpera.com', null), ('next.qorpera.com', null), ('app-preview.qorpera.com', null),
-		('my-qorpera.qorpera.com', null), ('xn--80ak6aa92e.qorpera.com', null), ('Look-shop.qorpera.com', null),
-		('look-shop.qorpera.com:443', null), ('', null)) pair(host, parsed) loop
+	-- Each host of the one host list (below), and what it is. qorpera_site_host takes a host lower-cased (its callers
+	-- lower-case it, as qorpera_site_serve_host does); the front drops a port and a trailing dot before anything reads it.
+	for v_host, v_slug, v_scope, v_verdict in select entry.host, entry.slug, entry.scope, entry.verdict from (values
+		-- The one host list (step 5.1's cross-check): every reader of a site host runs these rows in its own tests: this
+		-- file (qorpera_site_host and the one regex), site-serve's (siteHost), the web's Sites link and Look first link, the
+		-- executor's change record (the Live line's link), the front's Envoy (where each host goes) and sites-route's probe
+		-- names. A row is (host, slug, scope, verdict). taken: the own host (scope site) or the next host (scope next) of
+		-- the site named slug. name: the one regex and the length read slug and scope, and the name rule (D20:
+		-- qorpera_site_slug_valid) refuses the slug, so no site has it and no reader that holds the rule takes it. shape: no
+		-- site host by the regex or the length (slug and scope empty). case: upper case; lower-cased, it is the taken host
+		-- of slug and scope (a request's host is lower-cased; a link is never upper case). port, dot: with the port or the
+		-- trailing dot left out (the front drops both before anything reads the host) it is the taken host of slug and
+		-- scope; as written, no reader takes it. One row a line, in this form, between these two marker lines.
+		-- the one host list: begin
+		('look-shop.qorpera.com', 'look-shop', 'site', 'taken'),
+		('look-shop--next.qorpera.com', 'look-shop', 'next', 'taken'),
+		('webshop--next.qorpera.com', 'webshop', 'next', 'taken'),
+		('abc.qorpera.com', 'abc', 'site', 'taken'),
+		('abc--next.qorpera.com', 'abc', 'next', 'taken'),
+		('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijkl.qorpera.com', 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijkl', 'site', 'taken'),
+		('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijkl--next.qorpera.com', 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijkl', 'next', 'taken'),
+		('shop-next.qorpera.com', 'shop-next', 'site', 'taken'),
+		('shop-next--next.qorpera.com', 'shop-next', 'next', 'taken'),
+		('a1-b2.qorpera.com', 'a1-b2', 'site', 'taken'),
+		('000.qorpera.com', '000', 'site', 'taken'),
+		('saml-gift-message.qorpera.com', 'saml-gift-message', 'site', 'taken'),
+		('a-preview-b.qorpera.com', 'a-preview-b', 'site', 'taken'),
+		('preview-shop--next.qorpera.com', 'preview-shop', 'next', 'taken'),
+		('Look-Shop.qorpera.com', 'look-shop', 'site', 'case'),
+		('LOOK-SHOP--NEXT.QORPERA.COM', 'look-shop', 'next', 'case'),
+		('look-shop.qorpera.com:443', 'look-shop', 'site', 'port'),
+		('look-shop--next.qorpera.com:8443', 'look-shop', 'next', 'port'),
+		('look-shop.qorpera.com.', 'look-shop', 'site', 'dot'),
+		('look-shop--next.qorpera.com.', 'look-shop', 'next', 'dot'),
+		('shop-preview.qorpera.com', 'shop-preview', 'site', 'name'),
+		('shop-preview--next.qorpera.com', 'shop-preview', 'next', 'name'),
+		('my-qorpera.qorpera.com', 'my-qorpera', 'site', 'name'),
+		('qorpera-shop--next.qorpera.com', 'qorpera-shop', 'next', 'name'),
+		('qorpera.qorpera.com', 'qorpera', 'site', 'name'),
+		('api.qorpera.com', 'api', 'site', 'name'),
+		('sites.qorpera.com', 'sites', 'site', 'name'),
+		('www.qorpera.com', 'www', 'site', 'name'),
+		('app.qorpera.com', 'app', 'site', 'name'),
+		('shop.qorpera.com', 'shop', 'site', 'name'),
+		('shop--next.qorpera.com', 'shop', 'next', 'name'),
+		('next.qorpera.com', 'next', 'site', 'name'),
+		('edge.qorpera.com', 'edge', 'site', 'name'),
+		('beta--next.qorpera.com', 'beta', 'next', 'name'),
+		('ab.qorpera.com', '', '', 'shape'),
+		('ab--next.qorpera.com', '', '', 'shape'),
+		('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklm.qorpera.com', '', '', 'shape'),
+		('abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklm--next.qorpera.com', '', '', 'shape'),
+		('a--b.qorpera.com', '', '', 'shape'),
+		('look--shop--next.qorpera.com', '', '', 'shape'),
+		('shop---next.qorpera.com', '', '', 'shape'),
+		('shop--next--next.qorpera.com', '', '', 'shape'),
+		('--next.qorpera.com', '', '', 'shape'),
+		('-next.qorpera.com', '', '', 'shape'),
+		('-shop.qorpera.com', '', '', 'shape'),
+		('shop-.qorpera.com', '', '', 'shape'),
+		('shop_v2.qorpera.com', '', '', 'shape'),
+		('xn--80ak6aa92e.qorpera.com', '', '', 'shape'),
+		('xn--shop--next.qorpera.com', '', '', 'shape'),
+		('a.look-shop.qorpera.com', '', '', 'shape'),
+		('a.look-shop--next.qorpera.com', '', '', 'shape'),
+		('qorpera.com', '', '', 'shape'),
+		('.qorpera.com', '', '', 'shape'),
+		('lookqorpera.com', '', '', 'shape'),
+		('look-shop.qorpera.co', '', '', 'shape'),
+		('look-shop.evil.test', '', '', 'shape'),
+		('look-shop.qorpera.com.evil.test', '', '', 'shape'),
+		('', '', '', 'shape')
+		-- the one host list: end
+		) entry(host, slug, scope, verdict) loop
+		-- What the host is as written, and lower-cased (as qorpera_site_serve_host reads it).
+		v := case when v_verdict = 'taken' then jsonb_build_object('slug', v_slug, 'scope', v_scope) end;
 		perform pg_temp.base_assert(public.qorpera_site_host(v_host) is not distinct from v, 'the host ' || v_host || ': '
 			|| coalesce(public.qorpera_site_host(v_host)::text, 'none'));
-		-- The one regex agrees: it matches with the slug in group 1 (the length checked apart), and the rule holds.
-		perform pg_temp.base_assert((v_host ~ v_pattern and char_length(substring(v_host from v_pattern)) between 3 and 48
-				and public.qorpera_site_slug_valid(substring(v_host from v_pattern))) = (v is not null)
-			and (v is null or substring(v_host from v_pattern) = v ->> 'slug'), 'the regex on ' || v_host);
+		perform pg_temp.base_assert(public.qorpera_site_host(lower(v_host)) is not distinct from
+			case when v_verdict in ('taken', 'case') then jsonb_build_object('slug', v_slug, 'scope', v_scope) end,
+			'the host lower-cased ' || v_host);
+		-- With its port or trailing dot left out (as the front sends it on), it is its own host or next host.
+		if v_verdict in ('port', 'dot') then
+			perform pg_temp.base_assert(public.qorpera_site_host(regexp_replace(v_host, '(:[0-9]+|\.)$', ''))
+				= jsonb_build_object('slug', v_slug, 'scope', v_scope), 'the host without its port or dot ' || v_host);
+		end if;
+		-- The one regex agrees: on a taken host and on a name the rule refuses it reads the slug (group 1) and --next
+		-- (group 2) of the row; on every other host it matches nothing, or a slug that is not 3 to 48 long.
+		perform pg_temp.base_assert(case when v_verdict in ('taken', 'name')
+				then (regexp_match(v_host, v_pattern))[1] = v_slug
+					and ((regexp_match(v_host, v_pattern))[2] is not null) = (v_scope = 'next')
+					and char_length(v_slug) between 3 and 48
+					and public.qorpera_site_slug_valid(v_slug) = (v_verdict = 'taken')
+				else v_host !~ v_pattern or char_length(substring(v_host from v_pattern)) not between 3 and 48 end,
+			'the regex on ' || v_host);
 	end loop;
 	perform pg_temp.sh_hosts(null, false);
 end $$;

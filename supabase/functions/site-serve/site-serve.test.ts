@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
 	byteRange,
@@ -25,6 +26,7 @@ import {
 	parseHostAnswer,
 	parseOldHostAnswer,
 	parseServeAnswer,
+	parseUnlockAnswer,
 	rangeRequest,
 	requestedEtag,
 	SITE_HOST,
@@ -167,7 +169,8 @@ function assertPage(response: Response, referrer = "no-referrer"): void {
 	assert.equal(response.headers.get("x-content-type-options"), "nosniff");
 	assert.equal(response.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
 	assert.equal(response.headers.get("referrer-policy"), referrer);
-	assert.equal(response.headers.get("cache-control"), "no-store");
+	// Every answer carries no-transform (D23, step 5.1): today's value before it was no-store.
+	assert.equal(response.headers.get("cache-control"), "no-store, no-transform");
 	assert.equal(response.headers.get("access-control-allow-origin"), null);
 }
 
@@ -179,7 +182,8 @@ function assertContent(response: Response, hash: string): void {
 	assert.equal(response.headers.get("x-content-type-options"), "nosniff");
 	assert.equal(response.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
 	assert.equal(response.headers.get("referrer-policy"), "no-referrer");
-	assert.equal(response.headers.get("cache-control"), "private, no-cache");
+	// Every answer carries no-transform (D23, step 5.1): today's value before it was private, no-cache.
+	assert.equal(response.headers.get("cache-control"), "private, no-cache, no-transform");
 	assert.equal(response.headers.get("etag"), `"${hash}"`);
 	assert.equal(response.headers.get("access-control-allow-origin"), "*");
 	assert.equal(response.headers.get("set-cookie"), null);
@@ -198,6 +202,31 @@ const PGRST202 = {
 	hint: null,
 	message: "Could not find the function public.qorpera_site_serve_host in the schema cache",
 };
+
+/** The one host list of SQL test 1252 (step 5.1's cross-check): every reader of a site host runs its rows. A row is the
+ * host, the slug and scope the rule reads, and the verdict (taken, name, shape, case, port, dot: 1252 says what each
+ * means). */
+function oneHostList(): { host: string; slug: string; scope: string; verdict: string }[] {
+	const lines = readFileSync(new URL("../../tests/1252_site_hosts.test.sql", import.meta.url), "utf8").split("\n");
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	assert.ok(begin > 0 && end > begin, "1252's one host list");
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const row = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		assert.ok(row, line);
+		return { host: row[1] ?? "", slug: row[2] ?? "", scope: row[3] ?? "", verdict: row[4] ?? "" };
+	});
+	assert.ok(list.length >= 50, "1252's one host list holds its rows");
+	for (const verdict of ["taken", "name", "shape", "case", "port", "dot"])
+		assert.ok(
+			list.some((row) => row.verdict === verdict),
+			verdict,
+		);
+	return list;
+}
+
+/** Migration 20260930756000's text: what site-serve calls and reads must be there, as written. */
+const MIGRATION = readFileSync(new URL("../../migrations/20260930756000_site_hosts.sql", import.meta.url), "utf8");
 
 function hostRequest(host: string, path: string, init: RequestInit & { headers?: Record<string, string> } = {}): Request {
 	return new Request(`${BASE}${path}`, { ...init, headers: { "x-forwarded-host": host, ...init.headers } });
@@ -617,6 +646,7 @@ describe("site-serve: a session's files", () => {
 		assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
 		assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, HEAD");
 		assert.equal(preflight.headers.get("access-control-allow-headers"), "Range, If-None-Match");
+		assert.equal(preflight.headers.get("cache-control"), "no-store, no-transform");
 		const posted = await serve(request(`/shop/~${TOKEN}/x`, { method: "POST", body: "x" }), siteStore);
 		assert.equal(posted.status, 405);
 		assert.equal(posted.headers.get("allow"), "GET, HEAD, OPTIONS");
@@ -1213,6 +1243,36 @@ describe("site-serve: the one host rule", () => {
 		])
 			assert.equal(siteHost(host), null, host);
 		assert.equal(siteHost(null), null);
+	});
+
+	it("takes and refuses every host of the one host list (SQL test 1252) as SQL does, leaving the name rule to SQL", async () => {
+		const list = oneHostList();
+		for (const { host, slug, scope, verdict } of list) {
+			// taken and case: the host (lower-cased) by the rule. name: the rule's shape reads slug and scope, and SQL refuses
+			// the name (none). shape: no site host. port and dot: refused as written (the front drops both before it sends the
+			// name on, so site-serve never sees them).
+			if (verdict === "taken" || verdict === "case" || verdict === "name")
+				assert.deepEqual(siteHost(host), { host: host.toLowerCase(), slug, scope }, host);
+			else assert.equal(siteHost(host), null, host);
+		}
+		// A name the rule refuses shows what any host with no site shows (SQL answers none for it), byte for byte: on the
+		// own host the password page, on the next host "Not live yet". The old host's name (sites) is the old host first.
+		const none = store(undefined, undefined, { serveHost: { state: "none" } });
+		const answers = {
+			site: await snapshot(await serve(hostRequest(OWN, "/"), none.store)),
+			next: await snapshot(await serve(hostRequest(NEXT, "/"), none.store)),
+		};
+		assert.equal(answers.site.status, 401);
+		assert.equal(answers.next.status, 401);
+		for (const { host, scope } of list.filter((row) => row.verdict === "name" && row.host !== "sites.qorpera.com")) {
+			const { calls, store: siteStore } = store(undefined, undefined, { serveHost: { state: "none" } });
+			assert.deepEqual(
+				await snapshot(await serve(hostRequest(host, "/"), siteStore)),
+				answers[scope as "site" | "next"],
+				host,
+			);
+			assert.deepEqual(calls.serveHost, [[host, "", null, null, 0, MAX_FILE_BYTES]], host);
+		}
 	});
 });
 
@@ -2160,6 +2220,23 @@ describe("site-serve: while hosts are off, and before the migration", () => {
 		});
 	});
 
+	it("gives every one of today's answers on the old host an explicit Cache-Control with no-transform (D23)", async () => {
+		await silenced(async () => {
+			for (const [what, make, serveAnswer, unlockAnswer] of today) {
+				const { store: siteStore } = store(
+					serveAnswer ?? file(HTML),
+					unlockAnswer ?? { state: "open", token: NEW_TOKEN, maxAge: 604800 },
+				);
+				const response = await serve(make(), siteStore);
+				assert.match(
+					response.headers.get("cache-control") ?? "",
+					/^(?:no-store|private, no-cache), no-transform$/,
+					what,
+				);
+			}
+		});
+	});
+
 	it("shows a site host's password page with hosts off, and opens nothing there", async () => {
 		const { calls, store: siteStore } = store();
 		const own = await serve(hostRequest(OWN, "/"), siteStore);
@@ -2201,5 +2278,161 @@ describe("site-serve: the database's site host answers", () => {
 			maxAge: 43200,
 		});
 		assert.throws(() => parseEnterAnswer({ state: "open", token: NEW_TOKEN }));
+	});
+});
+
+describe("site-serve: migration 20260930756000's calls and answers, read from its text (step 5.1's cross-check)", () => {
+	/** A function of the migration, from `create function public.<name>(` to its `end $$;`. */
+	const body = (name: string): string => {
+		const start = MIGRATION.indexOf(`create function public.${name}(`);
+		assert.ok(start >= 0, name);
+		const end = MIGRATION.indexOf("\nend $$;", start);
+		assert.ok(end > start, name);
+		return MIGRATION.slice(start, end);
+	};
+	/** A function's argument names, in order. */
+	const parameters = (name: string): string[] => {
+		const text = body(name);
+		const open = text.indexOf("(");
+		return text
+			.slice(open + 1, text.indexOf(")", open))
+			.split(",")
+			.map((part) => part.trim().split(/\s+/)[0] ?? "");
+	};
+	/** Every answer a piece of a function's body gives, as its state and its keys: its JSON literals, and its
+	 * jsonb_build_object calls that start with the state (the call's own arguments, every other one a key). */
+	const answers = (text: string): { state: string; keys: string[]; literal?: Record<string, unknown> }[] => {
+		const found: { state: string; keys: string[]; literal?: Record<string, unknown> }[] = [];
+		for (const match of text.matchAll(/'(\{"state":[^']*\})'::jsonb/g)) {
+			const literal = JSON.parse(match[1] ?? "") as Record<string, unknown>;
+			found.push({ state: String(literal.state), keys: Object.keys(literal), literal });
+		}
+		for (const match of text.matchAll(/jsonb_build_object\('state', /g)) {
+			const args: string[] = [];
+			let depth = 0;
+			let quoted = false;
+			let current = "";
+			for (const character of text.slice((match.index ?? 0) + "jsonb_build_object(".length)) {
+				if (quoted || character === "'") {
+					if (character === "'") quoted = !quoted;
+					current += character;
+					continue;
+				}
+				if (character === ")" && depth === 0) break;
+				if (character === "(") depth++;
+				if (character === ")") depth--;
+				if (character === "," && depth === 0) {
+					args.push(current.trim());
+					current = "";
+				} else current += character;
+			}
+			args.push(current.trim());
+			const unquoted = (value = "") => value.replace(/^'(.*)'$/s, "$1");
+			found.push({
+				state: unquoted(args[1]),
+				keys: args.filter((_, index) => index % 2 === 0).map((key) => unquoted(key)),
+			});
+		}
+		return found;
+	};
+	/** An answer with exactly these keys, each with a value of the kind SQL writes there. */
+	const sample = (state: string, keys: string[], scope: "site" | "next"): Record<string, unknown> => {
+		const values: Record<string, unknown> = {
+			state,
+			url: `https://look-shop.qorpera.com/`,
+			scope,
+			public: false,
+			path: state === "directory" ? "products/" : "index.html",
+			status: 200,
+			contentType: "text/html; charset=utf-8",
+			bytes: Buffer.byteLength(HTML),
+			sha256: sha(HTML),
+			offset: 0,
+			content: Buffer.from(HTML).toString("base64"),
+			token: NEW_TOKEN,
+			maxAge: 43200,
+		};
+		return Object.fromEntries(keys.map((key) => [key, key in values ? values[key] : `unknown key ${key}`]));
+	};
+
+	it("calls only functions it defines, with exactly their argument names, granted to the service role", async () => {
+		const made: [string, string[]][] = [];
+		const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+			made.push([String(url).split("/rest/v1/rpc/")[1] ?? "", Object.keys(JSON.parse(String(init?.body)))]);
+			return new Response(JSON.stringify({ state: "none" }), { status: 200 });
+		}) as typeof fetch;
+		const db = new PostgrestSiteStore("https://project.example.test", "sb_secret_fixture", fetcher);
+		await db.serveHost(OWN, "", TOKEN, null, 0, 0);
+		await db.unlockHost(OWN, "pw", "");
+		await db.enter(NEXT, TICKET);
+		assert.deepEqual(
+			made.map(([name]) => name),
+			["qorpera_site_serve_host", "qorpera_site_unlock_host", "qorpera_site_enter"],
+		);
+		for (const [name, keys] of made) {
+			assert.deepEqual(keys, parameters(name), name);
+			assert.match(
+				MIGRATION,
+				new RegExp(`grant execute on function [^;]*public\\.${name}\\([^;]*to service_role;`),
+				name,
+			);
+		}
+		// Today's two calls keep their names and arguments: the migration changes their bodies in place.
+		assert.match(MIGRATION, /'public\.qorpera_site_serve\(text,text,text,text,integer,integer\)'::regprocedure/);
+		assert.match(MIGRATION, /'public\.qorpera_site_unlock\(text,text,text\)'::regprocedure/);
+		assert.doesNotMatch(MIGRATION, /create (or replace )?function public\.qorpera_site_(serve|unlock)\(/);
+	});
+
+	it("reads every answer qorpera_site_serve_host gives, on the old host and on a site host, and none it never gives", () => {
+		const text = body("qorpera_site_serve_host");
+		const legacy = `return '{"state":"legacy"}'::jsonb;`;
+		const split = text.indexOf(legacy) + legacy.length;
+		assert.ok(split > legacy.length, "the old host's part ends in legacy");
+		const old = answers(text.slice(0, split));
+		const host = answers(text.slice(split));
+		assert.deepEqual([...new Set(old.map((answer) => answer.state))].sort(), ["gone", "legacy", "moved"]);
+		assert.deepEqual([...new Set(host.map((answer) => answer.state))].sort(), [
+			"directory",
+			"file",
+			"gone",
+			"locked",
+			"missing",
+			"none",
+		]);
+		for (const { state, keys } of old)
+			assert.equal(parseOldHostAnswer(sample(state, keys, "site"), "look-shop").state, state, state);
+		for (const { state, keys, literal } of host)
+			for (const scope of ["site", "next"] as const) {
+				// A literal names its own scope (locked); a built answer names the host's.
+				if (literal && "scope" in literal && literal.scope !== scope) continue;
+				const value = literal ?? sample(state, keys, scope);
+				assert.equal(
+					parseHostAnswer(value, scope, null, { length: MAX_FILE_BYTES }).state,
+					state,
+					`${state} ${scope}`,
+				);
+			}
+		// Both scopes' locked answers are there.
+		assert.deepEqual(
+			host.filter((answer) => answer.state === "locked").map((answer) => answer.literal?.scope),
+			["site", "next"],
+		);
+	});
+
+	it("reads every answer of the own host's password and the next host's ticket", () => {
+		const unlock = body("qorpera_site_unlock_host");
+		assert.deepEqual(answers(unlock), [{ state: "wrong", keys: ["state"], literal: { state: "wrong" } }]);
+		assert.equal(parseUnlockAnswer({ state: "wrong" }).state, "wrong");
+		// Any other answer is today's password's (qorpera_site_unlock: open, wrong, limited), which site-serve reads already.
+		assert.match(unlock, /return public\.qorpera_site_unlock\(v_host_of ->> 'slug', p_password, p_client\);/);
+		const enter = answers(body("qorpera_site_enter"));
+		assert.deepEqual([...new Set(enter.map((answer) => answer.state))].sort(), ["open", "refused"]);
+		for (const { state, keys, literal } of enter)
+			assert.equal(parseEnterAnswer(literal ?? sample(state, keys, "next")).state, state, state);
+		// The next session's 12 hours, within what site-serve sets a cookie for.
+		assert.match(
+			body("qorpera_site_enter"),
+			/jsonb_build_object\('state', 'open', 'token', v_token, 'maxAge', 43200\)/,
+		);
 	});
 });

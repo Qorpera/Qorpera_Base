@@ -99,7 +99,8 @@ export const HOST_PAGE_SECURITY_POLICY =
 	"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'";
 /** Never includeSubDomains: the hosts beside a site's are the platform's and other companies'. */
 export const STRICT_TRANSPORT_SECURITY = "max-age=31536000";
-/** Every answer that is not a private site file: never stored, never rewritten on the way. */
+/** Every answer that is not a private site file: never stored, never rewritten on the way. Every answer of this function
+ * carries an explicit Cache-Control with no-transform (D23), the old host's too. */
 const NO_STORE = "no-store, no-transform";
 
 /** The database's doors, service role only. A thrown error means it could not answer; MissingFunction means the
@@ -474,7 +475,9 @@ function refreshPage(lang: Language): string {
 
 // --- Responses ------------------------------------------------------------------------------------------------------
 
-/** Headers on every answer the platform itself writes. */
+/** Headers on every answer the platform itself writes. Cache-Control with no-transform, as every answer of this function
+ * (D23, step 5.1): the zone's browser cache default would add a lifetime to an answer without one, and its features
+ * rewrite HTML. */
 function pageHeaders(referrerPolicy: "no-referrer" | "same-origin" = "no-referrer"): Record<string, string> {
 	return {
 		"content-security-policy": PAGE_SECURITY_POLICY,
@@ -482,7 +485,7 @@ function pageHeaders(referrerPolicy: "no-referrer" | "same-origin" = "no-referre
 		"x-content-type-options": "nosniff",
 		"x-robots-tag": "noindex, nofollow, noarchive",
 		"referrer-policy": referrerPolicy,
-		"cache-control": "no-store",
+		"cache-control": NO_STORE,
 	};
 }
 
@@ -534,7 +537,7 @@ function contentHeaders(file: { contentType: string; sha256: string }): Record<s
 		"x-content-type-options": "nosniff",
 		"x-robots-tag": "noindex, nofollow, noarchive",
 		"referrer-policy": "no-referrer",
-		"cache-control": "private, no-cache",
+		"cache-control": "private, no-cache, no-transform",
 		etag: `"${file.sha256}"`,
 		// A document of the site has an opaque origin, so its module scripts and fonts are CORS fetches. The token in the
 		// path is the capability; no cookie is used here.
@@ -802,7 +805,7 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 // --- The old host, while sites have hosts of their own ---------------------------------------------------------------
 
 /** Headers on the old host's answers that today's handler never gave (moved, gone): as its pages', never stored or
- * rewritten on the way. */
+ * rewritten on the way, and never kept at Cloudflare either. */
 const OLD_HOST_FRESH = { "cache-control": NO_STORE, "cdn-cache-control": "no-store" } as const;
 
 /** The old host: for a path whose first part could name a site, the database says legacy (today's handler), gone (410)
@@ -1252,6 +1255,7 @@ async function legacySiteServe(request: Request, options: SiteServeOptions): Pro
 					"access-control-allow-methods": "GET, HEAD",
 					"access-control-allow-headers": "Range, If-None-Match",
 					"access-control-max-age": "600",
+					"cache-control": NO_STORE,
 				},
 			});
 		if (method !== "GET" && method !== "HEAD") return notAllowed("GET, HEAD, OPTIONS");
