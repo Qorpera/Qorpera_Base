@@ -23,6 +23,8 @@ installed anywhere yet.
 | `init.sh` | the first start on an empty volume: secrets, CA and cert, `store/cluster.sql`, `store/template.sql`, the replication login, then the gateway. Refuses to run twice |
 | `base-backup.sh` | a base backup into `base/<UTC>`, keeps the newest 7, removes WAL older than the oldest kept |
 | `restore.sh` | a point-in-time restore into a new project: a base backup, the archived WAL up to a time, then promoted |
+| `compose.sh` | `docker compose` for this machine with the files the scripts use (the `.env`'s `COMPOSE_FILE`, plus `run-door.yml` when `DATA_RUN_LISTEN` is set). Every compose command by hand goes through it: a bare `docker compose up` would bring the gateway back without its run door |
+| `run-door.sh` | `status`: whether the run door is on, or off and why (the gateway's own last word, the secrets, the port); `make`: what is missing of its secrets, for a machine whose kit came before the door |
 | `standby.sh` | `allow`, `pack` and `unpack` (what the standby needs, from the primary's machine), `seed`, `status`, `promote` |
 | `drill.mjs`, `drill/` | the drill, its compose overlay and a stand-in for the platform's API. Never on a machine (below) |
 | `kit.test.mjs`, `.gitattributes` | the test that an archive of the kit leaves the drill out, and the rule that does it |
@@ -86,7 +88,7 @@ ssh root@<primary> /opt/company-data/kit/standby.sh pack | ./standby.sh unpack
 ./standby.sh status
 ```
 
-A take-over: stop the primary for good first (`docker compose stop` there, or the machine proven off), then on the
+A take-over: stop the primary for good first (`./compose.sh stop` there, or the machine proven off), then on the
 standby's machine `./standby.sh promote`. It promotes the store, forgets its upstream and starts its gateway with the
 same secrets. The old primary is then seeded again as a standby from a new, empty volume.
 
@@ -108,7 +110,19 @@ else (`run-door.yml`); without it nothing listens there and the gateway holds no
 bytes, never printed and never made again once it is there, and a cert from the kit's CA for the one name every
 provider host dials: `10.41.0.1`, the `qorpera0` bridge's own address, the same on both nodes, where each node's
 forward takes the call to the door (lanes: `nodework/road-run.md`). TLS ends at the gateway; the forwards pass TCP.
-`standby.sh pack` carries the folder, so a promoted standby's door takes the same token. The nodes' provider hosts
+`standby.sh pack` carries the folder, so a promoted standby's door takes the same token.
+
+A door that cannot start (a secret missing or unreadable) stays shut: the gateway still serves members and logs one
+line, `data gateway: run door: off (<why>)`; `./run-door.sh status` shows it and exits 1. Every compose command by hand
+goes through `./compose.sh`, which adds `run-door.yml` as the scripts do.
+
+On a machine whose kit came before the door: `./run-door.sh make && ./compose.sh up -d data-gateway` (the CA must be
+there: the primary's machine; a standby's door comes from `standby.sh pack`, so it needs a pack made after `make`).
+
+**The token is the nodes' too.** Both nodes' exec staging holds a copy as the credential `qorpera-company-data`. A
+primary rebuilt from its sealed copy of `DATA_LOCAL` must get the same `secrets/run-door/token` back (the sealed copy
+must hold it); a new token means both nodes' staged tokens are stale, every agent's data call answers 401, and the
+staging is redone before the next cut. The nodes' provider hosts
 hold the token as their systemd credential `qorpera-company-data` and pin the kit's `ca/ca.crt` by its sha256
 (`deploy/shared-execution/shared-execution.env.example`).
 
@@ -130,7 +144,7 @@ with `qorpera-company-data-gateway.mjs.sha256` beside it and a `manifest.json`, 
 A machine gets it as it gets the other node services' packages: the release makes the folder from the release commit
 and copies it to the machine (root's, 0755, the file 0644) at `DATA_GATEWAY_PACKAGE`. The container mounts that folder
 read-only at `/app` and starts the file only if `sha256sum --check` passes. A new gateway is a new folder and
-`docker compose up -d data-gateway`. The drill packages it the same way and runs it.
+`./compose.sh up -d data-gateway`. The drill packages it the same way and runs it.
 
 ## The drill
 

@@ -12,7 +12,7 @@
 // drill.yml, DATA_DB_MEMORY), every published port is on 127.0.0.1, and nothing is pulled: the images must be there.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -45,7 +45,7 @@ const RUN_ID = "64000000-0000-4000-8000-000000000003";
 const RUN_DOOR_NAME = "10.41.0.1";
 const newPass = () => randomBytes(32).toString("base64url");
 // Passes the stand-in redeems once each for "shop": A's first, B's after the take-over (each machine has its own stand-in).
-const PASSES = { a: Array.from({ length: 6 }, newPass), b: Array.from({ length: 6 }, newPass) };
+const PASSES = { a: Array.from({ length: 16 }, newPass), b: Array.from({ length: 6 }, newPass) };
 const STORE = companyDatabase(ENV);
 // Company values that must never reach the server's log: a parameter, a parameter a cast fails on, a row's value a
 // constraint names, and a word in a slow statement's own text.
@@ -354,6 +354,34 @@ try {
 	);
 	check("(g) the run door takes no plain HTTP", plainHttp === "refused" || plainHttp === "400", plainHttp);
 
+	// The documented upgrade: compose.sh, from /, with only the kit's .env: the gateway comes back with its run door.
+	const gatewayBefore = container(A, "data-gateway");
+	const recreate = () => script(A, "compose.sh", ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120", "data-gateway"]);
+	const upgraded = recreate();
+	const afterUpgrade = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	const statusOn = script(A, "run-door.sh", ["status"]);
+	check("(g) the documented upgrade (compose.sh up -d data-gateway, from /, only the kit's .env) brings the gateway back with its run door",
+		upgraded.ok && container(A, "data-gateway") !== gatewayBefore && afterUpgrade.status === 200 && statusOn.ok && /^run door: on$/m.test(statusOn.out),
+		`${upgraded.ok ? "" : tail(upgraded.err, 2)} ${afterUpgrade.status} ${afterUpgrade.error ?? ""} | ${statusOn.out.trim().split("\n").join(" / ")}`);
+	// A door whose token cannot be read stays shut and says why; the members' door is up as always.
+	renameSync(join(RUN_SECRETS, "token"), join(RUN_SECRETS, "token.away"));
+	const shutUp = recreate();
+	const shutLog = run("docker", ["logs", container(A, "data-gateway")]);
+	const shutMembers = await ask(A, "query", { database: "shop", question: "count" });
+	const shutDoor = await door(A, "describe", { database: "shop", pass: PASSES.a.shift() }, { token: runToken, ca: caPem });
+	const statusOff = script(A, "run-door.sh", ["status"]);
+	check("(g) a run door whose token cannot be read: the gateway starts, members are served, the door stays shut, its log and run-door.sh status say why",
+		shutUp.ok && shutMembers.status === 200 && shutDoor.status === 0 &&
+			/data gateway: run door: off \(its token cannot be read \(ENOENT\)\)/.test(`${shutLog.out}${shutLog.err}`) &&
+			!statusOff.ok && /^run door: off \(its token cannot be read/m.test(statusOff.out) && /secrets: 2 of 3/.test(statusOff.out),
+		`${shutUp.ok ? "" : tail(shutUp.err, 2)} members ${shutMembers.status}; door ${shutDoor.status} ${shutDoor.error ?? ""} | ${statusOff.out.trim().split("\n").join(" / ")}`);
+	renameSync(join(RUN_SECRETS, "token.away"), join(RUN_SECRETS, "token"));
+	const backUp = recreate();
+	const afterBack = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	check("(g) with the token back and the gateway made again by compose.sh, the door answers", backUp.ok && afterBack.status === 200 && script(A, "run-door.sh", ["status"]).ok,
+		`${afterBack.status} ${afterBack.error ?? ""}`);
+	const doorStatusText = `${statusOn.out}${statusOn.err}${statusOff.out}${statusOff.err}${shutLog.out}${shutLog.err}`;
+
 	// Without DATA_RUN_LISTEN: the same machine's gateway again, as a machine without the setting starts it.
 	const plainEnv = { ...A.env, COMPOSE_FILE: ["docker-compose.yml", "drill/drill.yml"].map((file) => join(KIT, file)).join(":"), DATA_RUN_LISTEN: "" };
 	const noDoor = run("docker", ["compose", "up", "-d", "--wait", "--wait-timeout", "120", "data-gateway"], { env: plainEnv });
@@ -429,7 +457,7 @@ try {
 	for (const [what, value] of [["a parameter", SECRET], ["a value a cast failed on", MARKER_CAST], ["a row's value a constraint named", MARKER_ROW], ["a word in a slow statement's text", MARKER_TEXT],
 		["a word inside the function the watcher ended", MARKER_LOOP], ["the first locking session's value", MARKER_LOCK_A], ["the second locking session's value", MARKER_LOCK_B]])
 		check(`(e) ${what} is not in the database's log`, !log.includes(value), `${log.split("\n").length} lines searched`);
-	const everyLog = [log, `${init.out}${init.err}`, `${doorLog.out}${doorLog.err}`, `${noDoorLog.out}${noDoorLog.err}`,
+	const everyLog = [log, `${init.out}${init.err}`, `${doorLog.out}${doorLog.err}`, `${noDoorLog.out}${noDoorLog.err}`, doorStatusText,
 		...["data-gateway", "platform-standin"].map((service) => {
 			const one = run("docker", ["logs", container(A, service)]);
 			return `${one.out}${one.err}`;

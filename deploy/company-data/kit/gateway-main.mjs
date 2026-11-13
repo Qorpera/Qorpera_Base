@@ -46,24 +46,29 @@ const address = (name) => {
 };
 const { host, port } = address("DATA_LISTEN");
 
-// The run door's secrets: read here, kept in memory, never logged.
+// The run door's secrets: read here, kept in memory, never logged. A door that cannot start (a secret missing or
+// unreadable) stays shut and says why; the members' door starts as always.
 let runs = null;
+let runsOff = null;
 if (process.env.DATA_RUN_DOOR) {
-	const secrets = setting("DATA_RUN_SECRETS");
-	const read = (file) => {
-		try {
-			return readFileSync(join(secrets, file), "utf8");
-		} catch {
-			console.error(`data gateway: the run door's ${file} cannot be read`);
-			process.exit(2);
-		}
-	};
-	const token = read("token").trim();
-	if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
-		console.error("data gateway: the run door's token is not 43 base64url characters");
-		process.exit(2);
+	try {
+		const secrets = process.env.DATA_RUN_SECRETS;
+		if (!secrets) throw new Error("DATA_RUN_SECRETS is not set");
+		const read = (file) => {
+			try {
+				return readFileSync(join(secrets, file), "utf8");
+			} catch (error) {
+				throw new Error(`its ${file} cannot be read (${error?.code ?? "error"})`);
+			}
+		};
+		const token = read("token").trim();
+		if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("its token is not 43 base64url characters");
+		const cert = read("door.crt");
+		const key = read("door.key");
+		runs = { ...address("DATA_RUN_DOOR"), token, cert, key };
+	} catch (error) {
+		runsOff = String(error?.message ?? error);
 	}
-	runs = { ...address("DATA_RUN_DOOR"), token, cert: read("door.crt"), key: read("door.key") };
 }
 
 const gateway = new Gateway({
@@ -72,14 +77,23 @@ const gateway = new Gateway({
 	...(runs ? { runs: { token: runs.token } } : {}),
 });
 const server = await serve(gateway, { host, port });
-const runServer = runs ? await serveRuns(gateway, { host: runs.host, port: runs.port, cert: runs.cert, key: runs.key }) : null;
+let runServer = null;
+if (runs) {
+	try {
+		runServer = await serveRuns(gateway, { host: runs.host, port: runs.port, cert: runs.cert, key: runs.key });
+	} catch (error) {
+		runsOff = `it did not start: ${String(error?.message ?? error).slice(0, 200)}`;
+	}
+}
 // The watcher (design §3): every 10 s it ends what runs past its limit and closes writes at a company's size limit.
 const stopWatcher = startWatcher(gateway, {
 	failed: (error) => console.error(`data gateway: the watcher's look failed: ${error?.code ?? ""} ${String(error?.message ?? error).slice(0, 200)}`),
 });
 // Names only: never a secret.
 console.log(`data gateway: listening on ${host}:${port}, store ${process.env.DATA_STORE_HOST}, secrets ${Object.keys(logins).join(", ")}`);
-console.log(runs ? `data gateway: run door listening on ${runs.host}:${runs.port} over TLS` : "data gateway: no run door");
+if (runServer) console.log(`data gateway: run door listening on ${runs.host}:${runs.port} over TLS`);
+else if (runsOff) console.error(`data gateway: run door: off (${runsOff})`);
+else console.log("data gateway: no run door");
 
 let stopping = false;
 const stop = async () => {

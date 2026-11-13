@@ -1,6 +1,7 @@
 # The gateway's run door (README.md, "The run door"), after docker-compose.yml. The kit's scripts add this file to
-# COMPOSE_FILE by themselves whenever DATA_RUN_LISTEN is set (lib.sh), so a machine never names it: without the
-# setting no run door listens, with it the door is published there and nowhere else.
+# COMPOSE_FILE by themselves whenever DATA_RUN_LISTEN is set (lib.sh), and so does compose.sh, which every compose
+# command by hand goes through: a machine never names it. Without the setting no run door listens, with it the door is
+# published there and nowhere else.
 #   DATA_RUN_LISTEN   where the run door's port is published, address:port: on data-primary its qdatahome0 address and
 #                     8481, which each node's forward on 10.41.0.1:8481 reaches (lanes: nodework/road-run.md)
 # Its secrets are in DATA_LOCAL/secrets/run-door, the gateway's user's (init.sh): the token every provider host brings

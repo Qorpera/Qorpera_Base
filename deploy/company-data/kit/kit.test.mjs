@@ -33,7 +33,7 @@ test("an archive of the kit holds what a machine runs and never the drill", asyn
 			.split("\n")
 			.filter((path) => !path.endsWith("/"));
 		for (const path of archived) assert.doesNotMatch(path, /\/drill(\.mjs|\/)|kit\.test\.mjs$/, path);
-		for (const file of ["env.sh", "docker-compose.yml", "replication.yml", "run-door.yml", "gateway-main.mjs", "lib.sh", "tls.sh", "init.sh", "base-backup.sh", "restore.sh", "standby.sh", "README.md",
+		for (const file of ["env.sh", "docker-compose.yml", "replication.yml", "run-door.yml", "gateway-main.mjs", "lib.sh", "tls.sh", "compose.sh", "run-door.sh", "init.sh", "base-backup.sh", "restore.sh", "standby.sh", "README.md",
 			"postgres/postgresql.conf", "postgres/pg_hba.conf", "postgres/pg_ident.conf", "postgres/archive-wal.sh", "postgres/restore-wal.sh"])
 			assert.ok(archived.includes(`${KIT}/${file}`), `${file} is in the archive`);
 		const machine = tracked.filter((path) => !/\/drill(\.mjs|\/)|kit\.test\.mjs$/.test(path));
@@ -88,6 +88,10 @@ test("the kit's .env is read as docker compose reads it: the README's examples a
 		assert.equal(readme.COMPOSE_FILE, "docker-compose.yml:replication.yml");
 		assert.equal(readme.DATA_GATEWAY_LISTEN, "127.0.0.1:8480");
 		assert.equal(readme.DATA_RUN_LISTEN, "<this machine's private address>:8481");
+		// Every compose command the README gives goes through compose.sh, which adds run-door.yml (lib.sh).
+		const text = await readFile(join(kit, "README.md"), "utf8");
+		assert.doesNotMatch(text, /`docker compose (up|stop|restart|start|down)/);
+		assert.match(text, /`\.\/compose\.sh up -d data-gateway`/);
 		writeFileSync(join(temporary, "extra.env"), EXTRA);
 		const extra = loaded(join(temporary, "extra.env"));
 		assert.deepEqual(
