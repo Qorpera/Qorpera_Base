@@ -171,11 +171,22 @@ const SHARE_APP_RUN = "To let members open one in their browser, share its port 
  * wait is short and a machine in line answers at once; past it the run is woken when the machine runs, as before. */
 export const CLOUD_MACHINE_START_WAIT_SECONDS = Object.freeze({ worker: 300, conversation: 60 });
 const CONVERSATION_START_WAIT = `With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.conversation}) the call waits while it starts, and no model turn is spent; if it is not running yet, finish this run normally: you are woken when it runs. `;
+/** Why an agent asks for more than the default 2 cpus (Jonas, 13 Nov 2026, on renders that did not look real: custom
+ * machines are "built, just not used well enough"). No machine had been started with more than 4 cpus, and the agent
+ * whose render raised the question ran Blender with -t 2 on a default machine. The figures are measured
+ * (deploy/machine/README.md, "Sizing a machine for the job": one full HD Cycles frame at 256 samples with
+ * OpenImageDenoise on a 7950X): 22 minutes on 2 threads, 5 on 8, the same processor seconds either way.
+ * Computer hours count max(cpus / 4, GiB / 8) times the time awake (RUNTIME-COMPUTER-HOURS.md), so 8 cpus for a
+ * quarter of the time cost what 2 cpus cost, while an idle hour before a large machine sleeps costs more than the job
+ * did: hence machine_stop. */
+const MACHINE_SIZE_FOR_THE_JOB =
+	"Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8. Hours count size times time awake, so that costs the same: for such work start a machine of 8 cpus and 8 GiB, tell the program to use them all, and stop it with machine_stop when done. ";
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
 	"Playwright with its Chromium (require('playwright')), a chromium command and ffmpeg are installed too: checking a page, taking pictures of it or filming it needs no screen. " +
-	"Pick its size: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
+	"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
+	MACHINE_SIZE_FOR_THE_JOB +
 	"A machine has no screen unless you ask: desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB, for work that needs a real screen, such as testing a product the way a person uses it or driving an app's interface (a smaller machine refuses its desktop). " +
 	"On it, with machine_run: desktop start <company files, folders or URLs> starts the desktop and opens each on it (a folder under /company with an index.html, or an .html file, is served and opened as a site; the files stay in the company folder, so a change shows after a reload; add --lang da-DK --tz Europe/Copenhagen for a Danish company); desktop run <program> starts a program on it; desktop stop when the work is done; desktop help lists everything. " +
 	"See and drive the screen with machine_screen: one call takes one action (click, type, keys, scroll, open) and shows you the screen after it. " +

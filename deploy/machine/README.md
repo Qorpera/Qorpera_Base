@@ -95,6 +95,29 @@ Every machine, with a desktop or without, has compressed memory from its boot on
 - Nothing else changed: a machine's sizes, the least size of a desktop computer, billing and the node's accounting are as before. Compressed memory lives inside the machine's own memory.
 - `scripts/prove-machine-memory.sh` proves all of it on throwaway machines made from a built image, in a node's image build space: compressed memory after a boot, the unit run again, a boot with the module hidden, the idle rule's measure on the quiet machine, clicks on one spot, past the edge (`desktop click` asked from the host every second keeps being answered the whole time: none fails, none takes 3 s or more, and at most 1 in 100 takes 2 s or more; every look of the guest helper is answered with an observation; every phase of the browser's work ends well; something was ended and named in the journal, and only what may be: browser tabs, Chromium's own helper processes and the agent's job, never the browser itself; the browser, the desktop, the helper and the machine's own services are alive after), and an agent's job that outgrows the machine. It passes on nothing that was not really answered: a helper that failed or timed out, an empty answer, a journal that could not be read and a browser phase that did not end well are each a failed check (`scripts/prove-machine-memory.test.mjs`).
 
+### Sizing a machine for the job
+
+An agent picks a machine's size, and until 13 Nov 2026 nothing told it why it would pick more than the default 2 CPUs and 4 GiB. Of the 38 machines agents had started by then, 30 had 2 CPUs, 5 had fewer and 3 had 4: none had more. The question came from a company's renders (Jonas, 13 Nov 2026: "how come we seem to not get very realistic animations for anything, even the things we want to make realistic?"): its agent had fetched Blender by itself and rendered with `-t 2` at 32 samples on a default machine. Custom machines were, in Jonas's words, "built, just not used well enough".
+
+`machine_start`'s description now says what a size buys and costs (`MACHINE_SIZE_FOR_THE_JOB` in `packages/runtime/src/cloud-machine-tools.ts`), and the company instructions say how a render is lit and looked at before anyone sees it (`packages/runtime/src/cloud-native-company-context.ts`).
+
+**Measured** on the operator test machines (10 vCPUs of a Ryzen 9 7950X each, shared with other test runs): official Blender 4.3.2, Cycles on the processors, OpenImageDenoise, fixed sample counts, one full HD frame of a lamp on a table in a room. "Dark world" is the scene as an agent writes it in one pass (boxes and cylinders, flat colours, a near-black world, the lamp as the only light); "real room" is the same layout from CC0 files (an HDRI as the world, texture sets, modelled furniture). The scene, its driver, every frame and its record are in `lanes/realistic-renders-20261113/`.
+
+| Threads | Dark world, 64 samples | Real room, 64 samples | Dark world, 256 samples | Real room, 256 samples |
+| --- | --- | --- | --- | --- |
+| 2 | 317 s (5.3 min) | 319 s (5.3 min) | 1312 s (21.9 min) | 1338 s (22.3 min) |
+| 8 | 83 s (1.4 min) | 81 s (1.4 min) | 319 s (5.3 min) | 299 s (5.0 min) |
+| 10 | 69 s (1.1 min) | 65 s (1.1 min) | 257 s (4.3 min) | 244 s (4.1 min) |
+
+The agent's own setting (1280 x 922, 32 samples, 2 threads, the dark world) took 94 s.
+
+- **Processors divide the wait, not the work.** The processor seconds are the same at every thread count, so a machine four times the size finishes in a quarter of the time.
+- **A larger machine costs the same.** Computer hours count `max(cpus / 4, GiB / 8)` times the time awake (`deploy/first-node/RUNTIME-COMPUTER-HOURS.md`): the 256-sample frame is 0.19 computer hours on 2 CPUs and 4 GiB and 0.17 on 8 CPUs and 8 GiB.
+- **Idle time is what costs.** A task machine sleeps after an hour without use: on 8 CPUs that hour is 2 computer hours, more than forty 64-sample frames. Hence `machine_stop` when the work is done.
+- **The room costs nothing.** The real room renders as fast as the dark world: what makes a frame look real is its light and its materials, not samples or processors. 64 samples with the denoiser are enough for a still.
+- **A large machine may wait or be refused.** Its CPUs count in full against its node's budget while it is awake, beside every other awake machine; when no node has room it waits in line, and a size above every node's largest machine is refused at once. The words name 8 CPUs and 8 GiB and say to start a smaller one instead of waiting, after deleting the one in line: left there, it would start by itself when room comes, unused and counted.
+- Not measured: more than 10 threads (the test machines have 10 vCPUs), and a company machine itself.
+
 ### Proof on node 2 (2026-09-29)
 
 Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/README.md`), so nothing on node 2's own LXD changed. It ran the real `setup-machine-network.sh`, `build-machine-image.sh` and `prove-machine-node.ts`, which runs the executor's journaled lifecycle, guest helper and commands with an in-memory kernel. A loopback NFSv4 export stood in for the NAS. The image was built by the build script as of f6b25e9d5, before its stdout fix: the record was taken from the end of its output. The fixed `> image-build.json` flow was checked in a container, not on LXD.
