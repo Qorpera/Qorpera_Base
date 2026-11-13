@@ -9,7 +9,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
-import { linkHref } from "../src/ui/dom.ts";
+import { refreshAppPreviews } from "../src/ui/interaction-card.ts";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
@@ -168,7 +168,6 @@ function company(
 		agent: (id) => (id === AGENT ? agent : undefined),
 		memberName: () => "Jonas",
 		conversation,
-		chatHref: (sessionId) => `#/c/p/chat/${sessionId}`,
 	};
 	return {
 		controller,
@@ -209,8 +208,24 @@ describe("the questions dock", () => {
 		expect(dock.el.querySelectorAll(".interaction-card")).toHaveLength(1);
 		expect(dock.el.textContent).toContain("Bob asks you");
 		expect(dock.el.textContent).toContain("Which direction should the shop take?");
-		const chat = dock.el.querySelector<HTMLElement>(".question-dock-note a");
-		expect(chat && linkHref(chat)).toBe(`#/c/p/chat/${SESSION}`);
+		dock.dispose();
+	});
+
+	it("is headed once: who asks, and no label row, time or way to the chat under it", async () => {
+		const { host } = company({ questions: [question(CARD_A, directions)] });
+		const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+		document.body.append(dock.el);
+		await settle();
+		// Jonas, 13 November 2026: "remove 'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'".
+		expect(dock.el.querySelector(".question-dock-note")).toBeNull();
+		expect(dock.el.querySelector("a")).toBeNull();
+		const heading = dock.el.querySelector(".interaction-heading");
+		// Kept for a screen reader, shown to nobody: the dock's own head says who asks.
+		expect(heading?.classList.contains("visually-hidden")).toBe(true);
+		expect(heading?.textContent).toContain("Question");
+		expect(dock.el.querySelector(".question-dock-title")?.textContent).toBe("Bob asks you");
+		// The card draws no second "asks you" of its own under the dock's head.
+		expect(dock.el.querySelector(".interaction-call")).toBeNull();
 		dock.dispose();
 	});
 
@@ -321,6 +336,107 @@ describe("the questions dock", () => {
 		expect(localStorage.getItem("qorpera.web.question-dock-folded")).toBe("1");
 		dock.el.querySelector<HTMLButtonElement>(".question-dock-pill")?.click();
 		expect(dock.el.querySelector(".interaction-card")).not.toBeNull();
+		dock.dispose();
+	});
+
+	describe("when the member goes to another concept with an answer just given (review r1 of #1763, F3)", () => {
+		/** One question about each concept: the calm shop's and the bold shop's. */
+		const about = (app: string, title: string): InteractionRequest => ({
+			surface: "question",
+			title,
+			payload: {
+				options: [
+					{ label: "Yes", value: "yes", preview: `app:${app}` },
+					{ label: "No", value: "no" },
+				],
+			},
+		});
+		const calm = about("shop-calm", "Is the calm shop right?");
+		const bold = about("shop-bold", "Is the bold shop right?");
+		const both = () => [
+			question(CARD_A, calm, "2026-11-10T10:00:00Z"),
+			question(CARD_B, bold, "2026-11-10T09:00:00Z"),
+		];
+		/** The other concept's card stays on screen while the answered one's hold runs out, and nothing flies. */
+		const staysOnBold = async (dock: QuestionDock) => {
+			expect(dock.el.textContent).toContain("Is the bold shop right?");
+			expect(dock.el.textContent).not.toContain("Is the calm shop right?");
+			await vi.advanceTimersByTimeAsync(2_250);
+			expect(dock.el.classList.contains("is-flying")).toBe(false);
+			expect(dock.el.textContent).not.toContain("Is the calm shop right?");
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(dock.el.hidden).toBe(false);
+			expect(dock.el.textContent).toContain("Is the bold shop right?");
+		};
+
+		it("keeps the answered card off the other concept's page while it is held", async () => {
+			const { host, answers } = company({ questions: both() });
+			const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+			document.body.append(dock.el);
+			await settle();
+			expect(dock.el.textContent).toContain("Is the calm shop right?");
+			dock.el.querySelector<HTMLButtonElement>(".choice-box")?.click();
+			await settle();
+			expect(answers).toEqual([[SESSION, CARD_A, "answered", { values: ["yes"] }]]);
+			expect(dock.el.textContent).toContain("Sent to Bob");
+			// Right after the answer, the member opens the bold shop's concept.
+			dock.setMatch((apps) => apps.has("shop-bold"));
+			await staysOnBold(dock);
+			dock.dispose();
+		});
+
+		it("keeps it off when the answer is taken after the member left", async () => {
+			let take = () => {};
+			const gate = new Promise<void>((resolve) => {
+				take = resolve;
+			});
+			const { host } = company({ questions: both(), gate });
+			const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+			document.body.append(dock.el);
+			await settle();
+			dock.el.querySelector<HTMLButtonElement>(".choice-box")?.click();
+			await settle();
+			expect(dock.el.textContent).toContain("Sending to Bob…");
+			// While the answer is on its way, the member opens the bold shop's concept; then the cloud takes the answer.
+			dock.setMatch((apps) => apps.has("shop-bold"));
+			expect(dock.el.textContent).toContain("Is the bold shop right?");
+			take();
+			await settle();
+			await staysOnBold(dock);
+			dock.dispose();
+		});
+	});
+
+	it("brings an app's preview into its card once the company's apps are read, keeping an answer being typed", async () => {
+		const request: InteractionRequest = {
+			surface: "question",
+			title: "Viser scenerne den lampe, du forestiller dig?",
+			payload: {
+				allowCustom: true,
+				options: [
+					{ label: "Ja, sådan", value: "ja", preview: "app:shop-calm" },
+					{ label: "Noget skal ændres", value: "nej" },
+				],
+			},
+		};
+		const { host } = company({ questions: [question(CARD_A, request)] });
+		// The company's apps are not read yet when the dock draws the card (review r1 of #1763, F1).
+		let read = false;
+		const app = (name: string) =>
+			read && name === "shop-calm" ? { title: "The calm shop", emblem: "star" as const, cover: null } : undefined;
+		const dock = new QuestionDock({ ...host, app }, (apps) => apps.has("shop-calm"));
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".choice-picture")).toBeNull();
+		const field = dock.el.querySelector<HTMLInputElement>(".interaction-field");
+		if (!field) throw new Error("no field");
+		field.value = "Mere lys";
+		read = true;
+		// What the page does after each read of the company's apps (app/application.ts decorateAppCards).
+		refreshAppPreviews(document.body, app);
+		expect(dock.el.querySelector(".choice-box .choice-app-name")?.textContent).toBe("The calm shop");
+		expect(dock.el.querySelector(".interaction-field")).toBe(field);
+		expect(field.value).toBe("Mere lys");
 		dock.dispose();
 	});
 });
