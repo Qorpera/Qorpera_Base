@@ -96,8 +96,10 @@ function callsFake(list: CodeRepositories = codeList()) {
 }
 
 /** The company folder: the code kept in Qorpera at code/qorpera/notes, a GitHub copy at code/qorpera/saml-storefront,
- * the place code/acme/shop that an import fills, the platform's set-aside folder, and a folder beside the code. */
+ * the place code/acme/shop that an import fills, the platform's set-aside folder, and a folder beside the code. A test
+ * changes `folders` and `files` (path → text) as the code host would; no hint or feed says so. */
 function folderFake() {
+	const files = new Map<string, string>();
 	const folders = new Set([
 		"notes",
 		"code",
@@ -112,15 +114,37 @@ function folderFake() {
 		"code/acme/shop/main",
 	]);
 	const parentOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
-	const entry = (path: string): CloudMemberFolderEntry | null =>
-		folders.has(path)
+	const entry = (path: string): CloudMemberFolderEntry | null => {
+		const text = files.get(path);
+		if (text !== undefined)
+			return {
+				path,
+				kind: "file",
+				version: id(101),
+				seq: 1,
+				updatedAt: at,
+				file: {
+					manifestSha256: "a".repeat(64),
+					fileSha256: "b".repeat(64),
+					bytes: text.length,
+					mediaType: "application/json",
+					executable: false,
+				},
+				target: null,
+			};
+		return folders.has(path)
 			? { path, kind: "folder", version: id(100), seq: 1, updatedAt: at, file: null, target: null }
 			: null;
+	};
 	return {
+		folders,
+		files,
 		list: vi.fn(
 			async (parent: string | null): Promise<CloudMemberFolderListPage> => ({
 				asOfSeq: 4,
-				entries: [...folders].filter((path) => parentOf(path) === (parent ?? "")).map((path) => entry(path)!),
+				entries: [...folders, ...files.keys()]
+					.filter((path) => parentOf(path) === (parent ?? ""))
+					.map((path) => entry(path)!),
 				next: null,
 			}),
 		),
@@ -203,7 +227,13 @@ async function storage(calls: CodeDownloadCalls) {
 		question()!.requestSubmit();
 		await settle();
 	};
-	return { host, browser, stop, go, button, line, question, field, pressed, send };
+	/** The open folder's rows, by name, and its count. */
+	const names = () =>
+		[...host.querySelectorAll<HTMLElement>(".files-list > .files-row .files-name")].map((name) => name.textContent);
+	const count = () => host.querySelector(".storage-count")?.textContent;
+	/** How often the folder at `path` was listed. */
+	const listed = (path: string) => folder.list.mock.calls.filter(([parent]) => parent === path).length;
+	return { host, browser, stop, go, button, line, question, field, pressed, send, folder, names, count, listed };
 }
 
 describe("a GitHub address, as a member pastes it", () => {
@@ -464,6 +494,64 @@ describe("the words of an import", () => {
 		setLanguagePreference("da");
 		for (const [imported, , danish] of lines) expect(importDoneWords(imported)).toBe(danish);
 	});
+
+	it("says the other lines of work that came with it, and that an agent can bring them in only while nothing changed since", () => {
+		const github = { from: "github", at, earlierChanges: 1, lastChange: 1 } as const;
+		const brought = "Brought in from GitHub on November 12, 2026. 1 earlier change came with it.";
+		const hentet = "Hentet ind fra GitHub den 12. november 2026. 1 tidligere ændring kom med.";
+		const next = "An agent can bring that work into the main version.";
+		const næste = "En agent kan føje det arbejde til hovedversionen.";
+		const github2 = "The copy on GitHub stays as it is.";
+		const github2da = "Kopien på GitHub forbliver, som den er.";
+		const lines: [Parameters<typeof importDoneWords>[0], string, string][] = [
+			[
+				{ ...github, otherWork: { lines: 1, changes: 1 } },
+				`${brought} It also brought 1 other line of work, with 1 change that was not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 1 andet arbejdsspor med, med 1 ændring, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				// saml-storefront's, as the plan reads it.
+				{ ...github, otherWork: { lines: 1, changes: 2 } },
+				`${brought} It also brought 1 other line of work, with 2 changes that were not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 1 andet arbejdsspor med, med 2 ændringer, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				{ ...github, otherWork: { lines: 3, changes: 1 } },
+				`${brought} It also brought 3 other lines of work, with 1 change that was not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 3 andre arbejdsspor med, med 1 ændring, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				// In the member's numbers; and once the place has a change after change 1, no next step.
+				{ ...github, otherWork: { lines: 1200, changes: 4321 }, lastChange: 2 },
+				`${brought} It also brought 1,200 other lines of work, with 4,321 changes that were not in the main version. ${github2}`,
+				`${hentet} Den havde også 1.200 andre arbejdsspor med, med 4.321 ændringer, som ikke var i hovedversionen. ${github2da}`,
+			],
+			[
+				// The last change not known: no next step either.
+				{ from: "file", at, earlierChanges: 1, otherWork: { lines: 2, changes: 5 } },
+				"Brought in from a file on November 12, 2026. 1 earlier change came with it. It also brought 2 other lines of work, with 5 changes that were not in the main version.",
+				"Hentet ind fra en fil den 12. november 2026. 1 tidligere ændring kom med. Den havde også 2 andre arbejdsspor med, med 5 ændringer, som ikke var i hovedversionen.",
+			],
+			[
+				// No other work: as before, whatever the last change.
+				github,
+				`${brought} ${github2}`,
+				`${hentet} ${github2da}`,
+			],
+		];
+		// A member never reads git, a branch, a commit, a ref, a merge or a repository, in either language.
+		const gitWords = /\bgit\b|git-|branch|commit|\bref|merge|repositor|bundle|\bgren|\bflet/i;
+		setLanguagePreference("en");
+		for (const [imported, english] of lines) {
+			expect(importDoneWords(imported)).toBe(english);
+			expect(importDoneWords(imported)).not.toMatch(gitWords);
+		}
+		setLanguagePreference("da");
+		for (const [imported, , danish] of lines) {
+			expect(importDoneWords(imported)).toBe(danish);
+			expect(importDoneWords(imported)).not.toMatch(gitWords);
+		}
+	});
 });
 
 describe("the import's keys and its ask, as the web reads them (cloud/code-downloads.ts)", () => {
@@ -525,7 +613,7 @@ describe("the import's keys and its ask, as the web reads them (cloud/code-downl
 			...kept,
 			repositories: [
 				{ owner: "qorpera", name: "notes" },
-				{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: 1204 } },
+				{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: 1204, lastChange: 1 } },
 				{ owner: "acme", name: "zipped", imported: { from: "file", at, earlierChanges: null } },
 			],
 			imports: {
@@ -610,6 +698,61 @@ describe("the import's keys and its ask, as the web reads them (cloud/code-downl
 				],
 			}).repositories,
 		).toEqual([{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: null } }]);
+	});
+
+	it("reads the other work that came with brought-in code, and the last change's number, each leniently", () => {
+		const shop = {
+			owner: "acme",
+			name: "shop",
+			changes: 1,
+			downloads: [],
+			importedFrom: { kind: "github", repository: "Acme/Shop", via: "public", branch: "main", commits: 1 },
+			importedAt: at,
+			earlierChanges: 1,
+		};
+		const read = (repository: Record<string, unknown>) =>
+			parseCodeRepositories({ ...answer, repositories: [repository] }).repositories[0];
+		const imported = { from: "github", at, earlierChanges: 1 } as const;
+		expect(read({ ...shop, otherWork: { lines: 1, changes: 2 } })).toEqual({
+			owner: "acme",
+			name: "shop",
+			imported: { ...imported, otherWork: { lines: 1, changes: 2 }, lastChange: 1 },
+		});
+		// None, a cloud from before the key, or a key not as expected: left out alone, the rest as it comes.
+		for (const otherWork of [
+			undefined,
+			null,
+			{},
+			{ lines: 1 },
+			{ changes: 2 },
+			{ lines: 0, changes: 2 },
+			{ lines: 1, changes: 0 },
+			{ lines: "1", changes: 2 },
+			{ lines: 1, changes: "2" },
+			{ lines: 1.5, changes: 2 },
+			{ lines: -1, changes: 2 },
+			{ lines: 1, changes: Number.MAX_SAFE_INTEGER + 2 },
+			[1, 2],
+			"1/2",
+			true,
+		])
+			expect(read({ ...shop, otherWork }), JSON.stringify(otherWork)).toEqual({
+				owner: "acme",
+				name: "shop",
+				imported: { ...imported, lastChange: 1 },
+			});
+		for (const changes of [undefined, null, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 2])
+			expect(read({ ...shop, changes, otherWork: { lines: 1, changes: 2 } }), JSON.stringify(changes)).toEqual({
+				owner: "acme",
+				name: "shop",
+				imported: { ...imported, otherWork: { lines: 1, changes: 2 } },
+			});
+		expect(read({ ...shop, changes: 7 })?.imported?.lastChange).toBe(7);
+		// Code begun here has no origin, so nothing of it is read.
+		expect(read({ owner: "acme", name: "shop", changes: 1, otherWork: { lines: 1, changes: 2 } })).toEqual({
+			owner: "acme",
+			name: "shop",
+		});
 	});
 
 	it("reads the ask's answer: on its way, refused with why, or one it does not know", () => {
@@ -1175,5 +1318,222 @@ describe("Bring code in, in Storage", () => {
 		await go("code/qorpera/saml-storefront");
 		expect(visibleText(button())).toBe("Hent det ind i Qorpera");
 		expect(visibleText(line())).toBe("Kopi af GitHub-projektet saml-storefront");
+	});
+});
+
+describe("the place's folder while code is brought in", () => {
+	/** The place after the set-aside: only its mark is left. */
+	const setAside = (folder: ReturnType<typeof folderFake>) => {
+		folder.folders.delete("code/acme/shop/main");
+		folder.files.set("code/acme/shop/restoring.json", '{"main":null}');
+	};
+
+	it("reads the place's folder again when its import moves a step and when it is in, with no word from the folder", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("set-aside")] }));
+		const { go, line, folder, names, count, listed } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		expect(visibleText(line())).toBe("Bringing in Shop: Putting it in place…");
+		expect(names()).toEqual([]);
+		expect(count()).toBe("0 items");
+		// The build writes the place's history: the next read of the list shows the step, and the folder is read again.
+		folder.folders.add("code/acme/shop/repo.git");
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("build")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(names()).toEqual(["repo.git"]);
+		expect(count()).toBe("1 item");
+		// The same step again: the folder is not read again.
+		const atBuild = listed("code/acme/shop");
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(listed("code/acme/shop")).toBe(atBuild);
+		// In: the open puts the main version and the record in place, and the mark goes. Storage shows it at once, as it
+		// does once the folder is opened again.
+		folder.folders.add("code/acme/shop/main");
+		folder.folders.add("code/acme/shop/changes");
+		folder.files.delete("code/acme/shop/restoring.json");
+		calls.list.mockResolvedValue(codeList({ repositories: [{ owner: "qorpera", name: "notes" }, keptShop] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(names()).toEqual(["changes", "main", "repo.git"]);
+		expect(count()).toBe("3 items");
+		expect(visibleText(line())).toBe(
+			"Brought in from GitHub on November 12, 2026. 1,204 earlier changes came with it. The copy on GitHub stays as it is.",
+		);
+		// The folder's hint and feed said nothing of it.
+		expect(folder.changes).not.toHaveBeenCalled();
+	});
+
+	it("reads a folder below the place again too, and goes up when the step took it away", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("close")] }));
+		const { go, host, folder, names } = await storage(calls);
+		await go("code/acme/shop/main");
+		expect(host.querySelector(".storage-title")?.textContent).toBe("main");
+		setAside(folder);
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("set-aside")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("shop");
+		expect(names()).toEqual([]);
+	});
+
+	it("reads it again when the import ends not brought in, and the mark shows again once it is not being brought in", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("build")] }));
+		const { go, line, folder, names, count } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		expect(names()).toEqual([]);
+		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_SOURCE_EMPTY", "Acme/Shop") }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(visibleText(line())).toBe("Shop was not brought in: there is nothing in it yet.");
+		expect(names()).toEqual(["restoring.json"]);
+		expect(count()).toBe("1 item");
+	});
+
+	it("does not read another folder again when an import moves elsewhere", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("close")] }));
+		const { go, line, listed } = await storage(calls);
+		await go("code/qorpera");
+		await go("code/acme");
+		const before = { owner: listed("code/qorpera"), acme: listed("code/acme") };
+		for (const step of ["set-aside", "build", "open"]) {
+			calls.list.mockResolvedValue(codeList({ bringing: [bringingShop(step)] }));
+			await vi.advanceTimersByTimeAsync(5000);
+		}
+		calls.list.mockResolvedValue(codeList({ repositories: [keptShop] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(visibleText(line())).toBe("Shop is brought in.Open");
+		expect({ owner: listed("code/qorpera"), acme: listed("code/acme") }).toEqual(before);
+	});
+
+	it("keeps a step that came while the folder was being read, and reads the place again after", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("set-aside")] }));
+		const { go, folder, names } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		// The build's read of the folder is slow, and answers what the place held when it was asked.
+		folder.folders.add("code/acme/shop/repo.git");
+		const slow = deferred<CloudMemberFolderListPage>();
+		const atBuild = await folder.list("code/acme/shop");
+		folder.list.mockReturnValueOnce(slow.promise);
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("build")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		// The open, while that read is out.
+		folder.folders.add("code/acme/shop/main");
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("open")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		slow.resolve(atBuild);
+		await settle();
+		await settle();
+		expect(names()).toEqual(["main", "repo.git"]);
+	});
+
+	it("leaves the mark out only while the list says that place is being brought in", async () => {
+		vi.useFakeTimers();
+		// Opened before the list was read: the first read that shows the import reads the folder again without it.
+		const calls = callsFake(codeList({ bringing: [bringingShop("build")] }));
+		const first = await storage(calls);
+		first.folder.files.set("code/acme/shop/restoring.json", "{}");
+		first.folder.files.set("code/acme/shop/main/restoring.json", "{}");
+		first.folder.files.set("code/qorpera/notes/restoring.json", "{}");
+		await first.go("code/acme/shop");
+		await settle();
+		expect(first.names()).toEqual(["main"]);
+		expect(first.count()).toBe("1 item");
+		// A file of that name further down, or outside the code, is not a mark; another place's mark (a restore there,
+		// say) shows, under the same owner or with the same name too.
+		await first.go("code/acme/shop/main");
+		expect(first.names()).toEqual(["restoring.json"]);
+		await first.go("code/qorpera/notes");
+		expect(first.names()).toEqual(["main", "restoring.json"]);
+		for (const place of ["code/acme/web", "code/qorpera/shop", "notes/acme/shop"]) {
+			first.folder.folders.add(place);
+			first.folder.files.set(`${place}/restoring.json`, "{}");
+			await first.go(place);
+			expect(first.names(), place).toEqual(["restoring.json"]);
+		}
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// A cloud that cannot bring code in shows it as any file.
+		const old = await storage(callsFake(codeList({ imports: false })));
+		old.folder.files.set("code/acme/shop/restoring.json", "{}");
+		await old.go("code/acme/shop");
+		await settle();
+		expect(old.names()).toEqual(["main", "restoring.json"]);
+		expect(old.count()).toBe("2 items");
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// What is below a folder of that name is no mark either.
+		const below = await storage(callsFake(codeList({ bringing: [bringingShop("build")] })));
+		below.folder.folders.add("code/acme/shop/restoring.json");
+		below.folder.files.set("code/acme/shop/restoring.json/restoring.json", "{}");
+		await below.go("code/acme/shop/restoring.json");
+		await settle();
+		expect(below.names()).toEqual(["restoring.json"]);
+	});
+});
+
+describe("the work that came along outside the main version, in Storage", () => {
+	const shop = {
+		owner: "acme",
+		name: "shop",
+		changes: 1,
+		downloads: [],
+		importedFrom: { kind: "github", repository: "Acme/Shop", via: "public", branch: "main", commits: 1204 },
+		importedAt: at,
+		earlierChanges: 1204,
+	};
+	/** The list as today's cloud answers it (migration 20260930736000): no otherWork key. */
+	const today = {
+		schema: "qorpera.code-repositories/v1",
+		canDownload: true,
+		repositories: [shop],
+		githubCopies: [],
+		bringing: [],
+		lastImport: null,
+	};
+	/** The line in the place's folder, the list read through the real call and parse. */
+	const said = async (repository: Record<string, unknown>) => {
+		const rpc = vi.fn(async (name: string): Promise<unknown> => {
+			if (name === "qorpera_list_code_repositories") return { ...today, repositories: [repository] };
+			throw new Error(`unexpected ${name}`);
+		});
+		const { go, line } = await storage(codeDownloadCalls({ rpc } as unknown as Cloud, profileA.profileId));
+		await go("code/acme/shop");
+		const text = visibleText(line());
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		return text;
+	};
+
+	it("reads exactly as before on a cloud whose list has no otherWork, or one it cannot read", async () => {
+		const before =
+			"Brought in from GitHub on November 12, 2026. 1,204 earlier changes came with it. The copy on GitHub stays as it is.";
+		expect(await said(shop)).toBe(before);
+		for (const otherWork of [null, {}, { lines: 0, changes: 0 }, { lines: 1 }, "1/2"])
+			expect(await said({ ...shop, otherWork }), JSON.stringify(otherWork)).toBe(before);
+		setLanguagePreference("da");
+		expect(await said(shop)).toBe(
+			"Hentet ind fra GitHub den 12. november 2026. 1.204 tidligere ændringer kom med. Kopien på GitHub forbliver, som den er.",
+		);
+	});
+
+	it("says what came along, and the next step until the place changes", async () => {
+		const storefront = { ...shop, earlierChanges: 1, otherWork: { lines: 1, changes: 2 } };
+		expect(await said(storefront)).toBe(
+			"Brought in from GitHub on November 12, 2026. 1 earlier change came with it. It also brought 1 other line of work, with 2 changes that were not in the main version. An agent can bring that work into the main version. The copy on GitHub stays as it is.",
+		);
+		expect(await said({ ...storefront, changes: 2 })).toBe(
+			"Brought in from GitHub on November 12, 2026. 1 earlier change came with it. It also brought 1 other line of work, with 2 changes that were not in the main version. The copy on GitHub stays as it is.",
+		);
+		setLanguagePreference("da");
+		expect(await said(storefront)).toBe(
+			"Hentet ind fra GitHub den 12. november 2026. 1 tidligere ændring kom med. Den havde også 1 andet arbejdsspor med, med 2 ændringer, som ikke var i hovedversionen. En agent kan føje det arbejde til hovedversionen. Kopien på GitHub forbliver, som den er.",
+		);
 	});
 });

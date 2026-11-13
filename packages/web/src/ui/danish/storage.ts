@@ -23,6 +23,7 @@ export const STORAGE: Record<string, string> = {
 	"List view": "Listevisning",
 	"No files of this type in this folder.": "Ingen filer af denne type i mappen.",
 	"{shown} of {count} loaded items": "{shown} af {count} indlæste elementer",
+	"1 item": "1 element",
 	"{count} items": "{count} elementer",
 	"{shown} of {count} items": "{shown} af {count} elementer",
 	Yesterday: "I går",
@@ -81,6 +82,17 @@ export const STORAGE: Record<string, string> = {
 	"Brought in from a file on {date}.": "Hentet ind fra en fil den {date}.",
 	"1 earlier change came with it.": "1 tidligere ændring kom med.",
 	"{count} earlier changes came with it.": "{count} tidligere ændringer kom med.",
+	// Work that came along outside the main version (migration 20260930741000): "line of work" is "arbejdsspor", the main
+	// version "hovedversionen"; never a branch, a commit or a merge.
+	"It also brought 1 other line of work, with 1 change that was not in the main version.":
+		"Den havde også 1 andet arbejdsspor med, med 1 ændring, som ikke var i hovedversionen.",
+	"It also brought 1 other line of work, with {changes} changes that were not in the main version.":
+		"Den havde også 1 andet arbejdsspor med, med {changes} ændringer, som ikke var i hovedversionen.",
+	"It also brought {lines} other lines of work, with 1 change that was not in the main version.":
+		"Den havde også {lines} andre arbejdsspor med, med 1 ændring, som ikke var i hovedversionen.",
+	"It also brought {lines} other lines of work, with {changes} changes that were not in the main version.":
+		"Den havde også {lines} andre arbejdsspor med, med {changes} ændringer, som ikke var i hovedversionen.",
+	"An agent can bring that work into the main version.": "En agent kan føje det arbejde til hovedversionen.",
 	"The copy on GitHub stays as it is.": "Kopien på GitHub forbliver, som den er.",
 	"{name} is brought in.": "{name} er hentet ind.",
 	"{name} was not brought in: {why}.": "{name} blev ikke hentet ind: {why}.",
