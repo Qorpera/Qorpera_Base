@@ -113,6 +113,8 @@ select 'Customer ' || n, 100 + (n % 7) * 25, case when n % 5 = 0 then 'shipped' 
 from generate_series(1, 240) n;
 `;
 const COUNT = "-- How many orders there are.\nselect count(*) as orders from orders;\n";
+/** A value of the company's that must never reach the store's server log. */
+const MARKER = `mark${randomBytes(6).toString("hex")}`;
 /** Every name a question's statement in the gateway has used for its own: aliases, CTEs and added columns. */
 const NAMES = [
 	"qorpera_asked",
@@ -306,7 +308,8 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 				["run", "-d", "--name", container, "--cpus", "2", "--memory", "4g", "--shm-size", "256m", "-e", `POSTGRES_PASSWORD=${superPassword}`,
 					...POSTGRES_LOCALE, "-p", "127.0.0.1::5432", POSTGRES_IMAGE, "-c", "max_connections=100",
 					// The server logs every statement and error, so a test can show that a company's database writes none.
-					"-c", "log_statement=all", "-c", "log_min_duration_statement=0"],
+					"-c", "log_statement=all", "-c", "log_min_duration_statement=0", "-c", "log_min_messages=info", "-c", "log_error_verbosity=verbose",
+					"-c", "log_lock_waits=on", "-c", "deadlock_timeout=100ms", "-c", "log_temp_files=0", "-c", "log_transaction_sample_rate=1"],
 				{ encoding: "utf8" },
 			);
 			if (started.status !== 0) throw new Error(`PostgreSQL did not start: ${started.stderr}`);
@@ -751,7 +754,17 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			assert.equal(await code(writer.query("delete from shop.orders where customer = 'w'")), "done");
 			assert.equal((await reader.query("show temp_file_limit")).rows[0].temp_file_limit, "256MB");
 			assert.equal(await code(reader.query("set temp_file_limit = '1GB'")), "42501");
-			for (const setting of ["log_min_messages = 'debug1'", "log_min_error_statement = 'error'", "log_min_duration_statement = 0", "log_statement = 'all'"])
+			for (const setting of [
+				"log_min_messages = 'debug1'",
+				"log_error_verbosity = 'verbose'",
+				"log_min_error_statement = 'error'",
+				"log_statement = 'all'",
+				"log_min_duration_statement = 0",
+				"log_min_duration_sample = 0",
+				"log_transaction_sample_rate = 1",
+				"log_lock_waits = on",
+				"log_temp_files = 0",
+			])
 				assert.equal(await code(reader.query(`set ${setting}`)), "42501", setting);
 			assert.equal(await code(reader.query(`set role "${role("payroll", "r")}"`)), "42501");
 		} finally {
@@ -951,7 +964,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	it("ends the backend of a statement that catches the watcher's cancel, and the next question works", async () => {
 		put(ENV_A, {
 			"data/shop/tables/005-stubborn.sql":
-				"create function stubborn() returns int language plpgsql as $f$\nbegin\n\tloop\n\t\tbegin\n\t\t\tperform pg_sleep(10);\n\t\texception when query_canceled then\n\t\t\tnull;\n\t\tend;\n\tend loop;\nend $f$;\n",
+				`create function stubborn() returns int language plpgsql as $f$\nbegin\n\tloop\n\t\tbegin\n\t\t\tperform pg_sleep(10), '${MARKER}-stubborn';\n\t\texception when query_canceled then\n\t\t\tnull;\n\t\tend;\n\tend loop;\nend $f$;\n`,
 		});
 		assert.equal(states(await ask(owner, "apply", { database: "shop" })).at(-1), "005-stubborn applied");
 		const database = companyDatabase(ENV_A);
@@ -1002,7 +1015,9 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			const settings = await asAdmin("postgres", "select array_to_string(setconfig, ',') as s from pg_db_role_setting r join pg_database d on d.oid = r.setdatabase where d.datname = $1 and r.setrole = 0", [made]);
 			assert.equal(
 				settings[0].s,
-				"temp_file_limit=256MB,work_mem=16MB,max_parallel_workers_per_gather=0,log_min_messages=fatal,log_min_error_statement=panic,log_min_duration_statement=-1,log_statement=none",
+				"temp_file_limit=256MB,work_mem=16MB,max_parallel_workers_per_gather=0,log_min_messages=panic,log_error_verbosity=terse," +
+					"log_min_error_statement=panic,log_statement=none,log_min_duration_statement=-1,log_min_duration_sample=-1," +
+					"log_transaction_sample_rate=0,log_lock_waits=off,log_temp_files=-1",
 				made,
 			);
 		}
@@ -1143,7 +1158,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	it("writes none of a company's values into the server's log", async () => {
-		const marker = `mark${randomBytes(6).toString("hex")}`;
+		const marker = MARKER;
 		put(ENV_A, {
 			"data/shop/queries/cast.sql": "select :v::int as n;\n",
 			"data/shop/queries/slow-mark.sql": `select pg_sleep(1) as waited, '${marker}-slow' as m;\n`,
@@ -1158,9 +1173,29 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		remove(ENV_A, "data/shop/tables/006-try.sql");
 		assert.equal((await ask(viewer, "query", { database: "shop", question: "slow-mark" })).status, 408);
 		assert.equal((await ask(viewer, "query", { database: "shop", question: "fast-mark" })).status, 200);
+		// A lock wait between two of the company's sessions, past the server's deadlock_timeout.
+		const database = companyDatabase(ENV_A);
+		const [{ n }] = await asAdmin(database, "select n from qorpera_data.databases where name = 'shop'");
+		const login = `${database}_w${n}`;
+		const first = connect(database, login, folderPassword(logins.folderKey, login));
+		const second = connect(database, login, folderPassword(logins.folderKey, login));
+		await first.connect();
+		await second.connect();
+		try {
+			await first.query(`begin; update shop.orders set note = '${marker}-lock-1' where id = 1`);
+			const waiting = second.query(`update shop.orders set note = '${marker}-lock-2' where id = 1`);
+			await sleep(400);
+			await first.query("rollback");
+			await waiting;
+			await second.query("update shop.orders set note = null where id = 1");
+		} finally {
+			await first.end().catch(() => undefined);
+			await second.end().catch(() => undefined);
+		}
 		const logs = spawnSync("docker", ["logs", container], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 		const all = `${logs.stdout}${logs.stderr}`;
-		// The server does log: the test's own statements in another database are there.
+		// The server does log: the test's own statements in another database are there. And the stubborn function's
+		// marker, which the watcher's termination would have quoted as context, is not.
 		assert.match(all, /statement: /);
 		assert.equal(all.includes(marker), false, all.split("\n").filter((line) => line.includes(marker)).slice(0, 5).join("\n"));
 	});

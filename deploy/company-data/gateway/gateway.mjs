@@ -20,6 +20,33 @@ const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 24;
 
+/** What a company's database sets so that no session in it writes the company's values into the server's log:
+ * errors, the statements behind them and their context carry them. The caller hears its errors through the gateway,
+ * and the watcher sees slow statements. Each is a superuser's setting, which a company's login cannot lift.
+ * - log_min_messages panic: no ERROR, LOG or FATAL line of the session (a watcher's termination is FATAL, and its
+ *   CONTEXT quotes the statement that ran). Also silences what debug_print_* and the *_stats settings would log.
+ * - log_error_verbosity terse: should a line ever be logged, it carries no DETAIL, HINT, QUERY or CONTEXT.
+ * - log_min_error_statement panic, log_statement none, log_min_duration_statement -1, log_min_duration_sample -1,
+ *   log_transaction_sample_rate 0: no statement text.
+ * - log_lock_waits off: a lock wait's lines name the statements' processes and context.
+ * - log_temp_files -1: a temporary file's line is followed by its statement.
+ * Not set here, and why they carry no value: log_connections and log_disconnections (role and database names, which
+ * say nothing of whose they are), log_autovacuum_min_duration (autovacuum's own sessions: table names only),
+ * deadlock_timeout (a timer; the lines it leads to are a session's own, silenced above), auto_explain (never loaded:
+ * a company's login cannot LOAD it, and the store's server does not preload it), and a PANIC (the server's own words
+ * about itself, not a statement's). */
+const LOG_SETTINGS = [
+	["log_min_messages", "panic"],
+	["log_error_verbosity", "terse"],
+	["log_min_error_statement", "panic"],
+	["log_statement", "none"],
+	["log_min_duration_statement", "-1"],
+	["log_min_duration_sample", "-1"],
+	["log_transaction_sample_rate", "0"],
+	["log_lock_waits", "off"],
+	["log_temp_files", "-1"],
+];
+
 /** The password of a database folder's login: derived from the gateway's folder key and never stored. */
 export function folderPassword(folderKey, role) {
 	return createHmac("sha256", Buffer.from(folderKey, "hex")).update(role).digest("base64url");
@@ -708,10 +735,8 @@ export class Gateway {
 					`alter database ${quoted(database)} connection limit ${COMPANY_CONNECTIONS}; ` +
 						`alter database ${quoted(database)} set temp_file_limit = '256MB'; alter database ${quoted(database)} set work_mem = '16MB'; ` +
 						`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0; ` +
-						// No session in a company's database writes its errors or its statements into the server's log: they
-						// carry the company's values. The caller hears the error through the gateway.
-						`alter database ${quoted(database)} set log_min_messages = 'fatal'; alter database ${quoted(database)} set log_min_error_statement = 'panic'; ` +
-						`alter database ${quoted(database)} set log_min_duration_statement = -1; alter database ${quoted(database)} set log_statement = 'none'`,
+						// No session in it writes the company's values into the server's log (LOG_SETTINGS).
+						LOG_SETTINGS.map(([name, value]) => `alter database ${quoted(database)} set ${name} = '${value}'`).join("; "),
 				);
 				await admin.query(`revoke all on database ${quoted(database)} from public`);
 				await this.#onProvision(database, "revoked");
