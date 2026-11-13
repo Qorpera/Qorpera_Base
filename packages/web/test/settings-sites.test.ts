@@ -211,6 +211,30 @@ describe("Sites: the rows", () => {
 		expect(shownLink("https://sites.qorpera.com/a-b/")).toBe("sites.qorpera.com/a-b");
 	});
 
+	it("shows a website at an address of its own as one on the sites host: its link copies, opens and reads by hand", async () => {
+		// Own code storage step 5.1: a website's link becomes https://<slug>.qorpera.com/; nothing else in its row changes.
+		const own: CompanySite = { ...shop, url: "https://wristband-shop.qorpera.com/" };
+		const write = clipboard();
+		setup([own, draft]);
+		await settle();
+		expect(control(own.id, "copy-link")?.textContent).toBe("wristband-shop.qorpera.com");
+		const open = rowOf(own.id)!.querySelector<HTMLAnchorElement>("a.site-link-open")!;
+		expect([open.href, open.target, open.rel]).toEqual([own.url, "_blank", "noopener noreferrer"]);
+		press(own.id, "copy-link");
+		await settle();
+		expect(write).toHaveBeenCalledWith(own.url);
+		expect(toast()).toBe("The link is copied.");
+		// The browser will not copy: the whole link, selected.
+		clipboard(refuse);
+		press(own.id, "copy-link");
+		await settle();
+		const field = view!.el.querySelector<HTMLInputElement>(`[data-focus-key="site-by-hand:link:${own.id}"]`)!;
+		expect([field.value, field.selectionStart, field.selectionEnd]).toEqual([own.url, 0, own.url.length]);
+		// A site on the sites host beside it reads as before.
+		expect(control(draft.id, "copy-link")?.textContent).toBe("sites.qorpera.com/launch-page");
+		expect(shownLink("https://wristband-shop.qorpera.com/")).toBe("wristband-shop.qorpera.com");
+	});
+
 	it("says what a site made from code has live, with the way to What's new, and follows it", async () => {
 		const { state } = setup([gift, shop], admin, undefined, { versions: { "gift-message": 2 } });
 		await settle();
@@ -1028,6 +1052,148 @@ describe("sites client", () => {
 			{ schema: "qorpera.company-site-password/v1", siteId: shop.id, password: "p", changedAt: timestamp, x: 1 },
 		])
 			expect(() => parseCompanySitePassword(bad, shop.id)).toThrow("Invalid site password.");
+	});
+
+	it("reads a website at an address of its own (step 5.1): exactly https://<its name>.qorpera.com/, nothing else", () => {
+		const own = "https://wristband-shop.qorpera.com/";
+		expect(parseCompanySite(row({ url: own }))).toEqual({ ...shop, url: own });
+		expect(
+			parseCompanySite(row({ url: own, title: null, state: "publishing", publishedAt: null, publishedBy: null })),
+		).toMatchObject({ url: own, state: "publishing" });
+		// The longest name a site may have; its look before going live (6 more) is 54 characters, inside DNS's 63.
+		const long = `a${"b".repeat(46)}c`;
+		expect(parseCompanySite(row({ slug: long, url: `https://${long}.qorpera.com/` })).url).toBe(
+			`https://${long}.qorpera.com/`,
+		);
+		expect(parseCompanySite(row({ slug: "9-lives-2026", url: "https://9-lives-2026.qorpera.com/" })).slug).toBe(
+			"9-lives-2026",
+		);
+		for (const url of [
+			// Over https, with no sign-in, port, path, query or fragment, not even an empty one.
+			"http://wristband-shop.qorpera.com/",
+			"https://user:pass@wristband-shop.qorpera.com/",
+			"https://user@wristband-shop.qorpera.com/",
+			"https://wristband-shop.qorpera.com:8443/",
+			"https://wristband-shop.qorpera.com:443/",
+			"https://wristband-shop.qorpera.com",
+			"https://wristband-shop.qorpera.com//",
+			"https://wristband-shop.qorpera.com/index.html",
+			"https://wristband-shop.qorpera.com/wristband-shop",
+			"https://wristband-shop.qorpera.com/?",
+			"https://wristband-shop.qorpera.com/?next=x",
+			"https://wristband-shop.qorpera.com/#",
+			"https://wristband-shop.qorpera.com/#x",
+			// Its own name, as the kernel writes it: never another site's, its look before going live, or an app link's.
+			"https://other-shop.qorpera.com/",
+			"https://wristband.qorpera.com/",
+			"https://wristband-shop--next.qorpera.com/",
+			"https://wristband-shop-preview.qorpera.com/",
+			"https://Wristband-Shop.qorpera.com/",
+			// One label before qorpera.com itself, and no other domain.
+			"https://wristband-shop.qorpera.com./",
+			"https://x.wristband-shop.qorpera.com/",
+			"https://wristband-shop.sites.qorpera.com/",
+			"https://wristband-shop.qorpera.com.example.org/",
+			"https://wristband-shopxqorpera.com/",
+			"https://wristband-shop.qorperaxcom/",
+			"https://wristband-shop.qorpera.site/",
+			"https://wristband-shop.example.com/",
+			"https://qorpera.com/",
+		])
+			expect(() => parseCompanySite(row({ url })), url).toThrow("Invalid site.");
+		// The longest names' look before going live is no address either (the host regex's `--next` part).
+		expect(() => parseCompanySite(row({ slug: long, url: `https://${long}--next.qorpera.com/` }))).toThrow(
+			"Invalid site.",
+		);
+		// A name with `--` (which the kernel refuses from step 5.1) has no host: shop--next.qorpera.com is site shop's look
+		// before going live. Its link on the sites host reads as today.
+		expect(() => parseCompanySite(row({ slug: "shop--next", url: "https://shop--next.qorpera.com/" }))).toThrow(
+			"Invalid site.",
+		);
+		expect(parseCompanySite(row({ slug: "shop--next", url: `${ORIGIN}/shop--next/` })).url).toBe(
+			`${ORIGIN}/shop--next/`,
+		);
+	});
+
+	it("reads and draws today's answers exactly as before: websites on the sites host, app links at their own", async () => {
+		const today = [
+			row(),
+			row({
+				id: draft.id,
+				slug: draft.slug,
+				title: null,
+				url: draft.url,
+				state: "publishing",
+				source: draft.source,
+				files: draft.files,
+				bytes: draft.bytes,
+				publishedAt: null,
+				publishedBy: null,
+			}),
+			appRow(),
+		];
+		const sites = createWebSites(
+			cloudWith(() => structuredClone(today)),
+			{ profileId: id(10) },
+		);
+		expect(await sites.list()).toEqual([shop, draft, app]);
+		view = new SitesView(sites, new AbortController().signal, { access: admin });
+		document.body.append(view.el);
+		await settle();
+		expect(
+			[shop, draft, app].map((site) => [
+				control(site.id, "copy-link")?.textContent,
+				rowOf(site.id)?.querySelector<HTMLAnchorElement>("a.site-link-open")?.href,
+			]),
+		).toEqual([
+			["sites.qorpera.com/wristband-shop", shop.url],
+			["sites.qorpera.com/launch-page", draft.url],
+			["saml-shop-preview.qorpera.com", app.url],
+		]);
+	});
+
+	it("reads and draws websites at addresses of their own beside today's links; a look before going live fails the list", async () => {
+		const own: CompanySite = { ...shop, url: "https://wristband-shop.qorpera.com/" };
+		let answer: unknown[] = [
+			row({ url: own.url }),
+			row({
+				id: gift.id,
+				slug: gift.slug,
+				title: gift.title,
+				url: gift.url,
+				source: gift.source,
+				publishedBy: null,
+			}),
+			appRow(),
+		];
+		const sites = createWebSites(
+			cloudWith(() => structuredClone(answer)),
+			{ profileId: id(10) },
+		);
+		expect(await sites.list()).toEqual([own, gift, app]);
+		view = new SitesView(sites, new AbortController().signal, { access: admin });
+		document.body.append(view.el);
+		await settle();
+		expect(
+			[own, gift, app].map((site) => [
+				control(site.id, "copy-link")?.textContent,
+				rowOf(site.id)?.querySelector<HTMLAnchorElement>("a.site-link-open")?.href,
+			]),
+		).toEqual([
+			["wristband-shop.qorpera.com", own.url],
+			["sites.qorpera.com/gift-message", gift.url],
+			["saml-shop-preview.qorpera.com", app.url],
+		]);
+		// One row in any other form fails the whole list, as today.
+		answer = [row({ url: "https://wristband-shop--next.qorpera.com/" }), appRow()];
+		await expect(sites.list()).rejects.toThrow("Invalid site.");
+	});
+
+	it("keeps the marker step 5.1's hosts-on gate reads in the live web bundle: the own-host regex's text", () => {
+		// The gate fetches the deployed bundle and looks for this text; the regex is what puts it there.
+		expect(readFileSync(resolve("src/cloud/sites.ts"), "utf8")).toContain(
+			String.raw`const SITE_HOST = /^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])(--next)?\.qorpera\.com$/;`,
+		);
 	});
 
 	it("lists the company's sites, reads and sets a password, and takes a site offline", async () => {
