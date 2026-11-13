@@ -1,0 +1,106 @@
+// The channel from a run's sealed slot to its home machine (lanes/agent-box-20261113, slice 1).
+//
+// `machine_run` is one request and one answer. Codex's own tools need a channel that stays open: its exec-server
+// streams a command's output as it comes and takes stdin back (P1 measured 1,097 output notifications in one run).
+// So this is the one streaming route of the coding executor's ingress: an HTTP upgrade on the same listener, with the
+// same transport token and the same proof of the run's holder, and then plain JSON-RPC lines, one per line, both ways.
+//
+//   the run's host (cloud-codex-home.ts) --upgrade--> the executor's ingress --> `codex exec-server` on the machine
+//
+// Why an upgrade and not another POST: the ingress bounds a request at 15 s and 10 per socket, which a channel that
+// lives as long as a turn cannot keep. An upgraded socket leaves that per-request machinery behind, and both ends of
+// this one are ours, so it carries our own lines rather than WebSocket frames (the office viewer's gateway does the
+// framing because a browser is its other end; here nothing needs it).
+//
+// The handshake is the first line ON the socket, never the URL or a header: a run's holder and its binding are not
+// things to put in a request line that proxies and logs keep.
+
+import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
+import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+
+export const CLOUD_HOME_CHANNEL_PATH = "/v1/home-session";
+export const CLOUD_HOME_CHANNEL_PROTOCOL = "qorpera-home-session/1";
+/** The handshake, and each line after it. A command's output chunk is far below this; a line over it ends the channel. */
+export const CLOUD_HOME_CHANNEL_LINE_BYTES = 8 * 1024 * 1024;
+/** How long the ingress waits for the handshake line after the upgrade. */
+export const CLOUD_HOME_CHANNEL_HANDSHAKE_MS = 10_000;
+
+/** The first line the run's host writes: whose channel this is, and which machine it wants. */
+export interface CloudHomeChannelHandshake {
+	schema: typeof CLOUD_HOME_CHANNEL_PROTOCOL;
+	binding: CloudNativeToolBinding;
+	machineId: string;
+	sessionId: string;
+}
+
+/** The ingress's one line back, before any byte of the machine's: the session, or why there is none. */
+export type CloudHomeChannelReady =
+	| { readonly ok: true; readonly sessionId: string; readonly machine: string }
+	| { readonly ok: false; readonly reason: string };
+
+/** What SQL answers the ingress for one session (`qorpera_authorize_home_session`), as the executor parses it. */
+export interface CloudHomeSessionAuthorized {
+	readonly state: "authorized";
+	readonly sessionId: string;
+	readonly machineId: string;
+	readonly machine: string;
+	readonly placementId: string;
+	readonly executorOwner: string;
+	readonly providerId: string;
+}
+
+export type CloudHomeSessionAnswer =
+	| CloudHomeSessionAuthorized
+	| { readonly state: "refused"; readonly reason: string };
+
+/** One side of the channel: the machine's, as the executor's host opens it, and the run's, as its host sees it. */
+export interface CloudHomeChannelSide {
+	write(line: string): void;
+	lines: AsyncIterable<string>;
+	close(): Promise<void>;
+}
+
+export function cloudHomeChannelHandshake(input: {
+	binding: CloudNativeToolBinding;
+	machineId: string;
+	sessionId: string;
+}): string {
+	if (!POSTGRES_UUID_PATTERN.test(input.machineId) || !POSTGRES_UUID_PATTERN.test(input.sessionId))
+		throw new Error("Invalid home session identity");
+	return JSON.stringify({
+		schema: CLOUD_HOME_CHANNEL_PROTOCOL,
+		binding: input.binding,
+		machineId: input.machineId,
+		sessionId: input.sessionId,
+	} satisfies CloudHomeChannelHandshake);
+}
+
+/** The handshake as the ingress reads it, or undefined for anything else: nothing of it is trusted beyond its shape. */
+export function parseCloudHomeChannelHandshake(line: string): CloudHomeChannelHandshake | undefined {
+	let value: JsonValue;
+	try {
+		value = JSON.parse(line) as JsonValue;
+	} catch {
+		return undefined;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	if (
+		Object.keys(record).sort().join() !== "binding,machineId,schema,sessionId" ||
+		record.schema !== CLOUD_HOME_CHANNEL_PROTOCOL ||
+		typeof record.machineId !== "string" ||
+		!POSTGRES_UUID_PATTERN.test(record.machineId) ||
+		typeof record.sessionId !== "string" ||
+		!POSTGRES_UUID_PATTERN.test(record.sessionId) ||
+		!record.binding ||
+		typeof record.binding !== "object" ||
+		Array.isArray(record.binding)
+	)
+		return undefined;
+	return {
+		schema: CLOUD_HOME_CHANNEL_PROTOCOL,
+		binding: record.binding as CloudNativeToolBinding,
+		machineId: record.machineId,
+		sessionId: record.sessionId,
+	};
+}

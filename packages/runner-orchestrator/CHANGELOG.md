@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- The agent's home (agent-box slice 1): `LxdCompanyMachineHost.execServer` opens `codex exec-server --listen stdio` inside a machine for one run's channel, as the machine's own `qorpera-agent` account (uid 2000), with its lines carried both ways for as long as the run's turn. It starts no unit, writes no inbox file and leaves no command row: what the model does through it is reviewed by the run's own host before a line arrives and recorded as the run's steps. `execInstancePipe` takes `user`/`group` (root unless given) and an `onStdout` that hands each chunk over as it comes instead of keeping it, so a command whose output is a stream costs no memory.
 
 ### Breaking Changes
 

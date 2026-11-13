@@ -248,3 +248,19 @@ export const CLOUD_MACHINE_GUEST_PATHS = /* @__PURE__ */ Object.freeze({
 	slice: "qorpera-machine.slice",
 	unitPrefix: "qorpera-machine-command-",
 });
+
+/**
+ * The agent's home on a machine (lanes/agent-box-20261113, slice 1): the pinned Codex in the image, and the account
+ * its exec-server runs as. The account is NOT root, unlike a machine command: the model's own shell and file tools go
+ * through it, and the less it starts with the better, even inside a VM that is the company's own boundary. Its uid is
+ * fixed so the executor can name it to LXD without reading the guest's files.
+ */
+export const CLOUD_MACHINE_HOME = /* @__PURE__ */ Object.freeze({
+	codex: "/opt/qorpera-machine/codex",
+	/** The company folder as the machine mounts it, and the environment's working directory. */
+	cwd: "/company",
+	account: "qorpera-agent",
+	uid: 2000,
+	gid: 2000,
+	home: "/var/lib/qorpera-agent",
+});

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -12,6 +12,13 @@ import {
 import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
+import {
+	CloudCodexHome,
+	type CloudCodexHomeChannel,
+	type CloudCodexHomeReview,
+	CloudCodexHomeSteps,
+	parseCloudCompanyHome,
+} from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -100,7 +107,7 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
-import { CloudRunLogGone } from "./cloud-run-log.ts";
+import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
@@ -181,6 +188,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #homeChannel: ((binding: CloudNativeToolBinding) => CloudCodexHomeChannel) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #folderBytes: (
@@ -211,6 +219,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+		/**
+		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+		 */
+		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
 		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 		 * save_coding_value. */
 		codingValues?: CloudMachineCodingValues;
@@ -235,6 +249,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#companyAccounts = options.companyAccounts;
 		this.#eventHooks = options.eventHooks;
 		this.#computerSession = options.computerSession;
+		this.#homeChannel = options.homeChannel;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
@@ -342,6 +357,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						() => false,
 					)
 				: Promise.resolve(false);
+			// The agent's home, by the company's switch (20260930752000). Anything but a clear yes leaves this run
+			// exactly as it is today: no environment, no channel, the same tools and the same provider request.
+			const homeRequest = this.#homeChannel
+				? cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call("qorpera_company_home_available", { p_binding: binding }, requestSignal),
+						signal,
+					).then(parseCloudCompanyHome, () => undefined)
+				: Promise.resolve(undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
@@ -380,6 +404,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
+			const home = await homeRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -858,6 +883,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
+					// The agent's home (slice 1): built only when this company's switch is on AND this agent has a
+					// machine running. The review and the work log are handed to it where they are built, below.
+					...(home && this.#homeChannel
+						? {
+								home: (input: {
+									review: CloudCodexHomeReview;
+									log: CloudRunLog | undefined;
+									signal: AbortSignal;
+								}) =>
+									new CloudCodexHome({
+										channel: this.#homeChannel!(binding),
+										sessionId: randomUUID(),
+										machineId: home.machineId,
+										review: input.review,
+										...(input.log ? { steps: new CloudCodexHomeSteps(input.log) } : {}),
+										signal: input.signal,
+									}),
+							}
+						: {}),
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					signal,
 					timeoutMs: this.#timeoutMs,

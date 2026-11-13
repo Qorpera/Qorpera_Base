@@ -50,6 +50,11 @@ NODE_VERSION=${2:?Node.js version, for example 24.9.0}
 NODE_SHA256=${3:?sha-256 of node-vNODE_VERSION-linux-x64.tar.xz from nodejs.org SHASUMS256.txt}
 PROJECT=${4:?the build space project, for example qorpera-build}
 NETWORK=${5:?the build space network, for example qorpera0}
+# The pinned Codex for the agent's home (lanes/agent-box-20261113, slice 1): the same artifact the execution host
+# runs, so the model's own tools on a machine are the build its slot was proven with. Its sha-256 must equal the pin
+# in deploy/first-node/native-codex/linux-x64-artifact.json. Optional while the home's switch is off everywhere: an
+# image built without it simply has no home, and a run whose company has the switch on is refused its channel.
+CODEX=${6:-}
 POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
 MACHINES=${7:-machines}
 # The toolbox's own pins beside apt's: uv and mise from their release pages, tsc and tsx from npm.
@@ -70,6 +75,13 @@ CHROMIUM_SHA256=ae8736ac28bc69278551500f219fc749575648263c43ec5990749eff43b9fcf8
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
 EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
+EXPECTED_CODEX_SHA256=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["sha256"])' \
+	"$(dirname "$0")/../first-node/native-codex/linux-x64-artifact.json")
+[[ $EXPECTED_CODEX_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "no pinned Codex sha-256" >&2; exit 1; }
+if [[ -n $CODEX ]]; then
+	[[ $(sha256sum <"$CODEX" | cut -d' ' -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
+		{ echo "the Codex given is not the pinned build ($EXPECTED_CODEX_SHA256)" >&2; exit 1; }
+fi
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
@@ -174,6 +186,11 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	rm -rf /tmp/chromium.zip /tmp/chromium
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
+	# The home of an agent (slice 1) runs the exec-server of Codex as this account, never as root: the shell and file
+	# tools of the model go through it. The uid and gid are fixed (CLOUD_MACHINE_HOME), so the executor names them to
+	# LXD without reading anything of the guest.
+	groupadd --gid 2000 qorpera-agent
+	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
 	# (desktop-look, which the package brings), from the pictures unpacked here; nothing of it is kept in the account.
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder /usr/share/qorpera-desktop
@@ -204,6 +221,8 @@ lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cl
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
+# The agent's home (slice 1): the pinned Codex, readable and runnable by everything on the machine, writable by none.
+[[ -z $CODEX ]] || lx file push "$CODEX" "$BUILDER/opt/qorpera-machine/codex" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-chromium.apparmor" "$BUILDER/etc/apparmor.d/qorpera-chromium" --uid 0 --gid 0 --mode 0644

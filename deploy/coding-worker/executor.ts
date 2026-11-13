@@ -46,6 +46,7 @@ import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/co
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
+import { authorizeHomeSession } from "./home-session-authority.ts";
 import {
 	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
 	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
@@ -483,6 +484,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
+			// The agent's home (slice 1): `codex exec-server` inside this node's machine, as the agent's user.
+			execServerLocal: (authority, signal) => machineHost.execServer(authority, signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
 			codingValueClearLocal: localMachineCodingValueClear(machineHost),
@@ -521,6 +524,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
 		machines: machineCommandRoutes(machineRouter, control, false),
+		// The agent's home (slice 1): one channel per run, on this node's own machines. A peer's runs reach their
+		// home through their own node's ingress, as a machine command of another node's does.
+		home: {
+			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
+			open: (authority, signal) => machineRouter.execServer(authority, signal),
+		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,

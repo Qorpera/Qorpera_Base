@@ -13,6 +13,8 @@ const STAGES = [
 	"codex-artifact",
 	"codex-identity",
 	"codex-result-fence",
+	// The agent's home: its socket and the one environment Codex may reach (slice 1).
+	"codex-home",
 	"codex-process-start",
 	"codex-initialize",
 	"codex-configuration",

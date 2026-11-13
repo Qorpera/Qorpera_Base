@@ -24,6 +24,8 @@ export type CloudCompanyPathRpc =
 	// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
 	| "qorpera_begin_native_company_execution_v3"
 	| "qorpera_bind_native_company_context"
+	// The agent's home: whether this run has one, and which machine it is (20260930752000).
+	| "qorpera_company_home_available"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
