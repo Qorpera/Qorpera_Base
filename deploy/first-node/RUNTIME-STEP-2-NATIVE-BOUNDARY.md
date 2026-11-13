@@ -146,7 +146,7 @@ single-turn app-server adapter for the pinned downstream Codex **0.147.0** binar
   execution routes are unavailable in the tested tool registry. Image generation
   is off for the agent's thread and the process; since 13 November 2026 one side
   thread of a Codex login's run has it on for a picture call, through its own
-  thread config (RUNTIME-INTERFACE-APPS.md §3b).
+  thread config (RUNTIME-INTERFACE-APPS.md §3c).
 - Native plan, user-question and orchestrator skill tools are explicitly
   disabled. Qorpera tools are direct-only, excluded from nested Code Mode calls.
 - Low effort in both configuration and the turn request, including the bundled

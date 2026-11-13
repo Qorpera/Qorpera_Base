@@ -152,7 +152,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | --- | --- | --- |
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
-| `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3b) | `internal`; `delegation` into another agent's or a member's app |
+| `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3c) | `internal`; `delegation` into another agent's or a member's app |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
