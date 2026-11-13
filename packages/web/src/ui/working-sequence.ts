@@ -31,6 +31,12 @@ export interface WorkingStep {
 	frame: number;
 	eyes: EyeField;
 	strokes: StrokeField;
+	/** While a turn plays: how far through it, 0 as the eyes start to leave to 1 once they are back and the
+	 * body has landed (figure-acts.ts `whirl`), and which way it spins. */
+	whirl?: { u: number; sense: 1 | -1 };
+	/** How far the eye pair sits from where it rests while working, in the recording's pixels as drawn (a
+	 * mirrored field looks the other way); none while an eye is hidden. */
+	gaze?: { x: number; y: number };
 }
 
 /** The recorded frames of a turn: the eyes leave over `exit`, are gone over
@@ -77,6 +83,10 @@ export interface WorkingSchedule {
 export const FPS = 60;
 /** Frames over which a join's eye offset eases away. */
 export const SLIDE_FRAMES = 8;
+/** Frames a turn's jump takes to land and settle once the eyes start back. */
+export const WHIRL_TAIL = 18;
+/** A recorded frame with the eyes at their working rest (the middle of the long hold). */
+const REST_FRAME = 300;
 
 // The recording's pieces. Frame numbers are the studio's 650 Working frames
 // and 279 Waiting frames. Rest pieces start and end with the eyes at rest.
@@ -250,12 +260,26 @@ export function workingStep(schedule: WorkingSchedule, seconds: number): Working
 	const frame = segment.from + (segment.to >= segment.from ? k : -k);
 	const field = spinField(segment, frame);
 	const remaining = 1 - smooth(Math.min(1, k / SLIDE_FRAMES));
-	return {
+	const step: WorkingStep = {
 		clip: segment.clip,
 		frame,
 		eyes: { ...field, x: segment.slide.x * remaining, y: segment.slide.y * remaining },
 		strokes: segment.strokes,
 	};
+	const { turn, spin } = segment;
+	if (turn && spin && frame >= spin.exit[0] && frame <= spin.entry[0] + WHIRL_TAIL)
+		step.whirl = {
+			u: (frame - spin.exit[0]) / (spin.entry[0] + WHIRL_TAIL - spin.exit[0]),
+			sense: turn.mirror ? -1 : 1,
+		};
+	const centre = centreAt(segment.clip, frame),
+		rest = centreAt("Working", REST_FRAME);
+	if (centre && rest)
+		step.gaze = {
+			x: (centre.x + step.eyes.x - rest.x) * (field.mirror ? -1 : 1),
+			y: centre.y + step.eyes.y - rest.y,
+		};
+	return step;
 }
 
 const between = (frame: number, [a, b]: [number, number]) => smooth(Math.min(1, Math.max(0, (frame - a) / (b - a))));

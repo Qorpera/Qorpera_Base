@@ -51,6 +51,7 @@ const context = Object.fromEntries(
 		"lineTo",
 		"closePath",
 		"arc",
+		"ellipse",
 		"stroke",
 		"rect",
 		"clip",
@@ -127,10 +128,14 @@ function advance(milliseconds: number): void {
 	frames.clear();
 	for (const callback of callbacks) callback(now);
 }
-function mount(activity: "Idle" | "Working" | "Thinking" = "Idle", identity = "agent"): HTMLElement {
+function mount(
+	activity: "Idle" | "Working" | "Thinking" | "Waiting" = "Idle",
+	identity = "agent",
+	options: { hand?: HTMLElement; alive?: boolean } = {},
+): HTMLElement {
 	const host = document.createElement("span");
 	document.body.append(host);
-	mounted.push(mountFigureMotion(host, "crown", "#fcb51b", artwork, { activity, identity }));
+	mounted.push(mountFigureMotion(host, "crown", "#fcb51b", artwork, { activity, identity, ...options }));
 	return host;
 }
 
@@ -186,6 +191,77 @@ describe("2D studio playback in the shell", () => {
 		advance(1000);
 		expect(frames.size).toBe(0);
 		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+	});
+	it("makes a figure that needs the member jump, bring its hand up and keep asking, drawn rather than recorded", async () => {
+		vi.mocked(loadRecordedMotion).mockClear();
+		const hand = document.createElement("span");
+		const host = mount("Waiting", "asks", { hand });
+		await settle();
+		show([host]);
+		const canvas = host.querySelector("canvas")!;
+		// The hand is down as the act starts and springs up with the jump.
+		expect(hand.style.transform).toContain("scale(0)");
+		advance(350);
+		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d/);
+		expect(hand.style.transform).not.toContain("scale(0)");
+		// Its eyes are drawn (wide pills), and no recording is fetched for them.
+		expect(context.roundRect).toHaveBeenCalled();
+		expect(loadRecordedMotion).not.toHaveBeenCalledWith("Waiting", expect.any(URL));
+		// On the ground again between asks, and still asking: the frames go on.
+		advance(2000);
+		expect(canvas.style.transform).toBe("");
+		expect(frames.size).toBe(1);
+		// A member who wants no motion sees it at rest with the hand up.
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		expect(canvas.style.transform).toBe("");
+		expect(hand.style.transform).toContain("rotate(0deg) scale(1)");
+		advance(1000);
+		expect(frames.size).toBe(0);
+	});
+	it("cheers once when asked to, smiling, and comes back to rest", async () => {
+		const host = mount("Idle", "cheers");
+		await settle();
+		show([host]);
+		advance(5000);
+		expect(frames.size).toBe(0);
+		const canvas = host.querySelector("canvas")!;
+		vi.mocked(context.ellipse!).mockClear();
+		mounted[mounted.length - 1]!.play("cheer");
+		expect(frames.size).toBe(1);
+		advance(16);
+		advance(300);
+		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d/);
+		// The smile is an arch, not the recorded eyes.
+		expect(context.ellipse).toHaveBeenCalled();
+		advance(1300);
+		advance(16);
+		expect(canvas.style.transform).toBe("");
+		// The recorded blink plays after the cheer, then the figure rests.
+		advance(5000);
+		expect(frames.size).toBe(0);
+		expect(canvas.dataset.frame).toBe("221");
+	});
+	it("lets an idle figure that is alive move again by itself, and leaves the others still", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const alive = mount("Idle", "alive", { alive: true }),
+				quiet = mount("Idle", "quiet");
+			await settle();
+			show([alive, quiet]);
+			advance(5000);
+			expect(frames.size).toBe(0);
+			// Its next move is due within half a minute of the opening blink; a timer wakes it.
+			now += 30_000;
+			vi.advanceTimersByTime(30_000);
+			expect(frames.size).toBe(1);
+			advance(16);
+			advance(16);
+			expect(frames.size).toBe(1);
+			expect(quiet.querySelector("canvas")!.dataset.frame).toBe("221");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it("plays Working past the recording's end without restarting, the same in every view of the agent", async () => {
 		const rail = mount("Working", "loop-boundary"),

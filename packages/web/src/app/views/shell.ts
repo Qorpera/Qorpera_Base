@@ -41,7 +41,7 @@ import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
-import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, colourNameHex, figureFor, playFigure, raisedHand } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -436,8 +436,6 @@ interface RailParts {
 	settled: boolean;
 	/** Mentions had been read at the last draw, so a mention now is news. */
 	mentionsRead: boolean;
-	/** What waits on the member had been read at the last draw, so a raised hand now is news. */
-	waitingRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -581,7 +579,6 @@ function changedRow(
 	element: HTMLElement,
 	unseen: boolean,
 	mentionsRead: boolean,
-	waitingRead: boolean,
 ): void {
 	if (before === undefined) {
 		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
@@ -601,7 +598,9 @@ function changedRow(
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
-	if (waitingRead && !was.waiting && now.waiting) playOnce(element, "hand-arrived");
+	// Its work is done: the figure cheers. (A raised hand comes up by itself: the figure brings it, ui/figure-motion.ts.)
+	if ((was.state === "working" || was.state === "writing") && now.state === "idle")
+		playFigure(element.querySelector(".figure"), "cheer");
 }
 
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -700,7 +699,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
-			waitingRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
@@ -966,7 +964,19 @@ function railLabel(
 /** A raised hand on the figure's top-right while the agent's work waits on this member (a card it raised for them,
  * or an approval card they answer), also while it works on something else. Its words are in the link's name. */
 function handMark(waiting: AgentModel["waiting"]): HTMLElement | null {
-	return waiting ? h("span", { class: "rail-hand", "aria-hidden": "true" }, icon("hand")) : null;
+	return waiting ? raisedHand() : null;
+}
+
+/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone), waving the raised hand
+ * when it has one, and perking up when the pointer comes over its row or card. */
+function railFigure(model: AgentModel, size: number, look: AgentLook, hand: HTMLElement | null): HTMLElement {
+	return agentFigure(model, model.displayName, { size, activity: look.figure, alive: true, hand: hand ?? undefined });
+}
+function perksUp(link: HTMLElement): HTMLElement {
+	link.addEventListener("pointerenter", (event) => {
+		if (event.pointerType === "mouse") playFigure(link.querySelector(".figure"), "perk");
+	});
+	return link;
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -999,18 +1009,27 @@ interface SessionModel {
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return h(
-		"a",
-		{ class: "cofounder-home", href, draggable: "false", "data-cofounder-id": model.id, ...railLabel(model, look) },
+	const hand = handMark(model.waiting);
+	return perksUp(
 		h(
-			"span",
-			{ class: "cofounder-stand" },
-			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
-			statusDisc(look, "cofounder-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
+			"a",
+			{
+				class: "cofounder-home",
+				href,
+				draggable: "false",
+				"data-cofounder-id": model.id,
+				...railLabel(model, look),
+			},
+			h(
+				"span",
+				{ class: "cofounder-stand" },
+				railFigure(model, 82, look, hand),
+				statusDisc(look, "cofounder-status"),
+				hand,
+				mentionBadge(model.mentioned),
+			),
+			h("strong", null, model.displayName),
 		),
-		h("strong", null, model.displayName),
 	);
 }
 
@@ -1040,25 +1059,28 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 /** A pinned agent: a square card with the figure over the name, as in Grok Bot. */
 function pinCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return h(
-		"a",
-		{
-			class: "rail-pin",
-			href,
-			draggable: "false",
-			"data-agent-id": model.id,
-			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look),
-		},
+	const hand = handMark(model.waiting);
+	return perksUp(
 		h(
-			"span",
-			{ class: "rail-pin-stand" },
-			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
-			statusDisc(look, "rail-row-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
+			"a",
+			{
+				class: "rail-pin",
+				href,
+				draggable: "false",
+				"data-agent-id": model.id,
+				style: `--agent-color: ${agentColor(model)}`,
+				...railLabel(model, look),
+			},
+			h(
+				"span",
+				{ class: "rail-pin-stand" },
+				railFigure(model, 52, look, hand),
+				statusDisc(look, "rail-row-status"),
+				hand,
+				mentionBadge(model.mentioned),
+			),
+			h("strong", { class: "rail-pin-name" }, model.displayName),
 		),
-		h("strong", { class: "rail-pin-name" }, model.displayName),
 	);
 }
 
@@ -1071,29 +1093,32 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
 	const line = live ?? model.idle?.text;
 	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
-	return h(
-		"a",
-		{
-			class: "rail-row rail-row-agent",
-			href,
-			draggable: "false",
-			"data-agent-id": model.id,
-			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look, model.idle),
-		},
+	const hand = handMark(model.waiting);
+	return perksUp(
 		h(
-			"span",
-			{ class: "rail-row-stand" },
-			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
-			statusDisc(look, "rail-row-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
-		),
-		h(
-			"span",
-			{ class: "rail-row-copy" },
-			h("strong", null, model.displayName),
-			line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
+			"a",
+			{
+				class: "rail-row rail-row-agent",
+				href,
+				draggable: "false",
+				"data-agent-id": model.id,
+				style: `--agent-color: ${agentColor(model)}`,
+				...railLabel(model, look, model.idle),
+			},
+			h(
+				"span",
+				{ class: "rail-row-stand" },
+				railFigure(model, 50, look, hand),
+				statusDisc(look, "rail-row-status"),
+				hand,
+				mentionBadge(model.mentioned),
+			),
+			h(
+				"span",
+				{ class: "rail-row-copy" },
+				h("strong", null, model.displayName),
+				line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
+			),
 		),
 	);
 }
@@ -1295,7 +1320,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
 		if (entry !== kept && parts.settled)
-			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead, parts.waitingRead);
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -1731,7 +1756,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	for (const member of state.team?.members ?? []) parts.known.add(`#/c/${profileId}/member/${member.userId}`);
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
-	parts.waitingRead = parts.settled && (state.waitingOnMe !== undefined || state.approvals !== undefined);
 	parts.notices = notices;
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {

@@ -6,7 +6,13 @@ import {
 } from "@qorpera/cloud-client/staff-characters";
 import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
+import {
+	type Activity,
+	type FigureArtwork,
+	type FigureMotion,
+	type Moment,
+	mountFigureMotion,
+} from "./figure-motion.ts";
 import { phrase, t } from "./preferences.ts";
 import { designPx } from "./scale.ts";
 
@@ -204,6 +210,57 @@ export interface FigureOptions {
 	activity?: Activity;
 	identity?: string;
 	className?: string;
+	/** The raised hand beside the figure (`raisedHand`), which the figure waves and takes along. */
+	hand?: HTMLElement;
+	/** Left alone, the figure still blinks, looks around and moves now and then. */
+	alive?: boolean;
+}
+
+/** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done, "perk" under
+ * the pointer. Nothing happens on any other element, or for a member who wants no motion. */
+export function playFigure(host: Element | null | undefined, kind: Moment): void {
+	if (!host) return;
+	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+/* An open hand as one solid shape, fingers fanned: the palm, four fingers and the thumb, in a 24-unit box
+ * whose wrist is at the bottom. Each part: x, y, width, height, corner radius, and its turn about the palm. */
+const HAND_PARTS: readonly [number, number, number, number, number, number][] = [
+	[6.3, 10.4, 11.6, 11.4, 5.2, 0],
+	[6.5, 3.4, 3.3, 11.5, 1.65, -15],
+	[9.7, 1.9, 3.3, 12.5, 1.65, -5],
+	[12.9, 2.5, 3.3, 12, 1.65, 5],
+	[15.9, 4.8, 3.1, 10, 1.55, 15],
+	[2.2, 11.6, 3.5, 8.6, 1.75, -42],
+];
+
+/** The raised hand of a figure whose work waits on the member (styles/app.css `.rail-hand`): the same shape
+ * twice, a ring in the colour under it and the hand over that, so it reads as cut out of the row. Hand it
+ * to the figure (`FigureOptions.hand`) and the figure waves it. */
+export function raisedHand(): HTMLElement {
+	const hand = document.createElement("span");
+	hand.className = "rail-hand";
+	hand.setAttribute("aria-hidden", "true");
+	const art = document.createElementNS(SVG, "svg");
+	art.setAttribute("viewBox", "0 0 24 24");
+	for (const layer of ["hand-ring", "hand-fill"]) {
+		const group = document.createElementNS(SVG, "g");
+		group.setAttribute("class", layer);
+		for (const [x, y, width, height, radius, turn] of HAND_PARTS) {
+			const part = document.createElementNS(SVG, "rect");
+			part.setAttribute("x", String(x));
+			part.setAttribute("y", String(y));
+			part.setAttribute("width", String(width));
+			part.setAttribute("height", String(height));
+			part.setAttribute("rx", String(radius));
+			if (turn) part.setAttribute("transform", `rotate(${turn} 12 17)`);
+			group.append(part);
+		}
+		art.append(group);
+	}
+	hand.append(art);
+	return hand;
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored
