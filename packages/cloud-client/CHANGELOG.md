@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `APP_KITS` names four data kits beside `explainer`: `model`, `board`, `path` and `object` (`deploy/first-node/RUNTIME-INTERFACE-APPS.md` §3b, 13 Nov 2026). An `app.toml` with `kit = "model"` reads; a client from before it reports that manifest as having a problem.
 - `MemberAgentMachine.generation` (migration `20260930738000`): the desktop's lease generation, which moves at every seating of a member and every hand-back that ends a lease, named to owners, admins and contributors; null for a viewer and from a database before it; a value that is not a safe whole number from 0 fails the read.
 - `MemberAgentMachine.others` (migration `20260930734000`): the other members who acted on the desktop they share with the agent in the last minute, by name (empty when none, or from a database before shared control); a value that is not a list of names fails the read.
 - `app-groups.ts`: a group's `colour` (one of `AGENT_COLOURS`), read from and written to one note line of `apps/groups.md`, `<!-- group colours: <id>=<colour>, … -->`, after the list and the retired ids; a colour for no group or not in the palette is left out. A reader from before it keeps the line as a note, so every group still reads. `resolveAppGroups` carries it. `app-icons.ts` (12 Nov 2026): an app's own icon format and its reader `parseAppIcon`; `INTERFACE_EMBLEMS` has 24.

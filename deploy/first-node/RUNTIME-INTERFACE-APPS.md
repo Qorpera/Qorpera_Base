@@ -14,10 +14,29 @@ Company File preview already uses (`packages/web/src/ui/page-frame.ts`).
 
 ## 1. What an app is
 
-A small web page an agent makes to show members something: a result, a test, a prototype, a dashboard. It lives in
-the Company File as ordinary files. A member opens it as a page of its own, `#/c/<profileId>/a/<name>`, from a card
+A small web page an agent makes so that members can see and handle one thing of the company. It lives in the Company
+File as ordinary files. A member opens it as a page of its own, `#/c/<profileId>/a/<name>`, from a card
 in the agent's message or from the apps drawer once it is posted (Jonas, 8 November 2026: an app is a whole product
 prototype, so it gets the page, not a side panel).
+
+Jonas, 13 November 2026, on a new company whose seven apps were each an employee's document made short: "They are
+HORRIBLE. the goal is to let you interact with the company more directly through them, but they are just long text
+documents... there is currently no real difference between the interfaces and just reading the company's files
+directly." And the split he means: "Agents: carry the intelligence to work on the company and drive it fourth.
+Company folder/files: carry all the information about the company. Interfaces: shows you the company and it's state so
+it becomes tangible and something you can understand. [...] they are supposed to be objects, models, apps and videos
+that are visual-first to let you see the company." So an app is one of four forms, and never a page to read:
+
+| Form | What a member does with it | Made with |
+| --- | --- | --- |
+| an object | turns it and looks at its parts | the `object` kit (§3b) |
+| a model | changes it and sees what follows | the `model`, `board` and `path` kits (§3b) |
+| an app | uses it: the product itself, or a working tool | a page written by hand (§2) |
+| a video | watches an explanation that moves and speaks | the `explainer` kit (§3a) |
+
+An app is made for a thing (the product, its business model, its market, its customers, its look), one app a thing,
+not for an area and not for an agent. The state of an agent's work is not an app: members read it on the line under
+the agent's name, on its wall and in its questions.
 
 ## 2. Format
 
@@ -312,6 +331,69 @@ web does not already answer. What the kit adds is that the agent writes one file
     (`NATIVE_CODEX_REALTIME_EGRESS_HOSTS`, `allowRealtime` in `cloud-native-egress.ts`). Only a Codex login's relay
     can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
   - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
+
+## 3b. The data kits (13 November 2026)
+
+The agents' apps of 13 November kept every rule of 10 November (a first screen that says how the area stands, about
+300 words, a diagram instead of a paragraph) and were still documents in boxes: rules about how a page should look do
+not make a researcher a designer. A data kit takes the drawing out of the agent's hands. The agent writes one data
+file, the facts and the names of its pictures; an engine Qorpera wrote draws one visual form from it, the same engine
+in every app of the kit.
+
+| Kit | The question it answers | What it draws from the data |
+| --- | --- | --- |
+| `model` | does it make money, and what moves it? | sliders for the numbers, one large figure, a waterfall from what a customer pays to what is left, and a curve against volume with its break-even; a number nobody knows yet is a hatched slider a member drags, or sets with "Try an example" |
+| `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
+| `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
+| `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+
+An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
+call the web does not already answer.
+
+| File | Whose | What it is |
+| --- | --- | --- |
+| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `save_app`'s schema carries the four guides on `kit` |
+| pictures and videos | the agent's, written from a machine | named in the data by their path in the app's folder |
+| `engine.js` | Qorpera's | the kit's engine (`packages/runtime/kits/<kit>/engine.js`). The runtime holds each engine's and guide's text (`cloud-app-kit-engines.generated.ts`, written by `npm run generate:app-kits`, held to the sources by a test) |
+| `index.html` | Qorpera's | the page (`kitPage` in `cloud-app-kits.ts`) |
+
+- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` one of the four, a new app needs its data file
+  among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
+  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
+  `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
+  (`APP_KIT_ENTRY`). On a later save the two are written again only where the folder holds none or other text (by
+  hash): new data, a new title, a picture that has arrived, or the engine of a newer runtime. An existing app takes
+  a kit the same way, keeping its owner and `posted`.
+- **The page names the pictures.** A page in the frame gets its pictures and videos only where it names them when it
+  opens (§2), so the page lists, hidden, every picture and video the data names that the app's folder holds at the
+  save (`kitMedia`: any text in the data that ends in a picture's or video's extension and is a plain path inside the
+  folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
+  quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
+  or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
+- **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
+  notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
+  `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where
+  there is no `qorpera` object (an agent looking at `/company/apps/<name>/index.html` on a machine before it shows
+  the app), the page answers the engine's read from that copy, lists no questions and refuses every change. In
+  Qorpera the frame defines `qorpera` before any script of the page runs, so the copy is never used there.
+- **Each app carries its engine**, as an explainer does (§3a), for the same reasons and at the same cost.
+- **One look.** Every engine builds its page from the base style's variables (§2) and follows light and dark; none
+  holds a colour of its own (a picture's and a direction's own palette are content). A kit's page that the web gives
+  no base style, because the app is a concept, carries Qorpera's plain look itself: the same variables, in the base
+  style's own layer and with no specificity, so the web's wins wherever it is there. Common to the four: the title
+  and at most one line, then the thing; labels, numbers and notes of one line, each field cut at its bound; `known`
+  drawn solid, `assumed` dashed and tagged, `unknown` hatched with a question mark; a source as one small link; the
+  page's few own words in English unless the data's `words` give them in its language.
+- **What a member does** goes through the bar (§5), from a button that says what it does: `board`'s `choose` answers
+  the agent's open question that points at the app (`answers`), and `model`'s `save` keeps a member's numbers in a
+  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app.
+- **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
+  shows. How the page looks stays the agent's to check on a machine.
+
+Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
+its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); pictures an
+agent generates (image generation is off in an agent's session, `cloud-codex-tool-session.ts`); and a look at an
+app's screenshot by someone other than its maker.
 
 ## 4. Web
 
@@ -614,6 +696,12 @@ security review of its own:
 8. An app's own icons (§2 "Icons", 12 November 2026): the format and the 24 emblems (`cloud-client/app-icons.ts`,
    `interfaces.ts`), `save_app`'s checks and how to draw them on `files`, and the web's Icon and colour and Generate
    icon in the drawer.
+9. The data kits (§3b, 13 November 2026): four more names for the manifest's `kit`
+   (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/{model,board,path,object}/`),
+   the page, the pictures it names and the read of the data (`cloud-app-kits.ts`), `save_app` writing engine and page
+   with the guides on the schema field, and the agents' instructions: an app is an object, a model, an app or a
+   video, one app a thing, never a document or the state of someone's work (hire overlay v16). No migration, no node
+   change and no change to the web's own code.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

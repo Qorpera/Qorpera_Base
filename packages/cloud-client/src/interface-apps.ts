@@ -74,10 +74,13 @@ export function parseAppWrites(
 	return { writes };
 }
 
-/** The kits an app can be made from (RUNTIME-INTERFACE-APPS.md §3a): `save_app` writes the kit's own files into the
- * app's folder, and the agent writes only what the kit leaves to it. `explainer` is a short narrated video: the kit
- * writes `engine.js` and `index.html`, the agent `scenes.js`. */
-export const APP_KITS = Object.freeze(["explainer"] as const);
+/** The kits an app can be made from (RUNTIME-INTERFACE-APPS.md §3a and §3b): `save_app` writes the kit's own files
+ * into the app's folder, and the agent writes only what the kit leaves to it. `explainer` is a short narrated video:
+ * the kit writes `engine.js` and `index.html`, the agent `scenes.js`. `model`, `board`, `path` and `object` each draw
+ * one visual form from one data file (Jonas, 13 November 2026: apps "are supposed to be objects, models, apps and
+ * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
+ * `<kit>.json` and the pictures it names. */
+export const APP_KITS = Object.freeze(["explainer", "model", "board", "path", "object"] as const);
 export type AppKit = (typeof APP_KITS)[number];
 
 /** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */
