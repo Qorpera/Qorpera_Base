@@ -342,8 +342,8 @@ describe("public member Company File gateway", () => {
 			413,
 		],
 		[
-			"a company data watch past 64 KiB",
-			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
+			"a company data watch past 512 KiB",
+			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
 			413,
 		],
 		[
@@ -944,7 +944,7 @@ describe("public member Company File gateway", () => {
 		assert.match(await watchDown.text(), /Company data is unavailable just now/);
 		assert.equal(seen.length, 7);
 	});
-	it("bounds a company data call's body: 64 KiB for a question, a watch or a look, 1 MiB for steps", async () => {
+	it("bounds a company data call's body: 64 KiB for a question or a look, 512 KiB for a watch, 1 MiB for steps", async () => {
 		const sizes: number[] = [];
 		const fetchImplementation: typeof fetch = async (_url, init) => {
 			sizes.push((init?.body as Uint8Array).byteLength);
@@ -952,7 +952,7 @@ describe("public member Company File gateway", () => {
 		};
 		for (const [verb, limit] of [
 			["query", 64 * 1024],
-			["watch", 64 * 1024],
+			["watch", 512 * 1024],
 			["describe", 64 * 1024],
 			["apply", 1024 * 1024],
 		] as const) {
@@ -968,7 +968,7 @@ describe("public member Company File gateway", () => {
 			});
 			assert.equal(over.status, 413, verb);
 		}
-		assert.deepEqual(sizes, [64 * 1024, 64 * 1024, 64 * 1024, 1024 * 1024]);
+		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024]);
 	});
 	it("reads a company data call's body only for a signed-in member, a watch too", async () => {
 		const fetchImplementation = async () => assert.fail("unchecked company data call forwarded");
@@ -1040,7 +1040,7 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(drop.status, 404);
 	});
-	it("gives a held watch 25 s, past the data gateway's 20 s hold", async () => {
+	it("gives a held watch 30 s, past the data gateway's 20 s hold and the sign-in check, and the others 25 s", async () => {
 		const original = AbortSignal.timeout;
 		const deadlines: number[] = [];
 		AbortSignal.timeout = (ms: number) => {
@@ -1058,7 +1058,7 @@ describe("public member Company File gateway", () => {
 		} finally {
 			AbortSignal.timeout = original;
 		}
-		assert.deepEqual(deadlines, [25_000, 25_000, 25_000, 25_000]);
+		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000]);
 	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;

@@ -24,8 +24,13 @@ const MAX_START_BYTES = 1024;
 /** A member's call to the company's databases, for one environment (RUNTIME-COMPANY-DATABASES.md section 3): a
  * question, a held watch, steps to apply, or what a database holds. The node's mux sends it to the data gateway. */
 const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe)$`);
-/** A question, a watch or a look at a database: names, parameters and etags, and a question's text when asked for. */
+/** A question or a look at a database: names, parameters, and a question's text when asked for. */
 const MAX_DATA_BYTES = 64 * 1024;
+/** A watch: up to 24 questions with their etags, and their texts of up to 16 KiB each when asked for. */
+const MAX_WATCH_BYTES = 512 * 1024;
+/** A watch is held by the data gateway for up to 20 s after its own reads, and the bridge's sign-in check may take
+ * 5 s before it. */
+const WATCH_TIMEOUT_MS = 30_000;
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -105,14 +110,14 @@ function route(path: string): RoutePolicy | undefined {
 			maxBody: MAX_START_BYTES,
 			unavailable: "The computer is unavailable just now.",
 		};
-	// Steps to apply may carry their texts, at most 1 MiB. The data gateway holds a watch for up to 20 s before it
-	// answers the same, so a watch keeps the default 25 s.
+	// Steps to apply may carry their texts, at most 1 MiB. A held watch gets 30 s, the others the default.
 	const data = COMPANY_DATA.exec(path);
 	if (data)
 		return {
 			method: "POST",
 			headers: ["authorization", "content-type"],
-			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : MAX_DATA_BYTES,
+			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : data[1] === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
+			...(data[1] === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
 			unavailable:
 				data[1] === "apply"
 					? "Company data is unavailable just now. Steps sent may still apply."

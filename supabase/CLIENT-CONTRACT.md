@@ -1927,8 +1927,9 @@ only after durable storage.
   node's mux sends them to the data gateway, `deploy/company-data/`; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`
   §3 and §5) — a member's question to the company's databases, a held watch of questions, steps to apply, or what a
   database holds, with the member's token, `content-type: application/json` and a JSON body: at most 1 MiB for
-  `apply`, 64 KiB for the others. Answers are JSON with `cache-control: no-store`, passed back with their status. A
-  watch is held up to 20 s by the data gateway; the bridge allows it the default 25 s. Behind the member company
+  `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
+  are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
+  gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
   gateway, which reads a body only for a signed-in member.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
