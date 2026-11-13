@@ -5,8 +5,9 @@ import {
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
-import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
@@ -24,8 +25,13 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_AFTER_ANSWER_TOOLS,
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	CloudNativeToolBoundary,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -57,6 +63,32 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
+// The answer first (the contract's 2026-11-13 amendment, proposed): the words say once, with the reason, that only the
+// run's bookkeeping follows its final send, and name exactly the tools the boundary still runs then. Nothing says the
+// final send is the turn's last act any more.
+it("tells every run once that only its bookkeeping follows its final send, naming exactly the tools that still run", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const rule =
+		/After it only ([a-z_, ]+) run: keep that bookkeeping for after the final send, so the member gets the answer without waiting for it\./.exec(
+			instructions,
+		);
+	expect(rule).not.toBeNull();
+	expect(rule![1].split(/, | and /).sort()).toEqual([...CLOUD_AFTER_ANSWER_TOOLS].sort());
+	expect(instructions.split("keep that bookkeeping for after the final send")).toHaveLength(2);
+	expect(instructions).toContain(
+		"It is your last message, so make every file change, check and coworker message first.",
+	);
+	for (const text of [
+		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		CLOUD_WALL_TOOL_DESCRIPTION,
+	])
+		expect(text).not.toMatch(
+			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
+		);
 });
 
 // Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
@@ -1596,15 +1628,17 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
 // (13 November 2026) the instructions and prompts were measured once more.
 // With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
-// 13 November 2026) merged with that master, the staff instructions were measured once more.
+// 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
+// where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
+// amendment, proposed).
 // With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
-// processors busy in the staff's (Jonas, 13 November 2026), all three instructions were measured once more.
+// processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "3aa31a5822bc123792a67ace7588bf1368e46129b5ec01c2e71b865c2b5a4472",
+			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1612,7 +1646,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "3fdfeb6f63488c958734d615f38420fdea83b1bf9e76e80a8c61dd3844f69733",
+			instructions: "e102952e71bddea9df3a45a85a4c0128ea34efe0176083b2af174f7d2c7de7cf",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1620,7 +1654,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "3aa31a5822bc123792a67ace7588bf1368e46129b5ec01c2e71b865c2b5a4472",
+			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

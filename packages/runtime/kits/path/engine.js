@@ -7,6 +7,11 @@
 	"use strict";
 
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. `concept` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const SVGNS = "http://www.w3.org/2000/svg";
 	const MAX = { title: 40, line: 60, step: 22, lane: 22, note: 90, mark: 40, kind: 14, next: 60, by: 22, figValue: 10, figLabel: 28, word: 28 };
 	const WORDS = {
@@ -63,6 +68,10 @@ body{margin:0}
 .pk *,.pk *::before,.pk *::after{box-sizing:border-box}
 .pk-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;column-gap:40px;row-gap:18px}
 .pk-head{min-width:0;max-width:34em}
+.pk--bare{padding:clamp(12px,1vw,16px)}
+.pk--bare .pk-head{display:none}
+.pk--bare .pk-top:not(:has(.pk-figs)){display:none}
+.pk--bare .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
 .pk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .pk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .pk-figs{display:flex;gap:clamp(24px,4vw,56px);align-items:flex-start}
@@ -593,7 +602,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	function quiet(msg) {
 		injectStyle();
 		if (!root) {
-			root = el("main", "pk");
+			root = el("main", BARE ? "pk pk--bare" : "pk");
 			document.body.append(root);
 		}
 		root.replaceChildren(el("p", "pk-quiet", null, msg));
@@ -604,7 +613,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		const m = model;
 		document.documentElement.lang = m.lang;
 		if (!root) {
-			root = el("main", "pk");
+			root = el("main", BARE ? "pk pk--bare" : "pk");
 			document.body.append(root);
 		}
 		const animate = !introDone && !still();
