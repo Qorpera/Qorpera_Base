@@ -167,10 +167,9 @@ deadlock). The company's database carries every setting the gateway's `LOG_SETTI
 It also checks retention with KEEP=2 in a backup folder whose path has a space, removing only backups' own names, and
 a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
-Last result: 13 November 2026, node01's test machine, against the gateway of `claude/company-data-gateway` at
-72dc09366: 48 of 48 checks passed. Package 0.1 s, init 14.5 s, apply 0.2 s, base backup 1.0 s, restore 2.5 s,
-standby seed over TLS 3.1 s, promote and the gateway answering 7.2 s; the watcher ended the stubborn function's
-backend 19.7 s after its call.
+Last result: 13 November 2026, node02's test machine, at c40d9682c (the run door's PR): 61 of 61 checks passed.
+Package 0.1 s, init 15.0 s, apply 0.2 s, base backup 1.6 s, restore 3.0 s, standby seed over TLS 4.0 s, promote and
+the gateway answering 7.6 s. Log: lanes `company-databases-20261113/rundoor/drill-1.log`.
 
 ## Not done here
 
