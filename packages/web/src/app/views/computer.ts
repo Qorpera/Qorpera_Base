@@ -17,7 +17,16 @@ import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { type MachineScreenPicture, MachineScreenView, TEXT_MAX } from "../../ui/machine-screen-view.ts";
+import {
+	type InputSpan,
+	type InputTime,
+	inputTime,
+	joinInputs,
+	type MachineScreenInput,
+	type MachineScreenPicture,
+	MachineScreenView,
+	TEXT_MAX,
+} from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
@@ -38,6 +47,46 @@ export const KEEP_EVERY_MS = 60_000;
  * hold it 11 s past an end that was not clean) before it is dropped. */
 const BUSY_GIVE_UP_MS = 15_000;
 const BUSY_RETRY_MS = 1000;
+/** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
+ * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
+ * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
+const FRESH_LIST_MS = 3000;
+/** No input older than this is ever sent (review r3 of #1701): the window waits at most BUSY_GIVE_UP_MS (15 s) on a
+ * desktop busy with another step, itself past the host's 11 s grace after an action that did not end cleanly, plus one
+ * retry (1 s) and the few seconds a send takes. Anything older was kept by a path that should have dropped it: it is
+ * dropped, never replayed, and the window says so. Its age is from the member's own event (the widget carries it
+ * through its buffers, review r4 F2), by both clocks (inputTooOld). */
+export const INPUT_MAX_AGE_MS = 20_000;
+
+/** Whether an input made at `madeAt` may no longer be sent (review r4 F2 of #1701): too old by the wall clock, OR by the
+ * monotonic clock, OR the wall clock went back since it was made. A suspended tab moves both clocks; a sleeping laptop
+ * moves the wall clock while some browsers stop the monotonic one there; a clock set back would make an old input look
+ * new by the wall clock alone. Either clock alone saying too old is enough, and a clock that went back is never trusted:
+ * the input is dropped, never sent. */
+export function inputTooOld(madeAt: InputTime, now: InputTime): boolean {
+	return (
+		now.wall < madeAt.wall ||
+		now.mono < madeAt.mono ||
+		now.wall - madeAt.wall > INPUT_MAX_AGE_MS ||
+		now.mono - madeAt.mono > INPUT_MAX_AGE_MS
+	);
+}
+
+/** How far the wall clock may fall behind the monotonic one, against an input's parts, before it counts as set back
+ * (inputSpanTooOld): above the drift of the two clocks over INPUT_MAX_AGE_MS, below any set-back that matters. */
+const CLOCK_SLACK_MS = 1000;
+
+/** Whether an action made of the parts in `made` may no longer be sent (review r5 F1 of #1701): too old whenever ANY
+ * of its parts is (inputTooOld of the oldest and of the newest by each clock), or the wall clock was set back since
+ * any part was made, even if it came forward again since (the wall-minus-monotonic offset fell). Joining two inputs
+ * never makes one that a part of it would not have been. */
+export function inputSpanTooOld(made: InputSpan, now: InputTime): boolean {
+	return (
+		inputTooOld(made.oldest, now) ||
+		inputTooOld(made.newest, now) ||
+		now.wall - now.mono < made.offset - CLOCK_SLACK_MS
+	);
+}
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
@@ -102,9 +151,74 @@ interface PageHold {
 	readonly machineId: string;
 	readonly epoch: number;
 	readonly seat: number;
-	readonly queue: MachineDesktopAction[];
+	readonly queue: QueuedAction[];
 	readonly stop: AbortController;
 	sending: boolean;
+	/** Where the picture gives the input it gathers under this hold: to this hold alone, while it is the page's (review r2
+	 * F1 of #1701: what the picture still gathers when the hold ends goes nowhere, never out shared). */
+	readonly input: MachineScreenInput;
+}
+
+/** The member's input on the desktop they share with the agent (20260930734000): its machine, the input not answered yet,
+ * sent one at a time in order with no hold (SQL runs it only while no one holds the desktop privately), and a signal
+ * that ends with it. A new object per machine; gone when this page types privately, the machine shown changes, someone
+ * types privately, or the window goes. */
+interface SharedInput {
+	readonly machineId: string;
+	/** The member's hand-back epoch for the machine when this sharing began, the highest the window knew (the list's, the
+	 * ledger's): a higher one seen later (a private hold of the member's taken and given back in any window, even one
+	 * the window never saw held) ends the sharing and its queue (review r4 F1 of #1701). */
+	readonly epoch: number;
+	/** The desktop's lease generation the list named when this sharing began (20260930738000; null from a database
+	 * before it): every action of it carries it as the one its input was made under, and SQL refuses it once someone held
+	 * the desktop privately since (DESKTOP_HELD_SINCE). Another one in the list ends the sharing (#sharingOf). */
+	readonly generation: number | null;
+	readonly queue: QueuedAction[];
+	readonly stop: AbortController;
+	sending: boolean;
+	/** It ended without the member's doing (the predicate turned false: review r5 F2 of #1701), and whether they were told
+	 * that input of it was dropped (once, from its queue or from the picture's buffer); an end they made (a switch, Back,
+	 * Type privately, a close) says nothing. */
+	endedLost: boolean;
+	told: boolean;
+	/** Where the picture gives the input it gathers while this computer is shared: to this computer alone, while this
+	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
+	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
+	readonly input: MachineScreenInput;
+}
+
+/** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
+interface QueuedAction {
+	readonly action: MachineDesktopAction;
+	readonly made: InputSpan;
+}
+
+/** Whether this browser was told once that a member and the agent share a computer (20260930734000). */
+const SHARED_SEEN_KEY = "qorpera.web.computer-shared-seen";
+
+function sharedSeen(): boolean {
+	try {
+		return localStorage.getItem(SHARED_SEEN_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function storeSharedSeen(): void {
+	try {
+		localStorage.setItem(SHARED_SEEN_KEY, "1");
+	} catch {
+		/* Told again in the next window. */
+	}
+}
+
+/** Who else uses the shared desktop, in one quiet line: "Ada is using it too." */
+function togetherWords(names: readonly string[]): string {
+	if (names.length === 0) return "";
+	if (names.length === 1) return t("{member} is using it too.", { member: names[0] as string });
+	return t("{members} are using it too.", {
+		members: t("{names} and {last}", { names: names.slice(0, -1).join(", "), last: names.at(-1) as string }),
+	});
 }
 
 /** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
@@ -123,17 +237,21 @@ interface TakeAttempt {
  * contributors may wake a sleeping machine. It looks only while a thread shows it and its tab is visible, slows down
  * while nothing changes, and stops after 30 minutes without a touch on the page until the member says they still watch.
  *
- * Owners, admins and contributors take the desktop over (migration 20260930713000, stage 1b): Take over, here or on the
- * agent's take-over card, gives them its mouse and keyboard (the picture takes their clicks, drags, wheel, keys and
- * text, one action at a time) while the agent gets no pictures of it and waits; Hand back, the card's I'm done, closing
- * the window or leaving the page gives it back. The hold is the database's, renewed every minute while the window
- * shows it; other members see who holds it, not the screen. While the picture changes or the member acts, the window
- * looks every 450 ms. What the member may hold, and every hand-back until it is confirmed, is the company's ledger's
- * (DesktopHoldLedger), not the window's: closing the window forgets nothing (review r2 of #1661). The picture takes the
- * member's input only in the large view (entered in the thread, or full screen; v234 in production: in the preview a
- * press drags the window, and a desktop cannot be driven at that size): a take-over of this page's enters the frame in
- * the thread by itself once a picture shows, and back in the preview the picture is watched only and the words say how
- * to use it.
+ * Owners, admins and contributors share the desktop with the agent (migration 20260930734000; Jonas, 12 Nov 2026: "Yes,
+ * shared control"): in the large view the picture takes their clicks, drags, wheel, keys and text at once, one action at
+ * a time, while the agent goes on working on the same screen; a click on the preview's picture opens the large view.
+ * More than one member may act; the window names the others who did in the last minute. Viewers watch.
+ *
+ * Typing privately is the take-over of migration 20260930713000 (stage 1b), for passwords: Type privately, here or the
+ * agent's take-over card, holds the desktop for this member alone while the agent gets no pictures of it and waits, and
+ * everyone else's shared input is refused; Done, the card's I'm done, closing the window or leaving the page ends it.
+ * The hold is the database's, renewed every minute while the window shows it; other members see who types privately,
+ * not the screen. While the picture changes or the member acts, the window looks every 450 ms. What the member may
+ * hold, and every hand-back until it is confirmed, is the company's ledger's (DesktopHoldLedger), not the window's:
+ * closing the window forgets nothing (review r2 of #1661). The picture takes the member's input only in the large view
+ * (entered in the thread, or full screen; v234 in production: in the preview a press drags the window, and a desktop
+ * cannot be driven at that size): a private hold of this page's enters the frame in the thread by itself once a picture
+ * shows, and back in the preview the picture is watched only and the words say how to use it.
  *
  * The panel belongs to the company's `ComputerPanels`, not to the thread it was opened in: a thread attaches it while
  * the member is there and hands it back on the way out. Only the member closing it, or leaving the company, ends it.
@@ -149,14 +267,14 @@ export class ComputerPanel {
 	/** Wake it, Keep watching or Try again, as the state asks. */
 	readonly #action = h("button", { type: "button", class: "computer-retry", hidden: true });
 	/** While no picture shows (the controls under the picture are gone then; review r1 and r2 of #1681), the controls'
-	 * words and button stand in the state's place for this page's own hold and its hand-back: what holding means and
-	 * Hand back (beside Turn it on when the screen is off), "Giving the computer back…" with Hand back disabled, or "could
-	 * not be given back yet" with Try again. #syncControls gives both places the same words, label and state. */
+	 * words and button stand in the state's place for this page's own private hold and its end: what typing privately
+	 * means and Done (beside Turn it on when the screen is off), "Ending private typing…" with Done disabled, or "could not
+	 * be ended yet" with Try again. #syncControls gives both places the same words, label and state. */
 	readonly #loadingControlText = h("p", { class: "computer-loading-control", "aria-live": "polite", hidden: true });
 	readonly #loadingHandBack = h(
 		"button",
 		{ type: "button", class: "computer-retry computer-loading-hand-back", hidden: true },
-		t("Hand back"),
+		t("Done"),
 	);
 	readonly #loading = h(
 		"div",
@@ -194,11 +312,20 @@ export class ComputerPanel {
 	#listed: MemberAgentMachines | undefined;
 	#listedAt = Number.NEGATIVE_INFINITY;
 	#listStale = true;
+	/** List reads begun so far, and the shared senders waiting for one begun after a moment (#freshList). */
+	#listReads = 0;
+	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
+	 * until one begun after it has answered, with the generation that stands now. */
+	#heldSince: number | undefined;
+	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
 	#chosen: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
 	/** The machine whose picture is up. */
 	#pictureOf: string | undefined;
+	/** The screen of the machine shown answered with a picture since it was chosen, and no look since was refused (off,
+	 * asleep, restarted, hidden, held, typed on privately): shared input goes only while it stands (review r3 of #1701). */
+	#screenSeen = false;
 	#lastLook = Number.NEGATIVE_INFINITY;
 	#delay = LOOK_EVERY_MS;
 	#unchanged = 0;
@@ -251,21 +378,32 @@ export class ComputerPanel {
 	readonly #ledger: DesktopHoldLedger;
 	#releaseShown: DesktopRelease | undefined;
 	#keepTimer: ReturnType<typeof setTimeout> | undefined;
-	/** Where the picture sends the member's input while they hold the desktop: one, so the picture keeps what it gathers. */
-	readonly #input = { act: (action: MachineDesktopAction) => this.#enqueue(action) };
+	/** The member's sharing of the computer shown (20260930734000): its input on its way, and the picture's input for it
+	 * (each hold has its own too, PageHold.input). A new one each time sharing begins; gone when it ends. The picture is
+	 * given another input object at every change of computer or of mode, so it hands what it gathered (a text not sent
+	 * yet, a click waiting for its second, a wheel turn, a press) to the input it gathered it for, which takes it only
+	 * while that is still the window's (review r2 F1 of #1701). */
+	#shared: SharedInput | undefined;
+	/** The first time this browser shares a computer, the large view says so in one quiet line, until it goes back. */
+	#introduce = !sharedSeen();
+	#introShown = false;
+	/** The note says an input was dropped on a desktop busy too long: said until the member's next input. */
+	#lostShown = false;
 	readonly #controlText = h("span", { class: "machine-screen-control-text" });
+	/** Who else uses the shared desktop (20260930734000). */
+	readonly #controlWho = h("span", { class: "machine-screen-control-who" });
 	readonly #controlNote = h("span", { class: "machine-screen-control-note", role: "status", "aria-live": "polite" });
 	readonly #controlButton = h("button", { type: "button", class: "machine-screen-control-button" });
-	/** Hand back, beside Take over, while the member holds the desktop in another window (review r14). */
+	/** Done, beside Type privately, while the member types privately in another window (review r14). */
 	readonly #controlHandBack = h(
 		"button",
 		{ type: "button", class: "machine-screen-control-hand-back", hidden: true },
-		t("Hand back"),
+		t("Done"),
 	);
 	readonly #controls = h(
 		"div",
 		{ class: "machine-screen-control", hidden: true },
-		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlNote),
+		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlWho, this.#controlNote),
 		this.#controlButton,
 		this.#controlHandBack,
 	);
@@ -352,6 +490,11 @@ export class ComputerPanel {
 			title: this.#titleText(),
 			onExpandedChange: (expanded) => {
 				this.#setExpanded(expanded);
+				// The line that says the computer is shared was said: once is enough (20260930734000).
+				if (!expanded && this.#introShown) this.#introduce = false;
+				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701): the member's own
+				// doing, so nothing is said (review r5 F2), and before the redraw, which would take it for one without it.
+				if (!expanded) this.#endShared();
 				// Input follows the view: the picture takes it only while entered.
 				this.#syncControls();
 			},
@@ -361,8 +504,8 @@ export class ComputerPanel {
 		this.#view.setControls(this.#controls);
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
-		// The controls' button and its stand-in without a picture do one thing: Hand back (or Try again) while the member
-		// holds the desktop or a hand-back of it is asking or failed, else Take over.
+		// The controls' button and its stand-in without a picture do one thing: Done (a hand-back; or Try again) while the
+		// member types privately or the end of it is asking or failed, else Type privately (a take-over).
 		const press = () =>
 			void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
 				? this.handBack()
@@ -389,6 +532,35 @@ export class ComputerPanel {
 		);
 		// A click in the window brings the looks back to every second.
 		this.el.addEventListener("pointerdown", () => this.#quicken(), { signal });
+		// A click on the preview's picture opens the large view, where the member uses the computer (20260930734000); a
+		// press that moves drags the window, as before (computer-drag.ts, which sees the same press first).
+		let tap: { readonly id: number; readonly x: number; readonly y: number } | undefined;
+		this.el.addEventListener(
+			"pointerdown",
+			(event) => {
+				const view = this.#view;
+				tap =
+					view?.shown &&
+					!view.entered &&
+					event.button === 0 &&
+					event.target instanceof Element &&
+					view.el.contains(event.target) &&
+					!event.target.closest("button, a, input, textarea, select")
+						? { id: event.pointerId, x: event.clientX, y: event.clientY }
+						: undefined;
+			},
+			{ capture: true, signal },
+		);
+		this.el.addEventListener(
+			"pointerup",
+			(event) => {
+				const at = tap;
+				tap = undefined;
+				if (!at || event.pointerId !== at.id || Math.hypot(event.clientX - at.x, event.clientY - at.y) >= 4) return;
+				this.#view?.enterFrame();
+			},
+			{ capture: true, signal },
+		);
 		this.#action.addEventListener("click", () => void this.#act(computer, signal), { signal });
 		const unsubscribe = options.hints?.((resource) => {
 			if (resource !== "machines") return;
@@ -436,11 +608,15 @@ export class ComputerPanel {
 	 * running desktop, or as soon as it does. */
 	takeOver(): void {
 		if (this.#stop.signal.aborted || !this.#computer) return;
+		// Shared input on its way goes no further: what comes next is private (review r1 F1 of #1701).
+		this.#endShared();
 		this.#wantTakeOver = this.#ledger.stamp();
 		this.#handBackFailed = false;
 		this.#touched();
 		this.#poke();
 		this.#startTake();
+		// The picture hands what it gathered for sharing to that sharing, now gone (review r2 F1 of #1701).
+		this.#syncControls();
 	}
 
 	/** Starts a take-over of the machine chosen now, at the click (review r4 F8), as its own attempt (review r12 F19): it
@@ -528,6 +704,8 @@ export class ComputerPanel {
 		this.#fitPreview();
 		// It slid in once; coming back to a thread it is simply there, as after a drag.
 		this.el.style.animation = "none";
+		// Out of a thread nothing is shared (review r3 of #1701).
+		this.#syncControls();
 	}
 
 	focus(): void {
@@ -541,6 +719,8 @@ export class ComputerPanel {
 		// (review r2 F4). A take-over still on its way is answered first; what it gets goes back as it comes. As the
 		// company's page goes, the ledger gives everything back itself.
 		this.#wantTakeOver = undefined;
+		// The member closes it: shared input goes, unsaid (review r5 F2), before anything redraws.
+		this.#endShared();
 		this.#released();
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
 		this.#stop.abort();
@@ -568,9 +748,8 @@ export class ComputerPanel {
 			}
 			if (this.#paused || Date.now() - this.#lastTouch >= PAUSE_AFTER_MS) {
 				this.#paused = true;
-				this.#etag = null;
-				this.#view?.clear();
-				this.#show("paused");
+				// The picture goes, and with it any sharing (review r3 of #1701).
+				this.#unpicture("paused");
 				await this.#wait(Number.POSITIVE_INFINITY, signal);
 				continue;
 			}
@@ -578,11 +757,18 @@ export class ComputerPanel {
 			if (this.#listStale || Date.now() >= listDue) {
 				// A hint that comes while this read is on its way asks for another after it.
 				this.#listStale = false;
+				const read = ++this.#listReads;
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
 					this.#failures = 0;
+					// A read begun after a DESKTOP_HELD_SINCE names the generation that stands now: sharing may go on under it.
+					if (this.#heldSince !== undefined && read > this.#heldSince) this.#heldSince = undefined;
 					this.#heldPerList();
+					// Senders waiting for a read begun after they asked: this is one (it has been applied above).
+					const waiting = this.#listWaiters;
+					this.#listWaiters = waiting.filter((waiter) => waiter.after >= read);
+					for (const waiter of waiting) if (waiter.after < read) waiter.done();
 				} catch {
 					signal.throwIfAborted();
 					this.#listStale = true;
@@ -602,6 +788,12 @@ export class ComputerPanel {
 				// held, may be held (a lost answer), on its way or queued; the window's own state does not decide it (review r1
 				// F6, r3 F8, r4 F8).
 				this.#ledger.releaseOthers(this.agentId, machine?.machineId);
+				// Shared input of the last machine's goes no further (20260930734000); the next machine's screen is not seen yet.
+				// A switch of the member's ended it already; a machine gone from the list ends it here, and says so (review r5
+				// F2), as does a word that input was lost before.
+				this.#screenSeen = false;
+				this.#endShared(true);
+				if (!this.#lostShown) this.#controlNote.textContent = "";
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -617,6 +809,7 @@ export class ComputerPanel {
 			if (!machine || machine.state !== "running") {
 				// A machine that sleeps may wake larger: what a start said of it is gone.
 				this.#startEnded = undefined;
+				this.#screenSeen = false;
 				this.#view?.clear();
 				this.#etag = null;
 				this.#showMachine(machine);
@@ -627,6 +820,8 @@ export class ComputerPanel {
 			// Another member holds the desktop: who, and no picture, until they give it back (a hint) or their hold runs
 			// out (its time: no hint comes then).
 			if (machine.control && !machine.control.mine) {
+				// Their private typing: no shared input either until it ends (20260930734000).
+				this.#endShared();
 				this.#unpicture("controlled", machine.control.name);
 				const until = Date.parse(machine.control.until);
 				const end = Number.isFinite(until) ? until + 500 : Number.POSITIVE_INFINITY;
@@ -666,6 +861,7 @@ export class ComputerPanel {
 				if (await this.#view?.show(look.png)) {
 					this.#etag = look.etag;
 					this.#pictureOf = machine.machineId;
+					this.#screenSeen = true;
 					this.#unchanged = 0;
 					// The desktop is on: the member's wish is met.
 					if (this.#wantOn?.machineId === machine.machineId) this.#wantOn = undefined;
@@ -681,8 +877,20 @@ export class ComputerPanel {
 			if (look.kind === "unchanged") {
 				this.#unchanged++;
 				this.#view?.live();
+				// The picture up is the screen as it is (the etag is its picture's): after a refusal that kept it, shared input
+				// may go again.
+				if (!this.#screenSeen && this.#picturing()) {
+					this.#screenSeen = true;
+					this.#syncControls();
+				}
 				this.#delay = LOOK_UNCHANGED_MS.find(([after]) => this.#unchanged >= after)?.[1] ?? LOOK_EVERY_MS;
 				continue;
+			}
+			// Every refusal but a look too soon says the screen is not as the member saw it: no shared input until a look shows
+			// it again (review r3 of #1701).
+			if (look.code !== "SCREEN_TOO_SOON" && this.#screenSeen) {
+				this.#screenSeen = false;
+				this.#syncControls();
 			}
 			switch (look.code) {
 				case "MACHINE_NOT_RUNNING":
@@ -737,8 +945,9 @@ export class ComputerPanel {
 					this.#delay = MACHINES_EVERY_MS;
 					break;
 				case "DESKTOP_MEMBER_IN_CONTROL":
-					// Another member took it: the list says who.
+					// Another member types privately: the list says who.
 					this.#listStale = true;
+					this.#endShared();
 					this.#unpicture("controlled");
 					this.#delay = LOOK_EVERY_MS;
 					break;
@@ -829,7 +1038,7 @@ export class ComputerPanel {
 			(hold.state === "refused" && hold.reason === "TAKE_CALLED_OFF")
 		)
 			// Said under the picture; the member may try again (at the epoch the refusal said, when it was a stale one).
-			this.#controlNote.textContent = t("The computer could not be taken over. Try again.");
+			this.#controlNote.textContent = t("Private typing could not start. Try again.");
 		if (hold.state === "refused") this.#listStale = true;
 		this.#syncControls();
 		this.#poke();
@@ -841,14 +1050,18 @@ export class ComputerPanel {
 		const held = this.#ledger.holder(machineId);
 		if (held === undefined) return;
 		this.#hold?.stop.abort();
-		this.#hold = {
+		// Typing privately: no shared input of this page's goes after it (SQL would refuse it anyway).
+		this.#endShared();
+		const hold: PageHold = {
 			machineId,
 			epoch: held.epoch,
 			seat: held.seat,
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
+			input: { act: (action, made) => this.#enqueue(hold, action, made) },
 		};
+		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
 		// Out of a thread (a take-over answered after the member left it) nothing is entered (review r1 F1 of #1685).
 		this.#enterOnHold = this.el.parentElement !== null;
@@ -862,11 +1075,13 @@ export class ComputerPanel {
 		if (!hold) return;
 		// Its input is dropped and an action of it on its way is cut off on the page; nothing it answers is acted on (F25).
 		hold.stop.abort();
+		hold.queue.length = 0;
 		this.#hold = undefined;
 		this.#enterOnHold = false;
 		clearTimeout(this.#keepTimer);
 		this.#keepTimer = undefined;
 		this.#controlNote.textContent = "";
+		this.#lostShown = false;
 		this.#syncControls();
 	}
 
@@ -919,84 +1134,345 @@ export class ComputerPanel {
 		this.#scheduleKeep(until === undefined ? KEEP_EVERY_MS / 4 : KEEP_EVERY_MS);
 	}
 
-	/** One of the member's actions, captured under the window's hold, after those of it on their way; texts typed one after
-	 * another go as one. */
-	#enqueue(action: MachineDesktopAction): void {
-		const hold = this.#hold;
-		if (!hold) return;
-		const last = hold.queue.at(-1);
+	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
+	 * window's, of the computer chosen now (review r2 F1 of #1701). */
+	#enqueue(hold: PageHold, action: MachineDesktopAction, made: InputSpan): void {
 		if (
-			last?.type === "type" &&
-			action.type === "type" &&
-			hold.queue.length > (hold.sending ? 1 : 0) &&
-			[...last.text].length + [...action.text].length <= TEXT_MAX
+			this.#hold !== hold ||
+			hold.stop.signal.aborted ||
+			!this.#current(hold) ||
+			this.#pick()?.machineId !== hold.machineId
 		)
-			hold.queue[hold.queue.length - 1] = { type: "type", text: last.text + action.text };
-		else hold.queue.push(action);
-		this.#touched();
+			return;
+		this.#queue(hold, action, made);
 		void this.#drain(hold);
 	}
 
-	/** Sends a hold's actions one at a time, each with the hold's epoch and seat: an answer before the next goes. A desktop
-	 * busy with another action (an agent's that began before the take-over) is waited for, then the action is dropped. The
-	 * loop is the hold's (F25): after every wait it ends, touching nothing (the queue, the note, the state, the ledger),
-	 * once the hold is not the window's any more; a newer hold has its own queue and its own loop, which starts at once. */
-	async #drain(hold: PageHold): Promise<void> {
+	/** One of the member's actions on the desktop they share with the agent (20260930734000), after those on their way:
+	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
+	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
+	#share(shared: SharedInput, action: MachineDesktopAction, made: InputSpan): void {
+		if (this.#shared !== shared || shared.stop.signal.aborted || !this.#sharingOf(shared)) {
+			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701). This
+			// input is dropped with it: said when the member did not end it (review r5 F2).
+			if (this.#shared === shared) this.#endShared(true);
+			this.#toldLost(shared);
+			return;
+		}
+		this.#queue(shared, action, made);
+		void this.#drain(shared);
+	}
+
+	/** Input of a sharing that ended without the member's doing was dropped: they are told, once (review r5 F2 of #1701). */
+	#toldLost(shared: SharedInput): void {
+		if (!shared.endedLost || shared.told) return;
+		shared.told = true;
+		this.#lostShown = true;
+		this.#controlNote.textContent = t("Your last input did not go through. Try again.");
+	}
+
+	/** The sharing of `machineId`, begun now unless it is on (its picture input is new then). */
+	#sharedFor(machineId: string): SharedInput {
+		if (this.#shared?.machineId === machineId && !this.#shared.stop.signal.aborted && this.#sharingOf(this.#shared))
+			return this.#shared;
+		this.#endShared();
+		const shared: SharedInput = {
+			machineId,
+			epoch: this.#epochOf(machineId),
+			generation: this.#generationOf(machineId),
+			queue: [],
+			stop: new AbortController(),
+			sending: false,
+			endedLost: false,
+			told: false,
+			input: {
+				act: (action, made) => this.#share(shared, action, made),
+				// A press the picture dropped unfinished as this sharing ended.
+				lost: () => this.#toldLost(shared),
+			},
+		};
+		this.#shared = shared;
+		return shared;
+	}
+
+	/** The action joins its queue; texts typed one after another, not sent yet, go as one. A new input ends the word that
+	 * an earlier one did not go through. */
+	#queue(sender: PageHold | SharedInput, action: MachineDesktopAction, made: InputSpan): void {
+		const last = sender.queue.at(-1);
+		if (
+			last?.action.type === "type" &&
+			action.type === "type" &&
+			sender.queue.length > (sender.sending ? 1 : 0) &&
+			[...last.action.text].length + [...action.text].length <= TEXT_MAX
+		)
+			// The joined text keeps every part's verdict (review r5 F1 of #1701): too old whenever any part is.
+			sender.queue[sender.queue.length - 1] = {
+				action: { type: "type", text: last.action.text + action.text },
+				made: joinInputs(last.made, made),
+			};
+		else sender.queue.push({ action, made });
+		if (this.#lostShown) {
+			this.#lostShown = false;
+			this.#controlNote.textContent = "";
+		}
+		this.#touched();
+	}
+
+	/** The shared input ends: its queue is emptied, an action of it on its way is cut off on the page, and it is never
+	 * used again (a new sharing is made when the predicate holds again: review r3 of #1701). Ended because the predicate
+	 * turned false (`lost`), input that was waiting is said lost; the member's own switch or press says nothing. */
+	#endShared(lost = false): void {
+		const shared = this.#shared;
+		this.#shared = undefined;
+		if (!shared) return;
+		shared.endedLost = lost;
+		// Input waiting in its queue is said lost now; input the picture still holds for it, when the picture hands it over.
+		if (shared.queue.length > 0) this.#toldLost(shared);
+		shared.stop.abort();
+		shared.queue.length = 0;
+	}
+
+	/** THE predicate of shared input (20260930734000, review r3 of #1701), in this one place: the shared sender exists,
+	 * and anything of it is sent, only while ALL of these hold: this window open, in a thread, in the large view; the
+	 * member may act (not a viewer); the computer chosen now is in the agent's list, is the one the window shows, runs,
+	 * and its screen answered with a picture since it was chosen (no look refused since: off, asleep, restarted, hidden,
+	 * held); and NO private hold is known of it: none in the list (another member's, or the member's own in another
+	 * window), none of this page's (held, on its way, being given back, or a give-back not confirmed), none in the
+	 * company's ledger. Whatever makes it false (a list read, a look's answer, an action's refusal, the member's own
+	 * press) ends the sharing and its queue at once (#syncControls, #share, #drain), and a sharing is never used again
+	 * once it was false. */
+	#sharing(): boolean {
+		const shown = this.#pick();
+		return (
+			!this.#stop.signal.aborted &&
+			this.attached &&
+			this.#view?.entered === true &&
+			this.#listed?.canTakeOver === true &&
+			shown !== undefined &&
+			shown.machineId === this.#machineId &&
+			shown.state === "running" &&
+			shown.desktopCapable &&
+			this.#picturing() &&
+			this.#screenSeen &&
+			!shown.control &&
+			this.#hold === undefined &&
+			!this.#ledger.mayHold(shown.machineId) &&
+			!this.#takingLive(shown.machineId) &&
+			this.#wantTakeOver === undefined &&
+			this.#heldSince === undefined &&
+			!this.#handBackFailed
+		);
+	}
+
+	/** Waits for a list read begun after now to answer and be applied: true then; false when none answered within
+	 * FRESH_LIST_MS or `stop` ended first. */
+	#freshList(stop: AbortSignal): Promise<boolean> {
+		return new Promise<boolean>((resolve) => {
+			let settled = false;
+			const end = (fresh: boolean) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				stop.removeEventListener("abort", aborted);
+				this.#listWaiters = this.#listWaiters.filter((waiter) => waiter !== entry);
+				resolve(fresh);
+			};
+			const aborted = () => end(false);
+			const timer = setTimeout(() => end(false), FRESH_LIST_MS);
+			const entry = { after: this.#listReads, done: () => end(true) };
+			if (stop.aborted) {
+				end(false);
+				return;
+			}
+			stop.addEventListener("abort", aborted, { once: true });
+			this.#listWaiters.push(entry);
+			this.#listStale = true;
+			this.#poke();
+		});
+	}
+
+	/** The predicate, for this sharing: it is the window's, of the computer it was made for, and no hand-back of the
+	 * member's came since it began (an epoch above its own, from the list or the ledger: review r4 F1 of #1701). */
+	#sharingOf(shared: SharedInput): boolean {
+		return (
+			this.#shared === shared &&
+			this.#pick()?.machineId === shared.machineId &&
+			this.#epochOf(shared.machineId) <= shared.epoch &&
+			// 20260930738000: the lease generation it was made under still the list's (a private hold seen since ends it).
+			this.#generationOf(shared.machineId) === shared.generation &&
+			this.#sharing()
+		);
+	}
+
+	/** The desktop's lease generation as the list last named it (20260930738000); null before it, or unknown. */
+	#generationOf(machineId: string): number | null {
+		return this.#listed?.machines.find((machine) => machine.machineId === machineId)?.generation ?? null;
+	}
+
+	/** The member's hand-back epoch for a machine, the highest the window knows: the list's (as last read) or the
+	 * ledger's (a hand-back's answer, TAKE_CALLED_OFF, a list). It only moves up. Looks and actions answer no epoch. */
+	#epochOf(machineId: string): number {
+		const listed = this.#listed?.machines.find((machine) => machine.machineId === machineId)?.epoch ?? 0;
+		return Math.max(listed, this.#ledger.epochOf(machineId) ?? 0);
+	}
+
+	/** Sends a hold's actions, or the shared ones, one at a time: an answer before the next goes. A private hold's go with
+	 * its epoch and seat; shared ones with none. A desktop busy with another action (the agent's, another member's), or
+	 * one member's actions too fast, is waited for; after BUSY_GIVE_UP_MS the input is dropped and the window says so.
+	 * Every other refusal, and an answer that never came, drops the whole queue at once, never tried again (review r3 of
+	 * #1701): what follows was made for a screen that is not there now. No input older than INPUT_MAX_AGE_MS is sent.
+	 * The loop is its sender's (F25): before every send and after every wait it checks the sender is still the window's
+	 * (for shared input: the predicate, #sharingOf), and when it is not, a shared sender is ended with its queue; a newer
+	 * one has its own queue and its own loop, which starts at once. */
+	async #drain(sender: PageHold | SharedInput): Promise<void> {
 		const computer = this.#computer;
-		if (hold.sending || !computer) return;
-		hold.sending = true;
-		const current = () => this.#hold === hold && !hold.stop.signal.aborted && !this.#stop.signal.aborted;
+		if (sender.sending || !computer) return;
+		sender.sending = true;
+		const hold = "seat" in sender ? sender : undefined;
+		const shared = hold ? undefined : (sender as SharedInput);
+		const current = () =>
+			(hold
+				? this.#hold === hold && this.#pick()?.machineId === hold.machineId
+				: this.#sharingOf(sender as SharedInput)) &&
+			!sender.stop.signal.aborted &&
+			!this.#stop.signal.aborted;
+		/** The whole queue goes; the window says so when it was not the screen's own state that ended it. */
+		const drop = (said: string | null) => {
+			sender.queue.length = 0;
+			if (said !== null) {
+				this.#lostShown = true;
+				this.#controlNote.textContent = said;
+			}
+			if (shared && this.#shared === shared) this.#endShared();
+			this.#syncControls();
+		};
 		try {
 			let busySince: number | undefined;
-			while (hold.queue.length && current()) {
-				const action = hold.queue[0] as MachineDesktopAction;
+			/** The input a fresh list read was waited for, for its next send alone. */
+			let observed: QueuedAction | undefined;
+			while (sender.queue.length) {
+				if (!current()) {
+					// The predicate went false: a shared sender and its queue end now, never to be used again.
+					if (shared && this.#shared === shared) this.#endShared(true);
+					else sender.queue.length = 0;
+					return;
+				}
+				const item = sender.queue[0] as QueuedAction;
+				const now = inputTime();
+				if (inputSpanTooOld(item.made, now)) {
+					drop(t("Your last input did not go through. Try again."));
+					return;
+				}
+				// Shared input that waited is sent only once a list read begun after the wait answered: what happened
+				// meanwhile (a private hold taken and given back, in any window of the member's) is seen first (review r4 F1).
+				const waited =
+					busySince !== undefined ||
+					now.wall - item.made.oldest.wall > BUSY_RETRY_MS ||
+					now.mono - item.made.oldest.mono > BUSY_RETRY_MS;
+				if (shared && waited && observed !== item) {
+					const fresh = await this.#freshList(sender.stop.signal);
+					if (!current()) continue;
+					if (!fresh) {
+						drop(t("Your last input did not go through. Try again."));
+						return;
+					}
+					observed = item;
+					continue;
+				}
+				observed = undefined;
 				let answer: MachineActAnswer | undefined;
 				try {
 					answer = await computer.screens.act(
-						hold.machineId,
-						action,
-						{ epoch: hold.epoch, seat: hold.seat },
-						hold.stop.signal,
+						sender.machineId,
+						item.action,
+						hold
+							? { epoch: hold.epoch, seat: hold.seat }
+							: shared?.generation !== null && shared?.generation !== undefined
+								? { generation: shared.generation }
+								: null,
+						sender.stop.signal,
 					);
 				} catch {
 					answer = undefined;
 				}
-				if (!current()) return;
-				if (answer?.kind === "refused" && answer.code === "DESKTOP_BUSY") {
+				if (!current()) continue;
+				if (answer?.kind === "done") {
+					busySince = undefined;
+					sender.queue.shift();
+					if (!this.#lostShown) this.#controlNote.textContent = "";
+					this.#syncControls();
+					// The screen changed (or may have): look again soon.
+					this.#quicken();
+					continue;
+				}
+				const busy =
+					answer?.kind === "refused" &&
+					(answer.code === "DESKTOP_BUSY" || answer.code === "DESKTOP_ACTIONS_TOO_FAST");
+				if (busy) {
 					busySince ??= Date.now();
 					if (Date.now() - busySince < BUSY_GIVE_UP_MS) {
 						this.#controlNote.textContent = t("Waiting for {name} to finish a step…", { name: this.#name });
+						this.#syncControls();
 						await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS));
 						continue;
 					}
+					// Busy all that time: this input and what came after it are dropped, and the window says so (20260930734000:
+					// nothing is lost without a word).
+					drop(t("The computer was busy, so your last input did not go through. Try again."));
+					return;
 				}
-				busySince = undefined;
-				this.#controlNote.textContent = "";
-				hold.queue.shift();
-				if (
-					answer?.kind === "refused" &&
-					(answer.code === "DESKTOP_CONTROL_ENDED" || answer.code === "DESKTOP_MEMBER_IN_CONTROL")
-				) {
-					// The hold ended under the action (handed back elsewhere, it ran out, or another tab took it over): the list
-					// says where it stands.
-					this.#released();
-					this.#ledger.ended(hold.machineId, hold.epoch, hold.seat);
+				// Any other refusal, or no answer: the queue goes, never tried again (review r3 of #1701).
+				const code = answer?.kind === "refused" ? answer.code : undefined;
+				if (code === "DESKTOP_HELD_SINCE") {
+					// Someone held the desktop privately since this input was made, unseen by the window (20260930738000): it and
+					// what came after it go, said; sharing waits for a list read begun now, then goes on under its generation.
+					this.#heldSince = this.#listReads;
 					this.#listStale = true;
-				}
-				// The screen changed (or may have): look again soon.
+					drop(t("Your last input did not go through. Try again."));
+				} else if (code === "DESKTOP_CONTROL_ENDED" || code === "DESKTOP_MEMBER_IN_CONTROL") {
+					// The hold ended under the action (handed back elsewhere, it ran out, or another tab took it over), or
+					// someone types privately now: the list says where it stands, and nothing is shared before a look shows the
+					// screen again.
+					this.#listStale = true;
+					if (code === "DESKTOP_MEMBER_IN_CONTROL") this.#screenSeen = false;
+					drop(null);
+					if (hold) {
+						this.#released();
+						this.#ledger.ended(hold.machineId, hold.epoch, hold.seat);
+					}
+				} else if (
+					code === "MACHINE_NOT_RUNNING" ||
+					code === "MACHINE_BOOT_CHANGED" ||
+					code === "DESKTOP_NOT_RUNNING" ||
+					code === "MACHINE_IMAGE_WITHOUT_SCREEN" ||
+					code === "MACHINE_NEEDS_COMPANY_VIEW" ||
+					code === "DESKTOP_MACHINE_TOO_SMALL" ||
+					code === "DESKTOP_DID_NOT_START"
+				) {
+					// The screen is not as the member saw it: no sharing until a look shows it again.
+					this.#screenSeen = false;
+					this.#listStale = true;
+					drop(null);
+				} else drop(t("Your last input did not go through. Try again."));
 				this.#quicken();
+				return;
 			}
 		} finally {
-			hold.sending = false;
+			sender.sending = false;
 		}
 	}
 
-	/** The take-over controls under the picture: Take over for a member who may, while there is a picture; what holding
-	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held and entered
-	 * (the large view); a take-over of this page's enters the frame in the thread once a picture shows. Without a
-	 * picture, the same words, label and state stand in the state's place for a hold or a hand-back (review r2 F1 of
-	 * #1681). */
+	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at
+	 * once, the first time a quiet line says that they share it with the agent, and Type privately (a lock) starts the
+	 * private mode; in the preview nothing but who else uses it (a click on the picture opens the large view). Typing
+	 * privately: what it means and Done, in both. A viewer is told they watch. Who else used the shared desktop in the
+	 * last minute is said in every case. The picture takes input only in the large view; a private hold of this page's
+	 * enters the frame in the thread once a picture shows. Without a picture, the same words, label and state stand in
+	 * the state's place for a private hold or its end (review r2 F1 of #1681). */
 	#syncControls(): void {
+		// The predicate is checked at every change the window draws: once false, the sharing and its queue are gone, and a
+		// new one is made only when it holds again (review r3 of #1701). Input that was waiting is said lost.
+		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared(true);
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
 		// Never full screen here: only the member's own press on Enter asks for that.
@@ -1009,48 +1485,92 @@ export class ComputerPanel {
 		const release =
 			(this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined) ??
 			(this.#handBackFailed ? "failed" : undefined);
-		const offer = !holding && !release && picture && this.#listed?.canTakeOver === true;
-		// The member holds it from elsewhere (another window, or this page before it was loaded again): shown, never used
-		// here; Take over makes it this window's, Hand back gives it back (review r14).
-		const elsewhere = offer && this.#pick()?.control?.mine === true;
-		this.#controls.hidden = !(picture && (holding || release || offer));
-		// Without a picture the controls are gone: this page's own hold and its hand-back keep their words and button in
-		// the state's place (review r2 F1 of #1681: a hand-back that is asking or failed says so there too).
+		const shown = this.#pick();
+		const mayAct = this.#listed?.canTakeOver === true;
+		// The member types privately from elsewhere (another window, or this page before it was loaded again): shown,
+		// never used here; Type privately makes it this window's, Done ends it (review r14).
+		const elsewhere = !holding && !release && picture && mayAct && shown?.control?.mine === true;
+		// No one types privately: the member shares the computer with the agent, and may start typing privately.
+		const open = !holding && !release && !elsewhere && picture && mayAct && !shown?.control;
+		const sharing = open && this.#sharing();
+		const who = picture && !holding && !release ? togetherWords(shown?.others ?? []) : "";
+		let text = "";
+		if (holding)
+			text =
+				picture && !entered
+					? t("Typing privately. Choose Enter to click and type.")
+					: t("Typing privately. {name} gets no pictures of the screen until you're done.", { name: this.#name });
+		else if (release === "failed")
+			text = t("Private typing could not be ended yet. It ends by itself within 5 minutes.");
+		else if (release) text = t("Ending private typing…");
+		else if (elsewhere) text = t("You are typing privately in another window.");
+		else if (open && entered && this.#introduce) {
+			text = t("You and {name} share this computer: you can both click and type.", { name: this.#name });
+			if (!this.#introShown) storeSharedSeen();
+			this.#introShown = true;
+		} else if (picture && entered && !mayAct)
+			text = t("You can watch. Someone with edit access can use the computer.");
+		// The button: Done while typing privately (Try again for an end that failed), Type privately where the member may
+		// start it (the large view) or holds it elsewhere.
+		const button = holding || release !== undefined || elsewhere || (open && entered);
+		// A note (private typing could not start, an input did not go through) shows in the preview too.
+		const note = this.#controlNote.textContent !== "";
+		this.#controls.hidden = !(picture && (button || text !== "" || who !== "" || note));
+		// Without a picture the controls are gone: this page's own private hold and its end keep their words and button in
+		// the state's place (review r2 F1 of #1681: an end that is asking or failed says so there too).
 		const standIn = !picture && (holding || release !== undefined);
 		this.#loadingControlText.hidden = !standIn;
 		this.#loadingHandBack.hidden = !standIn;
-		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
+		this.#controls.classList.toggle("is-holding", text !== "" || who !== "");
 		this.#controls.classList.toggle("is-elsewhere", elsewhere);
+		this.#controls.classList.toggle("is-private", holding);
 		this.#controlHandBack.hidden = !elsewhere;
-		const text = holding
-			? picture && !entered
-				? t("You are using the computer. Choose Enter to click and type.")
-				: t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
-						name: this.#name,
-					})
-			: release === "failed"
-				? t("The computer could not be given back yet. It goes back by itself within 5 minutes.")
-				: release
-					? t("Giving the computer back…")
-					: elsewhere
-						? t("You are using this computer in another window.")
-						: "";
 		for (const words of [this.#controlText, this.#loadingControlText])
 			if (words.textContent !== text) words.textContent = text;
+		if (this.#controlWho.textContent !== who) this.#controlWho.textContent = who;
+		const lock = !holding && release === undefined;
 		const label = holding
-			? t("Hand back")
+			? t("Done")
 			: release === "failed"
 				? t("Try again")
 				: release
-					? t("Hand back")
-					: t("Take over");
+					? t("Done")
+					: t("Type privately");
 		const disabled = this.#takingLive(this.#machineId) || release === "asking";
-		for (const button of [this.#controlButton, this.#loadingHandBack]) {
-			if (button.textContent !== label) button.textContent = label;
-			button.disabled = disabled;
-		}
-		this.#view?.capture(holding && picture && entered ? this.#input : null);
+		this.#controlButton.hidden = !button;
+		this.#controlButton.classList.toggle("is-secondary", open);
+		this.#label(this.#controlButton, label, lock);
+		this.#label(this.#loadingHandBack, label, false);
+		const tip = lock
+			? t("For passwords: {name} gets no pictures of the screen until you're done.", { name: this.#name })
+			: "";
+		if (this.#controlButton.title !== tip) this.#controlButton.title = tip;
+		for (const each of [this.#controlButton, this.#loadingHandBack]) each.disabled = disabled;
+		// Each hold and each sharing has an input of its own: at every change the picture hands what it gathered to the input
+		// it gathered it for (review r2 F1 of #1701).
+		const hold = holding ? this.#hold : undefined;
+		this.#view?.capture(
+			picture && entered
+				? hold
+					? hold.input
+					: sharing && this.#machineId
+						? this.#sharedFor(this.#machineId).input
+						: null
+				: null,
+		);
+		// Handing the picture another input can drop input it held for a sharing that ended without the member's doing, which
+		// says so (review r5 F2 of #1701): the note shows at once.
+		if (!note && this.#controlNote.textContent !== "") this.#controls.hidden = !picture;
 		if (entering) this.#view?.focusScreen();
+	}
+
+	/** A control's label, with the lock of private typing before it where it starts it; drawn again only when it changes. */
+	#label(button: HTMLButtonElement, label: string, lock: boolean): void {
+		const key = `${lock ? "lock:" : ""}${label}`;
+		if (button.dataset.label === key) return;
+		button.dataset.label = key;
+		if (lock) replace(button, icon("lock"), h("span", null, label));
+		else button.textContent = label;
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */
@@ -1123,6 +1643,7 @@ export class ComputerPanel {
 	/** The picture goes, and the window says why. */
 	#unpicture(shown: Shown, member: string | null = null): void {
 		this.#etag = null;
+		this.#screenSeen = false;
 		this.#view?.clear();
 		this.#show(shown, null, member);
 		this.#syncControls();
@@ -1217,11 +1738,11 @@ export class ComputerPanel {
 																				? [
 																						member
 																							? t(
-																									"{member} is using the computer. The screen is hidden meanwhile.",
+																									"{member} is typing privately. The screen is hidden until they're done.",
 																									{ member },
 																								)
 																							: t(
-																									"Someone is using the computer. The screen is hidden meanwhile.",
+																									"Someone is typing privately. The screen is hidden until they're done.",
 																								),
 																						null,
 																						null,
@@ -1471,6 +1992,14 @@ export class ComputerPanel {
 							if (machine.machineId !== before) {
 								this.#wantTakeOver = undefined;
 								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
+								// Shared input of the last computer goes no further, even while the loop waits on a request
+								// (review r1 F1 of #1701); the next one's screen is not seen yet (review r3).
+								this.#screenSeen = false;
+								this.#endShared();
+								this.#lostShown = false;
+								this.#controlNote.textContent = "";
+								// The picture takes nothing more for the last computer, at once (review r2 F1 of #1701).
+								this.#syncControls();
 							}
 							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();

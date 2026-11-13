@@ -645,6 +645,9 @@ export interface CompanyMachineMemberAct {
 	/** The seat the action was begun in, and its member: the fence is asked again once the desktop is held (round 23). */
 	seat: number;
 	userId: string;
+	/** A shared action (20260930734000): begun with no hold of the member's, at the lease generation `seat` (0 or more).
+	 * The fence then names no member: a private hold by anyone since, the member's own too, stops it. */
+	shared?: boolean;
 }
 /** The action ran (`exitCode`: `desktop`'s, null when it was killed at its deadline), or why it did not: the desktop is
  * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
@@ -2711,10 +2714,12 @@ export class LxdCompanyMachineHost {
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE");
 		const verb = act.action?.type;
 		const text = act.action?.text;
+		const shared = act.shared === true;
 		if (
 			![act.placementId, act.bootId, act.actionId, act.userId].every((id) => UUID.test(id)) ||
+			(act.shared !== undefined && typeof act.shared !== "boolean") ||
 			!Number.isSafeInteger(act.seat) ||
-			act.seat < 1 ||
+			act.seat < (shared ? 0 : 1) ||
 			typeof verb !== "string" ||
 			!SCREEN_VERBS.includes(verb) ||
 			verb === "open" ||
@@ -2725,17 +2730,19 @@ export class LxdCompanyMachineHost {
 		const pasted = typeof text === "string" && PASTED.test(text);
 		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
 		// Holding the desktop, the action's seat is asked again (round 23 of #1661): an action authorized before a hand-back
-		// never runs after it, nor after a clear of the clipboard recorded since. Nothing ran: the desktop is free again.
+		// never runs after it, nor after a clear of the clipboard recorded since. A shared one (20260930734000) is asked as
+		// an agent's action is, with no member: the generation it was begun at must stand and no one may hold the desktop
+		// privately, so a take-over since stops it here. Nothing ran: the desktop is free again.
 		let seated: boolean;
 		try {
-			seated = await this.#pictureAllowed(act.placementId, act.seat, act.userId, signal);
+			seated = await this.#pictureAllowed(act.placementId, act.seat, shared ? null : act.userId, signal);
 		} catch (error) {
 			this.#releaseDesktop(act.placementId, true);
 			throw error;
 		}
 		if (!seated) {
 			this.#releaseDesktop(act.placementId, true);
-			return { refused: "DESKTOP_CONTROL_ENDED" };
+			return { refused: shared ? "DESKTOP_MEMBER_IN_CONTROL" : "DESKTOP_CONTROL_ENDED" };
 		}
 		let ended = false;
 		try {

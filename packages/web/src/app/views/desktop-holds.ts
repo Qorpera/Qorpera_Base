@@ -195,6 +195,20 @@ export class DesktopHoldLedger {
 			: undefined;
 	}
 
+	/** Whether the page knows of any private hold of this machine's, in any form (shared input is never sent then:
+	 * 20260930734000, review r3 of #1701): a take-over waiting, on its way, held or maybe held, anything owed of it, or a
+	 * hand-back not answered. */
+	mayHold(machineId: string): boolean {
+		const hold = this.#holds.get(machineId);
+		return hold !== undefined && (hold.state !== undefined || this.#busy(hold));
+	}
+
+	/** The member's hand-back epoch for this machine, the highest the page learned (a hand-back's answer, a
+	 * TAKE_CALLED_OFF, a list); undefined while it learned none. Every move up is told to the listeners. */
+	epochOf(machineId: string): number | undefined {
+		return this.#holds.get(machineId)?.epoch;
+	}
+
 	/** Where the releases stand: a press records it, and passes it to take(). */
 	stamp(): number {
 		return this.#releases;

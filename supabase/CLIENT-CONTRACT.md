@@ -1282,6 +1282,14 @@ request of another shape.
   while a member holds its desktop (`mine` when it is the caller; `name` the holder's; `until` when the lease runs out
   unless renewed: read the list again then). The caller's own hold also says `epoch`, the epoch it was taken under,
   `seat`, its seat, and `press`, the id of the take-over that seated it (never for another member's).
+- Shared control (20260930734000, 20260930738000): owners, admins and contributors act on an agent's desktop beside the
+  agent with no hold, through the executor (`qorpera_member_machine_desktop_share_begin`, which the executor calls with
+  the member's token). The list also names, per machine, `others` (the other members who acted on it in the last
+  minute, by name) and, to those who may act, `generation`: the desktop's lease generation, which moves at every
+  seating and every hand-back that ends a lease. A page sends each shared action with the generation the list named
+  when its input was made; the begin refuses it `DESKTOP_HELD_SINCE` once that is not the current one (someone held the
+  desktop privately since), and the page then reads the list again and goes on under the new one. A begin without a
+  generation (a page before 20260930738000) is served as before.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes

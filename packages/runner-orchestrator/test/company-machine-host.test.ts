@@ -5199,6 +5199,50 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		);
 	});
 
+	it("asks the fence for a shared action as for an agent's, naming no member: a private hold since runs nothing (20260930734000)", async () => {
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const { f, calls } = await piped(async (given) => {
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		// On a desktop no one ever held, the seat is the lease generation 0; the member is not the fence's looker.
+		expect(
+			await f.host.memberAct({ ...act({ type: "click", x: 5, y: 5 }, id(51), 0), shared: true }, f.signal),
+		).toEqual({ done: { exitCode: 0 } });
+		expect(calls).toHaveLength(1);
+		expect(f.calls.filter((call) => call.method === "qorpera_machine_desktop_picture_check").at(-1)?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 0,
+			p_user_id: null,
+		});
+		// A private hold began since (anyone's, the member's own too): nothing runs, and the desktop is free again.
+		f.pictureChecks.push(held);
+		expect(
+			await f.host.memberAct({ ...act({ type: "type", text: "hunter2" }, id(52), 3), shared: true }, f.signal),
+		).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(calls).toHaveLength(1);
+		expect(
+			await f.host.memberAct({ ...act({ type: "key", keys: ["Return"] }, id(53), 3), shared: true }, f.signal),
+		).toEqual({ done: { exitCode: 0 } });
+		expect(JSON.parse(stdinText(calls[1]!))).toMatchObject({
+			receiptId: id(53),
+			action: { type: "key", keys: ["Return"] },
+		});
+		// Malformed: a seat below 0, or a word other than true or false.
+		for (const wrong of [
+			{ ...act({ type: "click", x: 5, y: 5 }, id(54), -1), shared: true },
+			{ ...act({ type: "click", x: 5, y: 5 }, id(55), 1), shared: "yes" as unknown as boolean },
+		])
+			await expect(f.host.memberAct(wrong, f.signal), JSON.stringify(wrong)).rejects.toThrow(
+				"COMPANY_MACHINE_MEMBER_ACT_INVALID",
+			);
+		expect(calls).toHaveLength(2);
+	});
+
 	it("lets no picture of a desktop a member took over since the look's read leave, to an agent or another member (review r1 F1)", async () => {
 		const picture = png();
 		const { f, pipe } = await piped(async (given) => {

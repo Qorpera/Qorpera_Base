@@ -2084,6 +2084,49 @@ describe("machine tools", () => {
 			}
 		});
 
+		it("says in one line who of the members used the shared screen and when, never what (20260930734000)", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				const wide = pngFile(pngHeader(16, 10, 8, 2), pngRows(new Array(10).fill(new Array(16 * 3).fill(90))));
+				const screenAnswer = (png: Buffer | null) => ({
+					schema: "qorpera.machine-screen-answer/v1" as const,
+					commandId: null,
+					header: {
+						schema: "qorpera.machine-screen/v1" as const,
+						started: false,
+						action: null,
+						activeWindow: "Shop",
+						windows: ["Shop"],
+						moreWindows: 0,
+						png: png ? png.length : 0,
+					},
+					png: png ? png.toString("base64") : null,
+					memberTouched: { name: "Dora Danske", secondsAgo: 12 },
+				});
+				f.screen.mockResolvedValueOnce(screenAnswer(wide));
+				const shown = await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f.content(shown as never)).toMatchObject({
+					kind: "screen",
+					memberTouched:
+						"Dora Danske used this screen 12 seconds ago (members can use it with you): what you saw before may have changed, so go by this picture before you act",
+				});
+				expect(shown.contentItems).toHaveLength(2);
+				f.screen.mockResolvedValueOnce(screenAnswer(null));
+				const blind = await f.boundary.invoke("look-2", "qorpera", "machine_screen", {
+					machine: "build-a",
+				});
+				expect(f.content(blind as never)).toMatchObject({
+					memberTouched: expect.stringMatching(/12 seconds ago .*so look again before you act$/),
+				});
+				// An answer with no member's touch says nothing of it.
+				f.screen.mockResolvedValueOnce({ ...screenAnswer(wide), memberTouched: undefined });
+				const quiet = await f.boundary.invoke("look-3", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f.content(quiet as never)).not.toHaveProperty("memberTouched");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
 		/** A refusal's answer. */
 		function f0(f: ReturnType<typeof fixture>, result: unknown) {
 			return f.content(result as never) as { refused: { reason: string; message: string } };
