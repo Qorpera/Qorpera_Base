@@ -1595,6 +1595,147 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		localStorage.clear();
 	});
 
+	it("folds a group's apps back into its tile: each shrinks toward it and goes, nearest first (13 Nov 2026)", () => {
+		localStorage.clear();
+		const { element } = drawer();
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		// jsdom lays nothing out: each tile has a box by its name, the group at the row's end and its apps wrapped onto
+		// the next row, Brand the farther of them (review F3 on #1729). Animations are recorded.
+		const at: Record<string, [number, number]> = { Market: [210, 0], Brand: [0, 70], Plan: [140, 70] };
+		const boxes = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			const name = this.closest<HTMLElement>(".rail-app")?.querySelector(".rail-app-name")?.textContent ?? "";
+			const [x, y] = at[name] ?? [280, 0];
+			return new DOMRect(x, y, 60, 60);
+		});
+		const animations: {
+			element: Element;
+			frames: Keyframe[];
+			options: KeyframeAnimationOptions;
+			cancel: ReturnType<typeof vi.fn>;
+		}[] = [];
+		const animate = vi.fn(function (this: Element, frames: Keyframe[], options: KeyframeAnimationOptions) {
+			const cancel = vi.fn();
+			animations.push({ element: this, frames, options, cancel });
+			return { finish() {}, cancel, finished: Promise.resolve() } as unknown as Animation;
+		});
+		const own = Element.prototype.animate;
+		Element.prototype.animate = animate as unknown as Element["animate"];
+		vi.useFakeTimers();
+		try {
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+			const folding = [...element.querySelectorAll<HTMLElement>(".rail-app.is-leaving.is-folding")];
+			const name = (tile: Element) => tile.querySelector(".rail-app-name")?.textContent;
+			expect(folding.map(name)).toEqual(["Brand", "Plan"]);
+			const into = animations.filter((entry) => folding.includes(entry.element as HTMLElement));
+			expect(into.map((entry) => [name(entry.element), entry.frames.at(-1), entry.options.delay])).toEqual([
+				["Brand", { translate: "210px -70px", scale: "0.2", opacity: 0 }, 18],
+				["Plan", { translate: "70px -70px", scale: "0.2", opacity: 0 }, 0],
+			]);
+			// Opened again while they fold: the same tiles come back whole, their folds cancelled (review F1 on #1729).
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			for (const entry of into) {
+				expect(entry.cancel).toHaveBeenCalledOnce();
+				expect((entry.element as HTMLElement).classList.contains("is-folding")).toBe(false);
+				expect((entry.element as HTMLElement).classList.contains("is-leaving")).toBe(false);
+			}
+			vi.advanceTimersByTime(400);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			// Folded, opened again and folded again at once: the first fold's end leaves the second alone (review F1, round 2).
+			group(element).click();
+			vi.advanceTimersByTime(100);
+			group(element).click();
+			group(element).click();
+			const second = animations.filter(
+				(entry) =>
+					entry.frames.at(-1)?.scale === "0.2" && !into.includes(entry) && entry.cancel.mock.calls.length === 0,
+			);
+			expect(second.map((entry) => name(entry.element))).toEqual(["Brand", "Plan"]);
+			vi.advanceTimersByTime(300);
+			expect(element.querySelectorAll(".rail-app.is-folding")).toHaveLength(2);
+			expect(second.every((entry) => entry.cancel.mock.calls.length === 0)).toBe(true);
+			// Its own end takes the tiles away and cancels the folds, so the same tiles stand whole when the group opens
+			// again later.
+			vi.advanceTimersByTime(200);
+			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
+			for (const entry of second) {
+				expect(entry.cancel).toHaveBeenCalledOnce();
+				expect(entry.element.isConnected).toBe(false);
+			}
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
+				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			boxes.mockRestore();
+			if (own) Element.prototype.animate = own;
+			else delete (Element.prototype as { animate?: unknown }).animate;
+			localStorage.clear();
+		}
+	});
+
+	it("keeps a folding group's way out when another group opens meanwhile, so it opens whole again", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		controller.store.set({
+			appGroups: parseAppGroups(
+				"- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n- group trips: Trips\n  - app:trips Trips\n",
+			),
+		});
+		await settle();
+		const groupNamed = (name: string) =>
+			element.querySelector<HTMLButtonElement>(`.rail-apps-grid > .rail-app-group[data-app-key='group:${name}']`)!;
+		groupNamed("market").click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips", "Members"]);
+		const folds: { element: Element; cancel: ReturnType<typeof vi.fn> }[] = [];
+		const own = Element.prototype.animate;
+		Element.prototype.animate = vi.fn(function (this: Element, frames: Keyframe[]) {
+			const cancel = vi.fn();
+			if (frames.at(-1)?.scale === "0.2") folds.push({ element: this, cancel });
+			return { finish() {}, cancel, finished: Promise.resolve() } as unknown as Animation;
+		}) as unknown as Element["animate"];
+		const boxes = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			const tile = this.closest<HTMLElement>(".rail-app");
+			const index = tile?.parentElement ? [...tile.parentElement.children].indexOf(tile) : 0;
+			return new DOMRect(index * 70, 0, 60, 60);
+		});
+		vi.useFakeTimers();
+		try {
+			// Market folds, and Trips opens before Market's apps are gone.
+			groupNamed("market").click();
+			expect(folds).toHaveLength(2);
+			vi.advanceTimersByTime(50);
+			groupNamed("trips").click();
+			expect(tiles(element)).toEqual(["Market", "Trips+", "Trips", "Members"]);
+			// Market's apps are still on their first way out, in the grid: no second one, their folds still running.
+			expect(folds).toHaveLength(2);
+			expect(folds.every((fold) => fold.cancel.mock.calls.length === 0)).toBe(true);
+			for (const fold of folds) {
+				expect(fold.element.parentElement).toBe(element.querySelector(".rail-apps-grid"));
+				expect((fold.element as HTMLElement).classList.contains("is-folding")).toBe(true);
+			}
+			vi.advanceTimersByTime(400);
+			// Their way out ended: gone, the folds cancelled, so Market opens with them whole.
+			for (const fold of folds) {
+				expect(fold.cancel).toHaveBeenCalledOnce();
+				expect(fold.element.isConnected).toBe(false);
+			}
+			groupNamed("market").click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips+", "Trips", "Members"]);
+			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
+				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			boxes.mockRestore();
+			if (own) Element.prototype.animate = own;
+			else delete (Element.prototype as { animate?: unknown }).animate;
+			localStorage.clear();
+		}
+	});
+
 	it("stands What's new loose after the company's apps, orange, with its count (own code storage step 4)", async () => {
 		localStorage.clear();
 		const { element, controller } = drawer();

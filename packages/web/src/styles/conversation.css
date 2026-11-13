@@ -718,7 +718,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel.is-entered { --computer-frame-bg: #121316; top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: var(--computer-frame-bg); }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
-.computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px minmax(0, 1fr); }
+.computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px auto minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
 .computer-panel.is-entered .screen-viewer-note { color: #f0c27a; }
 /* Empty, the note stays rendered (a live region must exist before its text changes); only the heading's 6px gap is cancelled. */
@@ -727,11 +727,11 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the titlebar row and bottom padding. The vh line is the fallback where container units are unsupported. */
-.computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
+.computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px - var(--computer-bar-h, 0px)) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
 .computer-panel .screen-viewer-embedded:fullscreen { --computer-frame-bg: #0b0c0e; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-frame { grid-template-rows: 48px minmax(0, 1fr); padding: 0 16px 16px; }
+.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-frame { grid-template-rows: 48px auto minmax(0, 1fr); padding: 0 16px 16px; }
 .computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-titlebar { padding: 0 4px; font-size: 13px; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-stage { width: min(100%, calc(160vh - 103px)); width: min(100%, calc((100cqh - 64px) * 1.6)); }
+.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-stage { width: min(100%, calc(160vh - 103px)); width: min(100%, calc((100cqh - 64px - var(--computer-bar-h, 0px)) * 1.6)); }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
@@ -802,7 +802,17 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* A member's take-over (20260930713000): under the picture, Take over; while they hold the desktop, what that means and
    Hand back across the foot of the picture, and a green edge round it while it takes their clicks and keys. */
 .computer-panel .machine-screen-control-slot { position: absolute; inset: auto 8px 8px; z-index: 5; display: flex; justify-content: flex-end; pointer-events: none; }
-.computer-panel.is-entered .machine-screen-control-slot { inset: auto 12px 12px; }
+/* In the large view nothing of ours sits on the desktop's picture (its dock and its clock; v239 real test, 13 Nov 2026):
+   the controls stand in a slim row of the frame between the titlebar and the picture, and the Live mark is the title's.
+   The picture's 8:5 fit takes the row's height off what it may use. */
+.computer-panel .machine-screen-bar-slot { display: none; }
+.computer-panel.is-entered .machine-screen:has(.machine-screen-bar-slot > .machine-screen-control:not([hidden])) { --computer-bar-h: 42px; }
+.computer-panel.is-entered .machine-screen-bar-slot { display: flex; align-items: center; justify-content: flex-end; height: var(--computer-bar-h, 0px); min-width: 0; padding: 0 2px 6px; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control { max-width: 100%; padding: 0; border-radius: 0; background: transparent; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control-words { flex: 0 1 auto; min-width: 0; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control-words > span:not(:empty) { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.computer-panel.is-entered .machine-screen-bar-slot :is(.machine-screen-control-text, .machine-screen-control-who) { color: rgb(255 255 255 / 72%); }
+.computer-panel.is-entered .machine-screen-mark { display: none; }
 .computer-panel .machine-screen-control { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; padding: 3px; border-radius: 14px; color: #fff; background: rgb(0 0 0 / 62%); font-size: 11px; line-height: 15px; pointer-events: auto; }
 .computer-panel .machine-screen-control[hidden] { display: none; }
 .computer-panel .machine-screen-control.is-holding { padding-left: 10px; }
@@ -1457,6 +1467,48 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @media (prefers-reduced-motion: reduce) { .choice-box { transition: none; } .choice-box:hover:not(:disabled) { transform: none; } .choice-picture.is-loading { animation: none; } }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
+/* A card that waits for the member, in a thread (ui/interaction-card.ts; Jonas, 13 Nov 2026: "some form of widget with
+ * proposed answers and a clear visual that indicates something to do"). It is the thread's one framed thing to act on:
+ * the frame is drawn in the accent colour inside a soft ring of it that breathes (styles/motion.css), the agent's
+ * figure waits at its head beside who asks, in that colour, and the proposed answers are large pills. */
+.interaction-card.is-asking {
+	position: relative; margin-block: 10px; padding: 14px 16px; border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+	border-radius: 20px; box-shadow: 0 8px 24px rgb(18 18 17 / 6%);
+}
+.interaction-card.is-asking::after {
+	content: ""; position: absolute; inset: -4px; border: 3px solid var(--accent-soft); border-radius: 24px; pointer-events: none;
+}
+/* The accent, nearer the text's own colour so small words in it read in either theme. */
+.interaction-call { display: flex; align-items: center; gap: 8px; min-width: 0; color: color-mix(in srgb, var(--accent) 78%, var(--text)); font-size: 13px; line-height: 1.3; }
+.interaction-call strong { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.interaction-figure { display: grid; flex: none; place-items: center; }
+.interaction-dot { flex: none; width: 8px; height: 8px; margin: 0 2px; border-radius: 50%; background: var(--accent); }
+.is-asking .interaction-title { margin: 10px 0 4px; font-size: 17px; font-weight: 650; }
+.is-asking .interaction-ask > :is(.interaction-body, .interaction-text), .is-asking .card-fold-wrap > .interaction-body { font-size: 14px; }
+.is-asking .interaction-options { margin: 12px 0; }
+.is-asking .interaction-options .btn { min-height: 38px; padding: 0 16px; font-size: 14px; font-weight: 550; }
+.is-asking .interaction-options .btn:not(.btn-primary) { border-color: var(--border-strong); background: var(--bg); }
+.is-asking .interaction-options .btn:not(.btn-primary):hover:not([aria-disabled="true"]) { border-color: var(--accent); background: var(--accent-soft); }
+.is-asking .interaction-actions { margin-top: 6px; }
+/* The way out (Skip, Decline, Discard) stands in the widget's top corner, across from who asks: the answers have the
+ * rest to themselves. It stays last in the page, so the keyboard reaches the answers first. */
+.is-asking .interaction-call { padding-right: 72px; }
+.interaction-card.is-asking .interaction-actions .interaction-quiet { position: absolute; top: 11px; right: 10px; min-height: 30px; margin: 0; border-color: transparent; background: none; font-size: 13px; }
+.interaction-card.is-asking .interaction-actions .interaction-quiet:hover:not([aria-disabled="true"]) { background: var(--hover); color: var(--text); }
+.is-asking .interaction-secret-row .interaction-field, .is-asking .interaction-secret-row .btn { min-height: 38px; }
+.is-asking .interaction-secret-row .btn { padding: 0 16px; border-radius: 999px; font-size: 14px; }
+.is-asking .interaction-field { min-height: 38px; font-size: 14px; }
+/* An answer of the member's own: the field with its Send at its end, as the composer has it. */
+.interaction-own { position: relative; display: flex; flex: 1 1 160px; min-width: 0; }
+.interaction-own > .interaction-field { flex: 1; padding-right: 42px; }
+.interaction-send {
+	position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+	border: 0; border-radius: 50%; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; transform: translateY(-50%);
+}
+.interaction-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
+.interaction-send:disabled { background: var(--pane-strong); color: var(--text-muted); cursor: default; }
+.interaction-send:not(:disabled):hover { background: var(--composer-accent-hover); }
+.interaction-send:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 /* A card with its answer, in a thread, is the exchange it was (ui/interaction-card.ts; Jonas, 13 Nov 2026): no frame.
  * What the agent asked is the agent's bubble and a question's answer the member's own (`.bubble`, `.mine .bubble`:
  * the messages' own rules draw both, in every theme); anything else done with the card is one quiet line under the

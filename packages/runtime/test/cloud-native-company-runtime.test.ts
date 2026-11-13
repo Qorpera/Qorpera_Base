@@ -1619,8 +1619,9 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 		inputSchema: { required: string[] };
 	}[];
 	const list = tools.find((tool) => tool.name === "company_list");
-	// The folder core pages a folder by its last path; no listing pins a snapshot.
-	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
+	// The folder core pages a folder by its last path; no listing pins a snapshot. Since keyholes S2 (12 November 2026)
+	// depth, glob, after and limit may be left out: one level, the first 500 entries.
+	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
@@ -3245,8 +3246,11 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
+	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
+	// again.
 	// On 13 November 2026 save_app's reads take data (the company's databases, which a kit's data may name), so they
-	// moved again.
+	// moved again; with the keyholes on one tree (the merge of claude/interfaces-visual-first) they were measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3293,9 +3297,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"31664f0b6c95755c36cbeb610f8f8bae55dba1e716954aff6af56a2183366d84",
+		"e2f18476b4651467c16a39e858212e8e3a4b958aa7732883fcf58a38b867d4d2",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"76d0f86e0cb7591301f6b2331ad6ee363961f8c555bbc5e36131ffabf8900ca3",
+		"7924591dce1dce0d16ea735573e0c733094f608688bd04217c386b8bb50faf87",
 	);
 });

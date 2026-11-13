@@ -1603,12 +1603,15 @@ export class CodingPill {
 	#face(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames, size: number) {
 		const badge = harnessBadge(session.harness);
 		badge.removeAttribute("title");
+		const activity = codingSessionActivity(session);
 		return h(
 			"span",
 			{ class: "coding-pill-face" },
 			agentFigure(agent, names.agent, {
 				size,
-				activity: codingSessionActivity(session),
+				activity,
+				// A session that waits is waiting for an answer: its figure becomes a question mark.
+				...(activity === "Waiting" ? { ask: "question" as const } : {}),
 				identity: `coding:${session.workerId}:${size}`,
 			}),
 			badge,

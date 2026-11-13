@@ -13,7 +13,9 @@ import type {
 } from "../../cloud/machine-screens.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
+import { agentColor, figureFor } from "../../ui/avatar.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
+import { ComputerScene, type ScenePhase } from "../../ui/computer-scene.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -96,6 +98,22 @@ export const SCREEN_OFF_EVERY_MS = 5000;
 export const WANT_ON_MS = 3 * 60_000;
 /** The least time between two starts of the desktop from one page: the database takes one per machine per 5 s. */
 export const START_AGAIN_MS = 5500;
+/** What a member's own click that opens an agent's computer starts by itself (COMPUTER-OPEN-BRIEF, 13 Nov 2026: "assume
+ * that's what I did when clicking the agents computer"), by what the first list read after the click says of the
+ * computer shown, for a member who may wake it: a computer asleep is woken; one already on its way up (another tab's
+ * wake, another member's) is joined, never woken twice; one that runs with its screen off has its screen turned on.
+ * "Start one" (no computer, or none with a screen) is never started by a click: it makes a computer. A window the page
+ * opened by itself, or a machine that falls asleep under an open window, starts nothing. */
+export const OPEN_STARTS: Readonly<Record<"asleep" | "starting" | "screenOff", boolean>> = Object.freeze({
+	asleep: true,
+	starting: true,
+	screenOff: true,
+});
+/** How long a click's ask waits for a list read to answer before it lapses (a window that cannot reach the computer
+ * says so, and Try again then starts nothing by itself). */
+export const ASK_LASTS_MS = 60_000;
+/** How long the first picture takes to settle in over the scene. */
+const SETTLE_MS = 450;
 /** With no touch on the page for this long the window stops looking and asks whether the member still watches. */
 export const PAUSE_AFTER_MS = 30 * 60_000;
 /** How often a member who touches the page says again that they watch (the database keeps the desktop on 30 min). */
@@ -116,6 +134,14 @@ export interface ComputerPanelOptions {
 	/** What the member may hold of the company's desktops: the company's ledger (ComputerPanels), which outlives the
 	 * window. A window opened on its own keeps one of its own. */
 	readonly ledger?: DesktopHoldLedger;
+	/** The company's time zone (the machine's clock and backdrop follow it; migration 20260930739000). */
+	readonly timeZone?: () => string | null | undefined;
+}
+
+/** How a window is opened: `asked` when the member's own click just asked for it (the agent's card, the thread's
+ * agent details, a take-over card); false, the default, when the page opens or shows it by itself. */
+export interface ComputerOpen {
+	readonly asked?: boolean;
 }
 
 /** What the window shows instead of a picture. */
@@ -286,7 +312,9 @@ export class ComputerPanel {
 		this.#action,
 		this.#loadingHandBack,
 	);
-	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
+	/** The desktop about to be seen, while the computer sleeps or starts (ui/computer-scene.ts). */
+	readonly #scene: ComputerScene;
+	readonly #body: HTMLDivElement;
 	/** The preview's own way out, top right; the entered frame has its Back button instead. */
 	readonly #closeButton = h("button", {
 		type: "button",
@@ -331,6 +359,17 @@ export class ComputerPanel {
 	#unchanged = 0;
 	#failures = 0;
 	#waking = false;
+	/** A wake of this page's that failed, for the machine named: the asleep state says so, with Try again. */
+	#wakeFailed: string | undefined;
+	/** The member's click that opened (or showed again) the window: the list reads begun before it, and when. The first
+	 * read begun after it decides what starts (OPEN_STARTS). */
+	#ask: { readonly before: number; readonly at: number } | undefined;
+	/** The agent the window is for, as last opened (its figure and colour for the scene). */
+	#agent: HostedStaffAgent;
+	readonly #timeZone: () => string | null | undefined;
+	/** The state of the machine the window says something of now (the scene's steps follow the list alone). */
+	#machineState: MemberAgentMachine["state"] | undefined;
+	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 	/** The member's wish that the desktop be on (20260930714000): this page's, for one machine, until its picture shows,
 	 * the member chooses another machine or closes the window, a refusal comes, or WANT_ON_MS pass. While it stands a
 	 * screen that is off is turned on by itself (after Wake it too), without a second press. */
@@ -413,9 +452,14 @@ export class ComputerPanel {
 		computer?: WebCompanyComputer,
 		parentSignal?: AbortSignal,
 		options: ComputerPanelOptions = {},
+		open: ComputerOpen = {},
 	) {
 		this.agentId = agent.id;
 		this.#name = agent.displayName;
+		this.#agent = agent;
+		this.#timeZone = options.timeZone ?? (() => undefined);
+		this.#scene = new ComputerScene(this.#sceneLook(undefined));
+		this.#body = h("div", { class: "computer-panel-body" }, this.#scene.el, this.#loading);
 		this.#parentGone = () => parentSignal?.aborted === true;
 		this.#ledger = options.ledger ?? new DesktopHoldLedger(computer, parentSignal);
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
@@ -568,7 +612,30 @@ export class ComputerPanel {
 			this.#quicken();
 		});
 		if (unsubscribe) signal.addEventListener("abort", unsubscribe, { once: true });
+		// The member's click opened it: the first list read decides what starts (OPEN_STARTS).
+		if (open.asked) this.#ask = { before: this.#listReads, at: Date.now() };
 		void this.#loop(computer, signal).catch(() => undefined);
+	}
+
+	/** The member's own click asked for this computer again (the window stands open, or shows again in a thread): the
+	 * first list read begun after it decides what starts (OPEN_STARTS), as at a first open. */
+	ask(): void {
+		if (this.#stop.signal.aborted || !this.#computer) return;
+		this.#ask = { before: this.#listReads, at: Date.now() };
+		this.#wakeFailed = undefined;
+		this.#listStale = true;
+		// The click is the member's word that they watch, as showing the window again is (attach; review r1 F2 of #1734).
+		if (this.#paused) {
+			this.#paused = false;
+			this.#confirm = true;
+		}
+		this.#touched();
+		this.#poke();
+	}
+
+	/** The agent as last opened: its figure and colour, for the scene. */
+	know(agent: HostedStaffAgent): void {
+		this.#agent = agent;
 	}
 
 	/** Whether a thread holds the panel right now (the thread itself may not be in the page yet). */
@@ -727,6 +794,8 @@ export class ComputerPanel {
 		this.#poke();
 		this.#close = () => {};
 		this.#view?.dispose();
+		clearTimeout(this.#settleTimer);
+		this.#scene.dispose();
 		this.el.style.removeProperty("animation");
 		leave(this.el, "is-closing", () => {
 			replace(this.el);
@@ -742,6 +811,7 @@ export class ComputerPanel {
 	async #loop(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
 		for (;;) {
 			signal.throwIfAborted();
+			if (this.#ask && Date.now() - this.#ask.at >= ASK_LASTS_MS) this.#ask = undefined;
 			if (!this.attached || document.visibilityState === "hidden") {
 				await this.#wait(Number.POSITIVE_INFINITY, signal);
 				continue;
@@ -769,6 +839,13 @@ export class ComputerPanel {
 					const waiting = this.#listWaiters;
 					this.#listWaiters = waiting.filter((waiter) => waiter.after >= read);
 					for (const waiter of waiting) if (waiter.after < read) waiter.done();
+					// The member's click: the first read begun after it decides what starts, while the click still stands (review
+					// r1 F1 of #1734: a read begun before the ask lapsed may answer after it).
+					const ask = this.#ask;
+					if (ask && read > ask.before) {
+						this.#ask = undefined;
+						if (Date.now() - ask.at < ASK_LASTS_MS) this.#askedOpen(computer, signal);
+					}
 				} catch {
 					signal.throwIfAborted();
 					this.#listStale = true;
@@ -784,6 +861,7 @@ export class ComputerPanel {
 				// The wish that a desktop be on is for the machine it was made for alone (20260930714000).
 				if (this.#wantOn && this.#wantOn.machineId !== machine?.machineId) this.#wantOn = undefined;
 				this.#startEnded = undefined;
+				this.#wakeFailed = undefined;
 				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
 				// held, may be held (a lost answer), on its way or queued; the window's own state does not decide it (review r1
 				// F6, r3 F8, r4 F8).
@@ -859,6 +937,8 @@ export class ComputerPanel {
 			if (machine.machineId !== this.#machineId || this.#pick()?.machineId !== machine.machineId) continue;
 			if (look.kind === "picture") {
 				if (await this.#view?.show(look.png)) {
+					// The first picture settles in over the scene it was waited on.
+					if (!this.#scene.el.hidden) this.#settle();
 					this.#etag = look.etag;
 					this.#pictureOf = machine.machineId;
 					this.#screenSeen = true;
@@ -1634,10 +1714,96 @@ export class ComputerPanel {
 			);
 			return;
 		}
-		// Wake it was pressed: the machine is on its way up, and its screen comes on with it.
-		if ((machine.state === "stopped" || machine.state === "stopping") && !this.#wishFor(machine.machineId))
-			this.#show("asleep");
+		this.#machineState = machine.state;
+		const asleep = machine.state === "stopped" || machine.state === "stopping";
+		// A failed wake is said until the machine moves or the member asks again.
+		if (!asleep) this.#wakeFailed = undefined;
+		// Wake it was pressed (or the click that opened the window): the machine is on its way up, and its screen comes on
+		// with it.
+		if (asleep && !this.#wishFor(machine.machineId) && !this.#waking) this.#show("asleep");
 		else this.#show("starting", machine.waitingFor);
+	}
+
+	/** The member's click that opened the window, against the first list read after it (OPEN_STARTS). */
+	#askedOpen(computer: WebCompanyComputer, signal: AbortSignal): void {
+		const machine = this.#pick();
+		if (!machine || !this.#listed?.canWake) return;
+		const machineId = machine.machineId;
+		if (machine.state === "stopped" || machine.state === "stopping") {
+			if (OPEN_STARTS.asleep) void this.#wake(computer, machineId, signal);
+			return;
+		}
+		if (machine.state === "starting" || machine.state === "waiting") {
+			if (!OPEN_STARTS.starting || this.#wishFor(machineId)) return;
+		} else if (!OPEN_STARTS.screenOff || this.#wishFor(machineId) || (this.#picturing() && this.#screenSeen)) return;
+		// Joined, not woken again: the wish carries it through to a picture, as Wake it's does (20260930714000).
+		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+		this.#startEnded = undefined;
+		this.#startAnswered = undefined;
+	}
+
+	/** Wakes a sleeping machine (Wake it, or the click that opened the window): one call, joined while it is on its way;
+	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
+	 * again; the list says where it stands. */
+	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
+		if (this.#waking) return;
+		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+		this.#startEnded = undefined;
+		this.#startAnswered = undefined;
+		this.#wakeFailed = undefined;
+		this.#waking = true;
+		this.#show("starting");
+		try {
+			await computer.wakeMachine(machineId, signal);
+		} catch {
+			if (!signal.aborted && this.#wantOn?.machineId === machineId) {
+				this.#wantOn = undefined;
+				this.#wakeFailed = machineId;
+			}
+		} finally {
+			this.#waking = false;
+		}
+		if (signal.aborted) return;
+		this.#listStale = true;
+		this.#poke();
+	}
+
+	/** The scene the window draws for a state, or none (the plain words). Its steps follow what the list said alone. */
+	#scenePhase(shown: Shown): ScenePhase | undefined {
+		if (shown === "asleep") return "asleep";
+		if (shown === "starting") return this.#machineState === "starting" ? "starting" : "waking";
+		if (shown === "making") return "waking";
+		if (shown === "turning") return "screen";
+		if (shown === "loading" && !this.#view?.shown) return this.#scene.el.hidden ? "off" : this.#scene.phase;
+		return undefined;
+	}
+
+	/** The first picture settles in over the scene; then the scene goes. */
+	#settle(): void {
+		const view = this.#view;
+		this.#scene.set("settled");
+		this.#loading.classList.remove("is-scene");
+		view?.el.classList.add("is-arriving");
+		clearTimeout(this.#settleTimer);
+		this.#settleTimer = setTimeout(() => {
+			view?.el.classList.remove("is-arriving");
+			if (this.#view?.shown) this.#scene.hide();
+		}, SETTLE_MS);
+	}
+
+	/** What the scene says of the machine shown, and the figure it draws: the agent's own on a computer the agent started,
+	 * else the neutral one (its backdrop names the agent that started it, #1708). */
+	#sceneLook(machine: MemberAgentMachine | undefined): {
+		figure: ReturnType<typeof figureFor> | "neutral";
+		color: string;
+		timeZone: string | null | undefined;
+	} {
+		const figure = machine && !machine.startedByAgent ? "neutral" : figureFor(this.#agent);
+		return {
+			figure,
+			color: figure === "neutral" ? agentColor(this.#agent) : agentColor(this.#agent, figure),
+			timeZone: this.#timeZone(),
+		};
 	}
 
 	/** The picture goes, and the window says why. */
@@ -1678,7 +1844,9 @@ export class ComputerPanel {
 									? this.#startRefusedWords()
 									: shown === "asleep"
 										? this.#listed?.canWake
-											? [t("The computer is asleep."), null, this.#waking ? null : t("Wake it")]
+											? this.#wakeFailed !== undefined && this.#wakeFailed === this.#machineId
+												? [t("The computer could not be started. Try again."), null, t("Try again")]
+												: [t("The computer is asleep."), null, this.#waking ? null : t("Wake it")]
 											: [t("The computer is asleep."), t("Someone with edit access can wake it."), null]
 										: shown === "starting"
 											? [
@@ -1755,14 +1923,38 @@ export class ComputerPanel {
 		this.#loading.dataset.state = shown;
 		// The state text shows only while there is no picture over it (a screen reader would read it under one).
 		this.#loading.hidden = this.#view?.shown === true;
-		this.#spinner.hidden = !(
-			shown === "loading" ||
-			shown === "starting" ||
-			shown === "updating" ||
-			shown === "turning" ||
-			shown === "making" ||
-			this.#waking
-		);
+		// Asleep and on its way up the window draws the desktop about to be seen; the words stay here for screen readers.
+		const phase = this.#scenePhase(shown);
+		if (phase) {
+			this.#scene.look(this.#sceneLook(this.#pick()));
+			this.#scene.set(phase);
+			this.#scene.say(
+				status,
+				waitingFor === "room"
+					? t("Waiting for room on our servers…")
+					: waitingFor === "hours"
+						? t("Out of computer hours…")
+						: "",
+				phase === "waking" ? (detail ?? "") : "",
+			);
+			this.#loading.classList.add("is-scene");
+			this.#loading.dataset.scene = phase;
+		} else if (!this.#view?.shown || this.#scene.phase !== "settled") {
+			clearTimeout(this.#settleTimer);
+			this.#scene.hide();
+			this.#loading.classList.remove("is-scene");
+			delete this.#loading.dataset.scene;
+		}
+		this.#spinner.hidden =
+			phase !== undefined ||
+			!(
+				shown === "loading" ||
+				shown === "starting" ||
+				shown === "updating" ||
+				shown === "turning" ||
+				shown === "making" ||
+				this.#waking
+			);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
 		this.#detail.hidden = detail === null;
 		this.#detail.textContent = detail ?? "";
@@ -1797,22 +1989,10 @@ export class ComputerPanel {
 			await this.#startComputer(computer, signal);
 			if (signal.aborted) return;
 		} else if (state === "asleep" && this.#machineId && !this.#waking) {
-			const machineId = this.#machineId;
-			// One press: the machine wakes, and its screen comes on when it runs (20260930714000).
-			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
-			this.#startEnded = undefined;
-			this.#startAnswered = undefined;
-			this.#waking = true;
-			this.#show("asleep");
-			try {
-				await computer.wakeMachine(machineId, signal);
-			} catch {
-				// The list says where it stands now.
-			} finally {
-				this.#waking = false;
-			}
+			// One press (Wake it, or Try again after a wake that failed): the machine wakes, and its screen comes on when
+			// it runs (20260930714000).
+			await this.#wake(computer, this.#machineId, signal);
 			if (signal.aborted) return;
-			this.#listStale = true;
 		}
 		if (document.activeElement === this.#action) this.focus();
 		this.#poke();
@@ -2060,16 +2240,20 @@ export class ComputerPanels {
 		return this.#panels.get(agentId);
 	}
 
-	/** The agent's panel, started now unless a thread already opened it; none once the company is left. */
-	open(agent: HostedStaffAgent): ComputerPanel | undefined {
+	/** The agent's panel, started now unless a thread already opened it; none once the company is left. `asked`: the
+	 * member's own click asked for it just now, so a sleeping computer wakes (OPEN_STARTS); the page's own opens leave
+	 * it as it is. */
+	open(agent: HostedStaffAgent, open: ComputerOpen = {}): ComputerPanel | undefined {
 		if (this.#signal?.aborted) return undefined;
 		let panel = this.#panels.get(agent.id);
 		if (panel) {
-			// The agent may have been renamed while no thread showed the panel.
+			// The agent may have been renamed (or drawn anew) while no thread showed the panel.
 			panel.retitle(agent.displayName);
+			panel.know(agent);
+			if (open.asked) panel.ask();
 			return panel;
 		}
-		panel = new ComputerPanel(agent, this.#computer, this.#signal, this.#options);
+		panel = new ComputerPanel(agent, this.#computer, this.#signal, this.#options, open);
 		this.#panels.set(agent.id, panel);
 		return panel;
 	}

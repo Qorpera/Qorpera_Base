@@ -179,6 +179,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 					readOnly: !writing,
 					...(handle.switchable ? { switchable: true } : {}),
 					...(handle.codeHost ? { codeHost: true } : {}),
+					// A run's own view: the search this service speaks (keyholes S4), so the run asks only for what it takes.
+					...(handle.searchSupport ? { search: handle.searchSupport } : {}),
 				}),
 			);
 			if (role === "feed")
