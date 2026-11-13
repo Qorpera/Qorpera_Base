@@ -126,9 +126,11 @@ export interface MemberCompanyGatewayOptions {
 	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
 	 * signed out can make the bridge hold a body. */
 	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
-	/** The auth service's own issuer (its `API_EXTERNAL_URL` plus `/auth/v1`), when the deployment names one
-	 * (`QORPERA_MEMBER_TOKEN_ISSUER`): a token of another issuer is then refused here. Never derived from the address
-	 * the functions reach the stack at, which is not the issuer (review r1 F2 of #1746). */
+	/** Exactly what the auth service puts in a token's `iss`, copied unchanged from the stack's own environment, when
+	 * the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): a token of another issuer is then refused here. Nothing
+	 * is appended to it and no path is demanded of it — the pinned self-hosted configuration issues with
+	 * `API_EXTERNAL_URL` as it stands (review r2 F2 of #1746) — and it is never derived from the address the functions
+	 * reach the stack at, which is not the issuer (review r1 F2 of #1746). */
 	memberTokenIssuer?: string;
 	/** The clock, in milliseconds (the tests'). */
 	now?: () => number;

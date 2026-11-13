@@ -676,8 +676,16 @@ function pressControl(p: ComputerPanel) {
 function handBackButton(p: ComputerPanel) {
 	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back") ?? null;
 }
+/** The picture shown now: the view has two canvases (the window's own looks and the live picture), one shown at a
+ * time (20260930745000, review r6 of #1746), and the member sees and acts on whichever that is. */
 function canvas(p: ComputerPanel) {
-	return p.el.querySelector<HTMLCanvasElement>(".machine-screen-canvas")!;
+	const all = [...p.el.querySelectorAll<HTMLCanvasElement>(".machine-screen-canvas")];
+	return all.find((one) => !one.hidden) ?? all[0]!;
+}
+/** The box the picture is drawn in, for both canvases: which of them shows depends on whether the live picture is up. */
+function inBox(p: ComputerPanel, width: number, height: number) {
+	for (const one of p.el.querySelectorAll<HTMLCanvasElement>(".machine-screen-canvas"))
+		vi.spyOn(one, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, width, height));
 }
 /** The time between looks, `count` times, to `step` ms. */
 async function gaps(s: Setup, count: number, step = 50) {
@@ -698,7 +706,7 @@ async function holding(s: Setup = setup()) {
 	s.state.answers.push({ picture: 1 });
 	const p = panel(s);
 	await flush();
-	vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+	inBox(p, 800, 500);
 	canvas(p).width = 1600;
 	canvas(p).height = 1000;
 	pressControl(p);
@@ -2018,7 +2026,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		const control = p.el.querySelector<HTMLElement>(".machine-screen-control")!;
 		expect(control.closest(".screen-viewer-stage")).not.toBeNull();
 		press(canvas(p), 10, 10);
@@ -2042,7 +2050,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		// The preview, before the take-over: a picture to watch, no input, no control.
 		expect(entered(p)).toBe(false);
 		expect(canvas(p).getAttribute("role")).toBe("img");
@@ -2421,7 +2429,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("maps a press by the picture as drawn, letterboxed, and takes none outside it", async () => {
 		const { s, p } = await holding();
 		// 1000 x 500 box: the 1600 x 1000 picture drawn at half size, 100 px in from each side.
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 500));
+		inBox(p, 1000, 500);
 		press(canvas(p), 100, 0, { button: 2 });
 		press(canvas(p), 899, 499, { button: 2 });
 		press(canvas(p), 50, 250, { button: 2 });
@@ -2911,7 +2919,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		canvas(p).width = 1600;
 		canvas(p).height = 1000;
 		return { s, p };
@@ -4189,7 +4197,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		canvas(p).width = 1600;
 		canvas(p).height = 1000;
 		press(canvas(p), 400, 250);
@@ -4238,7 +4246,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			s.state.answers.push({ picture: 1 });
 			const p = panel(s);
 			await flush();
-			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			inBox(p, 800, 500);
 			hover(p, 100, 100);
 			await advance(100);
 			expect(s.pointers, "preview").toEqual([]);
@@ -4250,7 +4258,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			s.state.answers.push({ picture: 1 });
 			const p = panel(s);
 			await flush();
-			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			inBox(p, 800, 500);
 			press(canvas(p), 400, 250);
 			await advance(DOUBLE_CLICK_MS);
 			hover(p, 100, 100);
@@ -4525,7 +4533,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		const first = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode, ledger });
 		first.attach(document.body, () => first.dispose());
 		await flush();
-		vi.spyOn(canvas(first), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(first, 800, 500);
 		canvas(first).width = 1600;
 		canvas(first).height = 1000;
 		press(canvas(first), 400, 250);
@@ -4549,7 +4557,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		second.attach(document.body, () => second.dispose());
 		cleanup.push(() => second.dispose());
 		await flush();
-		vi.spyOn(canvas(second), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(second, 800, 500);
 		canvas(second).width = 1600;
 		canvas(second).height = 1000;
 		press(canvas(second), 400, 250);
@@ -4604,7 +4612,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		canvas(p).width = 1600;
 		canvas(p).height = 1000;
 		press(canvas(p), 400, 250);
