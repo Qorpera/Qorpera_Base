@@ -8,6 +8,7 @@ import {
 	KIT_ENGINE_JS,
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
+	kitBindings,
 	kitDataFile,
 	kitMedia,
 	kitNotes,
@@ -686,4 +687,121 @@ it("names in the page the pictures the folder holds, and says which it lacks", a
 	const page = f.text("apps/marked/index.html");
 	expect(page).toContain('data-kit-src="pictures/halo.webp"');
 	expect(page).not.toContain('data-kit-src="pictures/arc-one.webp"');
+});
+
+it("finds the questions a kit's data names exactly as the page's script does", async () => {
+	const deep = (depth: number): unknown => (depth === 0 ? { query: "shop/deep" } : { next: deep(depth - 1) });
+	const samples: Record<string, unknown>[] = [
+		{ a: { query: "shop/month" } },
+		{ a: { query: "shop/month", params: { days: 30 }, column: "orders", example: 3 } },
+		{ a: [{ query: "shop/month" }, { query: "shop/month" }, { query: "shop/month", params: { days: 7 } }] },
+		{ a: { query: "shop/month", note: "a key a binding has not" } },
+		{ a: { query: 5 } },
+		{ a: ["query"], query: "shop/month" },
+		{ a: deep(10) },
+		{ a: deep(11) },
+		{ a: deep(12) },
+	];
+	for (const sample of samples) {
+		// The page asks once for each question it finds; a watch the bridge refuses lets it go on at once.
+		const watch = vi.fn((_name: string, _params: unknown, _listener: unknown, failed: (error: Error) => void) => {
+			failed(new Error("Not now."));
+			return () => undefined;
+		});
+		const { kit } = openPage(sample, { read: async () => JSON.stringify(sample), watch, onChange() {} });
+		await kit.load();
+		const label = JSON.stringify(sample);
+		expect(kitBindings(sample), label).toHaveLength(watch.mock.calls.length);
+		expect(kitBindings(sample).length > 0, label).toBe(kit.live.length > 0);
+	}
+	expect(kitBindings(samples[2])).toHaveLength(2);
+	expect(kitBindings(samples[3])).toEqual([]);
+});
+
+it("tells the maker when the data names more questions than a page keeps live", () => {
+	const asking = (count: number) => ({
+		...MODEL,
+		groups: [
+			{
+				label: "Numbers",
+				inputs: Array.from({ length: count }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: { query: `shop/q${n}`, params: { n } },
+				})),
+			},
+		],
+	});
+	expect(kitNotes("model", asking(8), () => true)).toEqual([]);
+	expect(kitNotes("model", asking(9), () => true)).toEqual([
+		"model.json names 9 different questions of the company's databases: a page keeps 8 live, and the rest show as not known.",
+	]);
+});
+
+it("adds data to a kit app's reads when its data names a question, and only adds it", async () => {
+	const LOOK =
+		"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	// A new app whose data names a question: data joins the reads the agent gave.
+	const made = read(
+		await f.call(
+			"save_app",
+			save("orders", "make-1", { title: "Orders", kit: "model", reads: ["files"] }, [
+				{ path: "model.json", text: JSON.stringify(ORDERS) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(manifestOf(f, "orders")?.reads).toEqual(["files", "data"]);
+	expect(made.look).toContain(LOOK);
+	const bare = read(
+		await f.call(
+			"save_app",
+			save("bare", "make-2", { title: "Bare", kit: "model" }, [
+				{ path: "model.json", text: JSON.stringify(ORDERS) },
+			]),
+		),
+	);
+	expect(manifestOf(f, "bare")?.reads).toEqual(["data"]);
+	expect(bare.look).toContain(LOOK);
+	// An app with no question keeps its manifest as it is, through a change too.
+	await f.call(
+		"save_app",
+		save("plain", "make-3", { title: "Plain", kit: "model" }, [{ path: "model.json", text: JSON.stringify(MODEL) }]),
+	);
+	const plain = manifestOf(f, "plain");
+	expect(plain?.reads).toEqual([]);
+	const manifest = f.text("apps/plain/app.toml");
+	const kept = read(
+		await f.call(
+			"save_app",
+			save("plain", "change-1", null, [{ path: "model.json", text: JSON.stringify({ ...MODEL, line: "Now" }) }]),
+		),
+	);
+	expect(kept.files.map((file: { path: string }) => file.path)).not.toContain("apps/plain/app.toml");
+	expect(f.text("apps/plain/app.toml")).toBe(manifest);
+	expect(kept.look ?? []).not.toContain(LOOK);
+	// The change that brings the first question adds data, the manifest otherwise as it was.
+	const asked = read(
+		await f.call("save_app", save("plain", "change-2", null, [{ path: "model.json", text: JSON.stringify(ORDERS) }])),
+	);
+	expect(asked.state).toBe("applied");
+	expect(manifestOf(f, "plain")).toEqual({ ...plain, reads: ["data"] });
+	expect(asked.look).toContain(LOOK);
+	// The questions go away: data stays.
+	await f.call("save_app", save("plain", "change-3", null, [{ path: "model.json", text: JSON.stringify(MODEL) }]));
+	expect(manifestOf(f, "plain")?.reads).toEqual(["data"]);
+	// An app with no kit may name data itself.
+	const own = read(
+		await f.call(
+			"save_app",
+			save("tool", "make-4", { title: "Tool", reads: ["data"] }, [{ path: "index.html", text: "<p>Orders</p>" }]),
+		),
+	);
+	expect(own.state).toBe("applied");
+	expect(manifestOf(f, "tool")?.reads).toEqual(["data"]);
 });

@@ -72,6 +72,7 @@ import {
 	KIT_ENGINE_JS,
 	KIT_GUIDE,
 	KIT_PAGE,
+	kitBindings,
 	kitDataFile,
 	kitNotes,
 	kitPage,
@@ -420,6 +421,10 @@ function kitData(kit: DataKit, text: string): Readonly<Record<string, unknown>> 
 	if ("problem" in parsed) throw new CloudToolRefusal(`APP_DATA_INVALID: ${parsed.problem}`);
 	return parsed.data;
 }
+
+/** What the answer's look says when save_app added `data` to a kit app's reads. */
+const DATA_READ_ADDED =
+	"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.";
 
 /** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
 function refuseKitFiles(kit: NonNullable<AppManifest["kit"]>, files: readonly AppFile[]): void {
@@ -795,7 +800,7 @@ export function cloudAppTools(options: {
 				// A new app: its whole folder in one unit, the apps folder with it when the company has none yet.
 				if (request.manifest === null)
 					throw new CloudToolRefusal("APP_NOT_FOUND: no app has that name; give a manifest to make it");
-				const manifest: AppManifest = {
+				let manifest: AppManifest = {
 					name: request.manifest.name,
 					about: request.manifest.about,
 					emblem: request.manifest.emblem ?? "page",
@@ -838,6 +843,10 @@ export function cloudAppTools(options: {
 					const written = new Set(request.files.map((file) => file.path.toLowerCase()));
 					const holds = (path: string) => written.has(path.toLowerCase());
 					look = kitNotes(kit, data, holds);
+					if (kitBindings(data).length > 0 && !manifest.reads.includes("data")) {
+						manifest = { ...manifest, reads: [...manifest.reads, "data"] };
+						look.push(DATA_READ_ADDED);
+					}
 					files = [
 						...files,
 						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
@@ -915,6 +924,8 @@ export function cloudAppTools(options: {
 			let kit = before?.kit ?? null;
 			let title = before?.name ?? request.name;
 			let concept = before?.concept ?? false;
+			// The manifest this call writes: the one given, or the stored one when its kit's data names a question below.
+			let manifestOut: AppManifest | null = null;
 			if (request.manifest !== null) {
 				const manifest: AppManifest = {
 					name: request.manifest.name,
@@ -938,21 +949,11 @@ export function cloudAppTools(options: {
 				kit = manifest.kit;
 				title = manifest.name;
 				concept = manifest.concept;
-				const textOut = writeAppManifest(manifest);
 				if (stored === "unreadable")
 					throw new CloudToolRefusal(
 						`APP_MANIFEST_UNREADABLE: ${manifestPath} is not text; replace it on the company's computer`,
 					);
-				units.push(
-					stored === null
-						? { op: "write", path: manifestPath, content: { text: textOut, mediaType: "application/toml" } }
-						: {
-								op: "write",
-								path: manifestPath,
-								content: { text: textOut, mediaType: stored.entry.file.mediaType },
-								expectedVersion: stored.entry.version,
-							},
-				);
+				manifestOut = manifest;
 			} else if (storedParse?.ok) entry = storedParse.manifest.entry;
 			else
 				throw new CloudToolRefusal(
@@ -1016,6 +1017,12 @@ export function cloudAppTools(options: {
 				const holds = (path: string) =>
 					written.has(path.toLowerCase()) || byKey.get(path.toLowerCase())?.kind === "file";
 				look = kitNotes(kit, data, holds);
+				// Data that names a question reads the company's databases: `data` joins the reads, never leaves them.
+				const reading = manifestOut ?? before;
+				if (kitBindings(data).length > 0 && reading !== null && !reading.reads.includes("data")) {
+					manifestOut = { ...reading, reads: [...reading.reads, "data"] };
+					look.push(DATA_READ_ADDED);
+				}
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
 					{ path: KIT_PAGE, text: kitPage(request.name, kit, title, data, holds) },
@@ -1023,6 +1030,19 @@ export function cloudAppTools(options: {
 					const found = byKey.get(file.path);
 					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
 				}
+			}
+			if (manifestOut !== null) {
+				const textOut = writeAppManifest(manifestOut);
+				units.push(
+					stored === null || stored === "unreadable"
+						? { op: "write", path: manifestPath, content: { text: textOut, mediaType: "application/toml" } }
+						: {
+								op: "write",
+								path: manifestPath,
+								content: { text: textOut, mediaType: stored.entry.file.mediaType },
+								expectedVersion: stored.entry.version,
+							},
+				);
 			}
 			refuseTooManyIcons(files, new Map([...byKey].filter(([path, item]) => item.kind === "file" && inIcons(path))));
 			const sizes = new Map<string, number>();

@@ -3245,6 +3245,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 13 November 2026 save_app's reads take data (the company's databases, which a kit's data may name), so they
+	// moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3291,9 +3293,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"bf3b8c3cc1af7742802b37e631a45f0366d37f351790dffd4712b675a628bb5e",
+		"31664f0b6c95755c36cbeb610f8f8bae55dba1e716954aff6af56a2183366d84",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"bae10d7acb1fcd8564b96b432b86aedd10184379c33df0c8d9555855e91c472d",
+		"76d0f86e0cb7591301f6b2331ad6ee363961f8c555bbc5e36131ffabf8900ca3",
 	);
 });

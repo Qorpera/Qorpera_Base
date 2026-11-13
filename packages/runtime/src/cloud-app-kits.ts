@@ -120,10 +120,11 @@ const KIT_LIVE_VALUES = [
 	"const tell=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
 	"if(window.requestAnimationFrame)window.requestAnimationFrame(go);else setTimeout(go,16)};",
 	// One watch for each question with its params. A failed answer is no answer: the last good one stays. A watch that
-	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again.
+	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again
+	// (once, however many values share it).
 	'const ask=(b)=>{const p=b.params&&typeof b.params==="object"?b.params:{},key=JSON.stringify([b.query,p]);let w=asks.get(key);',
 	"if(!w){w={dead:1};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}const dead=()=>{w.dead=1;w.ready()};",
-	"if(w.dead){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
+	"if(w.dead&&!w.used){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
 	"w.a=a;w.ready();if(s!==w.s){w.s=s;tell()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
 	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
 	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
@@ -145,6 +146,38 @@ const KIT_LIVE_VALUES = [
 	// One load at a time: a load asked for while one runs starts after it, so the newest answers land last.
 	"let chain=Promise.resolve();K.load=()=>{const p=chain.then(run);chain=p.catch(()=>{});return p}})();",
 ].join("");
+
+/** The keys a binding holds: an object whose `query` is text and whose keys are among these is a live value. */
+const KIT_BINDING_KEYS: ReadonlySet<string> = new Set(["query", "params", "column", "example"]);
+/** How many questions a page keeps live at once (the bridge's watches); the rest show as not known. */
+export const KIT_LIVE_QUESTIONS = 8;
+
+/**
+ * The questions of the company's databases a kit's data names, once each (a question with its params counts once), as
+ * the page's script finds them (KIT_LIVE_VALUES): a binding is an object whose `query` is text and whose keys are among
+ * `query`, `params`, `column` and `example`, below the data's top and at most 12 levels down. Data that names any reads
+ * the company's databases (`reads` holds `data`).
+ */
+export function kitBindings(data: unknown): string[] {
+	const found = new Set<string>();
+	const walk = (value: unknown, depth: number): void => {
+		if (depth > 12 || typeof value !== "object" || value === null) return;
+		const object = value as Record<string, unknown>;
+		if (
+			depth > 0 &&
+			!Array.isArray(value) &&
+			typeof object.query === "string" &&
+			Object.keys(object).every((key) => KIT_BINDING_KEYS.has(key))
+		) {
+			const params = typeof object.params === "object" && object.params !== null ? object.params : {};
+			found.add(JSON.stringify([object.query, params]));
+			return;
+		}
+		for (const item of Object.values(object)) walk(item, depth + 1);
+	};
+	walk(data, 0);
+	return [...found];
+}
 
 /** A data file's text as the object an engine draws from, or what is wrong with it, in words for its maker. */
 export function parseKitData(
@@ -255,6 +288,7 @@ export function kitPage(
  * What a read of a kit's data tells its maker after a save: advice, never a refusal.
  * - Pictures and videos the data names that the app's folder does not hold: the page shows a placeholder until they are
  *   written and the app is saved again (the page names its pictures when it is written).
+ * - More questions of the company's databases than a page keeps live: the rest show as not known.
  * - Texts longer than a kit shows: a page of a kit holds labels and short notes, and an engine cuts the rest.
  */
 export function kitNotes(
@@ -279,6 +313,11 @@ export function kitNotes(
 			for (const [name, item] of Object.entries(value)) walk(item, name, depth + 1);
 	};
 	walk(data, "", 0);
+	const questions = kitBindings(data).length;
+	if (questions > KIT_LIVE_QUESTIONS)
+		notes.push(
+			`${kitDataFile(kit)} names ${questions} different questions of the company's databases: a page keeps ${KIT_LIVE_QUESTIONS} live, and the rest show as not known.`,
+		);
 	if (long.length > 0)
 		notes.push(
 			`${long.length === 1 ? "1 text is" : `${long.length} texts are`} longer than a ${kit} page shows (in ${[...new Set(long)].slice(0, 4).join(", ")}): the page cuts ${long.length === 1 ? "it" : "them"}. A kit's page holds names, numbers and notes of a line; the reasoning stays in its file, linked as a source.`,
