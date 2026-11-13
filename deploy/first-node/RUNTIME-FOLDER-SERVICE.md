@@ -417,7 +417,9 @@ service, so the execution host stays small:
     A file that changed after the page that gave the cursor is searched again from its start at its new version, and a
     path gone by then is passed over (the walk goes on at the next path); every file a page goes on in is among its
     `reads` at the version it searched, which is how the runtime tells: it leaves out what the same call showed of an
-    old version (and does not release it), and says so when an earlier answer showed part of it.
+    old version (and does not release it), and says so when an earlier answer showed part of it (which a cursor
+    alone does not tell: the run keeps, with each cursor it seals, whether an answer showed part of that file at that
+    version).
   - **Errors.** A path not in the view is `NOT_FOUND`; a run view the core ended is `VIEW_CLOSED` (the run opens
     another); an operator mount's view is `BAD_REQUEST`. A storage server that cannot be read now fails the page
     (`UNAVAILABLE`), and so does a share with no folder for the company's objects (an unmounted share shows an empty

@@ -101,6 +101,8 @@
 :root[data-theme="dark"] .bubble:has(> .app-cards) { background: none; }
 :root[data-theme="dark"] .app-card:hover { background: color-mix(in srgb, var(--text) 6%, var(--bg)); }
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
+/* A member's note from an app opens with the app's card, on the thread as an agent's cards are (views/conversation.ts). */
+:root[data-theme="dark"] .mine .bubble:has(> .app-cards) { background: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
 /* The thread foot's glass, on the dark surface (conversation.css). */

@@ -160,13 +160,13 @@ describe("before the recorded motion arrives", () => {
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
 		advance(1000);
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
-		// The working figure goes on with its act: it bounces under its stars.
+		// The working figure goes on with its act: it bounces under its stars, off the ground between beats.
 		const poses = new Set<string>();
 		for (let frame = 0; frame < 420; frame++) {
 			advance(1000 / 60);
 			poses.add(still.querySelector("canvas")!.style.transform);
 		}
-		expect([...poses].some((pose) => /^translate\(0%, -\d/.test(pose))).toBe(true);
+		expect([...poses].some((pose) => /^translate\([-\d.]+%, -[1-9]/.test(pose))).toBe(true);
 	});
 });
 
@@ -198,12 +198,13 @@ describe("2D studio playback in the shell", () => {
 		show([host]);
 		const canvas = host.querySelector("canvas")!;
 		vi.mocked(context.arc!).mockClear();
-		// In the air it turns edge on: thin, and off the ground.
+		// In the air it turns edge on: thin, and off the ground. (The act plays at 0.85 of its own pace: 0.3 s of
+		// it is 0.35 s on the clock.)
 		advance(16);
-		advance(284);
+		advance(336);
 		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d[\d.]*%\) rotate\(0deg\) scale\(0\.[1-6]/);
 		// Down again, as the symbol: the question mark's hook and its dot are arcs, drawn in the figure's colour.
-		advance(700);
+		advance(760);
 		advance(16);
 		expect(canvas.style.transform).toBe("");
 		expect(context.arc).toHaveBeenCalled();
@@ -236,7 +237,7 @@ describe("2D studio playback in the shell", () => {
 		for (let frame = 0; frame < 120; frame++) advance(1000 / 60);
 		expect(questionDot()).toBe(false);
 		// A few seconds on the dots have become the question mark, in the figure's colour.
-		for (let frame = 0; frame < 270; frame++) advance(1000 / 60);
+		for (let frame = 0; frame < 330; frame++) advance(1000 / 60);
 		expect(questionDot()).toBe(true);
 		expect(context.fillStyle).toBe("#fcb51b");
 		// A writing figure with nothing waiting never draws one.
