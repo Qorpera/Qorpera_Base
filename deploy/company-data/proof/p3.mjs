@@ -38,6 +38,13 @@ await withAdmin("cdl_template", (db) =>
 		create table qorpera_data.step_effects (txid bigint not null default txid_current(), kind text not null,
 			object text not null, rows bigint);
 
+		-- Transactions whose effects the gateway has read: from then on nothing in them may destroy data, also at commit. No
+		-- company role writes it, and nothing takes a transaction out of it.
+		create table qorpera_data.sealed (
+			txid bigint primary key default txid_current(),
+			sealed_at timestamptz not null default now()
+		);
+
 		-- Says that a table changed, once per statement.
 		create function qorpera_data.changed() returns trigger language plpgsql security definer set search_path = '' as $$
 		begin
@@ -50,9 +57,15 @@ await withAdmin("cdl_template", (db) =>
 		declare n bigint;
 		begin
 			if tg_op = 'TRUNCATE' then
+				if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+					raise exception 'A step may not destroy data after it was checked: % was emptied', tg_table_schema || '.' || tg_table_name;
+				end if;
 				insert into qorpera_data.step_effects (kind, object) values ('emptied table', tg_table_schema || '.' || tg_table_name);
 			else
 				select count(*) into n from gone;
+				if n > 0 and exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+					raise exception 'A step may not destroy data after it was checked: rows of % were deleted', tg_table_schema || '.' || tg_table_name;
+				end if;
 				if n > 0 then
 					insert into qorpera_data.step_effects (kind, object, rows) values ('deleted rows', tg_table_schema || '.' || tg_table_name, n);
 				end if;
@@ -70,7 +83,11 @@ await withAdmin("cdl_template", (db) =>
 		create trigger qorpera_emptied before truncate on qorpera_data.model
 			for each statement execute function qorpera_data.rows_gone();
 
-		-- A dropped table, column or schema is recorded. Dropping one of Qorpera's triggers is refused.
+		-- A dropped table, column or schema is recorded. A table or a column is recorded whether the statement named it or it
+		-- went with something else (a column whose type or domain was dropped with cascade, a table of a dropped schema, a
+		-- partition). A schema only when it was named: its tables are each recorded. What holds no rows of the company's own is
+		-- left: a view, a materialized view (its rows are computed from tables), a sequence (a counter), an index, a type.
+		-- Dropping one of Qorpera's triggers is refused.
 		create function qorpera_data.dropped() returns event_trigger language plpgsql security definer set search_path = '' as $$
 		declare gone record;
 		begin
@@ -79,7 +96,10 @@ await withAdmin("cdl_template", (db) =>
 					raise exception 'Qorpera''s trigger % cannot be dropped', gone.object_identity;
 				end if;
 				if gone.object_type in ('table', 'table column', 'schema') and gone.schema_name is distinct from 'qorpera_data'
-					and (gone.original or gone.object_type = 'table') then
+					and (gone.original or gone.object_type in ('table', 'table column')) then
+					if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+						raise exception 'A step may not destroy data after it was checked: % was dropped', gone.object_identity;
+					end if;
 					insert into qorpera_data.step_effects (kind, object) values ('dropped ' || gone.object_type, gone.object_identity);
 				end if;
 			end loop;
@@ -155,6 +175,14 @@ await withAdmin("cdl_template", (db) =>
 		begin
 			execute step;
 		end $$;
+		-- Seals the current transaction, one way, and gives what it destroyed so far: what destroys data after this aborts
+		-- the transaction, also at its commit.
+		create function qorpera_data.seal() returns table (kind text, object text, rows bigint)
+		language plpgsql security definer set search_path = '' as $$
+		begin
+			insert into qorpera_data.sealed (txid) values (txid_current()) on conflict (txid) do nothing;
+			return query select e.kind, e.object, e.rows from qorpera_data.step_effects e where e.txid = txid_current() order by 1, 2;
+		end $$;
 		-- What this transaction's step destroyed.
 		create function qorpera_data.effects() returns table (kind text, object text, rows bigint) language sql
 			security definer set search_path = '' as $$
@@ -202,6 +230,10 @@ for (const company of COMPANIES) {
 		insert into shop.cart_lines (cart_id) select c from generate_series(1, 100) c, generate_series(1, 3);
 		create function shop.raw(text) returns bigint language plpgsql as $$ declare n bigint; begin execute $1 into n; return n; end $$;
 		create function shop.mine() returns trigger language plpgsql as $$ begin return null; end $$;
+		create type shop.mood as enum ('glad', 'sad');
+		create domain shop.price as numeric(12,2) check (value >= 0);
+		create table shop.reviews (id bigserial primary key, mood shop.mood not null, price shop.price not null);
+		insert into shop.reviews (mood, price) select (array['glad', 'sad'])[1 + n % 2]::shop.mood, n from generate_series(1, 40) n;
 		grant usage on schema shop to ${role(company, "shop", "read")}, ${role(company, "shop", "write")};
 		grant select on all tables in schema shop to ${role(company, "shop", "read")}, ${role(company, "shop", "write")};
 		grant insert, update, delete on all tables in schema shop to ${role(company, "shop", "write")};
@@ -481,6 +513,7 @@ for (const company of COMPANIES) {
 				(select count(*)::text || '/' || sum(hashtextextended(o::text, 0))::text from shop.orders o) as orders,
 				(select count(*)::int from shop.cart_lines) as cart_lines,
 				(select count(*)::int from shop.carts) as carts,
+				(select count(*)::text || '/' || sum(hashtextextended(r::text, 0))::text from shop.reviews r) as reviews,
 				(select count(*)::int from information_schema.columns where table_schema = 'shop' and table_name = 'customers') as customer_columns,
 				(select string_agg(t.tgrelid::regclass || ' ' || t.tgname || ' ' || t.tgenabled::text || ' ' || t.tgfoid::regproc, ', '
 					order by t.tgrelid::regclass::text, t.tgname)
@@ -492,17 +525,30 @@ for (const company of COMPANIES) {
 		});
 	const first = await state();
 	const kept = first.triggers.split(", ").filter((entry) => / qorpera_(changed|rows_gone|emptied) O qorpera_data\./.test(entry));
-	check("every table a company made carries Qorpera's three triggers by itself", kept.length === 12, first.triggers);
+	check("every table a company made carries Qorpera's three triggers by itself", kept.length === 15, first.triggers);
 
 	// The gateway applies a step on a connection logged in as the folder's owner role, in one transaction.
 	await quiet("cdl_b");
 	const owner = await client("cdl_b", "cdl_b_shop_owner");
 	const apply = async (label, sql, allowed) => {
 		await owner.query("begin; set local lock_timeout = '2s'; set local statement_timeout = '30s'; set local search_path = shop");
-		const ran = await outcome(() => owner.query("select qorpera_data.apply_step($1)", [sql]));
-		const effects = ran.ok ? (await owner.query("select * from qorpera_data.effects()")).rows : [];
+		let ran = await outcome(() => owner.query("select qorpera_data.apply_step($1)", [sql]));
+		// Deferred work runs now, before the check: a deferred trigger or foreign key would otherwise run at commit, after
+		// what the step destroyed was read. An error here fails the step like any other.
+		if (ran.ok) ran = await outcome(() => owner.query("set constraints all immediate"));
+		// Read what it destroyed, and seal the transaction: whatever destroys data after this, also at commit, aborts it.
+		const effects = ran.ok ? (await owner.query("select * from qorpera_data.seal()")).rows : [];
 		const destroys = effects.length > 0;
-		await owner.query(ran.ok && (!destroys || allowed) ? "commit" : "rollback");
+		if (ran.ok && (!destroys || allowed)) {
+			// A commit that fails (a deferred trigger that destroys after the seal) is a step that did not land.
+			const committed = await outcome(() => owner.query("commit"));
+			if (!committed.ok) {
+				ran = committed;
+				await owner.query("rollback").catch(() => undefined);
+			}
+		} else {
+			await owner.query("rollback");
+		}
 		note(`${label}: ${ran.ok ? (destroys ? effects.map((effect) => `${effect.kind} ${effect.object}${effect.rows ? ` (${effect.rows})` : ""}`).join("; ") : "destroys nothing") : `refused ${ran.code} ${ran.message}`}${!ran.ok ? "" : destroys && !allowed ? " -> held for a member" : " -> applied"}`);
 		return { ran, effects, destroys };
 	};
@@ -536,6 +582,16 @@ for (const company of COMPANIES) {
 		["erases what Qorpera recorded", "delete from shop.orders where id <= 100; delete from qorpera_data.step_effects", /permission denied/],
 		["says commit, then deletes in a new transaction",
 			"insert into shop.orders (amount) values (1); commit; delete from shop.orders where id <= 100", /transaction|COMMIT/i],
+		["makes a two-stage deferred trigger whose second firing deletes rows after the check",
+			`create function shop.second() returns trigger language plpgsql as $f$ begin delete from shop.orders where id <= 50; return null; end $f$;
+			create constraint trigger second_delete after insert on shop.cart_lines initially deferred for each row execute function shop.second();
+			create function shop.first() returns trigger language plpgsql as $f$ begin
+				set constraints all deferred; insert into shop.cart_lines (cart_id) values (1); return null; end $f$;
+			create constraint trigger first_queue after insert on shop.carts initially deferred for each row execute function shop.first();
+			insert into shop.carts values (1001)`, /after it was checked/],
+		["makes a deferred foreign key that fails",
+			"create table shop.links (id int primary key, cart_id bigint references shop.carts deferrable initially deferred); insert into shop.links values (1, 999999)",
+			/foreign key/],
 	]) {
 		const before = await state();
 		const step = await apply(label, sql, false);
@@ -565,9 +621,29 @@ for (const company of COMPANIES) {
 	const merge = await apply("delete rows by merge",
 		"merge into shop.orders o using (select g as id from generate_series(1, 7) g) s on o.id = s.id when matched then delete", false);
 	check("rows deleted by merge are held, with the count", rowsGone(merge.effects, "shop.orders") === 7, `${rowsGone(merge.effects, "shop.orders")}`);
+	const dropType = await apply("drop an enum type a column with rows uses, with cascade", "drop type shop.mood cascade", false);
+	check("a step that drops a column by dropping its enum type with cascade is held",
+		dropType.effects.some((effect) => effect.kind === "dropped table column" && effect.object === "shop.reviews.mood"),
+		dropType.effects.map((effect) => `${effect.kind} ${effect.object}`).join("; "));
+	const dropDomain = await apply("drop a domain a column with rows uses, with cascade", "drop domain shop.price cascade", false);
+	check("a step that drops a column by dropping its domain with cascade is held",
+		dropDomain.effects.some((effect) => effect.kind === "dropped table column" && effect.object === "shop.reviews.price"),
+		dropDomain.effects.map((effect) => `${effect.kind} ${effect.object}`).join("; "));
+	const dropSchema = await apply("drop the folder's schema with cascade", "drop schema shop cascade", false);
+	const droppedTables = dropSchema.effects.filter((effect) => effect.kind === "dropped table").map((effect) => effect.object);
+	check("a step that drops a schema with its tables is held, with each table",
+		dropSchema.effects.some((effect) => effect.kind === "dropped schema" && effect.object === "shop")
+			&& ["shop.orders", "shop.reviews", "shop.carts", "shop.cart_lines", "shop.customers"].every((table) => droppedTables.includes(table)),
+		dropSchema.effects.map((effect) => `${effect.kind} ${effect.object}`).join("; "));
+	const deferred = await apply("make a deferred constraint trigger that deletes rows, and queue it",
+		`create function shop.later() returns trigger language plpgsql as $f$ begin delete from shop.orders where id <= 50; return null; end $f$;
+		create constraint trigger later_delete after insert on shop.carts initially deferred for each row execute function shop.later();
+		insert into shop.carts values (1000)`, false);
+	check("a step whose deferred trigger deletes rows is held, with the count", rowsGone(deferred.effects, "shop.orders") === 50,
+		`${rowsGone(deferred.effects, "shop.orders")}`);
 	const held = await state();
 	check("every held step left shop as it was", JSON.stringify(before) === JSON.stringify(held),
-		`${held.orders} orders, ${held.carts} carts, ${held.cart_lines} cart lines, ${held.customer_columns} customer columns`);
+		`${held.orders} orders, ${held.carts} carts, ${held.cart_lines} cart lines, ${held.reviews} reviews, ${held.customer_columns} customer columns`);
 
 	// Steps that destroy nothing land.
 	const add = await apply("add a column", "alter table shop.orders add column shipped_at timestamptz", false);
@@ -581,6 +657,15 @@ for (const company of COMPANIES) {
 	);
 	check("a step that makes a table is applied, and the table gets Qorpera's three triggers by itself",
 		made.ran.ok && !made.destroys && returns.rows[0].n === 3, `${returns.rows[0].n} triggers`);
+
+	const linesBefore = await withAdmin("cdl_b", (db) => db.query("select count(*)::int as n from shop.cart_lines"));
+	const honest = await apply("make a deferred constraint trigger that only inserts, and queue it",
+		`create function shop.note_cart() returns trigger language plpgsql as $f$ begin insert into shop.cart_lines (cart_id) values (new.id); return null; end $f$;
+		create constraint trigger note_cart after insert on shop.carts initially deferred for each row execute function shop.note_cart();
+		insert into shop.carts values (2000)`, false);
+	const linesAfter = await withAdmin("cdl_b", (db) => db.query("select count(*)::int as n from shop.cart_lines where cart_id = 2000"));
+	check("a step whose deferred work only inserts is applied, and its deferred insert landed",
+		honest.ran.ok && !honest.destroys && linesAfter.rows[0].n === 1, `${honest.ran.message}; ${linesBefore.rows[0].n} lines before, ${linesAfter.rows[0].n} for the new cart`);
 
 	const yes = await apply("delete rows, after a member's yes", "delete from shop.orders where id <= 100", true);
 	const after = await withAdmin("cdl_b", (db) => db.query("select count(*)::int as n from shop.orders"));
