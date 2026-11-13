@@ -647,7 +647,7 @@ export class Gateway {
 					`set local search_path = ${quoted(name)}`,
 			);
 			try {
-				await client.query({ text: "select qorpera_data.run_step($1)", values: [text], queryMode: "extended" });
+				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
 			} catch (error) {
 				await client.query("rollback").catch(() => undefined);
 				const told = storeProblem(error);

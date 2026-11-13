@@ -506,17 +506,22 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			(await asAdmin(database, "select (select count(*) from guard.t) || '/' || (select count(*) from guard.parent) || '/' || (select count(*) from guard.child) as n"))[0].n;
 		const before = await rows();
 		assert.equal(before, "10/3/9");
+		const stay = (trigger) => new RegExp(`Qorpera's trigger ${trigger} on guard\\.t must stay as Qorpera made it`);
 		const refused = [
-			["alter table t disable trigger user;\ndelete from t;\nalter table t enable trigger user;\n", /switch off or replace Qorpera's triggers: qorpera_changed is switched off/],
-			["alter table t disable trigger qorpera_rows_gone;\ndelete from t where id = 1;\n", /qorpera_rows_gone is switched off/],
-			["alter table t enable replica trigger qorpera_changed;\n", /qorpera_changed is switched off/],
-			["drop trigger qorpera_rows_gone on t;\n", /may not remove Qorpera's triggers: qorpera_rows_gone on guard\.t/],
-			["create or replace trigger qorpera_rows_gone after delete on t for each statement execute function noop();\ndelete from t;\n", /qorpera_rows_gone was replaced/],
-			["create or replace trigger qorpera_rows_gone after insert on t referencing new table as gone for each statement execute function qorpera_data.rows_gone();\n", /qorpera_rows_gone was replaced/],
-			["create trigger qorpera_x after insert on t for each statement execute function noop();\n", /qorpera_x is not one of Qorpera's triggers/],
-			["alter trigger qorpera_rows_gone on t rename to kept;\ndelete from t;\n", /kept is not one of Qorpera's triggers/],
-			["create unlogged table u (id int);\n", /kept logged/],
-			["alter table t set unlogged;\n", /kept logged/],
+			["alter table t disable trigger user;\ndelete from t;\nalter table t enable trigger user;\n", stay("qorpera_\\w+")],
+			["alter table t disable trigger qorpera_rows_gone;\ndelete from t where id = 1;\n", stay("qorpera_rows_gone")],
+			["alter table t enable replica trigger qorpera_changed;\n", stay("qorpera_changed")],
+			["drop trigger qorpera_rows_gone on t;\n", /Qorpera's trigger qorpera_rows_gone on guard\.t cannot be dropped/],
+			["create or replace trigger qorpera_rows_gone after delete on t for each statement execute function noop();\ndelete from t;\n", stay("qorpera_rows_gone")],
+			["create or replace trigger qorpera_rows_gone after insert on t referencing new table as gone for each statement execute function qorpera_data.rows_gone();\n", stay("qorpera_rows_gone")],
+			["create or replace trigger qorpera_rows_gone after delete on t referencing old table as gone for each statement when (false) execute function qorpera_data.rows_gone();\ndelete from t;\n", stay("qorpera_rows_gone")],
+			["create trigger qorpera_x after insert on t for each statement execute function noop();\n", stay("qorpera_x")],
+			["alter trigger qorpera_rows_gone on t rename to kept;\nalter table t disable trigger kept;\ndelete from t;\n", /Qorpera's triggers on guard\.t are missing/],
+			["create unlogged table u (id int);\n", /Qorpera keeps every table logged: guard\.u is not/],
+			["alter table t set unlogged;\n", /Qorpera keeps every table logged: guard\.t is not/],
+			["set local session_replication_role = replica;\ndelete from t;\n", /permission denied/],
+			["alter event trigger qorpera_guard disable;\nalter table t disable trigger user;\ndelete from t;\n", /must be owner|permission denied/],
+			["delete from t where id = 1;\ndelete from qorpera_data.step_effects;\n", /permission denied/],
 		];
 		for (const [text, problem] of refused) {
 			put(ENV_A, { "data/guard/tables/002-try.sql": text });
