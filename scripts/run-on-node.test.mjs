@@ -34,8 +34,10 @@ import {
 	EXTRA_PAUSE_SECONDS,
 	EXTRA_PRESSURE,
 	EXTRA_SLOTS,
+	FREE_CORES,
 	FRONT,
 	firstTaking,
+	freeGrowScript,
 	GROW_MEMORY_MIB,
 	growScript,
 	HISTORY,
@@ -75,6 +77,7 @@ import {
 	secretLooking,
 	seedScript,
 	shellQuote,
+	slotsTaken,
 	suiteCommand,
 	treeDigest,
 	WIDE_SLOTS,
@@ -469,9 +472,17 @@ test("past the CPU lane's slots, the first run in the queue takes an extra one o
 });
 
 test("--cores runs changed's steps side by side and is only for changed", () => {
-	// Side by side within what one slot gives, unless the run says otherwise.
-	assert.equal(parseArgs(["changed"]).cores, CHANGED_CORES);
+	// Side by side within three slots' cores, which a run without --front takes only while they are free (freeGrowScript),
+	// unless the run says otherwise; --cores 2 keeps to one slot.
+	assert.equal(parseArgs(["changed"]).cores, FREE_CORES);
+	assert.equal(FREE_CORES, 6);
+	assert.equal(parseArgs(["--cores", "2", "changed"]).cores, 2);
+	// A --front run without --cores keeps to what one slot gives, as before.
+	assert.equal(parseArgs(["--front", "changed"]).cores, CHANGED_CORES);
 	assert.equal(CHANGED_CORES, 2);
+	// pr-loop's batch runs (tools/pr-loop/loop.mjs runOnNodeArgs) parse as before.
+	const batch = parseArgs(["--no-status", "--record", "r.json", "--tree", "pr-loop", "--front", "--cores", "6", "--parts", "2", "--fail-fast", "--base", "origin/master", "changed"]);
+	assert.deepEqual([batch.front, batch.cores, batch.parts, batch.failFast, batch.tree], [true, 6, 2, true, "pr-loop"]);
 	assert.equal(parseArgs(["--cores", "1", "changed"]).cores, 1);
 	assert.equal(parseArgs(["hosted-db"]).cores, null);
 	const options = parseArgs(["--front", "--cores", "6", "changed"]);
@@ -614,7 +625,7 @@ test("a run in parts prints each part's output a whole step at a time, so steps 
 	assert.deepEqual(writes, []);
 });
 
-test("a --front --cores run takes up to three slots, one such run per machine; any other --cores run keeps its slot's cores", () => {
+test("a --cores run takes up to three slots, one such run per machine: a --front one ahead of the queue, any other only free ones", () => {
 	assert.equal(WIDE_SLOTS, 3);
 	const run = "20261016T001500-1-ab";
 	const base = { run, runDir: `/home/tester/runs/${run}`, treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" };
@@ -633,22 +644,40 @@ test("a --front --cores run takes up to three slots, one such run per machine; a
 		assert.ok(script.indexOf("cores_file=") < script.indexOf('sudo -n -u "$runner"'));
 		assert.doesNotMatch(script, /kill -0/);
 	}
-	// Only a front run takes the machine's wide lock, without waiting, and grows; any other keeps its one slot.
+	// A front run takes the machine's wide lock, without waiting, and grows ahead of the queue (growScript), as before: none
+	// of the free slots' rule is in its session.
+	const allStarted = `/home/tester/runs/${run}/.run-on-node-all-started`;
+	const sideBySide = `/home/tester/runs/${run}/.run-on-node-side-by-side`;
 	assert.match(
 		wide,
 		/\n\tif \{ exec 6>"\/run\/lock\/qorpera-test-machine-wide\.lock"; \} 2>\/dev\/null && flock -n 6; then echo "== run-on-node: side by side in up to \$want slots of \$per cores, taking the others as they free"; exec 4> >\(grow\)\n\telse echo "== run-on-node: another --front run holds this machine's extra slots: side by side in this one slot \(\$per cores\)"; fi\n/,
 	);
-	assert.ok(wide.includes(growScript({ allStarted: `/home/tester/runs/${run}/.run-on-node-all-started` })));
-	assert.doesNotMatch(narrow, /grow|wide\.lock|want=/);
+	assert.ok(wide.includes(growScript({ allStarted })));
+	assert.ok(!wide.includes(freeGrowScript({ allStarted, sideBySide })));
+	assert.doesNotMatch(wide, /free-wide|side-by-side|free ones/);
+	// Any other takes a lock of its own, without waiting, so it never keeps a --front run from the wide one, and takes free
+	// slots only (freeGrowScript).
+	assert.match(
+		narrow,
+		/\n\tif \{ exec 6>"\/run\/lock\/qorpera-test-machine-free-wide\.lock"; \} 2>\/dev\/null && flock -n 6; then echo "== run-on-node: side by side in up to \$want slots of \$per cores: once its steps run side by side, it takes free ones of slots 1-4 while no other run waits for one here"; exec 4> >\(grow\)\n\telse echo "== run-on-node: another run takes this machine's free slots: side by side in this one slot \(\$per cores\)"; fi\n/,
+	);
+	assert.ok(narrow.includes(freeGrowScript({ allStarted, sideBySide })));
+	assert.ok(!narrow.includes(growScript({ allStarted })));
+	assert.doesNotMatch(narrow, /qorpera-test-machine-wide\.lock|-more/);
+	// It tries slots 4 to 1 only: never the kept slot 5, nor the extra ones (6, 7).
+	const freeGrow = freeGrowScript({ allStarted, sideBySide });
+	assert.match(freeGrow, /\n\t\t\t\tfor candidate in \$\(seq 4 -1 1\); do\n/);
+	assert.equal(freeGrow.match(/for candidate in/g).length, 1);
 	// Without --cores nothing of it.
 	for (const script of [runScript({ ...base, front: true }), runScript(base)]) assert.doesNotMatch(script, /cores|grow|wide|want=/);
-	// The slots it wants: the cores asked over one slot's (vCPUs / 5), rounded up, at most WIDE_SLOTS.
-	for (const [asked, cpus, slots] of [[6, 10, 3], [4, 10, 2], [3, 10, 2], [2, 10, 1], [1, 10, 1], [16, 12, 3], [6, 6, 3]]) {
-		const lines = runScript({ ...base, front: true, cores: asked }).split("\n");
-		const per = lines.find((line) => line.startsWith("per=")).split(";")[0].replaceAll("$(nproc)", String(cpus));
-		const want = lines.find((line) => line.startsWith("want="));
-		assert.equal(spawnSync("bash", ["-c", `${per}; ${want}; echo $want`], { encoding: "utf8" }).stdout.trim(), String(slots), `${asked} of ${cpus}`);
-	}
+	// The slots it wants, with --front or without: the cores asked over one slot's (vCPUs / 5), rounded up, at most WIDE_SLOTS.
+	for (const front of [true, false])
+		for (const [asked, cpus, slots] of [[6, 10, 3], [4, 10, 2], [3, 10, 2], [2, 10, 1], [1, 10, 1], [16, 12, 3], [6, 6, 3]]) {
+			const lines = runScript({ ...base, front, cores: asked }).split("\n");
+			const per = lines.find((line) => line.startsWith("per=")).split(";")[0].replaceAll("$(nproc)", String(cpus));
+			const want = lines.find((line) => line.startsWith("want="));
+			assert.equal(spawnSync("bash", ["-c", `${per}; ${want}; echo $want`], { encoding: "utf8" }).stdout.trim(), String(slots), `${asked} of ${cpus}`);
+		}
 	// A killed run's cores file is pruned by the time in its name, like the copy markers.
 	assert.match(
 		pruneScript(),
@@ -1228,6 +1257,170 @@ test(
 		}
 	},
 );
+
+test(
+	"a run without --front takes free slots only: once its steps run side by side, never the kept slot, never while another run waits",
+	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
+	async () => {
+		const locks = mkdtempSync(join(tmpdir(), "run-on-node-free-"));
+		const queue = join(locks, "qorpera-test-machine-queue");
+		const quickQueue = join(locks, "qorpera-test-machine-quick-queue");
+		const arriving = join(locks, "arriving");
+		const slot = (n) => join(locks, `qorpera-test-machine-slot${n}.lock`);
+		const cores = join(locks, "cores");
+		const allStarted = join(locks, "all-started");
+		const sideBySide = join(locks, "side-by-side");
+		const meminfo = join(locks, "meminfo");
+		const memory = (mib) => {
+			writeFileSync(`${meminfo}.tmp`, `MemTotal:       16303428 kB\nMemFree:          812344 kB\nMemAvailable:   ${String(mib * 1024).padStart(8)} kB\n`);
+			renameSync(`${meminfo}.tmp`, meminfo);
+		};
+		const holders = new Map();
+		const sessions = [];
+		const hold = (file) =>
+			new Promise((resolvePromise, reject) => {
+				const child = spawn("flock", ["--nonblock", "--no-fork", file, "sh", "-c", "echo held; exec sleep 60"], { stdio: ["ignore", "pipe", "inherit"] });
+				holders.set(file, child);
+				child.stdout.once("data", () => resolvePromise());
+				child.once("exit", (code) => reject(new Error(`lock holder for ${file} exited ${code}`)));
+			});
+		const release = async (file) => {
+			const child = holders.get(file);
+			holders.delete(file);
+			const exited = new Promise((resolvePromise) => child.once("exit", resolvePromise));
+			child.kill("SIGKILL");
+			await exited;
+		};
+		const free = (file) => spawnSync("flock", ["--nonblock", file, "true"]).status === 0;
+		const until = async (what, check) => {
+			for (const end = Date.now() + 15_000; !check(); await sleep(100)) if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+		};
+		// A session as runScript leaves it for grow: its first slot locked on fd 9, one slot's cores in the file.
+		const session = (want) => {
+			const child = spawn(
+				"bash",
+				[
+					"-c",
+					[
+						"set -uo pipefail",
+						`exec 9>${shellQuote(slot(1))}; flock -n 9 || exit 3`,
+						`per=2; want=${want}; cores_file=${shellQuote(cores)}; echo "$per" >"$cores_file"`,
+						freeGrowScript({ locks, allStarted, sideBySide, meminfo, arriving }),
+						"exec 4> >(grow)",
+						"echo started",
+						"read -r _",
+					].join("\n"),
+				],
+				{ stdio: ["pipe", "pipe", "inherit"] },
+			);
+			const state = { out: "", child };
+			sessions.push(child);
+			child.stdout.on("data", (data) => {
+				state.out += data;
+			});
+			state.ended = new Promise((resolvePromise) => child.stdout.once("end", resolvePromise));
+			return state;
+		};
+		const end = async (state) => {
+			state.child.stdin.end();
+			await state.ended;
+		};
+		const waits = "== run-on-node: another run waits for a slot here or is being copied: no more slots while one does\n";
+		try {
+			mkdirSync(queue);
+			mkdirSync(quickQueue);
+			mkdirSync(arriving);
+			memory(8192);
+			// Before its steps run side by side (one at a time), it takes nothing; then one free slot a turn, the higher
+			// first, without a queue ticket, and keeps them until its session ends.
+			const first = session(3);
+			await until("the session", () => first.out.includes("started"));
+			await sleep(3_000);
+			assert.doesNotMatch(first.out, /too/);
+			writeFileSync(sideBySide, "");
+			await until("slots 4 and 3", () => first.out.includes("slot 3 too: 3 slots, 6 cores\n"));
+			assert.match(first.out, /== run-on-node: slot 4 too: 2 slots, 4 cores\n== run-on-node: slot 3 too: 3 slots, 6 cores\n/);
+			assert.equal(readFileSync(cores, "utf8"), "6\n");
+			assert.deepEqual([free(slot(4)), free(slot(3)), readdirSync(queue)], [false, false, []]);
+			await end(first);
+			assert.deepEqual([free(slot(1)), free(slot(3)), free(slot(4)), existsSync(cores)], [true, true, true, false]);
+			// Slots 2-4 busy: the kept slot (5) and the extra ones (6, 7) are free, and it takes none of them, nor opens their files.
+			for (const n of [2, 3, 4]) await hold(slot(n));
+			const second = session(3);
+			await until("the session", () => second.out.includes("started"));
+			await sleep(3_000);
+			assert.doesNotMatch(second.out, /too/);
+			assert.deepEqual([5, 6, 7].map((n) => existsSync(slot(n))), [false, false, false]);
+			assert.equal(readFileSync(cores, "utf8"), "2\n");
+			// A run waits in the queue: slot 3 frees, and it takes it not, saying so once.
+			const owner = join(queue, "1760650000000000000-2");
+			await hold(owner);
+			await release(slot(3));
+			await until("the wait", () => second.out.includes(waits));
+			await sleep(3_000);
+			assert.doesNotMatch(second.out, /too/);
+			assert.equal(free(slot(3)), true);
+			// A ticket nobody holds is a run that died, not one that waits: once the live one has gone, it takes the slot.
+			writeFileSync(join(queue, "1760640000000000000-3"), "");
+			await release(owner);
+			await until("slot 3", () => second.out.includes("== run-on-node: slot 3 too: 2 slots, 4 cores\n"));
+			assert.match(second.out, /no more slots while one does\n== run-on-node: no run waits and 8192 MiB available: taking free slots again\n== run-on-node: slot 3 too/);
+			assert.equal(second.out.split(waits).length, 2);
+			await end(second);
+			// A --front run's growing ticket, a quick run's and a copy under way each count as a run that waits; a copy's marker
+			// older than 10 minutes does not.
+			const stale = join(arriving, "20261113T080000-1-old");
+			writeFileSync(stale, "");
+			utimesSync(stale, new Date(Date.now() - 20 * 60_000), new Date(Date.now() - 20 * 60_000));
+			const others = [
+				["a --front run's growing ticket", join(queue, `${FRONT}1760650000000000001-4-more`), true],
+				["a quick run's ticket", join(quickQueue, "1760650000000000002-5"), true],
+				["a copy under way", join(arriving, "20261113T080500-6-new"), false],
+			];
+			for (const [what, file, ticket] of others) {
+				if (ticket) await hold(file);
+				else writeFileSync(file, "");
+				const third = session(2);
+				writeFileSync(sideBySide, "");
+				await until(`the wait for ${what}`, () => third.out.includes(waits));
+				await sleep(2_500);
+				assert.doesNotMatch(third.out, /too/, what);
+				if (ticket) await release(file);
+				else rmSync(file);
+				await until(`slot 3 after ${what}`, () => third.out.includes("slot 3 too: 2 slots, 4 cores\n"));
+				await end(third);
+			}
+			// Under GROW_MEMORY_MIB available it takes none; with enough again it does.
+			memory(2047);
+			const fourth = session(2);
+			await until("the low-memory stop", () => fourth.out.includes("== run-on-node: 2047 MiB available, under 2048: no more slots until there is more\n"));
+			await sleep(2_500);
+			assert.doesNotMatch(fourth.out, /too/);
+			memory(2048);
+			await until("slot 3", () => fourth.out.includes("== run-on-node: no run waits and 2048 MiB available: taking free slots again\n== run-on-node: slot 3 too"));
+			await end(fourth);
+			// Once every step has started it takes no more.
+			writeFileSync(allStarted, "");
+			const fifth = session(3);
+			await until("the stop", () => fifth.out.includes("== run-on-node: every step has started: no more slots (1 of 3)\n"));
+			await sleep(2_500);
+			assert.deepEqual([fifth.out.includes("too"), free(slot(3)), readFileSync(cores, "utf8")], [false, true, "2\n"]);
+			await end(fifth);
+			assert.deepEqual([free(slot(1)), free(slot(3)), existsSync(cores)], [true, true, false]);
+		} finally {
+			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");
+			rmSync(locks, { recursive: true, force: true });
+		}
+	},
+);
+
+test("a changed run's record says how many slots it held at most and the cores they gave", () => {
+	assert.deepEqual(slotsTaken({ slot_cores: "6", workers: "2" }), { slots: 3, slotCores: 6 });
+	assert.deepEqual(slotsTaken({ slot_cores: "2", workers: "2" }), { slots: 1, slotCores: 2 });
+	// Nothing to say: no steps reached, no cores file read, or a status file without the slot's workers.
+	for (const status of [{}, { workers: "2" }, { slot_cores: "0", workers: "2" }, { slot_cores: "6" }, { slot_cores: "x", workers: "2" }])
+		assert.deepEqual(slotsTaken(status), {}, JSON.stringify(status));
+});
 
 test(
 	"only a front run takes the kept slot, and first; a slot's lock file is opened for reading, so a read-only one still locks",

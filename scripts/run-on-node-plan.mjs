@@ -469,6 +469,11 @@ function narrow(step, stepWorkers) {
  * run stops waiting for more slots: the steps still running need no more cores than they have. */
 export const ALL_STARTED = ".run-on-node-all-started";
 
+/** A side-by-side run started by run-on-node.mjs makes this file in its directory once its `alone` parts are done and its
+ * steps start side by side: only from then on can more cores start a step sooner, so a run without --front takes free
+ * slots only once it is there (run-on-node.mjs freeGrowScript). */
+export const SIDE_BY_SIDE = ".run-on-node-side-by-side";
+
 /** A --fail-fast run's part stops once run-on-node.mjs makes this file in its directory: another part failed. */
 export const STOP = ".run-on-node-stop";
 
@@ -494,8 +499,9 @@ const OWNED =
  *
  * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, more as further
  * slots free: the budget is the smaller of that and `cores`, read again every second. A value it cannot read keeps
- * the budget where it was, from one core. `stepWorkers` false: a VITEST_MAX_WORKERS the run was given (run-on-node.mjs
- * --env) wins over the steps' `workers`.
+ * the budget where it was, from one core. The most it read goes to the status file as `slot_cores`, for the run's
+ * record. Before the rest starts, it makes SIDE_BY_SIDE. `stepWorkers` false: a VITEST_MAX_WORKERS the run was given
+ * (run-on-node.mjs --env) wins over the steps' `workers`.
  *
  * `failFast` (run-on-node.mjs --fail-fast, for pr-loop's batch runs, which are bisected when they fail): after the first
  * failed step, or once the file STOP is in the run's directory, no step starts, and the steps running side by side are
@@ -601,10 +607,11 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 			: []),
 		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
 		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
-		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0`,
+		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0; most=0`,
+		`[ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && : >${SIDE_BY_SIDE}`,
 		'while [ -n "${pending// }${running// }" ]; do',
 		...(failFast ? [`\tif ${halted}; then stop; break; fi`] : []),
-		`\thave=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$budget" -gt "$top" ] && top=$budget`,
+		`\thave=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && { budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$have" -gt "$most" ] && most=$have; }; [ "$budget" -gt "$top" ] && top=$budget`,
 		'\tleft=""',
 		"\tfor i in $pending; do",
 		'\t\tif [ -z "${running// }" ] || [ $(( used + need[i] )) -le "$budget" ]; then start "$i"; running="$running $i"; used=$(( used + need[i] )); else left="$left $i"; fi',
@@ -630,6 +637,7 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 		"done",
 		"wait",
 		`echo "== changed: side by side within ${cores} cores\${QORPERA_RUN_CORES_FILE:+ (at most $(( top / 100 )) from its slots)}: at most $tasks tasks of the runner user, at least \${least:-?} MiB available"`,
+		'[ -n "${QORPERA_RUN_CORES_FILE:-}" ] && echo "slot_cores=$most" >>.run-on-node-status',
 		...fail,
 	].join("\n");
 }

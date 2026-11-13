@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, renameS
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ALL_STARTED, describePlan, planChanged, planScript, STOP, splitPlan } from "./run-on-node-plan.mjs";
+import { ALL_STARTED, describePlan, planChanged, planScript, SIDE_BY_SIDE, STOP, splitPlan } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
 	machineLabel,
@@ -49,9 +49,12 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     take the slot kept for such runs when it is free (pr-loop's batch runs,
                                     which test every approved head at once)
          --cores N                  changed: run the steps side by side within N cores, their tree-wide parts
-                                    first and alone (default: 2, what one slot gives). With --front the run takes
-                                    up to 3 slots as they free (one such run per machine), each only while the
-                                    machine has 2 GiB available; otherwise it keeps to its one slot's cores
+                                    first and alone (default: 6; with --front, 2, what one slot gives). The run starts
+                                    in one slot and takes up to 3 as they free (one such run per machine), each only
+                                    while the machine has 2 GiB available. A --front run takes them ahead of the queue,
+                                    the slot kept for --front runs first. Any other takes only slots 1-4, once its steps
+                                    run side by side and only while no other run waits for a slot or is being copied
+                                    there. --cores 2 keeps to one slot
          --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
                                     at once (N at most the machines' count). Each waits on every machine and runs on the
                                     first with a slot for it, the part with the most work queued first. One exit code,
@@ -140,9 +143,9 @@ export const KEPT_SLOTS = 1;
  * (MiB, MemAvailable): in proof run 20261016T144011 five busy runs left node01 1264 MiB. The coordinator's decision of
  * 16 Oct. */
 export const GROW_MEMORY_MIB = 2048;
-/** A changed run's steps run side by side within this many cores, unless --cores says otherwise: what one slot gives. Steps
- * that mostly wait then wait together. The same 11 steps on node02 under full load (7 Nov): one at a time 1106 s, side by
- * side 893 s; pr-loop's batches have run this way since 16 Oct. */
+/** A changed --front run's steps run side by side within this many cores, unless --cores says otherwise: what one slot
+ * gives (any other changed run asks for FREE_CORES). Steps that mostly wait then wait together. The same 11 steps on node02
+ * under full load (7 Nov): one at a time 1106 s, side by side 893 s; pr-loop's batches have run this way since 16 Oct. */
 export const CHANGED_CORES = 2;
 /** Past the CPU lane's slots, the first run in its queue may take one of EXTRA_SLOTS more, while the machine has room
  * (roomyScript): the slots count runs, and a run's CPU varies. On 7 Nov 06:25-06:45Z node01 had runs waiting in 36 of 36
@@ -182,10 +185,18 @@ const LANES = {
 export const FRONT = "0-";
 /** A --front --cores run (pr-loop's batch, its steps side by side) may hold up to this many of its machine's CPU slots:
  * it starts in one and takes the others as they free, ahead of every run that came after it. One such run per machine
- * at a time holds WIDE; any other --cores run keeps its one slot's cores. The coordinator's decision of 16 Oct: 6 of
- * a 10-vCPU machine's cores for the batch, the other slots for everyone else. */
+ * at a time holds WIDE. The coordinator's decision of 16 Oct: 6 of a 10-vCPU machine's cores for the batch, the other
+ * slots for everyone else. Any other --cores run may hold as many, but takes only free ones (FREE_CORES). */
 export const WIDE_SLOTS = 3;
 const WIDE = `${LOCKS}/qorpera-test-machine-wide.lock`;
+/** A changed run without --front asks for this many cores unless --cores says otherwise: WIDE_SLOTS slots' worth. Past its
+ * first slot it takes only free ones, and only while no other run waits (freeGrowScript), so on a busy machine it keeps
+ * to one slot's cores as before. Such runs took a median of 10 minutes in one slot (117 passed changed runs on node02,
+ * 12-13 Nov) while the machines were mostly free: of 75 runs of one lane in 12 hours, 74 started with nobody waiting and
+ * the median busy slots were 0. The founder's word of 13 Nov. */
+export const FREE_CORES = WIDE_SLOTS * CHANGED_CORES;
+/** One such run per machine at a time holds FREE_WIDE: a lock of its own, so it never keeps a --front run from WIDE. */
+const FREE_WIDE = `${LOCKS}/qorpera-test-machine-free-wide.lock`;
 /** A part of a changed --parts run waits on every machine its copy reached, and runs on the first that gives it a slot
  * (claimParts): in proof run 20261016T144011 a part waited 587 s on one machine while slots freed on the other. Its
  * session on each (runScript `claim`) says QUEUED once it holds a queue ticket, then SLOT and the slot once it holds one,
@@ -289,7 +300,16 @@ export function parseArgs(argv) {
 		if (suite === "changed") {
 			if (extra.length) throw new Error("changed takes no suite arguments");
 			// The plan, and with it the command and the build, is made from git in main().
-			return { ...options, cores: options.cores ?? CHANGED_CORES, install: options.install ?? true, build: options.build, suite, command: [], quick: false, plain: plain(options, suite, extra) };
+			return {
+				...options,
+				cores: options.cores ?? (options.front ? CHANGED_CORES : FREE_CORES),
+				install: options.install ?? true,
+				build: options.build,
+				suite,
+				command: [],
+				quick: false,
+				plain: plain(options, suite, extra),
+			};
 		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
@@ -505,7 +525,8 @@ export function runCommandLine({ command, env = [], sudo = false, cores = null, 
  * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
  * for the CPU lane's; a `front` run waits ahead of every run without it and tries the kept slots (KEPT_SLOTS) first,
  * which no other run takes. A `cores` run (changed --cores) tells its
- * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript).
+ * steps how many cores its slots give it in its cores file; a `front` one takes up to WIDE_SLOTS slots (growScript), any
+ * other up to as many free ones while no other run waits (freeGrowScript).
  * A `claim` session (a part that waits on several machines) says QUEUED and SLOT, and starts only on a "go" line; when its
  * input ends first, it leaves the queue or frees its slot, removes its run directory and exits DROPPED.
  * Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are recorded as setup-failed. */
@@ -625,7 +646,15 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 								`\telse echo "== run-on-node: another --front run holds this machine's extra slots: side by side in this one slot ($per cores)"; fi`,
 								"fi",
 							]
-						: []),
+						: [
+								// Any other run takes free slots, never the kept one, only while no other run waits (freeGrowScript).
+								freeGrowScript({ allStarted: `${runDir}/${ALL_STARTED}`, sideBySide: `${runDir}/${SIDE_BY_SIDE}` }),
+								`want=$(( (${cores} + per - 1) / per )); [ "$want" -gt ${WIDE_SLOTS} ] && want=${WIDE_SLOTS}`,
+								'if [ "$want" -gt 1 ]; then',
+								`\tif { exec 6>"${FREE_WIDE}"; } 2>/dev/null && flock -n 6; then echo "== run-on-node: side by side in up to $want slots of $per cores: once its steps run side by side, it takes free ones of slots 1-${CPU_SLOTS - KEPT_SLOTS} while no other run waits for one here"; exec 4> >(grow)`,
+								`\telse echo "== run-on-node: another run takes this machine's free slots: side by side in this one slot ($per cores)"; fi`,
+								"fi",
+							]),
 				]
 			: []),
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
@@ -759,6 +788,62 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
 		"\twhile read -r _; do :; done",
 		"}",
 	].join("\n");
+}
+
+/** The bash function `grow` of a --cores run without --front. Like growScript's, it takes up to `$want` of the CPU lane's
+ * slots in all, the session's first included, one a turn, each only while the machine has GROW_MEMORY_MIB available
+ * (`meminfo`); it keeps `$cores_file` at the cores they give (`$per` each), stops waiting once every step has started
+ * (`allStarted`) and keeps its slots until its stdin ends. But it never goes ahead of another run: it holds no queue
+ * ticket, and takes a slot only while no run waits for one on the machine (a live ticket in either lane's queue, a --front
+ * run's own included) and none is being copied there (`arriving`, read first: a copy's marker goes only once its run holds
+ * a ticket, so a run between the two is seen). It takes only the slots before the kept ones, never an extra one, and only
+ * once its steps run side by side (`sideBySide`): before that they run one at a time and more cores would start nothing. */
+export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, meminfo = "/proc/meminfo", arriving = ARRIVING }) {
+	const queues = [LANES.cpu.queue, LANES.quick.queue].map((queue) => `${shellQuote(`${locks}/${queue}`)}/*`).join(" ");
+	return [
+		"grow() {",
+		// The session's own locks stay the session's: its free-slots lock (fd 6), the runner user (fd 8) and its first slot (fd 9).
+		"\texec 6>&- 8>&- 9>&-; umask 022",
+		`\theld=1; said=""; trap 'rm -f "$cores_file" "$cores_file.tmp"' EXIT`,
+		`\twhile [ "$held" -lt "$want" ] && [ ! -e ${shellQuote(allStarted)} ]; do`,
+		`\t\tif [ -e ${shellQuote(sideBySide)} ]; then`,
+		`\t\t\twaiting=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
+		// A ticket nobody holds belongs to a run that died; with none, the unmatched pattern opens no file.
+		`\t\t\tfor t in ${queues}; do { flock -n 5 || waiting=$(( waiting + 1 )); } 2>/dev/null 5<"$t"; done`,
+		`\t\t\tavailable=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null)`,
+		'\t\t\tif [ "$waiting" -gt 0 ]; then',
+		'\t\t\t\t[ "$said" = waits ] || { said=waits; echo "== run-on-node: another run waits for a slot here or is being copied: no more slots while one does"; }',
+		`\t\t\telif [ "\${available:-0}" -lt ${GROW_MEMORY_MIB} ]; then`,
+		`\t\t\t\t[ "$said" = low ] || { said=low; echo "== run-on-node: \${available:-no} MiB available, under ${GROW_MEMORY_MIB}: no more slots until there is more"; }`,
+		"\t\t\telse",
+		'\t\t\t\t[ -z "$said" ] || { said=""; echo "== run-on-node: no run waits and $available MiB available: taking free slots again"; }',
+		`\t\t\t\tfor candidate in $(seq ${CPU_SLOTS - KEPT_SLOTS} -1 1); do`,
+		`\t\t\t\t\tlock="${locks}/${LANES.cpu.slot}$candidate.lock"; { exec {fd}<"$lock" || exec {fd}>"$lock"; } 2>/dev/null || continue`,
+		'\t\t\t\t\tif flock -n "$fd"; then',
+		'\t\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
+		'\t\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
+		// One slot a turn: who waits and the memory are read again before the next.
+		"\t\t\t\t\t\tbreak",
+		"\t\t\t\t\telse exec {fd}>&-; fi",
+		"\t\t\t\tdone",
+		"\t\t\tfi",
+		"\t\tfi",
+		// The wait ends early when stdin does (read's status 1, a timeout's is over 128): the session is over.
+		'\t\t[ "$held" -lt "$want" ] && { read -r -t 2 _; [ $? -gt 128 ] || return 0; }',
+		"\tdone",
+		'\t[ "$held" -lt "$want" ] && echo "== run-on-node: every step has started: no more slots ($held of $want)"',
+		"\twhile read -r _; do :; done",
+		"}",
+	].join("\n");
+}
+
+/** A run's record of the slots it held: `slots`, the most it held at once, and `slotCores`, the cores they gave, from the
+ * status file (planScript's `slot_cores`, the most its cores file said, over `workers`, one slot's: vCPUs / CPU_SLOTS). Empty
+ * without them: a run that is not a changed one, or one that never reached its steps. */
+export function slotsTaken(status) {
+	const cores = Number(status.slot_cores);
+	const per = Number(status.workers);
+	return Number.isInteger(cores) && cores > 0 && Number.isInteger(per) && per > 0 ? { slots: Math.round(cores / per), slotCores: cores } : {};
 }
 
 /** `key=value` words from the status file; later lines win. */
@@ -1666,6 +1751,8 @@ async function main() {
 			...(options.limit ? { limitSeconds: options.limit } : {}),
 			...(options.front ? { front: true } : {}),
 			...(options.cores ? { cores: options.cores } : {}),
+			// How many slots, and so cores, a changed run held at most: why it was fast or slow.
+			...slotsTaken(status),
 			...(options.failFast ? { failFast: true } : {}),
 			cpuSlot: status.slot ? Number(status.slot) : null,
 			queuedSeconds: status.queued_s ? Number(status.queued_s) : null,

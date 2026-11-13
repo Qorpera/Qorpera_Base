@@ -13,6 +13,7 @@ import {
 	planScript,
 	RUNNER_ORCHESTRATOR_WAITING,
 	RUNTIME_WAITING,
+	SIDE_BY_SIDE,
 	STEPS,
 	STOP,
 	splitPlan,
@@ -355,8 +356,10 @@ test("side by side: alone parts first and alone, then the rest longest first wit
 		const events = readFileSync(join(cwd, "events"), "utf8").trim().split("\n");
 		assert.equal(mostCores(events, { web: 2, short: 1, long: 1, bad: 1, half: 1 }), 2);
 		assert.equal(events.length, 10);
-		// Only a run-on-node run, which reads its slots' cores, marks when every step has started.
+		// Only a run-on-node run, which reads its slots' cores, marks when every step has started, when its steps start side
+		// by side, and the most cores its slots gave (the status file holds the failed steps only).
 		assert.equal(existsSync(join(cwd, ALL_STARTED)), false);
+		assert.equal(existsSync(join(cwd, SIDE_BY_SIDE)), false);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -366,8 +369,9 @@ test("side by side within the cores the run's slots give it, read again as they 
 	const rest = (name, more) => `echo "start ${name}" >>events; ${more}; s=$?; echo "end ${name}" >>events; exit $s`;
 	// The longest step starts alone in one slot's core, then a second slot frees (the file says 4).
 	const grow = 'echo 4 >"$QORPERA_RUN_CORES_FILE.tmp" && mv -f "$QORPERA_RUN_CORES_FILE.tmp" "$QORPERA_RUN_CORES_FILE"; sleep 3';
+	// The side-by-side mark comes after the alone parts, before the rest.
 	const steps = [
-		{ name: "first", commands: [rest("first", grow)], seconds: 100 },
+		{ name: "first", commands: [rest("first", `[ -e ${SIDE_BY_SIDE} ] && ${grow}`)], alone: [`[ ! -e ${SIDE_BY_SIDE} ]`], seconds: 100 },
 		...["b", "c", "d", "e"].map((name, i) => ({ name, commands: [rest(name, "sleep 2")], seconds: 50 - i })),
 	];
 	const cores = { first: 1, b: 1, c: 1, d: 1, e: 1 };
@@ -384,13 +388,19 @@ test("side by side within the cores the run's slots give it, read again as they 
 		assert.equal(events[1].startsWith("start "), true);
 		assert.equal(mostCores(events, cores), 4);
 		assert.equal(existsSync(join(cwd, ALL_STARTED)), true);
+		assert.equal(existsSync(join(cwd, SIDE_BY_SIDE)), true);
+		// The most cores its slots gave, for the run's record: 4, though it asked for 6.
+		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "slot_cores=4\n");
 		// A cores file it cannot read keeps the budget at one core: the steps run one at a time.
 		rmSync(join(cwd, "events"));
 		rmSync(join(cwd, ALL_STARTED));
+		rmSync(join(cwd, SIDE_BY_SIDE));
+		rmSync(join(cwd, ".run-on-node-status"));
 		const quick = steps.map((step) => ({ ...step, commands: [rest(step.name, "true")] }));
 		const missing = spawnSync("bash", ["-c", planScript(quick, { cores: 6 })], { cwd, encoding: "utf8", env: env(join(cwd, "none")) });
 		assert.equal(missing.status, 0, missing.stdout);
 		assert.match(missing.stdout, /\(at most 1 from its slots\)/);
+		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "slot_cores=0\n");
 		assert.equal(mostCores(readFileSync(join(cwd, "events"), "utf8").trim().split("\n"), cores), 1);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
@@ -408,7 +418,7 @@ test("side by side: a worker killed, or one that cannot write its result, fails 
 	const cwd = mkdtempSync(join(tmpdir(), "plan-script-"));
 	try {
 		// Before workers were reaped, this run never ended.
-		const result = spawnSync("bash", ["-c", planScript(steps, { cores: 3 })], { cwd, encoding: "utf8", timeout: 30_000 });
+		const result = spawnSync("bash", ["-c", planScript(steps, { cores: 3 })], { cwd, encoding: "utf8", env: env(), timeout: 30_000 });
 		assert.equal(result.signal, null, result.stdout);
 		assert.equal(result.status, 1, result.stdout);
 		assert.match(result.stdout, /== changed: fine\nfine-done\n== changed: fine passed in \d+ s\n/);
