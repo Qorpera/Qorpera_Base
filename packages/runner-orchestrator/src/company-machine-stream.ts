@@ -244,6 +244,11 @@ class ByteQueue {
 		this.#drop(size);
 		return out;
 	}
+	/** Drops the next `size` bytes without reading or copying them: only pieces are let go (the server's cut text, a
+	 * colour map, a bell: of no use to a live picture). */
+	skip(size: number): void {
+		this.#drop(size);
+	}
 	/** Moves the next `size` bytes into `target` at `at`, piece by piece (so a large area is taken across several turns
 	 * without ever copying it twice). */
 	takeInto(target: Buffer, at: number, size: number): void {
@@ -290,17 +295,29 @@ const UPDATE_SLACK_BYTES = 1024 * 1024;
  * that says it is larger is ended (the v245 release review: the bounds are what CPU time is paid against). */
 const MAX_WIDTH = 3840;
 const MAX_HEIGHT = 2160;
-/** At most this many bytes of areas are taken out of what came in, in one turn of the event loop: a whole update of the
- * largest screen (twice its 33 MB) is taken over many turns, each about a millisecond on node 2, never in one stretch
- * that holds node 1's executor (the v245 release review). */
+/** What the reader may do in one turn of the event loop, counted in bytes: a whole update of the largest screen (twice
+ * its 33 MB) is read over many turns of about a millisecond each on node 2, never in one stretch that holds an
+ * executor (the v245 release review). EVERY unit of the reader's work is charged against it (RFB_UNIT_COST plus its
+ * bytes), and it is checked in one place, before each unit (review r10 of #1746). */
 export const RFB_TAKE_PER_TURN = 1024 * 1024;
+/** What one unit of the reader's work costs besides its bytes — a message, an area's header walked or taken, an update
+ * handed on, a piece of bytes dropped: so a flood of tiny messages pauses the reading as surely as one large area does.
+ * At most RFB_TAKE_PER_TURN / RFB_UNIT_COST (4,096) units a turn. */
+export const RFB_UNIT_COST = 256;
+/** The longest cut text (the desktop's clipboard) a server may send; it is dropped as it comes, never held. */
+const MAX_CUT_TEXT = 16 * 1024 * 1024;
 
 /**
  * Reads an RFB 3.8 server's bytes as they come (feed) and answers what the handshake asks, with nothing else: the
  * version, the security type None and the shared flag; then, once the server said what it is, this module's pixel
  * format, its encodings and a request for the whole screen. Every FramebufferUpdate becomes one `update` event; a
- * colour map, a bell and the server's cut text (the desktop's clipboard) are read and dropped. Anything it does not
- * know throws: the relay is ended.
+ * colour map, a bell and the server's cut text (the desktop's clipboard) are dropped without being read or copied.
+ * Anything it does not know throws: the relay is ended.
+ *
+ * Its work is done ONE UNIT AT A TIME, each unit charged to the turn's budget (RFB_UNIT_COST plus its bytes), and the
+ * budget is checked in exactly one place, the loop in drain() that runs the units (review r10 of #1746): however the
+ * server's bytes come — one large area, a million empty updates, bells, cut text — one call of drain() does at most
+ * about its budget's worth of work, and a stream drains again on the next turn while `busy`.
  */
 export class RfbReader {
 	readonly #queue = new ByteQueue();
@@ -308,9 +325,9 @@ export class RfbReader {
 	#stage: "version" | "security" | "result" | "init" | "messages" = "version";
 	#width = 0;
 	#height = 0;
-	/** How far the sizes of an update's rectangles were walked while its bytes come: each piece goes on from there. */
+	/** How far the sizes of an update's rectangles were walked while its bytes come: one header a unit. */
 	#walk: { count: number; index: number; at: number } | null = null;
-	/** An update whose bytes are all here, being taken out over several turns: what is taken so far, and the area that is
+	/** An update whose bytes are all here, being taken out a unit at a time: what is taken so far, and the area that is
 	 * part taken (its buffer and how much of it is filled). */
 	#taking: {
 		readonly count: number;
@@ -324,9 +341,13 @@ export class RfbReader {
 		height: number;
 		part: { readonly head: Buffer; readonly pixels: Buffer; filled: number } | null;
 	} | null = null;
-	/** Bytes taken out in this call of drain(): past its budget, the rest waits for the next. */
+	/** Bytes still to be dropped of a message this reader has no use for (cut text, a colour map). */
+	#skipping = 0;
+	/** What this call of drain() has done so far, and may do. */
 	#taken = 0;
 	#budgetLeft = Number.POSITIVE_INFINITY;
+	/** Whether the last drain() stopped at its budget with work still to do. */
+	#paused = false;
 	constructor(onEvent: (event: RfbEvent) => void) {
 		this.#onEvent = onEvent;
 	}
@@ -345,42 +366,54 @@ export class RfbReader {
 		return 2 * 4 * Math.max(this.#width * this.#height, 1) + UPDATE_SLACK_BYTES;
 	}
 
-	/** Takes the server's next bytes and reads all it can at once; answers what to send it now (the handshake's answers
-	 * only). The stream itself does not use it: it pushes, and drains a little at a time (`push`, `drain`). */
+	/** Takes the server's next bytes and reads all of them at once; answers what to send it now (the handshake's answers
+	 * only). The stream itself does not use it: it pushes, and drains a turn's budget at a time (`push`, `drain`). */
 	feed(chunk: Buffer): Buffer[] {
 		this.push(chunk);
 		return this.drain(Number.POSITIVE_INFINITY);
 	}
-	/** Takes the server's next bytes, reading none of them yet. Nothing of an update is buffered past what this screen's
-	 * update may need (counting apart what is left of an update being taken out). */
+	/** Takes the server's next bytes, reading none of them yet. Nothing is held past what this screen's update may need,
+	 * counting apart what is left of an update being taken out and what is to be dropped unread. */
 	push(chunk: Buffer): void {
 		this.#queue.push(chunk);
-		if (this.#queue.length - (this.#taking?.left ?? 0) > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
+		const held = this.#queue.length - (this.#taking?.left ?? 0) - Math.min(this.#skipping, this.#queue.length);
+		if (held > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
 	}
-	/** Reads what is here, taking out at most about `budget` bytes of areas: answers what to send the server now. While
-	 * `busy`, more can be read without more bytes coming. */
+	/** Reads what is here, ONE UNIT AT A TIME while this turn's `budget` lasts: answers what to send the server now. */
 	drain(budget: number): Buffer[] {
 		this.#taken = 0;
 		this.#budgetLeft = budget;
+		this.#paused = false;
 		const out: Buffer[] = [];
 		for (;;) {
+			// THE one check of the budget: before every unit of work, whatever kind it is.
+			if (this.#taken >= this.#budgetLeft) {
+				// Paused with work it can go on with: bytes still here, or an update being taken out (all of whose bytes
+				// are here, down to the last unit that hands it on).
+				this.#paused = this.#queue.length > 0 || this.#taking !== null;
+				return out;
+			}
 			const step = this.#step();
 			if (step === null) return out;
 			out.push(...step);
 		}
 	}
-	/** Whether an update is being taken out (all its bytes are here; drain() paused at its budget): drain again on the
-	 * next turn. */
+	/** Whether the last drain() stopped at its budget with work it can go on with: drain again on the next turn. */
 	get busy(): boolean {
-		return this.#taking !== null;
+		return this.#paused;
 	}
-	/** One step if its bytes are all there: what to send for it; null when more bytes are needed. */
+	/** What the last drain() was charged (read by the tests and nothing else). */
+	get charged(): number {
+		return this.#taken;
+	}
+	/** One unit of work if its bytes are there, charged: what to send for it; null when more bytes are needed. */
 	#step(): Buffer[] | null {
 		const queue = this.#queue;
 		switch (this.#stage) {
 			case "version": {
 				if (queue.length < 12) return null;
 				const version = queue.take(12).toString("latin1");
+				this.#taken += RFB_UNIT_COST + 12;
 				if (!/^RFB 003\.(00[89]|[0-9]{3})\n$/.test(version) || version < "RFB 003.008\n")
 					throw new Error("RFB_VERSION_REFUSED");
 				this.#stage = "security";
@@ -392,12 +425,14 @@ export class RfbReader {
 				if (count === 0) throw new Error("RFB_REFUSED");
 				if (queue.length < 1 + count) return null;
 				const types = queue.take(1 + count).subarray(1);
+				this.#taken += RFB_UNIT_COST + 1 + count;
 				if (!types.includes(RFB_SECURITY_NONE)) throw new Error("RFB_SECURITY_REFUSED");
 				this.#stage = "result";
 				return [Buffer.from([RFB_SECURITY_NONE])];
 			}
 			case "result": {
 				if (queue.length < 4) return null;
+				this.#taken += RFB_UNIT_COST + 4;
 				if (queue.take(4).readUInt32BE(0) !== 0) throw new Error("RFB_REFUSED");
 				this.#stage = "init";
 				// Shared: other viewers (an earlier one of this host's, another tool) are not cut off.
@@ -409,6 +444,7 @@ export class RfbReader {
 				if (nameLength > 4096) throw new Error("RFB_INVALID");
 				if (queue.length < 24 + nameLength) return null;
 				const init = queue.take(24 + nameLength);
+				this.#taken += RFB_UNIT_COST + 24 + nameLength;
 				this.#width = init.readUInt16BE(0);
 				this.#height = init.readUInt16BE(2);
 				if (this.#width < 1 || this.#height < 1 || this.#width > MAX_WIDTH || this.#height > MAX_HEIGHT)
@@ -421,47 +457,65 @@ export class RfbReader {
 				return this.#message();
 		}
 	}
+	/** One unit of the messages: of an update under way, of bytes being dropped, or the start of the next message. */
 	#message(): Buffer[] | null {
-		// An update being taken out goes on where it paused: its type byte was taken long ago.
-		if (this.#taking) return this.#update();
 		const queue = this.#queue;
+		// An update being walked or taken out goes on where it stopped (its type byte is not looked at again).
+		if (this.#walk || this.#taking) return this.#update();
+		// Bytes of a message of no use here: dropped as they come, a unit at a time, never copied.
+		if (this.#skipping > 0) {
+			if (queue.length === 0) return null;
+			const now = Math.min(this.#skipping, queue.length, Math.max(1, this.#budgetLeft - this.#taken));
+			queue.skip(now);
+			this.#skipping -= now;
+			this.#taken += RFB_UNIT_COST + now;
+			return [];
+		}
 		if (queue.length < 1) return null;
 		const type = queue.peek(1)[0] as number;
 		if (type === 0) return this.#update();
 		if (type === 1) {
+			// A colour map: of no use to a picture in true colour. Its header is read, its entries dropped.
 			if (queue.length < 6) return null;
 			const count = queue.peek(6).readUInt16BE(4);
-			if (queue.length < 6 + 6 * count) return null;
-			queue.take(6 + 6 * count);
+			queue.skip(6);
+			this.#taken += RFB_UNIT_COST + 6;
+			this.#skipping = 6 * count;
 			return [];
 		}
 		if (type === 2) {
-			queue.take(1);
+			// A bell.
+			queue.skip(1);
+			this.#taken += RFB_UNIT_COST + 1;
 			return [];
 		}
 		if (type === 3) {
-			// The server's cut text: the desktop's clipboard. Read past and dropped, never kept or passed on.
+			// The server's cut text: the desktop's clipboard. Dropped as it comes, never kept, copied or passed on.
 			if (queue.length < 8) return null;
 			const length = queue.peek(8).readUInt32BE(4);
-			if (length > 16 * 1024 * 1024) throw new Error("RFB_INVALID");
-			if (queue.length < 8 + length) return null;
-			queue.take(8 + length);
+			if (length > MAX_CUT_TEXT) throw new Error("RFB_INVALID");
+			queue.skip(8);
+			this.#taken += RFB_UNIT_COST + 8;
+			this.#skipping = length;
 			return [];
 		}
 		throw new Error("RFB_UNKNOWN_MESSAGE");
 	}
-	/** A FramebufferUpdate, once all of it is there (it is read whole, so a half one never shows), taken out over as
-	 * many turns as its size needs: at most about RFB_TAKE_PER_TURN bytes a turn. */
+	/** One unit of a FramebufferUpdate: one header walked (nothing is taken until the whole update is there, so a half
+	 * one never shows), then one header or one piece of an area's pixels taken out, then the update handed on. */
 	#update(): Buffer[] | null {
 		const queue = this.#queue;
 		if (!this.#taking) {
-			if (queue.length < 4) return null;
-			// Walk its rectangles' sizes first: nothing is taken until the whole update is there. The walk goes on from
-			// where the last piece left it.
-			const walk = this.#walk ?? { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
-			if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
-			this.#walk = walk;
-			for (; walk.index < walk.count; walk.index++) {
+			if (!this.#walk) {
+				if (queue.length < 4) return null;
+				const walk = { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
+				if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
+				this.#walk = walk;
+				this.#taken += RFB_UNIT_COST + 4;
+				return [];
+			}
+			const walk = this.#walk;
+			if (walk.index < walk.count) {
 				if (queue.length < walk.at + 12) return null;
 				const head = queue.peekAt(walk.at, 12);
 				const w = head.readUInt16BE(4);
@@ -474,10 +528,14 @@ export class RfbReader {
 				else throw new Error("RFB_UNKNOWN_ENCODING");
 				// The whole update's size is known as its headers are walked: refused before any more of it is buffered.
 				if (walk.at > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
+				walk.index++;
+				this.#taken += RFB_UNIT_COST + 12;
+				return [];
 			}
 			if (queue.length < walk.at) return null;
 			this.#walk = null;
 			queue.take(4);
+			this.#taken += RFB_UNIT_COST + 4;
 			this.#taking = {
 				count: walk.count,
 				index: 0,
@@ -490,13 +548,14 @@ export class RfbReader {
 				height: this.#height,
 				part: null,
 			};
+			return [];
 		}
 		const taking = this.#taking;
-		for (; taking.index < taking.count; taking.index++) {
-			if (this.#taken >= this.#budgetLeft) return null;
+		if (taking.index < taking.count) {
 			if (!taking.part) {
 				const head = queue.take(12);
 				taking.left -= 12;
+				this.#taken += RFB_UNIT_COST + 12;
 				const w = head.readUInt16BE(4);
 				const h = head.readUInt16BE(6);
 				const encoding = head.readInt32BE(8);
@@ -511,20 +570,23 @@ export class RfbReader {
 					// dropped here, so one update — and so one ring entry — never holds pixels of two sizes (review r5 F3
 					// of #1746). The server sends the whole screen of the new size right after, which this module asks for.
 					taking.rects.length = 0;
-					continue;
+					taking.index++;
+					return [];
 				}
 				const bytes = w * h * 4 + (encoding === -239 ? Math.ceil(w / 8) * h : 0);
 				taking.part = { head, pixels: Buffer.allocUnsafe(bytes), filled: 0 };
+				return [];
 			}
-			// The area's bytes, as many as this turn's budget allows: a whole screen's area goes over several turns.
+			// A piece of the area's bytes, as much as this turn's budget allows (at least one byte, so it always goes on).
 			const part = taking.part;
 			const now = Math.min(part.pixels.byteLength - part.filled, Math.max(1, this.#budgetLeft - this.#taken));
 			queue.takeInto(part.pixels, part.filled, now);
 			part.filled += now;
 			taking.left -= now;
 			this.#taken += now;
-			if (part.filled < part.pixels.byteLength) return null;
+			if (part.filled < part.pixels.byteLength) return [];
 			taking.part = null;
+			taking.index++;
 			const x = part.head.readUInt16BE(0);
 			const y = part.head.readUInt16BE(2);
 			const w = part.head.readUInt16BE(4);
@@ -541,8 +603,10 @@ export class RfbReader {
 			} else if (w > 0 && h > 0 && x + w <= taking.width && y + h <= taking.height)
 				taking.rects.push({ x, y, width: w, height: h, pixels: part.pixels });
 			else if (w > 0 && h > 0) throw new Error("RFB_INVALID");
+			return [];
 		}
 		this.#taking = null;
+		this.#taken += RFB_UNIT_COST;
 		this.#onEvent({ kind: "update", rects: taking.rects, cursor: taking.cursor, size: taking.size });
 		return [];
 	}
@@ -666,6 +730,66 @@ interface StreamUpdate {
 	readonly resized: boolean;
 	readonly bytes: number;
 }
+
+/**
+ * The updates kept for members whose cycles lag, oldest first, with what they hold in total. Every operation is O(1),
+ * or amortised O(1) per update, at any size up to its caps (review r10 of #1746): the oldest goes by moving a head index
+ * (the array is compacted in one splice only once most of it is gone), and the newest size change in it is kept as
+ * state rather than searched for. Seqs in it are consecutive, so a member's window is found by arithmetic.
+ */
+class UpdateRing {
+	#entries: StreamUpdate[] = [];
+	#head = 0;
+	bytes = 0;
+	rects = 0;
+	/** The seq of the newest update that changed the size, ever (still in the ring while it is past the oldest's). */
+	#newestResize = 0;
+	get length(): number {
+		return this.#entries.length - this.#head;
+	}
+	push(update: StreamUpdate): void {
+		this.#entries.push(update);
+		this.bytes += update.bytes;
+		this.rects += update.rects.length;
+		if (update.resized) this.#newestResize = update.seq;
+	}
+	/** The oldest update, or undefined. */
+	get oldest(): StreamUpdate | undefined {
+		return this.#entries[this.#head];
+	}
+	/** Lets the oldest go; answers it. */
+	shift(): StreamUpdate | undefined {
+		const old = this.#entries[this.#head];
+		if (!old) return undefined;
+		this.#head++;
+		this.bytes -= old.bytes;
+		this.rects -= old.rects.length;
+		if (this.#head > 1024 && this.#head * 2 > this.#entries.length) {
+			this.#entries.splice(0, this.#head);
+			this.#head = 0;
+		}
+		return old;
+	}
+	/** The seq of the newest size change still in the ring, or 0. */
+	get newestResize(): number {
+		const oldest = this.oldest;
+		return oldest && this.#newestResize >= oldest.seq ? this.#newestResize : 0;
+	}
+	/** The updates after seq `after` up to `upTo`, in order: found by their seqs, which follow one another. */
+	window(after: number, upTo: number): StreamUpdate[] {
+		const oldest = this.oldest;
+		if (!oldest) return [];
+		const from = this.#head + Math.max(0, after + 1 - oldest.seq);
+		const to = this.#head + Math.max(0, upTo + 1 - oldest.seq);
+		return this.#entries.slice(from, Math.min(to, this.#entries.length));
+	}
+	clear(): void {
+		this.#entries = [];
+		this.#head = 0;
+		this.bytes = 0;
+		this.rects = 0;
+	}
+}
 interface Watcher {
 	sentSeq: number;
 	wake: () => void;
@@ -675,43 +799,30 @@ interface Watcher {
 	sizeSent: { width: number; height: number };
 }
 
-/** At most this many messages wait for the VNC server at once: the reader answers one update with one request, so a
- * guest that stops reading its socket can otherwise pile them up without bound (review r2 F1 of #1746). Past it the
- * oldest requests are dropped, since only the newest matters (a whole-screen request is kept whatever happens). */
-const MAX_OUTBOX_ITEMS = 64;
-
-/** What to send the VNC server: the handshake's answers and the three messages, in order, until it is closed. A guest
- * that does not read them holds at most MAX_OUTBOX_ITEMS. */
+/**
+ * What to send the VNC server, in order, until it is closed: the handshake's answers (a handful, once, in the order
+ * they came), then update requests — of which only the newest of each kind can matter: the whole-screen request (a
+ * member may be waiting for exactly that picture) and the incremental one. A request replaces the waiting one of its
+ * kind, so a guest that stops reading its socket holds at most the handshake's answers and two requests, and every push
+ * is O(1) however many come (review r2 F1, and r10 of #1746: no search or splice over waiting items per push).
+ */
 class Outbox {
-	readonly #items: Buffer[] = [];
+	/** The handshake's answers and anything else that is not an update request (six at most, once). */
+	readonly #other: Buffer[] = [];
+	#whole: Buffer | null = null;
+	#incremental: Buffer | null = null;
 	#wake: () => void = () => {};
 	#closed = false;
-	/** How many messages were dropped because the server stopped reading (for the stream's own checks). */
-	#dropped = 0;
-	get dropped(): number {
-		return this.#dropped;
-	}
 	get waiting(): number {
-		return this.#items.length;
+		return this.#other.length + (this.#whole ? 1 : 0) + (this.#incremental ? 1 : 0);
 	}
 	push(message: Buffer): void {
 		if (this.#closed) return;
-		this.#items.push(message);
-		// The server is not reading: every incremental update request but the newest is worthless, so the oldest of them
-		// go. A whole-screen request (the first byte 3 with `incremental` 0) is never dropped: a member may be waiting
-		// for exactly that picture.
-		while (this.#items.length > MAX_OUTBOX_ITEMS) {
-			const at = this.#items.findIndex((item) => item.length === 10 && item[0] === 3 && item[1] === 1);
-			if (at < 0) break;
-			this.#items.splice(at, 1);
-			this.#dropped++;
-		}
-		// Even messages that are never dropped for being worthless (a whole-screen request after every size change a
-		// guest cares to send) are bounded: past twice the bound the oldest goes, whatever it is.
-		while (this.#items.length > 2 * MAX_OUTBOX_ITEMS) {
-			this.#items.shift();
-			this.#dropped++;
-		}
+		// FramebufferUpdateRequest: type 3, incremental flag, then x, y, width, height.
+		if (message.length === 10 && message[0] === 3) {
+			if (message[1] === 1) this.#incremental = message;
+			else this.#whole = message;
+		} else this.#other.push(message);
 		this.#wake();
 	}
 	close(): void {
@@ -720,8 +831,10 @@ class Outbox {
 	}
 	async *messages(): AsyncGenerator<Uint8Array> {
 		for (;;) {
-			const next = this.#items.shift();
+			const next = this.#other.shift() ?? this.#whole ?? this.#incremental;
 			if (next) {
+				if (next === this.#whole) this.#whole = null;
+				else if (next === this.#incremental) this.#incremental = null;
 				yield next;
 				continue;
 			}
@@ -870,12 +983,10 @@ const STREAM_CYCLE_EVERY_MS = 34;
 export class DesktopStream {
 	readonly #options: DesktopStreamOptions;
 	readonly #watchers = new Set<Watcher>();
-	readonly #ring: StreamUpdate[] = [];
+	readonly #ring = new UpdateRing();
 	readonly #stop = new AbortController();
 	readonly #outbox = new Outbox();
 	readonly #png = new WeakMap<RfbRect | RfbCursor, Promise<Buffer>>();
-	#ringBytes = 0;
-	#ringRects = 0;
 	#seq = 0;
 	#width = 0;
 	#height = 0;
@@ -893,7 +1004,7 @@ export class DesktopStream {
 	/** What the stream holds right now, in entries: the ring's updates and the messages waiting for the VNC server.
 	 * Both are bounded whatever the guest sends (review r2 F1 of #1746); read by the tests and by nothing else. */
 	get held(): { readonly ring: number; readonly rects: number; readonly outbox: number } {
-		return { ring: this.#ring.length, rects: this.#ringRects, outbox: this.#outbox.waiting };
+		return { ring: this.#ring.length, rects: this.#ring.rects, outbox: this.#outbox.waiting };
 	}
 
 	/** Streams the desktop to `sink`, released by `release`, until `signal` aborts, a cycle ends it, or the relay ends:
@@ -978,13 +1089,15 @@ export class DesktopStream {
 				this.#height = event.size.height;
 				this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
 			}
-			this.#push(event);
-			// Keep the changes coming: the next request at once.
+			// An update with no areas, no pointer shape and no size changes nothing a member sees: it is not kept (review
+			// r10 of #1746), and only asks for the next one.
+			if (event.rects.length > 0 || event.cursor || event.size) this.#push(event);
+			// Keep the changes coming: the next request at once (it replaces any still waiting: O(1)).
 			this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
 		});
 		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
-		// RFB_TAKE_PER_TURN bytes, each followed by a turn of everything else node 1's executor does (the v245 release
-		// review: a large update must not hold its event loop in one stretch).
+		// RFB_TAKE_PER_TURN bytes of charged work — every message, header and piece counted (review r10 of #1746) — each
+		// followed by a turn of everything else the executor does (the v245 release review).
 		let reading = false;
 		const read = () => {
 			reading = false;
@@ -1027,7 +1140,8 @@ export class DesktopStream {
 		const rects = update.rects.flatMap(bands);
 		const bytes =
 			rects.reduce((sum, rect) => sum + rect.pixels.byteLength, 0) + (update.cursor?.pixels.byteLength ?? 0);
-		this.#ring.push({
+		const ring = this.#ring;
+		ring.push({
 			seq: ++this.#seq,
 			rects,
 			cursor: update.cursor,
@@ -1036,38 +1150,22 @@ export class DesktopStream {
 			resized: update.size !== null,
 			bytes,
 		});
-		this.#ringBytes += bytes;
-		this.#ringRects += rects.length;
-		// Over the ring's bound, in bytes, in entries or in areas: the oldest go (in one splice), and every member who had
-		// not been sent them gets the whole screen anew.
-		let cut = 0;
-		let cutBytes = 0;
-		let cutRects = 0;
+		// Over the ring's bound, in bytes, in entries or in areas: the oldest go (each once, in O(1)), and every member who
+		// had not been sent them gets the whole screen anew.
+		let dropped = 0;
 		while (
-			this.#ring.length - cut > 1 &&
-			(this.#ringBytes - cutBytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) ||
-				this.#ring.length - cut > (this.#options.ringEntries ?? MAX_RING_ENTRIES) ||
-				this.#ringRects - cutRects > (this.#options.ringRects ?? MAX_RING_RECTS))
-		) {
-			const old = this.#ring[cut] as StreamUpdate;
-			cutBytes += old.bytes;
-			cutRects += old.rects.length;
-			cut++;
-		}
-		const dropped = cut > 0 ? (this.#ring[cut - 1] as StreamUpdate).seq : 0;
-		if (cut > 0) {
-			this.#ring.splice(0, cut);
-			this.#ringBytes -= cutBytes;
-			this.#ringRects -= cutRects;
-		}
+			ring.length > 1 &&
+			(ring.bytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) ||
+				ring.length > (this.#options.ringEntries ?? MAX_RING_ENTRIES) ||
+				ring.rects > (this.#options.ringRects ?? MAX_RING_RECTS))
+		)
+			dropped = (ring.shift() as StreamUpdate).seq;
 		if (dropped > 0) {
 			// What is left of the ring begins at the newest size change in it, if any: pixels from before that change
 			// belong to a size this member was never told and are of no use now, since the whole screen is coming anyway
-			// (review r4 F2 of #1746).
-			let newestResize: StreamUpdate | undefined;
-			for (let i = this.#ring.length - 1; i >= 0 && !newestResize; i--)
-				if ((this.#ring[i] as StreamUpdate).resized) newestResize = this.#ring[i];
-			const from = Math.max(dropped, newestResize ? newestResize.seq - 1 : 0);
+			// (review r4 F2 of #1746). The newest change is the ring's own state, never searched for (r10).
+			const newestResize = ring.newestResize;
+			const from = Math.max(dropped, newestResize > 0 ? newestResize - 1 : 0);
 			let refresh = false;
 			for (const watcher of this.#watchers)
 				if (watcher.sentSeq < from) {
@@ -1086,14 +1184,7 @@ export class DesktopStream {
 	#trim(): void {
 		let least = this.#seq;
 		for (const watcher of this.#watchers) least = Math.min(least, watcher.sentSeq);
-		let cut = 0;
-		while (cut < this.#ring.length && (this.#ring[cut] as StreamUpdate).seq <= least) {
-			const old = this.#ring[cut] as StreamUpdate;
-			this.#ringBytes -= old.bytes;
-			this.#ringRects -= old.rects.length;
-			cut++;
-		}
-		if (cut > 0) this.#ring.splice(0, cut);
+		while ((this.#ring.oldest?.seq ?? Number.POSITIVE_INFINITY) <= least) this.#ring.shift();
 	}
 
 	/**
@@ -1105,7 +1196,7 @@ export class DesktopStream {
 	 */
 	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<void> {
 		const sizeSent = watcher.sizeSent;
-		const updates = this.#ring.filter((update) => update.seq > watcher.sentSeq && update.seq <= upTo);
+		const updates = this.#ring.window(watcher.sentSeq, upTo);
 		// The size these pixels are of: the first entry's own, which is what a member who joined, or one whose updates
 		// were evicted, is told before any of them.
 		let size = sizeSent.width === 0 ? (updates[0]?.at ?? { width: this.#width, height: this.#height }) : sizeSent;
@@ -1199,9 +1290,7 @@ export class DesktopStream {
 		this.#ended = reason;
 		this.#stop.abort();
 		this.#outbox.close();
-		this.#ring.length = 0;
-		this.#ringBytes = 0;
-		this.#ringRects = 0;
+		this.#ring.clear();
 		for (const watcher of this.#watchers) watcher.wake();
 		void this.#relay.finally(() => this.#options.ended?.());
 	}

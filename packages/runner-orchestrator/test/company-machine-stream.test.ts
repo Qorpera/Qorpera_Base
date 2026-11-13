@@ -10,6 +10,7 @@ import {
 	encodePng,
 	PNG_PIXELS_PER_TURN,
 	RFB_TAKE_PER_TURN,
+	RFB_UNIT_COST,
 	RFB_VERSION,
 	RfbReader,
 	rfbSetEncodings,
@@ -558,26 +559,22 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect(sink.messages.some((message) => message.type === STREAM_CURSOR)).toBe(false);
 	});
 
-	it("bounds what the queues hold in ENTRIES, not only in bytes: empty updates and piled-up requests (review r2 F1 of #1746)", async () => {
+	it("bounds what the queues hold in ENTRIES, not only in bytes: empty updates and piled-up requests (review r2 F1 and r10 of #1746)", async () => {
 		const desktop = fakeDesktop();
-		// A member whose cycles never answer: everything the guest sends stays in the ring for it.
+		// A member whose cycles never answer: everything the guest sends that a member could see stays in the ring for it.
 		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringEntries: 8 });
 		const watching = stream.watch(async () => "pending", sinkOf(), new AbortController().signal);
 		await settle();
-		// 200 updates of no areas at all: each weighs nothing and still costs an entry.
+		const first = stream.held.ring;
+		// 700 updates of no areas at all: they change nothing a member sees, so none is kept (r10), and the requests they
+		// answer with replace one another: the outbox holds at most the handshake's answers and two requests.
 		const empty = Buffer.alloc(4);
-		for (let n = 0; n < 200; n++) desktop.send(empty);
+		for (let n = 0; n < 700; n++) desktop.send(empty);
 		await settle();
-		expect(stream.held).toEqual({ ring: 8, rects: 0, outbox: expect.any(Number) });
-		// The guest stops reading its socket: the requests the reader answers with pile up, bounded too, and a
-		// whole-screen request is never the one dropped.
-		expect(stream.held.outbox).toBeLessThanOrEqual(64);
-		for (let n = 0; n < 500; n++) desktop.send(empty);
-		await settle();
-		expect(stream.held.ring).toBe(8);
-		expect(stream.held.outbox).toBeLessThanOrEqual(64);
-		// A guest that changes the screen's size again and again makes whole-screen requests, which are never dropped for
-		// being worthless: they are bounded all the same (twice the bound, then the oldest goes).
+		expect(stream.held).toEqual({ ring: first, rects: 0, outbox: expect.any(Number) });
+		expect(stream.held.outbox).toBeLessThanOrEqual(3);
+		// A guest that changes the screen's size again and again: each change is kept (a member must be told it), the
+		// ring bounded in entries; its whole-screen requests replace one another too, the newest standing.
 		const resize = (width: number, height: number) => {
 			const head = Buffer.alloc(12);
 			head.writeUInt16BE(width, 4);
@@ -587,7 +584,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 		};
 		for (let n = 0; n < 500; n++) resize(64 + (n % 8), 40 + (n % 8));
 		await settle();
-		expect(stream.held.outbox).toBeLessThanOrEqual(128);
+		expect(stream.held.outbox).toBeLessThanOrEqual(3);
 		expect(stream.held.ring).toBe(8);
 		// The relay's end lets that member go.
 		desktop.end(95);
@@ -756,6 +753,228 @@ describe("a desktop's live picture (20260930745000)", () => {
 		stop.abort();
 		await watching;
 	}, 30_000);
+
+	/** The most any one drain() may do (review r10 of #1746): its budget, plus the one unit that may start just under it
+	 * (the largest is the server's init with a 4 KiB name). */
+	const MAX_CHARGE_A_TURN = RFB_TAKE_PER_TURN + RFB_UNIT_COST + 24 + 4096;
+	/** The most events one drain() may hand on: every event is a unit, and so costs at least RFB_UNIT_COST. */
+	const MAX_EVENTS_A_TURN = Math.ceil(MAX_CHARGE_A_TURN / RFB_UNIT_COST);
+
+	it("charges every message to the turn, so a large update followed by 100,000 empty updates and 100,000 bells is read over many bounded turns (review r10 of #1746)", () => {
+		let events = 0;
+		const reader = new RfbReader((event) => {
+			if (event.kind === "update") events++;
+		});
+		reader.feed(Buffer.concat(serverHello(1600, 1000)));
+		// The whole screen in one area, then the flood, all pushed before a byte is read: the pile-up the push-then-read
+		// design allows.
+		reader.push(update(rawRect(0, 0, 1600, 1000, [1, 2, 3])));
+		const empties = Buffer.alloc(4 * 100_000);
+		for (let at = 0; at < empties.length; at += 4) empties[at] = 0;
+		reader.push(empties);
+		reader.push(Buffer.alloc(100_000, 2));
+		let turns = 0;
+		let most = 0;
+		do {
+			const before = events;
+			reader.drain(RFB_TAKE_PER_TURN);
+			turns++;
+			most = Math.max(most, events - before);
+			expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
+		} while (reader.busy && turns < 100_000);
+		expect(events).toBe(100_001);
+		// Never more than a turn's worth: before, one drain handed on all 100,000 updates at once.
+		expect(most).toBeLessThanOrEqual(MAX_EVENTS_A_TURN);
+		expect(turns).toBeGreaterThan(100);
+	});
+
+	it("drops the server's cut text and colour maps as they come, never holding or copying them, a turn's budget at a time (review r10 of #1746)", () => {
+		const reader = new RfbReader(() => {});
+		reader.feed(Buffer.concat(serverHello(64, 40)));
+		// A 16 MiB cut text on a small screen (whose own budget is about 1 MiB): it streams through, dropped as it comes.
+		const head = Buffer.alloc(8);
+		head[0] = 3;
+		head.writeUInt32BE(16 * 1024 * 1024, 4);
+		reader.push(head);
+		let turns = 0;
+		for (let sent = 0; sent < 16 * 1024 * 1024; sent += 256 * 1024) {
+			reader.push(Buffer.alloc(256 * 1024, 0x41));
+			do {
+				reader.drain(RFB_TAKE_PER_TURN);
+				turns++;
+				expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
+			} while (reader.busy);
+		}
+		// A colour map of 65,535 entries (393 KB), then a bell: dropped the same way.
+		const map = Buffer.alloc(6);
+		map[0] = 1;
+		map.writeUInt16BE(65_535, 4);
+		reader.push(Buffer.concat([map, Buffer.alloc(6 * 65_535), Buffer.from([2])]));
+		do reader.drain(RFB_TAKE_PER_TURN);
+		while (reader.busy);
+		// Then an update still reads: nothing of what was dropped is left in the way.
+		let read = 0;
+		const after = new RfbReader((event) => {
+			if (event.kind === "update") read++;
+		});
+		after.feed(Buffer.concat(serverHello(64, 40)));
+		// As the relay brings it: in pieces of at most its own 1 MiB buffer.
+		const whole = Buffer.concat([head, Buffer.alloc(16 * 1024 * 1024, 0x41), update(rawRect(0, 0, 8, 8, [1, 1, 1]))]);
+		for (let at = 0; at < whole.length; at += 1024 * 1024) after.feed(whole.subarray(at, at + 1024 * 1024));
+		expect(read).toBe(1);
+		expect(turns).toBeGreaterThan(16);
+	});
+
+	it("keeps the executor's loop free while a guest floods empty updates and bells behind a held release check (review r10 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0 });
+		const { release } = gate();
+		const stop = new AbortController();
+		const watching = stream.watch(release, sinkOf(), stop.signal);
+		await settle();
+		desktop.send(update(rawRect(0, 0, 64, 40, [5, 5, 5])));
+		await settle();
+		const kept = stream.held.ring;
+		// The longest stretch the event loop is held while the flood is read: a timer that should fire every millisecond.
+		let last = performance.now();
+		let longest = 0;
+		const tick = setInterval(() => {
+			const now = performance.now();
+			longest = Math.max(longest, now - last);
+			last = now;
+		}, 1);
+		const empties = Buffer.alloc(4 * 200_000);
+		desktop.send(empties);
+		desktop.send(Buffer.alloc(200_000, 2));
+		// Read in turns: about 150 turns for the empty updates and 50 for the bells; a second and a half is plenty.
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		await vi.waitFor(() => expect(stream.held.outbox).toBeLessThanOrEqual(3));
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		clearInterval(tick);
+		// Nothing of the flood is kept, the requests it answers with replace one another, and no turn held the loop long
+		// (before: one turn read all 200,000 updates, each a ring eviction with a scan of the whole ring).
+		expect(stream.held.ring).toBe(kept);
+		expect(stream.held.outbox).toBeLessThanOrEqual(3);
+		expect(longest).toBeLessThan(250);
+		stop.abort();
+		await watching;
+	}, 30_000);
+
+	it("stands guard over the reader's turn: seeded random sequences of every message it accepts, at and around its bounds, in random pieces (review r10 of #1746)", () => {
+		// A small seeded generator: the same sequences on every run, and a new seed is one number away.
+		const generator = (seed: number) => () => {
+			seed = (seed + 0x6d2b79f5) | 0;
+			let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+		for (const seed of [1, 7, 1746]) {
+			const random = generator(seed);
+			const int = (low: number, high: number) => low + Math.floor(random() * (high - low + 1));
+			let width = 256;
+			let height = 160;
+			const budget = () => 2 * 4 * width * height + 1024 * 1024;
+			const sent: { rects: number; size: boolean; cursor: boolean }[] = [];
+			const got: { rects: number; size: boolean; cursor: boolean }[] = [];
+			let eventsThisTurn = 0;
+			const reader = new RfbReader((event) => {
+				if (event.kind !== "update") return;
+				eventsThisTurn++;
+				got.push({ rects: event.rects.length, size: event.size !== null, cursor: event.cursor !== null });
+			});
+			reader.feed(Buffer.concat(serverHello(width, height)));
+			const rect = (x: number, y: number, w: number, h: number) => rawRect(x, y, w, h, [int(0, 255), 1, 2]);
+			const message = (): Buffer => {
+				const kind = random();
+				if (kind < 0.25) {
+					// An update of areas within the screen: often a few, sometimes the most allowed (1,024), sometimes up to
+					// the screen's own budget in pixels.
+					const most = random() < 0.05;
+					const count = most ? 1024 : int(0, 12);
+					const parts: Buffer[] = [];
+					let bytes = 4;
+					for (let n = 0; n < count; n++) {
+						const w = most ? int(1, 4) : int(1, width);
+						const h = most ? int(1, 4) : int(1, height);
+						if (bytes + 12 + w * h * 4 > budget() - 4096) break;
+						parts.push(rect(int(0, width - w), int(0, height - h), w, h));
+						bytes += 12 + w * h * 4;
+					}
+					// A pointer shape too, now and then (never beyond the 1,024 entries an update may have).
+					const withCursor = parts.length < 1024 && random() < 0.1;
+					if (withCursor) {
+						const side = int(1, 32);
+						const head = Buffer.alloc(12);
+						head.writeUInt16BE(side, 4);
+						head.writeUInt16BE(side, 6);
+						head.writeInt32BE(-239, 8);
+						parts.push(
+							Buffer.concat([head, Buffer.alloc(side * side * 4), Buffer.alloc(Math.ceil(side / 8) * side)]),
+						);
+					}
+					sent.push({ rects: parts.length - (withCursor ? 1 : 0), size: false, cursor: withCursor });
+					return update(...parts);
+				}
+				if (kind < 0.3) {
+					// The screen's size changes (alone in its update, as Xvnc sends it).
+					width = int(32, 320);
+					height = int(32, 200);
+					const head = Buffer.alloc(12);
+					head.writeUInt16BE(width, 4);
+					head.writeUInt16BE(height, 6);
+					head.writeInt32BE(-223, 8);
+					sent.push({ rects: 0, size: true, cursor: false });
+					return update(head);
+				}
+				if (kind < 0.55) {
+					// Empty updates, many at once.
+					const many = int(1, 20_000);
+					for (let n = 0; n < many; n++) sent.push({ rects: 0, size: false, cursor: false });
+					return Buffer.alloc(4 * many);
+				}
+				if (kind < 0.75) return Buffer.alloc(int(1, 20_000), 2);
+				if (kind < 0.88) {
+					const count = random() < 0.1 ? 65_535 : int(0, 300);
+					const head = Buffer.alloc(6);
+					head[0] = 1;
+					head.writeUInt16BE(count, 4);
+					return Buffer.concat([head, Buffer.alloc(6 * count, 9)]);
+				}
+				const length = random() < 0.05 ? 4 * 1024 * 1024 : int(0, 70_000);
+				const head = Buffer.alloc(8);
+				head[0] = 3;
+				head.writeUInt32BE(length, 4);
+				return Buffer.concat([head, Buffer.alloc(length, 0x42)]);
+			};
+			let turns = 0;
+			let slowest = 0;
+			for (let n = 0; n < 400; n++) {
+				const bytes = message();
+				// In random pieces, from single bytes to 256 KiB, read after each piece until the reader waits for more.
+				for (let at = 0; at < bytes.length; ) {
+					const piece = random() < 0.2 ? int(1, 16) : int(1, 262_144);
+					reader.push(bytes.subarray(at, at + piece));
+					at += piece;
+					do {
+						eventsThisTurn = 0;
+						const began = performance.now();
+						reader.drain(RFB_TAKE_PER_TURN);
+						const took = performance.now() - began;
+						slowest = Math.max(slowest, took);
+						turns++;
+						// For EVERY turn: what it handed on, what it was charged (every byte it copied is charged), its time.
+						expect(eventsThisTurn).toBeLessThanOrEqual(MAX_EVENTS_A_TURN);
+						expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
+						expect(took).toBeLessThan(50);
+					} while (reader.busy);
+				}
+			}
+			// And nothing was lost or reordered on the way: every update, in order.
+			expect(got).toEqual(sent);
+			expect(turns).toBeGreaterThan(400);
+			expect(slowest).toBeLessThan(50);
+		}
+	}, 120_000);
 
 	it("keeps a large area as bands of whole rows sharing its pixels, so no PNG or message is much over a megabyte to make (v245 release review)", async () => {
 		const desktop = fakeDesktop();
