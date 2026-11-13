@@ -45,6 +45,7 @@ async function bundle(scratch) {
 				'export {HttpCloudCompanyFolderBytes} from "./packages/runtime/src/cloud-company-folder-bytes.ts";',
 				'export {cloudFolderFileTools} from "./packages/runtime/src/cloud-folder-file-tools.ts";',
 				'export {cloudInterfaceTools} from "./packages/runtime/src/cloud-folder-interface-tools.ts";',
+				'export {cloudMachineTools} from "./packages/runtime/src/cloud-machine-tools.ts";',
 				'export {CloudRunLogCompanyFolder} from "./packages/runtime/src/cloud-run-log-folder.ts";',
 				'export {openCloudRunLog} from "./packages/runtime/src/cloud-run-log-open.ts";',
 				'export {CloudRunResumeRpc} from "./packages/runtime/src/cloud-run-resume.ts";',
@@ -350,7 +351,7 @@ function provider(state, calls) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools } = context;
+	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools, moreTools } = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -426,6 +427,7 @@ async function attempt(code, context) {
 				tools: [
 					...code.cloudFolderFileTools({ folder, operations, identity }),
 					...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
+					...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
 				],
 				assertContext: (signal, timeoutMs) => gateway.assertReadableContext(signal, timeoutMs),
 				checkRun: (signal, timeoutMs) => gateway.checkRun(signal, timeoutMs),
@@ -478,9 +480,9 @@ export function answerOf(output) {
 /** Runs one proof: the company of SQL test 924 with `setup` (SQL run in the fixture's transaction after its part, as
  * the platform; `pg_temp.base_*` helpers are there; or a function of the bundled code that gives it) and the objects of
  * its texts, Alice's run in Shared context through the real patched Codex making `calls` with the folder file tools
- * (and the interface tools, `interfaceTools`), then `check(run)` on what was stored. Without the binary it prints NOT
- * RUN. */
-export async function proveCompanyRun({ name, prompt, setup, objects, calls, check, interfaceTools = false }) {
+ * (and the interface tools, `interfaceTools`, and the tools `moreTools(code, {db, binding, identity, operations, paths})`
+ * gives), then `check(run)` on what was stored. Without the binary it prints NOT RUN. */
+export async function proveCompanyRun({ name, prompt, setup, objects, calls, check, interfaceTools = false, moreTools }) {
 	const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 	if (!binary) {
 		process.stdout.write("NOT RUN: set QORPERA_CODEX_FENCE_BINARY to the patched Codex this tree pins\n");
@@ -535,6 +537,7 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			prompt,
 			lane: state.lane,
 			interfaceTools,
+			moreTools,
 		});
 		if (state.failure) throw state.failure;
 		assert.equal(state.agent.length, calls.length + 1, "the model made every call, then answered");
