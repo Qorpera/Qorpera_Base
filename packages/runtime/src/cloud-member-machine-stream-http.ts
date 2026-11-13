@@ -24,6 +24,15 @@ const MAX_INCOMING_BYTES = 256;
 const HIGH_WATER_BYTES = 2 * 1024 * 1024;
 const PING_EVERY_MS = 30_000;
 const PONG_WITHIN_MS = 60_000;
+/** How long a connection may take to send its whole upgrade request, and how often that is checked. Node checks the
+ * request's deadline only every `connectionsCheckingInterval` (30 s unless told), so with the default a connection that
+ * sends nothing would be held for up to about 35 s; checked every second, it goes within about 6 s (the lead's read of
+ * #1746, 13 Nov). */
+const UPGRADE_WITHIN_MS = 5000;
+const CHECK_EVERY_MS = 1000;
+/** Connections this listener holds at once, upgraded or not: room for its 64 streams and the upgrades on their way.
+ * Past it, Node closes a new connection the moment it is accepted, before a byte of it is read. */
+const MAX_CONNECTIONS = 256;
 
 /** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
 export interface CloudMemberMachineStreamSink {
@@ -99,14 +108,18 @@ export class CloudMemberMachineStreamListener {
 		)
 			throw new Error("Member machine stream listener is invalid");
 		this.#options = options;
-		this.#server = createServer((_request, reply) => {
+		this.#server = createServer({ connectionsCheckingInterval: CHECK_EVERY_MS }, (_request, reply) => {
 			// Only the upgrade is served: anything else is nothing.
 			reply.writeHead(404, { "content-length": "0", connection: "close" });
 			reply.end();
 		});
-		// The upgrade's request comes whole within 5 s, or the connection goes.
-		this.#server.headersTimeout = 5000;
-		this.#server.requestTimeout = 5000;
+		// The upgrade's request comes whole within 5 s, or the connection goes — checked every second, so a connection
+		// that sends nothing at all is gone within about 6 s, never the 35 s Node's default check would allow.
+		this.#server.headersTimeout = UPGRADE_WITHIN_MS;
+		this.#server.requestTimeout = UPGRADE_WITHIN_MS;
+		// And at most this many at once: a flood of idle connections holds at most 256 sockets for at most ~6 s each,
+		// and an upgraded stream keeps its own (it counts among them until it ends).
+		this.#server.maxConnections = MAX_CONNECTIONS;
 		this.#server.on("upgrade", (request: IncomingMessage, socket: Socket, head: Buffer) =>
 			this.#upgrade(request, socket, head),
 		);
@@ -123,10 +136,14 @@ export class CloudMemberMachineStreamListener {
 		});
 	}
 
-	/** Stops taking streams and ends every open one (1001). */
+	/** Stops taking streams and ends every open one (1001). A connection that has not upgraded is cut at once: closing
+	 * stops Node's deadline check, so one that sends nothing would otherwise hold the close for as long as it liked. An
+	 * upgraded stream is ended by its own close (1001), which lets its socket go within 2 s. */
 	async close(): Promise<void> {
 		for (const open of this.#open) open.stop.abort("stopping");
-		await new Promise<void>((resolve) => this.#server.close(() => resolve()));
+		const closed = new Promise<void>((resolve) => this.#server.close(() => resolve()));
+		this.#server.closeAllConnections();
+		await closed;
 	}
 
 	#upgrade(request: IncomingMessage, socket: Socket, head: Buffer): void {

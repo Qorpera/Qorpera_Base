@@ -217,6 +217,70 @@ describe("the live-picture listener (20260930745000)", () => {
 		await vi.waitFor(() => expect(staying.frames.at(-1)?.payload.readUInt16BE(0)).toBe(1001));
 	});
 
+	it("lets a connection that sends nothing hold its socket about 6 s at most, never the 35 s of Node's default check (the lead's read, 13 Nov)", async () => {
+		const { port } = await listener(() => null);
+		const idle = connect(port, "127.0.0.1");
+		await new Promise<void>((resolve) => idle.once("connect", () => resolve()));
+		idle.on("error", () => {});
+		const began = Date.now();
+		await new Promise<void>((resolve) => idle.once("close", () => resolve()));
+		const held = Date.now() - began;
+		// The upgrade's 5 s, checked every second.
+		expect(held).toBeGreaterThanOrEqual(4500);
+		expect(held).toBeLessThan(7000);
+	}, 15_000);
+
+	it("holds at most 256 connections: the 257th is closed as it is accepted, and a stream it admitted keeps running", async () => {
+		let sends = 0;
+		let stop: (reason: string) => void = () => {};
+		const { service, port } = await listener(() => async (sink, signal) => {
+			const beat = setInterval(() => {
+				sends++;
+				void sink.send(Buffer.from([1, 0, 64, 0, 40])).catch(() => {});
+			}, 100);
+			signal.addEventListener("abort", () => clearInterval(beat));
+			return new Promise<string>((resolve) => {
+				stop = (reason) => {
+					clearInterval(beat);
+					resolve(reason);
+				};
+			});
+		});
+		// One admitted stream: an upgraded connection counts among the 256 until it ends.
+		const stream = await open(port);
+		expect(stream.status).toBe("HTTP/1.1 101 Switching Protocols");
+		// 255 connections that send nothing: 256 in all.
+		const idle: Socket[] = [];
+		cleanups.push(async () => {
+			for (const one of idle) one.destroy();
+		});
+		for (let n = 0; n < 255; n++) {
+			const one = connect(port, "127.0.0.1");
+			one.on("error", () => {});
+			await new Promise<void>((resolve) => one.once("connect", () => resolve()));
+			idle.push(one);
+		}
+		// The 257th: accepted by the kernel, closed by the listener at once, before a byte is read.
+		const over = connect(port, "127.0.0.1");
+		over.on("error", () => {});
+		const began = Date.now();
+		await new Promise<void>((resolve) => over.once("close", () => resolve()));
+		expect(Date.now() - began).toBeLessThan(1000);
+		// The 256 are still open, and the stream still streams.
+		expect(idle.filter((one) => one.destroyed).length).toBe(0);
+		const before = stream.frames.length;
+		await vi.waitFor(() => expect(stream.frames.length).toBeGreaterThan(before + 2));
+		expect(stream.frames.every((one) => one.opcode === 0x2)).toBe(true);
+		expect(sends).toBeGreaterThan(0);
+		stop("closed");
+		await vi.waitFor(() => expect(stream.frames.at(-1)?.opcode).toBe(0x8));
+		// And the executor's stop is not held by them: the 255 that never upgraded are cut at once.
+		const closing = Date.now();
+		await service.close();
+		expect(Date.now() - closing).toBeLessThan(3000);
+		await vi.waitFor(() => expect(idle.every((one) => one.destroyed)).toBe(true));
+	}, 15_000);
+
 	it("tells the browser why, in a code and a reason it acts on", () => {
 		expect(cloudMemberMachineStreamClose("closed")).toEqual({ code: 1000, reason: "" });
 		expect(cloudMemberMachineStreamClose("POINTER_PASS_ENDED")).toEqual({ code: 4001, reason: "POINTER_PASS_ENDED" });
