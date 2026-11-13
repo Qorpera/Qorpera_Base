@@ -2,11 +2,12 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
+import type { WebRoutine, WebRoutineDraft } from "../src/cloud/routines.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
@@ -20,6 +21,7 @@ import {
 	at,
 	bo,
 	cofounder,
+	connections,
 	digitalPostConnected,
 	letter,
 	letterFolder,
@@ -106,9 +108,85 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	await reader.open();
 	const main = h("main");
 	document.body.append(main);
-	// The address and Digital Post calls behind Addresses: no hooks yet, Digital Post not connected.
-	const hooks: EventHook[] = [];
+	// The address and Digital Post calls behind Addresses: a mailbox for each address the mail lists, Digital Post not
+	// connected.
+	const hooks: EventHook[] = fake.addresses.map((address, n) => ({
+		id: id(950 + n),
+		name: `mail-${String(address.address).split("@")[0]}`,
+		purpose: String(address.address).split("@")[0]!,
+		proof: "mail",
+		status: "active",
+		email: String(address.address),
+		createdAt: timestamp,
+	}));
+	// The routines that start on mail to a mailbox, as the routine list gives them: each address's own (`routines`), and
+	// those the page makes. Who answers an address follows them, as the cloud's address read does.
+	// The cloud's clock for them: each change is later than the one before it.
+	let changes = 0;
+	const stamp = () => new Date(Date.parse(timestamp) + ++changes * 1000).toISOString();
+	const listening: WebRoutine[] = fake.addresses.flatMap((address, n) =>
+		(address.routines as { routineId: string; title: string; staffAgentId: string }[]).map(
+			(routine) =>
+				({
+					routineId: routine.routineId,
+					clientRoutineId: routine.routineId,
+					title: routine.title,
+					staffAgentId: routine.staffAgentId,
+					status: "active",
+					updatedAt: stamp(),
+					triggers: [{ id: "file", kind: "listener", source: "event", hookId: id(950 + n), timeZone: "UTC" }],
+				}) as WebRoutine,
+		),
+	);
+	/** What a test turns: the routines that stay paused when they are resumed (they wait for a login), and what else
+	 * happens in the cloud as a new routine is saved (another member's save, or a routine that does not start). */
+	const cloud = { stuck: new Set<string>(), saved: (_made: WebRoutine) => {} };
+	const answered = () => {
+		fake.addresses = fake.addresses.map((address) => {
+			const hook = hooks.find((each) => each.email === address.address);
+			const active = listening.filter(
+				(routine) =>
+					routine.status === "active" &&
+					routine.triggers.some((trigger) => "hookId" in trigger && trigger.hookId === hook?.id),
+			);
+			return {
+				...address,
+				routines: active.map(({ routineId, title, staffAgentId }) => ({ routineId, title, staffAgentId })),
+				handledBy: [...new Set(active.map((routine) => routine.staffAgentId))].map((staffAgentId) => ({
+					staffAgentId,
+					name: [cofounder, ada, bo].find((agent) => agent.id === staffAgentId)?.displayName,
+				})),
+			};
+		});
+	};
 	const manage: MailboxManage = {
+		routines: {
+			list: vi.fn(async () => listening.map((routine) => ({ ...routine }))),
+			save: vi.fn(async (draft: WebRoutineDraft) => {
+				const made = {
+					routineId: id(700 + listening.length),
+					clientRoutineId: draft.clientRoutineId,
+					title: draft.title,
+					staffAgentId: draft.staffAgentId,
+					status: "active",
+					updatedAt: stamp(),
+					triggers: [draft.trigger],
+				} as WebRoutine;
+				listening.push(made);
+				cloud.saved(made);
+				answered();
+				return "saved" as const;
+			}),
+			setEnabled: vi.fn(async (routine: { routineId: string }, _account: unknown, enabled: boolean) => {
+				const kept = listening.find((each) => each.routineId === routine.routineId);
+				if (kept) {
+					kept.status = enabled && !cloud.stuck.has(kept.routineId) ? "active" : "paused";
+					kept.updatedAt = stamp();
+				}
+				answered();
+			}),
+		},
+		accounts: vi.fn(async () => connections),
 		hooks: {
 			list: vi.fn(async () => [...hooks]),
 			createHook: vi.fn(),
@@ -142,7 +220,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	const draw = () => renderMailbox(main, controller, "mailbox", { manage: () => manage });
 	cleanup.push(controller.store.subscribe(draw));
 	draw();
-	return { f, controller, fake, main, manage, accounts };
+	return { f, controller, fake, main, manage, accounts, routines: { listening, cloud, stamp, answered } };
 }
 
 const texts = (root: ParentNode, selector: string) =>
@@ -285,17 +363,35 @@ describe("the Inbox", () => {
 		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
 		button(none.main, "Add mailbox")!.click();
 		const form = none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
-		// The name is all the form asks for.
+		// The name is all the form asks to be typed; who answers the address is picked on its chip.
 		expect([...form.querySelectorAll("input")].map((field) => field.getAttribute("aria-label"))).toEqual([
 			"Mailbox name",
 		]);
-		type(form.querySelector('input[aria-label="Mailbox name"]')!, "hello");
-		none.fake.addresses = [ADDRESS];
-		form.requestSubmit();
+		const answers = () => none.main.querySelector<HTMLButtonElement>("[data-focus-key='add-answerer']")!;
+		const picked = () => answers().querySelector(".mailbox-writer-name")?.textContent;
+		expect(picked()).toBe("Choose who answers");
+		answers().click();
+		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual(["Nobody", "Co-Founder", "Ada", "Bo"]);
+		menuRow("Bo").click();
+		expect(picked()).toBe("Bo");
+		expect(document.activeElement).toBe(answers());
+		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
+		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
 		await vi.waitFor(() =>
 			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "hello", expect.anything()),
 		);
 		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
+		// The new address goes to the agent picked: a routine of Bo's that starts on its mail.
+		await vi.waitFor(() => expect(none.manage.routines!.save).toHaveBeenCalledTimes(1));
+		expect(vi.mocked(none.manage.routines!.save).mock.calls[0]?.[0]).toMatchObject({
+			staffAgentId: bo.id,
+			title: "Answer email to hello@acme.example",
+			trigger: { kind: "listener", source: "event", hookId: id(950), only: ["mail.received"] },
+		});
+		await vi.waitFor(() =>
+			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
+		);
 	});
 });
 
@@ -752,35 +848,394 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-tab[aria-selected='true']")?.textContent).toBe("Sent");
 	});
 
-	it("lists each address with who answers it, and asks the Co-Founder to give it to another agent", async () => {
-		const { main, controller } = await mailbox(() => {});
-		vi.spyOn(controller, "openCofounderConversation").mockResolvedValue({ sessionId: session.sessionId });
+	// Jonas, 12 Nov 2026: "don't like the UX of giving an agent an email - should be more intuitive".
+	it("lists each address once with who answers it, and gives it to an agent or takes it from one in one step", async () => {
+		const { main, controller, manage } = await mailbox(() => {});
 		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
-		expect(texts(main, ".mailbox-address-name strong")).toEqual(["hello@acme.example"]);
-		expect(main.querySelector(".mailbox-address-agent")?.textContent).toBe("Ada answers it");
-		expect(main.querySelector(".mailbox-week")?.textContent).toBe("12");
-		button(main, "Change")!.click();
-		expect(texts(main, ".mailbox-pick")).toEqual(["Co-Founder", "Ada", "Bo"]);
-		expect(main.querySelector(".mailbox-pick.is-current")?.textContent).toBe("Ada");
-		button(main, "Bo")!.click();
-		await vi.waitFor(() =>
-			expect(send).toHaveBeenCalledWith(
-				session.sessionId,
-				"Please have Bo answer the email that comes to hello@acme.example.",
-			),
-		);
-		await vi.waitFor(() =>
-			expect(main.querySelector(".mailbox-toast")?.textContent).toBe(
-				"Asked Co-Founder to give hello@acme.example to Bo",
-			),
-		);
+		// One line an address: its name, who answers it on a chip, how much came, and its buttons.
+		await vi.waitFor(() => expect(main.querySelectorAll(".hook-card")).toHaveLength(1));
+		const card = () => main.querySelector<HTMLElement>(".hook-card")!;
+		const chip = () => card().querySelector<HTMLButtonElement>(".mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const said = () => card().querySelector(".mailbox-address-agent > .mailbox-muted")?.textContent;
+		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const press = (name: string) => {
+			chip().click();
+			menuRow(name).click();
+		};
+		expect(card().querySelector(".settings-copy strong")?.textContent).toBe("hello@acme.example");
+		expect(main.querySelector(".mailbox-address")).toBeNull();
+		expect([said(), named()]).toEqual(["Answered by", "Ada"]);
+		expect(card().querySelector(".mailbox-week")?.textContent).toBe("12");
+		expect(texts(card(), ".connection-actions button")).toEqual(["Pause", "Remove"]);
+		// The chip opens the agents, each one a box to tick: those who answer it are ticked.
+		chip().click();
+		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual(["Co-Founder", "Ada", "Bo"]);
+		expect(menuRow("Ada").getAttribute("role")).toBe("menuitemcheckbox");
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("true");
+		expect(menuRow("Bo").getAttribute("aria-checked")).toBe("false");
+		menuRow("Bo").click();
+		// While it is on its way the chip names the agents as they will be, and waits.
+		expect([said(), named()]).toEqual(["Setting it up", "Ada and Bo"]);
+		expect(chip().disabled).toBe(true);
+		await vi.waitFor(() => expect(toast()).toBe("Bo answers hello@acme.example too"));
+		// Bo got a routine of his own that starts on the address's mail: the member's own save, on their model account.
+		// Ada's answering did not change, and no word went to the Co-Founder.
+		expect(vi.mocked(manage.routines!.save).mock.calls).toEqual([
+			[
+				{
+					clientRoutineId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+					staffAgentId: bo.id,
+					title: "Answer email to hello@acme.example",
+					prompt: expect.stringContaining("Read each email that arrives at hello@acme.example"),
+					trigger: {
+						id: "file",
+						kind: "listener",
+						source: "event",
+						hookId: id(950),
+						only: ["mail.received"],
+						timeZone: expect.any(String),
+						replyPolicy: "optional",
+					},
+					effort: "low",
+				},
+				expect.objectContaining({ connectionId: id(880) }),
+				expect.any(String),
+			],
+		]);
+		expect(manage.routines!.setEnabled).not.toHaveBeenCalled();
+		expect(send).not.toHaveBeenCalled();
+		expect([said(), named()]).toEqual(["Answered by", "Ada and Bo"]);
+		expect(chip().disabled).toBe(false);
+		expect(document.activeElement).toBe(chip());
+		// Ada's tick off: her routine stops, and Bo answers alone.
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls).toEqual([
+			[expect.objectContaining({ routineId: id(801) }), undefined, false, expect.any(String)],
+		]);
+		expect(named()).toBe("Bo");
+		// On again: she takes up the routine she had, and no second one is made.
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example too"));
+		expect(manage.routines!.save).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.at(-1)).toEqual([
+			expect.objectContaining({ routineId: id(801) }),
+			expect.objectContaining({ connectionId: id(880) }),
+			true,
+			expect.any(String),
+		]);
+		expect(named()).toBe("Ada and Bo");
+		// Both off: nobody answers it, and the chip asks again.
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo no longer answers hello@acme.example"));
+		expect([said(), named()]).toEqual([undefined, "Choose who answers"]);
+		expect(chip().classList.contains("is-current")).toBe(false);
+		// The first agent on an address answers it alone.
+		press("Co-Founder");
+		await vi.waitFor(() => expect(toast()).toBe("Co-Founder answers hello@acme.example"));
 		// The company's addresses are made, paused and removed here, and Digital Post connected.
-		await vi.waitFor(() => expect(button(main, "Add mailbox")).toBeDefined());
+		expect(button(main, "Add mailbox")).toBeDefined();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='mailbox']")).not.toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='webhook']")).toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
+	});
+
+	// Review of #1719, rounds 1 and 2: a handover in steps could stop half way. One agent's answering is one thing now,
+	// and what the cloud holds after decides what is said.
+	it("says why an address could not be given to an agent, and goes by what the cloud holds when an answer is lost", async () => {
+		const { main, manage, routines } = await mailbox(() => {});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const said = () => main.querySelector(".hook-card .mailbox-error")?.textContent;
+		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const press = (name: string) => {
+			chip().click();
+			menuRow(name).click();
+		};
+		const lost =
+			<A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
+			async (...args: A): Promise<R> => {
+				await call(...args);
+				throw new Error("Failed to fetch");
+			};
+		const save = vi.mocked(manage.routines!.save);
+		const setEnabled = vi.mocked(manage.routines!.setEnabled);
+		const list = vi.mocked(manage.routines!.list);
+		expect(named()).toBe("Ada");
+		// None of the member's model accounts can pay for work that starts on its own: nothing is written.
+		vi.mocked(manage.accounts!).mockResolvedValueOnce({ ...connections, connections: [] });
+		press("Bo");
+		await vi.waitFor(() =>
+			expect(said()).toBe(
+				"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+			),
+		);
+		expect(save).not.toHaveBeenCalled();
+		expect(named()).toBe("Ada");
+		expect(toast()).toBeUndefined();
+		// The save is refused: its reason is said.
+		save.mockRejectedValueOnce(new Error("The company is paused."));
+		press("Bo");
+		await vi.waitFor(() => expect(said()).toBe("The company is paused."));
+		expect(named()).toBe("Ada");
+		// The save goes, but the routine is not at work after it: Bo is not said to answer.
+		routines.cloud.saved = (made) => {
+			made.status = "paused";
+		};
+		press("Bo");
+		await vi.waitFor(() =>
+			expect(said()).toBe("Bo's routine for this address did not start. Bo's routines say why."),
+		);
+		expect(named()).toBe("Ada");
+		expect(toast()).toBeUndefined();
+		routines.cloud.saved = () => {};
+		// Nothing of this touched Ada's routine.
+		expect(setEnabled).not.toHaveBeenCalled();
+		// An answer that is lost: Bo's routine was taken up again in the cloud, though the page heard nothing. What the
+		// cloud holds decides, and the next thing said is true.
+		setEnabled.mockImplementationOnce(lost(setEnabled.getMockImplementation()!));
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo answers hello@acme.example too"));
+		expect(said()).toBeUndefined();
+		expect(named()).toBe("Ada and Bo");
+		// The same for a stop whose answer is lost.
+		setEnabled.mockImplementationOnce(lost(setEnabled.getMockImplementation()!));
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		expect(said()).toBeUndefined();
+		expect(named()).toBe("Bo");
+		// The cloud cannot be read after a stop: the page says so and claims nothing; the line is as the mail says.
+		list.mockImplementationOnce(list.getMockImplementation()!).mockRejectedValueOnce(new Error("Failed to fetch"));
+		press("Bo");
+		await vi.waitFor(() => expect(said()).toBe("Failed to fetch"));
+		expect(named()).toBe("Choose who answers");
+	});
+
+	// Review of #1719, round 1: a routine taken up again may stay paused, waiting for a login.
+	it("gives the agent a new routine when the one it had stays paused, and never says it answers before it does", async () => {
+		const { main, manage, routines } = await mailbox((mail) => {
+			mail.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		});
+		// Ada answered the address once: her routine is paused, and waits for a login only its own page moves.
+		routines.listening.push({
+			routineId: id(801),
+			clientRoutineId: id(801),
+			title: "Morning mail",
+			staffAgentId: ada.id,
+			status: "paused",
+			updatedAt: routines.stamp(),
+			triggers: [{ id: "file", kind: "listener", source: "event", hookId: id(950), timeZone: "UTC" }],
+		} as WebRoutine);
+		routines.cloud.stuck.add(id(801));
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		chip().click();
+		menuRow("Ada").click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada answers hello@acme.example"),
+		);
+		// The old routine was tried first and stayed paused; the new one is hers, and at work.
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls).toEqual([
+			[
+				expect.objectContaining({ routineId: id(801) }),
+				expect.objectContaining({ connectionId: id(880) }),
+				true,
+				expect.any(String),
+			],
+		]);
+		expect(manage.routines!.save).toHaveBeenCalledTimes(1);
+		expect(routines.listening.map((routine) => [routine.staffAgentId, routine.status])).toEqual([
+			[ada.id, "paused"],
+			[ada.id, "active"],
+		]);
+		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("Ada");
+	});
+
+	it("keeps one routine when another member gives the address to the same agent at the same moment", async () => {
+		const theirs = (n: number, updatedAt: string) =>
+			({
+				routineId: id(n),
+				clientRoutineId: id(n),
+				title: "Answer email to hello@acme.example",
+				staffAgentId: ada.id,
+				status: "active",
+				updatedAt,
+				triggers: [{ id: "file", kind: "listener", source: "event", hookId: id(950), timeZone: "UTC" }],
+			}) as WebRoutine;
+		const { main, manage, routines } = await mailbox((mail) => {
+			mail.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const press = (name: string) => {
+			chip().click();
+			menuRow(name).click();
+		};
+		const stops = () => vi.mocked(manage.routines!.setEnabled).mock.calls.map((call) => [call[0].routineId, call[2]]);
+		const atWork = () =>
+			routines.listening.filter((routine) => routine.status === "active").map((routine) => routine.routineId);
+		// The other member's save is the later one: it stays, and this page's own routine stops. Ada answers once.
+		routines.cloud.saved = () => {
+			routines.listening.push(theirs(990, routines.stamp()));
+		};
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(stops()).toEqual([[id(700), false]]);
+		expect(atWork()).toEqual([id(990)]);
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		// Off, then the other way round: the other member's save is the earlier one, so this page's stays and theirs
+		// stops. Ada's routine from before stays paused when it is taken up, so she gets a new one here.
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		vi.mocked(manage.routines!.setEnabled).mockClear();
+		routines.cloud.stuck.add(id(700)).add(id(990));
+		routines.cloud.saved = (made) => {
+			routines.listening.push(theirs(991, new Date(Date.parse(made.updatedAt) - 500).toISOString()));
+		};
+		// The stop of theirs commits, but its answer is lost: it is tried once more, and the routines are read again.
+		const setEnabled = vi.mocked(manage.routines!.setEnabled);
+		const change = setEnabled.getMockImplementation()!;
+		setEnabled.mockImplementationOnce(change).mockImplementationOnce(async (...args) => {
+			await change(...args);
+			throw new Error("Failed to fetch");
+		});
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(stops()).toEqual([
+			[id(990), true],
+			[id(991), false],
+			[id(991), false],
+		]);
+		expect(atWork()).toEqual([id(702)]);
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		// Review of #1719, round 3: a stop of the other member's routine that fails was passed over. Off and on once
+		// more; this time theirs can't be stopped, on either try. Ada has two routines at work: the line says so, and
+		// what puts it right.
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toEqual([]));
+		setEnabled.mockClear();
+		routines.cloud.stuck.add(id(702)).add(id(991));
+		routines.cloud.saved = (made) => {
+			routines.listening.push(theirs(992, new Date(Date.parse(made.updatedAt) - 500).toISOString()));
+		};
+		setEnabled
+			.mockImplementationOnce(change)
+			.mockRejectedValueOnce(new Error("Failed to fetch"))
+			.mockRejectedValueOnce(new Error("Failed to fetch"));
+		press("Ada");
+		await vi.waitFor(() =>
+			expect(main.querySelector(".hook-card .mailbox-error")?.textContent).toBe(
+				"Ada has more than one routine for this address at work, and wakes more than once for an email. Take Ada off the address and give it to Ada again.",
+			),
+		);
+		expect(stops()).toEqual([
+			[id(702), true],
+			[id(992), false],
+			[id(992), false],
+		]);
+		expect(atWork()).toEqual([id(704), id(992)]);
+		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("Ada");
+		// Off stops them both, and on again takes up one.
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toEqual([]));
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		routines.cloud.stuck.clear();
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toHaveLength(1));
+	});
+
+	// Review of #1719, round 3: after a change the line showed what the addresses said before it, when they could not
+	// be read again or an older read answered late.
+	it("goes by what the routines said while the addresses can't be read, and lets no older read undo a change", async () => {
+		const { main, f, fake, manage } = await mailbox(() => {});
+		// The addresses' read: down, or the next one held back and answering with what it read when it began.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const read = rpc.getMockImplementation()!;
+		let down = false;
+		let hold: Promise<void> | null = null;
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_addresses" && down) throw new Error("Failed to fetch");
+			if (fn === "qorpera_member_mail_addresses" && hold) {
+				const [wait, before] = [hold, fake.addresses];
+				hold = null;
+				await wait;
+				return before;
+			}
+			return read(fn, args);
+		});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const press = (name: string) => {
+			chip().click();
+			menuRow(name).click();
+		};
+		expect(named()).toBe("Ada");
+		// The addresses can't be read after Ada is taken off: the line goes by the routines, and her tick is off.
+		down = true;
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		expect(named()).toBe("Choose who answers");
+		chip().click();
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("false");
+		// So a press on her gives the address back, and does not take it from her again.
+		menuRow("Ada").click();
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.map((call) => call[2])).toEqual([false, true]);
+		expect(named()).toBe("Ada");
+		// The addresses are read again with the next change, and the line is theirs once more.
+		down = false;
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo answers hello@acme.example too"));
+		expect(named()).toBe("Ada and Bo");
+		// A read begun before a change answers after it, with what it read then: it is let go.
+		let release = () => {};
+		hold = new Promise((resolve) => {
+			release = resolve;
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(hold).toBeNull());
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo no longer answers hello@acme.example"));
+		expect(named()).toBe("Ada");
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(named()).toBe("Ada");
+		// Review of #1719, round 4: both at once. A read begun before Ada is taken off answers after it, and the read
+		// after the change fails: the older read is still let go, and the line goes by the routines.
+		hold = new Promise((resolve) => {
+			release = resolve;
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(hold).toBeNull());
+		down = true;
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(named()).toBe("Choose who answers");
+		chip().click();
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("false");
+		menuRow("Ada").click();
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.at(-1)?.[2]).toBe(true);
+		expect(named()).toBe("Ada");
 	});
 
 	it("builds the address cards again for a company opened again, and in a new time zone or language", async () => {
@@ -1895,9 +2350,14 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-answers")).toBeNull();
 		expect(button(main, "Reply")).toBeUndefined();
 		button(main, "Back to Inbox")!.click();
+		// Addresses shows each address and who answers it, with nothing to change.
 		tab(main, "Addresses");
-		expect(button(main, "Change")).toBeUndefined();
-		expect(main.querySelector(".mailbox-manage")).toBeNull();
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		expect(main.querySelector(".mailbox-answer-line .mailbox-address-agent")?.textContent).toBe("Ada answers it");
+		expect(main.querySelector(".mailbox-answerer")).toBeNull();
+		expect(main.querySelector(".mailbox-manage .connection-actions button")).toBeNull();
+		expect(button(main, "Add mailbox")).toBeUndefined();
+		expect(main.querySelector(".mailbox-manage .digital-post")).toBeNull();
 	});
 });
 

@@ -347,6 +347,41 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(settling.removed).toEqual([]);
 	});
 
+	it("keeps an answer half made in a waiting card when the agent's look changes, and draws only the figure anew", async () => {
+		const thread = setup([message(1), question()]);
+		const waiting = thread.card(id(600))!;
+		expect(waiting.classList.contains("is-asking")).toBe(true);
+		const stand = waiting.querySelector<HTMLElement>(".interaction-figure")!;
+		const figure = stand.firstElementChild;
+		expect(figure?.classList.contains("figure")).toBe(true);
+		const field = waiting.querySelector<HTMLInputElement>(".interaction-own > .interaction-field")!;
+		field.value = "#ops";
+		field.dispatchEvent(new Event("input"));
+		const send = waiting.querySelector<HTMLButtonElement>(".interaction-send")!;
+		expect(send.disabled).toBe(false);
+		// Another colour for the agent (review r1 F1 on #1730).
+		const { staff: agents } = thread.company.store.get();
+		thread.company.store.set({
+			staff: agents.map((agent) =>
+				agent.id === staff.id ? { ...agent, appearance: { ...agent.appearance, color: "#654321" } } : agent,
+			),
+		});
+		await settle();
+		expect(thread.card(id(600))).toBe(waiting);
+		expect(waiting.querySelector(".interaction-own > .interaction-field")).toBe(field);
+		expect([field.value, send.disabled]).toEqual(["#ops", false]);
+		expect(waiting.querySelector(".interaction-figure")).toBe(stand);
+		expect(stand.firstElementChild).not.toBe(figure);
+		expect(stand.firstElementChild?.classList.contains("figure")).toBe(true);
+		expect(stand.children).toHaveLength(1);
+		// A redraw with the same look leaves the figure as it is.
+		const again = stand.firstElementChild;
+		await thread.show([message(1), question(), message(3)]);
+		expect(thread.card(id(600))).toBe(waiting);
+		expect(stand.firstElementChild).toBe(again);
+		expect(field.value).toBe("#ops");
+	});
+
 	it("draws a coding value's card again when a role change moves whose value it saves", async () => {
 		const coding = question({
 			request: {

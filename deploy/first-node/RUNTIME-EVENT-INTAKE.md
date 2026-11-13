@@ -468,7 +468,20 @@ switched off or something failed, so the provider retries; a message the databas
 logged and settled with 200, since a retry would send the same message.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
-`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+`only: ["mail.received"]`. An agent makes one with `manage_routine`; an owner or admin gives a mailbox to an agent
+in the Mailbox's Addresses (Jonas, 12 November 2026: giving an agent an email "should be more intuitive"), which
+writes that routine's file for the agent as the member's own save (`when: event`, the mailbox's hook,
+`only: [mail.received]`, reply `optional`, effort `low`), on the member's own model account that works while they
+are away. A mailbox may have several agents, as several routines may listen to a hook: the page gives a mailbox to
+one agent or takes it from one, and no other agent's routine changes with it, so there is no handover in steps that
+could stop half way. Giving takes up the routine the agent had last, and writes a new one when that stays paused
+(who pays for a routine is never switched there); taking pauses the agent's routines on the mailbox. What the routine
+list holds after decides what the page says, whatever it heard back. When two members give one mailbox to the same
+agent at the same moment, each page keeps, of the routines begun then, the one the cloud saved last (`updatedAt`)
+and pauses the others, so the agent wakes once for an email; a pause that fails is tried once more and the routines
+are read again, and the page says so when the agent still has two at work. The save's own rules check the hook and who pays, as
+for an agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the routine rules
+already take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
 whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
 says so and names the authentication results.
 

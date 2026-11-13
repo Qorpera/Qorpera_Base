@@ -2873,8 +2873,16 @@ export class ConversationView {
 								takeOver,
 							]),
 				]);
-				nodes.push(
-					keep(item.id, cardKey, email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`, () =>
+				// The agent's figure, waiting, as it stands beside its question in the questions dock: the head of a card
+				// that waits for the member.
+				const waitingFigure = agent
+					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting" })
+					: undefined;
+				const card = keep(
+					item.id,
+					cardKey,
+					email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`,
+					() =>
 						renderInteractionCard(
 							{ ...item, answer },
 							{
@@ -2883,6 +2891,7 @@ export class ConversationView {
 								canAnswer: answers,
 								inThread: true,
 								viewerId: this.#company.userId,
+								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
@@ -2932,8 +2941,17 @@ export class ConversationView {
 									: {}),
 							},
 						),
-					),
 				);
+				// The figure follows the agent's look by itself. The look is no part of the card's key: a card drawn
+				// again for it would lose an answer half made in it (review r1 F1 on #1730).
+				const stand = card.querySelector<HTMLElement>(".interaction-figure");
+				if (stand && waitingFigure) {
+					const look = JSON.stringify([agent?.id, agent?.appearance, agent?.templateId]);
+					if (stand.dataset.look !== undefined && stand.dataset.look !== look)
+						stand.replaceChildren(waitingFigure());
+					stand.dataset.look = look;
+				}
+				nodes.push(card);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];

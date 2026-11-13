@@ -399,11 +399,7 @@ describe("a card with its answer, in a thread", () => {
 		expect(late?.textContent).toContain("past its time");
 	});
 
-	it("keeps its frame while it waits, and wherever it is not in a thread", () => {
-		const waiting = renderInteractionCard(item(question), thread());
-		expect(classes(waiting)).not.toContain("is-exchange");
-		expect(waiting.querySelector(".bubble, .visually-hidden, .review-mark, [data-sent-at]")).toBeNull();
-		expect(waiting.querySelectorAll(".interaction-ask .interaction-options .btn")).toHaveLength(2);
+	it("keeps its frame wherever it is not in a thread, answered or waiting", () => {
 		// The questions dock draws the same card with no thread around it.
 		const docked = renderInteractionCard(item(question, { ...answered, answeredBy: VIEWER }), context());
 		expect(classes(docked)).not.toContain("is-exchange");
@@ -412,6 +408,92 @@ describe("a card with its answer, in a thread", () => {
 		).toBeNull();
 		expect(classes(docked.querySelector(".interaction-result"))).toEqual(["interaction-result"]);
 		expect(docked.querySelector(".interaction-attribution")?.textContent).toMatch(/^Jonas · /);
+		const waiting = renderInteractionCard(
+			item({ ...question, payload: { ...question.payload, allowCustom: true } }),
+			context(),
+		);
+		expect(classes(waiting)).toEqual(["interaction-card", "surface-question", "state-waiting"]);
+		expect(
+			waiting.querySelector(".interaction-call, .interaction-own, .interaction-send, .visually-hidden"),
+		).toBeNull();
+		expect(waiting.dataset.sentAt).toBeUndefined();
+		expect(waiting.querySelector(".interaction-heading")?.textContent).toContain("Waiting for you");
+	});
+});
+
+describe("a card that waits for the member, in a thread", () => {
+	const thread = (overrides: Partial<Parameters<typeof renderInteractionCard>[1]> = {}) =>
+		context({ inThread: true, viewerId: MEMBER, ...overrides });
+	const classes = (element: Element | null | undefined) => [...(element?.classList ?? [])];
+	const own: InteractionRequest = { ...question, payload: { ...question.payload, allowCustom: true } };
+
+	it("says who asks at its head, with the agent's figure, and keeps the label row for a screen reader", () => {
+		const figure = document.createElement("span");
+		figure.className = "figure";
+		const card = renderInteractionCard(item(question), thread({ figure: () => figure }));
+		expect(classes(card)).toEqual(["interaction-card", "surface-question", "state-waiting", "is-asking"]);
+		// Its time shows on a hover, as a message's does.
+		expect(card.dataset.sentAt).toBe("2026-09-22T20:00:00Z");
+		const call = card.querySelector(".interaction-ask > .interaction-call");
+		expect(call?.querySelector(".interaction-figure")?.firstElementChild).toBe(figure);
+		expect(call?.querySelector(".interaction-dot")).toBeNull();
+		expect(call?.querySelector("strong")?.textContent).toBe("Yang Tang asks you");
+		const heading = card.querySelector(".interaction-heading");
+		expect(classes(heading)).toContain("visually-hidden");
+		expect(heading?.textContent).toContain("Question");
+		expect(heading?.textContent).toContain("Waiting for you");
+		// The proposed answers and the way out are the card's own, as anywhere.
+		expect([...card.querySelectorAll(".interaction-options .btn")].map((pill) => pill.textContent)).toEqual([
+			"#general",
+			"#finance",
+		]);
+		expect(card.querySelector(".interaction-actions .interaction-quiet")?.textContent).toBe("Skip");
+		// With no figure to draw, a dot in the accent stands where it would.
+		const plain = renderInteractionCard(item(question), thread());
+		expect(plain.querySelector(".interaction-call > .interaction-dot")).not.toBeNull();
+		expect(plain.querySelector(".interaction-figure")).toBeNull();
+	});
+
+	it("says the agent needs the member on a card that is no question", () => {
+		const secret: InteractionRequest = { surface: "secret", title: "Stripe key", payload: { label: "Stripe key" } };
+		const card = renderInteractionCard(item(secret), thread({ provideSecret: async () => {} }));
+		expect(classes(card)).toContain("is-asking");
+		expect(card.querySelector(".interaction-call strong")?.textContent).toBe("Yang Tang needs you");
+	});
+
+	it("sends an answer of the member's own from a Send in its field, live once something is typed", () => {
+		const ctx = thread();
+		const card = renderInteractionCard(item(own), ctx);
+		const field = card.querySelector<HTMLInputElement>(".interaction-own > .interaction-field")!;
+		const send = card.querySelector<HTMLButtonElement>(".interaction-own > .interaction-send")!;
+		expect([send.getAttribute("aria-label"), send.disabled]).toEqual(["Send", true]);
+		field.value = "   ";
+		field.dispatchEvent(new Event("input"));
+		expect(send.disabled).toBe(true);
+		send.click();
+		expect(ctx.answer).not.toHaveBeenCalled();
+		field.value = " #ops ";
+		field.dispatchEvent(new Event("input"));
+		expect(send.disabled).toBe(false);
+		send.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["#ops"] });
+		// Enter still sends, as it always did.
+		const again = thread();
+		const typed = renderInteractionCard(item(own), again).querySelector<HTMLInputElement>(".interaction-field")!;
+		typed.value = "#ops";
+		typed.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true }));
+		expect(again.answer).toHaveBeenCalledWith("answered", { values: ["#ops"] });
+		// A question that takes several answers has its own Send beside the field: no second one in it.
+		const several = renderInteractionCard(item({ ...own, payload: { ...own.payload, multiSelect: true } }), thread());
+		expect(several.querySelector(".interaction-own, .interaction-send")).toBeNull();
+		expect(several.querySelector(".interaction-actions > .interaction-field")).not.toBeNull();
+	});
+
+	it("stays the plain card for a member who cannot answer it", () => {
+		const card = renderInteractionCard(item(own), thread({ canAnswer: false }));
+		expect(classes(card)).toEqual(["interaction-card", "surface-question", "state-waiting"]);
+		expect(card.querySelector(".interaction-call, .visually-hidden, button, input")).toBeNull();
+		expect(card.dataset.sentAt).toBeUndefined();
 	});
 });
 

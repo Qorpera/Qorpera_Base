@@ -1,8 +1,12 @@
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { describeError } from "../../cloud/client.ts";
+import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
+import type { EventHook } from "../../cloud/event-hooks.ts";
 import type {
 	MailAccount,
 	MailAddress,
+	MailAgent,
 	MailMember,
 	MailMessage,
 	MailMessageRef,
@@ -10,6 +14,13 @@ import type {
 	MailWaitingItem,
 	MailWaitingSend,
 } from "../../cloud/mail.ts";
+import {
+	canPayForRoutine,
+	claudeLogin,
+	latestVersions,
+	type WebRoutine,
+	type WebRoutines,
+} from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
@@ -49,8 +60,14 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   answer's Writer chip gives it to an agent instead, as the Write window's does: the member's words then go to that
  *   agent as their own message, with the email's subject and sender as quotes (contract, "quoted outside content in a
  *   member's message"), and the agent's review decides as for any send.
- * - Sent: the threads whose newest message the company sent. Addresses: each address, who answers it, how much came in
- *   the last 7 days, and Change, which asks the Co-Founder to give it to another agent.
+ * - Sent: the threads whose newest message the company sent. Addresses: each address on one line, with who answers it
+ *   and how much came in the last 7 days. An owner or admin gives an address to an agent there, in one step (Jonas,
+ *   12 Nov 2026: "don't like the UX of giving an agent an email - should be more intuitive"): the chip on the address's
+ *   line opens the agents, those who answer it ticked, and a press gives the address to an agent or takes it from one.
+ *   Behind it that is a routine of the agent's that starts on mail to the address, written as the member's own save,
+ *   on their own model account that works while they are away. An address may have several agents, as the cloud lets
+ *   several routines listen to a mailbox: one agent's answering is one thing, and nobody else's changes with it
+ *   (`giveAddress`). The form that adds an address asks who answers it too.
  * - Write: the member writes an email. Nobody owns a new one: the Writer chip says "You" (Jonas, 10 Nov 2026: "It
  *   should have no agent owning it by default"), and Send sends it as the member's own email from one of the company's
  *   addresses (contract, M2e). Who it goes to are chips, as a mail app has them: an address typed becomes one at a
@@ -65,6 +82,8 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   while the company has an email address, or Digital Post connected or holding letters.
  * - Making addresses (Jonas, 9 Nov 2026: they live here, not in Settings): under Addresses, and on the page with no
  *   address yet, an owner or admin adds, pauses or removes the company's mail addresses and connects Digital Post.
+ *   The addresses are the company's mailboxes as Settings' card lists them (views/settings-hooks.ts), each line with
+ *   this page's own part: who answers it. Every member sees them; only an owner or admin changes them.
  *
  * What came from outside the company (a sender, a subject, a snippet, a message's text) is only ever set as text, and
  * carries the title that says so. Account mail shows only that it is account mail, for which site, who used the
@@ -94,7 +113,14 @@ interface MailboxUi {
 	replies: Record<string, Reply>;
 	/** What is typed in the line to an agent about a Digital Post letter. */
 	note: string;
+	/** `digital-post` while its row asks who reads it. */
 	changing: string | null;
+	/** The address being given to an agent (`on`) or taken from one, while that is on its way: its chip waits. */
+	answering: { readonly address: string; readonly agent: string; readonly on: boolean } | null;
+	/** Why an address could not be given to the agent picked, by address. */
+	answerErrors: Record<string, string>;
+	/** Who answers the address the Add form makes; nobody until the member picks. */
+	addAgent: string | null;
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
@@ -159,17 +185,41 @@ function controllerKey(company: CompanyController): number {
 	return key;
 }
 /** The address and Digital Post cards of a page's state, kept so a form being filled survives a redraw: for the company
- * controller, the language and the time zone they were built for. */
-const manageViews = new WeakMap<
+ * controller, the language and the time zone they were built for. The cards' own parts are drawn for the page as it
+ * was last drawn (`page`). Digital Post's card is an owner's or admin's, made once the member is one. */
+interface ManageViews {
+	readonly company: CompanyController;
+	readonly locale: string;
+	readonly zone: string;
+	readonly calls: MailboxManage;
+	readonly hooks: HooksView;
+	post: DigitalPostView | undefined;
+	page: Page;
+	/** What the cards' own parts were last drawn from: they are drawn again only when it changed. */
+	shown: string;
+}
+const manageViews = new WeakMap<MailboxUi, ManageViews>();
+/** A page's addresses being given to agents, one after another: the last of them. */
+const answerings = new WeakMap<MailboxUi, Promise<void>>();
+/** Who answers an address as the routines said when it was last given or taken on a page, by address, where the
+ * addresses could not be read after it: the agents, and the addresses as they were read last (`read`). The line goes
+ * by the agents while the addresses are still those, and by the addresses' own word once they are read again. */
+const answeredBy = new WeakMap<
 	MailboxUi,
-	{
-		readonly company: CompanyController;
-		readonly locale: string;
-		readonly zone: string;
-		readonly hooks: HooksView;
-		readonly post: DigitalPostView;
-	}
+	Map<string, { readonly agents: readonly string[]; readonly read: readonly MailAddress[] | undefined }>
 >();
+
+/** The agents who answer an address: as the mail's addresses say, or as the routines said when it was given or taken
+ * here and the addresses could not be read since (`answeredBy`), so its line never goes back to what was. */
+function handlersOf(page: Page, address: string): readonly MailAgent[] {
+	const read = page.company.store.get().mail?.addresses;
+	const listed = read?.find((item) => item.address === address)?.handledBy ?? [];
+	const kept = answeredBy.get(page.ui)?.get(address);
+	if (!kept || kept.read !== read) return listed;
+	return kept.agents.map(
+		(staffAgentId) => listed.find((each) => each.staffAgentId === staffAgentId) ?? { staffAgentId },
+	);
+}
 /** The chip of a page whose menu is open (the Write window's `writer` or `from`, an answer's `reply-writer`): a redraw
  * under the menu draws it open. */
 const chipMenus = new WeakMap<MailboxUi, string>();
@@ -320,6 +370,11 @@ function pastedRecipients(text: string): string[] {
 export interface MailboxManage {
 	readonly hooks: HooksClient;
 	readonly digitalPost: DigitalPostClient;
+	/** The routines behind "who answers an address": an agent answers one through a routine that starts on its mail.
+	 * Without them, and the member's accounts, who answers an address is only shown. */
+	readonly routines?: Pick<WebRoutines, "list" | "save" | "setEnabled">;
+	/** The signed-in member's own model accounts: such a routine runs on one of them. */
+	readonly accounts?: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 }
 
 export interface MailboxOptions {
@@ -352,6 +407,9 @@ export function renderMailbox(
 			replies: {},
 			note: "",
 			changing: null,
+			answering: null,
+			answerErrors: {},
+			addAgent: null,
 			busy: false,
 			error: null,
 			toast: null,
@@ -381,6 +439,9 @@ export function renderMailbox(
 		new Date().toDateString(),
 		name,
 		{ ...ui, toast: ui.toast?.id ?? null },
+		// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
+		// draws them from it, also when it reads the same as the last one.
+		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
 		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
@@ -668,22 +729,26 @@ function toast(page: Page, text: string, agent: string | null): HTMLElement {
 }
 
 function noAddress(page: Page): HTMLElement {
-	const manage = manageArea(page);
+	// The first address is an owner's or admin's to make.
+	const views = page.company.store.get().team?.capabilities.authorize === true ? manageOf(page) : null;
 	return h(
 		"div",
 		{ class: "mailbox-empty" },
 		h("h1", null, t("The company has no email address yet")),
 		h("p", null, t("Make one, and pick the agent who answers what comes in.")),
 		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected.")),
-		manage ?? h("p", { class: "mailbox-muted" }, t("An owner or admin makes the company's addresses.")),
+		views
+			? h("div", { class: "mailbox-manage" }, views.hooks.el, views.post?.el ?? null)
+			: h("p", { class: "mailbox-muted" }, t("An owner or admin makes the company's addresses.")),
 	);
 }
 
-/** For owners and admins: the company's mail addresses to add, pause or remove, and Digital Post to connect. A change
+/** The company's mail addresses as lines, each with who answers it, which an owner or admin adds, pauses, removes and
+ * gives to an agent, and Digital Post for them to connect. None where the page was given no calls for them. A change
  * reads the company's mail again, so a new address shows at once. */
-function manageArea(page: Page): HTMLElement | null {
+function manageOf(page: Page): ManageViews | null {
 	const { company, ui, options } = page;
-	if (!options.manage || company.store.get().team?.capabilities.authorize !== true) return null;
+	if (!options.manage) return null;
 	let views = manageViews.get(ui);
 	// The company opened again (a new controller, the old one stopped), a new language or a new time zone: the cards
 	// are built again.
@@ -695,26 +760,64 @@ function manageArea(page: Page): HTMLElement | null {
 			views.zone !== presentationTimeZone())
 	) {
 		views.hooks.dispose();
-		views.post.dispose();
+		views.post?.dispose();
 		manageViews.delete(ui);
 		views = undefined;
 	}
+	const access = { canManage: () => company.store.get().team?.capabilities.authorize === true };
+	const changed = () => void CompanyMail.of(company)?.reread();
 	if (!views) {
 		const calls = options.manage();
-		const access = { canManage: () => company.store.get().team?.capabilities.authorize === true };
-		const changed = () => void CompanyMail.of(company)?.reread();
+		// The cards' own parts are drawn for the page as it stands when they are drawn.
+		const drawn = () => manageViews.get(ui)?.page ?? page;
 		views = {
 			company,
 			locale: presentationLocale(),
 			zone: presentationTimeZone(),
-			hooks: new HooksView(calls.hooks, company.signal, { access, kinds: ["mailbox"], changed }),
-			post: new DigitalPostView(calls.digitalPost, company.signal, { access, changed }),
+			calls,
+			page,
+			shown: "",
+			post: undefined,
+			hooks: new HooksView(calls.hooks, company.signal, {
+				access,
+				kinds: ["mailbox"],
+				changed,
+				card: (hook) => answerer(drawn(), calls, hook),
+				form: () => newAnswerer(drawn(), calls),
+				// The new address goes to the agent its form named.
+				added: (hook) => {
+					const now = drawn();
+					const agent = now.ui.addAgent;
+					now.ui.addAgent = null;
+					if (agent && hook.email)
+						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true);
+				},
+			}),
 		};
 		manageViews.set(ui, views);
 	}
+	views.page = page;
+	if (access.canManage())
+		views.post ??= new DigitalPostView(views.calls.digitalPost, company.signal, { access, changed });
 	views.hooks.update();
-	views.post.update();
-	return h("div", { class: "mailbox-manage" }, views.hooks.el, views.post.el);
+	// Who answers an address is the mail's to say: its lines are drawn again when that, or what the member is doing
+	// about it, changed. A form being filled is otherwise left alone.
+	const state = company.store.get();
+	const shown = JSON.stringify([
+		state.mail?.addresses ?? null,
+		(state.mail?.addresses ?? []).map((address) => handlersOf(page, address.address)),
+		ui.answering,
+		ui.answerErrors,
+		ui.addAgent,
+		assigns(page, views.calls),
+		state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
+	]);
+	if (views.shown !== shown) {
+		views.shown = shown;
+		views.hooks.redraw();
+	}
+	views.post?.update();
+	return views;
 }
 
 // The lists ---------------------------------------------------------------------------------------------------------
@@ -1744,27 +1847,32 @@ function digitalPostAddress(page: Page, agents: readonly HostedStaffAgent[]): HT
 // Addresses ---------------------------------------------------------------------------------------------------------
 
 function addressesView(page: Page): HTMLElement {
-	const { company, ui } = page;
-	const mail = company.store.get().mail;
-	const cofounder = company.cofounderId();
-	const agents = agentsAtWork(page);
-	const rows = (mail?.addresses ?? []).map((address) => {
-		const handler = address.handledBy[0];
-		const changing = ui.changing === address.address;
+	const { company } = page;
+	const views = manageOf(page);
+	const post = digitalPostAddress(page, agentsAtWork(page));
+	const postList = post ? h("ul", { class: "mailbox-address-list" }, post) : null;
+	if (views)
+		return h(
+			"div",
+			{ class: "mailbox-addresses" },
+			h(
+				"div",
+				{ class: "mailbox-manage" },
+				views.hooks.el,
+				postList,
+				company.store.get().team?.capabilities.authorize === true ? (views.post?.el ?? null) : null,
+			),
+		);
+	// A page without the calls behind the addresses reads them from the mail: each one and who answers it.
+	const rows = (company.store.get().mail?.addresses ?? []).map((address) => {
+		const [handler] = address.handledBy;
 		return h(
 			"li",
 			{ class: "mailbox-address" },
 			h(
 				"div",
 				{ class: "mailbox-address-row" },
-				h(
-					"span",
-					{ class: "mailbox-address-name" },
-					h("strong", null, address.address),
-					address.routines.length
-						? h("span", { class: "mailbox-muted" }, address.routines.map((routine) => routine.title).join(", "))
-						: null,
-				),
+				h("span", { class: "mailbox-address-name" }, h("strong", null, address.address)),
 				h(
 					"span",
 					{ class: "mailbox-address-agent" },
@@ -1773,86 +1881,385 @@ function addressesView(page: Page): HTMLElement {
 						? t("{name} answers it", { name: agentName(page, handler.staffAgentId, handler.name) })
 						: t("No agent answers it yet"),
 				),
-				h(
-					"span",
-					{ class: "mailbox-muted" },
-					h("strong", { class: "mailbox-week" }, String(address.last7Days)),
-					` ${t("in the last 7 days")}`,
-				),
-				canWrite(page) && cofounder
-					? h(
-							"button",
-							{
-								type: "button",
-								class: "mailbox-text is-quiet",
-								"aria-expanded": String(changing),
-								"data-focus-key": `change:${address.address}`,
-								onclick: () => {
-									ui.changing = changing ? null : address.address;
-									page.redraw(`change:${address.address}`);
-								},
-							},
-							t("Change"),
-						)
-					: null,
 			),
-			changing && cofounder
-				? h(
-						"div",
-						{ class: "mailbox-picks", role: "group", "aria-label": t("Who should answer it?") },
-						h("span", { class: "mailbox-muted" }, t("Who should answer it?")),
-						...agents.map((agent) => {
-							const current = address.handledBy.some((each) => each.staffAgentId === agent.id);
-							return h(
-								"button",
-								{
-									type: "button",
-									class: `mailbox-pick${current ? " is-current" : ""}`,
-									"aria-pressed": String(current),
-									disabled: ui.busy,
-									onclick: () => {
-										if (current) {
-											ui.changing = null;
-											page.redraw();
-											return;
-										}
-										const cofounderName = agentName(page, cofounder);
-										void tell(
-											page,
-											cofounder,
-											{
-												text: t("Please have {name} answer the email that comes to {address}.", {
-													name: agent.displayName,
-													address: address.address,
-												}),
-												quotes: [],
-											},
-											t("Asked {cofounder} to give {address} to {name}", {
-												cofounder: cofounderName,
-												address: address.address,
-												name: agent.displayName,
-											}),
-											() => {
-												ui.changing = null;
-											},
-										);
-									},
-								},
-								figure(page, agent.id, agent.displayName, 30),
-								agent.displayName,
-							);
-						}),
-					)
-				: null,
 		);
 	});
-	const post = digitalPostAddress(page, agents);
+	return h("div", { class: "mailbox-addresses" }, h("ul", { class: "mailbox-address-list" }, ...rows), postList);
+}
+
+/** Whether this member gives addresses to agents here: an owner or admin, on a page that has the calls for it. */
+function assigns(page: Page, calls: MailboxManage): boolean {
+	return (
+		page.company.store.get().team?.capabilities.authorize === true &&
+		calls.routines !== undefined &&
+		calls.accounts !== undefined
+	);
+}
+
+/** A chip that opens a menu of agents, as the Writer chip does: the figure of the agent it shows (a plus for none),
+ * its words, and the menu `items` makes. `name` is its focus key, and names its menu. While an address is being given
+ * or taken (`waits` for the one it is about) every such chip waits. */
+function agentChip(
+	page: Page,
+	name: string,
+	agentId: string | null,
+	label: string,
+	items: () => MenuEntry[],
+	waits = false,
+): HTMLElement {
+	const chip = h(
+		"button",
+		{
+			type: "button",
+			class: `mailbox-pick mailbox-answerer${agentId ? " is-current" : ""}`,
+			disabled: page.ui.answering !== null,
+			"aria-busy": waits ? "true" : null,
+			"data-focus-key": name,
+		},
+		agentId ? figure(page, agentId, undefined, 24) : h("span", { class: "mailbox-nobody" }, icon("plus")),
+		h("span", { class: "mailbox-writer-name" }, label),
+		icon("chevron-down"),
+	);
+	menuOn(page, chip, name, t("Who answers it"), items);
+	return chip;
+}
+
+/** Who answers a mailbox, on its line of Addresses, and how much came to it. An address may have more than one agent:
+ * each agent with a routine that starts on its mail answers it, as the cloud lets several listen. An owner or admin
+ * has a chip that opens the agents, those who answer it checked: a press gives the address to an agent, or takes it
+ * from one (`answerWith`), and nobody else's answering changes. While that is on its way the chip shows the agents as
+ * they will be, and waits. Anyone else reads who answers it. What could not be done is said under it. */
+function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElement | null {
+	const { company, ui } = page;
+	const email = hook.email;
+	if (!email) return null;
+	// A mailbox just made is in the list before the mail is read again: nobody answers it yet.
+	const address = company.store.get().mail?.addresses.find((item) => item.address === email);
+	const handlers = handlersOf(page, email);
+	const nameOf = (agentId: string) =>
+		agentName(page, agentId, handlers.find((each) => each.staffAgentId === agentId)?.name);
+	const week = address
+		? h(
+				"span",
+				{ class: "mailbox-muted mailbox-address-week" },
+				h("strong", { class: "mailbox-week" }, String(address.last7Days)),
+				` ${t("in the last 7 days")}`,
+			)
+		: null;
+	const setting = ui.answering?.address === email ? ui.answering : null;
+	// Those who answer it, as they will be once what is on its way is done.
+	const answering = handlers.map((each) => each.staffAgentId).filter((agentId) => agentId !== setting?.agent);
+	if (setting?.on) answering.push(setting.agent);
+	const [first, second, ...more] = answering;
+	const names = !first
+		? null
+		: !second
+			? nameOf(first)
+			: more.length
+				? t("{name} and {count} more", { name: nameOf(first), count: more.length + 1 })
+				: t("{first} and {second}", { first: nameOf(first), second: nameOf(second) });
+	if (!assigns(page, calls))
+		return h(
+			"div",
+			{ class: "mailbox-answer-line" },
+			h(
+				"span",
+				{ class: "mailbox-address-agent" },
+				first ? figure(page, first, undefined, 24) : null,
+				names ? t("{name} answers it", { name: names }) : t("No agent answers it yet"),
+			),
+			week,
+		);
+	const said = ui.answerErrors[email];
+	const target = { address: email, hookId: hook.id };
 	return h(
 		"div",
-		{ class: "mailbox-addresses" },
-		h("ul", { class: "mailbox-address-list" }, ...rows, ...(post ? [post] : [])),
-		manageArea(page),
+		{ class: "mailbox-answer-line" },
+		h(
+			"span",
+			{ class: "mailbox-address-agent" },
+			first || setting
+				? h("span", { class: "mailbox-muted" }, setting ? t("Setting it up") : t("Answered by"))
+				: null,
+			agentChip(
+				page,
+				`answerer:${hook.id}`,
+				first ?? null,
+				names ?? t("Choose who answers"),
+				() => {
+					// The agents at work, and after them whoever else answers it (an agent no longer at work can be taken off).
+					const listed = agentsAtWork(page).map((agent) => agent.id);
+					for (const each of handlers) if (!listed.includes(each.staffAgentId)) listed.push(each.staffAgentId);
+					return listed.map((agentId): MenuEntry => {
+						const on = handlers.some((each) => each.staffAgentId === agentId);
+						return {
+							label: nameOf(agentId),
+							lead: figure(page, agentId, undefined, 22),
+							checked: on,
+							multiple: true,
+							select: () => void answerWith(page, calls, target, agentId, !on),
+						};
+					});
+				},
+				setting !== null,
+			),
+		),
+		week,
+		said ? h("p", { class: "mailbox-error", role: "alert" }, said) : null,
 	);
+}
+
+/** Who answers the address the Add form makes: the same chip, in the form, for one agent or nobody. Nobody until the
+ * member picks; the new address goes to that agent once it is made. */
+function newAnswerer(page: Page, calls: MailboxManage): HTMLElement | null {
+	const { ui } = page;
+	if (!assigns(page, calls)) return null;
+	const chosen = activeAgent(page, ui.addAgent ?? undefined);
+	const pick = (agentId: string | null) => () => {
+		ui.addAgent = agentId;
+		page.redraw("add-answerer");
+	};
+	return h(
+		"div",
+		{ class: "mailbox-answer-line is-new" },
+		h(
+			"span",
+			{ class: "mailbox-address-agent" },
+			chosen ? h("span", { class: "mailbox-muted" }, t("Answered by")) : null,
+			agentChip(page, "add-answerer", chosen?.id ?? null, chosen?.displayName ?? t("Choose who answers"), () => {
+				const agents = agentsAtWork(page);
+				const items: MenuEntry[] = [
+					{
+						label: t("Nobody"),
+						lead: h("span", { class: "mailbox-nobody" }),
+						checked: !chosen,
+						select: pick(null),
+					},
+				];
+				if (agents.length) items.push({ kind: "separator" });
+				for (const agent of agents)
+					items.push({
+						label: agent.displayName,
+						lead: figure(page, agent.id, undefined, 22),
+						checked: agent.id === chosen?.id,
+						select: pick(agent.id),
+					});
+				return items;
+			}),
+		),
+	);
+}
+
+/** The member's own model account an agent's answering runs on: one that works while they are away, else the first
+ * that can pay for work that starts on its own (never a Claude login or a ChatGPT plan), as a routine's editor picks. */
+function payingAccount(connections: NativeExecutionConnections) {
+	const able = latestVersions(
+		connections.connections.filter(
+			(item) => item.connectionStatus === "active" && item.authorizationState === "active" && !claudeLogin(item),
+		),
+	).filter((item) => canPayForRoutine(item, true));
+	return able.find((item) => item.allowAutonomous === true) ?? able[0];
+}
+
+/** Gives an address to an agent (`on`), or takes it from one. With none on its way it starts at once, so its chip
+ * waits from the press on. With one on its way (a new address made meanwhile) it takes its turn after it, and is not
+ * lost. */
+function answerWith(
+	page: Page,
+	calls: MailboxManage,
+	target: { readonly address: string; readonly hookId: string },
+	agentId: string,
+	on: boolean,
+): Promise<void> {
+	const before = page.ui.answering ? answerings.get(page.ui) : undefined;
+	const turn = before
+		? before.then(() => giveAddress(page, calls, target, agentId, on))
+		: giveAddress(page, calls, target, agentId, on);
+	answerings.set(page.ui, turn);
+	return turn;
+}
+
+/** The routines that start on mail to a mailbox, as the routine list gives them now. */
+async function listeners(routines: NonNullable<MailboxManage["routines"]>, hookId: string): Promise<WebRoutine[]> {
+	return (await routines.list()).filter((routine) =>
+		routine.triggers.some(
+			(trigger) => trigger.kind === "listener" && trigger.source === "event" && trigger.hookId === hookId,
+		),
+	);
+}
+
+/** The routine changed last comes first: the cloud's own times, and the ids where two are the same. */
+function newestFirst(a: WebRoutine, b: WebRoutine): number {
+	return Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.routineId < b.routineId ? -1 : 1);
+}
+
+/** Gives an address to an agent, or takes it from one. An agent answers an address through a routine of its own that
+ * starts on mail to it, written here as the member's own save (cloud/routines.ts), on their own model account.
+ *
+ * One agent's answering is one thing, and nobody else's changes with it: an address may have several agents, as the
+ * cloud lets several routines listen to a mailbox, and the line names them all. So nothing here is a handover in
+ * steps that could stop half way and leave an address with nobody, or with an agent the member did not see.
+ *
+ * - Giving: an agent that answered the address before takes up the routine it had last. One that stays paused (it
+ *   waits for a login only its own page moves: who pays for a routine is never switched here) is left, and the agent
+ *   gets a new one. With no model account that can pay, nothing is written.
+ * - Taking: each routine of the agent's that starts on the address's mail stops.
+ * - What the cloud holds after decides what is said, whatever was heard back: a save or a stop whose answer was lost
+ *   has still happened, and a routine that is not at work after its save answers nothing. The address is said to be
+ *   the agent's only once a routine of the agent's is at work.
+ * - Two members may give one address to the same agent at the same moment, and the agent would wake twice for each
+ *   email. Of the routines this began and those begun meanwhile, the one the cloud saved last is kept, here and on
+ *   the other member's page, and the others stop. A routine at work before is nobody's to stop here.
+ *
+ * The company's mail is read again after, so the line says who answers it now. What could not be done is kept for the
+ * address's line; nothing is thrown. */
+async function giveAddress(
+	page: Page,
+	calls: MailboxManage,
+	target: { readonly address: string; readonly hookId: string },
+	agentId: string,
+	on: boolean,
+): Promise<void> {
+	const { company, ui } = page;
+	const { routines, accounts } = calls;
+	const agent = activeAgent(page, agentId);
+	// Only an agent at work is given an address; any agent that answers one can be taken off it.
+	if (!routines || !accounts || (on && !agent)) return;
+	const name = agentName(page, agentId);
+	const focus = `answerer:${target.hookId}`;
+	ui.answering = { address: target.address, agent: agentId, on };
+	const { [target.address]: _said, ...rest } = ui.answerErrors;
+	ui.answerErrors = rest;
+	page.redraw();
+	const atWork = (routine: WebRoutine) => routine.status === "active";
+	const own = async () =>
+		(await listeners(routines, target.hookId)).filter((routine) => routine.staffAgentId === agentId);
+	const stop = (routine: WebRoutine) => routines.setEnabled(routine, undefined, false, crypto.randomUUID());
+	// The agent's routines at work before, and whether this began one: a routine taken up again, or a new one.
+	let wasAtWork = new Set<string>();
+	let began = false;
+	let failure: unknown;
+	try {
+		const before = await own();
+		wasAtWork = new Set(before.filter(atWork).map((routine) => routine.routineId));
+		if (!on) for (const routine of before) if (atWork(routine)) await stop(routine);
+		if (on && !wasAtWork.size) {
+			const account = payingAccount(await accounts(company.signal));
+			if (!account)
+				throw new Error(
+					t(
+						"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+					),
+				);
+			const [paused] = before.filter((routine) => routine.status === "paused").sort(newestFirst);
+			began = true;
+			if (paused) await routines.setEnabled(paused, account, true, crypto.randomUUID());
+			if (!paused || !(await own()).some((routine) => routine.routineId === paused.routineId && atWork(routine))) {
+				await routines.save(
+					{
+						clientRoutineId: crypto.randomUUID(),
+						staffAgentId: agentId,
+						title: t("Answer email to {address}", { address: target.address }),
+						prompt: t(
+							"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.",
+							{ address: target.address },
+						),
+						trigger: {
+							id: "file",
+							kind: "listener",
+							source: "event",
+							hookId: target.hookId,
+							only: ["mail.received"],
+							timeZone: presentationTimeZone(),
+							// It answers the sender, not the member: it writes in its thread only when it has something to say.
+							replyPolicy: "optional",
+						},
+						effort: "low",
+					},
+					account,
+					crypto.randomUUID(),
+				);
+			}
+		}
+	} catch (error) {
+		failure = error;
+	}
+	// What the cloud holds now decides, whatever was heard back.
+	let held: { readonly answers: boolean; readonly twice: boolean } | null = null;
+	let unread: unknown;
+	try {
+		let now = (await own()).filter(atWork);
+		// The routines begun for this agent just now, here and by another member: the one saved last stays. A stop that
+		// fails is tried once more, and the routines are read again: what is still at work then is said, not passed over.
+		const older =
+			on && began
+				? now
+						.filter((routine) => !wasAtWork.has(routine.routineId))
+						.sort(newestFirst)
+						.slice(1)
+				: [];
+		if (older.length) {
+			for (const routine of older)
+				await stop(routine)
+					.catch(() => stop(routine))
+					.catch(() => {});
+			now = (await own()).filter(atWork);
+		}
+		held = {
+			answers: now.length > 0,
+			twice: older.some((routine) => now.some((each) => each.routineId === routine.routineId)),
+		};
+	} catch (error) {
+		unread = error;
+	}
+	// The addresses are read afresh, so the line says who answers it now. Where they can't be read, the line goes by
+	// what the routines just said until they can: it never goes back to what was before the change.
+	const fresh = (await CompanyMail.of(company)?.addressesAfresh()) === true;
+	const kept = answeredBy.get(ui) ?? new Map();
+	answeredBy.set(ui, kept);
+	if (fresh) kept.delete(target.address);
+	else if (held) {
+		const agents = handlersOf(page, target.address)
+			.map((each) => each.staffAgentId)
+			.filter((each) => each !== agentId);
+		if (held.answers) agents.push(agentId);
+		kept.set(target.address, { agents, read: company.store.get().mail?.addresses });
+	}
+	const listed = handlersOf(page, target.address);
+	ui.answering = null;
+	const reached = held !== null && held.answers === on;
+	if (held && reached && !held.twice) {
+		say(
+			page,
+			!on
+				? t("{name} no longer answers {address}", { name, address: target.address })
+				: listed.some((each) => each.staffAgentId !== agentId)
+					? t("{name} answers {address} too", { name, address: target.address })
+					: t("{name} answers {address}", { name, address: target.address }),
+			on ? agentId : null,
+			focus,
+		);
+		return;
+	}
+	// A refusal saved nothing; the file's or the mailbox's problems say why, in English.
+	ui.answerErrors = {
+		...ui.answerErrors,
+		[target.address]: !held
+			? describeError(unread)
+			: held.twice
+				? t(
+						"{name} has more than one routine for this address at work, and wakes more than once for an email. Take {name} off the address and give it to {name} again.",
+						{ name },
+					)
+				: failure instanceof WebCompanyFolderRejectedError
+					? withProblems(t("The address could not be given to the agent."), failure.problems)
+					: failure !== undefined
+						? describeError(failure)
+						: on
+							? t("{name}'s routine for this address did not start. {name}'s routines say why.", { name })
+							: t("It could not be changed. Try again."),
+	};
+	page.redraw(focus);
 }
 
 // Writing an email ------------------------------------------------------------------------------------------------

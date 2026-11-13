@@ -30,7 +30,13 @@ import { phrase, t } from "./preferences.ts";
  * agent's bubble, a question's answer as the member's own bubble on their side, and anything else done with the card
  * (saved, handed back, declined, past its time) as one quiet line under the question, marked as a decided approval is.
  * It has no frame, and its label row is kept for a screen reader only: each part tells its time on a hover, as a
- * message does (ui/sent-time-hover.ts). */
+ * message does (ui/sent-time-hover.ts).
+ *
+ * A card that waits for this member in a thread is the one thing there to act on, and says so (Jonas, 13 November
+ * 2026: "I still want some form of widget with proposed answers and a clear visual that indicates something to do"):
+ * it keeps its frame, drawn in the accent colour with a soft ring that breathes, and its head is the agent's figure,
+ * waiting, beside "{name} asks you" in that colour, in place of the label row (kept for a screen reader). The proposed
+ * answers are large pills, and an answer of the member's own has a Send button in its field. */
 
 /** A body longer than this many lines, or than this many characters as shown, folds behind Show more (ui/card-fold.ts):
  * past what a card the agent may write holds (5 short lines), so a readable card shows whole. */
@@ -65,6 +71,8 @@ export interface InteractionCardContext {
 	inThread?: boolean;
 	/** The member looking, whose own answer stands on their side of the thread. */
 	viewerId?: string;
+	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
+	figure?: () => HTMLElement;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** Opens the agent's computer for a takeover; absent when the thread has none. */
@@ -281,6 +289,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	const result: (HTMLElement | null)[] = [];
 	// In a thread a card with its answer is the exchange it was: the bubbles' own classes draw it (styles/conversation.css).
 	const exchange = context.inThread === true && state !== "waiting";
+	// In a thread a card this member can answer says that it waits for them.
+	const asking = context.inThread === true && open;
 	const mark = (name: "check" | "close") =>
 		exchange
 			? h(
@@ -417,7 +427,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					: h("div", { class: "interaction-options" }, ...optionButtons),
 			);
 			const field = custom
-				? h("input", {
+				? (h("input", {
 						type: "text",
 						class: "interaction-field",
 						placeholder: t("Something else…"),
@@ -425,14 +435,31 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 						onkeydown: (event: KeyboardEvent) => {
 							if (event.key !== "Enter") return;
 							event.preventDefault();
-							const value = (event.currentTarget as HTMLInputElement).value.trim();
-							if (value) answer("answered", { values: [value] });
+							sendOwn();
 						},
-					})
+					}) as HTMLInputElement)
 				: null;
+			const sendOwn = () => {
+				const value = field?.value.trim();
+				if (value) answer("answered", { values: [value] });
+			};
+			// In a thread the field has a Send of its own, live once something is typed: Enter is not the only way. A
+			// question that takes several answers has its Send beside the field already.
+			let own: HTMLElement | null = field;
+			if (field && asking && !multi) {
+				const sendOwnButton = h(
+					"button",
+					{ type: "button", class: "interaction-send", "aria-label": t("Send"), disabled: true, onclick: sendOwn },
+					icon("send"),
+				) as HTMLButtonElement;
+				field.addEventListener("input", () => {
+					sendOwnButton.disabled = !field.value.trim();
+				});
+				own = h("span", { class: "interaction-own" }, field, sendOwnButton);
+			}
 			const sendButton = multi ? pill(t("Send"), send, "primary", busy) : null;
 			actions.push(
-				field,
+				own,
 				sendButton,
 				pill(t("Skip"), () => answer("declined"), "quiet", busy),
 			);
@@ -560,8 +587,13 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	card = h(
 		"article",
 		{
-			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}`,
-			dataset: { interactionId: item.id, surface: request.surface, state },
+			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}${asking ? " is-asking" : ""}`,
+			dataset: {
+				interactionId: item.id,
+				surface: request.surface,
+				state,
+				...(asking ? { sentAt: item.createdAt } : {}),
+			},
 			"aria-label": t("{kind} from {name}: {title}", {
 				kind: t(SURFACE_LABEL[request.surface]),
 				name: context.agentName,
@@ -574,9 +606,26 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				class: `interaction-ask${exchange ? " bubble" : ""}`,
 				...(exchange ? { dataset: { sentAt: item.createdAt } } : {}),
 			},
+			// A card that waits for the member in a thread is headed by who asks: the label row is then a screen reader's.
+			asking
+				? h(
+						"div",
+						{ class: "interaction-call" },
+						context.figure
+							? h("span", { class: "interaction-figure" }, context.figure())
+							: h("span", { class: "interaction-dot", "aria-hidden": "true" }),
+						h(
+							"strong",
+							null,
+							request.surface === "question"
+								? t("{name} asks you", { name: context.agentName })
+								: t("{name} needs you", { name: context.agentName }),
+						),
+					)
+				: null,
 			h(
 				"header",
-				{ class: `interaction-heading${exchange ? " visually-hidden" : ""}` },
+				{ class: `interaction-heading${exchange || asking ? " visually-hidden" : ""}` },
 				h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
 				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
 				badge(t(STATE_LABEL[state]), stateTone),
