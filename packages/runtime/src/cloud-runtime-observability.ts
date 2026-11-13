@@ -102,6 +102,12 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"machine_screen",
 	// The company's code kept in Qorpera (20260930720000): taking a change out of main, and describing one.
 	"manage_code",
+	// Company databases (slice 5, 20260930750000): describing them, applying their steps, and asking them.
+	"data_describe",
+	"data_apply",
+	"data_query",
+	// A picture the agent makes, saved in the company folder and shown to the model (20260930746000).
+	"make_picture",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

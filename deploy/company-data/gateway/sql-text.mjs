@@ -14,13 +14,8 @@ export const MAX_PARAMETERS = 16;
 /** The parameter the gateway fills itself: the member looking. */
 export const VIEWER = "viewer";
 
-/**
- * @param {string} text the file's text
- * @returns {{ ok: true, sql: string, parameters: string[], words: string[] } | { ok: false, problem: string }}
- * `sql` has each `:name` replaced by `$n` (one number per name) and no closing semicolon.
- */
-export function readStatement(text) {
-	if (typeof text !== "string" || text.includes("\0")) return { ok: false, problem: "The file is not text" };
+/** A file's words: its leading `--` lines, after any blank lines, up to the first blank or other line. */
+export function leadingWords(text) {
 	const words = [];
 	for (const line of text.split("\n")) {
 		const trimmed = line.trim();
@@ -31,6 +26,17 @@ export function readStatement(text) {
 		if (!trimmed.startsWith("--")) break;
 		words.push(trimmed.replace(/^--+\s?/, ""));
 	}
+	return words;
+}
+
+/**
+ * @param {string} text the file's text
+ * @returns {{ ok: true, sql: string, parameters: string[], words: string[] } | { ok: false, problem: string }}
+ * `sql` has each `:name` replaced by `$n` (one number per name) and no closing semicolon.
+ */
+export function readStatement(text) {
+	if (typeof text !== "string" || text.includes("\0")) return { ok: false, problem: "The file is not text" };
+	const words = leadingWords(text);
 	const parameters = [];
 	let sql = "";
 	let last = -1; // where the last character outside comments and white space sits in `sql`

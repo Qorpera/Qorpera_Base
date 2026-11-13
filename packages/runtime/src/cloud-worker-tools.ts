@@ -730,6 +730,7 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 				"table_write",
 				"save_app",
 				"post_app",
+				"make_picture",
 			].includes(tool.name),
 	};
 }

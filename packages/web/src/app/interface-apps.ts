@@ -88,7 +88,9 @@ import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } f
  *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there. Any app may
  *   ask the same way to send a note to the agent that owns it (`tell`), which the member writes on the bar.
  * - A link the member clicks in the page comes over the bridge too (`open`): checked here (`appLink`), it opens another
- *   app, a file of the company's own work or a web page, and nothing else. The page learns nothing from it.
+ *   app, a file of the company's own work or a web page, and nothing else. A web page is a request like the others: it
+ *   opens only once the member has seen its whole address on the bar and pressed Open (Jonas, 13 November 2026: "Show
+ *   the address first"), since a page can put what the member typed into an address. The page learns nothing from it.
  * - An app's page starts from Qorpera's base style (app/interface-app-style.ts), put first in its head when it is put
  *   together: the company's colours, the scheme, the system font and plain defaults, all of which the page's own
  *   styles override. */
@@ -606,21 +608,34 @@ const MAX_PATH_CHARS = 1024;
 const MAX_PARAMS_CHARS = 4096;
 /** A row's cells may be longer than a read's few short values. */
 const MAX_ROW_PARAMS_CHARS = 16 * 1024;
+/** What a request put to the member on the bar spends of the minute's budget: a change, a note, or a web page to open. */
+const REQUEST_COST = 5;
 /** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, a
- * request for a change reads the table or the questions before anything is shown, and a note costs as a change. */
-const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5, tell: 5 };
+ * request for a change reads the table or the questions before anything is shown, and a note costs as a change. A link
+ * (`open`) costs one, and a link to a web page, which is put on the bar, what a request costs (`answer`). A question of
+ * the company's databases (`query`) and the start of a watch (`watch`) cost one; ending a watch (`unwatch`) only takes
+ * work away and costs nothing, and what a watch sends later costs nothing either. */
+const CALL_COST: Readonly<Record<string, number>> = {
+	todos: 10,
+	answer: REQUEST_COST,
+	setRow: REQUEST_COST,
+	addRow: REQUEST_COST,
+	tell: REQUEST_COST,
+	unwatch: 0,
+};
 /** A question's parameters: at most this many, each value at most this long. */
 const MAX_DATA_PARAMS = 16;
 const MAX_DATA_VALUE_CHARS = 1024;
 const DATA_PARAM = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const NO_DATA_READ = 'Add "data" to reads in app.toml to ask the company\'s databases';
 /** What a page is told when its request did not become a change. */
-const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "told" | "failed">, string>> = {
-	declined: "The member said not now",
-	busy: "Another request is waiting for the member's answer",
-	quiet: "The member said not now three times: this page asks again after the member reloads it",
-	gone: "The page was put away, or what it may ask for changed, before the member answered",
-};
+const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "opened" | "told" | "failed">, string>> =
+	{
+		declined: "The member said not now",
+		busy: "Another request is waiting for the member's answer",
+		quiet: "The member said not now three times: this page asks again after the member reloads it",
+		gone: "The page was put away, or what it may ask for changed, before the member answered",
+	};
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
@@ -721,12 +736,17 @@ export class AppBridge {
 			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
 		)
 			return refuse("Not a call the app answers");
-		// Ending a watch only takes work away: it is never refused for the budget, and costs nothing.
-		if (call.method === "unwatch") return this.#unwatch(call);
+		// The call's whole cost is known before anything is spent, and checked and charged in one step: a call that does
+		// not fit in the minute is refused and spends nothing (a note at 117 calls was let through to 122, and a web
+		// link refused there kept its first call; review r1 of #1770, F2).
 		const spent = budget(this.#key);
-		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
+		const cost =
+			call.method === "open" && appLink(call.params.href)?.kind === "web"
+				? REQUEST_COST
+				: (CALL_COST[call.method] ?? 1);
+		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls + cost > MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		spent.calls += CALL_COST[call.method] ?? 1;
+		spent.calls += cost;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -818,6 +838,8 @@ export class AppBridge {
 			case "query":
 			case "watch":
 				return this.#data(call);
+			case "unwatch":
+				return this.#unwatch(call);
 			case "open": {
 				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
 				// needs nothing in `reads`: nothing is read for it, and the answer is the same whether or not what it names
@@ -825,6 +847,7 @@ export class AppBridge {
 				const link = appLink(call.params.href);
 				if (link === null || !this.#follow)
 					return refuse("A link opens an app (app:name), a company file (folder:path) or a web page (https://…)");
+				if (link.kind === "web") return this.#web(link, this.#follow);
 				this.#follow(link);
 				return { ok: true, value: null };
 			}
@@ -887,7 +910,34 @@ export class AppBridge {
 		if ("message" in result) return refuse(result.message);
 		if (result.outcome === "told")
 			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
-		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
+		if (result.outcome === "saved") return { ok: true, value: { saved: true } };
+		// Only a web page's request is opened; a change never is.
+		return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+	}
+
+	/** A web page the member clicked a link to (Jonas, 13 November 2026: "Show the address first"): put on the bar, its
+	 * whole address shown, and opened in a new tab only by the member's press on Open there, which also lets the browser
+	 * open the tab. Like any request it costs a request's share of the budget, waits alone (a second while one waits is
+	 * refused) and is quiet after three Not now in a row. */
+	async #web(link: Extract<AppLink, { kind: "web" }>, follow: (link: AppLink) => void): Promise<AppAnswer> {
+		const gate = this.#gate;
+		if (!gate) return refuse("No web page opens from this page");
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		// The tab opens in the press itself: `follow` runs before the first await of the bar's perform.
+		const result = await gate.ask({ kind: "link", href: link.href }, async () => {
+			follow(link);
+			return undefined;
+		});
+		if (result.outcome === "opened") return { ok: true, value: null };
+		if (
+			result.outcome === "declined" ||
+			result.outcome === "busy" ||
+			result.outcome === "quiet" ||
+			result.outcome === "gone"
+		)
+			return refuse(GATE_SAYS[result.outcome]);
+		return refuse("message" in result ? result.message : "No web page opened");
 	}
 
 	/** A named question of the company's databases: asked once (`query`), or asked and kept live (`watch`), whose later

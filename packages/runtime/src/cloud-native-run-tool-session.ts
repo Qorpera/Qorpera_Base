@@ -4,6 +4,7 @@ import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
 	type CloudCodexOpening,
+	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -32,6 +33,7 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
+import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
@@ -109,6 +111,8 @@ export async function runCloudNativeRunToolSession(options: {
 	compactor?: MemoryCompactChannel;
 	/** A voice call's lane, as runCloudCodexToolSession takes it. */
 	voice?: CloudVoiceChannel;
+	/** The picture lane, as runCloudCodexToolSession takes it. */
+	pictures?: CloudPictureChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
 	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
 	 * runCloudCodexToolSession takes it. */
@@ -124,7 +128,7 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
 	try {
@@ -263,6 +267,7 @@ export async function runCloudNativeRunToolSession(options: {
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
 			...(options.voice ? { voice: options.voice } : {}),
+			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
@@ -323,9 +328,15 @@ export async function runCloudNativeRunToolSession(options: {
 				await assertActive(signal);
 			},
 		});
-		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5).
+		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5). A
+		// usage limit the provider met after the run's answer stays the login's to record (the 2026-11-13 amendment).
 		if (runLog?.log.gone)
-			throw tagNativeRuntimeFailure(new CloudRunLogGone(), "codex-turn-completion", "authority_unavailable");
+			throw tagNativeRuntimeFailure(
+				new CloudRunLogGone(),
+				"codex-turn-completion",
+				"authority_unavailable",
+				result.usageSignal ?? null,
+			);
 	} catch (error) {
 		executionFailed = true;
 		throw error;
@@ -347,6 +358,11 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		}
 	}
-	if (cleanupError) throw cleanupError;
+	// A usage limit the provider met after the run's answer stays the login's to record, also when cleanup failed after
+	// it (the 2026-11-13 amendment).
+	if (cleanupError)
+		throw result?.usageSignal
+			? tagNativeRuntimeFailure(cleanupError, "native-tools", "unknown", result.usageSignal)
+			: cleanupError;
 	return result;
 }

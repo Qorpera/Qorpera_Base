@@ -243,6 +243,9 @@ export function cloudActionEffect(
 		case "table_read":
 		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
 		case "zoom":
+		// Company databases (slice 5): what they hold, and a question or a read, as the database folder's read login.
+		case "data_describe":
+		case "data_query":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
@@ -262,6 +265,9 @@ export function cloudActionEffect(
 		case "good_will_mark":
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
+		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
+		// that would destroy data is held until a member says yes.
+		case "data_apply":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
@@ -382,6 +388,10 @@ export function cloudActionEffect(
 		// Posting its own app shows members its own work, which they may already read (Jonas, 7 November 2026: "yes, no
 		// review of course"); posting another agent's or a member's app is delegation (post_app's prepare says which).
 		case "post_app":
+			return args.foreignOwner === true ? "delegation" : "internal";
+		// A picture the agent makes is written as company_write writes a file (20260930746000); one put into another
+		// agent's or a member's app changes that app, as save_app does (make_picture's prepare says which).
+		case "make_picture":
 			return args.foreignOwner === true ? "delegation" : "internal";
 		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
 		case "update_wall":
@@ -914,6 +924,12 @@ export function describeCloudAction(
 				"effect",
 				"Members see the changed app under its maker's name, as a page of its own and in their apps if it is posted",
 			);
+	} else if (tool.name === "make_picture") {
+		title = args.foreignOwner === true ? "Put a picture into another agent's app" : "Make a picture";
+		target = text(args.path) || null;
+		quote("picture", args.prompt);
+		if (args.foreignOwner === true)
+			add("effect", "Members see the picture in that app, which shows it under its maker's name");
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
 		target = text(args.name) || null;

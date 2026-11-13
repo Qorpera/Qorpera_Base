@@ -42,7 +42,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
-import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { appIconEmblem, type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -864,12 +864,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(list, company, (event) => openRailMenu(company, created, event));
+		pressToOpenMenu(list, company.signal, (event) => openRailMenu(company, created, event));
 		// A right-click on a page in the drawer hides it, as on an agent.
 		appsDrawer.addEventListener("contextmenu", (event) => openDrawerMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(appsDrawer, company, (event) => openDrawerMenu(company, created, event));
+		pressToOpenMenu(appsDrawer, company.signal, (event) => openDrawerMenu(company, created, event));
 		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent, group chat or contact one place.
 		list.addEventListener(
 			"keydown",
@@ -3256,72 +3256,6 @@ function hiddenPageRow(model: {
 		);
 	});
 	return row;
-}
-
-/** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event). */
-function pressToOpenMenu(list: HTMLElement, company: CompanyController, open: (event: MouseEvent) => void): void {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let start: { x: number; y: number } | undefined;
-	// When a press last opened a menu; never, at first, so the page's first 800 ms
-	// (performance.now() counts from its start) do not swallow a right-click.
-	let opened = Number.NEGATIVE_INFINITY;
-	const clear = () => {
-		clearTimeout(timer);
-		timer = undefined;
-	};
-	const signal = company.signal;
-	list.addEventListener(
-		"pointerdown",
-		(event) => {
-			if (event.pointerType !== "touch") return;
-			clear();
-			start = { x: event.clientX, y: event.clientY };
-			const target = event.target as Element;
-			timer = setTimeout(() => {
-				timer = undefined;
-				opened = performance.now();
-				const synthetic = new MouseEvent("contextmenu", {
-					clientX: start!.x,
-					clientY: start!.y,
-					bubbles: true,
-					cancelable: true,
-				});
-				Object.defineProperty(synthetic, "target", { value: target });
-				open(synthetic);
-			}, 550);
-		},
-		{ signal },
-	);
-	list.addEventListener(
-		"pointermove",
-		(event) => {
-			if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) clear();
-		},
-		{ signal },
-	);
-	for (const type of ["pointerup", "pointercancel", "scroll"])
-		list.addEventListener(type, clear, { signal, passive: true });
-	// The browser's own long-press menu (Android) and the tap that ends the press do nothing more.
-	list.addEventListener(
-		"contextmenu",
-		(event) => {
-			if (performance.now() - opened < 800) {
-				event.preventDefault();
-				event.stopImmediatePropagation();
-			}
-		},
-		{ capture: true, signal },
-	);
-	list.addEventListener(
-		"click",
-		(event) => {
-			if (performance.now() - opened < 800) {
-				event.preventDefault();
-				event.stopPropagation();
-			}
-		},
-		{ capture: true, signal },
-	);
 }
 
 /** The section an item stands in, or undefined for Unassigned (a placement in a section that is gone included). */

@@ -15,6 +15,8 @@ Group=qorpera-shared-host-%i
 WorkingDirectory=/var/lib/qorpera-shared-execution/slots/%i/host
 Environment=HOME=/var/lib/qorpera-shared-execution/slots/%i/host
 Environment=NODE_EXTRA_CA_CERTS=%d/qorpera-cloud-secret-ca
+# The run door's CA (company databases), read only when the slot's env names QORPERA_COMPANY_DATA_URL.
+Environment=QORPERA_COMPANY_DATA_CA_FILE=%d/qorpera-company-data-ca
 EnvironmentFile=/run/qorpera-shared-execution/slots/%i/native-provider.env
 # Every secret arrives from PID 1. The identity volumes, the service journals
 # and the slot material are unreachable from inside this unit.
@@ -23,6 +25,8 @@ LoadCredential=qorpera-native-identity:/run/qorpera-shared-execution/slots/%i/cr
 LoadCredential=qorpera-native-object-token:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-object-token
 LoadCredential=qorpera-office-native:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-office-native
 LoadCredential=qorpera-coding-command:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-coding-command
+LoadCredential=qorpera-company-data:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-company-data
+LoadCredential=qorpera-company-data-ca:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-company-data-ca
 LoadCredential=qorpera-cloud-secret-runtime:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-runtime
 LoadCredential=qorpera-cloud-secret-ca:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-ca
 LoadCredential=qorpera-native-provider-master-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-provider-master-key

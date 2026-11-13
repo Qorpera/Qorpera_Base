@@ -311,6 +311,77 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	return handle;
 }
 
+/** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event): it calls `open` with a
+ * contextmenu event of its own, at the press, for the element pressed inside `list`. Used by the rail, the apps drawer
+ * and the Concepts viewer's list; it stops with `signal`. */
+export function pressToOpenMenu(list: HTMLElement, signal: AbortSignal, open: (event: MouseEvent) => void): void {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let start: { x: number; y: number } | undefined;
+	// When a press last opened a menu; never, at first, so the page's first 800 ms
+	// (performance.now() counts from its start) do not swallow a right-click.
+	let opened = Number.NEGATIVE_INFINITY;
+	const clear = () => {
+		clearTimeout(timer);
+		timer = undefined;
+	};
+	// A press still held when its owner goes (the rail, the drawer or the Concepts viewer put away) opens nothing: the
+	// timer stops with the listeners, and one that already fired checks again (review r1 of #1767, F1).
+	signal.addEventListener("abort", clear, { once: true });
+	list.addEventListener(
+		"pointerdown",
+		(event) => {
+			if (event.pointerType !== "touch") return;
+			clear();
+			start = { x: event.clientX, y: event.clientY };
+			const target = event.target as Element;
+			timer = setTimeout(() => {
+				timer = undefined;
+				if (signal.aborted) return;
+				opened = performance.now();
+				const synthetic = new MouseEvent("contextmenu", {
+					clientX: start!.x,
+					clientY: start!.y,
+					bubbles: true,
+					cancelable: true,
+				});
+				Object.defineProperty(synthetic, "target", { value: target });
+				open(synthetic);
+			}, 550);
+		},
+		{ signal },
+	);
+	list.addEventListener(
+		"pointermove",
+		(event) => {
+			if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) clear();
+		},
+		{ signal },
+	);
+	for (const type of ["pointerup", "pointercancel", "scroll"])
+		list.addEventListener(type, clear, { signal, passive: true });
+	// The browser's own long-press menu (Android) and the tap that ends the press do nothing more.
+	list.addEventListener(
+		"contextmenu",
+		(event) => {
+			if (performance.now() - opened < 800) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+			}
+		},
+		{ capture: true, signal },
+	);
+	list.addEventListener(
+		"click",
+		(event) => {
+			if (performance.now() - opened < 800) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+		},
+		{ capture: true, signal },
+	);
+}
+
 /** Where a context menu opened from the keyboard (Shift+F10, the menu key) stands: under its element. */
 export function menuPoint(event: MouseEvent, element: Element): { x: number; y: number } {
 	if (event.clientX || event.clientY) return { x: event.clientX, y: event.clientY };
