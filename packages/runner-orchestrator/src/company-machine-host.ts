@@ -41,6 +41,7 @@ import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./fold
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 import { EXEC_SERVER_OUTPUT_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -56,6 +57,11 @@ const FOLDER_WAIT_MS = 20000;
 const BOUNDARY_MS = 15000;
 /** The windows of one pass's ended commands, all of them. */
 const WINDOWS_MS = 30000;
+/** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
+ * often a release that did not answer is tried before the channel ends, and what may wait for one. */
+const HOME_RELEASE_SPACING_MS = 200;
+const HOME_RELEASE_TRIES = 3;
+const HOME_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
 /** A boot's final boundary: what an unanswered final held is not applied, and the stop goes on. */
 const FINAL_BOUNDARY_MS = 60000;
 /** folder-mount: the guest waits up to 60 s for a mount still settling, then up to 100 × 200 ms for readiness. */
@@ -654,6 +660,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	// The record of a desktop clipboard the host cleared after a member held it (F32 of #1661; F33: it was missing here,
 	// so the executor's closed control refused it in production).
 	"qorpera_machine_desktop_clipboard_cleared",
+	// The agent's home (slice 3, 20260930754000): whether a session may share its machine, and its window's ids.
+	"qorpera_folder_home_session_window",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -931,6 +939,9 @@ interface BootFolder {
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
+	/** The windows this process opened for the boot's home sessions (slice 3, 20260930754000), until their channel
+	 * ends: opened again each pass as the commands' are (#reopen). */
+	homes: Map<string, FolderCommandWindow>;
 	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
@@ -1648,6 +1659,7 @@ export class LxdCompanyMachineHost {
 				asked: true,
 				held: false,
 				windows: new Map(),
+				homes: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
 				stillNotSaved: new Map(),
@@ -1679,6 +1691,7 @@ export class LxdCompanyMachineHost {
 					asked: false,
 					held: false,
 					windows: new Map(),
+					homes: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
 					stillNotSaved: new Map(),
@@ -2094,6 +2107,8 @@ export class LxdCompanyMachineHost {
 			if (!e.commands.includes(commandId) || this.#delivering.has(`${e.placementId}/${commandId}`)) continue;
 			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
 		}
+		for (const window of f.homes.values())
+			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
 	}
 	/** A settled boot's folder, watched each pass (6d-2) at the boundary its ends' closes answered, or a plain one.
 	 * Reads the core cannot read retire the placement (#retire): a read being released, or one released before that a
@@ -3535,7 +3550,10 @@ export class LxdCompanyMachineHost {
 	 * This is the only command of a machine that is not a `machine_run`: it starts no unit, writes no inbox file and
 	 * leaves no command row. What the model does through it is reviewed by the run's own host before a line gets here
 	 * (slice 4) and recorded as the run's steps (slice 2); the changes it makes land in the company folder through the
-	 * machine's `/company` mount, as every change on a machine does.
+	 * machine's `/company` mount, as every change on a machine does. On a machine with a folder (slice 3,
+	 * 20260930754000) the session first gets its own folder window, so those changes are credited to its run, and what
+	 * the machine sends back leaves only once the folder released the machine's reads and the run took them in
+	 * (#homeFolder).
 	 */
 	async execServer(
 		input: { readonly placementId: string; readonly sessionId: string },
@@ -3543,14 +3561,22 @@ export class LxdCompanyMachineHost {
 	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
 		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId))
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const home = this.#options.folder ? await this.#homeFolder(input, signal) : undefined;
 		const name = lxdCompanyMachineName(input.placementId);
 		const toMachine = new LinePipe();
 		const fromMachine = new LinePipe();
 		const run = new AbortController();
 		const stop = (): void => run.abort();
 		signal.addEventListener("abort", stop, { once: true });
-		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
-		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const gate = home?.gate(
+			(chunk) => fromMachine.push(chunk),
+			() => {
+				run.abort();
+				fromMachine.end();
+			},
+		);
 		const pipe = exec(
 			this.#policy.project,
 			name,
@@ -3569,16 +3595,19 @@ export class LxdCompanyMachineHost {
 				},
 				cwd: CLOUD_MACHINE_HOME.cwd,
 				stdin: toMachine.read(),
-				onStdout: (chunk) => fromMachine.push(chunk),
+				onStdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
 				maxStdoutBytes: EXEC_SERVER_OUTPUT_BYTES,
 				stderrTailBytes: 4096,
 			},
 			run.signal,
 		)
 			.catch(() => undefined)
-			.finally(() => {
+			.then(async () => {
+				// What the machine sent before it ended still leaves once released; then the session's window closes.
+				await gate?.drained();
 				fromMachine.end();
 				toMachine.end();
+				await home?.close();
 			});
 		return {
 			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
@@ -3586,9 +3615,83 @@ export class LxdCompanyMachineHost {
 			close: async () => {
 				signal.removeEventListener("abort", stop);
 				toMachine.end();
+				gate?.close();
 				run.abort();
 				await pipe;
 			},
+		};
+	}
+	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts. SQL says
+	 * whether the session still stands and may share its machine (its agent's, for the same member and worker access,
+	 * and only while they read the whole folder), with the ids its window carries; a refusal is thrown by its reason and
+	 * no channel starts. Then, once the boot's folder settled: on a boot with /company the session's command window opens,
+	 * its id the session's, so what the machine changes until it closes is credited to the session's run (opened again
+	 * each pass, #reopen); and the run takes in every read the disk was served before anything of the channel's reaches
+	 * it, so what an earlier run left on this disk is in this run's read set. A take-in that holds starts no channel.
+	 * The gate holds each later batch of output for the same release; `close` closes the window, once, with the
+	 * boundary that publishes what the session changed last. */
+	async #homeFolder(
+		input: { readonly placementId: string; readonly sessionId: string },
+		signal: AbortSignal,
+	): Promise<{
+		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
+		close(): Promise<void>;
+	}> {
+		const folder = this.#options.folder as FolderControl;
+		const answer = parseHomeFolderAnswer(
+			await this.#call("qorpera_folder_home_session_window", { p_session_id: input.sessionId }, signal),
+			input,
+		);
+		if (answer.state === "refused") throw new Error(answer.reason);
+		const { session } = answer;
+		const boot = await this.#settled(session, signal);
+		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
+		if (boot.state === "open") {
+			const window: FolderCommandWindow = {
+				commandId: session.sessionId,
+				runId: session.runId,
+				staffAgentId: session.staffAgentId,
+				requestedByUserId: session.requestedByUserId,
+			};
+			await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+			boot.homes.set(session.sessionId, window);
+		}
+		let closing: Promise<void> | undefined;
+		const close = (): Promise<void> => {
+			closing ??= (async () => {
+				if (!boot.homes.delete(session.sessionId)) return;
+				const answered = await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				noted(boot, answered);
+			})();
+			return closing;
+		};
+		// A release that did not answer (the service or SQL busy) is tried again a few times; any other hold is final.
+		const transient = new Set<string>([HELD.unanswered, HELD.unreleased, HELD.untaken, HELD.paused]);
+		const release = async (): Promise<string | undefined> => {
+			for (let tries = 1; ; tries++) {
+				const held = this.#heldAlready(at, boot) ?? (await this.#release(folder, at, boot, BOUNDARY_MS, signal));
+				if (held === undefined || !transient.has(held) || tries >= HOME_RELEASE_TRIES || signal.aborted)
+					return held;
+				await setTimeout(250 * tries, undefined, { signal }).catch(() => undefined);
+			}
+		};
+		const first = await release().catch(() => HELD.untaken);
+		if (first !== undefined) {
+			await close();
+			throw new Error("HOME_FOLDER_HELD");
+		}
+		return {
+			gate: (pass, fail) =>
+				new HomeOutputGate({
+					release,
+					pass,
+					fail,
+					spacingMs: HOME_RELEASE_SPACING_MS,
+					limitBytes: HOME_OUTPUT_WAIT_BYTES,
+				}),
+			close,
 		};
 	}
 	async command(
@@ -3915,7 +4018,10 @@ export class LxdCompanyMachineHost {
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
 	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs
 	 * unfenced, and so does a boot whose folder ended (its guest restarts, or its placement was retired, 6d-2). */
-	async #settled(authority: CompanyMachineCommandAuthority, signal: AbortSignal): Promise<BootFolder> {
+	async #settled(
+		authority: Pick<CompanyMachineCommandAuthority, "placementId" | "bootId">,
+		signal: AbortSignal,
+	): Promise<BootFolder> {
 		const deadline = Date.now() + FOLDER_WAIT_MS;
 		for (;;) {
 			if (typeof authority.bootId === "string" && this.#ended(authority.placementId, authority.bootId))

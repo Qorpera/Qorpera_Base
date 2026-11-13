@@ -142,6 +142,8 @@ async function fixture(
 	const pictureChecks: unknown[] = [];
 	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
 	const clipboardClears: unknown[] = [];
+	/** What the executor's ask for a home session answers, in turn (20260930754000): an answer, or an error. */
+	const homeSessions: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -238,6 +240,11 @@ async function fixture(
 				const next = clipboardClears.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.machine-desktop-clipboard/v1", state: "ok" };
+			}
+			if (method === "qorpera_folder_home_session_window") {
+				const next = homeSessions.shift();
+				if (next instanceof Error) throw next;
+				return next;
 			}
 			if (method === "qorpera_retire_company_machine")
 				return (
@@ -480,6 +487,7 @@ async function fixture(
 		memberReads,
 		pictureChecks,
 		clipboardClears,
+		homeSessions,
 		busy,
 		client,
 		get host() {
@@ -6534,5 +6542,134 @@ describe("company machine host: the desktop's time zone (20260930739000)", () =>
 		expect([...cut].sort()).toEqual([FIGURE, ZONE]);
 		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
 		expect(failures(f)).toEqual([]);
+	});
+});
+
+describe("the agent's home in the company folder (slice 3, 20260930754000)", () => {
+	/** A machine whose boot's folder settled with /company, and a channel to it that runs until its signal aborts. */
+	async function home() {
+		const f = await fixture({ folder: true });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		f.running();
+		await f.host.pass(f.signal);
+		const exec: { request?: LxdExecPipeRequest; signal?: AbortSignal } = {};
+		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			f.order.push("exec:exec-server");
+			exec.request = request;
+			exec.signal = signal;
+			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
+				const done = () => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+				if (signal.aborted) done();
+				signal.addEventListener("abort", done, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const session = (sessionId = id(30)) => ({
+			schema: "qorpera.folder-home-session/v1",
+			state: "open",
+			sessionId,
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+			machineId: id(2),
+			placementId: id(6),
+			bootId: f.boot,
+		});
+		const opens = (sessionId = id(30)) =>
+			f.service.requests.filter((request) => request.op === "open" && request.commandId === sessionId).length;
+		return { f, exec, pipe, session, opens };
+	}
+
+	it("opens the session's own window, takes in the disk's reads before the channel starts, and lets output out only once released", async () => {
+		const { f, exec, session, opens } = await home();
+		f.homeSessions.push(session());
+		const before = f.order.length;
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		expect(f.order.slice(before)).toEqual([
+			"sql:qorpera_folder_home_session_window",
+			"folder:open",
+			"folder:boundary",
+			"sql:qorpera_folder_test_machine_inherit_reads",
+			"exec:exec-server",
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_folder_home_session_window")?.args).toEqual({
+			p_session_id: id(30),
+		});
+		// The window carries the session's id and its run's, agent's and member's.
+		expect(f.service.requests.find((request) => request.op === "open" && request.commandId === id(30))).toEqual({
+			op: "open",
+			machine: id(6),
+			commandId: id(30),
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+		});
+		expect(
+			f.calls.filter((call) => call.method === "qorpera_folder_test_machine_inherit_reads").at(-1)?.args,
+		).toEqual({
+			p_placement_id: id(6),
+			p_boot_id: f.boot,
+			p_run_id: id(31),
+			p_inherit_id: expect.any(String),
+		});
+		// What the machine sends back leaves after a boundary and the run's take-in, not before.
+		const lines = channel.lines[Symbol.asyncIterator]();
+		const mark = f.order.length;
+		exec.request?.onStdout?.(Buffer.from('{"id":1,"result":{}}\n'));
+		expect(await lines.next()).toEqual({ done: false, value: '{"id":1,"result":{}}' });
+		expect(f.order.slice(mark)).toEqual(["folder:boundary", "sql:qorpera_folder_test_machine_inherit_reads"]);
+		// Each pass opens the window again, as a command's, for a folder service that restarted.
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(2);
+		// The channel ends: the window closes once, with a boundary, and no pass opens it again.
+		await channel.close();
+		expect(exec.signal?.aborted).toBe(true);
+		expect(f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30))).toEqual([
+			{ op: "close", machine: id(6), commandId: id(30) },
+		]);
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(2);
+	});
+
+	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		const lines = channel.lines[Symbol.asyncIterator]();
+		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		exec.request?.onStdout?.(Buffer.from('{"id":2,"result":"a secret"}\n'));
+		expect(await lines.next()).toEqual({ done: true, value: undefined });
+		expect(exec.signal?.aborted).toBe(true);
+		await channel.close();
+		expect(
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
+		).toHaveLength(1);
+	});
+
+	it("starts no channel when SQL refuses the session, or when the disk's reads cannot be taken in", async () => {
+		const { f, pipe, session, opens } = await home();
+		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
+		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
+			"HOME_NOT_SHARED",
+		);
+		expect(opens()).toBe(0);
+		// An answer about another placement is no answer.
+		f.homeSessions.push({ ...session(), placementId: id(9) });
+		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
+			"HOME_FOLDER_SESSION_INVALID",
+		);
+		// The take-in before the channel holds: the window it opened closes again.
+		f.homeSessions.push(session());
+		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
+			"HOME_FOLDER_HELD",
+		);
+		expect(opens()).toBe(1);
+		expect(
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
+		).toHaveLength(1);
+		expect(pipe).not.toHaveBeenCalled();
 	});
 });
