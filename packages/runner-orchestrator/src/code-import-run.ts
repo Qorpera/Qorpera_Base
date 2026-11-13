@@ -927,7 +927,12 @@ export class CodeImport {
 				!Array.isArray(fetched.refs) ||
 				fetched.refs.length < 1 ||
 				!Number.isSafeInteger(fetched.leftOut) ||
-				fetched.leftOut < 0
+				fetched.leftOut < 0 ||
+				(fetched.sourceBranch !== undefined &&
+					fetched.sourceBranch !== null &&
+					(typeof fetched.sourceBranch !== "string" ||
+						!codeImportBranchValid(fetched.sourceBranch) ||
+						fetched.sourceBranch === fetched.defaultBranch))
 			)
 				throw new Error("IMPORT_FETCH_ANSWER_INVALID");
 			const createdAt = new Date(this.#now()).toISOString(),
@@ -957,6 +962,9 @@ export class CodeImport {
 				mainSha: fetched.mainSha,
 				refs: fetched.refs.length,
 				leftOut: fetched.leftOut,
+				// The source's own default when the request named another branch: the look's refs plan keeps it whatever
+				// its age (the lead's call 6a of the import's follow-ups).
+				...(typeof fetched.sourceBranch === "string" ? { sourceBranch: fetched.sourceBranch } : {}),
 			};
 		} finally {
 			await writer?.abort().catch((error: unknown) => this.#failed(run, run.step, error));

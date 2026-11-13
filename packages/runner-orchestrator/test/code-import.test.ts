@@ -854,9 +854,31 @@ describe("the wants", () => {
 			],
 			wants: [A, D, B, C],
 			leftOut: 1,
+			sourceBranch: null,
 		});
-		// A branch the request named.
-		expect(codeImportWants(list(refs), { branch: "zeta" })).toMatchObject({ defaultBranch: "zeta", mainSha: B });
+		// A branch the request named; GitHub's own default (HEAD's target) is named beside it, for the refs plan to keep
+		// whatever its age (the lead's call 6a of the import's follow-ups).
+		expect(codeImportWants(list(refs), { branch: "zeta" })).toMatchObject({
+			defaultBranch: "zeta",
+			mainSha: B,
+			sourceBranch: "master",
+		});
+		// None when the named branch is the source's own, HEAD names no listed head or none, or a name the import
+		// would not keep.
+		expect(codeImportWants(list(refs), { branch: "master" }).sourceBranch).toBeNull();
+		expect(
+			codeImportWants(list(refs, { oid: A, target: "refs/heads/gone" }), { branch: "zeta" }).sourceBranch,
+		).toBeNull();
+		expect(codeImportWants(list(refs, { oid: A, target: null }), { branch: "zeta" }).sourceBranch).toBeNull();
+		expect(codeImportWants(list(refs, null), { branch: "zeta" }).sourceBranch).toBeNull();
+		expect(
+			codeImportWants(
+				list([...refs, [`refs/heads/${PLANTED.aws}`, C]], { oid: C, target: `refs/heads/${PLANTED.aws}` }),
+				{
+					branch: "zeta",
+				},
+			).sourceBranch,
+		).toBeNull();
 	});
 
 	it("leaves out what is past the wants' cap, and names the header refuses; a ref of a wanted object comes along", () => {
@@ -1312,6 +1334,69 @@ describe("the refs plan", () => {
 			"create refs/qorpera/kept-here",
 			A,
 		]);
+	});
+
+	// The lead's call 6a of the import's follow-ups: when the request named another branch as main, the source's own
+	// default is kept whatever its age; it still counts toward the 200 and must pass the name rules.
+	it("keeps the source's own default whatever its age when another branch came in as main, and nothing else changes", () => {
+		const old = nowSeconds - 400 * DAY;
+		const given = (refs: CodeImportRefSeen[], sourceBranch?: string | null) =>
+			codeImportRefsPlan({ repository: place, defaultBranch: "feature", refs, now: NOW, sourceBranch });
+		const refs = [
+			ref("refs/heads/feature", B, nowSeconds - 10),
+			ref("refs/heads/master", A, old),
+			ref("refs/heads/stale", C, old),
+			ref("refs/heads/recent", D, nowSeconds - 5),
+			ref("refs/tags/v1", D, old),
+		];
+		const today = given(refs);
+		// Without it, naming main itself, or naming a head that is not there: today's plan exactly.
+		for (const sourceBranch of [null, "feature", "gone"]) expect(given(refs, sourceBranch)).toEqual(today);
+		expect(today.refs.map((r) => r.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/recent",
+			"refs/qorpera/kept-here",
+			"refs/tags/v1",
+		]);
+		expect(today.leftOutBy).toEqual({ name: 0, clash: 0, notCommit: 0, older: 2, over: 0, other: 0 });
+		const kept = given(refs, "master");
+		expect(kept.refs.map((r) => r.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/master",
+			"refs/qorpera/imported/heads/recent",
+			"refs/qorpera/kept-here",
+			"refs/tags/v1",
+		]);
+		expect(kept.refs).toContainEqual({ name: "refs/qorpera/imported/heads/master", sha: A });
+		expect(kept.branches).toEqual({ seen: 3, kept: 2 });
+		expect(kept.leftOutBy).toEqual({ ...today.leftOutBy, older: 1 });
+		expect(kept.leftOut).toBe(today.leftOut - 1);
+		expect(kept.mainSha).toBe(B);
+		// It counts toward the 200, and is taken first: with 200 newer heads it is still kept, and the oldest of them is
+		// not.
+		const many = [
+			ref("refs/heads/feature", B),
+			ref("refs/heads/master", A, old),
+			...Array.from({ length: 200 }, (_, i) =>
+				ref(`refs/heads/b${String(i).padStart(3, "0")}`, shaOf(2000 + i), nowSeconds - i),
+			),
+		];
+		const full = given(many, "master");
+		expect(full.branches).toEqual({ seen: 201, kept: 200 });
+		expect(full.refs).toContainEqual({ name: "refs/qorpera/imported/heads/master", sha: A });
+		expect(full.refs.map((r) => r.name)).not.toContain("refs/qorpera/imported/heads/b199");
+		expect(full.leftOutBy).toMatchObject({ older: 0, over: 1 });
+		expect(given(many).refs.map((r) => r.name)).toContain("refs/qorpera/imported/heads/b199");
+		// A name the folder does not take (not NFC here) is left out as such a head is; one that is no commit too.
+		const nfd = "cafe\u0301";
+		const named = given([ref("refs/heads/feature", B), ref(`refs/heads/${nfd}`, A, old)], nfd);
+		expect(named.refs.map((r) => r.name)).toEqual(["refs/heads/main", "refs/qorpera/kept-here"]);
+		expect(named.leftOutBy).toMatchObject({ name: 1, older: 0 });
+		const tag = given([ref("refs/heads/feature", B), ref("refs/heads/master", C, old, "tag", "commit")], "master");
+		expect(tag.leftOutBy).toMatchObject({ notCommit: 1, older: 0 });
+		// A name the import would not keep is no input.
+		for (const bad of [PLANTED.aws, "x".repeat(201), "a b", 7])
+			expect(() => given(refs, bad as string), String(bad)).toThrow("INVALID_CODE_IMPORT");
 	});
 
 	it("keeps 500 tags and 200 heads, newest first, ties by name", () => {
@@ -2271,6 +2356,15 @@ describe("the request's shapes", () => {
 				),
 			),
 		).toBeLessThan(2560);
+		// The source's own default when another branch came in as main (the lead's call 6a): read and sent back, and
+		// with both names at their longest (200 quotes each, 400 bytes of JSON) still within what the executor sends.
+		const named = { ...raw, sourceBranch: "main" };
+		expect(codeImportProgressOf({ ...progress, raw: named })).toEqual({ ...progress, raw: named });
+		expect(codeImportProgressValue({ ...progress, raw: named } as never).raw).toEqual(named);
+		const quotes = { ...raw, defaultBranch: '"'.repeat(200), sourceBranch: `${'"'.repeat(199)}x` };
+		expect(
+			Buffer.byteLength(JSON.stringify(codeImportProgressValue({ ...progress, raw: quotes } as never))),
+		).toBeLessThan(2560);
 		for (const [what, bad] of [
 			["step", { step: "fly" }],
 			["key", { other: 1 }],
@@ -2278,6 +2372,10 @@ describe("the request's shapes", () => {
 			["raw main", { raw: { ...raw, mainSha: B } }],
 			["raw branch", { raw: { ...raw, defaultBranch: PLANTED.aws } }],
 			["raw key", { raw: { ...raw, extra: 1 } }],
+			["raw source branch is main", { raw: { ...raw, sourceBranch: raw.defaultBranch } }],
+			["raw source branch a key", { raw: { ...raw, sourceBranch: PLANTED.aws } }],
+			["raw source branch no name", { raw: { ...raw, sourceBranch: 7 } }],
+			["raw source branch null", { raw: { ...raw, sourceBranch: null } }],
 			["kept name", { kept: { ...kept, name: raw.name } }],
 			["kept refs", { kept: { ...kept, refs: 1 } }],
 			["at", { at: "2026-11-12" }],

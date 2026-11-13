@@ -667,6 +667,10 @@ export interface CodeImportWanted {
 	readonly wants: readonly string[];
 	/** Refs not in the header: names git or the header refuses, refs past the wants' cap, and the list's unreadable. */
 	readonly leftOut: number;
+	/** The source's own default branch (HEAD's `symref-target`, after `refs/heads/`) when the request named another one
+	 * and HEAD names a listed head whose name the import takes; null otherwise. The refs plan keeps it whatever its age
+	 * (`codeImportRefsPlan`'s `sourceBranch`). */
+	readonly sourceBranch: string | null;
 }
 
 /** From the ref list to the fetch: the default branch is `branch` when the request named one
@@ -694,6 +698,17 @@ export function codeImportWants(
 	}
 	const defaultBranch = target.slice("refs/heads/".length);
 	if (!codeImportBranchValid(defaultBranch)) throw refused("IMPORT_BRANCH_NAME");
+	// When another branch comes in as main, the source's own default is kept beside it whatever its age (the lead's
+	// call 6a of the import's follow-ups): its name, when HEAD names a listed head the import would take as a name.
+	const own = list.head?.target;
+	const sourceBranch =
+		typeof own === "string" &&
+		own !== target &&
+		own.startsWith("refs/heads/") &&
+		byName.has(own) &&
+		codeImportBranchValid(own.slice("refs/heads/".length))
+			? own.slice("refs/heads/".length)
+			: null;
 	const main = byName.get(target) as CodeImportListedRef;
 	const sorted = (prefix: string) =>
 		list.refs.filter((ref) => ref.name.startsWith(prefix) && ref !== main).sort((a, b) => byBytes(a.name, b.name));
@@ -714,7 +729,7 @@ export function codeImportWants(
 		}
 		refs.push({ name: ref.name, sha: ref.oid });
 	}
-	return { defaultBranch, mainSha: main.oid, refs, wants: [...wanted], leftOut };
+	return { defaultBranch, mainSha: main.oid, refs, wants: [...wanted], leftOut, sourceBranch };
 }
 
 /** The fetch request: `ofs-delta`, the wants and `done` (no haves, so no acknowledgments and a pack that needs nothing
@@ -1070,7 +1085,9 @@ export interface CodeImportRefsPlan {
 
 /** From the proof repository's refs to what the imported repository keeps (5.3 step 5, X11): `refs/heads/main` and
  * `refs/qorpera/kept-here` at the default branch; tags whose target is a commit, newest first, at most 500; other heads
- * changed in the last 90 days, newest first, at most 200, as `refs/qorpera/imported/heads/<name>`; every other ref
+ * changed in the last 90 days, newest first, at most 200, as `refs/qorpera/imported/heads/<name>` (and, when the
+ * request named another branch as main, the source's own default, `sourceBranch`, first and whatever its age; it
+ * counts toward the 200 and must pass the same name rules); every other ref
  * deleted, and counted with its reason (`CodeImportLeftOut`). Each kept name must be one git, restore's own name test,
  * the code host's disk (`codeImportRefPartsFit`) and the folder (at `code/<owner>/<name>/repo.git/<ref>`,
  * `codeImportFolderPathValid`) take, and not one name to the
@@ -1081,6 +1098,8 @@ export function codeImportRefsPlan(value: {
 	defaultBranch: string;
 	refs: readonly CodeImportRefSeen[];
 	now: number;
+	/** The source's own default branch when the request named another one as main (`CodeImportRaw.sourceBranch`). */
+	sourceBranch?: string | null;
 }): CodeImportRefsPlan {
 	let repository: CloudCodingRepository;
 	try {
@@ -1089,9 +1108,11 @@ export function codeImportRefsPlan(value: {
 		throw new Error("INVALID_CODE_IMPORT");
 	}
 	const { defaultBranch, refs, now } = value;
+	const sourceBranch = value.sourceBranch ?? null;
 	if (
 		repository.host !== "qorpera" ||
 		!whole(now) ||
+		(sourceBranch !== null && (typeof sourceBranch !== "string" || !codeImportBranchValid(sourceBranch))) ||
 		!Array.isArray(refs) ||
 		!refs.every(
 			(ref) =>
@@ -1141,7 +1162,14 @@ export function codeImportRefsPlan(value: {
 	const left = { name: 0, clash: 0, notCommit: 0, older: 0, over: 0, other: 0 };
 	const newest = (a: CodeImportRefSeen, b: CodeImportRefSeen) => b.time - a.time || byBytes(a.name, b.name);
 	const tags = refs.filter((ref) => ref.name.startsWith("refs/tags/")).sort(newest);
-	const heads = refs.filter((ref) => ref.name.startsWith("refs/heads/") && ref !== base).sort(newest);
+	// The source's own default, when another branch came in as main: considered first and kept whatever its age.
+	const own =
+		sourceBranch === null || sourceBranch === defaultBranch
+			? undefined
+			: refs.find((ref) => ref.name === `refs/heads/${sourceBranch}`);
+	const heads = refs
+		.filter((ref) => ref.name.startsWith("refs/heads/") && ref !== base)
+		.sort((a, b) => Number(b === own) - Number(a === own) || newest(a, b));
 	left.other = refs.length - 1 - tags.length - heads.length;
 	const since = Math.floor(now / 1000) - CODE_IMPORT_BRANCH_DAYS * 86_400;
 	/** One ref considered for keeping under `name`, until `cap` of its kind are kept. */
@@ -1180,7 +1208,7 @@ export function codeImportRefsPlan(value: {
 			head,
 			`${CODE_IMPORT_IMPORTED_HEADS}${head.name.slice("refs/heads/".length)}`,
 			head.type === "commit",
-			head.time >= since,
+			head === own || head.time >= since,
 			CODE_IMPORT_BRANCHES,
 			keptHeads,
 		);
@@ -1846,7 +1874,8 @@ export const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside",
 export type CodeImportStep = (typeof CODE_IMPORT_STEPS)[number];
 
 /** The first bundle, as stored: its name, bytes and their SHA-256, the default branch and its commit, how many refs its
- * header names and how many the fetch left out. */
+ * header names and how many the fetch left out; and, when the request named another branch as main, the source's own
+ * default (`sourceBranch`, which the refs plan keeps whatever its age). */
 export interface CodeImportRaw {
 	readonly name: string;
 	readonly sha256: string;
@@ -1855,6 +1884,7 @@ export interface CodeImportRaw {
 	readonly mainSha: string;
 	readonly refs: number;
 	readonly leftOut: number;
+	readonly sourceBranch?: string;
 }
 /** The restore-shaped bundle, as stored: what restore's jobs take (`CodeRestoreBundle`), and how many refs it has. */
 export interface CodeImportKept {
@@ -1891,7 +1921,12 @@ const PROGRESS_OWN = ["step", "raw", "kept", "at", "setAside", "built", "relayRe
 const SET_ASIDE = /^code\/_set-aside\/./;
 
 function rawOf(value: unknown, fail: string): CodeImportRaw {
-	const raw = closed(value, ["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"], [], fail);
+	const raw = closed(
+		value,
+		["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"],
+		["sourceBranch"],
+		fail,
+	);
 	if (
 		typeof raw.name !== "string" ||
 		!CODE_IMPORT_BUNDLE_NAME.test(raw.name) ||
@@ -1904,7 +1939,11 @@ function rawOf(value: unknown, fail: string): CodeImportRaw {
 		!SHA.test(raw.mainSha) ||
 		!raw.name.endsWith(`-${raw.mainSha.slice(0, 12)}`) ||
 		!whole(raw.refs, 1) ||
-		!whole(raw.leftOut)
+		!whole(raw.leftOut) ||
+		(raw.sourceBranch !== undefined &&
+			(typeof raw.sourceBranch !== "string" ||
+				!codeImportBranchValid(raw.sourceBranch) ||
+				raw.sourceBranch === raw.defaultBranch))
 	)
 		throw new Error(fail);
 	return {
@@ -1915,6 +1954,7 @@ function rawOf(value: unknown, fail: string): CodeImportRaw {
 		mainSha: raw.mainSha,
 		refs: raw.refs,
 		leftOut: raw.leftOut,
+		...(raw.sourceBranch === undefined ? {} : { sourceBranch: raw.sourceBranch as string }),
 	};
 }
 
@@ -2229,6 +2269,8 @@ export interface CodeImportFetched {
 	readonly mainSha: string;
 	readonly refs: readonly CodeBundleRef[];
 	readonly leftOut: number;
+	/** The source's own default branch, when the request named another one (`CodeImportRaw.sourceBranch`). */
+	readonly sourceBranch?: string | null;
 }
 
 /** Part C2's `fetchGitHubImport` (`code-import-fetch.ts`): the advertisement, the ref list (once more after a `not our

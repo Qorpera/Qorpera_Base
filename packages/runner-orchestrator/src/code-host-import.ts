@@ -273,8 +273,26 @@ export async function readIncomingCodeBundle(
 		}
 		const defaultBranch = codeImportFileBranch({ branch: branch as string | null, refs, headSha });
 		const mainSha = refs.find((ref) => ref.name === `refs/heads/${defaultBranch}`)?.sha as string;
+		// The file's own default by the same rule, when the request named another branch: the refs plan keeps it
+		// whatever its age. None when the file has no clear one.
+		let sourceBranch: string | null = null;
+		if (branch !== null) {
+			try {
+				sourceBranch = codeImportFileBranch({ branch: null, refs, headSha });
+			} catch {
+				sourceBranch = null;
+			}
+		}
 		await readOut(run, copy, measured, CODE_IMPORT_READ_PIECE_BYTES, (piece) => sink.write(piece, job.signal));
-		return { sha256: measured.sha256, bytes: measured.bytes, defaultBranch, mainSha, refs, leftOut: 0 };
+		return {
+			sha256: measured.sha256,
+			bytes: measured.bytes,
+			defaultBranch,
+			mainSha,
+			refs,
+			leftOut: 0,
+			...(sourceBranch === null || sourceBranch === defaultBranch ? {} : { sourceBranch }),
+		};
 	});
 }
 
@@ -1023,6 +1041,7 @@ export async function lookCodeImport(
 			defaultBranch: raw.defaultBranch,
 			refs: seen.refs,
 			now: now as number,
+			sourceBranch: raw.sourceBranch ?? null,
 		});
 		if (plan.mainSha !== raw.mainSha)
 			throw new CodeHostJobFailure(DIFFERS, "its default branch is at another commit");

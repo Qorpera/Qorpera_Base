@@ -630,6 +630,8 @@ async function world(
 	};
 	const b = {
 		looks: [] as { look: boolean; now: number }[],
+		/** The source's own default the fetch or read named beside the branch asked for, which raw carries to the look. */
+		sourceBranch: undefined as string | undefined,
 		reads: [] as CodeImportReadValue[],
 		/** The look job's answer: the look alone, or the restore-shaped bundle with it. */
 		look: async (
@@ -664,6 +666,7 @@ async function world(
 				mainSha: s.mainSha,
 				refs: 3,
 				leftOut: 0,
+				...(b.sourceBranch === undefined ? {} : { sourceBranch: b.sourceBranch }),
 			});
 			expect(digest(await collect(source))).toBe(value.raw.sha256);
 			return await b.look(value, sink);
@@ -938,7 +941,16 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 	it("a public project: the public transport, with nothing at the place to set aside", async () => {
 		const x = await world({ input: "public" });
 		(x.input.from as Record<string, unknown>).branch = "trunk";
+		// The fetch names GitHub's own default beside the branch asked for: raw keeps it for the look's refs plan, which
+		// keeps that head whatever its age (the lead's call 6a of the import's follow-ups).
+		const writes = x.fetching.writes;
+		x.fetching.writes = async (options, writer) => ({ ...(await writes(options, writer)), sourceBranch: "dev" });
+		x.b.sourceBranch = "dev";
 		expect(await x.run()).toMatchObject({ state: "done", result: "imported", setAside: null, bundle: x.s.keptName });
+		const saved = x.kernel.steps.filter((step) => "raw" in step).map((step) => step.raw as Record<string, unknown>);
+		expect(saved.length).toBeGreaterThan(0);
+		expect(saved.every((raw) => raw.sourceBranch === "dev")).toBe(true);
+		expect(x.b.looks).toHaveLength(1);
 		expect(x.transports.made).toEqual(["public Acme/Shop"]);
 		expect(x.fetching.options.map((options) => options.branch)).toEqual(["trunk"]);
 		expect(x.kernel.relay).toEqual([]);
@@ -1057,6 +1069,26 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 					};
 				},
 				outcome: { state: "refused", code: "IMPORT_BRANCH_NAME" },
+			},
+			{
+				name: "a source's own default that is the branch brought in",
+				set: (x) => {
+					x.fetching.writes = async (_options, writer) => {
+						for await (const piece of pieces(x.s.raw)) await writer.write(piece);
+						return { ...x.s.fetched, sourceBranch: x.s.fetched.defaultBranch };
+					};
+				},
+				outcome: { state: "failed", code: "IMPORT_FETCH_ANSWER_INVALID" },
+			},
+			{
+				name: "a source's own default that looks like a key",
+				set: (x) => {
+					x.fetching.writes = async (_options, writer) => {
+						for await (const piece of pieces(x.s.raw)) await writer.write(piece);
+						return { ...x.s.fetched, sourceBranch: `sk-ant-api03-${"A".repeat(30)}` };
+					};
+				},
+				outcome: { state: "failed", code: "IMPORT_FETCH_ANSWER_INVALID" },
 			},
 			{
 				name: "a file that is not the one asked for",

@@ -570,6 +570,40 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		expect(await readdir(f.scratchRoot)).toEqual([]);
 	});
 
+	// The lead's call 6a of the import's follow-ups: another branch brought in as main, and the source's own default 400
+	// days old, kept beside it whatever its age, measured as a line, and in the restore-shaped bundle.
+	it("keeps the source's own default whatever its age when another branch came in as main", async () => {
+		const f = await fixture(),
+			h = new History();
+		const root = h.commit("refs/heads/master", { time: NOW_S - 500 * DAY, files: { "a.txt": "a\n" } });
+		h.commit("refs/heads/master", { time: NOW_S - 400 * DAY, from: root, files: { "m.txt": "m\n" } });
+		h.commit("refs/heads/feature", { time: NOW_S - DAY, from: root, files: { "f.txt": "f\n" } });
+		h.commit("refs/heads/stale", { time: NOW_S - 400 * DAY, from: root, files: { "s.txt": "s\n" } });
+		const b = await bundled(f, await made(f, h), "feature");
+		// As today without it: the old default is older than 90 days, left out, and no line.
+		const today = lookOf((await looking(f, b)).result);
+		expect(today.defaultBranch).toBe("feature");
+		expect(today.branches).toEqual({ seen: 2, kept: 0 });
+		expect(today.lines).toEqual({ count: 0, changes: 0, shown: [] });
+		const named = { bytes: b.bytes, raw: { ...b.raw, sourceBranch: "master" } };
+		const look = lookOf((await looking(f, named)).result);
+		expect(look.branches).toEqual({ seen: 2, kept: 1 });
+		expect(look.leftOut).toBe(today.leftOut - 1);
+		expect(look.lines).toEqual({
+			count: 1,
+			changes: 1,
+			shown: [{ name: "master", ahead: 1, behind: 1, lastAt: codeImportTime(NOW_S - 400 * DAY), fits: true }],
+		});
+		const { result } = await looking(f, named, { look: false });
+		if (result.state !== "kept") throw new Error(`not kept: ${JSON.stringify(result.look)}`);
+		expect(result.bundle.refs.map((ref) => ref.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/master",
+			"refs/qorpera/kept-here",
+		]);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
 	it("measures the other lines of work: the changes main lacks, each counted once, at most 10 shown, and whether the folder takes their names", async () => {
 		const f = await fixture(),
 			h = new History();
@@ -1413,6 +1447,15 @@ describe("code host: an import's file source, read (own code storage, step 6, pa
 		expect((await choose(["a", "b"], "b", null, ["b"])).answer.defaultBranch).toBe("b");
 		await refused(choose(["a", "b", "c"], "b", null, ["b", "c"]), "IMPORT_BRANCH_UNKNOWN");
 		await refused(choose(["dev", "main"], "dev", "gone"), "IMPORT_BRANCH_UNKNOWN");
+		// The file's own default by the same rule, beside a branch the request named (the lead's call 6a): only then,
+		// only when it is another, and only when the file has a clear one.
+		expect((await choose(["dev", "main"], "dev", "dev")).answer).toMatchObject({
+			defaultBranch: "dev",
+			sourceBranch: "main",
+		});
+		expect((await choose(["dev", "main"], "dev")).answer).not.toHaveProperty("sourceBranch");
+		expect((await choose(["dev", "main"], "dev", "main")).answer).not.toHaveProperty("sourceBranch");
+		expect((await choose(["a", "b", "c"], "b", "a", ["b", "c"])).answer).not.toHaveProperty("sourceBranch");
 		await refused(
 			choose(["ghp_0123456789abcdefghijABCDEFGHIJ012345"], "ghp_0123456789abcdefghijABCDEFGHIJ012345"),
 			"IMPORT_BRANCH_NAME",
