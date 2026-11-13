@@ -14,6 +14,11 @@ import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome, type 
  * - A note to the app's owner (`tell`) is the member's own words, written in a field of the bar's, which starts with
  *   the page's draft: what goes is what the field holds when the member sends it, and Send is off while it is empty.
  *   What the page says the note is about is a value on the bar, never part of its sentences.
+ * - A web page the member clicked a link to in the page opens only from the bar (Jonas, 13 November 2026: "Show the
+ *   address first"): a page can put what the member typed into an address, so the member sees the whole address before
+ *   it leaves. The site stands first, on a line of its own, then the address in full, wrapping and selectable, scrolled
+ *   inside its line when it is very long; both are text the bar writes, which nothing of the page styles. The tab opens
+ *   in the member's press on Open, so the browser lets it open.
  * - Every request is its own bar. Nothing is remembered: there is no "always allow".
  * - A page can time a request to land under a click meant for the page, so the yes button wakes a second after the bar
  *   is on screen, takes only a press that began after it woke, and is never where the focus lands: Not now is, or for
@@ -47,6 +52,64 @@ let bars = 0;
 
 /** A value as the bar shows it: a line break is a mark, so no value draws lines of its own under the bar's. */
 const oneLine = (value: string) => value.replace(/\s*[\r\n]+\s*/g, " ↵ ").replace(/\t/g, " ");
+
+/** Two-level endings a site is registered one label further in under (shop.example.co.uk is example.co.uk's). The bar
+ * has no list of public suffixes: this is a reading aid for the commonest, and the whole host is always shown. */
+const TWO_LEVEL = new Set([
+	"co.uk",
+	"org.uk",
+	"ac.uk",
+	"gov.uk",
+	"me.uk",
+	"ltd.uk",
+	"plc.uk",
+	"net.uk",
+	"com.au",
+	"net.au",
+	"org.au",
+	"edu.au",
+	"gov.au",
+	"co.nz",
+	"org.nz",
+	"co.jp",
+	"ne.jp",
+	"or.jp",
+	"ac.jp",
+	"com.br",
+	"org.br",
+	"co.za",
+	"org.za",
+	"com.cn",
+	"org.cn",
+	"com.mx",
+	"co.in",
+	"co.kr",
+	"com.tw",
+	"com.hk",
+	"com.sg",
+	"com.tr",
+	"com.ar",
+	"co.il",
+	"com.pl",
+]);
+
+/** A web page's site as the bar shows it, first and on its own line: the host, as the browser will reach it (punycode
+ * stays punycode), its registered part in the bar's ink and any labels before it quieter, and a port when there is one.
+ * An address by number is shown whole. */
+function site(url: URL): HTMLElement {
+	const host = url.hostname;
+	const labels = host.split(".");
+	const numeric = host.startsWith("[") || /^[\d.]+$/.test(host);
+	const kept = numeric ? labels.length : TWO_LEVEL.has(labels.slice(-2).join(".")) ? 3 : 2;
+	const lead = labels.slice(0, Math.max(0, labels.length - kept));
+	return h(
+		"span",
+		{ class: "app-ask-site" },
+		lead.length ? h("span", { class: "app-ask-site-lead" }, `${lead.join(".")}.`) : null,
+		h("span", { class: "app-ask-site-name" }, labels.slice(-kept).join(".")),
+		url.port ? h("span", { class: "app-ask-site-port" }, `:${url.port}`) : null,
+	);
+}
 
 /** The request on the bar: `working` once the member allowed it and its change is on its way. */
 interface Pending {
@@ -141,6 +204,17 @@ export class AppAskBar implements AppGate {
 			value === null
 				? h("span", { class: "app-ask-empty" }, t("empty"))
 				: h("span", { class: "app-ask-value" }, oneLine(value));
+		if (ask.kind === "link") {
+			const url = new URL(ask.href);
+			return h(
+				"dl",
+				{ class: "app-ask-lines is-link" },
+				...line(t("Site"), site(url)),
+				// The address in full: its path, query and fragment, as they will go. It wraps and can be selected; a very
+				// long one scrolls inside its line, and the keyboard reaches it there.
+				...line(t("Address"), h("span", { class: "app-ask-address", tabindex: "0" }, url.href)),
+			);
+		}
 		if (ask.kind === "answer")
 			return h(
 				"dl",
@@ -209,7 +283,7 @@ export class AppAskBar implements AppGate {
 
 	#show(ask: AppAsk, perform: PreparedAsk["perform"], pending: Pending, keep?: PreparedAsk["keep"]): void {
 		this.#clear();
-		const agent = ask.kind === "row" ? undefined : this.#host.agent(ask.agentId);
+		const agent = ask.kind === "answer" || ask.kind === "tell" ? this.#host.agent(ask.agentId) : undefined;
 		const name = agent?.displayName ?? t("The agent");
 		const title = h(
 			"strong",
@@ -218,9 +292,11 @@ export class AppAskBar implements AppGate {
 				? t("This app wants to send your answer to {name}", { name })
 				: ask.kind === "tell"
 					? t("This app wants to send your note to {name}", { name })
-					: ask.add
-						? t("This app wants to add a row to a company table")
-						: t("This app wants to change a row in a company table"),
+					: ask.kind === "link"
+						? t("This app wants to open a web page")
+						: ask.add
+							? t("This app wants to add a row to a company table")
+							: t("This app wants to change a row in a company table"),
 		);
 		const field = ask.kind === "tell" ? this.#field(ask) : undefined;
 		const later = h("button", { type: "button", class: "app-ask-button" }, t("Not now"));
@@ -231,9 +307,11 @@ export class AppAskBar implements AppGate {
 				? t("Send answer")
 				: ask.kind === "tell"
 					? t("Send note")
-					: ask.add
-						? t("Add row")
-						: t("Change row"),
+					: ask.kind === "link"
+						? t("Open")
+						: ask.add
+							? t("Add row")
+							: t("Change row"),
 		);
 		// The yes button wakes a second after the bar is on a screen the member can see, and takes only a press that
 		// began after that: a click or a key already on its way when the bar came in does nothing. A note's Send is
@@ -299,10 +377,17 @@ export class AppAskBar implements AppGate {
 			yes.disabled = true;
 			later.disabled = true;
 			if (field) field.readOnly = true;
-			yes.textContent = ask.kind === "row" ? t("Saving…") : t("Sending…");
+			yes.textContent = ask.kind === "row" ? t("Saving…") : ask.kind === "link" ? t("Opening…") : t("Sending…");
+			// A web page's tab opens here, in the member's press: perform opens it before it awaits anything.
 			void perform(words).then(
 				(note) => {
 					this.#declines = 0;
+					if (ask.kind === "link") {
+						// The new tab is what the member sees: the bar goes.
+						pending.settle({ outcome: "opened" });
+						this.#hide();
+						return;
+					}
 					if (ask.kind === "tell" && note?.held) {
 						holding = true;
 						// Not added to the thread, whose draft answers something else already: the note stays here with its words,

@@ -687,20 +687,22 @@ describe("the bridge", () => {
 				follows ? (link) => followed.push(link) : undefined,
 			).answer({ method: "open", params: { href } });
 		// It needs nothing in reads, and the answer is the same whether or not what the link names is there.
-		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md", "https://example.com/"])
+		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md"])
 			expect(await open(href), href).toEqual({ ok: true, value: null });
+		// A web page opens only from the bar, once the member saw its address (Jonas, 13 November 2026: "Show the address
+		// first"): a bridge with no bar opens none (test/app-actions.test.ts has the bar's part).
+		expect(await open("https://example.com/")).toEqual({ ok: false, error: "No web page opens from this page" });
 		expect(followed).toEqual([
 			{ kind: "app", name: "hiring" },
 			{ kind: "file", path: "sales/report.md" },
 			{ kind: "file", path: "sales/missing.md" },
-			{ kind: "web", href: "https://example.com/" },
 		]);
 		for (const bad of ["folder:QorperaOS/tables/tasks/table.toml", "other.html", "javascript:alert(1)", 7])
 			expect(await open(bad), String(bad)).toEqual({
 				ok: false,
 				error: "A link opens an app (app:name), a company file (folder:path) or a web page (https://…)",
 			});
-		expect(followed).toHaveLength(4);
+		expect(followed).toHaveLength(3);
 		expect(folder.reads).toEqual([]);
 		// A bridge given no way to open one (none is today) opens none.
 		expect(await open("app:hiring", false)).toMatchObject({ ok: false });
@@ -708,7 +710,7 @@ describe("the bridge", () => {
 		let refused = 0;
 		for (let index = 0; index < 115; index++) if (!(await open("app:hiring")).ok) refused++;
 		expect(refused).toBe(4);
-		expect(followed).toHaveLength(4 + 111);
+		expect(followed).toHaveLength(3 + 111);
 		expect(await open("app:hiring")).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
 	});
 

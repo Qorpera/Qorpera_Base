@@ -450,7 +450,9 @@ app's screenshot by someone other than its maker.
   for the open concept Reload, which also lets a concept that was told "Not now" three times ask again. The strip
   that said whose the open concept is and that Qorpera never asks for passwords there was removed on 13 November 2026
   on the founder's word (§6 H2); who made each concept still stands in its row. With the line gone, nothing on screen
-  tells a member that a sign-in a concept's page draws is not Qorpera's own. Its toggle is the sidebar's ("Hide
+  tells a member that a sign-in a concept's page draws is not Qorpera's own; what they type into one can leave by a
+  web link only after they have seen the link's whole address on Qorpera's bar and pressed Open (§4 "Links"; the
+  founder's word, 13 November 2026: "Show the address first"). Its toggle is the sidebar's ("Hide
   sidebar", "Show sidebar"). It folds to the compact rail's strip; at phone width it is a top bar with a menu.
 - **Questions dock.** The agents' open question cards stand over the corner of an app's page or the Concepts viewer's
   stage, outside the frame: one tap answers, as in the chat. The dock heads the card itself — the agent's figure
@@ -470,10 +472,17 @@ app's screenshot by someone other than its maker.
     a message does;
   - `folder:<path>`: Storage at that file or folder, where a folder link in a message opens when no chat stands beside
     it. The path is under the rules of a read (§5): the company's own work, never a platform folder;
-  - `http:` and `https:`: a new tab, checked as a link in a message is (no name or password in the address), with no
-    way back to the app and no referrer. The member's click was in the frame, so a browser may stop the tab as a
-    pop-up. Then Qorpera offers the link in a line of its own above the app's frame, named by its real host and path,
-    and the member's click on that line opens it.
+  - `http:` and `https:`: checked as a link in a message is (no name or password in the address), then put on
+    Qorpera's bar above the page (§5 "Changes") as a request of its own, and opened only after the member has seen its
+    whole address there and pressed Open (the founder's word, 13 November 2026: "Show the address first"), so what a
+    page puts into an address is seen before it leaves. The bar shows the site first, on a line of its own (the host
+    as the browser will reach it, punycode as punycode, its registered part in the bar's ink and any labels before it
+    quieter, and a port when there is one), then the address in full, path, query and fragment, as text of the bar's
+    own: it wraps, can be selected, and scrolls inside its own line past six lines, so it is never cut. The tab opens
+    in that press, with no way back to the app and no referrer; Not now, Escape, a page put away, or another request
+    waiting open nothing. The press is the member's own on Qorpera's button, so a browser lets the tab open; should it
+    still stop one, Qorpera offers the link in a line of its own above the app's frame, named by its real host and
+    path, and the member's click on that line opens it.
 
   Anything else opens nothing: a relative address (an app is one page, §2), `mailto:`, any other scheme, a platform
   folder. Three things are not touched: a jump inside the page (`#…`), any click the page's handlers took for
@@ -565,14 +574,15 @@ Rules:
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
-  ten, since it reads every agent's todos, and a request for a change or a note as five), a call's params at most
+  ten, since it reads every agent's todos, and a request for a change, a note or a web page to open as five), a call's params at most
   4 KiB (a row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A
   call over the budget is refused ("Too many calls") and spends nothing. Change notices come up to once a second, so a page that
   drew on every one would spend a minute's budget in seconds. `save_app` therefore tells agents the pace: draw when
   the page opens, after a change draw again once and no sooner than ten seconds after the last draw, each source
   called once per draw, and after a failed read keep what was shown and read again ten seconds later.
 - **Links are calls**: an `open` is checked on the host (`appLink`, with the path rules of a read) and spends one call
-  of the budget; a refused one counts with the refused calls, and 300 of those stop the frame. It needs nothing in
+  of the budget; a web page's link, put on the bar, spends what a request does (five in all); a refused one counts
+  with the refused calls, and 300 of those stop the frame. It needs nothing in
   `reads`, because nothing is read for it. The answer is the same whether or not what the link names is there, and the
   frame document drops it, so a page learns nothing from a link.
 - **No requests of its own**: the frame keeps `sandbox="allow-scripts"`, no origin, the frame document's policy
@@ -591,16 +601,19 @@ https://claude.ai/artifact/YRm5HVhRitjiEPmH189jVX): answer an agent's question, 
 checks the request and puts it to the member on a **bar it draws outside the app's frame**
 (`app/views/app-ask-bar.ts`), and the change is made only when the member allows it there, as the member's own save.
 - The manifest's `writes` must name the action: `answers`, or `table:<name>` for that table. Anything else is refused
-  with no bar, before anything is read.
+  with no bar, before anything is read. A note to the app's owner and a web page a link leads to need nothing in
+  `writes`: the page chooses neither who hears a note nor its words, and a link only asks to open what the member
+  sees in full.
 - The bar stands above the frame and pushes the page down, in every placement (an app's page, the Concepts viewer):
   nothing of the page is ever under its buttons. The frame has no origin, so the page can neither draw the bar nor
   press it.
 - The bar says what will be saved in Qorpera's words, with no text of the app's in its sentences: for an answer, the
   agent, the card's title and the labels of the options chosen, read from the card; for a row, the table's name, the
-  row's key and each cell as it is and as it will be (an added row: each cell it sets).
+  row's key and each cell as it is and as it will be (an added row: each cell it sets); for a web page a link leads
+  to, the site and the whole address (§4 "Links").
 - Every request is its own bar. There is no "always allow", and nothing is remembered.
 - "Not now" has the focus (for a note, the bar's field: §6 says why that is safe). The yes button ("Send answer",
-  "Change row", "Add row", "Send note") wakes one second after the bar is on a visible screen, and takes only a press
+  "Change row", "Add row", "Send note", "Open") wakes one second after the bar is on a visible screen, and takes only a press
   (pointer or key) that began on it after it woke: a click or a held key on its way when the bar came in does nothing,
   and Enter in the page stays in the page. Escape on the bar is "Not now".
 - One bar at a time: while one is open another request is refused at once. After three "Not now" in a row the app is
@@ -761,8 +774,10 @@ prompt-injected agent can still do is ask: a member who allows a bar without rea
 to an answer the agent itself asked for or to a row of a table the app names, or sends the app's owner the page's
 draft and its 60-character `about` (§6); it can never be a file, a member's or agent's place, a setting, or anything
 outside those. A leak through a side channel leaves from the member's browser, unlogged.
-Links add one way out: a page can put what it read into a web address, as an agent can in a message. It leaves only
-when the member clicks it, in a tab of the member's own browser, unlogged like the side channels.
+Links add one way out: a page can put what it read, or what the member typed into it, into a web address, as an
+agent can in a message. It leaves only after the member has seen the whole address on Qorpera's bar and pressed Open
+there (the founder's word, 13 November 2026: "Show the address first"), in a tab of the member's own browser, unlogged
+like the side channels.
 
 ## 6. Security review
 
@@ -772,7 +787,7 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | Finding | Done |
 | --- | --- |
 | H1 the bridge must not ride on window messages | one port per frame, handed over once; second "ready" or third load tears it down |
-| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here". **Since 10 November 2026 an app's own page has no header** (Jonas's decision, §4), so the line stands beside the chat only. **Removed from the Concepts viewer on 13 November 2026 on the founder's word**: its side panel had carried the line in a strip of its own (#1539 round 1), and that strip is gone (§4). Who made a concept still stands in its row. What else guards a member is as it was, and it is this much: a change to the company and a note to an agent go only through Qorpera's own bar, with the member's yes, and a page has no network of its own and submits no form (the frame is sandboxed with scripts only, `default-src 'none'`, `form-action 'none'`). But an `http:` or `https:` link the member clicks opens in a new tab at the address the page gave it: one with a name or password in it is refused, and its path and query may still carry what the member typed (§4 "Links", §5's threat model). The side channels §5 names stand too. Nothing replaces the line on a concept, and a detector for password fields would be defeated by a hostile page, so with the line gone nothing on screen tells a member that a sign-in a concept draws is not Qorpera's. On an app's own page nothing replaces it yet: a page that draws a sign-in there has the rail beside it and nothing else of Qorpera's. A guard that costs no header is a follow-up (§7): the line shown above the page only while the page has a password field on screen |
+| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here". **Since 10 November 2026 an app's own page has no header** (Jonas's decision, §4), so the line stands beside the chat only. **Removed from the Concepts viewer on 13 November 2026 on the founder's word**: its side panel had carried the line in a strip of its own (#1539 round 1), and that strip is gone (§4). Who made a concept still stands in its row. What else guards a member is as it was, and it is this much: a change to the company and a note to an agent go only through Qorpera's own bar, with the member's yes, and a page has no network of its own and submits no form (the frame is sandboxed with scripts only, `default-src 'none'`, `form-action 'none'`). An `http:` or `https:` link the member clicks opens only after the member has seen its whole address on Qorpera's bar and pressed Open (the founder's word, 13 November 2026: "Show the address first"): one with a name or password in it is refused before any bar, and what a page puts into the path or query of one, what the member typed among it, is seen before it leaves (§4 "Links", §5's threat model). The side channels §5 names stand. Nothing replaces the line on a concept, and a detector for password fields would be defeated by a hostile page, so with the line gone nothing on screen tells a member that a sign-in a concept draws is not Qorpera's. On an app's own page nothing replaces it yet: a page that draws a sign-in there has the rail beside it and nothing else of Qorpera's. A guard that costs no header is a follow-up (§7): the line shown above the page only while the page has a password field on screen |
 | H3 the Allow bar is too weak | no writes until step 5, which builds the review's gate: see the table below |
 | M1 threat model | corrected above; side channels are best effort |
 | M2 reads: allow list, path checks, never-in-bridge | platform folders refused, host path checks, the list above |
@@ -822,7 +837,7 @@ security review of its own:
 | the frame leaving its page | every click on a link that the page left alone is stopped, whoever made it; `#…` stays in the page, and `javascript:` is left to the browser as before |
 | the page's own handlers deciding what the frame hears | the link is noted before any handler of the page (on the click's way down, listened for before the page is written) and the click is settled behind them, by the browser's own account of whether a handler took it: at the window, or on the node where a handler stops it, by listeners put last at every click; where none can follow (a stop at once, and two places on the way down) when the stopping handler returns. Nothing the page reads or says of a click is changed. Named limits in §4 |
 | a new tab reaching back into the app | opened with its opener cut before it loads, and no referrer (the site sends none); the offered line is `rel="noopener noreferrer"` |
-| what a page read, carried out in an address | as a link in a message: only on the member's click; accepted, in the threat model above |
+| what a page read, carried out in an address | only after the member has seen the whole address on Qorpera's bar and pressed Open (13 November 2026: "Show the address first"); accepted, in the threat model above |
 | the company's colours as a way to inject styles | only hex colours parsed from `brand.toml` reach the stylesheet; every other byte of it is fixed |
 | the base style overriding an app | one cascade layer under the page's own styles, no `!important` |
 | a dark base under an app that assumed a light page | dark only for a page that declares `color-scheme` light and dark |

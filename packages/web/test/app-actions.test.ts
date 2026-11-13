@@ -761,6 +761,92 @@ describe("the bridge's requests for a change", () => {
 	});
 });
 
+describe('a link the member clicks in an app\'s page (Jonas, 13 November 2026: "Show the address first")', () => {
+	const app = (): CompanyApp & { manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest('name = "Concepts"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		return { name: "concepts", path: "apps/concepts", manifest: parsed.manifest, problems: [], version: null };
+	};
+	/** A bridge whose links are followed into `followed`, with a gate that answers as the member would on the bar. */
+	const linked = (decide: "open" | "decline" | "busy" = "open") => {
+		const followed: unknown[] = [];
+		const asked: AppAsk[] = [];
+		let opened = 0;
+		const gate: AppGate = {
+			closed: () => (decide === "busy" ? "busy" : null),
+			ask: async (ask, perform) => {
+				asked.push(ask);
+				if (decide !== "open") return { outcome: "declined" };
+				// Nothing of this request is followed before the member's press: the press is perform.
+				expect(followed).toHaveLength(opened);
+				opened++;
+				await perform("");
+				return { outcome: "opened" };
+			},
+		};
+		const key = crypto.randomUUID();
+		const bridge = new AppBridge(
+			{ folder: () => memberFolder({}).folder, agents: () => [] },
+			app(),
+			key,
+			new AbortController().signal,
+			gate,
+			(link) => followed.push(link),
+		);
+		return { bridge, followed, asked, opened: () => opened };
+	};
+	const click = (bridge: AppBridge, href: string) => bridge.answer({ method: "open", params: { href } });
+	const whole = "https://example.com/pricing?plan=team&email=ada%40lund.dk#top";
+
+	it("puts a web page on the bar with its whole address, and opens it only when the member pressed Open", async () => {
+		const { bridge, followed, asked } = linked();
+		expect(await click(bridge, whole)).toEqual({ ok: true, value: null });
+		expect(asked).toEqual([{ kind: "link", href: whole }]);
+		expect(followed).toEqual([{ kind: "web", href: whole }]);
+	});
+
+	it("opens nothing when the member says not now, or while another request waits", async () => {
+		for (const decide of ["decline", "busy"] as const) {
+			const { bridge, followed } = linked(decide);
+			expect(await click(bridge, whole), decide).toMatchObject({ ok: false });
+			expect(followed).toEqual([]);
+		}
+	});
+
+	it("refuses an address with a name or password in it before any bar, as before", async () => {
+		const { bridge, followed, asked } = linked();
+		for (const href of [
+			"https://ada:secret@example.com/",
+			"https://ada@example.com/",
+			"javascript:alert(1)",
+			"mailto:a@b.dk",
+		])
+			expect(await click(bridge, href), href).toMatchObject({ ok: false });
+		expect(asked).toEqual([]);
+		expect(followed).toEqual([]);
+	});
+
+	it("opens another app and a company file at once, with no bar, as before", async () => {
+		const { bridge, followed, asked } = linked();
+		expect(await click(bridge, "app:sales")).toEqual({ ok: true, value: null });
+		expect(await click(bridge, "folder:strategy/plan%202027.md")).toEqual({ ok: true, value: null });
+		expect(asked).toEqual([]);
+		expect(followed).toEqual([
+			{ kind: "app", name: "sales" },
+			{ kind: "file", path: "strategy/plan 2027.md" },
+		]);
+	});
+
+	it("costs a web page's link what any request costs: five calls of the minute's budget", async () => {
+		const { bridge, opened } = linked();
+		// 120 calls a minute: 24 web links fit, and the 25th is refused before any bar.
+		for (let index = 0; index < 24; index++)
+			expect(await click(bridge, `${whole}${index}`)).toMatchObject({ ok: true });
+		expect(await click(bridge, whole)).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
+		expect(opened()).toBe(24);
+	});
+});
+
 describe("the bar a request is put to the member on", () => {
 	const change: AppAsk = {
 		kind: "row",
@@ -1157,6 +1243,108 @@ describe("the bar a request is put to the member on", () => {
 			expect(await outcome).toEqual({ outcome: "failed", message: "That agent is no longer at work." });
 			expect(bar.el.querySelector('[role="alert"]')?.textContent).toBe("That agent is no longer at work.");
 		});
+	});
+});
+
+describe('a web page a link in the app leads to, on the bar (Jonas, 13 November 2026: "Show the address first")', () => {
+	const long =
+		"https://shop.example.co.uk:8443/checkout/step-2?email=ada%40lund.dk&card=4242%204242&note=Hej%20med%20dig&ref=lysvaekker-concept#pay-now";
+	let stage: HTMLElement;
+	const make = () => {
+		const bar = new AppAskBar({
+			emblem: () => document.createElement("span"),
+			agent: () => undefined,
+			open: () => {},
+		});
+		stage.prepend(bar.el);
+		return bar;
+	};
+	const button = (bar: AppAskBar, text: string) =>
+		[...bar.el.querySelectorAll("button")].find((each) => each.textContent === text) as HTMLButtonElement;
+	const press = (target: HTMLButtonElement) => {
+		target.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+		target.click();
+	};
+	const lines = (bar: AppAskBar) =>
+		[...bar.el.querySelectorAll("dt")].map((term) => [term.textContent, term.nextElementSibling?.textContent]);
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		stage = document.createElement("section");
+		stage.append(document.createElement("iframe"));
+		document.body.append(stage);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		stage.remove();
+	});
+
+	it("shows the site first and the whole address, and opens it only on Open, once it woke", async () => {
+		const bar = make();
+		const perform = vi.fn(async () => undefined);
+		const outcome = bar.ask({ kind: "link", href: long }, perform);
+		expect(bar.el.querySelector(".app-ask-title")?.textContent).toBe("This app wants to open a web page");
+		// The site on its own line, its registered part apart from the labels before it; then the address in full,
+		// query and fragment included, as text of the bar's own.
+		expect(lines(bar)).toEqual([
+			["Site", "shop.example.co.uk:8443"],
+			["Address", long],
+		]);
+		expect(bar.el.querySelector(".app-ask-site-lead")?.textContent).toBe("shop.");
+		expect(bar.el.querySelector(".app-ask-site-name")?.textContent).toBe("example.co.uk");
+		expect(bar.el.querySelector(".app-ask-site-port")?.textContent).toBe(":8443");
+		expect(bar.el.querySelector(".app-ask-address")?.children).toHaveLength(0);
+		// Not the default: the focus is on Not now, and Open sleeps a second; a press begun before it woke opens nothing.
+		const open = button(bar, "Open");
+		expect(document.activeElement).toBe(button(bar, "Not now"));
+		expect(open.disabled).toBe(true);
+		press(open);
+		open.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+		await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+		open.click();
+		expect(perform).not.toHaveBeenCalled();
+		press(open);
+		// The tab opens in the press itself, before anything is awaited.
+		expect(perform).toHaveBeenCalledTimes(1);
+		expect(await outcome).toEqual({ outcome: "opened" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(bar.el.hidden).toBe(true);
+		expect(bar.closed()).toBeNull();
+	});
+
+	it("opens nothing on Not now or Escape, asks one at a time, and is quiet after three", async () => {
+		const bar = make();
+		const perform = vi.fn(async () => undefined);
+		const first = bar.ask({ kind: "link", href: "https://example.com/" }, perform);
+		// A second link while one waits is refused at once.
+		expect(await bar.ask({ kind: "link", href: "https://example.org/" }, perform)).toEqual({ outcome: "busy" });
+		button(bar, "Not now").click();
+		expect(await first).toEqual({ outcome: "declined" });
+		const second = bar.ask({ kind: "link", href: "https://example.com/a" }, perform);
+		bar.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(await second).toEqual({ outcome: "declined" });
+		const third = bar.ask({ kind: "link", href: "https://example.com/b" }, perform);
+		button(bar, "Not now").click();
+		expect(await third).toEqual({ outcome: "declined" });
+		expect(bar.el.textContent).toContain("This app asked three times");
+		expect(await bar.ask({ kind: "link", href: "https://example.com/c" }, perform)).toEqual({ outcome: "quiet" });
+		expect(perform).not.toHaveBeenCalled();
+	});
+
+	it("shows a host as the browser will reach it: punycode as punycode, a short one whole, an address by number whole", () => {
+		const shown = (href: string) => {
+			const bar = make();
+			void bar.ask({ kind: "link", href }, async () => undefined);
+			const parts = [".app-ask-site-lead", ".app-ask-site-name"].map(
+				(part) => bar.el.querySelector(part)?.textContent,
+			);
+			bar.dispose();
+			return parts;
+		};
+		expect(shown(new URL("https://bücher.example/").href)).toEqual([undefined, "xn--bcher-kva.example"]);
+		expect(shown("https://paypal.com.login.example.net/x")).toEqual(["paypal.com.login.", "example.net"]);
+		expect(shown("https://example.com/")).toEqual([undefined, "example.com"]);
+		expect(shown("http://192.168.1.20:8080/")).toEqual([undefined, "192.168.1.20"]);
 	});
 });
 
