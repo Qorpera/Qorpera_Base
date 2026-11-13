@@ -36,6 +36,8 @@ export const CLOUD_HOME_SOCKET_NAME = "exec.sock";
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 /** Connections the namespace may hold at once: Codex opens one environment, and one more while it reconnects. */
 const MAX_CONNECTIONS = 4;
+/** Calls whose output has not been released yet; past it the oldest are forgotten, as the boundary forgets results. */
+const MAX_OPEN_CALLS = 8_192;
 /** What the model is told when its home could not be reached. Plain words, and what to do instead. */
 export const CLOUD_HOME_UNAVAILABLE =
 	"HOME_UNAVAILABLE: this agent's machine could not be reached, so nothing ran there. Use the company's own tools, or try again.";
@@ -101,63 +103,75 @@ export interface CloudCodexHomeReview {
 	): Promise<CloudActionGateResult>;
 }
 
-/** One native step of the run's work log, from Codex's own item notifications (slice 2). */
-interface NativeStep {
-	readonly j: number;
+/** What Codex said one of its own calls was, until the fence releases that call's output. */
+interface NativeCall {
+	readonly tool: string;
+	readonly argumentsText: string;
 	readonly paths: readonly string[];
 }
 
 /**
  * The run's native steps: what the model did on its home, as the run's work log holds it.
  *
- * Codex tells the host what each of its own calls was (`item/completed` for a `commandExecution` with its command, its
- * working directory and its exit code, for a `fileChange` with the paths it changed). The host writes that as a step
- * the moment it hears it, and finishes the step with the exact envelope the model is shown when the result fence
- * releases it. Without this a run that works on its home keeps no work log at all, and in Shared context the fold
- * leaves its own work out with no line (memory-tree/run-work.ts).
+ * Codex tells the host what each of its own calls was (`item/completed` for a `commandExecution` with its command,
+ * its working directory and its exit code, for a `fileChange` with the paths it changed). The host keeps that until
+ * the result fence releases the call's output, and then writes the step and finishes it in one go, with the exact
+ * envelope the model is shown. One go, because a step opened and never finished would hold the run's log open: a
+ * call whose output never reaches the model (its turn ended first) simply has no step, which is the rule the fold
+ * already follows for a call the log does not hold (memory-tree/run-work.ts).
+ *
+ * Without this a run that works on its home keeps no work log at all, and in Shared context the fold leaves its own
+ * work out with no line.
  */
 export class CloudCodexHomeSteps {
 	readonly #log: CloudRunLog;
-	readonly #open = new Map<string, NativeStep>();
-	/** Counted for the proof and the report: steps opened, steps finished. */
-	opened = 0;
-	finished = 0;
+	readonly #calls = new Map<string, NativeCall>();
+	/** Counted for the proof and the report: calls heard, steps written. */
+	heard = 0;
+	written = 0;
 
 	constructor(log: CloudRunLog) {
 		this.#log = log;
 	}
 
-	/** Codex's own notification. Returns the step's index when one was opened. */
-	note(method: string, params: Record<string, unknown>): number | undefined {
-		if (method !== "item/completed") return undefined;
+	/** Codex's own notification. */
+	note(method: string, params: Record<string, unknown>): void {
+		if (method !== "item/completed") return;
 		const item = params.item;
-		if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+		if (!item || typeof item !== "object" || Array.isArray(item)) return;
 		const value = item as Record<string, unknown>;
 		const call = typeof value.id === "string" ? value.id : undefined;
-		if (!call || call.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(call) || this.#open.has(call))
-			return undefined;
+		if (!call || call.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(call) || this.#calls.has(call)) return;
 		const described = describeItem(value);
-		if (!described) return undefined;
-		const argumentsText = JSON.stringify(described.arguments);
-		const j = this.#log.step({
-			call,
+		if (!described) return;
+		this.#calls.set(call, {
 			tool: described.tool,
-			argumentsText,
-			argumentSha256: createHash("sha256").update(argumentsText).digest("hex"),
+			argumentsText: JSON.stringify(described.arguments),
+			paths: described.paths,
 		});
-		this.#open.set(call, { j, paths: described.paths });
-		this.opened++;
-		return j;
+		remember(this.#calls, MAX_OPEN_CALLS);
+		this.heard++;
 	}
 
-	/** The result fence releasing this call's output: the step keeps the exact envelope the model got. */
+	/** The result fence releasing this call's output: its step is written and finished with that exact envelope. */
 	finish(callId: string, envelope: string): void {
-		const step = this.#open.get(callId);
-		if (!step) return;
-		this.#open.delete(callId);
-		this.finished++;
-		this.#log.finish(step.j, envelope, [], [...step.paths]);
+		const call = this.#calls.get(callId);
+		if (!call) return;
+		this.#calls.delete(callId);
+		const j = this.#log.step({
+			call: callId,
+			tool: call.tool,
+			argumentsText: call.argumentsText,
+			argumentSha256: createHash("sha256").update(call.argumentsText).digest("hex"),
+		});
+		this.written++;
+		this.#log.finish(j, envelope, [], [...call.paths]);
 	}
+}
+
+/** Keeps the newest calls only: a turn of thousands cannot grow this without bound. */
+function remember(store: Map<string, unknown>, limit: number): void {
+	while (store.size > limit) store.delete(store.keys().next().value as string);
 }
 
 /** What a step says about one of Codex's own calls: its tool, its canonical arguments and the paths it touched. */

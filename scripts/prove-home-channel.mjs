@@ -717,6 +717,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 		record.approvals = state.approvals;
 		record.fence = state.fence;
 		record.homeCause = state.homes?.map((home) => ({ cause: home.cause ?? null, counts: home.counts })) ?? [];
+		process.stdout.write(`home: ${JSON.stringify(record.homeCause)}; reviews ${JSON.stringify(state.reviews)}\n`);
 		record.exec = state.exec.map((line) => ({ direction: line.direction, method: line.method, bytes: line.bytes, canaries: line.canaries }));
 		record.execMethods = state.exec.reduce((counts, line) => {
 			if (line.method) counts[`${line.direction} ${line.method}`] = (counts[`${line.direction} ${line.method}`] ?? 0) + 1;
@@ -911,8 +912,8 @@ async function attemptRun(code, { db, binding, scratch, identityRoot, nativeBina
 			binarySha256: sha256(readFileSync(process.execPath)),
 			identityRoot,
 			prompt,
-			signal: AbortSignal.timeout(300_000),
-			timeoutMs: 280_000,
+			signal: AbortSignal.timeout(150_000),
+			timeoutMs: 140_000,
 		});
 	} catch (error) {
 		return { error, folder, paths, identity: admitted };
@@ -1069,22 +1070,28 @@ async function main() {
 		// 4. The review at the host: a declined command never reaches the machine.
 		await run("review", {
 			home: {
+				// What the run's own review gate would answer for this action. A command Codex itself refuses by its own
+				// policy (`rm -rf`) never reaches this host at all, so the proof declines one Codex allows.
 				decide: (call) =>
-					/rm -rf/.test(call.summary) ? { run: false, text: "REVIEW_DENIED: this would delete the company's files. The action did not happen." } : undefined,
+					/declined\.txt/.test(call.summary)
+						? { run: false, text: "REVIEW_DENIED: this action was not allowed. The action did not happen. Do not retry it." }
+						: undefined,
 			},
 			calls: [
 				exec({ cmd: "touch /company/reviewed.txt && echo touched" }),
-				exec({ cmd: "rm -rf /company/docs && echo removed" }),
-				exec({ cmd: "ls /company /company/docs" }),
+				exec({ cmd: "touch /company/declined.txt && echo oops" }),
+				exec({ cmd: "ls /company" }),
 			],
 			check: async ({ state, record, machine }) => {
 				assert(existsSync(join(machine.company, "reviewed.txt")), "the allowed command ran");
-				assert(existsSync(join(machine.company, "docs/seed.md")), "the declined command did not");
+				assert(!existsSync(join(machine.company, "declined.txt")), "the declined command did not");
 				const declined = shown(state, state.calls[1].callId)?.text ?? "";
 				assert(declined.includes("REVIEW_DENIED"), declined);
 				const starts = state.exec.filter((line) => line.method === "process/start");
-				assert(!state.exec.some((line) => line.line.includes("rm -rf")), "no line of the declined command reached the machine");
-				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.kind}: ${review.summary.slice(0, 40)}`).join("; ")}); the declined rm -rf never reached it (${starts.length} starts did), docs/ is still there, and the model was told ${JSON.stringify(declined.slice(0, 80))}`);
+				assert(!state.exec.some((line) => line.line.includes("declined.txt")), "no line of the declined command reached the machine");
+				const listed = shown(state, state.calls[2].callId)?.text ?? "";
+				assert(listed.includes("reviewed.txt") && !listed.includes("declined.txt"), listed);
+				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.kind}: ${review.summary.slice(0, 48)}`).join("; ")}); the declined one never reached it (${starts.length} of ${state.reviews.length} were started there), the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
 			},
 		});
 	} finally {
