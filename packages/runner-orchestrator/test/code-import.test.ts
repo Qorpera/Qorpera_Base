@@ -26,8 +26,11 @@ import {
 	CODE_IMPORT_KEY_KINDS,
 	CODE_IMPORT_KEY_PATTERNS,
 	CODE_IMPORT_LEASE_MS,
+	CODE_IMPORT_LINE_TREE_BYTES,
+	CODE_IMPORT_LINES_SECONDS,
 	CODE_IMPORT_LOOK_BYTES,
 	CODE_IMPORT_LOOK_COLUMN_BYTES,
+	CODE_IMPORT_LOOK_LINES,
 	CODE_IMPORT_LOOK_PATH_BYTES,
 	CODE_IMPORT_LOOK_PATHS,
 	CODE_IMPORT_LOOK_SHOWN,
@@ -57,6 +60,7 @@ import {
 	CODE_IMPORT_TAGS,
 	CODE_IMPORT_WANTS,
 	type CodeImportAnswer,
+	type CodeImportLineSeen,
 	type CodeImportLookFacts,
 	type CodeImportRefList,
 	type CodeImportRefSeen,
@@ -82,6 +86,7 @@ import {
 	codeImportJsonbBound,
 	codeImportKeyIn,
 	codeImportLfsPointer,
+	codeImportLinesShown,
 	codeImportLook,
 	codeImportLookedAnswer,
 	codeImportLookOf,
@@ -192,6 +197,9 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_LOOK_PATH_BYTES,
 			CODE_IMPORT_LOOK_PATHS,
 			CODE_IMPORT_LOOK_SHOWN,
+			CODE_IMPORT_LOOK_LINES,
+			CODE_IMPORT_LINES_SECONDS,
+			CODE_IMPORT_LINE_TREE_BYTES,
 			CODE_IMPORT_PROGRESS_BYTES,
 			CODE_IMPORT_LEASE_MS,
 			CODE_IMPORT_RENEW_MS,
@@ -232,6 +240,9 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_LOOK_PATH_BYTES: 200,
 			CODE_IMPORT_LOOK_PATHS: 10,
 			CODE_IMPORT_LOOK_SHOWN: 30,
+			CODE_IMPORT_LOOK_LINES: 10,
+			CODE_IMPORT_LINES_SECONDS: 300,
+			CODE_IMPORT_LINE_TREE_BYTES: 32 * MiB,
 			CODE_IMPORT_PROGRESS_BYTES: 3_072,
 			CODE_IMPORT_LEASE_MS: 900_000,
 			CODE_IMPORT_RENEW_MS: 300_000,
@@ -843,9 +854,113 @@ describe("the wants", () => {
 			],
 			wants: [A, D, B, C],
 			leftOut: 1,
+			sourceBranch: null,
 		});
-		// A branch the request named.
-		expect(codeImportWants(list(refs), { branch: "zeta" })).toMatchObject({ defaultBranch: "zeta", mainSha: B });
+		// A branch the request named; GitHub's own default (HEAD's target) is named beside it, for the refs plan to keep
+		// whatever its age (the lead's call 6a of the import's follow-ups).
+		expect(codeImportWants(list(refs), { branch: "zeta" })).toMatchObject({
+			defaultBranch: "zeta",
+			mainSha: B,
+			sourceBranch: "master",
+		});
+		// None when the named branch is the source's own, HEAD names no listed head or none, or a name the import
+		// would not keep.
+		expect(codeImportWants(list(refs), { branch: "master" }).sourceBranch).toBeNull();
+		expect(
+			codeImportWants(list(refs, { oid: A, target: "refs/heads/gone" }), { branch: "zeta" }).sourceBranch,
+		).toBeNull();
+		expect(codeImportWants(list(refs, { oid: A, target: null }), { branch: "zeta" }).sourceBranch).toBeNull();
+		expect(codeImportWants(list(refs, null), { branch: "zeta" }).sourceBranch).toBeNull();
+		expect(
+			codeImportWants(
+				list([...refs, [`refs/heads/${PLANTED.aws}`, C]], { oid: C, target: `refs/heads/${PLANTED.aws}` }),
+				{
+					branch: "zeta",
+				},
+			).sourceBranch,
+		).toBeNull();
+	});
+
+	// Review round 3 of #1725, F2: the source's own default is wanted right after the branch brought in, before every
+	// other head and tag, so the cap on wanted objects never leaves it out of the bundle the refs plan keeps it from.
+	it("wants the source's own default right after the branch asked for, ahead of the cap; without one, as before", () => {
+		// The branch asked for and the source's default are the two wanted; the other head is left out and counted, and a
+		// tag at a wanted object comes along.
+		expect(codeImportWants(list(refs), { branch: "zeta", maximumWants: 2 })).toEqual({
+			defaultBranch: "zeta",
+			mainSha: B,
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/heads/master", sha: A },
+				{ name: "refs/tags/v0", sha: B },
+			],
+			wants: [B, A],
+			leftOut: 3,
+			sourceBranch: "master",
+		});
+		// The review's case: 4,999 other heads, each its own commit, whose names sort before master's: master is still the
+		// second want and the second ref, and only one other head is past the cap.
+		const crowd = list([
+			["refs/heads/feature", B],
+			["refs/heads/master", A],
+			...Array.from(
+				{ length: 4_999 },
+				(_, i) => [`refs/heads/a${String(i).padStart(4, "0")}`, shaOf(i + 10)] as [string, string],
+			),
+		]);
+		const many = codeImportWants(crowd, { branch: "feature" });
+		expect(many.wants).toHaveLength(CODE_IMPORT_WANTS);
+		expect(many.wants.slice(0, 2)).toEqual([B, A]);
+		expect(many.refs.slice(0, 2)).toEqual([
+			{ name: "refs/heads/feature", sha: B },
+			{ name: "refs/heads/master", sha: A },
+		]);
+		expect(many.leftOut).toBe(2);
+		expect(many.sourceBranch).toBe("master");
+		// At the commit of the branch asked for: no second want, and its ref comes along.
+		expect(
+			codeImportWants(
+				list(
+					[
+						["refs/heads/zeta", B],
+						["refs/heads/master", B],
+						["refs/heads/alpha", D],
+					],
+					{ oid: B, target: "refs/heads/master" },
+				),
+				{ branch: "zeta", maximumWants: 1 },
+			),
+		).toMatchObject({
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/heads/master", sha: B },
+			],
+			wants: [B],
+			leftOut: 2,
+			sourceBranch: "master",
+		});
+		// A cap of one want: the branch asked for alone, and the source's default named nowhere (nothing to keep).
+		expect(codeImportWants(list(refs), { branch: "zeta", maximumWants: 1 })).toMatchObject({
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/tags/v0", sha: B },
+			],
+			wants: [B],
+			sourceBranch: null,
+		});
+		// Without a branch named: the wants, the header and what is left out exactly as before.
+		expect(codeImportWants(list(refs), { maximumWants: 2 })).toEqual({
+			defaultBranch: "master",
+			mainSha: A,
+			refs: [
+				{ name: "refs/heads/master", sha: A },
+				{ name: "refs/heads/alpha", sha: D },
+			],
+			wants: [A, D],
+			leftOut: 4,
+			sourceBranch: null,
+		});
+		expect(codeImportWants(crowd).wants.slice(0, 3)).toEqual([A, shaOf(10), shaOf(11)]);
 	});
 
 	it("leaves out what is past the wants' cap, and names the header refuses; a ref of a wanted object comes along", () => {
@@ -1301,6 +1416,69 @@ describe("the refs plan", () => {
 			"create refs/qorpera/kept-here",
 			A,
 		]);
+	});
+
+	// The lead's call 6a of the import's follow-ups: when the request named another branch as main, the source's own
+	// default is kept whatever its age; it still counts toward the 200 and must pass the name rules.
+	it("keeps the source's own default whatever its age when another branch came in as main, and nothing else changes", () => {
+		const old = nowSeconds - 400 * DAY;
+		const given = (refs: CodeImportRefSeen[], sourceBranch?: string | null) =>
+			codeImportRefsPlan({ repository: place, defaultBranch: "feature", refs, now: NOW, sourceBranch });
+		const refs = [
+			ref("refs/heads/feature", B, nowSeconds - 10),
+			ref("refs/heads/master", A, old),
+			ref("refs/heads/stale", C, old),
+			ref("refs/heads/recent", D, nowSeconds - 5),
+			ref("refs/tags/v1", D, old),
+		];
+		const today = given(refs);
+		// Without it, naming main itself, or naming a head that is not there: today's plan exactly.
+		for (const sourceBranch of [null, "feature", "gone"]) expect(given(refs, sourceBranch)).toEqual(today);
+		expect(today.refs.map((r) => r.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/recent",
+			"refs/qorpera/kept-here",
+			"refs/tags/v1",
+		]);
+		expect(today.leftOutBy).toEqual({ name: 0, clash: 0, notCommit: 0, older: 2, over: 0, other: 0 });
+		const kept = given(refs, "master");
+		expect(kept.refs.map((r) => r.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/master",
+			"refs/qorpera/imported/heads/recent",
+			"refs/qorpera/kept-here",
+			"refs/tags/v1",
+		]);
+		expect(kept.refs).toContainEqual({ name: "refs/qorpera/imported/heads/master", sha: A });
+		expect(kept.branches).toEqual({ seen: 3, kept: 2 });
+		expect(kept.leftOutBy).toEqual({ ...today.leftOutBy, older: 1 });
+		expect(kept.leftOut).toBe(today.leftOut - 1);
+		expect(kept.mainSha).toBe(B);
+		// It counts toward the 200, and is taken first: with 200 newer heads it is still kept, and the oldest of them is
+		// not.
+		const many = [
+			ref("refs/heads/feature", B),
+			ref("refs/heads/master", A, old),
+			...Array.from({ length: 200 }, (_, i) =>
+				ref(`refs/heads/b${String(i).padStart(3, "0")}`, shaOf(2000 + i), nowSeconds - i),
+			),
+		];
+		const full = given(many, "master");
+		expect(full.branches).toEqual({ seen: 201, kept: 200 });
+		expect(full.refs).toContainEqual({ name: "refs/qorpera/imported/heads/master", sha: A });
+		expect(full.refs.map((r) => r.name)).not.toContain("refs/qorpera/imported/heads/b199");
+		expect(full.leftOutBy).toMatchObject({ older: 0, over: 1 });
+		expect(given(many).refs.map((r) => r.name)).toContain("refs/qorpera/imported/heads/b199");
+		// A name the folder does not take (not NFC here) is left out as such a head is; one that is no commit too.
+		const nfd = "cafe\u0301";
+		const named = given([ref("refs/heads/feature", B), ref(`refs/heads/${nfd}`, A, old)], nfd);
+		expect(named.refs.map((r) => r.name)).toEqual(["refs/heads/main", "refs/qorpera/kept-here"]);
+		expect(named.leftOutBy).toMatchObject({ name: 1, older: 0 });
+		const tag = given([ref("refs/heads/feature", B), ref("refs/heads/master", C, old, "tag", "commit")], "master");
+		expect(tag.leftOutBy).toMatchObject({ notCommit: 1, older: 0 });
+		// A name the import would not keep is no input.
+		for (const bad of [PLANTED.aws, "x".repeat(201), "a b", 7])
+			expect(() => given(refs, bad as string), String(bad)).toThrow("INVALID_CODE_IMPORT");
 	});
 
 	it("keeps 500 tags and 200 heads, newest first, ties by name", () => {
@@ -1841,6 +2019,334 @@ describe("the look", () => {
 		] as [string, (copy: Record<string, unknown>) => void][])
 			expect(() => codeImportLookOf(broken(change)), what).toThrow("INVALID_CODE_IMPORT_LOOK");
 	});
+
+	/** A commit's time the look shows (2025-11-12T14:00:00Z), and an other line of work as the measure finds it. */
+	const T = 1_762_956_000;
+	const DAY_S = 86_400;
+	const line = (name: string, ahead: number, time: number, more: Partial<CodeImportLineSeen> = {}) =>
+		({ name, ahead, behind: 1, time, fits: true, ...more }) as CodeImportLineSeen;
+
+	it("shows the other lines of work: at most 10, most changes first, then the newest, then by name; names whole or null", () => {
+		const long = `q${"z".repeat(199)}`,
+			over = `x${"y".repeat(200)}`;
+		const seen = [
+			line("b-one", 1, T),
+			// The same changes and time as b-one: by name.
+			line("a-one", 1, T),
+			// Names that are not shown come after those that are, at the same changes and time; between them, their own.
+			line(over, 1, T),
+			line(PLANTED.aws, 1, T),
+			line("old", 1, T - DAY_S),
+			// Past the year 9999: no time shown, after every time at its changes.
+			line("far", 1, 253_402_300_800),
+			line("most", 5, T - 9 * DAY_S, { behind: 0 }),
+			line("two", 2, T - 2 * DAY_S, { fits: false }),
+			line("two-new", 2, T - DAY_S, { fits: null }),
+			line(long, 1, T + 1),
+			line("left-1", 1, T - 30 * DAY_S),
+			line("left-2", 1, T - 31 * DAY_S),
+		];
+		const order = ["most", "two-new", "two", long, "a-one", "b-one", PLANTED.aws, over, "old", "left-1"];
+		expect(codeImportLinesShown(seen).map((each) => each.name)).toEqual(order);
+		expect(codeImportLinesShown([...seen].reverse()).map((each) => each.name)).toEqual(order);
+		const look = codeImportLook(
+			facts({ branches: { seen: 20, kept: 12 }, lines: { count: 12, changes: 9, shown: [...seen].reverse() } }),
+		);
+		const at = (time: number) => codeImportTime(time);
+		expect(look.lines).toEqual({
+			count: 12,
+			changes: 9,
+			shown: [
+				{ name: "most", ahead: 5, behind: 0, lastAt: at(T - 9 * DAY_S), fits: true },
+				{ name: "two-new", ahead: 2, behind: 1, lastAt: at(T - DAY_S), fits: null },
+				{ name: "two", ahead: 2, behind: 1, lastAt: at(T - 2 * DAY_S), fits: false },
+				{ name: long, ahead: 1, behind: 1, lastAt: at(T + 1), fits: true },
+				{ name: "a-one", ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: "b-one", ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: null, ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: null, ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: "old", ahead: 1, behind: 1, lastAt: at(T - DAY_S), fits: true },
+				{ name: "left-1", ahead: 1, behind: 1, lastAt: at(T - 30 * DAY_S), fits: true },
+			],
+		});
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(look)))).toEqual(look);
+		// The key both ways: left out when there was no measure, and a measure that found nothing says so.
+		const without = codeImportLook(facts());
+		expect("lines" in without).toBe(false);
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(without)))).toEqual(without);
+		const none = codeImportLook(
+			facts({ branches: { seen: 0, kept: 0 }, lines: { count: 0, changes: 0, shown: [] } }),
+		);
+		expect(none.lines).toEqual({ count: 0, changes: 0, shown: [] });
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(none)))).toEqual(none);
+		// A line whose last change shows no time sorts after one whose does, and the far one is left out above.
+		expect(
+			codeImportLinesShown([line("far", 1, 253_402_300_800), line("near", 1, 0)]).map((each) => each.name),
+		).toEqual(["near", "far"]);
+	});
+
+	it("fits its bounds with every line at its largest: the shown keys go first, the lines never", () => {
+		const big = '"'.repeat(200),
+			most = Number.MAX_SAFE_INTEGER,
+			end = 253_402_300_799;
+		const largest = facts({
+			bytes: most,
+			defaultBranch: big,
+			commits: most,
+			firstAt: "9999-12-31T23:59:59Z",
+			lastAt: "9999-12-31T23:59:59Z",
+			authors30d: most,
+			tags: { seen: most, kept: 500 },
+			branches: { seen: most, kept: 200 },
+			lines: {
+				count: 200,
+				changes: most,
+				shown: Array.from({ length: 12 }, () => line(big, most, end, { behind: most, fits: false })),
+			},
+			leftOut: most,
+			files: most,
+			entries: most,
+			biggest: { path: big, bytes: most },
+			lfsPointers: most,
+			submodules: most,
+			refused: { code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths: Array.from({ length: 11 }, () => big) },
+			scan: { blobs: most, bytes: most, all: false },
+			why: "CODE_HOST_NAMES_FOLDER_REFUSES",
+		});
+		const look = codeImportLook(largest);
+		expect(look.defaultBranch).toBe(big);
+		expect(look.lines?.shown).toHaveLength(10);
+		for (const shown of look.lines?.shown ?? []) expect(shown.name).toBe(big);
+		// No shown keys, and every number at its largest, `more` too: under 11 KiB as text and as the jsonb bound.
+		const worst = { ...look, refused: { ...look.refused, more: most } };
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(worst)))).toEqual(worst);
+		const text = Buffer.byteLength(JSON.stringify(worst));
+		expect(text).toBeLessThanOrEqual(11 * 1024);
+		expect(codeImportJsonbBound(worst)).toBeLessThanOrEqual(11 * 1024);
+		// With keys to show, whole shown keys go until it fits; the lines stay whole.
+		const keys = codeImportLook({
+			...largest,
+			secrets: Array.from({ length: 40 }, (_, i) => ({
+				kind: "aws" as const,
+				path: `${i}`.padEnd(200, '"'),
+				inMain: true,
+			})),
+		});
+		expect(keys.lines).toEqual(look.lines);
+		expect(keys.secrets.found).toBe(40);
+		expect(keys.secrets.shown.length).toBeGreaterThan(0);
+		expect(keys.secrets.shown.length).toBeLessThan(30);
+		expect(Buffer.byteLength(JSON.stringify(keys))).toBeLessThanOrEqual(CODE_IMPORT_LOOK_BYTES);
+		expect(codeImportJsonbBound(keys)).toBeLessThanOrEqual(CODE_IMPORT_LOOK_BYTES);
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(keys)))).toEqual(keys);
+	});
+
+	it("reads the lines back only by their rules", () => {
+		const look = codeImportLook(
+			facts({
+				lines: {
+					count: 3,
+					changes: 4,
+					shown: [line("a", 3, T), line("b", 1, T, { fits: null }), line(PLANTED.aws, 1, T, { fits: false })],
+				},
+			}),
+		);
+		expect(look.lines?.shown.map((each) => each.name)).toEqual(["a", "b", null]);
+		expect(codeImportLookOf(look)).toEqual(look);
+		const changed = (change: (lines: Record<string, unknown>, shown: Record<string, unknown>[]) => void) => {
+			const copy = JSON.parse(JSON.stringify(look));
+			change(copy.lines, copy.lines.shown);
+			return copy;
+		};
+		const at = codeImportTime(T);
+		// Two names not shown, at the same changes and time: either order.
+		expect(() =>
+			codeImportLookOf(
+				changed((_, shown) => {
+					shown[1] = { ...(shown[1] as object), name: null };
+				}),
+			),
+		).not.toThrow();
+		const many = (count: number) =>
+			Array.from({ length: count }, (_, i) => ({
+				name: `n${String(i).padStart(2, "0")}`,
+				ahead: 1,
+				behind: 0,
+				lastAt: at,
+				fits: true,
+			}));
+		expect(() =>
+			codeImportLookOf({
+				...JSON.parse(JSON.stringify(look)),
+				branches: { seen: 200, kept: 200 },
+				lines: { count: 200, changes: 200, shown: many(10) },
+			}),
+		).not.toThrow();
+		for (const [what, change] of [
+			["shown not a list", (l) => Object.assign(l, { shown: {} })],
+			["a key more", (l) => Object.assign(l, { extra: 1 })],
+			["a key less", (l) => delete l.changes],
+			["a line's key more", (_, s) => Object.assign(s[0] as object, { extra: 1 })],
+			["a line's key less", (_, s) => delete s[0]?.fits],
+			["count over the kept heads", (l) => Object.assign(l, { count: 5 })],
+			["count not whole", (l) => Object.assign(l, { count: 3.5 })],
+			["no changes for lines", (l) => Object.assign(l, { changes: 0 })],
+			["changes without lines", (l) => Object.assign(l, { count: 0, changes: 1, shown: [] })],
+			["more shown than counted", (l) => Object.assign(l, { count: 2 })],
+			["ahead none", (_, s) => Object.assign(s[2] as object, { ahead: 0 })],
+			["ahead over changes", (_, s) => Object.assign(s[0] as object, { ahead: 5 })],
+			["behind below none", (_, s) => Object.assign(s[0] as object, { behind: -1 })],
+			["behind not whole", (_, s) => Object.assign(s[0] as object, { behind: 1.5 })],
+			[
+				"a time with its milliseconds",
+				(_, s) => Object.assign(s[0] as object, { lastAt: "2025-11-12T14:00:00.000Z" }),
+			],
+			["a name with a key", (_, s) => Object.assign(s[1] as object, { name: PLANTED.github })],
+			["a name of 201 bytes", (_, s) => Object.assign(s[1] as object, { name: "b".repeat(201) })],
+			["an empty name", (_, s) => Object.assign(s[1] as object, { name: "" })],
+			["fits a word", (_, s) => Object.assign(s[0] as object, { fits: "yes" })],
+			["fewer changes first", (_, s) => s.reverse()],
+			["older first", (_, s) => Object.assign(s[1] as object, { lastAt: codeImportTime(T - DAY_S) })],
+			["no time before a time", (_, s) => Object.assign(s[1] as object, { lastAt: null })],
+			[
+				"no name before a name",
+				(_, s) => {
+					Object.assign(s[1] as object, { name: null });
+					Object.assign(s[2] as object, { name: "c" });
+				},
+			],
+			[
+				"names out of their byte order",
+				(_, s) => {
+					Object.assign(s[1] as object, { name: "c" });
+					Object.assign(s[2] as object, { name: "b" });
+				},
+			],
+		] as [string, (lines: Record<string, unknown>, shown: Record<string, unknown>[]) => void][])
+			expect(() => codeImportLookOf(changed(change)), what).toThrow("INVALID_CODE_IMPORT_LOOK");
+		expect(() =>
+			codeImportLookOf({
+				...JSON.parse(JSON.stringify(look)),
+				branches: { seen: 200, kept: 200 },
+				lines: { count: 200, changes: 200, shown: many(11) },
+			}),
+		).toThrow("INVALID_CODE_IMPORT_LOOK");
+		expect(() => codeImportLookOf({ ...JSON.parse(JSON.stringify(look)), lines: null })).toThrow(
+			"INVALID_CODE_IMPORT_LOOK",
+		);
+	});
+});
+
+/** A list of SQL test 1235 between its markers, each entry a JSON text (shared with runtime's
+ * test/cloud-company-folder-client.test.ts). */
+function shapesOf1235(marker: string): unknown[] {
+	const sql = readFileSync(
+		new URL("../../../supabase/tests/1235_code_import_follow_ups.test.sql", import.meta.url),
+		"utf8",
+	);
+	const section = sql.slice(sql.indexOf(`-- BEGIN ${marker}\n`), sql.indexOf(`-- END ${marker}\n`));
+	return [...section.matchAll(/^\t'(\{.*\})',?$/gm)].map((match) =>
+		JSON.parse((match[1] as string).replaceAll("''", "'")),
+	);
+}
+
+// The import's follow-ups, the cross-check of the merged parts: the looks this executor writes are the ones the kernel's
+// rule takes (migration 20260930741000, SQL test 1235 section 2b, which holds them as literals) and the agent's read
+// hands on (runtime), and no line the kernel refuses is ever written.
+describe("the look's lines as the kernel takes them", () => {
+	const T = 1_762_956_000;
+	const base: CodeImportLookFacts = {
+		bytes: 2048,
+		defaultBranch: "main",
+		mainSha: "c".repeat(40),
+		commits: 7,
+		firstAt: "2025-01-02T03:04:05Z",
+		lastAt: "2026-11-12T10:00:00Z",
+		authors30d: 1,
+		tags: { seen: 1, kept: 1 },
+		branches: { seen: 14, kept: 12 },
+		leftOut: 2,
+		files: 9,
+		entries: 11,
+		biggest: { path: "README.md", bytes: 300 },
+		lfsPointers: 0,
+		submodules: 0,
+		refused: null,
+		secrets: [],
+		scan: { blobs: 9, bytes: 3000, all: true },
+		why: null,
+	};
+	const line = (
+		name: string,
+		ahead: number,
+		behind: number,
+		time: number,
+		fits: boolean | null,
+	): CodeImportLineSeen => ({
+		name,
+		ahead,
+		behind,
+		time,
+		fits,
+	});
+	/** Twelve names of 200 bytes: one with quotes, one of two-byte letters. */
+	const named = (n: number) =>
+		n === 1
+			? `feature/${"a".repeat(192)}`
+			: n === 2
+				? "ø".repeat(100)
+				: n === 3
+					? `it's "q"${"x".repeat(192)}`
+					: `${String(n).padStart(2, "0")}/${"y".repeat(197)}`;
+
+	it("writes exactly the looks SQL test 1235 takes, and none of the lines it refuses", () => {
+		const made = [
+			// No measure (a look from before, or one that did not end well), and a measure that found no other line.
+			codeImportLook(base),
+			codeImportLook({ ...base, lines: { count: 0, changes: 0, shown: [] } }),
+			codeImportLook({ ...base, lines: { count: 1, changes: 2, shown: [line("feature/cart", 2, 3, T, true)] } }),
+			// Twelve lines, ten shown, each name 200 bytes.
+			codeImportLook({
+				...base,
+				lines: {
+					count: 12,
+					changes: 90,
+					shown: Array.from({ length: 12 }, (_, k) => line(named(k + 1), 12 - k, k + 1, T, true)),
+				},
+			}),
+			// A name over 200 bytes (not shown), fits false and null, and a time past the year 9999 (not shown).
+			codeImportLook({
+				...base,
+				lines: {
+					count: 3,
+					changes: 3,
+					shown: [
+						line("old-work", 1, 9, 253_402_300_800, true),
+						line("x".repeat(201), 1, 4, T, null),
+						line("release/1.x", 2, 0, T, false),
+					],
+				},
+			}),
+		];
+		for (let n = 1; n <= 12; n++) expect(Buffer.byteLength(named(n))).toBe(200);
+		const looks = shapesOf1235("THE LOOKS PART B WRITES");
+		expect(looks).toHaveLength(made.length);
+		expect(made.map((look) => JSON.parse(JSON.stringify(look)))).toEqual(looks);
+		expect(made[3]?.lines?.shown).toHaveLength(10);
+		expect(made[4]?.lines?.shown.map((each) => [each.name, each.lastAt, each.fits])).toEqual([
+			["release/1.x", codeImportTime(T), false],
+			[null, codeImportTime(T), null],
+			["old-work", null, true],
+		]);
+		// What the kernel refuses, against a look that keeps 200 heads as 1235's does: the executor's own reader refuses it
+		// too, and every look the executor writes is one that reader took (codeImportLook ends with codeImportLookOf).
+		const kept = JSON.parse(JSON.stringify(codeImportLook({ ...base, branches: { seen: 300, kept: 200 } })));
+		expect(codeImportLookOf(kept)).toEqual(kept);
+		const refused = shapesOf1235("LINES THE LOOK REFUSES");
+		expect(refused.length).toBeGreaterThanOrEqual(20);
+		for (const lines of refused)
+			expect(() => codeImportLookOf({ ...kept, lines }), JSON.stringify(lines)).toThrow("INVALID_CODE_IMPORT_LOOK");
+	});
 });
 
 describe("the request's shapes", () => {
@@ -1932,6 +2438,15 @@ describe("the request's shapes", () => {
 				),
 			),
 		).toBeLessThan(2560);
+		// The source's own default when another branch came in as main (the lead's call 6a): read and sent back, and
+		// with both names at their longest (200 quotes each, 400 bytes of JSON) still within what the executor sends.
+		const named = { ...raw, sourceBranch: "main" };
+		expect(codeImportProgressOf({ ...progress, raw: named })).toEqual({ ...progress, raw: named });
+		expect(codeImportProgressValue({ ...progress, raw: named } as never).raw).toEqual(named);
+		const quotes = { ...raw, defaultBranch: '"'.repeat(200), sourceBranch: `${'"'.repeat(199)}x` };
+		expect(
+			Buffer.byteLength(JSON.stringify(codeImportProgressValue({ ...progress, raw: quotes } as never))),
+		).toBeLessThan(2560);
 		for (const [what, bad] of [
 			["step", { step: "fly" }],
 			["key", { other: 1 }],
@@ -1939,6 +2454,10 @@ describe("the request's shapes", () => {
 			["raw main", { raw: { ...raw, mainSha: B } }],
 			["raw branch", { raw: { ...raw, defaultBranch: PLANTED.aws } }],
 			["raw key", { raw: { ...raw, extra: 1 } }],
+			["raw source branch is main", { raw: { ...raw, sourceBranch: raw.defaultBranch } }],
+			["raw source branch a key", { raw: { ...raw, sourceBranch: PLANTED.aws } }],
+			["raw source branch no name", { raw: { ...raw, sourceBranch: 7 } }],
+			["raw source branch null", { raw: { ...raw, sourceBranch: null } }],
 			["kept name", { kept: { ...kept, name: raw.name } }],
 			["kept refs", { kept: { ...kept, refs: 1 } }],
 			["at", { at: "2026-11-12" }],

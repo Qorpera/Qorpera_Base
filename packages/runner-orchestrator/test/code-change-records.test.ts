@@ -1364,6 +1364,400 @@ describe("change 1 of a repository brought in (step 6)", () => {
 	});
 });
 
+/** The other lines of work that came with a repository brought in (the import's follow-ups, migration
+ * `20260930741000`), as the registry keeps the look's `lines`: three lines with five changes main lacked, two shown. */
+const OTHER_WORK = {
+	count: 3,
+	changes: 5,
+	shown: [
+		{ name: "feature/cart", ahead: 3, behind: 2, lastAt: "2026-11-01T09:15:00Z", fits: true },
+		{ name: "legacy", ahead: 1, behind: 40, lastAt: "2025-02-28T23:59:59Z", fits: false },
+	],
+};
+/** Change 1 with them: the record as it was, then the lines, between what came with it and what a customer will notice. */
+const OTHER_WORK_WORDS = [
+	"",
+	"It also brought 3 other lines of work, kept apart from main:",
+	"",
+	"- `refs/qorpera/imported/heads/feature/cart`: 3 changes main did not have, 2 of main's it did not have, last changed 2026-11-01",
+	"- `refs/qorpera/imported/heads/legacy`: 1 change main did not have, 40 of main's it did not have, last changed 2025-02-28; the company folder cannot hold some of its file names",
+	"- and 1 more (git for-each-ref refs/qorpera/imported/heads/ lists them)",
+	"",
+	"A coding session brings one into main by merging it into its branch and finishing.",
+];
+const withLines = (lines: unknown, extra: Partial<CodeChangeFile> = {}) =>
+	change({ ...IMPORTED, importedFrom: { ...(IMPORTED.importedFrom as object), lines }, ...extra });
+
+describe("change 1 of a repository brought in: the other lines of work that came with it (step 6, follow-ups)", () => {
+	/** The words of the lines in a record: from the line after what came with it to the line before the next section. */
+	const linesIn = (made: string): string[] => {
+		const lines = made.split("\n");
+		const from = lines.findIndex((line) => line.endsWith("Qorpera does not check code brought in."));
+		return lines.slice(from + 1, lines.indexOf("## What a customer will notice") - 1);
+	};
+
+	it("names them after what came with it, byte for byte", () => {
+		const [head, rest] = IMPORTED_TEXT.split("\n\n## What a customer will notice\n");
+		expect(codeChangeRecordText(withLines(OTHER_WORK))).toBe(
+			`${head}\n${OTHER_WORK_WORDS.join("\n")}\n\n## What a customer will notice\n${rest}`,
+		);
+		// One line, one change, all of them shown, and one whose name the look did not show.
+		expect(
+			linesIn(
+				codeChangeRecordText(
+					withLines({
+						count: 1,
+						changes: 1,
+						shown: [{ name: null, ahead: 1, behind: 0, lastAt: null, fits: null }],
+					}),
+				),
+			),
+		).toEqual([
+			"",
+			"It also brought 1 other line of work, kept apart from main:",
+			"",
+			"- one whose name is not shown: 1 change main did not have, 0 of main's it did not have",
+			"",
+			"A coding session brings one into main by merging it into its branch and finishing.",
+		]);
+		// None shown (the registry dropped them to keep its 2,048 bytes): only the count, and where to list them.
+		expect(linesIn(codeChangeRecordText(withLines({ count: 4, changes: 9, shown: [] })))).toEqual([
+			"",
+			"It also brought 4 other lines of work, kept apart from main:",
+			"",
+			"- 4 not named here (git for-each-ref refs/qorpera/imported/heads/ lists them)",
+			"",
+			"A coding session brings one into main by merging it into its branch and finishing.",
+		]);
+	});
+
+	it("reads exactly as before for a row with no lines, as every repository brought in so far has, byte for byte", () => {
+		// Today's record of change 1, as master wrote it before the look measured other lines of work.
+		const today = text(
+			"# Change 1: Brought in from GitHub: Qorpera/saml-storefront",
+			"",
+			"- State: in main",
+			"- When: 2026-11-13 10:02 UTC",
+			"- What: code brought into Qorpera",
+			`- Main after: ${AFTER}`,
+			"- Files changed: 412",
+			"- Checks: not run",
+			"",
+			"1234 earlier changes on `master` and 412 files came with it. Qorpera does not check code brought in.",
+			"",
+			"## What a customer will notice",
+			"",
+			"Nothing was said.",
+			"",
+			"## Picture",
+			"",
+			"None.",
+		);
+		expect(codeChangeRecordText(change(IMPORTED))).toBe(today);
+		// No lines, none counted, or lines the record cannot read: no words of them at all.
+		for (const lines of [
+			undefined,
+			null,
+			"3",
+			3,
+			true,
+			[],
+			[OTHER_WORK],
+			{},
+			{ ...OTHER_WORK, count: 0 },
+			{ ...OTHER_WORK, count: -1 },
+			{ ...OTHER_WORK, count: 1.5 },
+			{ ...OTHER_WORK, count: "3" },
+			{ ...OTHER_WORK, count: null },
+			{ changes: 5, shown: OTHER_WORK.shown },
+		])
+			expect(codeChangeRecordText(withLines(lines)), JSON.stringify(lines)).toBe(today);
+	});
+
+	it("counts what it cannot name: a line not of its shape, past ten, past the count, or past 4 KiB", () => {
+		const one = (extra: Record<string, unknown>) => ({
+			name: "x",
+			ahead: 2,
+			behind: 1,
+			lastAt: "2026-11-01T09:15:00Z",
+			fits: true,
+			...extra,
+		});
+		const items = (lines: unknown) =>
+			linesIn(codeChangeRecordText(withLines(lines))).filter((l) => l.startsWith("- "));
+		// A line not of its shape is counted with the rest.
+		const odd = [
+			null,
+			"feature",
+			7,
+			[],
+			one({ ahead: 0 }),
+			one({ ahead: "2" }),
+			one({ ahead: 1.5 }),
+			one({ ahead: undefined }),
+			one({ behind: -1 }),
+			one({ behind: null }),
+		];
+		expect(items({ count: 12, changes: 20, shown: [...odd, one({ name: "kept" })] })).toEqual([
+			"- `refs/qorpera/imported/heads/kept`: 2 changes main did not have, 1 of main's it did not have, last changed 2026-11-01",
+			"- and 11 more (git for-each-ref refs/qorpera/imported/heads/ lists them)",
+		]);
+		// Ten at most, in the kernel's order.
+		const twelve = Array.from({ length: 12 }, (_, at) => one({ name: `l${at}` }));
+		const ten = items({ count: 15, changes: 40, shown: twelve });
+		expect(ten).toHaveLength(11);
+		expect(ten.slice(0, 10).map((line) => line.split("`")[1])).toEqual(
+			twelve.slice(0, 10).map((line) => `refs/qorpera/imported/heads/${line.name}`),
+		);
+		expect(ten.at(-1)).toBe("- and 5 more (git for-each-ref refs/qorpera/imported/heads/ lists them)");
+		// More shown than counted: as many as counted, and none more.
+		expect(items({ count: 2, changes: 4, shown: twelve.slice(0, 4) }).map((line) => line.split("`")[1])).toEqual([
+			"refs/qorpera/imported/heads/l0",
+			"refs/qorpera/imported/heads/l1",
+		]);
+		// Ten names of 200 bytes that are all backticks, the longest code a name makes: as many as fit 4 KiB, the rest
+		// counted, and the record well within its 24 KiB.
+		const ticks = Array.from({ length: 10 }, () => one({ name: "`".repeat(200), fits: false }));
+		const made = codeChangeRecordText(withLines({ count: 2_147_483_647, changes: 2_147_483_647, shown: ticks }));
+		const words = linesIn(made);
+		expect(bytes(words.join("\n"))).toBeLessThanOrEqual(4096);
+		const named = words.filter((line) => line.startsWith("- `"));
+		expect(named.length).toBeGreaterThan(3);
+		expect(named.length).toBeLessThan(10);
+		expect(named[0]).toBe(
+			`- ${"`".repeat(201)} refs/qorpera/imported/heads/${"`".repeat(200)} ${"`".repeat(201)}: 2 changes main did not have, 1 of main's it did not have, last changed 2026-11-01; the company folder cannot hold some of its file names`,
+		);
+		expect(words).toContain(
+			`- and ${2_147_483_647 - named.length} more (git for-each-ref refs/qorpera/imported/heads/ lists them)`,
+		);
+		expect(bytes(made)).toBeLessThan(8 * 1024);
+	});
+
+	it("shows a name whole as code, or says it is not shown: never cut, never with a character no line holds", () => {
+		const said = (name: unknown) =>
+			linesIn(
+				codeChangeRecordText(
+					withLines({ count: 1, changes: 1, shown: [{ name, ahead: 1, behind: 0, lastAt: null, fits: null }] }),
+				),
+			)[3];
+		const not = "- one whose name is not shown: 1 change main did not have, 0 of main's it did not have";
+		for (const name of [
+			null,
+			undefined,
+			"",
+			7,
+			"a".repeat(201),
+			`${"é".repeat(100)}a`,
+			`a${NUL}b`,
+			`a\nb`,
+			`a${ESC}[31m`,
+			`a${DEL}`,
+			`a${C1}`,
+			`a${LS}`,
+			`a${RLO}b`,
+			`a${ISOLATE}`,
+			`a${HALF}`,
+		])
+			expect(said(name), JSON.stringify(name)).toBe(not);
+		expect(said("a".repeat(200))).toBe(
+			`- \`refs/qorpera/imported/heads/${"a".repeat(200)}\`: 1 change main did not have, 0 of main's it did not have`,
+		);
+		expect(said("é".repeat(100))).toMatch(/^- `refs\/qorpera\/imported\/heads\/(é){100}`: /);
+		// Markdown inside a name is the name's: no link, emphasis, HTML or heading of its own.
+		expect(said("a`b*c_[x](http://evil.example)<b>#")).toBe(
+			"- ``refs/qorpera/imported/heads/a`b*c_[x](http://evil.example)<b>#``: 1 change main did not have, 0 of main's it did not have",
+		);
+	});
+
+	it("says when a line last changed only when it can read the time, and the folder's names only when they do not fit", () => {
+		const said = (extra: Record<string, unknown>) =>
+			linesIn(
+				codeChangeRecordText(
+					withLines({
+						count: 1,
+						changes: 7,
+						shown: [{ name: "f", ahead: 7, behind: 1, lastAt: null, fits: null, ...extra }],
+					}),
+				),
+			)[3];
+		const bare = "- `refs/qorpera/imported/heads/f`: 7 changes main did not have, 1 of main's it did not have";
+		for (const lastAt of [null, undefined, "", "never", "2026-13-40T00:00:00Z", 1_762_870_200_000])
+			expect(said({ lastAt }), String(lastAt)).toBe(bare);
+		expect(said({ lastAt: "2026-11-12T23:59:59Z" })).toBe(`${bare}, last changed 2026-11-12`);
+		for (const fits of [true, null, undefined, "false", 0]) expect(said({ fits }), String(fits)).toBe(bare);
+		expect(said({ fits: false })).toBe(`${bare}; the company folder cannot hold some of its file names`);
+	});
+
+	it("is said only in change 1 of a repository brought in", () => {
+		for (const kind of ["landing", "undo", "restore", "found"] as const)
+			expect(
+				codeChangeRecordText(
+					change({
+						kind,
+						undoes: kind === "undo" ? [12] : null,
+						importedFrom: { ...(IMPORTED.importedFrom as object), lines: OTHER_WORK },
+					}),
+				),
+			).not.toContain("line of work");
+	});
+});
+
+describe("codeChangeIndexText: the other lines of work an import brought (step 6, follow-ups)", () => {
+	const PLACE = { owner: "qorpera", name: "saml-storefront" };
+	const HEADING = "# Changes in qorpera/saml-storefront";
+	const AT = "2026-11-13T10:02:41.5+00:00";
+	const DAY = 86_400_000;
+	/** Two days after the import. */
+	const NOW = Date.parse(AT) + 2 * DAY;
+	/** What the kernel sends in the list's `index` (migration `20260930741000`): the import's time and its lines. */
+	const IMPORTED_KEY = { at: AT, lines: { count: 1, changes: 2, shown: [OTHER_WORK.shown[0]] } };
+	const LINES: CodeChangeLine[] = [
+		{ n: 2, createdAt: "2026-11-13T11:00:00+00:00", state: "landed", kind: "landing", line: "Free returns" },
+		{
+			n: 1,
+			createdAt: "2026-11-13T10:02:41+00:00",
+			state: "landed",
+			kind: "import",
+			line: "Brought in from GitHub: Qorpera/saml-storefront",
+		},
+	];
+	const LIST = [
+		"- 2 · 2026-11-13 · in main · Free returns",
+		"- 1 · 2026-11-13 · in main · Brought in from GitHub: Qorpera/saml-storefront",
+	];
+	const BROUGHT =
+		"Brought in on 2026-11-13 with 1 other line of work that the main version did not have (2 changes): changes/1.md names them.";
+	const opening = (imported: unknown, now = NOW, lines = LINES) =>
+		codeChangeIndexText(PLACE, lines, { imported }, now).split("\n")[2];
+
+	it("opens the list with one line for the import, byte for byte, above what is live and what is ready", () => {
+		expect(codeChangeIndexText(PLACE, LINES, { imported: IMPORTED_KEY }, NOW)).toBe(
+			text(HEADING, "", BROUGHT, "", ...LIST),
+		);
+		const live = {
+			version: 1,
+			kind: "release",
+			change: 2,
+			since: "2026-11-13T12:00:00+00:00",
+			by: "Jonas Hansen",
+			url: "https://sites.qorpera.com/storefront/",
+		};
+		expect(codeChangeIndexText(PLACE, LINES, { live, ready: null, imported: IMPORTED_KEY }, NOW)).toBe(
+			text(
+				HEADING,
+				"",
+				BROUGHT,
+				"",
+				"Live: version 1, made at change 2, since 2026-11-13 12:00 UTC; Jonas Hansen said go. https://sites.qorpera.com/storefront/",
+				"Ready in What's new: nothing.",
+				"",
+				...LIST,
+			),
+		);
+		// Many lines, one change; one line, one change.
+		expect(opening({ at: AT, lines: { count: 3, changes: 1, shown: [] } })).toBe(
+			"Brought in on 2026-11-13 with 3 other lines of work that the main version did not have (1 change): changes/1.md names them.",
+		);
+		expect(opening({ at: AT, lines: { count: 1, changes: 1 } })).toBe(
+			"Brought in on 2026-11-13 with 1 other line of work that the main version did not have (1 change): changes/1.md names them.",
+		);
+	});
+
+	it("says it in words a member reads too: no git word, and no name of a line of work", () => {
+		const said = opening({
+			at: AT,
+			lines: { count: 2, changes: 9, shown: [{ ...OTHER_WORK.shown[0], name: "evil [x](http://evil.example)" }] },
+		});
+		expect(said).toBe(
+			"Brought in on 2026-11-13 with 2 other lines of work that the main version did not have (9 changes): changes/1.md names them.",
+		);
+		expect(said).not.toMatch(/\b(git|branch|branches|commit|commits|ref|refs|merge|repository|repositories)\b/i);
+		expect(said).not.toContain("evil");
+	});
+
+	it("stands after the restore line when both stand, in one paragraph", () => {
+		const lines: CodeChangeLine[] = [
+			...LINES,
+			{ n: 3, createdAt: "2026-11-14T08:00:00+00:00", state: "lost", kind: "landing", line: "Gift message" },
+			{
+				n: 4,
+				createdAt: "2026-11-14T09:30:00+00:00",
+				state: "landed",
+				kind: "restore",
+				line: "Restored from the copy of 2026-11-14 07:00 UTC",
+			},
+		];
+		expect(codeChangeIndexText(PLACE, lines, { imported: IMPORTED_KEY }, NOW)).toBe(
+			text(
+				HEADING,
+				"",
+				"Put back to an earlier copy on 2026-11-14: change 3 is no longer in main.",
+				BROUGHT,
+				"",
+				"- 4 · 2026-11-14 · in main · Restored from the copy of 2026-11-14 07:00 UTC",
+				"- 3 · 2026-11-14 · lost in a restore · Gift message",
+				...LIST,
+			),
+		);
+	});
+
+	it("says it for 30 days after the import and not after, and the rest of the list is as it was, to the byte", () => {
+		const at = Date.parse(AT);
+		const without = text(HEADING, "", ...LIST);
+		expect(opening(IMPORTED_KEY, at)).toBe(BROUGHT);
+		expect(opening(IMPORTED_KEY, at + 30 * DAY - 1)).toBe(BROUGHT);
+		expect(codeChangeIndexText(PLACE, LINES, { imported: IMPORTED_KEY }, at + 30 * DAY)).toBe(without);
+		expect(codeChangeIndexText(PLACE, LINES, { imported: IMPORTED_KEY }, at + 400 * DAY)).toBe(without);
+		expect(codeChangeIndexText(PLACE, LINES, { imported: IMPORTED_KEY }, NOW).replace(`${BROUGHT}\n\n`, "")).toBe(
+			without,
+		);
+		// A clock behind the import's time is not past it.
+		expect(opening(IMPORTED_KEY, at - DAY)).toBe(BROUGHT);
+		// Made by the clock when no time is given: an import of January is long past.
+		expect(
+			codeChangeIndexText(PLACE, LINES, { imported: { ...IMPORTED_KEY, at: "2026-01-10T09:30:00+00:00" } }),
+		).toBe(without);
+	});
+
+	it("reads an import it cannot say for sure as no line, which is the list as it was, and never throws for it", () => {
+		const without = text(HEADING, "", ...LIST);
+		for (const imported of [
+			undefined,
+			null,
+			"2026-11-13",
+			7,
+			true,
+			[],
+			[IMPORTED_KEY],
+			{},
+			{ at: AT },
+			{ lines: IMPORTED_KEY.lines },
+			{ at: AT, lines: null },
+			{ at: AT, lines: [] },
+			{ at: AT, lines: "1" },
+			{ ...IMPORTED_KEY, at: null },
+			{ ...IMPORTED_KEY, at: "never" },
+			{ ...IMPORTED_KEY, at: "7" },
+			{ ...IMPORTED_KEY, at: "2026-11-13" },
+			{ ...IMPORTED_KEY, at: "2026-13-40T10:02:41+00:00" },
+			{ ...IMPORTED_KEY, at: Date.parse(AT) },
+			{ at: AT, lines: { count: 0, changes: 0, shown: [] } },
+			{ at: AT, lines: { count: 1, changes: 0 } },
+			{ at: AT, lines: { count: 0, changes: 2 } },
+			{ at: AT, lines: { count: "1", changes: 2 } },
+			{ at: AT, lines: { count: 1, changes: "2" } },
+			{ at: AT, lines: { count: 1.5, changes: 2 } },
+			{ at: AT, lines: { count: 1 } },
+			{ at: AT, lines: { changes: 2 } },
+		])
+			expect(codeChangeIndexText(PLACE, LINES, { imported }, NOW), JSON.stringify(imported)).toBe(without);
+		// What is live and what is ready stand as they would alone.
+		expect(codeChangeIndexText(PLACE, LINES, { ready: null, imported: { at: "never" } }, NOW)).toBe(
+			text(HEADING, "", "Ready in What's new: nothing.", "", ...LIST),
+		);
+	});
+});
+
 describe("what the kernel is told of paths", () => {
 	it("sends the first fifty paths that fit the row, and counts the rest", () => {
 		const paths = Array.from({ length: 60 }, (_, at) => ({ path: `src/${at}.ts`, change: "changed" as const }));
@@ -2200,6 +2594,60 @@ describe("CodeChangeRecords", () => {
 			indexVersion: 9,
 			problem: null,
 		});
+	});
+
+	it("writes change 1's other lines of work and the import's line at the head of the list from the kernel's answer, by its own clock (step 6, follow-ups)", async () => {
+		const at = "2026-11-13T10:02:41.5+00:00";
+		const lines = [
+			{
+				n: 1,
+				createdAt: "2026-11-13T10:02:41+00:00",
+				state: "landed",
+				kind: "import",
+				line: "Brought in from GitHub: Qorpera/saml-storefront",
+			},
+		];
+		const listed = "- 1 · 2026-11-13 · in main · Brought in from GitHub: Qorpera/saml-storefront";
+		const t = setup({ now: () => Date.parse(at) + 86_400_000 });
+		t.kernel.changes = [sent(withLines(OTHER_WORK))];
+		t.kernel.index = { version: 2, lines, imported: { at, lines: OTHER_WORK } };
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.wrote[0]?.records).toEqual([{ n: 1, text: codeChangeRecordText(withLines(OTHER_WORK)) }]);
+		expect(String((t.wrote[0]?.records[0] as { text: string }).text)).toContain(OTHER_WORK_WORDS.join("\n"));
+		expect(t.wrote[0]?.index).toBe(
+			text(
+				"# Changes in qorpera/shop",
+				"",
+				"Brought in on 2026-11-13 with 3 other lines of work that the main version did not have (5 changes): changes/1.md names them.",
+				"",
+				listed,
+			),
+		);
+		expect(t.calls.at(-1)?.args.p_written).toEqual({
+			changes: [{ n: 1, version: 1 }],
+			indexVersion: 2,
+			problem: null,
+		});
+		expect(t.errors()).toEqual([]);
+		// Inside a job, the same.
+		const inside = setup({ now: () => Date.parse(at) });
+		inside.kernel.changes = [];
+		inside.kernel.index = { version: 2, lines, imported: { at, lines: OTHER_WORK } };
+		const signal = new AbortController().signal;
+		await inside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
+		expect(inside.wrote[0]?.index).toBe(t.wrote[0]?.index);
+		// 30 days after the import by its own clock, and an answer it cannot read: the list as it was.
+		for (const [now, imported] of [
+			[Date.parse(at) + 30 * 86_400_000, { at, lines: OTHER_WORK }],
+			[Date.parse(at), { at, lines: { count: "3" } }],
+		] as const) {
+			const late = setup({ now: () => now });
+			late.kernel.changes = [];
+			late.kernel.index = { version: 2, lines, imported };
+			await expect(late.pass()).resolves.toEqual({ written: 1, failed: 0 });
+			expect(late.wrote[0]?.index).toBe(text("# Changes in qorpera/shop", "", listed));
+			expect(late.errors()).toEqual([]);
+		}
 	});
 
 	it("opens the list it writes with the line for a restore by its own clock, in a pass and inside a job", async () => {

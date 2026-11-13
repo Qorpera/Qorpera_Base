@@ -20,6 +20,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
+import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "../src/code-folder-names.ts";
 import {
 	addCodeWorktree,
 	archiveCodeArea,
@@ -35,6 +36,7 @@ import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	CodeWorktreeNamesRefused,
 	checkCodeArea,
 	codeAreaPath,
 	codeRefsSha256,
@@ -209,6 +211,65 @@ describe("code host seed", () => {
 		const paths = await refusal.catch((error) => error.paths);
 		expect([...paths].sort()).toEqual(["README.md", "Readme.md", "src/A.ts", "src/a.ts"]);
 		expect(await exists(c.repo)).toBe(false);
+	});
+
+	it("refuses a seed with names the company folder does not take where a session's worktree holds them, naming them, before anything of it enters repo.git", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		/** A commit on the source's main of `paths`, put in its index as git takes them (a path too long for a disk too). */
+		const named = async (paths: readonly string[]) => {
+			await f.src("reset", "--quiet", "--hard", f.baseSha);
+			const blob = await f.src("rev-parse", "HEAD:README.md");
+			for (const path of paths) await f.src("update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+			await f.src("commit", "--quiet", "-m", "names");
+			return f.src("rev-parse", "HEAD");
+		};
+		const seed = async (head: string) =>
+			seedCodeArea(c.job, { repository: f.repository, baseSha: head, bundle: await f.bundle("refs/heads/main") });
+		// A first seed: no repo.git is made.
+		await expect(seed(await named(["bad.", "x /file", "x /y/z.txt"]))).rejects.toMatchObject({
+			code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+			paths: ["bad.", "x "],
+		});
+		expect(await exists(c.repo)).toBe(false);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		// The seed's refusal is no worktree's: it names no branch or base of a session.
+		await expect(seed(await named(["bad."]))).rejects.not.toBeInstanceOf(CodeWorktreeNamesRefused);
+		// An update: repo.git, its refs, its packs and main/ stay as they were.
+		await f.src("reset", "--quiet", "--hard", f.baseSha);
+		expect((await seed(f.baseSha)).state).toBe("seeded");
+		const before = {
+			refs: await f.git(c.repo, "--git-dir=.", "for-each-ref"),
+			packs: (await readdir(join(c.repo, "objects/pack"))).sort(),
+			main: (await readdir(join(c.code, "main"))).sort(),
+		};
+		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, and 4,097 where a session's worktree does
+		// (`code/qorpera/example/worktrees/<36>/`), one past its 4,096: no session could check it out.
+		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
+		expect(Buffer.byteLength(deep)).toBe(4029);
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4055);
+		expect(Buffer.byteLength(`code/qorpera/example/${CODE_FOLDER_ANY_SESSION}/${deep}`)).toBe(4097);
+		for (const [paths, refused] of [
+			[["bad."], ["bad."]],
+			[[deep], [deep]],
+			[
+				["n".repeat(256), "ok/a\\b.txt"],
+				["n".repeat(256), "ok/a\\b.txt"],
+			],
+		] as const) {
+			const head = await named(paths);
+			await expect(seed(head)).rejects.toMatchObject({ code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths: refused });
+			expect(await f.git(c.repo, "--git-dir=.", "for-each-ref")).toBe(before.refs);
+			expect((await readdir(join(c.repo, "objects/pack"))).sort()).toEqual(before.packs);
+			expect((await readdir(join(c.code, "main"))).sort()).toEqual(before.main);
+			await expect(f.git(c.repo, "--git-dir=.", "cat-file", "-e", head)).rejects.toThrow();
+			expect(await readdir(c.scratchRoot)).toEqual([]);
+		}
+		// Asked before the repack: no pack was made of the refused commit.
+		const commands = c.log.length;
+		await expect(seed(await named(["bad."]))).rejects.toMatchObject({ code: "CODE_HOST_NAMES_FOLDER_REFUSES" });
+		expect(c.log.slice(commands).some((command) => command.argv.includes("repack"))).toBe(false);
+		expect(c.log.slice(commands).some((command) => command.argv.includes("ls-tree"))).toBe(true);
 	});
 
 	it("refuses a bundle of another branch or commit, an incomplete first seed, and a worker branch as base", async () => {
@@ -523,6 +584,121 @@ describe("code host worktrees", () => {
 			addCodeWorktree(c.job, { repository: f.repository, workerId: randomUUID(), baseSha: f.baseSha }),
 		).rejects.toMatchObject({ code: "CODE_HOST_NOT_SEEDED" });
 	});
+
+	it("refuses a worktree made again at a head with names the company folder does not take where it stands, before anything is written, saying they are its branch's", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		/** A session whose branch holds `paths` (put in its index as git takes them), its worktree's files then gone. */
+		const retired = async (paths: readonly string[], files: Record<string, string> = {}) => {
+			const s = await session(f, c, baseSha);
+			const blob = await f.git(
+				c.repo,
+				"--git-dir=.",
+				"rev-parse",
+				`${await s.commit({ "ok.txt": "ok\n", ...files })}:ok.txt`,
+			);
+			for (const path of paths)
+				await f.git(s.tree, "update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+			await f.git(s.tree, "commit", "--quiet", "--allow-empty", "-m", "names");
+			const head = await f.git(s.tree, "rev-parse", "HEAD");
+			await rm(s.tree, { recursive: true });
+			return { ...s, head, input: { repository: kept, workerId: s.workerId, baseSha } };
+		};
+		// 4,029 bytes: 4,055 where main/ holds it, and 4,097 where the session's worktree holds it
+		// (`code/qorpera/example/worktrees/<36>/`), one past the folder's 4,096.
+		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
+		for (const [paths, refused] of [
+			[["bad."], ["bad."]],
+			[["x /file", "x /y/z.txt"], ["x "]],
+			[["a/b/c./d.txt"], ["a/b/c."]],
+			[["n".repeat(256)], ["n".repeat(256)]],
+			[[deep], [deep]],
+		] as const) {
+			const s = await retired(paths);
+			const admin = (await readdir(s.admin)).sort();
+			const commands = c.log.length;
+			const refusal = await addCodeWorktree(c.job, s.input).catch((error: unknown) => error);
+			expect(refusal).toBeInstanceOf(CodeWorktreeNamesRefused);
+			expect(refusal).toMatchObject({
+				name: "CodeHostRefusal",
+				code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+				paths: refused,
+				of: "branch",
+			});
+			// Nothing written: git's folder for the worktree stays as it was, no file of the worktree is made, and git was
+			// never asked to add it.
+			expect((await readdir(s.admin)).sort()).toEqual(admin);
+			expect(await exists(s.tree)).toBe(false);
+			expect(c.log.slice(commands).some((command) => command.argv.includes("worktree"))).toBe(false);
+			// The branch stays as the session left it.
+			expect(await f.git(c.repo, "--git-dir=.", "rev-parse", `refs/heads/qorpera/coding/${s.workerId}`)).toBe(
+				s.head,
+			);
+			// Without git's folder too: the same, and nothing made.
+			await rm(s.admin, { recursive: true });
+			await expect(addCodeWorktree(c.job, s.input)).rejects.toMatchObject({
+				code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+				of: "branch",
+			});
+			expect(await exists(s.admin)).toBe(false);
+			expect(await exists(s.tree)).toBe(false);
+		}
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		// The code host's own rules say whose names they are too.
+		const cased = await retired([], { "Cart.js": "a\n", "cart.js": "b\n" });
+		await expect(addCodeWorktree(c.job, cased.input)).rejects.toMatchObject({
+			code: "CODE_HOST_NAMES_DIFFER_BY_CASE",
+			of: "branch",
+		});
+		await expect(addCodeWorktree(c.job, cased.input)).rejects.toBeInstanceOf(CodeWorktreeNamesRefused);
+		// A new worktree at a base that holds such a name: refused as the base's, and nothing made.
+		const named = await retired(["bad."]);
+		const fresh = randomUUID();
+		await expect(
+			addCodeWorktree(c.job, { repository: kept, workerId: fresh, baseSha: named.head }),
+		).rejects.toMatchObject({ code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths: ["bad."], of: "base" });
+		expect(await exists(join(c.code, "worktrees", fresh))).toBe(false);
+		expect(await exists(join(c.repo, "worktrees", fresh))).toBe(false);
+		await expect(
+			f.git(c.repo, "--git-dir=.", "rev-parse", "--verify", `refs/heads/qorpera/coding/${fresh}`),
+		).rejects.toThrow();
+		// A name the folder takes is added again as before.
+		const fine = await retired(["n".repeat(255), "a:b.txt"]);
+		expect(await addCodeWorktree(c.job, fine.input)).toMatchObject({ state: "added", headSha: fine.head });
+	});
+});
+
+describe("the company folder's names where a place holds them", () => {
+	const area = "code/qorpera/example";
+	const records = (...paths: string[]) => paths.map((path) => ({ type: "blob", path: Buffer.from(path) }));
+	/** A path of `bytes` bytes (not a multiple of 201), every name within 255. */
+	const long = (bytes: number) => {
+		const parts = Array.from({ length: Math.floor(bytes / 201) }, () => "d".repeat(200));
+		return [...parts, "e".repeat(bytes - parts.length * 201)].join("/");
+	};
+
+	it("asks where main/ holds a path by default, and where a session's worktree holds it when told, 42 bytes deeper", () => {
+		const workerId = randomUUID();
+		expect(CODE_FOLDER_ANY_SESSION).toHaveLength(`worktrees/${workerId}`.length);
+		expect(`${area}/${CODE_FOLDER_ANY_SESSION}/`.length - `${area}/main/`.length).toBe(42);
+		for (const bytes of [4028, 4029, 4070, 4071]) expect(Buffer.byteLength(long(bytes))).toBe(bytes);
+		// main/: 26 bytes before the path, so 4,070 is the longest.
+		expect(codeFolderRefuses(area, records(long(4070)))).toEqual([]);
+		expect(codeFolderRefuses(area, records(long(4071)))).toEqual([long(4071)]);
+		expect(codeFolderRefuses(area, records(long(4071)), "main")).toEqual([long(4071)]);
+		// A session's worktree: 68 bytes before the path, so 4,028 is the longest, for any session.
+		for (const under of [CODE_FOLDER_ANY_SESSION, `worktrees/${workerId}`]) {
+			expect(codeFolderRefuses(area, records(long(4028)), under)).toEqual([]);
+			expect(codeFolderRefuses(area, records(long(4029)), under)).toEqual([long(4029)]);
+		}
+		expect(codeFolderRefuses(area, records(long(4029)))).toEqual([]);
+		// What the folder refuses wherever it stands is refused in both.
+		for (const under of ["main", CODE_FOLDER_ANY_SESSION])
+			expect(
+				codeFolderRefuses(area, records("ok.txt", "bad.", "a\\b", "n".repeat(256), "n".repeat(255)), under),
+			).toEqual(["bad.", "a\\b", "n".repeat(256)]);
+	});
 });
 
 describe("code host export", () => {
@@ -801,8 +977,8 @@ describe("code host commit reads", () => {
 			".devcontainer/devcontainer.json/inside": "x\n",
 			"docker/Dockerfile": "FROM scratch\n",
 			"big.txt": "0123456789".repeat(10),
-			// Names git would quote in --format output: a space, a quote, a tab and a character outside ASCII (NFC).
-			'set up/a"b\tc.json': "odd\n",
+			// Names git would quote in --format output: a space, a quote and a character outside ASCII (NFC).
+			'set up/a"b c.json': "odd\n",
 			"docs/été.md": "summer\n",
 		};
 		for (const [path, content] of Object.entries(files)) {
@@ -814,8 +990,17 @@ describe("code host commit reads", () => {
 		await f.src("add", "--all");
 		await f.src("update-index", "--add", "--cacheinfo", `160000,${f.baseSha},vendored`);
 		await f.src("commit", "--quiet", "-m", "setup");
-		const head = await f.src("rev-parse", "HEAD");
-		await seedCodeArea(c.job, { repository: f.repository, baseSha: head, bundle: await f.bundle("refs/heads/main") });
+		const base = await f.src("rev-parse", "HEAD");
+		await seedCodeArea(c.job, { repository: f.repository, baseSha: base, bundle: await f.bundle("refs/heads/main") });
+		// And a tab, which no seed takes (the company folder does not) and a session's branch may hold all the same: its
+		// commit is read too.
+		const workerId = randomUUID();
+		await addCodeWorktree(c.job, { repository: f.repository, workerId, baseSha: base });
+		const tree = join(c.code, "worktrees", workerId);
+		await writeFile(join(tree, 'set up/a"b\tc.json'), "tab\n");
+		await f.git(tree, "add", 'set up/a"b\tc.json');
+		await f.git(tree, "commit", "--quiet", "-m", "tab");
+		const head = await f.git(tree, "rev-parse", "HEAD");
 		let kept: CodeCommitSource | undefined;
 		const read = await withCodeCommit(c.job, { repository: f.repository, commit: head }, async (source) => {
 			kept = source;
@@ -833,7 +1018,8 @@ describe("code host commit reads", () => {
 				dockerfile: await text("docker/Dockerfile"),
 				exact: await text("big.txt", 100),
 				cut: await text("big.txt", 10),
-				quoted: await text('set up/a"b\tc.json'),
+				quoted: await text('set up/a"b c.json'),
+				tab: await text('set up/a"b\tc.json'),
 				accented: await text("docs/été.md"),
 				invalid: await Promise.all(
 					["", "/README.md", "a/../README.md", "./README.md", "docker//Dockerfile", "docker/"].map((path) =>
@@ -856,6 +1042,7 @@ describe("code host commit reads", () => {
 			exact: "0123456789".repeat(10),
 			cut: "01234567890",
 			quoted: "odd\n",
+			tab: "tab\n",
 			accented: "summer\n",
 			invalid: Array(6).fill("INVALID_CODE_HOST_PATH"),
 		});
@@ -1058,6 +1245,10 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 		// folder's 4,096 bytes.
 		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(51)].join("/");
 		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4097);
+		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, but 4,097 where a session's worktree holds it
+		// (`code/qorpera/example/worktrees/<36>/`): nothing goes into main that no session could check out.
+		const edge = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${edge}`)).toBe(4055);
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			// A folder is named once, at the highest part the folder refuses.
@@ -1066,6 +1257,7 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 			[["a\\b.txt"], ["a\\b.txt"]],
 			[[long], [long]],
 			[[deep], [deep]],
+			[[edge], [edge]],
 		] as const) {
 			const { s, head } = await named(paths);
 			await expect(
@@ -1691,6 +1883,14 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 			],
 		});
 		for (const s of sessions) expect(await exists(join(s.admin, "HEAD"))).toBe(true);
+		// A name the company folder does not take where the worktree holds it: added again, the worktree would be refused
+		// (`addCodeWorktree`), so its files stay.
+		const folder = await session(f, c, baseSha);
+		await folder.commit({ "bad.": "a\n" }, "folder names");
+		expect(
+			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [folder.workerId] }, { phase: "files" }),
+		).toEqual({ retired: [], kept: [{ workerId: folder.workerId, reason: "NAMES_REFUSED" }] });
+		expect(await readFile(join(folder.tree, "bad."), "utf8")).toBe("a\n");
 		// At most 20 sessions a job, each once, in one of the two phases.
 		const commands = c.log.length;
 		for (const [ids, phase] of [

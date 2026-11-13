@@ -240,6 +240,8 @@ export async function fetchGitHubImport(
 				mainSha: wanted.mainSha,
 				refs: wanted.refs,
 				leftOut: wanted.leftOut,
+				// GitHub's own default, when the request named another branch: the refs plan keeps it whatever its age.
+				...(wanted.sourceBranch === null ? {} : { sourceBranch: wanted.sourceBranch }),
 			};
 		}
 	} catch (error) {
