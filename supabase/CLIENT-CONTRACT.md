@@ -1695,7 +1695,9 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
 Every files site gets a host of its own, `https://<slug>.qorpera.com/`, served at the top (links from `/` are the
 site's own), and a repository's site a next host, `https://<slug>--next.qorpera.com/`, where owners and admins look
 at a version before it is live (Look first, "What's new" below). Built switched off: the operator sets
-`qorpera_site_settings.hosts_domain` (`qorpera.com`) first and `hosts_enabled` last, only once the web that parses the
+`qorpera_site_settings.hosts_domain` first and `hosts_enabled` last (the column takes `qorpera.com` and no other value,
+23514: site-serve, the web and the executor have that domain written in, so the one host rule is one domain everywhere),
+only once the web that parses the
 host form, the app relay's cross-origin refusal and the front's `site-hosts` route are live (STEP5-BUILD's order);
 `hosts_enabled = false` is the way back.
 

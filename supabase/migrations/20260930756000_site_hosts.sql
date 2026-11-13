@@ -38,7 +38,7 @@
 --    A takedown and a restore enter the site's company first, as every writer for a company does (folder fence, then
 --    company row, KEY SHARE: qorpera_site_enter_company), so a company's deletion either sees a takedown and waits, or
 --    holds the company and the takedown waits for it.
--- 7. Twenty-four existing functions change, each by anchors on its definition as the migrations before this one leave it (an
+-- 7. Twenty-seven existing functions change, each by anchors on its definition as the migrations before this one leave it (an
 --    anchor that is not found exactly once fails the migration); each changed body carries the marker 20260930756000 and
 --    keeps every marker it had:
 --    * qorpera_site_slug_valid: the name rule (3);
@@ -57,7 +57,8 @@
 --      breaks the rule is refused with the rule in one sentence (qorpera_site_name_words); a site of the company that
 --      Qorpera took down takes nothing, refused SITE_TAKEN_DOWN with the reason in plain words and no address
 --      (qorpera_site_taken_down_words), writing nothing;
---    * a repository's site's upload pass (qorpera_code_sites_due, qorpera_code_site_begin): never a site taken down;
+--    * a repository's site's upload pass (qorpera_code_sites_due, qorpera_code_site_begin, and an upload begun before:
+--      qorpera_code_site_list, _put, _finish): never a site taken down;
 --    * a takedown sticks until qorpera_site_restore: unpublish_site (above), a member's take offline
 --      (qorpera_unpublish_company_site) and a company's deletion (qorpera_delete_hosted_profile) refuse while a site is
 --      taken down, a deletion asked before waits (qorpera_finish_company_deletion's holdings: taken_down_sites), and
@@ -134,9 +135,10 @@ comment on table public.qorpera_company_site_tickets is
 
 alter table public.qorpera_site_settings
 	-- The domain a files site's own host is under, <slug>.<hosts_domain>, and its next host <slug>--next.<hosts_domain>:
-	-- one level, which the platform's certificate covers. Set before hosts_enabled.
-	add column hosts_domain text check (hosts_domain is null or (char_length(hosts_domain) <= 190
-		and hosts_domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$')),
+	-- one level, which the platform's certificate covers. Set before hosts_enabled. One value only (the review of #1774,
+	-- round 3): site-serve (SITE_HOST), the web (SITE_HOST) and the executor's change record have qorpera.com written in,
+	-- so the one host rule is one domain in all four places; another would move every old link to a host nobody serves.
+	add column hosts_domain text check (hosts_domain is null or hosts_domain = 'qorpera.com'),
 	-- Own hosts on: links name them, the old host's links move there, Look first opens.
 	add column hosts_enabled boolean not null default false,
 	add constraint qorpera_site_settings_hosts check (not hosts_enabled or hosts_domain is not null);
@@ -511,6 +513,51 @@ select pg_temp.site_hosts_patch('public.qorpera_code_sites_due(text,text,integer
 	$new$			or public.qorpera_code_site_given_up(v_repository, v_point)
 			-- 20260930756000: never a site Qorpera took down: nothing is uploaded to it until it is restored.
 			or public.qorpera_site_down_reason(v_repository.site_id) is not null;$new$]);
+-- An upload begun before the takedown takes nothing more while the site is down (the review of #1774, round 3): its
+-- list, its bytes and its finish are refused (SITE_TAKEN_DOWN), each read on the site as it holds it locked (the list
+-- and the put take it shared before the version, as the finish takes it before the version), so a takedown on its way
+-- is waited for, then read. Restored, the upload goes on where it stopped.
+select pg_temp.site_hosts_patch('public.qorpera_code_site_list(text,text,uuid,jsonb)'::regprocedure, array[
+	$old$	if v_repository.environment_id is not null then
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;$old$,
+	$new$	if v_repository.environment_id is not null then
+		-- 20260930756000: the version's site first, shared, then the version.
+		perform 1 from public.qorpera_company_sites as site
+		join public.qorpera_company_site_versions as version on version.site_id = site.id
+		where version.id = p_version_id for share of site;
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	-- 20260930756000: a site Qorpera took down takes nothing more until it is restored.
+	if public.qorpera_site_down_reason(v_version.site_id) is not null then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TAKEN_DOWN'); end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_code_site_put(text,text,uuid,jsonb)'::regprocedure, array[
+	$old$	if v_repository.environment_id is not null then
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;$old$,
+	$new$	if v_repository.environment_id is not null then
+		-- 20260930756000: the version's site first, shared, then the version.
+		perform 1 from public.qorpera_company_sites as site
+		join public.qorpera_company_site_versions as version on version.site_id = site.id
+		where version.id = p_version_id for share of site;
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	-- 20260930756000: a site Qorpera took down takes no more bytes until it is restored.
+	if public.qorpera_site_down_reason(v_version.site_id) is not null then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TAKEN_DOWN'); end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_code_site_finish(text,text,uuid)'::regprocedure, array[
+	$old$	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	if v_version.state <> 'uploading' then$old$,
+	$new$	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	-- 20260930756000: a site Qorpera took down (read under the site's lock, taken above) gets no version ready until it is
+	-- restored.
+	if public.qorpera_site_down_reason(v_version.site_id) is not null then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TAKEN_DOWN'); end if;
+	if v_version.state <> 'uploading' then$new$]);
 select pg_temp.site_hosts_patch('public.qorpera_code_site_begin(text,text,uuid,text,text,integer,jsonb)'::regprocedure, array[
 	$old$		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
 	end if;$old$,
@@ -904,6 +951,9 @@ begin
 		('public.qorpera_unpublish_company_site(uuid)', array['20260930550000', '20260930729000']),
 		('public.qorpera_delete_hosted_profile(uuid)', array[]::text[]),
 		('public.qorpera_finish_company_deletion(uuid)', array[]::text[]),
+		('public.qorpera_code_site_list(text,text,uuid,jsonb)', array[]::text[]),
+		('public.qorpera_code_site_put(text,text,uuid,jsonb)', array[]::text[]),
+		('public.qorpera_code_site_finish(text,text,uuid)', array[]::text[]),
 		('public.qorpera_site_abandoned(public.qorpera_company_sites)', array['20260930550000', '20260930562000', '20260930729000'])) checked(signature, markers)
 	loop
 		foreach v_marker in array v_markers || '20260930756000'::text loop

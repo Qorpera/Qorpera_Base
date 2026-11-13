@@ -1513,11 +1513,44 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 			expect(text(block(view)), role).toContain(DOWN);
 			// No password to share either: the Sites page has none to show for it.
 			expect(text(block(view)), role).not.toContain("The password is in Sites.");
-			// What is live and ready is still said; putting a version live is the kernel's to refuse.
+			// What is live and ready is still said; nothing the kernel would refuse is offered (review of #1774, round 3).
 			expect(text(block(view)), role).toContain("Live now");
-			if (role === "owner") expect(labels(block(view))).toContain("Put it live");
+			expect(text(block(view)), role).toContain("6 changes are ready");
+			if (role === "owner") expect(labels(block(view))).toEqual(["Not yet"]);
 			plain(block(view));
 			view.dispose();
+		}
+	});
+
+	it("offers an owner no Look first, Put it live or Go back for a site taken down, only Not yet (review of #1774, round 3)", async () => {
+		const read = () => releasesOf([shop()], true, true);
+		// Up: all four, as before.
+		const { view: up } = await page([read()], { takenDown: async () => new Set<string>() });
+		expect(labels(block(up))).toEqual(["Go back to version 2", "Look first", "Put it live", "Not yet"]);
+		up.dispose();
+		// Taken down: the line says why, and only Not yet is left; a site never live has no Put the first version live.
+		const { view, client } = await page([read()], { takenDown: async () => new Set(["wristband-shop"]) });
+		expect(labels(block(view))).toEqual(["Not yet"]);
+		expect(text(block(view))).toContain(DOWN);
+		expect(client.openPreview).not.toHaveBeenCalled();
+		view.dispose();
+		const { view: first } = await page([releasesOf([shop({ live: null, back: null })], true, true)], {
+			takenDown: async () => new Set(["wristband-shop"]),
+		});
+		expect(labels(block(first))).toEqual(["Not yet"]);
+		expect(text(block(first))).toContain(DOWN);
+		first.dispose();
+		// In Danish too.
+		setLanguagePreference("da");
+		try {
+			const { view: da } = await page([read()], { takenDown: async () => new Set(["wristband-shop"]) });
+			expect(labels(block(da))).toEqual(["Ikke endnu"]);
+			expect(text(block(da))).toContain(
+				"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+			);
+			da.dispose();
+		} finally {
+			setLanguagePreference("system");
 		}
 	});
 

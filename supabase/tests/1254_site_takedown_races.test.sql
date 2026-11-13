@@ -9,6 +9,8 @@
 --       takedown waits for it, then finds no site of that name.
 --   F2. A takedown on its way (its transaction open) while an agent takes its app link offline, or puts a publish's
 --       files: the agent's call waits for the site's row, then reads the takedown and is refused, writing nothing.
+--   Round 3. The same while the executor's upload pass puts the bytes of a repository's site, or finishes its version
+--       (change 4 of company/h-look, due at the end of 1252's fixture): refused SITE_TAKEN_DOWN, nothing written.
 -- The other company (91170000-…010, 1170's) has the site race-down, abandoned two days ago, and its deletion asked.
 
 select pg_temp.rel_other_site('race-down', interval '2 days');
@@ -176,6 +178,61 @@ begin
 		raise exception 'F2: the put beside a takedown: %', v; end if;
 	perform public.qorpera_site_restore('agent-shop');
 end $$;
+
+-- Round 3. The executor's upload of change 4 of company/h-look (look-shop) begins and lists its files, committed.
+select set_config('qorpera_test.r1254_version',
+	pg_temp.rel_begin('h-look', 4, pg_temp.rel_manifest(pg_temp.rel_texts('h4'))) ->> 'versionId', false) \g /dev/null
+select pg_temp.base_assert(pg_temp.rel_list(current_setting('qorpera_test.r1254_version')::uuid,
+	pg_temp.rel_files(pg_temp.rel_texts('h4')), true) ->> 'state' = 'listed', 'the upload is listed') \g /dev/null
+-- Its put while a takedown is on its way: the put waits for the site (shared, before the version), then reads the
+-- takedown and is refused; no bytes are kept (the listing copied some from the site's other versions already).
+do $$
+declare v jsonb; v_kept jsonb := (select jsonb_agg(jsonb_build_array(file.path, file.content is not null) order by file.path)
+	from public.qorpera_company_site_files file where file.version_id = current_setting('qorpera_test.r1254_version')::uuid);
+begin
+	if v_kept is null or not exists (select 1 from jsonb_array_elements(v_kept) kept where kept -> 1 = 'false') then
+		raise exception 'Round 3: the listed upload has no file left to put: %', v_kept; end if;
+	perform pg_temp.r1254_act_as('service_role');
+	perform pg_temp.r1254_hold_takedown('look-shop');
+	perform dblink_send_query('r1254_act', format('select public.qorpera_code_site_put(%L, %L, %L, %L)::text', 'exec-1170',
+		repeat('5', 64), current_setting('qorpera_test.r1254_version'),
+		jsonb_build_object('parts', pg_temp.rel_parts(pg_temp.rel_texts('h4')))));
+	if not pg_temp.r1254_waits() then
+		perform dblink_exec('r1254_hold', 'rollback');
+		raise exception 'Round 3: the upload''s put did not wait for the takedown on its way: %', pg_temp.r1254_answer(); end if;
+	perform dblink_exec('r1254_hold', 'commit');
+	v := pg_temp.r1254_answer();
+	if v is distinct from '{"schema":"qorpera.code-site-put/v1","state":"refused","code":"SITE_TAKEN_DOWN"}'::jsonb
+		or (select jsonb_agg(jsonb_build_array(file.path, file.content is not null) order by file.path)
+			from public.qorpera_company_site_files file where file.version_id = current_setting('qorpera_test.r1254_version')::uuid)
+			is distinct from v_kept
+		or exists (select 1 from public.qorpera_company_site_file_parts
+			where version_id = current_setting('qorpera_test.r1254_version')::uuid) then
+		raise exception 'Round 3: the upload''s put beside a takedown: %', v; end if;
+end $$;
+select public.qorpera_site_restore('look-shop') \g /dev/null
+select pg_temp.base_assert(pg_temp.rel_put(current_setting('qorpera_test.r1254_version')::uuid,
+	pg_temp.rel_parts(pg_temp.rel_texts('h4'))) ->> 'state' = 'kept', 'the bytes once restored') \g /dev/null
+-- Its finish while a takedown is on its way: the finish waits (the registry row, then the site), then reads the
+-- takedown and is refused; the version stays uploading.
+do $$
+declare v jsonb;
+begin
+	perform pg_temp.r1254_act_as('service_role');
+	perform pg_temp.r1254_hold_takedown('look-shop');
+	perform dblink_send_query('r1254_act', format('select public.qorpera_code_site_finish(%L, %L, %L)::text', 'exec-1170',
+		repeat('5', 64), current_setting('qorpera_test.r1254_version')));
+	if not pg_temp.r1254_waits() then
+		perform dblink_exec('r1254_hold', 'rollback');
+		raise exception 'Round 3: the upload''s finish did not wait for the takedown on its way: %', pg_temp.r1254_answer(); end if;
+	perform dblink_exec('r1254_hold', 'commit');
+	v := pg_temp.r1254_answer();
+	if v is distinct from '{"schema":"qorpera.code-site-finish/v1","state":"refused","code":"SITE_TAKEN_DOWN"}'::jsonb
+		or (select state from public.qorpera_company_site_versions where id = current_setting('qorpera_test.r1254_version')::uuid)
+			<> 'uploading' then
+		raise exception 'Round 3: the upload''s finish beside a takedown: %', v; end if;
+end $$;
+select public.qorpera_site_restore('look-shop') \g /dev/null
 
 -- F1, the takedown first. Its transaction is open when the finisher's pass comes: the pass waits for it (the company's
 -- fence and row), then counts the site taken down and waits; the site and its name stay.

@@ -139,10 +139,12 @@ begin
 			or drill_taken_at is not null)
 		and not exists (select 1 from public.qorpera_company_site_sessions where scope <> 'site' or version_id is not null),
 		'all off');
-	-- Hosts need a domain of one or more labels, lower case, no dot at either end.
+	-- Hosts need a domain, and it is qorpera.com, the one value site-serve, the web and the executor have written in (the
+	-- review of #1774, round 3): any other, even a well-formed one, is refused.
 	perform pg_temp.base_error('update public.qorpera_site_settings set hosts_enabled = true', '23514');
 	foreach v_function in array array['Qorpera.com', 'qorpera', '.qorpera.com', 'qorpera.com.', 'qorpera..com', '-a.com',
-		'a_b.com', 'https://qorpera.com', repeat('a', 63) || '.' || repeat('b', 63) || '.' || repeat('c', 63) || '.com'] loop
+		'a_b.com', 'https://qorpera.com', repeat('a', 63) || '.' || repeat('b', 63) || '.' || repeat('c', 63) || '.com',
+		'example.com', 'sites.qorpera.com', 'qorpera.dev', 'qorpera.com.evil.test', 'qorpera-com', ''] loop
 		perform pg_temp.base_error(format('update public.qorpera_site_settings set hosts_domain = %L', v_function), '23514');
 	end loop;
 	-- A session's scope and version go together; a drill is check or site; a ticket is a digest that ends after it began
@@ -926,7 +928,7 @@ end $$;
 -- A repository's site: change 4 lands and waits for its upload. Taken down, nothing is uploaded to it, and its list file
 -- (written again) says so with no link and no live version; restored, it is due again.
 do $$
-declare v jsonb; v_index bigint; v_states text;
+declare v jsonb; v_index bigint; v_states text; v_version uuid; v_rows jsonb;
 begin
 	perform pg_temp.base_assert(pg_temp.rel_land(2532, 'h3', 'h4', pg_temp.rel_made('h4', '{"name":"look-shop"}'), 'h-look')
 		= pg_temp.rec_answer('recorded', 4), 'h-look 4');
@@ -954,6 +956,42 @@ begin
 	perform pg_temp.base_assert((pg_temp.rec_shop('h-look')).index_version = v_index + 2
 		and position('h-look:4' in pg_temp.rel_due_names()) > 0 and v -> 'preparing' = '{"change":4}' and not v ? 'takenDown'
 		and v -> 'live' ->> 'url' = 'https://look-shop.qorpera.com/', 'restored: ' || v::text);
+	-- An upload begun before a takedown takes nothing more while the site is down (the review of #1774, round 3): its
+	-- list, its bytes and its finish are refused, writing nothing; restored, it goes on where it stopped (a block undone
+	-- after, so change 4 stays due).
+	begin
+		v := pg_temp.rel_begin('h-look', 4, pg_temp.rel_manifest(pg_temp.rel_texts('h4')));
+		perform pg_temp.base_assert(v ->> 'state' = 'uploading', 'the upload begins: ' || v::text);
+		v_version := (v ->> 'versionId')::uuid;
+		perform public.qorpera_site_take_down('look-shop', 'Reported.');
+		v := pg_temp.rel_list(v_version, pg_temp.rel_files(pg_temp.rel_texts('h4')), true);
+		perform pg_temp.base_assert(v = '{"schema":"qorpera.code-site-list/v1","state":"refused","code":"SITE_TAKEN_DOWN"}'
+			and not exists (select 1 from public.qorpera_company_site_files where version_id = v_version), 'the list: ' || v::text);
+		perform public.qorpera_site_restore('look-shop');
+		v := pg_temp.rel_list(v_version, pg_temp.rel_files(pg_temp.rel_texts('h4')), true);
+		perform pg_temp.base_assert(v ->> 'state' = 'listed', 'listed once restored: ' || v::text);
+		v_rows := (select jsonb_agg(to_jsonb(file) order by file.path) from public.qorpera_company_site_files file
+			where file.version_id = v_version);
+		perform public.qorpera_site_take_down('look-shop', 'Reported.');
+		v := pg_temp.rel_put(v_version, pg_temp.rel_parts(pg_temp.rel_texts('h4')));
+		perform pg_temp.base_assert(v = '{"schema":"qorpera.code-site-put/v1","state":"refused","code":"SITE_TAKEN_DOWN"}',
+			'the put: ' || v::text);
+		v := pg_temp.rel_finish(v_version);
+		perform pg_temp.base_assert(v = '{"schema":"qorpera.code-site-finish/v1","state":"refused","code":"SITE_TAKEN_DOWN"}',
+			'the finish: ' || v::text);
+		perform pg_temp.base_assert((select jsonb_agg(to_jsonb(file) order by file.path) from public.qorpera_company_site_files file
+				where file.version_id = v_version) = v_rows
+			and not exists (select 1 from public.qorpera_company_site_file_parts where version_id = v_version)
+			and (select state from public.qorpera_company_site_versions where id = v_version) = 'uploading', 'nothing written');
+		perform public.qorpera_site_restore('look-shop');
+		v := pg_temp.rel_put(v_version, pg_temp.rel_parts(pg_temp.rel_texts('h4')));
+		perform pg_temp.base_assert(v ->> 'state' = 'kept', 'the bytes once restored: ' || v::text);
+		v := pg_temp.rel_finish(v_version);
+		perform pg_temp.base_assert(v ->> 'state' = 'ready', 'ready once restored: ' || v::text);
+		raise exception 'r1252 undo';
+	exception when raise_exception then
+		if sqlerrm <> 'r1252 undo' then raise; end if;
+	end;
 end $$;
 
 -- 10c. A takedown sticks (the lead's call, 13 Nov 2026) -----------------------------------------------------------------

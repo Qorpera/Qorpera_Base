@@ -592,16 +592,14 @@ export class WhatsNewView {
 	}
 
 	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
-	 * the password is, and the site's link and Go back as pill buttons. */
-	#live(site: CodeReleaseSite, can: boolean, busy: boolean): HTMLElement {
+	 * the password is, and the site's link and Go back as pill buttons. A site Qorpera took down (`down`) shows neither:
+	 * every address of it shows a "gone" page, and the kernel refuses going back until Qorpera restores it. */
+	#live(site: CodeReleaseSite, can: boolean, busy: boolean, down: boolean): HTMLElement {
 		const live = site.live;
-		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it, and no password to share; it
-		// is said for a site that was never live too, whose Look first answers so (the review of #1774, F4).
-		const down = Boolean(site.site && this.#takenDown.has(site.site.slug));
 		const shown = live && site.site && !down ? site.site : undefined;
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
-		if (live && site.back && can) {
+		if (live && site.back && can && !down) {
 			back = h(
 				"button",
 				{ type: "button", class: "site-button", disabled: busy, onclick: () => void this.#goBack(site) },
@@ -714,13 +712,16 @@ export class WhatsNewView {
 		return card;
 	}
 
-	/** What is ready, and the buttons (Look first, while `look`, then Put it live and Not yet); or that nothing is. */
+	/** What is ready, and the buttons (Look first, while `look`, then Put it live and Not yet); or that nothing is. A site
+	 * Qorpera took down (`down`) keeps only Not yet: the kernel refuses Look first and Put it live until it is restored,
+	 * and the live row says why (the review of #1774, round 3). */
 	#ready(
 		site: CodeReleaseSite,
 		can: boolean,
 		look: boolean,
 		busy: boolean,
 		cards: Map<string, HTMLElement>,
+		down: boolean,
 	): HTMLElement[] {
 		const ready = site.ready;
 		if (!ready) return [h("p", { class: "whats-new-empty" }, t("Nothing new is ready."))];
@@ -746,19 +747,26 @@ export class WhatsNewView {
 		let actions: HTMLElement;
 		if (can) {
 			const working = this.#working?.site === key ? this.#working.action : undefined;
-			const put = button(
-				working === "live" ? t("Putting it live…") : site.live ? t("Put it live") : t("Put the first version live"),
-				() => void this.#putLive(site),
-				{ primary: true, disabled: busy },
-			);
-			put.dataset.focusKey = `live:${key}`;
+			let put: HTMLButtonElement | null = null;
+			if (!down) {
+				put = button(
+					working === "live"
+						? t("Putting it live…")
+						: site.live
+							? t("Put it live")
+							: t("Put the first version live"),
+					() => void this.#putLive(site),
+					{ primary: true, disabled: busy },
+				);
+				put.dataset.focusKey = `live:${key}`;
+			}
 			const notYet = button(working === "talk" ? t("Working…") : t("Not yet"), () => void this.#notYet(site), {
 				disabled: busy,
 			});
 			notYet.dataset.focusKey = `talk:${key}`;
 			// Look first, before Put it live: a project with a site, while the read offers it.
 			let first: HTMLButtonElement | null = null;
-			if (look && site.site) {
+			if (look && site.site && !down) {
 				first = button(working === "look" ? t("Opening…") : t("Look first"), () => void this.#lookFirst(site), {
 					disabled: busy,
 				});
@@ -793,11 +801,15 @@ export class WhatsNewView {
 					)
 				: null;
 		const waiting = String(site.waiting);
+		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it and no password to share, and
+		// nothing the kernel would refuse (Look first, Put it live, Go back); the live row says why, for a site that was
+		// never live too (the review of #1774, F4 and round 3).
+		const down = Boolean(site.site && this.#takenDown.has(site.site.slug));
 		return h(
 			"section",
 			{ class: "whats-new-site", dataset: { site: key }, "aria-label": titleOf(site) },
 			h("h2", null, titleOf(site)),
-			this.#live(site, can, busy),
+			this.#live(site, can, busy, down),
 			said("live"),
 			site.problem || site.givenUp
 				? notice(
@@ -811,7 +823,7 @@ export class WhatsNewView {
 					)
 				: null,
 			said("ready"),
-			...this.#ready(site, can, look, busy, cards),
+			...this.#ready(site, can, look, busy, cards, down),
 			said("actions"),
 			site.waiting > 0
 				? h(

@@ -63,7 +63,12 @@
   company row, KEY SHARE: `qorpera_site_enter_company`), so a company's deletion pass either sees a takedown and waits
   or holds the company until its purge; an agent's unpublish, a publish's put, a company's deletion and Look first read
   the site locked (SQL test 1254 runs the races on two connections). The access read names each site (`slug`, `title`,
-  `kind`, `source`).
+  `kind`, `source`). An upload begun before a takedown takes nothing more while the site is down (review round 3): its
+  list, put and finish answer `refused`, `SITE_TAKEN_DOWN`, each under the site's lock, writing nothing, and the upload
+  pass reads that answer as a plain stop: logged (`code-site`, step `taken-down`), told to no one, no try counted
+  against the change; the due list leaves the site out until it is restored, so nothing is asked meanwhile, and the
+  next pass after the restore goes on with the same version. `qorpera_site_settings.hosts_domain` takes `qorpera.com`
+  and no other value, the domain the executor's change record has written in.
 - A website's own address on the executor's side (own code storage, step 5, release 5.1, part X1;
   `lanes/own-code-storage/STEP5-BUILD.md`, migration `20260930756000`). While the checks switch says `rootLinks` (only
   while sites have hosts of their own) the collect lets a site's links from `/` through: the host always sets

@@ -23,6 +23,11 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   `.qorpera.com`; take the one label before it; a label ending `--next` is a next host and its slug is the label without
   that ending, else an own host; the slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is 3 to 48 long and passes the name rule
   below. As one regex: `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the length checked apart.
+- **One domain, written in four places.** `qorpera.com` is in site-serve (`SITE_HOST`, its old host's `moved`), the
+  web (`SITE_HOST` of `cloud/sites.ts`, which `cloud/releases.ts` reads Look first's link by) and the executor's change
+  record, so SQL takes no other: `qorpera_site_settings.hosts_domain` is null or `qorpera.com`, nothing else (a check
+  on the column refuses any other value, 23514; the review of #1774, round 3). Another domain would be a new release of
+  all four, not a setting.
 - **The road in** is the one app links have used since v195: the wildcard record, the certificate for one level
   (`*.qorpera.com`) and the tunnel rule `*.qorpera.com → http://api-front:8080`. A name two levels deep
   (`a.b.qorpera.com`) has no certificate: its TLS handshake fails before anything is asked.
@@ -172,7 +177,8 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 password, and how to tell Qorpera it is wrong: Feedback in their menu (no mail address: none is confirmed to reach
 anyone). Its row has no menu (nothing in it would be done while the site is down). A project's site taken down before
 it ever went live, which no list shows, gets the same row (the access read names it). What's new offers no link to it
-and says it was taken down, for a site never live too. The site does not
+and says it was taken down, for a site never live too, and offers none of what would be refused: no Look first, no Put
+it live, no Go back (Not yet stays). The site does not
 go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain
 words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
 
@@ -180,7 +186,8 @@ words. The reason comes from `qorpera_company_site_access` (every member). Tell 
 site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
 company." `publish_site` (its check, its begin, an upload on its way and its finish) and `share_app` (its check and its
 share) refuse so and write nothing. A project's site made from code takes no upload while it is down (the upload pass
-leaves it out), and its `changes/index.md` says the same words in place of what is live, with no link, from the next
+leaves it out, and an upload begun before stops: its list, bytes and finish answer `SITE_TAKEN_DOWN`, which the pass
+reads as a plain stop, counting no try, and goes on with the same version after the restore), and its `changes/index.md` says the same words in place of what is live, with no link, from the next
 write after the takedown (the takedown and the restore ask for that write). Write the reason so it can be read by the
 agent and the members alike: one line, no address, nothing private.
 
@@ -399,7 +406,7 @@ cluster, no tunnel, no record, no certificate.
 Through `/Users/jonas/work/dbhome/window/newdb_check.py FILE --write`, one statement a file:
 
 ```sql
-update public.qorpera_site_settings set hosts_domain = 'qorpera.com';   -- first; hosts stay off
+update public.qorpera_site_settings set hosts_domain = 'qorpera.com';   -- first; hosts stay off (no other value is taken)
 ```
 
 Then `node deploy/sites/sites-route.mjs --check` from the operator's Mac. It reads the tunnel's rules, the records, the
