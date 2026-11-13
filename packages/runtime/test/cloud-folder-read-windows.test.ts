@@ -170,6 +170,18 @@ describe("a window of a file", () => {
 		const small = parse(await f.call("company_read", { path: "notes/blob.md", offset: 8, limit: 4 }));
 		expect(small).toMatchObject({ offset: 8, text: "ghp_[REDACTED]", bytesRead: 4 + 1024 });
 		expect(small.secretRun).toContain("starts at offset 8");
+		// A run of %-escapes or \u escapes whose read ends inside an escape (review r6 of #1700): its match stops short of
+		// the read's end, and the window still says it goes on.
+		for (const [path, unit] of [
+			["notes/url.md", "%2B"],
+			["notes/json.md", "\\u002B"],
+		] as const) {
+			const g = await fixture({ files: { [path]: `${["whsec", unit.repeat(600)].join("_")}\nend\n` } });
+			const escaped = parse(await g.call("company_read", { path, offset: 0, limit: 4 }));
+			expect(escaped.text.startsWith("whsec_[REDACTED]")).toBe(true);
+			expect(escaped).toMatchObject({ offset: 0, bytesRead: 4 + 1024, nextOffset: 4 + 1024 });
+			expect(escaped.secretRun).toContain("starts at offset 0");
+		}
 		// A read asked to start deep inside such a run, further in than a read takes before its start, cannot see where the
 		// run began: it shows what follows as it is and says nothing. Only the window that ends in the run can say so.
 		expect(parse(await f.call("company_read", { path: "notes/blob.md", offset: 40_000 })).secretRun).toBeUndefined();

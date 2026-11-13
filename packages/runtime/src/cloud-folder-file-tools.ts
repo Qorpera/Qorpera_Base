@@ -117,6 +117,8 @@ const TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
  * windowLead): more than the longest the shortest whole secret can be in any spelling the cut knows (a github_pat_
  * whose every `_` is JSON-escaped twice: 597 characters). */
 const SECRET_MARGIN = 1024;
+/** The longest unit a secret's pattern takes as one character: a JSON escape written twice (`\\u005F`), 7. */
+const SECRET_UNIT = 7;
 /** Text around a window, only to find secrets in: bytes that are no UTF-8 become U+FFFD, which no secret holds. */
 const AROUND = new TextDecoder("utf-8", { ignoreBOM: true });
 
@@ -399,9 +401,11 @@ function fitted(text: string, least: number, render: (shown: string) => string):
  * window never ends inside a secret (cloudSecretSpans, the boundary's own patterns): `text` is the window and what
  * follows it as far as read, `end` where the window's room would end it (within the window). A secret that starts in
  * the window and runs past that end ends the window where it starts, so the next window holds it whole. One that
- * starts the window is taken whole, past the room if need be: the answer shows its short cut form. If it goes on past
- * everything read (`more`: the file goes on), it is taken as far as read, and `runsOn` says the window ends inside it:
- * no window can hold it, and what follows is the rest of it, which nothing can cut on its own. `secrets` are
+ * starts the window is taken whole, past the room if need be: the answer shows its short cut form. If it may go on past
+ * everything read (`more`: the file goes on, and it reaches the end of the read, or ends so near it that its next
+ * unit, a %-escape or a \u escape, may be cut there: review r6 of #1700), it is taken as far as read, and `runsOn`
+ * says the window ends inside it: no window can hold it, and what follows is the rest of it, which nothing can cut on
+ * its own. (Such a secret is longer than the read's SECRET_MARGIN: no real key is.) `secrets` are
  * cloudSecretSpans(text), found once for a window's many fittings.
  */
 function windowEnd(
@@ -414,7 +418,8 @@ function windowEnd(
 		if (span.start >= end) break;
 		if (span.end <= end) continue;
 		if (span.start > 0) return { end: span.start, runsOn: false };
-		return { end: span.end, runsOn: more && span.end === text.length };
+		if (more && span.end > text.length - SECRET_UNIT) return { end: text.length, runsOn: true };
+		return { end: span.end, runsOn: false };
 	}
 	return { end, runsOn: false };
 }
