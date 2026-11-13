@@ -183,7 +183,18 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 					from: {
 						type: "object",
 						additionalProperties: false,
-						properties: { github: { type: "string" }, file: { type: "string" }, branch: { type: "string" } },
+						properties: {
+							github: { type: "string" },
+							file: { type: "string" },
+							// The import's follow-ups (lead's decision 3): a branch beside github too.
+							branch: {
+								type: "string",
+								minLength: 1,
+								maxLength: 200,
+								description:
+									"The branch to bring in as main when it is not the source's own: one a look named, or a file's when its main branch is not clear.",
+							},
+						},
 					},
 					look: { type: "boolean" },
 				},
@@ -277,12 +288,17 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				[{ ...undo, from: { github: "acme/shop" } }, "undo takes only action"],
 				[{ ...bringIn, owner: "Acme" }, "owner and name are the repository's"],
 				[{ ...bringIn, look: "yes" }, "look is true or false"],
-				[(({ from: _from, ...rest }) => rest)(bringIn), 'from is {"github":"owner/name"} or {"file":'],
+				[
+					(({ from: _from, ...rest }) => rest)(bringIn),
+					'from is {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"}, either with branch',
+				],
 				...[
 					"acme/shop",
 					{},
+					{ branch: "main" },
 					{ github: "acme/shop", file: "code/_incoming/shop/shop.bundle" },
-					{ github: "acme/shop", branch: "main" },
+					{ github: "acme/shop", file: "code/_incoming/shop/shop.bundle", branch: "main" },
+					{ github: "acme/shop", tag: "v1" },
 					{ url: "https://github.com/acme/shop" },
 				].map((from) => [{ ...bringIn, from }, 'from is {"github":"owner/name"} or {"file":'] as const),
 				...[
@@ -340,13 +356,18 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 					"main.lock",
 					"a/b.",
 					"a#b",
-				].map(
-					(branch) =>
-						[
-							{ ...bringIn, from: { file: "code/_incoming/shop/shop.bundle", branch } },
-							"from.branch is the name of the file's branch to bring in",
-						] as const,
+				].flatMap((branch) =>
+					// The same rule beside a file and, since the lead's decision 3, beside a GitHub project.
+					[{ file: "code/_incoming/shop/shop.bundle" }, { github: "acme/shop" }].map(
+						(from) =>
+							[
+								{ ...bringIn, from: { ...from, branch } },
+								"from.branch is the name of the branch to bring in as main, of at most 200 bytes: letters, digits, ., _, - and /",
+							] as const,
+					),
 				),
+				// A bad project is said before a bad branch, as a bad file is.
+				[{ ...bringIn, from: { github: "acme", branch: "a..b" } }, "from.github is a GitHub project's owner/name"],
 			] as const) {
 				const refused = await f.invoke(args as Record<string, unknown>);
 				expect(refused, JSON.stringify(args)).toMatchObject({ success: false, status: "denied" });
@@ -1375,7 +1396,9 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 						"It is being brought in (getting it from GitHub, waiting until no coding session works on it on GitHub).",
 					],
 					[imports({ state: "running", step: "set-aside" }), "It is being brought in (putting it in place)."],
-					[imports({ state: "running", step: "tidy" }), "It is being brought in (tidying up)."],
+					// The import's follow-ups, item 7: no executor writes a tidy step, so a read that names one is not an
+					// answer, and the wait ends with nothing seen.
+					[imports({ state: "running", step: "tidy" }), "It is being brought in (waiting its turn)."],
 					[
 						imports({ state: "queued", step: "look", waiting: "QUIET_NIGHT" }),
 						"It is being brought in (checking it, waiting for the company's other code work).",
@@ -1423,6 +1446,240 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 		} finally {
 			lost.run.close();
 		}
+	});
+});
+
+// The import's follow-ups (STEP6-FOLLOW-UPS-PLAN.md sections 1, 7 and 8; STEP6-BUILD.md "The import's follow-ups"):
+// the look's other lines of work, the read's twelfth key file, and from.branch beside github. This runtime goes live
+// before the SQL and the executors that send the new keys, so without them every answer reads as before, byte for byte.
+describe("manage_code bring_in: the other branches, the bundle left behind, and a branch from GitHub", () => {
+	const VERSION = "74100000-0000-4000-8000-00000000000a";
+	const BUNDLE = "code/_incoming/shop/shop.bundle";
+	const fileIn = { ...bringIn, from: { file: BUNDLE } };
+	const imported = (over: Record<string, unknown> = {}) =>
+		imports({ state: "done", step: "open", look: look(), result: "imported", change: 1, ...over });
+	const looked = (over: Record<string, unknown> = {}) =>
+		imports({ state: "done", step: "look", look: look(over), result: "looked" });
+	/** The look's lines (qorpera.code-import-look/v1's optional key, part B). */
+	const line = (over: Record<string, unknown> = {}) => ({
+		name: "feature/checkout",
+		ahead: 3,
+		behind: 12,
+		lastAt: "2026-11-09T08:00:00Z",
+		fits: true,
+		...over,
+	});
+	const lines = (over: Record<string, unknown> = {}) => ({
+		count: 2,
+		changes: 5,
+		shown: [line(), line({ name: "fix", ahead: 2, behind: 0, lastAt: "2026-11-01T08:00:00Z", fits: null })],
+		...over,
+	});
+	/** What the model reads for one read answer, asked with `args`. */
+	const said = async (ended: Record<string, unknown>, args: Record<string, unknown> = bringIn) => {
+		const f = await fixture((method) => (method === IMPORT ? asked : ended));
+		try {
+			const answer = await f.invoke(args);
+			expect(answer, JSON.stringify(ended)).toMatchObject({ success: true, status: "ok" });
+			return answer.text;
+		} finally {
+			f.run.close();
+		}
+	};
+	const FACTS =
+		"12 MB, 340 changes from 2024-03-01 to 2026-11-10, 2 people other than the company's agents changed it in the last 30 days, 210 files; it fits.";
+	const BROUGHT = "Brought in as code/acme/shop: 340 earlier changes on main, 210 files; change 1 of its record.";
+	const GITHUB = " The copy on GitHub stays as it was; Qorpera no longer works on it there.";
+	const CHECKS = " Have a coding session add its checks file.";
+	const AS_BEFORE = ` Qorpera no longer needs the bundle it read from ${BUNDLE}. Delete that file only if it is still the bundle you made for this; leave any other file there.`;
+	const INSTEAD =
+		" To bring one in as the main branch instead, call bring_in with from.branch set to its name, look false and a new operationKey.";
+	const MERGE =
+		" To bring one into main, have a coding session on code/acme/shop merge it into its branch (git merge refs/qorpera/imported/heads/<name>), run the checks and finish; changes/1.md lists them.";
+
+	it("reads every answer of today's SQL and executors exactly as before: no lines, no file", async () => {
+		// Today's read has eleven keys and a look without lines (20260930736000): each answer as v238 says it.
+		for (const [ended, args, text] of [
+			[
+				looked(),
+				{ ...bringIn, look: true },
+				`${FACTS} It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.`,
+			],
+			[imported(), bringIn, `${BROUGHT}${GITHUB}${CHECKS}`],
+			[imported(), fileIn, `${BROUGHT}${AS_BEFORE}${CHECKS}`],
+			[
+				imported({ look: look({ commits: 1, files: 1, defaultBranch: null }), change: null }),
+				fileIn,
+				`Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file.${AS_BEFORE}${CHECKS}`,
+			],
+			[
+				imported({ look: null }),
+				fileIn,
+				`Brought in as code/acme/shop; change 1 of its record.${AS_BEFORE}${CHECKS}`,
+			],
+		] as const) {
+			expect(Object.keys(ended)).toHaveLength(11);
+			expect(JSON.stringify(ended)).not.toContain('"lines"');
+			expect(await said(ended, args)).toBe(text);
+		}
+	});
+
+	it("says nothing more for a look that found no other branch with work main lacks, or a read whose file is null", async () => {
+		// The new keys sent with nothing in them (GitHub code, or a look with no such branch): the words of before.
+		expect(await said(looked({ lines: { count: 0, changes: 0, shown: [] } }), { ...bringIn, look: true })).toBe(
+			`${FACTS} It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.`,
+		);
+		expect(await said(imported({ look: look({ lines: { count: 0, changes: 0, shown: [] } }), file: null }))).toBe(
+			`${BROUGHT}${GITHUB}${CHECKS}`,
+		);
+		expect(await said(imported({ file: null }), fileIn)).toBe(`${BROUGHT}${AS_BEFORE}${CHECKS}`);
+	});
+
+	it("says what other branches a look found with work main lacks, and how one comes in as main instead", async () => {
+		expect(await said(looked({ lines: lines() }), { ...bringIn, look: true })).toBe(
+			`${FACTS} It has 2 other branches with work its main branch lacks, which come in under refs/qorpera/imported/heads/: "feature/checkout" (3 changes main lacks, 12 behind main), "fix" (2 changes main lacks, 0 behind main). It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.${INSTEAD}`,
+		);
+		// One branch; ten shown of more; one the company folder cannot hold, which never comes in as main.
+		expect(
+			await said(looked({ lines: lines({ count: 1, changes: 1, shown: [line({ ahead: 1, behind: 1 })] }) }), {
+				...bringIn,
+				look: true,
+			}),
+		).toContain(
+			`It has 1 other branch with work its main branch lacks, which comes in under refs/qorpera/imported/heads/: "feature/checkout" (1 change main lacks, 1 behind main). It found no`,
+		);
+		const ten = Array.from({ length: 10 }, (_, n) => line({ name: `b${n}`, ahead: 1 }));
+		expect(
+			await said(looked({ branches: { seen: 40, kept: 30 }, lines: lines({ count: 25, changes: 9, shown: ten }) }), {
+				...bringIn,
+				look: true,
+			}),
+		).toContain(
+			`"b8" (1 change main lacks, 12 behind main), "b9" (1 change main lacks, 12 behind main) and 15 more.`,
+		);
+		const held = await said(
+			looked({ lines: lines({ count: 3, changes: 4, shown: [line({ name: "bad", fits: false })] }) }),
+			{ ...bringIn, look: true },
+		);
+		expect(held).toBe(
+			`${FACTS} It has 3 other branches with work its main branch lacks, which come in under refs/qorpera/imported/heads/: "bad" (3 changes main lacks, 12 behind main; the company folder cannot hold some of its file names, so it cannot be merged as it is) and 2 more. It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.`,
+		);
+		// A name the look would not show, or one from.branch does not take, is never offered as main; a name passes for no
+		// words of the answer.
+		for (const name of [null, "feature@2", "über", 'x"y']) {
+			const text = await said(looked({ lines: lines({ count: 1, changes: 3, shown: [line({ name })] }) }), {
+				...bringIn,
+				look: true,
+			});
+			expect(text).toContain(
+				`refs/qorpera/imported/heads/: ${name === null ? "one whose name is not shown" : JSON.stringify(name)} (3 changes main lacks, 12 behind main).`,
+			);
+			expect(text).not.toContain(INSTEAD);
+		}
+		// Main does not fit, a branch does: it may come in as main instead.
+		expect(
+			await said(
+				looked({
+					fits: false,
+					refused: { code: "IMPORT_USES_LFS", paths: [".gitattributes"], more: 0 },
+					why: "IMPORT_USES_LFS",
+					lines: lines(),
+				}),
+				{ ...bringIn, look: true },
+			),
+		).toMatch(
+			/Qorpera can't bring those in yet\. It has 2 other branches .* It found no strings that look like keys\. To bring one in as the main branch instead, call bring_in with from\.branch set to its name, look false and a new operationKey\.$/,
+		);
+		// Shown none of them (the record keeps fewer than the look): counted only.
+		expect(await said(looked({ lines: lines({ shown: [] }) }), { ...bringIn, look: true })).toContain(
+			"It has 2 other branches with work its main branch lacks, which come in under refs/qorpera/imported/heads/. It found no",
+		);
+	});
+
+	it("says what other branches came with code brought in, and how a coding session brings one into main", async () => {
+		expect(await said(imported({ look: look({ lines: lines() }) }))).toBe(
+			`${BROUGHT} 2 other branches came with it under refs/qorpera/imported/heads/, with 5 changes main lacks: "feature/checkout" (3), "fix" (2).${MERGE}${GITHUB}${CHECKS}`,
+		);
+		expect(
+			await said(
+				imported({
+					look: look({
+						lines: lines({ count: 1, changes: 1, shown: [line({ name: null, ahead: 1, fits: false })] }),
+					}),
+				}),
+				fileIn,
+			),
+		).toBe(
+			`${BROUGHT} 1 other branch came with it under refs/qorpera/imported/heads/, with 1 change main lacks: one whose name is not shown (1; the company folder cannot hold some of its file names).${MERGE}${AS_BEFORE}${CHECKS}`,
+		);
+		expect(
+			await said(imported({ look: look({ lines: lines({ count: 4, shown: [line({ name: "saml" })] }) }) })),
+		).toContain(`with 5 changes main lacks: "saml" (3) and 3 more.${MERGE}`);
+	});
+
+	it("says whether the file there is still the bundle that was read, with the version a removal of only it names", async () => {
+		const file = (version: string | null, path = BUNDLE) => ({ path, version });
+		expect(await said(imported({ file: file(VERSION) }), fileIn)).toBe(
+			`${BROUGHT} Qorpera no longer needs ${BUNDLE}: it is still the bundle that was read (version ${VERSION}). If you made it for this, delete it with company_delete and expectedVersion ${VERSION}; that removes only that version.${CHECKS}`,
+		);
+		expect(await said(imported({ file: file(null) }), fileIn)).toBe(
+			`${BROUGHT} The file at ${BUNDLE} is no longer the bundle that was read, or is gone: leave it.${CHECKS}`,
+		);
+		// A file the agent did not name is never one to delete: the words of before.
+		expect(await said(imported({ file: file(VERSION, "code/_incoming/other/shop.bundle") }), fileIn)).toBe(
+			`${BROUGHT}${AS_BEFORE}${CHECKS}`,
+		);
+		// The version is only for code brought in: a look, a refusal and GitHub code say nothing of it.
+		for (const [ended, args] of [
+			[
+				imports({ state: "done", step: "look", look: look(), result: "looked", file: null }),
+				{ ...fileIn, look: true },
+			],
+			[imports({ state: "refused", code: "IMPORT_FILE_CHANGED", file: null }), fileIn],
+			[imported({ file: file(VERSION) }), bringIn],
+		] as const) {
+			const text = await said(ended, args);
+			expect(text).not.toMatch(/delete|version/i);
+		}
+	});
+
+	it("brings another branch of a GitHub project in as main, and says when the source has no such branch", async () => {
+		const f = await fixture((method) =>
+			method === IMPORT ? asked : imported({ look: look({ defaultBranch: "feature/checkout" }) }),
+		);
+		try {
+			expect(
+				(
+					await f.invoke({
+						...bringIn,
+						from: { github: "github.com/Acme/Shop", branch: " refs/heads/feature/checkout " },
+					})
+				).text,
+			).toBe(
+				`Brought in as code/acme/shop: 340 earlier changes on feature/checkout, 210 files; change 1 of its record.${GITHUB}${CHECKS}`,
+			);
+			expect(f.calls[0]?.args.p_request).toEqual({
+				operationKey: "bring-shop",
+				owner: "acme",
+				name: "shop",
+				from: { github: "Acme/Shop", branch: "feature/checkout" },
+				look: false,
+			});
+		} finally {
+			f.run.close();
+		}
+		const unknown = imports({ state: "refused", code: "IMPORT_BRANCH_UNKNOWN" });
+		for (const from of [
+			{ github: "Acme/Shop", branch: "feature/gone" },
+			{ file: BUNDLE, branch: "feature/gone" },
+		])
+			expect(await said(unknown, { ...bringIn, from })).toBe(
+				'Nothing was brought in: it has no branch "feature/gone": call again with from.branch set to one it has, or without from.branch, and a new operationKey.',
+			);
+		// Without a branch, a file's words are as before.
+		expect(await said(unknown, fileIn)).toBe(
+			"Nothing was brought in: the file has more than one branch and none is clearly its main one: call again with from.branch, the branch to bring in, and a new operationKey.",
+		);
 	});
 });
 
