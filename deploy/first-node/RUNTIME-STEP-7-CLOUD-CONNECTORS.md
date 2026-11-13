@@ -378,6 +378,11 @@ location = /v1/coding-mcp {
     proxy_read_timeout 600s;
     proxy_pass http://$qorpera_operations_broker;
 }
+# Own code storage, step 6 (the import): the two fetch routes wait up to 150 s
+# for the executor to take what they send, above the relay's own 2-minute idle
+# bound, since the http level's send_timeout of 40 s cut an import's fetch
+# whose writer (the executor's bundle store) paused longer, and the import then
+# ended busy and fetched again.
 location = /v1/coding-repository-fetch/refs {
     limit_except GET { deny all; }
     if ($qorpera_operations_broker = "") { return 404; }
@@ -386,6 +391,7 @@ location = /v1/coding-repository-fetch/refs {
     proxy_request_buffering off;
     client_max_body_size 0;
     proxy_read_timeout 600s;
+    send_timeout 150s;
     proxy_pass http://$qorpera_operations_broker;
 }
 location = /v1/coding-repository-fetch/upload-pack {
@@ -396,6 +402,7 @@ location = /v1/coding-repository-fetch/upload-pack {
     proxy_request_buffering off;
     client_max_body_size 0;
     proxy_read_timeout 600s;
+    send_timeout 150s;
     proxy_pass http://$qorpera_operations_broker;
 }
 ```

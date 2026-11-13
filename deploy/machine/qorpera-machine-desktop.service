@@ -10,10 +10,24 @@ Slice=qorpera-machine.slice
 User=desktop
 Group=desktop
 WorkingDirectory=/home/desktop
-Environment=HOME=/home/desktop XDG_RUNTIME_DIR=/run/qorpera-desktop
-RuntimeDirectory=qorpera-desktop
+# Two folders under /run, with two owners (12 Nov 2026, review r1 F1 of #1704). /run/qorpera-desktop is ROOT's: what
+# root notes about the desktop (its idle clock `last-use`, the language and time zone it was started with, the folders
+# it serves, a screenshot on its way) is written and read there by root alone (`desktop`, the screen helper, the
+# executor). The desktop's account may read it and can never put, replace or point anything there, so nothing root
+# reads, writes or touches there can be the account's doing. /run/qorpera-desktop/session is the ACCOUNT's own: its
+# session bus and what its programs keep; root reads nothing there. systemd makes the first folder as root's because
+# it is only the way to the second: RuntimeDirectory= gives the account the innermost folder alone, and removes that
+# one when the desktop stops.
+Environment=HOME=/home/desktop XDG_RUNTIME_DIR=/run/qorpera-desktop/session
+RuntimeDirectory=qorpera-desktop/session
 RuntimeDirectoryMode=0700
+# Root's notes: root's folder whatever was there, empty at every start but for the idle clock, and gone with the
+# desktop (`+`: as root, whatever User= says).
+ExecStartPre=+/usr/bin/install -d -o root -g root -m 0755 /run/qorpera-desktop
+ExecStartPre=+/usr/bin/find /run/qorpera-desktop -mindepth 1 -maxdepth 1 ! -name session -exec /usr/bin/rm -rf -- {} +
+ExecStartPre=+/usr/bin/touch /run/qorpera-desktop/last-use
 ExecStart=/opt/qorpera-machine/desktop-session
+ExecStopPost=-+/usr/bin/find /run/qorpera-desktop -mindepth 1 -maxdepth 1 ! -name session -exec /usr/bin/rm -rf -- {} +
 Restart=no
 TimeoutStopSec=10
 # When memory runs out, the screen is not what is ended: its X server and session bus keep this, and the session script

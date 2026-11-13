@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	APP_GROUPS_MAX_BYTES,
+	type AppGroup,
 	appGroupName,
 	appGroupSlug,
 	appGroupsGroups,
@@ -346,5 +347,54 @@ describe("what the drawer draws", () => {
 			{ kind: "item", key: "concepts" },
 		]);
 		expect(drawn.missing).toEqual(["app:gone", "app:gone-too", "sites"]);
+	});
+});
+
+describe("the groups' colours (12 Nov 2026)", () => {
+	it("reads each group's colour from its note line, wherever it stands, and writes it back as one line after the list", () => {
+		const text = `<!-- group colours: market=green, trips=teal, gone=pink, routes=red, bad id=gold -->
+- group trips: Trips
+  - app:planner
+  - group routes: Routes
+    - app:lofoten
+- group market: Market
+  - app:research
+<!-- retired group ids: old -->
+`;
+		const file = parseAppGroups(text);
+		const [trips, market] = file.items as AppGroup[];
+		expect(trips?.colour).toBe("teal");
+		expect(market?.colour).toBe("green");
+		// "red" is no palette colour (coral is): it is left out, and so is a group the file does not have.
+		expect((trips?.items[1] as AppGroup | undefined)?.colour).toBeUndefined();
+		expect(file.notes).toEqual([]);
+		expect(writeAppGroups(file)).toBe(`- group trips: Trips
+  - app:planner
+  - group routes: Routes
+    - app:lofoten
+- group market: Market
+  - app:research
+
+<!-- retired group ids: old -->
+
+<!-- group colours: trips=teal, market=green -->
+`);
+		expect(parseAppGroups(writeAppGroups(file))).toEqual(file);
+		// The drawer gets them too.
+		expect(resolveAppGroups(file, ["app:planner", "app:research"]).items).toEqual([
+			{ kind: "group", id: "trips", name: "Trips", items: [{ kind: "item", key: "app:planner" }], colour: "teal" },
+			{
+				kind: "group",
+				id: "market",
+				name: "Market",
+				items: [{ kind: "item", key: "app:research" }],
+				colour: "green",
+			},
+		]);
+	});
+
+	it("writes no colours line for a file without colours", () => {
+		const plain = parseAppGroups("- group trips: Trips\n  - app:planner\n");
+		expect(writeAppGroups(plain)).toBe("- group trips: Trips\n  - app:planner\n");
 	});
 });

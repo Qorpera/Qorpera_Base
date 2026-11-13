@@ -30,6 +30,7 @@ import {
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { codeImportShown } from "./code-import.ts";
 import { type CodeSiteCollected, codeSiteRefusedSummary, codeSiteReported } from "./code-site.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
 import {
@@ -394,7 +395,16 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					paths = error.paths;
 				} else if (error instanceof CodeHostJobFailure && error.code === "CODE_HOST_REF_UNREADABLE")
 					code = error.code;
-				const summary = code === undefined ? undefined : landRefusal(repository.baseBranch, code, paths);
+				// The names the company folder refuses are named as the import's look shows a path (`codeImportShown`): one
+				// over 200 bytes, key-like or with a control character is only counted.
+				const summary =
+					code === undefined
+						? undefined
+						: landRefusal(
+								repository.baseBranch,
+								code,
+								code === "CODE_HOST_NAMES_FOLDER_REFUSES" ? paths.map((path) => codeImportShown(path)) : paths,
+							);
 				if (code === undefined || summary === undefined) throw error;
 				await this.#reportRefused(session, headSha, "refused", code, paths);
 				throw new CodingLandRefused(code, summary, { cause: error });

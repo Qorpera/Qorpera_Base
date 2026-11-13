@@ -1,0 +1,896 @@
+#!/usr/bin/python3 -I
+"""What root's `desktop` does with files where the desktop's account can reach: putting a file or a folder on the
+desktop (`desktop open`, `--copy`) and saving a picture of the screen (`desktop shot`, `--shot`).
+Installed as /opt/qorpera-machine/desktop-files; `desktop` runs it as root.
+
+The account `desktop` is where pages and an agent's programs on the desktop run. In any folder it may write it can
+make a name a link to a file only root may read, at any moment. So root never looks at a path and then uses the
+path: between the look and the use the path can come to mean something else (review r2 of #1704 showed two ways).
+All work here is done in one of two ways, and none in a third:
+
+- AS THE ACCOUNT. The work runs in a process of the account's own (setpriv: its user, its group, its other groups;
+  no descriptor of root's; a session of its own). Whatever a planted link leads to, that process reaches only what
+  the account could reach anyway. Everything in the account's Desktop folder is done this way. What it makes in
+  steps (a copy, a picture) lies under a name the desktop does not show until it is whole, and gets its name in one
+  step; what did not end well, root has the account take away again.
+- AS ROOT, THROUGH FOLDERS ROOT HOLDS. Root opens the way part by part from `/`, each part inside the descriptor of
+  the one before and never through a link (O_NOFOLLOW), and goes on only through folders that root alone can change:
+  owned by root, not writable by a group or by everyone, with no ACL that lets another write. What root then reads
+  or makes, it reads or makes inside the descriptor it holds. Nobody but root can have put a name on such a way, and
+  no name is looked up twice: a name is taken hold of once (O_PATH), and what is then held says what it is and is
+  what gets opened.
+
+A way that is not root's alone is never worked on with root's rights: the work is then the account's to do, or it
+is refused with the part that stopped it.
+"""
+
+import ctypes
+import errno
+import os
+import re
+import secrets
+import select
+import shutil
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import tarfile
+import time
+
+ACCOUNT = "desktop"
+DESK = "/home/desktop/Desktop"
+SELF = "/opt/qorpera-machine/desktop-files"
+# Where root's ways start, and who alone may be able to change a folder on them. (The tests walk a folder of their
+# own as the one who runs them; nothing in this program changes these two.)
+TOP = "/"
+OWNER = 0
+# A folder entered on a way: inside the one held, never through a link.
+FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# A name taken hold of, whatever it is: not followed, not opened, nothing done to it.
+HOLD = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
+# What a hold holds, opened for reading through the kernel's own name for the descriptor (no name is looked up again).
+READ = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+# What the account's side answers with, beside 0 (done) and 1 (failed, with a message).
+WHOLE_DISK, NO_SUCH, CANNOT_READ = 2, 3, 13
+KINDS = ("site", "folder", "page", "file")
+# How long root waits for the account's side, in seconds: the account can stop its own process, and `desktop` holds
+# the desktop's lock meanwhile. A link or a picture is a moment's work; a copy may be a large folder.
+PATIENCE = {"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900}
+# What is not whole yet has a name of its own, which the desktop does not show: a copy on its way is
+# Desktop/.qorpera-desktop-copy.<mark>, a picture on its way .<name>.<mark>.part beside its place. Root picks the mark
+# (16 hex digits) for each piece of work, so it can have exactly that taken away again.
+STAGE = ".qorpera-desktop-copy."
+URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+
+
+class Stop(Exception):
+	"""The command ends with this message and exit code."""
+
+	def __init__(self, message, code=1):
+		super().__init__(message)
+		self.code = code
+
+
+class NotRootsAlone(Exception):
+	"""Root does not work through this way: the message names the part that stops it, and why."""
+
+
+class Missing(Exception):
+	"""A part of the way is not there, in a folder that root alone can change (so nobody can have hidden it)."""
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Root's side: folders it holds.
+
+
+def others_can_write(fd):
+	"""Why another than root can change the names in the folder behind `fd`; None when nobody else can."""
+	status = os.fstat(fd)
+	if status.st_uid != OWNER:
+		return "belongs to another account than root"
+	if status.st_mode & 0o022:
+		return "can be written by its group or by everyone"
+	try:
+		acl = os.getxattr(fd, "system.posix_acl_access")
+	except OSError as error:
+		# No ACL on it, or a file system that keeps none (the company folder's).
+		if error.errno in (errno.ENODATA, errno.ENOTSUP, errno.ENOSYS):
+			return None
+		return f"has an ACL that cannot be read ({error.strerror})"
+	# A POSIX ACL as the kernel hands it out: a version (2), then entries of a tag, the rights and an id. Only the
+	# owner's own entry (tag 1) may carry the right to write (2); the mask (tag 16) gives nobody anything by itself.
+	if len(acl) < 4 or (len(acl) - 4) % 8 or struct.unpack_from("<I", acl)[0] != 2:
+		return "has an ACL that cannot be understood"
+	for at in range(4, len(acl), 8):
+		tag, rights, _ = struct.unpack_from("<HHI", acl, at)
+		if tag not in (1, 16) and rights & 2:
+			return "has an ACL that lets others write"
+	return None
+
+
+class Way:
+	"""A walk down from `/`, holding every folder it has entered. Each one is entered inside the one before, never
+	through a link, and only when root alone can change it."""
+
+	def __init__(self):
+		self.names = []
+		self.held = [os.open(TOP, FOLDER)]
+		try:
+			self.check(self.fd, self.shown())
+		except BaseException:
+			self.close()
+			raise
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, *_):
+		self.close()
+
+	def close(self):
+		while self.held:
+			os.close(self.held.pop())
+
+	@property
+	def fd(self):
+		return self.held[-1]
+
+	def shown(self, *more):
+		return "/" + "/".join([*self.names, *more])
+
+	def check(self, fd, shown):
+		why = others_can_write(fd)
+		if why:
+			raise NotRootsAlone(f"{shown} {why}")
+
+	def folder(self, name):
+		"""Opens the folder `name` of the folder held, never through a link, and checks it."""
+		try:
+			fd = os.open(name, FOLDER, dir_fd=self.fd)
+		except FileNotFoundError:
+			raise Missing(self.shown(name)) from None
+		except OSError as error:
+			if error.errno in (errno.ENOTDIR, errno.ELOOP):
+				raise NotRootsAlone(f"{self.shown(name)} is a link, or not a folder") from None
+			raise
+		try:
+			self.check(fd, self.shown(name))
+		except BaseException:
+			os.close(fd)
+			raise
+		return fd
+
+	def into(self, name, make=False):
+		"""Enters the folder `name`. `..` goes back up: every folder below was entered as a real folder, so up is
+		where the walk came from."""
+		if name == "..":
+			if self.names:
+				self.names.pop()
+				os.close(self.held.pop())
+			return
+		try:
+			fd = self.folder(name)
+		except Missing:
+			if not make:
+				raise
+			# The folder held is root's alone, so the name made in it is root's from its first moment.
+			try:
+				os.mkdir(name, 0o755, dir_fd=self.fd)
+			except FileExistsError:
+				pass
+			fd = self.folder(name)
+		self.held.append(fd)
+		self.names.append(name)
+
+
+def walk(path, make=False):
+	"""Walks to the folder that holds the last name of `path` (absolute); answers the Way and that name. A path that
+	ends in a folder for sure (`/`, `.`, `..`) is walked whole, and the name is None."""
+	if not path.startswith("/") or "\0" in path:
+		raise Stop(f"not a path: {path!r}")
+	names = [name for name in path.split("/") if name not in ("", ".")]
+	last = None
+	if names and names[-1] != ".." and not path.endswith(("/", "/.")):
+		last = names.pop()
+	way = Way()
+	try:
+		for name in names:
+			way.into(name, make)
+	except BaseException:
+		way.close()
+		raise
+	return way, last
+
+
+def source(way, name):
+	"""Takes hold of `name` in the folder held, never through a link, and opens what it then holds for reading: a
+	file, or a folder that root alone can change. Answers that descriptor and what it is."""
+	try:
+		hold = os.open(name, HOLD, dir_fd=way.fd)
+	except FileNotFoundError:
+		raise Missing(way.shown(name)) from None
+	try:
+		status = os.fstat(hold)
+		if stat.S_ISLNK(status.st_mode):
+			raise NotRootsAlone(f"{way.shown(name)} is a link")
+		if not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode)):
+			raise NotRootsAlone(f"{way.shown(name)} is neither a file nor a folder")
+		fd = os.open(f"/proc/self/fd/{hold}", READ)
+	finally:
+		os.close(hold)
+	if stat.S_ISDIR(status.st_mode):
+		try:
+			way.check(fd, way.shown(name))
+		except BaseException:
+			os.close(fd)
+			raise
+	return fd, status
+
+
+def plain(info):
+	info.uid = info.gid = 0
+	info.uname = info.gname = ""
+	return info
+
+
+def send_folder(tar, fd, arc, shown):
+	"""Adds the folder behind `fd` and all in it to the archive, and answers how many entries it left out. Every
+	folder in it must be root's alone, as the way to it. Each name in it is taken hold of once: a link is kept as a
+	link, never followed; a file or a folder is read through that hold; what is none of the three is left out."""
+	why = others_can_write(fd)
+	if why:
+		raise NotRootsAlone(f"{shown} {why}")
+	status = os.fstat(fd)
+	info = tarfile.TarInfo(arc)
+	info.type = tarfile.DIRTYPE
+	info.mode = stat.S_IMODE(status.st_mode)
+	info.mtime = status.st_mtime
+	tar.addfile(plain(info))
+	left_out = 0
+	for name in sorted(os.listdir(fd)):
+		try:
+			hold = os.open(name, HOLD, dir_fd=fd)
+		except FileNotFoundError:
+			# Gone since the folder was listed (in a folder of root's alone, root's own doing).
+			continue
+		try:
+			held = os.fstat(hold)
+			if stat.S_ISLNK(held.st_mode):
+				info = tarfile.TarInfo(f"{arc}/{name}")
+				info.type = tarfile.SYMTYPE
+				info.linkname = os.readlink("", dir_fd=hold)
+				info.mtime = held.st_mtime
+				tar.addfile(plain(info))
+			elif stat.S_ISDIR(held.st_mode):
+				inner = os.open(f"/proc/self/fd/{hold}", READ)
+				try:
+					left_out += send_folder(tar, inner, f"{arc}/{name}", f"{shown}/{name}")
+				finally:
+					os.close(inner)
+			elif stat.S_ISREG(held.st_mode):
+				with os.fdopen(os.open(f"/proc/self/fd/{hold}", READ), "rb") as file:
+					tar.addfile(plain(tar.gettarinfo(arcname=f"{arc}/{name}", fileobj=file)), file)
+			else:
+				left_out += 1
+		finally:
+			os.close(hold)
+	return left_out
+
+
+def send(fd, status, shown, out):
+	"""Writes what `fd` holds (a file, or a folder and all in it) to `out` as an archive: `copy`, what is in it, and
+	a last empty member `done`, without which the other side keeps nothing. Answers how many entries were left out."""
+	left_out = 0
+	with tarfile.open(fileobj=out, mode="w|", format=tarfile.PAX_FORMAT) as tar:
+		if stat.S_ISDIR(status.st_mode):
+			left_out = send_folder(tar, fd, "copy", shown)
+		else:
+			with os.fdopen(os.dup(fd), "rb") as file:
+				tar.addfile(plain(tar.gettarinfo(arcname="copy", fileobj=file)), file)
+		tar.addfile(tarfile.TarInfo("done"))
+	return left_out
+
+
+def here():
+	"""The folder a path without a leading `/` is meant from: this command's own."""
+	try:
+		return os.getcwd()
+	except OSError:
+		return "/"
+
+
+def account_command(words):
+	"""The command that runs this program's account side as the account: its user, its group and its other groups,
+	no right kept or gained, and an environment made anew."""
+	return ["/usr/bin/setpriv", f"--reuid={ACCOUNT}", f"--regid={ACCOUNT}", "--init-groups", "--inh-caps=-all", "--no-new-privs",
+		"--reset-env", "--", "/usr/bin/python3", "-I", SELF, "account", *words]  # fmt: skip
+
+
+# The signals that ask root's side to stop. Those it heeds are held back (blocked) from the start of root's side to
+# its last statement, the taking away of what was on its way included: the kernel keeps one that arrives waiting,
+# however many arrive, and no code of this program ever runs because of one. Root's side looks for one that waits at
+# the points it chooses (stop_asked), and leaves for it in one place, at its end (leave). A SIGKILL cannot be held
+# back: what is on its way then stays under its hidden name.
+STOPS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+# Decided once, at the start of root's side (heed_stops), from what it was started with. HEEDED: the stop signals it
+# heeds at all. One that its caller ignores (`nohup desktop open ...`), or holds back itself, is not root's side's to
+# heed: it is neither held back here nor read, and is at the end what it was at the start. (Held back, even an
+# ignored signal would wait and be read as a stop: review r5 F1 of #1712.) STARTED_WITH: the signals that were held
+# back for root's side already, which is what the account's processes are started with again.
+HEEDED = frozenset()
+STARTED_WITH = frozenset()
+# How often root's side looks while it waits for the account's side, in seconds.
+TICK = 0.05
+
+
+class Stopped(Exception):
+	"""Root's side gives up its work because it was asked to stop: raised where it looked, with nothing of the account's
+	side left that it had started. It leaves at its end, not here."""
+
+
+def heed_stops():
+	"""Decides which stop signals root's side heeds, from what it was started with, and holds those back."""
+	global HEEDED, STARTED_WITH
+	STARTED_WITH = frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+	HEEDED = frozenset(number for number in STOPS if signal.getsignal(number) is not signal.SIG_IGN and number not in STARTED_WITH)
+	signal.pthread_sigmask(signal.SIG_BLOCK, HEEDED)
+
+
+def stop_asked():
+	"""The number of a signal that root's side heeds, asks it to stop and waits; or 0."""
+	return min(signal.sigpending() & HEEDED, default=0)
+
+
+def leave(number):
+	"""Root's side ends for the signal that asked it to stop: its last statement, after all it started is ended,
+	collected and taken away. It ends BY that signal (given its own default again and let through), so whoever waits
+	for it sees a command ended by the signal, which is what a shell goes by to stop its script on an interrupt.
+	Should the signal not end it, it leaves with the code a shell gives such an end."""
+	sys.stdout.flush()
+	sys.stderr.flush()
+	signal.signal(number, signal.SIG_DFL)
+	signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})
+	os._exit(128 + number)
+
+
+class Pipe:
+	"""The pipe root's copy goes down to the account's side, written without ever waiting blindly: root's side waits
+	a tick at a time for it to take more, and looks every tick (as_account's `look`); when the account's side has
+	ended, the copy ends."""
+
+	def __init__(self, fd, ended, look):
+		self.fd, self.ended, self.look, self.looked = fd, ended, look, time.monotonic()
+
+	def write(self, data):
+		left = memoryview(data)
+		while left:
+			ended, takes, _ = select.select([self.ended], [self.fd], [], TICK)
+			if ended:
+				raise BrokenPipeError(errno.EPIPE, "the account's side has ended")
+			if takes:
+				try:
+					left = left[os.write(self.fd, left) :]
+				except BlockingIOError:
+					pass
+			if time.monotonic() - self.looked >= TICK:
+				self.looked = time.monotonic()
+				self.look()
+		return len(data)
+
+	def flush(self):
+		pass
+
+
+def as_account(*words, feed=None, heed=True):
+	"""Runs this program's account side as the account (account_command), in a session of its own, with `/` as its
+	folder, none of the signals held back that root's side holds back for itself, and no descriptor but its three:
+	nothing to read (or the pipe `feed` writes to), and two files in memory for what it says. It is given PATIENCE
+	seconds. Root's side never waits for it blindly: every
+	TICK it looks whether its patience is over and, with `heed`, whether root's side was asked to stop (the taking
+	away is run without `heed`: a stop does not end it). Either ends the account's side. However that side ends,
+	everything it started that is still there is ended and collected before this goes on: nothing of it can write any
+	more. Answers its exit code, what it printed, what it complained of, and what `feed` answered; with `heed`, gives
+	up (Stopped) when root's side was asked to stop."""
+	if heed and stop_asked():
+		raise Stopped()
+	# What the account's side leaves behind when it ends before its own child (the copying `cp`) becomes this
+	# process's to collect, not init's (PR_SET_CHILD_SUBREAPER).
+	ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
+	out, err = os.memfd_create("answer"), os.memfd_create("complaint")
+	reads, writes = os.pipe() if feed else (None, None)
+	process = ended = fed = failure = code = None
+	impatient = []
+	deadline = time.monotonic() + PATIENCE[words[0]]
+
+	def look():
+		# The two reasons to end the account's side before it ends by itself. Its number is its group's (a session
+		# of its own), and still its own here: it is collected only below, after the last look.
+		if not impatient and time.monotonic() >= deadline:
+			impatient.append(True)
+			end_group(process)
+		if heed and stop_asked():
+			end_group(process)
+
+	try:
+		try:
+			process = subprocess.Popen(
+				account_command(words),
+				stdin=reads if feed else subprocess.DEVNULL,
+				stdout=out,
+				stderr=err,
+				close_fds=True,
+				start_new_session=True,
+				cwd="/",
+				# What root's side holds back for itself is not held back for the account's processes: they are
+				# started with what root's side was started with. (A signal its caller ignores is ignored by them
+				# too, as by any program started under it; they are ended with SIGKILL, which nothing ignores.)
+				preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),
+			)
+			# Readable when the account's side has ended, before it is collected.
+			ended = os.pidfd_open(process.pid)
+			if feed:
+				os.close(reads)
+				reads = None
+				os.set_blocking(writes, False)
+				try:
+					fed = feed(Pipe(writes, ended, look))
+				except BrokenPipeError:
+					# The other side ended first; its exit code and its complaint say why.
+					pass
+				except Exception as error:
+					# The pipe is closed below: the other side sees a copy that did not come whole, and keeps nothing.
+					failure = error
+				os.close(writes)
+				writes = None
+			while not select.select([ended], [], [], TICK)[0]:
+				look()
+		finally:
+			for fd in (reads, writes, ended):
+				if fd is not None:
+					os.close(fd)
+			if process is not None:
+				end_group(process)
+				code = process.wait()
+				while True:
+					try:
+						os.waitpid(-process.pid, 0)
+					except ChildProcessError:
+						break
+		# Nothing of the account's side is left.
+		if heed and stop_asked():
+			raise Stopped()
+		if failure:
+			raise failure
+		if impatient:
+			return 1, "", f"the desktop's user did not finish within {PATIENCE[words[0]]} seconds, and was stopped", fed
+		if code < 0:
+			return 1, "", f"the desktop's user's side was ended before it finished (signal {-code})", fed
+		said = []
+		for fd in (out, err):
+			os.lseek(fd, 0, os.SEEK_SET)
+			said.append(os.read(fd, 65536).decode("utf-8", "replace"))
+		# What it complained of is made fit to show: no control characters, not endless.
+		return code, said[0], "".join(c if c.isprintable() else " " for c in said[1][:1500]).strip(), fed
+	finally:
+		os.close(out)
+		os.close(err)
+
+
+def end_group(process):
+	"""Ends the account's side and all it started (its process group). Only ever called before the side is collected."""
+	try:
+		os.killpg(process.pid, signal.SIGKILL)
+	except ProcessLookupError:
+		pass
+
+
+def staged(work, *words, feed=None, beside=()):
+	"""Has the account do a piece of work that makes something in steps (a copy, a picture). What is not whole yet
+	lies under a name made from a mark picked here. When the work does not end well, the account is asked to take
+	that away again: also when its process was ended, by root's patience, by anything else, or because root's side
+	was asked to stop. By then nothing of the first try is left that could write (as_account ends and collects it),
+	and the taking away runs to its end whatever is asked of root's side meanwhile, so what is taken away stays away."""
+	mark = secrets.token_hex(8)
+	try:
+		done = as_account(work, *words, mark, feed=feed)
+	except BaseException:
+		as_account("tidy", mark, *beside, heed=False)
+		raise
+	if done[0] != 0:
+		as_account("tidy", mark, *beside, heed=False)
+	return done
+
+
+def answer_of(code, printed, complaint, target):
+	"""The account's answer, checked before root goes by it: three lines, a kind this program knows, an absolute
+	path, a plain name, nothing that cannot be shown."""
+	if code == WHOLE_DISK:
+		raise Stop("open a file or a folder, not the whole disk", 2)
+	if code != 0:
+		raise Stop(complaint or f"the desktop's user could not put {target} on the desktop")
+	lines = printed.split("\n")
+	if len(lines) != 4 or lines[3] or lines[0] not in KINDS or not lines[1].startswith("/") or not lines[2] or "/" in lines[2]:
+		raise Stop("the desktop's user gave no answer that can be used")
+	if not all(c.isprintable() for line in lines[:3] for c in line):
+		raise Stop(f"{target} has a name with a character that cannot be shown: not opened")
+	return lines[:3]
+
+
+def root_copy(given, target):
+	"""A copy on the desktop of what lies on a way of root's alone: root reads it, whoever else may, and sends it to
+	a process of the account's own, which puts it on its desktop."""
+	way, name = walk(given)
+	with way:
+		if name is None:
+			if not way.names:
+				raise Stop("open a file or a folder, not the whole disk", 2)
+			fd, name, shown = os.dup(way.fd), way.names[-1], way.shown()
+			status = os.fstat(fd)
+		else:
+			fd, status = source(way, name)
+			shown = way.shown(name)
+		try:
+			kind = "folder" if stat.S_ISDIR(status.st_mode) else "file"
+			code, printed, complaint, left_out = staged("take", name, kind, feed=lambda pipe: send(fd, status, shown, pipe))
+		finally:
+			os.close(fd)
+	if left_out:
+		print(f"{left_out} of its entries are neither file, folder nor link: left out", file=sys.stderr)
+	return answer_of(code, printed, complaint, target)
+
+
+def there(given):
+	"""Whether the target is there at all, as far as root's own way can say: False only for a part that is missing
+	in a folder of root's alone. The answer picks a message and nothing else."""
+	try:
+		way, name = walk(given)
+	except Missing:
+		return False
+	except NotRootsAlone:
+		return True
+	with way:
+		if name is not None:
+			try:
+				os.close(os.open(name, HOLD, dir_fd=way.fd))
+			except FileNotFoundError:
+				return False
+	return True
+
+
+def root_open(target, copy):
+	"""`desktop open TARGET [--copy]`: answers the kind, the path that is opened and the name on the desktop; None
+	when there is no such file or folder."""
+	given = os.path.join(here(), target)
+	refusal = None
+	if copy:
+		try:
+			return root_copy(given, target)
+		except Missing:
+			return None
+		except NotRootsAlone as stopped:
+			refusal = stopped
+	# A link on the desktop, or a copy of what is not on a way of root's alone: the account's own work, start to end.
+	code, printed, complaint, _ = staged("copy", given) if copy else as_account("place", given)
+	if code == NO_SUCH:
+		return None
+	if code == CANNOT_READ:
+		# What reads like an address and is no file that anyone here can vouch for is an address.
+		if URL.match(target):
+			return None
+		if copy:
+			raise Stop(
+				f"the desktop's user cannot read {target}, and root does not read it for the desktop: {refusal}. Root copies for"
+				" the desktop only what lies on a way of folders that root alone can change, with no link on it (under /root, say)."
+			)
+		if not there(given):
+			return None
+		raise Stop(f"the desktop's user cannot read {target}: open it with --copy")
+	return answer_of(code, printed, complaint, target)
+
+
+def root_save(picture, file):
+	"""`desktop shot FILE`: puts the picture root took (a file in root's own folder) at FILE."""
+	given = os.path.join(here(), file)
+	# Without the company folder mounted, /company is a plain folder on this machine: nothing would ever show the picture.
+	named = os.path.normpath(given)
+	if (named == "/company" or named.startswith("/company/")) and not os.path.ismount("/company"):
+		raise Stop(
+			"this machine has no company folder at /company, so company_read cannot show a picture saved there"
+			" (machine_start says which machines get it)",
+			4,
+		)
+	taken = os.open(picture, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+	try:
+		if not stat.S_ISREG(os.fstat(taken).st_mode):
+			raise Stop(f"{picture} is no picture")
+		try:
+			way, name = walk(given, make=True)
+		except NotRootsAlone as refusal:
+			# Not a way of root's alone: the account saves it, with its own rights, or nobody does. It reads the picture
+			# where root took it (root's folder, which the account may read).
+			os.fchmod(taken, 0o644)
+			code, _, complaint, _ = staged("save", picture, given, beside=(given,))
+			if code != 0:
+				raise Stop(
+					f"no picture saved at {file}: {refusal}, so root does not write there, and the desktop's user could not"
+					f" either ({complaint or 'no reason given'}). Save it under /company or /root, or where the desktop's user may write."
+				) from None
+			return
+		with way:
+			if name is None:
+				raise Stop(f"no picture saved at {file}: it is a folder")
+			try:
+				out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644, dir_fd=way.fd)
+			except OSError as error:
+				why = "is a link" if error.errno == errno.ELOOP else f"cannot be written ({error.strerror})"
+				raise Stop(f"no picture saved at {file}: {way.shown(name)} {why}") from None
+			with os.fdopen(out, "wb") as target, os.fdopen(os.dup(taken), "rb") as bytes_:
+				if not stat.S_ISREG(os.fstat(out).st_mode):
+					raise Stop(f"no picture saved at {file}: {way.shown(name)} is not a file")
+				shutil.copyfileobj(bytes_, target)
+	finally:
+		os.close(taken)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The account's side: its own rights, its own Desktop folder.
+
+
+def answer(path, place):
+	if os.path.isdir(path):
+		kind = "site" if os.path.isfile(os.path.join(path, "index.html")) else "folder"
+	else:
+		kind = "page" if path.lower().endswith((".html", ".htm")) else "file"
+	print(kind, path, os.path.basename(place), sep="\n")
+
+
+def names(name, folder):
+	"""The names tried on the desktop, in turn: the name, then with a number (site-2, notes-2.txt)."""
+	yield name
+	number = 2
+	while True:
+		if not folder and name.find(".", 1) != -1:
+			stem, ending = name.rsplit(".", 1)
+			yield f"{stem}-{number}.{ending}"
+		else:
+			yield f"{name}-{number}"
+		number += 1
+
+
+def found(target):
+	"""The target as the account finds it, through whatever links: its real path."""
+	try:
+		path = os.path.realpath(target, strict=True)
+	except PermissionError:
+		sys.exit(CANNOT_READ)
+	except OSError:
+		sys.exit(NO_SUCH)
+	if path == "/":
+		sys.exit(WHOLE_DISK)
+	return path
+
+
+def stage(mark):
+	"""The name a copy has in the Desktop folder until it is whole (the same disk, so giving it its name is one step)."""
+	if not re.fullmatch("[0-9a-f]{16}", mark):
+		sys.exit("not a mark for what is on its way")
+	return os.path.join(DESK, STAGE + mark)
+
+
+def part(file, mark):
+	"""The name a picture has beside its place until it is whole."""
+	if not re.fullmatch("[0-9a-f]{16}", mark):
+		sys.exit("not a mark for what is on its way")
+	return os.path.join(os.path.dirname(file), f".{os.path.basename(file)}.{mark}.part")
+
+
+def put(on_its_way, name, folder):
+	"""Gives a copy that is whole a free name on the desktop, in one step and only where no name is (renameat2 with
+	RENAME_NOREPLACE): the name appears with all that is in it or not at all, and nothing there is ever replaced."""
+	rename = ctypes.CDLL(None, use_errno=True).renameat2
+	for candidate in names(name, folder):
+		place = os.path.join(DESK, candidate)
+		if rename(-100, os.fsencode(on_its_way), -100, os.fsencode(place), 1) == 0:
+			return place
+		if ctypes.get_errno() != errno.EEXIST:
+			raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()), place)
+
+
+def drop(place):
+	"""Takes away what is not whole (whatever rights its folders came with)."""
+	if os.path.isdir(place) and not os.path.islink(place):
+		try:
+			os.chmod(place, 0o700)
+			for where, folders, _ in os.walk(place):
+				for name in folders:
+					if not os.path.islink(os.path.join(where, name)):
+						os.chmod(os.path.join(where, name), 0o700)
+		except OSError:
+			pass
+		shutil.rmtree(place, ignore_errors=True)
+	else:
+		try:
+			os.unlink(place)
+		except OSError:
+			pass
+
+
+def account_place(target):
+	"""A link on the desktop to where the target is. The same link is used again; a name that is taken gets a number."""
+	path = found(target)
+	if not os.access(path, os.R_OK):
+		sys.exit(CANNOT_READ)
+	place = path
+	if not path.startswith(DESK + "/"):
+		os.makedirs(DESK, mode=0o755, exist_ok=True)
+		for candidate in names(os.path.basename(path), not os.path.isfile(path)):
+			place = os.path.join(DESK, candidate)
+			try:
+				os.symlink(path, place)
+				break
+			except FileExistsError:
+				if os.path.islink(place) and os.readlink(place) == path:
+					break
+	answer(path, place)
+
+
+def account_copy(target, mark):
+	"""A copy on the desktop, made by the account of what it can read itself: made under its staging name, and given
+	its name when it is whole."""
+	path = found(target)
+	if not os.access(path, os.R_OK):
+		sys.exit(CANNOT_READ)
+	if path.startswith(DESK + "/"):
+		# Already on the desktop (an earlier copy, say): opened where it is.
+		answer(path, path)
+		return
+	on_its_way = stage(mark)
+	os.makedirs(DESK, mode=0o755, exist_ok=True)
+	copied = subprocess.run(["/usr/bin/cp", "-a", "-T", "--", path, on_its_way], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)  # fmt: skip
+	if copied.returncode != 0:
+		drop(on_its_way)
+		if "Permission denied" in copied.stderr:
+			sys.exit(CANNOT_READ)
+		sys.exit(f"{path} could not be copied to the desktop: {copied.stderr.strip()[:500]}")
+	try:
+		place = put(on_its_way, os.path.basename(path), not os.path.isfile(path))
+	except OSError:
+		drop(on_its_way)
+		raise
+	answer(place, place)
+
+
+def account_take(name, kind, mark):
+	"""A copy on the desktop of what root sends: an archive on stdin, unpacked under its staging name and given its
+	name only when it came whole."""
+	if "/" in name or name in ("", ".", "..") or kind not in ("file", "folder"):
+		sys.exit("not a name for the desktop")
+	on_its_way = stage(mark)
+	os.makedirs(DESK, mode=0o755, exist_ok=True)
+	whole = False
+
+	def inside(tar):
+		nonlocal whole
+		for member in tar:
+			if member.name == "done":
+				whole = True
+			elif member.name == "copy" or member.name.startswith("copy/"):
+				member.name = member.name[5:] or "."
+				if member.islnk():
+					member.linkname = member.linkname[5:]
+				yield member
+
+	try:
+		with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tar:
+			if kind == "folder":
+				os.mkdir(on_its_way, 0o700)
+				tar.extractall(on_its_way, members=inside(tar), filter="tar")
+			else:
+				for member in inside(tar):
+					if not member.isreg():
+						raise tarfile.TarError("not a file")
+					new = os.open(on_its_way, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+					with tar.extractfile(member) as from_, os.fdopen(new, "wb") as to:
+						shutil.copyfileobj(from_, to)
+					os.chmod(on_its_way, member.mode & 0o755)
+					os.utime(on_its_way, (member.mtime, member.mtime))
+		if not whole:
+			raise tarfile.TarError("it did not come whole")
+		place = put(on_its_way, name, kind == "folder")
+	except (tarfile.TarError, OSError) as error:
+		drop(on_its_way)
+		sys.exit(f"{name} could not be copied to the desktop: {error}")
+	answer(place, place)
+
+
+def account_save(picture, file, mark):
+	"""A picture root took, saved by the account where the account may write: written beside its place, and put in
+	its place when it is whole."""
+	on_its_way = part(file, mark)
+	try:
+		os.makedirs(os.path.dirname(file), exist_ok=True)
+		try:
+			shutil.copyfile(picture, on_its_way)
+		except PermissionError:
+			# The account may write the picture's own file but make no name beside it: written where it is.
+			shutil.copyfile(picture, file)
+			return
+		os.replace(on_its_way, file)
+	except OSError as error:
+		drop(on_its_way)
+		sys.exit(str(error))
+
+
+def account_tidy(mark, file=None):
+	"""Takes away what a piece of work that did not end well left under its staging names."""
+	drop(stage(mark))
+	if file is not None:
+		drop(part(file, mark))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def main(words):
+	if words[:1] == ["account"]:
+		# The account's side never runs with root's rights, and holds nothing it was not meant to be handed.
+		if os.getuid() == 0 or os.geteuid() == 0:
+			raise Stop("the account's side of desktop-files runs as the desktop's user only")
+		os.closerange(3, 4096)
+		try:
+			match words[1:]:
+				case ["place", target]:
+					account_place(target)
+				case ["copy", target, mark]:
+					account_copy(target, mark)
+				case ["take", name, kind, mark]:
+					account_take(name, kind, mark)
+				case ["save", picture, file, mark]:
+					account_save(picture, file, mark)
+				case ["tidy", mark]:
+					account_tidy(mark)
+				case ["tidy", mark, file]:
+					account_tidy(mark, file)
+				case _:
+					raise Stop("desktop-files account place|copy|take|save|tidy ...", 2)
+		except OSError as error:
+			# Its own rights did not reach (its Desktop folder made a link to a folder of root's, say).
+			sys.exit(f"the desktop's user could not do it: {error}")
+		return
+	if os.geteuid() != 0:
+		raise Stop("desktop-files runs as root, from `desktop`")
+	heed_stops()
+	match words:
+		case ["open", "--", target] | ["open", "--copy", "--", target]:
+			opened = root_open(target, words[1] == "--copy")
+			if opened is not None:
+				print(*opened, sep="\n")
+			elif URL.match(target):
+				# What names no file may be an address: `desktop` opens that in the browser.
+				print("url", target, "-", sep="\n")
+			else:
+				raise Stop(f"no such file or folder: {target}")
+		case ["save", picture, "--", file]:
+			root_save(picture, file)
+		case _:
+			raise Stop("desktop-files open [--copy] -- TARGET | save PICTURE -- FILE", 2)
+
+
+if __name__ == "__main__":
+	code = 0
+	try:
+		main(sys.argv[1:])
+	except Stop as stop:
+		print(stop, file=sys.stderr)
+		code = stop.code
+	except OSError as error:
+		print(f"desktop-files: {error}", file=sys.stderr)
+		code = 1
+	except Stopped:
+		code = 1
+	# The one place where root's side stops for a signal: here, with its work done or given up and nothing left of it.
+	if stop_asked():
+		leave(stop_asked())
+	sys.exit(code)

@@ -1711,6 +1711,17 @@ with the member folder client. Storage → the repository's folder → "Download
   repository is kept in Qorpera. `owner` and `name` are the folder's (`code/<owner>/<name>/`, lower case), `github`
   the project as GitHub names it (`Owner/Name`, as its newest session there named it). At most 100, ordered by
   folder. A client from before the key ignores it; a cloud from before it has no such key (read it as `[]`).
+  Since `20260930736000_code_import` also, always, `bringing: [{owner, name, from, step, waiting, startedAt}]`: the
+  code being brought in now (oldest first; `[]` when none; a cloud without the key cannot bring code in). `from` is
+  `{github: "Owner/Name"}` or `{file: "<the bundle's name>"}`; `step` null before its first step, else `fetch`, `read`,
+  `look`, `close`, `set-aside`, `build`, `open` or `tidy`; `waiting` null or why it waits for the company's agents
+  (`SESSIONS_BUSY`, `SESSIONS_ATTACHED`, `SESSIONS_OPEN`). `lastImport`: null, or `{owner, name, from, state, reason}`
+  for the company's newest import of the last 24 hours, when it ended `refused` or `failed` (`reason` its code, as
+  `IMPORT_USES_LFS`; a suffix after `:` may follow). Each repository gains `importedFrom`
+  (`{kind: "github", repository: "Owner/Name"}`, `{kind: "file", name}`, or null for code begun in Qorpera),
+  `importedAt` and `earlierChanges` (how many earlier changes came with it, or null). No commit, path or byte count.
+  A repository whose import has not ended yet (recorded, but its folder not open yet) is in `bringing` (at step
+  `open`), not in `repositories`, until its import's end puts it there.
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
@@ -1722,6 +1733,15 @@ with the member folder client. Storage → the repository's folder → "Download
   it ended) or `failed` (anything else, a made file that is over included: its 7 days passed, a newer download
   began to replace it, or a restore began to move the repository's folder; ask again). P0002 "No such download" for
   a request that is not one of the company's downloads.
+- `qorpera_request_code_import(profile, owner, name, github)` (`20260930736000_code_import`): owners and admins of
+  the company (42501 "Code unavailable" otherwise) bring a GitHub project in as `code/<owner>/<name>/`. `owner` and
+  `name` follow a repository's rules (lower case), `github` is exactly `Owner/Name` (22023 "Code import request is
+  invalid" otherwise). Answers `{schema: "qorpera.code-import/v1", state: "queued", requestId}` or
+  `{schema, state: "refused", reason}` with `reason` one of `kept_here` (a project is kept at that place),
+  `already_here` (that GitHub project was brought in at another place), `busy` (other code is being brought in),
+  `sessions_open` (agents still work on it on GitHub), `no_executor`, `file_missing`, `deleting`. Asked again for the
+  same place and project it answers `queued` with the request that has it (the open one, or the one that brought it
+  in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
 ## 3. Realtime

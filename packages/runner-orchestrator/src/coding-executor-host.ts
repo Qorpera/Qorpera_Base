@@ -251,8 +251,15 @@ export interface LxdCodingExecutorHostOptions {
 		client: LxdInstanceExecStreamClient;
 		/** Where a session's commands start and what its finished turn exports (default: none, at /company). */
 		repositories?: CodingFolderRepositories;
-		/** Each view the guest mounted for a session, and how the view it replaced ended, if it replaced one. */
-		onMount?(mount: { workerId: string; machineId: string; viewId: string; replaced?: CodingFolderViewEnd }): void;
+		/** Each view the guest mounted for a session, how the view it replaced ended, if it replaced one, and whether the
+		 * agent said the machine's package caches are ready at this mount (the turn's commands get them only then). */
+		onMount?(mount: {
+			workerId: string;
+			machineId: string;
+			viewId: string;
+			replaced?: CodingFolderViewEnd;
+			packageCaches: boolean;
+		}): void;
 		/** The log lines of a landing's checks (own code storage, step 3): `code-checks` (each command `started` and
 		 * `ended`, the site's collect and drop among them, each `boundary` after the collect, what the drop `dropped`, and
 		 * the `run`) and `code-checks-error` (whose `error` is the error itself, for the log to redact). Never a check's
@@ -2813,6 +2820,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				machineId: machine.machineId,
 				viewId,
 				...(replaced && { replaced }),
+				packageCaches,
 			});
 			// What the agent said of the machine's package caches at this mount: the turn's commands get them only then.
 			return packageCaches;

@@ -3,6 +3,21 @@ import { constants } from "node:fs";
 import { type FileHandle, link, lstat, mkdir, open, readdir, realpath, rm, statfs, unlink } from "node:fs/promises";
 import { posix } from "node:path";
 import { isUuid, parseCloudCodingRepository, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import {
+	CODE_IMPORT_BRANCH_BYTES,
+	CODE_IMPORT_BUNDLE_NAME,
+	CODE_IMPORT_BUNDLE_SCHEMA,
+	CODE_IMPORT_MAXIMUM_BYTES,
+	type CodeImportBundleFacts,
+	type CodeImportBundleManifest,
+	type CodeImportBundleWriter,
+	type CodeImportFrom,
+	codeImportBranchValid,
+	codeImportBundleName,
+	codeImportGitHubOf,
+	codeImportHeaderRefValid,
+	codeImportIncomingPathValid,
+} from "./code-import.ts";
 import { code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
 /** Where nightly care copies out the repositories kept in Qorpera (own code storage, step 2; `code-host-care.ts`): one
@@ -10,8 +25,10 @@ import { code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
  * company folder.
  *
  *   code-bundles/<companyId>/<owner>/<name>/
- *     20261111T021455Z-<main, 12 hex>.bundle   0600, never overwritten
- *     20261111T021455Z-<main, 12 hex>.json     0600, its manifest (`qorpera.code-bundle/v1`)
+ *     20261111T021455Z-<main, 12 hex>.bundle          0600, never overwritten
+ *     20261111T021455Z-<main, 12 hex>.json            0600, its manifest (`qorpera.code-bundle/v1`)
+ *     import-20261112T161455Z-<main, 12 hex>.bundle   0600, the first bundle of code brought in (step 6), and
+ *     import-20261112T161455Z-<main, 12 hex>.json     its manifest (`qorpera.code-import-bundle/v1`)
  *
  * A bundle is written to a temporary file beside its place, and gets its name only once its bytes are the ones the
  * code host hashed: fsync, a no-overwrite link, then the manifest's link, which is what makes it a stored bundle, and
@@ -20,7 +37,15 @@ import { code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
  * SHA-256 against the manifest, `git bundle verify`, `git clone --mirror <file> <name>.git`, then
  * `git -C <name>.git symbolic-ref HEAD refs/heads/main` (a bundle says which commit HEAD is at, not which branch). The
  * platform's own restore reads a bundle through `read` (`code-host-restore.ts`;
- * `deploy/code-host/RESTORE-RUNBOOK.md`). */
+ * `deploy/code-host/RESTORE-RUNBOOK.md`).
+ *
+ * The first bundle of an import (`begin` with `kind: "import"`, `code-import-fetch.ts` writing it) is another kind: it
+ * holds every ref the source had, as the source sent it, and nothing has proven it yet (the code host's look does). It
+ * is named `import-<UTC>-<12 hex>` and has its own manifest, with no `verified` mark, so `find`, `verify`, `read` and
+ * `prune` never see it: it is read with `readImport`, listed with `names` and goes only by `remove`. Its pieces take a
+ * line of their own (one import a coding executor runs at a time): another company's commit, care's nightly `verify` or
+ * a prune never holds up a fetch while its source streams; its `begin`, `commit` and `abort` stand in the store's
+ * line. */
 
 export const CODE_BUNDLE_SCHEMA = "qorpera.code-bundle/v1";
 /** The store's folder in the executor's `control/` folder on its storage. */
@@ -107,7 +132,21 @@ export interface CodeBundleRead {
 	pieces: AsyncIterable<Uint8Array>;
 }
 
+/** An import's first bundle handed out (`CodeBundleStore.readImport`), as `read` hands out an ordinary one. */
+export interface CodeImportBundleRead {
+	manifest: CodeImportBundleManifest;
+	pieces: AsyncIterable<Uint8Array>;
+}
+
 export interface CodeBundleStore {
+	/** A writer for an import's first bundle (`kind: "import"`): as below, but twice `maximumBytes` (by default the
+	 * import's 1 GiB, at most the store's 2 GiB) must be free, its pieces take the writer's own line, and its commit
+	 * stores an `import-*` bundle with its own manifest (`CodeImportBundleWriter`). */
+	begin(
+		target: CodeBundleTarget,
+		options: { kind: "import"; expectedBytes?: number; maximumBytes?: number },
+		signal?: AbortSignal,
+	): Promise<CodeImportBundleWriter>;
 	/** A writer for the repository's next bundle. First the storage is checked mounted, what a dead write left in the
 	 * repository's folder is removed, and twice `expectedBytes` must be free (`CODE_BUNDLE_NO_SPACE`). */
 	begin(
@@ -127,8 +166,17 @@ export interface CodeBundleStore {
 	 * the manifest's `bytes` (`CODE_BUNDLE_DIFFERS` when the file opened has another size, or ends early). Nothing here
 	 * hashes them: whoever takes them does, against the manifest's `sha256`. */
 	read(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleRead>;
+	/** As `read`, for an import's first bundle (`import-*`, its own manifest): `CODE_BUNDLE_MISSING` when it is not a
+	 * stored one. */
+	readImport(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeImportBundleRead>;
+	/** The names of both kinds that have a bundle or a manifest in the repository's folder, whole or not, sorted (the
+	 * dated ones first, then the `import-*` ones): what an import that starts over at a place clears. */
+	names(target: CodeBundleTarget, signal?: AbortSignal): Promise<string[]>;
+	/** Removes one name of either kind, its manifest first, then its bundle; false when neither was there. */
+	remove(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<boolean>;
 	/** Removes the repository's stored bundles beyond the newest `keep`, and answers their names. Only right after a
-	 * commit to the repository through this store (`CODE_BUNDLE_PRUNE_NOT_NOW` otherwise), whose bundle always stays. */
+	 * commit to the repository through this store (`CODE_BUNDLE_PRUNE_NOT_NOW` otherwise), whose bundle always stays.
+	 * An import's bundle is never one of them, and its commit lets nothing go. */
 	prune(target: CodeBundleTarget, keep: number, signal?: AbortSignal): Promise<string[]>;
 	/** The companies that have a folder in the store. */
 	companies(signal?: AbortSignal): Promise<string[]>;
@@ -175,8 +223,133 @@ function nameOf(value: string): string {
 	return value;
 }
 
+function importNameOf(value: string): string {
+	if (typeof value !== "string" || !CODE_IMPORT_BUNDLE_NAME.test(value)) throw new Error("INVALID_CODE_BUNDLE");
+	return value;
+}
+
+/** A name of either kind. */
+function anyNameOf(value: string): string {
+	return typeof value === "string" && value.startsWith("import-") ? importNameOf(value) : nameOf(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The bundle's facts as an ordinary manifest, when they are a bundle's; `INVALID_CODE_BUNDLE` otherwise. */
+function bundleManifest(target: CodeBundleTarget, name: string, facts: CodeBundleFacts): CodeBundleManifest {
+	const refs = Array.isArray(facts?.refs) ? facts.refs : undefined;
+	if (
+		!refs ||
+		!refs.every((ref) => isRecord(ref) && typeof ref.name === "string" && typeof ref.sha === "string") ||
+		nameOf(name) !== codeBundleName(facts.createdAt, facts.mainSha) ||
+		!isUuid(facts.environmentId) ||
+		typeof facts.gitVersion !== "string" ||
+		facts.gitVersion.length > 200 ||
+		typeof facts.executorOwner !== "string" ||
+		facts.executorOwner.length > 200 ||
+		typeof facts.refsSha256 !== "string" ||
+		!SHA256_HEX_PATTERN.test(facts.refsSha256) ||
+		typeof facts.sha256 !== "string" ||
+		!SHA256_HEX_PATTERN.test(facts.sha256) ||
+		!Number.isSafeInteger(facts.bytes) ||
+		facts.bytes < 1
+	)
+		throw new Error("INVALID_CODE_BUNDLE");
+	return {
+		schema: CODE_BUNDLE_SCHEMA,
+		companyId: target.companyId,
+		environmentId: facts.environmentId,
+		repository: { host: "qorpera", owner: target.owner, name: target.name, baseBranch: "main" },
+		createdAt: facts.createdAt,
+		gitVersion: facts.gitVersion,
+		mainSha: facts.mainSha,
+		refsSha256: facts.refsSha256,
+		refs: refs.slice(0, CODE_BUNDLE_MANIFEST_REFS).map((ref) => ({ name: ref.name, sha: ref.sha })),
+		refsCount: refs.length,
+		sha256: facts.sha256,
+		bytes: facts.bytes,
+		verified: true,
+		executorOwner: facts.executorOwner,
+	};
+}
+
+/** Where an import's code came from, as its request named it: a GitHub repository or a file source, and the branch it
+ * asked for; null when it is neither. */
+function fromOf(value: unknown): CodeImportFrom | null {
+	if (!isRecord(value)) return null;
+	const { github, file, branch } = value;
+	const keys = Object.keys(value)
+		.filter((key) => key !== "branch")
+		.join();
+	if (
+		branch !== undefined &&
+		(typeof branch !== "string" ||
+			Buffer.byteLength(branch, "utf8") > CODE_IMPORT_BRANCH_BYTES ||
+			!codeImportHeaderRefValid(`refs/heads/${branch}`))
+	)
+		return null;
+	const asked = branch === undefined ? {} : { branch };
+	if (keys === "github" && typeof github === "string") {
+		try {
+			codeImportGitHubOf(github);
+		} catch {
+			return null;
+		}
+		return { github, ...asked };
+	}
+	if (keys === "file" && typeof file === "string" && codeImportIncomingPathValid(file)) return { file, ...asked };
+	return null;
+}
+
+/** An import's facts as its first bundle's manifest, when they are an import's: the default branch's head among the
+ * refs, at main's commit; `INVALID_CODE_BUNDLE` otherwise. The refs are kept in the order given (a fetch's header:
+ * the default branch first), the first 2,000 of them. */
+function importManifest(
+	target: CodeBundleTarget,
+	name: string,
+	facts: CodeImportBundleFacts,
+): CodeImportBundleManifest {
+	const refs = Array.isArray(facts?.refs) ? facts.refs : undefined;
+	const from = fromOf(facts?.from);
+	if (
+		!refs ||
+		!refs.every(
+			(ref) => isRecord(ref) && typeof ref.name === "string" && typeof ref.sha === "string" && SHA.test(ref.sha),
+		) ||
+		!from ||
+		importNameOf(name) !== codeImportBundleName(facts.createdAt, facts.mainSha) ||
+		!isUuid(facts.environmentId) ||
+		typeof facts.defaultBranch !== "string" ||
+		!codeImportBranchValid(facts.defaultBranch) ||
+		!refs.some((ref) => ref.name === `refs/heads/${facts.defaultBranch}` && ref.sha === facts.mainSha) ||
+		!Number.isSafeInteger(facts.leftOut) ||
+		facts.leftOut < 0 ||
+		typeof facts.executorOwner !== "string" ||
+		facts.executorOwner.length > 200 ||
+		typeof facts.sha256 !== "string" ||
+		!SHA256_HEX_PATTERN.test(facts.sha256) ||
+		!Number.isSafeInteger(facts.bytes) ||
+		facts.bytes < 1
+	)
+		throw new Error("INVALID_CODE_BUNDLE");
+	return {
+		schema: CODE_IMPORT_BUNDLE_SCHEMA,
+		companyId: target.companyId,
+		environmentId: facts.environmentId,
+		repository: { host: "qorpera", owner: target.owner, name: target.name },
+		createdAt: facts.createdAt,
+		from,
+		defaultBranch: facts.defaultBranch,
+		mainSha: facts.mainSha,
+		refs: refs.slice(0, CODE_BUNDLE_MANIFEST_REFS).map((ref) => ({ name: ref.name, sha: ref.sha })),
+		refsCount: refs.length,
+		leftOut: facts.leftOut,
+		sha256: facts.sha256,
+		bytes: facts.bytes,
+		executorOwner: facts.executorOwner,
+	};
 }
 
 /** A stored manifest, when it is whole and the named bundle's of this repository. */
@@ -203,6 +376,33 @@ function manifestOf(value: unknown, target: CodeBundleTarget, name: string): Cod
 		(value.bytes as number) >= 1 &&
 		Array.isArray(refs);
 	return valid ? (value as unknown as CodeBundleManifest) : null;
+}
+
+/** A stored import manifest, when it is whole and the named first bundle's of this repository. */
+function importManifestOf(value: unknown, target: CodeBundleTarget, name: string): CodeImportBundleManifest | null {
+	if (!isRecord(value) || !isRecord(value.repository)) return null;
+	const { repository, refs } = value;
+	const valid =
+		value.schema === CODE_IMPORT_BUNDLE_SCHEMA &&
+		!("verified" in value) &&
+		value.companyId === target.companyId &&
+		repository.host === "qorpera" &&
+		repository.owner === target.owner &&
+		repository.name === target.name &&
+		isUuid(value.environmentId) &&
+		typeof value.mainSha === "string" &&
+		SHA.test(value.mainSha) &&
+		typeof value.createdAt === "string" &&
+		CODE_IMPORT_BUNDLE_NAME.test(name) &&
+		name.endsWith(`-${value.mainSha.slice(0, 12)}`) &&
+		typeof value.defaultBranch === "string" &&
+		fromOf(value.from) !== null &&
+		typeof value.sha256 === "string" &&
+		SHA256_HEX_PATTERN.test(value.sha256) &&
+		Number.isSafeInteger(value.bytes) &&
+		(value.bytes as number) >= 1 &&
+		Array.isArray(refs);
+	return valid ? (value as unknown as CodeImportBundleManifest) : null;
 }
 
 /** The work, or the signal's reason once it stops first; the work goes on. */
@@ -239,42 +439,46 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 	)
 		throw new Error("INVALID_CODE_BUNDLE_STORE");
 	const assert = options.assert ?? (async () => undefined);
-	/** The last use of the store, settled: the next waits for it, even once its caller gave up, so IO that a hard NFS
-	 * mount hangs never overlaps. */
-	let last: Promise<unknown> = Promise.resolve();
 	/** The temporary files of the writers that are open, which no sweep takes. */
 	const writing = new Set<string>();
 	/** The repositories with a commit since their last prune, by the name it stored. */
 	const committed = new Map<string, string>();
 	const keyOf = (target: CodeBundleTarget) => `${target.companyId}/${target.owner}/${target.name}`;
 
-	/** One use of the store, after the last one ended and within `ms`. It rejects with its caller's reason, with
-	 * `CODE_BUNDLE_STORE_TIMEOUT` past `ms`, with the fixed code the store or the storage's check gave, or with
-	 * `CODE_BUNDLE_STORE_FAILED` for anything else (the cause kept). A use whose time passed while it waited in the
-	 * line is not begun, unless it is `owed`: work that takes a writer's file down runs when its turn comes, however
-	 * long that took, and only its caller stops waiting. */
-	async function use<T>(
-		ms: number,
-		signal: AbortSignal | undefined,
-		work: (checked: AbortSignal) => Promise<T>,
-		owed = false,
-	): Promise<T> {
-		const deadline = AbortSignal.timeout(ms);
-		const checked = signal ? AbortSignal.any([signal, deadline]) : deadline;
-		const running = last.then(async () => {
-			if (!owed) checked.throwIfAborted();
-			return await work(checked);
-		});
-		last = running.catch(() => undefined);
-		try {
-			return await abortable(running, checked);
-		} catch (error) {
-			if (signal?.aborted) throw signal.reason;
-			if (deadline.aborted) throw new Error("CODE_BUNDLE_STORE_TIMEOUT");
-			if (error instanceof Error && FIXED.test(error.message)) throw error;
-			throw new Error("CODE_BUNDLE_STORE_FAILED", { cause: error });
-		}
+	/** A line of uses. Each use comes after the last one of its line ended and runs within `ms`. It rejects with its
+	 * caller's reason, with `CODE_BUNDLE_STORE_TIMEOUT` past `ms`, with the fixed code the store or the storage's check
+	 * gave, or with `CODE_BUNDLE_STORE_FAILED` for anything else (the cause kept). A use whose time passed while it
+	 * waited in the line is not begun, unless it is `owed`: work that takes a writer's file down runs when its turn
+	 * comes, however long that took, and only its caller stops waiting. */
+	function line() {
+		/** The line's last use, settled: the next waits for it, even once its caller gave up, so IO that a hard NFS mount
+		 * hangs never overlaps within a line. */
+		let last: Promise<unknown> = Promise.resolve();
+		return async function use<T>(
+			ms: number,
+			signal: AbortSignal | undefined,
+			work: (checked: AbortSignal) => Promise<T>,
+			owed = false,
+		): Promise<T> {
+			const deadline = AbortSignal.timeout(ms);
+			const checked = signal ? AbortSignal.any([signal, deadline]) : deadline;
+			const running = last.then(async () => {
+				if (!owed) checked.throwIfAborted();
+				return await work(checked);
+			});
+			last = running.catch(() => undefined);
+			try {
+				return await abortable(running, checked);
+			} catch (error) {
+				if (signal?.aborted) throw signal.reason;
+				if (deadline.aborted) throw new Error("CODE_BUNDLE_STORE_TIMEOUT");
+				if (error instanceof Error && FIXED.test(error.message)) throw error;
+				throw new Error("CODE_BUNDLE_STORE_FAILED", { cause: error });
+			}
+		};
 	}
+	/** The store's own line: every use but an import writer's pieces. */
+	const use = line();
 
 	/** A folder of the store: this process's own, mode 0700, and reached by no link. */
 	async function checkFolder(path: string): Promise<void> {
@@ -309,11 +513,16 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 	}
 
 	/** The named bundle's manifest, when both files are there, this process's own, and the bundle has the manifest's
-	 * size. Anything else is no stored bundle. */
-	async function stored(folder: string, target: CodeBundleTarget, name: string): Promise<CodeBundleManifest | null> {
+	 * size. Anything else is no stored bundle. `parse` reads the manifest of its kind. */
+	async function stored<M extends { bytes: number }>(
+		folder: string,
+		target: CodeBundleTarget,
+		name: string,
+		parse: (value: unknown, target: CodeBundleTarget, name: string) => M | null,
+	): Promise<M | null> {
 		try {
 			const record = await readRecord(posix.join(folder, `${name}.json`), MAX_MANIFEST_BYTES);
-			const manifest = manifestOf(record.value, target, name);
+			const manifest = parse(record.value, target, name);
 			const file = await lstat(posix.join(folder, `${name}.bundle`));
 			return manifest && file.isFile() && file.uid === process.getuid?.() && file.size === manifest.bytes
 				? manifest
@@ -323,13 +532,22 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 		}
 	}
 
-	function writer(
+	/** A writer of either kind: `made` checks the commit's facts and makes its manifest. An import's (`own`, the
+	 * writer's own line) writes its pieces in that line, and commits and aborts in the store's line once its last
+	 * piece there settled, so a piece whose caller gave up is never cut off by its file's close. */
+	function writer<F, M extends { sha256: string; bytes: number }>(
 		target: CodeBundleTarget,
 		folder: string,
 		temporary: string,
 		file: FileHandle,
 		maximum: number,
-	): CodeBundleWriter {
+		made: (name: string, facts: F) => M,
+		own?: ReturnType<typeof line>,
+	): {
+		write(chunk: Uint8Array, signal?: AbortSignal): Promise<void>;
+		commit(name: string, facts: F, signal?: AbortSignal): Promise<M>;
+		abort(): Promise<void>;
+	} {
 		const hash = createHash("sha256");
 		let bytes = 0;
 		let state: "open" | "failed" | "closed" = "open";
@@ -341,11 +559,23 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			for (const path of [temporary, ...others]) await missing(unlink(path));
 			await syncDirectory(folder);
 		};
+		const pieces = own ?? use;
+		/** In the store's line; an import's after the writer's own line is free. The wait in both counts toward `ms`, and
+		 * an owed use is owed in both. */
+		const settled = <T>(
+			ms: number,
+			signal: AbortSignal | undefined,
+			work: (checked: AbortSignal) => Promise<T>,
+			owed = false,
+		): Promise<T> =>
+			own
+				? own(ms, signal, (checked) => use(ms, owed ? undefined : checked, work, owed), owed)
+				: use(ms, signal, work, owed);
 		return Object.freeze({
 			async write(chunk: Uint8Array, signal?: AbortSignal): Promise<void> {
 				if (!(chunk instanceof Uint8Array)) throw new Error("INVALID_CODE_BUNDLE");
 				try {
-					await use(stepMs, signal, async () => {
+					await pieces(stepMs, signal, async () => {
 						if (state !== "open") throw new Error("CODE_BUNDLE_WRITER_CLOSED");
 						if (bytes + chunk.length > maximum) throw new Error("CODE_BUNDLE_TOO_LARGE");
 						for (let offset = 0; offset < chunk.length; ) {
@@ -362,52 +592,17 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 				}
 			},
 
-			commit(name: string, facts: CodeBundleFacts, signal?: AbortSignal): Promise<CodeBundleManifest> {
-				return use(slowMs, signal, async (checked) => {
+			commit(name: string, facts: F, signal?: AbortSignal): Promise<M> {
+				return settled(slowMs, signal, async (checked) => {
 					if (state !== "open") throw new Error("CODE_BUNDLE_WRITER_CLOSED");
 					const beside = posix.join(folder, `.write-${randomUUID()}`);
 					try {
-						const refs = Array.isArray(facts?.refs) ? facts.refs : undefined;
-						if (
-							!refs ||
-							!refs.every(
-								(ref) => isRecord(ref) && typeof ref.name === "string" && typeof ref.sha === "string",
-							) ||
-							nameOf(name) !== codeBundleName(facts.createdAt, facts.mainSha) ||
-							!isUuid(facts.environmentId) ||
-							typeof facts.gitVersion !== "string" ||
-							facts.gitVersion.length > 200 ||
-							typeof facts.executorOwner !== "string" ||
-							facts.executorOwner.length > 200 ||
-							typeof facts.refsSha256 !== "string" ||
-							!SHA256_HEX_PATTERN.test(facts.refsSha256) ||
-							typeof facts.sha256 !== "string" ||
-							!SHA256_HEX_PATTERN.test(facts.sha256) ||
-							!Number.isSafeInteger(facts.bytes) ||
-							facts.bytes < 1
-						)
-							throw new Error("INVALID_CODE_BUNDLE");
-						// The bytes that came are the bytes the code host hashed, all of them.
-						if (hash.digest("hex") !== facts.sha256 || bytes !== facts.bytes)
+						const manifest = made(name, facts);
+						// The bytes that came are the bytes the code host hashed (or the fetch counted), all of them.
+						if (hash.digest("hex") !== manifest.sha256 || bytes !== manifest.bytes)
 							throw new Error("CODE_BUNDLE_DIFFERS");
 						await file.sync();
 						if ((await file.stat()).size !== bytes) throw new Error("CODE_BUNDLE_DIFFERS");
-						const manifest: CodeBundleManifest = {
-							schema: CODE_BUNDLE_SCHEMA,
-							companyId: target.companyId,
-							environmentId: facts.environmentId,
-							repository: { host: "qorpera", owner: target.owner, name: target.name, baseBranch: "main" },
-							createdAt: facts.createdAt,
-							gitVersion: facts.gitVersion,
-							mainSha: facts.mainSha,
-							refsSha256: facts.refsSha256,
-							refs: refs.slice(0, CODE_BUNDLE_MANIFEST_REFS).map((ref) => ({ name: ref.name, sha: ref.sha })),
-							refsCount: refs.length,
-							sha256: facts.sha256,
-							bytes,
-							verified: true,
-							executorOwner: facts.executorOwner,
-						};
 						const text = Buffer.from(`${JSON.stringify(manifest)}\n`);
 						if (text.length > MAX_MANIFEST_BYTES) throw new Error("INVALID_CODE_BUNDLE");
 						const record = await open(
@@ -438,7 +633,8 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 							await missing(unlink(bundle));
 							throw exists(error);
 						}
-						committed.set(keyOf(target), name);
+						// Only an ordinary bundle lets a prune go on: an import's is never one prune counts.
+						if (!own) committed.set(keyOf(target), name);
 						return manifest;
 					} finally {
 						await close([beside]);
@@ -449,7 +645,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			abort(): Promise<void> {
 				// Owed: a wait behind the store's other uses that outlasts the step must not leave the file, which no
 				// sweep takes while its writer counts as open.
-				return use(
+				return settled(
 					stepMs,
 					undefined,
 					async () => {
@@ -461,65 +657,174 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 		});
 	}
 
-	return Object.freeze({
-		async begin(
-			target: CodeBundleTarget,
-			writerOptions: { expectedBytes?: number; maximumBytes?: number } = {},
-			signal?: AbortSignal,
-		): Promise<CodeBundleWriter> {
-			const repository = targetOf(target);
-			const expected = writerOptions.expectedBytes ?? 0,
-				maximum = writerOptions.maximumBytes ?? CODE_BUNDLE_MAXIMUM_BYTES;
-			if (!Number.isSafeInteger(expected) || expected < 0 || !Number.isSafeInteger(maximum) || maximum < 1)
-				throw new Error("INVALID_CODE_BUNDLE");
-			const make = async (checked: AbortSignal): Promise<CodeBundleWriter> => {
+	/** A name of either kind whose bundle is in the folder without its manifest: a commit gives both names within one
+	 * use of the store's line, so none is on its way while another use runs. */
+	const orphan = (name: string, names: ReadonlySet<string>) => {
+		if (!name.endsWith(".bundle")) return false;
+		const base = name.slice(0, -".bundle".length);
+		return (CODE_BUNDLE_NAME.test(base) || CODE_IMPORT_BUNDLE_NAME.test(base)) && !names.has(`${base}.json`);
+	};
+
+	function begin(
+		target: CodeBundleTarget,
+		options: { kind: "import"; expectedBytes?: number; maximumBytes?: number },
+		signal?: AbortSignal,
+	): Promise<CodeImportBundleWriter>;
+	function begin(
+		target: CodeBundleTarget,
+		options?: { expectedBytes?: number; maximumBytes?: number },
+		signal?: AbortSignal,
+	): Promise<CodeBundleWriter>;
+	async function begin(
+		target: CodeBundleTarget,
+		writerOptions: { kind?: "import"; expectedBytes?: number; maximumBytes?: number } = {},
+		signal?: AbortSignal,
+	): Promise<CodeBundleWriter | CodeImportBundleWriter> {
+		const repository = targetOf(target);
+		const importing = writerOptions.kind === "import";
+		const expected = writerOptions.expectedBytes ?? 0,
+			maximum = writerOptions.maximumBytes ?? (importing ? CODE_IMPORT_MAXIMUM_BYTES : CODE_BUNDLE_MAXIMUM_BYTES);
+		if (
+			(writerOptions.kind !== undefined && !importing) ||
+			!Number.isSafeInteger(expected) ||
+			expected < 0 ||
+			!Number.isSafeInteger(maximum) ||
+			maximum < 1 ||
+			(importing && maximum > CODE_BUNDLE_MAXIMUM_BYTES)
+		)
+			throw new Error("INVALID_CODE_BUNDLE");
+		// An import's size is known only as it comes: room for twice the most it may be.
+		const room = importing ? maximum : expected;
+		const make = async (checked: AbortSignal): Promise<CodeBundleWriter | CodeImportBundleWriter> => {
+			await assert(checked);
+			const folder = (await folderOf(repository, true)) as string;
+			// A dead write's leftovers: its temporary files, and a bundle of either kind whose manifest never came. The
+			// folder is this executor's alone.
+			let swept = false;
+			const names = new Set(await readdir(folder));
+			for (const name of names) {
+				const path = posix.join(folder, name);
+				const dead = (TEMPORARY.test(name) && !writing.has(path)) || orphan(name, names);
+				if (!dead) continue;
+				checked.throwIfAborted();
+				await unlink(path);
+				swept = true;
+			}
+			if (swept) await syncDirectory(folder);
+			const space = await statfs(folder, { bigint: true });
+			if (space.bavail * space.bsize < 2n * BigInt(room)) throw new Error("CODE_BUNDLE_NO_SPACE");
+			const temporary = posix.join(folder, `.write-${randomUUID()}`);
+			const file = await open(
+				temporary,
+				constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+				0o600,
+			);
+			writing.add(temporary);
+			return importing
+				? writer(
+						repository,
+						folder,
+						temporary,
+						file,
+						maximum,
+						(name: string, facts: CodeImportBundleFacts) => importManifest(repository, name, facts),
+						line(),
+					)
+				: writer(repository, folder, temporary, file, maximum, (name: string, facts: CodeBundleFacts) =>
+						bundleManifest(repository, name, facts),
+					);
+		};
+		// The work goes on after its caller stopped waiting (`use`), and may still open a writer nobody is given:
+		// that writer is aborted when it comes. An abort is owed, so its file goes when the store's line gets to it,
+		// whatever stands in the line before it, and no later sweep has to step around it.
+		let made: Promise<CodeBundleWriter | CodeImportBundleWriter> | undefined;
+		try {
+			return await use(stepMs, signal, (checked) => {
+				made = make(checked);
+				return made;
+			});
+		} catch (error) {
+			void made?.then(
+				(late) => late.abort().catch(() => undefined),
+				() => undefined,
+			);
+			throw error;
+		}
+	}
+
+	/** A stored bundle's manifest and its bytes, of the kind `parse` reads. */
+	async function reading<M extends { bytes: number }>(
+		repository: CodeBundleTarget,
+		bundle: string,
+		parse: (value: unknown, target: CodeBundleTarget, name: string) => M | null,
+		signal: AbortSignal | undefined,
+	): Promise<{ manifest: M; pieces: AsyncIterable<Uint8Array> }> {
+		const found = await use(stepMs, signal, async (checked) => {
+			await assert(checked);
+			const folder = await folderOf(repository, false);
+			const manifest = folder ? await stored(folder, repository, bundle, parse) : null;
+			return folder && manifest ? { folder, manifest } : null;
+		});
+		if (!found) throw new Error("CODE_BUNDLE_MISSING");
+		const { folder, manifest } = found;
+		async function* pieces(): AsyncGenerator<Uint8Array, void, undefined> {
+			// Owed: the handle goes when the store's line gets to it, whatever its reader stopped for.
+			const close = (handle: FileHandle) =>
+				use(stepMs, undefined, () => handle.close(), true).catch(() => undefined);
+			const openIt = async (checked: AbortSignal): Promise<FileHandle> => {
 				await assert(checked);
-				const folder = (await folderOf(repository, true)) as string;
-				// A dead write's leftovers: its temporary files, and a bundle whose manifest never came (a commit gives both
-				// names within one use of the store, so none is on its way now). The folder is this executor's alone.
-				let swept = false;
-				const names = new Set(await readdir(folder));
-				for (const name of names) {
-					const path = posix.join(folder, name);
-					const dead =
-						(TEMPORARY.test(name) && !writing.has(path)) ||
-						(name.endsWith(".bundle") &&
-							CODE_BUNDLE_NAME.test(name.slice(0, -".bundle".length)) &&
-							!names.has(`${name.slice(0, -".bundle".length)}.json`));
-					if (!dead) continue;
-					checked.throwIfAborted();
-					await unlink(path);
-					swept = true;
-				}
-				if (swept) await syncDirectory(folder);
-				const space = await statfs(folder, { bigint: true });
-				if (space.bavail * space.bsize < 2n * BigInt(expected)) throw new Error("CODE_BUNDLE_NO_SPACE");
-				const temporary = posix.join(folder, `.write-${randomUUID()}`);
-				const file = await open(
-					temporary,
-					constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-					0o600,
+				const opened = await open(
+					posix.join(folder, `${bundle}.bundle`),
+					constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
 				);
-				writing.add(temporary);
-				return writer(repository, folder, temporary, file, maximum);
+				try {
+					// The file this handle holds, not whatever has the name by now.
+					const stat = await opened.stat();
+					if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size !== manifest.bytes)
+						throw new Error("CODE_BUNDLE_DIFFERS");
+					return opened;
+				} catch (error) {
+					await opened.close().catch(() => undefined);
+					throw error;
+				}
 			};
-			// The work goes on after its caller stopped waiting (`use`), and may still open a writer nobody is given:
-			// that writer is aborted when it comes. An abort is owed, so its file goes when the store's line gets to it,
-			// whatever stands in the line before it, and no later sweep has to step around it.
-			let made: Promise<CodeBundleWriter> | undefined;
+			// The work goes on after its caller stopped waiting (`use`), and may still open a file nobody is given: that
+			// handle is closed when it comes, as `begin` takes down a writer that comes late.
+			let opening: Promise<FileHandle> | undefined;
+			let file: FileHandle;
 			try {
-				return await use(stepMs, signal, (checked) => {
-					made = make(checked);
-					return made;
+				file = await use(stepMs, signal, (checked) => {
+					opening = openIt(checked);
+					return opening;
 				});
 			} catch (error) {
-				void made?.then(
-					(late) => late.abort().catch(() => undefined),
-					() => undefined,
-				);
+				void opening?.then(close, () => undefined);
 				throw error;
 			}
-		},
+			try {
+				for (let offset = 0; offset < manifest.bytes; ) {
+					const at = offset;
+					const piece = await use(stepMs, signal, async () => {
+						const buffer = Buffer.allocUnsafe(Math.min(READ_BYTES, manifest.bytes - at));
+						for (let filled = 0; filled < buffer.length; ) {
+							const { bytesRead } = await file.read(buffer, filled, buffer.length - filled, at + filled);
+							if (bytesRead === 0) throw new Error("CODE_BUNDLE_DIFFERS");
+							filled += bytesRead;
+						}
+						return buffer;
+					});
+					offset += piece.length;
+					yield piece;
+				}
+			} finally {
+				await close(file);
+			}
+		}
+		return { manifest, pieces: { [Symbol.asyncIterator]: pieces } };
+	}
+
+	return Object.freeze({
+		begin,
 
 		async find(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleManifest | null> {
 			const repository = targetOf(target),
@@ -527,7 +832,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			return use(stepMs, signal, async (checked) => {
 				await assert(checked);
 				const folder = await folderOf(repository, false);
-				return folder ? await stored(folder, repository, bundle) : null;
+				return folder ? await stored(folder, repository, bundle, manifestOf) : null;
 			});
 		},
 
@@ -537,7 +842,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			return use(slowMs, signal, async (checked) => {
 				await assert(checked);
 				const folder = await folderOf(repository, false);
-				const manifest = folder ? await stored(folder, repository, bundle) : null;
+				const manifest = folder ? await stored(folder, repository, bundle, manifestOf) : null;
 				if (!folder || !manifest) return null;
 				const file = await open(
 					posix.join(folder, `${bundle}.bundle`),
@@ -563,70 +868,47 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 		},
 
 		async read(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleRead> {
-			const repository = targetOf(target),
-				bundle = nameOf(name);
-			const found = await use(stepMs, signal, async (checked) => {
+			return reading(targetOf(target), nameOf(name), manifestOf, signal);
+		},
+
+		async readImport(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeImportBundleRead> {
+			return reading(targetOf(target), importNameOf(name), importManifestOf, signal);
+		},
+
+		async names(target: CodeBundleTarget, signal?: AbortSignal): Promise<string[]> {
+			const repository = targetOf(target);
+			return use(stepMs, signal, async (checked) => {
 				await assert(checked);
 				const folder = await folderOf(repository, false);
-				const manifest = folder ? await stored(folder, repository, bundle) : null;
-				return folder && manifest ? { folder, manifest } : null;
+				if (!folder) return [];
+				const names = new Set<string>();
+				for (const file of await readdir(folder)) {
+					const base = file.replace(/\.(?:bundle|json)$/, "");
+					if (base !== file && (CODE_BUNDLE_NAME.test(base) || CODE_IMPORT_BUNDLE_NAME.test(base)))
+						names.add(base);
+				}
+				return [...names].sort();
 			});
-			if (!found) throw new Error("CODE_BUNDLE_MISSING");
-			const { folder, manifest } = found;
-			async function* pieces(): AsyncGenerator<Uint8Array, void, undefined> {
-				// Owed: the handle goes when the store's line gets to it, whatever its reader stopped for.
-				const close = (handle: FileHandle) =>
-					use(stepMs, undefined, () => handle.close(), true).catch(() => undefined);
-				const openIt = async (checked: AbortSignal): Promise<FileHandle> => {
-					await assert(checked);
-					const opened = await open(
-						posix.join(folder, `${bundle}.bundle`),
-						constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-					);
-					try {
-						// The file this handle holds, not whatever has the name by now.
-						const stat = await opened.stat();
-						if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size !== manifest.bytes)
-							throw new Error("CODE_BUNDLE_DIFFERS");
-						return opened;
-					} catch (error) {
-						await opened.close().catch(() => undefined);
-						throw error;
-					}
-				};
-				// The work goes on after its caller stopped waiting (`use`), and may still open a file nobody is given: that
-				// handle is closed when it comes, as `begin` takes down a writer that comes late.
-				let opening: Promise<FileHandle> | undefined;
-				let file: FileHandle;
-				try {
-					file = await use(stepMs, signal, (checked) => {
-						opening = openIt(checked);
-						return opening;
-					});
-				} catch (error) {
-					void opening?.then(close, () => undefined);
-					throw error;
+		},
+
+		async remove(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<boolean> {
+			const repository = targetOf(target),
+				bundle = anyNameOf(name);
+			return use(stepMs, signal, async (checked) => {
+				await assert(checked);
+				const folder = await folderOf(repository, false);
+				if (!folder) return false;
+				let removed = false;
+				// The manifest first: a bundle without one is no stored bundle, and goes at the next `begin`.
+				for (const file of [`${bundle}.json`, `${bundle}.bundle`]) {
+					checked.throwIfAborted();
+					if (await missing(unlink(posix.join(folder, file)).then(() => true))) removed = true;
 				}
-				try {
-					for (let offset = 0; offset < manifest.bytes; ) {
-						const at = offset;
-						const piece = await use(stepMs, signal, async () => {
-							const buffer = Buffer.allocUnsafe(Math.min(READ_BYTES, manifest.bytes - at));
-							for (let filled = 0; filled < buffer.length; ) {
-								const { bytesRead } = await file.read(buffer, filled, buffer.length - filled, at + filled);
-								if (bytesRead === 0) throw new Error("CODE_BUNDLE_DIFFERS");
-								filled += bytesRead;
-							}
-							return buffer;
-						});
-						offset += piece.length;
-						yield piece;
-					}
-				} finally {
-					await close(file);
-				}
-			}
-			return { manifest, pieces: { [Symbol.asyncIterator]: pieces } };
+				if (removed) await syncDirectory(folder);
+				// A prune lets older bundles go only for a new one that still stands.
+				if (committed.get(keyOf(repository)) === bundle) committed.delete(keyOf(repository));
+				return removed;
+			});
 		},
 
 		async prune(target: CodeBundleTarget, keep: number, signal?: AbortSignal): Promise<string[]> {
@@ -647,7 +929,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 				const whole: string[] = [];
 				for (const name of names) {
 					checked.throwIfAborted();
-					if (await stored(folder, repository, name)) whole.push(name);
+					if (await stored(folder, repository, name, manifestOf)) whole.push(name);
 				}
 				const kept = new Set([...whole.slice(0, keep), latest]);
 				const removed: string[] = [];

@@ -472,6 +472,26 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector(".storage-count")?.textContent).toBe("3 items");
 	});
 
+	it("counts one item as one, in English and in Danish", async () => {
+		const { host, fake } = await opened({ embedded: true });
+		const count = () => host.querySelector(".storage-count")?.textContent;
+		await click(row(host, "big"));
+		expect(count()).toBe("0 items");
+		fake.contents.set("big/only.txt", "one");
+		await click(host.querySelector(".files-crumb"));
+		await click(row(host, "big"));
+		expect(count()).toBe("1 item");
+		setLanguagePreference("da");
+		try {
+			await click(host.querySelector(".files-crumb"));
+			expect(count()).toBe("4 elementer");
+			await click(row(host, "big"));
+			expect(count()).toBe("1 element");
+		} finally {
+			setLanguagePreference("system");
+		}
+	});
+
 	it("shows searchable Recents from the company change feed, opens a file, and returns to Documents", async () => {
 		const search = document.createElement("input");
 		const onSectionChange = vi.fn();
