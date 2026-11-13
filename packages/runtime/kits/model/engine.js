@@ -5,6 +5,11 @@
 (() => {
 	"use strict";
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. `concept` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const D = document;
 	const NS = "http://www.w3.org/2000/svg";
 	const reduced = () => {
@@ -707,6 +712,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk *,.mk *::before,.mk *::after{box-sizing:border-box}
 :where(.mk) button{font:inherit;color:inherit}
 .mk-head{grid-area:head;min-width:0;padding-bottom:clamp(10px,2vh,20px)}
+.mk--bare{padding:clamp(12px,1vw,16px)}
+.mk--bare .mk-title,.mk--bare .mk-line{display:none}
+.mk--bare .mk-head{padding-bottom:0}
 .mk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .mk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .mk-err{margin:4px 0 0;font-size:13px;color:var(--q-muted)}
@@ -967,7 +975,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		injectStyle();
 		NF.clear();
 		const W = M.words;
-		const root = h("main", "mk");
+		const root = h("main", BARE ? "mk mk--bare" : "mk");
 		root.lang = M.lang;
 		ui = { root, rows: [], W, hl: null };
 		// head
