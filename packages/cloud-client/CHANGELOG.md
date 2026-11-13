@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `APP_KITS` names four data kits beside `explainer`: `model`, `board`, `path` and `object` (`deploy/first-node/RUNTIME-INTERFACE-APPS.md` §3b, 13 Nov 2026). An `app.toml` with `kit = "model"` reads; a client from before it reports that manifest as having a problem.
 - `MemberAgentMachine.others` takes at most the first 50 names of a list (the newest first, as SQL orders them from `20260930744000`): a longer list from before it is never a failed read any more (release review of v239, #1723 r1 F1).
 - `MemberAgentMachine.generation` (migration `20260930738000`): the desktop's lease generation, which moves at every seating of a member and every hand-back that ends a lease, named to owners, admins and contributors; null for a viewer and from a database before it; a value that is not a safe whole number from 0 fails the read.
 - `MemberAgentMachine.others` (migration `20260930734000`): the other members who acted on the desktop they share with the agent in the last minute, by name (empty when none, or from a database before shared control); a value that is not a list of names fails the read.
