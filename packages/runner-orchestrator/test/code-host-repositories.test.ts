@@ -384,7 +384,7 @@ describe("CodeHostRepositories", () => {
 		expect(names.message).toBe("CODE_HOST_NAMES_DIFFER_BY_CASE");
 		expect(names.cause).toBeInstanceOf(CodeHostRefusal);
 		expect(names.summary).toMatch(
-			/^The change was not landed, and nothing changed on main: it holds names in one folder that differ only by upper and lower case: .*"Cart\.js".*Rename them so that each is its own name, commit and finish again\.$/,
+			/^The change was not landed, and nothing changed on main: it holds names in one folder that differ only by upper and lower case: .*"Cart\.js".*Rename them so that each is its own name, commit and finish again\. \[code=CODING_LAND_NAMES_REFUSED\]$/,
 		);
 		expect(names.summary).toContain('"cart.js"');
 		// Nothing landed: main is where the start left it.
@@ -422,7 +422,7 @@ describe("CodeHostRepositories", () => {
 		});
 		// The 256-byte name (over 200 bytes) and the key are counted, never named.
 		expect(refused.summary).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
