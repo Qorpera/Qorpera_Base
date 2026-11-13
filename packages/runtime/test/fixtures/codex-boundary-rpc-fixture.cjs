@@ -1,6 +1,6 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, truncateSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, truncateSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -213,7 +213,12 @@ const pictureTurnId = "turn_picture";
 const pictureItemId = "ig_1";
 // followUp: the host's answer to the turn's request after a failed generation, whose text output reaches the fence.
 const pictureEvidence = { threads: [], prewarm: null, turn: null, composed: null, followUp: null, interrupts: [], refused: null, savedPath: null };
-const pictureWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...pictureEvidence, mainThread: threadParameters, configuration }));
+// Written whole and renamed into place: a test reads it while later messages are still being recorded, and must never
+// read half a line.
+const pictureWrite = () => {
+	writeFileSync(`${evidencePath}.writing`, JSON.stringify({ ...pictureEvidence, mainThread: threadParameters, configuration }));
+	renameSync(`${evidencePath}.writing`, evidencePath);
+};
 // The one-pixel PNG of Codex's own image tests.
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
 const pictureItem = (patch) => ({ type: "imageGeneration", id: pictureItemId, status: "completed", revisedPrompt: "a red apple", result: "", failure: null, ...patch });
