@@ -441,9 +441,10 @@ function deskLight(
 	lc.globalCompositeOperation = "source-over";
 	lc.clearRect(0, 0, side, side);
 	lc.setTransform(side / 100, 0, 0, side / 100, 0, 0);
-	const glow = lc.createRadialGradient(50, 112, 6, 50, 112, 82);
+	// From below and in front: the lower face takes the light, the top keeps its own colour.
+	const glow = lc.createRadialGradient(50, 118, 4, 50, 118, 72);
 	glow.addColorStop(0, `rgba(${r},${g},${b},${1 * s})`);
-	glow.addColorStop(0.45, `rgba(${r},${g},${b},${0.7 * s})`);
+	glow.addColorStop(0.55, `rgba(${r},${g},${b},${0.85 * s})`);
 	glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
 	lc.fillStyle = glow;
 	lc.fillRect(0, 0, 100, 100);

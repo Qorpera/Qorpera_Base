@@ -84,18 +84,18 @@ function scheduleFor(seed: number): Schedule {
 	while (t < LOOP_S) {
 		if (rnd() < 0.72) {
 			// A line read fast: three to five short hops rightward, then one quick sweep back.
-			x = between(-0.32, -0.16);
-			t += between(0.25, 0.5);
+			x = between(-0.75, -0.5);
+			t += between(0.22, 0.45);
 			gazes.push({ at: t, x, y: LOOK_Y + between(-0.03, 0.04), move: 0.09 });
 			const hops = 3 + Math.floor(rnd() * 3);
 			for (let i = 0; i < hops && t < LOOP_S; i++) {
-				x = Math.min(0.32, x + between(0.11, 0.18));
-				t += between(0.2, 0.42);
+				x = Math.min(0.75, x + between(0.25, 0.4));
+				t += between(0.16, 0.36);
 				gazes.push({ at: t, x, y: LOOK_Y + between(-0.025, 0.025), move: 0.06 });
 			}
 		} else {
 			// A dart to something on the screen, held a little longer.
-			x = between(-0.3, 0.3);
+			x = between(-0.7, 0.7);
 			t += between(0.3, 0.6);
 			gazes.push({ at: t, x, y: LOOK_Y + between(-0.06, 0.07), move: 0.07 });
 			t += between(0.6, 1.2);
@@ -109,9 +109,9 @@ function scheduleFor(seed: number): Schedule {
 	for (let at = between(3, 6); at < LOOP_S - 3; at += between(8, 13)) leans.push({ at, length: between(1.6, 2.4) });
 	const lights: Light[] = [];
 	let tint = 0;
-	for (let at = 0; at < LOOP_S; at += between(0.35, 1.1)) {
+	for (let at = 0; at < LOOP_S; at += between(0.18, 0.7)) {
 		tint = (tint + 1 + Math.floor(rnd() * (atComputerTints.length - 1))) % atComputerTints.length;
-		lights.push({ at, tint, strength: between(0.82, 1) });
+		lights.push({ at, tint, strength: between(0.5, 1) });
 	}
 	schedule = { gazes, blinks, leans, lights };
 	schedules.set(seed, schedule);
@@ -119,7 +119,7 @@ function scheduleFor(seed: number): Schedule {
 }
 
 /** How much of the agent's colour each tint keeps (the rest is white): the screen's light is the agent's own. */
-export const atComputerTints = [0.72, 0.56, 0.8, 0.5] as const;
+export const atComputerTints = [0.8, 0.45, 1, 0.6] as const;
 
 const ease = (u: number) => 1 - (1 - u) ** 3;
 const smooth = (u: number) => u * u * (3 - 2 * u);
@@ -161,8 +161,8 @@ export function atComputerFrame(seconds: number, seed: number, reduced: boolean)
 	while (light + 1 < lights.length && lights[light + 1]!.at <= t) light++;
 	const shown = lights[light]!,
 		previous = lights[(light + lights.length - 1) % lights.length]!;
-	// A soft change of tint, 0.15 s.
-	const mix = smooth(clamp((t - shown.at) / 0.15));
+	// A quick change of tint, 0.08 s, as a screen's picture changes.
+	const mix = smooth(clamp((t - shown.at) / 0.08));
 	const strength = previous.strength + (shown.strength - previous.strength) * mix;
 	const face = { x: gx, y: gy, width: 1, height: open, rotation: 0, alpha: 1 };
 	const r2 = (value: number) => Math.round(value * 100);

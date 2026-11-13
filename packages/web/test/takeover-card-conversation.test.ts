@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import type { ComputerPanel, ComputerPanels } from "../src/app/views/computer.ts";
+import { ComputerByItself } from "../src/app/views/computer-by-itself.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { SessionExecutionSponsor } from "../src/cloud/session-input.ts";
 import type { TranscriptInteraction } from "../src/cloud/transcript.ts";
@@ -86,6 +87,9 @@ function setup() {
 		get: vi.fn((agentId: string) => (agentId === staff.id && open ? panel : undefined)),
 		close: vi.fn(),
 		dispose: vi.fn(),
+		// The window that shows by itself (20260930742000): never in these tests.
+		byItself: new ComputerByItself({ close: vi.fn() }),
+		busy: vi.fn(() => false),
 		releaseAgent: vi.fn(
 			(_agentId: string) =>
 				new Promise<boolean>((resolve) => {
