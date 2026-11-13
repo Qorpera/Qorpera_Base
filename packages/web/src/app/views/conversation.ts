@@ -2871,6 +2871,10 @@ export class ConversationView {
 								item.createdAt,
 								answer?.answeredBy ? this.#company.memberName(answer.answeredBy) : null,
 								takeOver,
+								// The agent's figure heads a card that waits for the member.
+								agent?.id,
+								agent?.appearance,
+								agent?.templateId,
 							]),
 				]);
 				nodes.push(
@@ -2883,6 +2887,10 @@ export class ConversationView {
 								canAnswer: answers,
 								inThread: true,
 								viewerId: this.#company.userId,
+								// Waiting, as it stands beside its question in the questions dock.
+								...(agent
+									? { figure: () => agentFigure(agent, agentName, { size: 30, activity: "Waiting" }) }
+									: {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
