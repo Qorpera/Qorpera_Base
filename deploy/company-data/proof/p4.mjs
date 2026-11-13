@@ -4,8 +4,10 @@
 // table cut at fixed key values. A table without a primary key is cut by its rows' place on disk.
 // Every snapshot is written to files that are kept: schema.sql, sequences.sql and the parts. Everything is read in one
 // transaction that sees one moment and holds a share lock on every table, while another connection keeps writing and
-// others try to empty, rebuild and drop tables. The files alone bring the rows back, and the restored database takes
-// new rows with the numbers its sequences would have given.
+// others try to empty, rebuild and drop tables. A change that queues for a table before the shape is read cannot lock
+// the export: the shape's dump waits a bounded time for its own locks, then the export lets go and starts again. The
+// files alone bring the rows back, and the restored database takes new rows with the numbers its sequences would have
+// given.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, createReadStream, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,6 +26,9 @@ const MIB = 1048576;
 const BLOCK = 8192;
 // A CSV row of the keyless table is a little smaller than its row on disk: 0.85 of 16 MiB of pages keeps a part under 16 MiB.
 const BLOCKS_PER_PART = Math.floor((PART_BYTES * 0.85) / BLOCK);
+// How long the shape's dump waits for a table's lock, and how often an export starts again before it gives up.
+const DUMP_LOCK_WAIT_MS = 2000;
+const EXPORT_TRIES = 8;
 if (!CONTAINER || !SNAP_HOST) throw new Error("run through run.sh: it makes the container and the snapshot folder");
 
 /** The sha256 of a file and of each of its 4 MiB pieces. */
@@ -158,6 +163,10 @@ const listTables = (db) =>
  * transaction that sees one moment. Before the moment the transaction takes a share lock on every table and holds it to
  * the end: a moment alone does not hold back a statement that empties or rebuilds a table, which would make the
  * table look empty to the moment. Rows are written and changed freely meanwhile.
+ * The shape is read by pg_dump on the same moment, and pg_dump takes its own share locks. A change that queued for a
+ * table after the export's lock stands ahead of pg_dump's request: the change waits for the export, pg_dump waits for
+ * the change, the export waits for pg_dump, and PostgreSQL sees no deadlock in it. So pg_dump waits a bounded time for
+ * a lock; when it gives up, the export lets its tables go, the change goes through, and the export starts again.
  * Gives the files' hashes and the fingerprint taken inside that same transaction. */
 async function exportSnapshot(name, cuts, { only, beforeLock, afterMoment, afterSchema, betweenTables } = {}) {
 	const host = join(SNAP_HOST, name);
@@ -167,8 +176,15 @@ async function exportSnapshot(name, cuts, { only, beforeLock, afterMoment, after
 	let tries = 0;
 	let tables;
 	let moment;
+	let momentAt;
+	let schema = "";
+	const restarts = [];
 	for (;;) {
 		tries++;
+		if (tries > EXPORT_TRIES) {
+			await db.end();
+			throw new Error(`the export could not hold its tables in ${EXPORT_TRIES} tries: ${restarts.map((restart) => restart.why).join("; ")}`);
+		}
 		// The tables, from a short read of their own. Then lock them all, and only then take the moment.
 		tables = only ?? (await listTables(db));
 		if (beforeLock) await beforeLock(tries);
@@ -178,27 +194,40 @@ async function exportSnapshot(name, cuts, { only, beforeLock, afterMoment, after
 		if (!locked.ok) {
 			// A table dropped since the list: start again.
 			await db.query("rollback");
+			restarts.push({ why: "a table of the list was gone", message: locked.message, ms: 0 });
 			continue;
 		}
 		moment = (await db.query("select pg_export_snapshot() as id, pg_backend_pid() as pid")).rows[0];
 		// A table made or dropped between the list and the locks: the moment holds a table that is not locked. Start again.
 		const seen = only ?? (await listTables(db));
-		if (JSON.stringify(seen) === JSON.stringify(tables)) break;
+		if (JSON.stringify(seen) !== JSON.stringify(tables)) {
+			await db.query("rollback");
+			restarts.push({ why: "the tables changed between the list and the locks", message: "", ms: 0 });
+			continue;
+		}
+		momentAt = now();
+		if (afterMoment) await afterMoment(moment, tries);
+		if (only) break;
+		// The shape: pg_dump on the export's own snapshot, so it sees the same moment as the rows. It runs first, before
+		// any part is written, so a restart costs little.
+		const dumpBegun = now();
+		const dumped = await outcome(async () => {
+			schema = await run(["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", "cds", "--schema-only", "--schema=shop",
+				"--no-owner", "--no-privileges", `--lock-wait-timeout=${DUMP_LOCK_WAIT_MS}`, `--snapshot=${moment.id}`]);
+		});
+		if (dumped.ok) break;
+		// pg_dump could not lock a table in time: another session's change is queued for it. Let go, so that change goes
+		// through, and start again with a new moment.
+		const letGoAt = now();
 		await db.query("rollback");
+		restarts.push({ why: "the shape's dump could not lock a table in time", message: dumped.message, ms: letGoAt - dumpBegun, letGoAt });
 	}
-	const momentAt = now();
-	if (afterMoment) await afterMoment(moment);
 	for (const path of [host, ...tables.map((table) => join(host, table))]) {
 		mkdirSync(path, { recursive: true });
 		chmodSync(path, 0o777);
 	}
-	let schema = "";
 	let sequences = [];
 	if (!only) {
-		// The shape: pg_dump on the export's own snapshot, so it sees the same moment as the rows. It locks the tables
-		// too, so it runs before anything else can queue for a table: a waiting truncate would hold pg_dump back.
-		schema = await run(["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", "cds", "--schema-only", "--schema=shop",
-			"--no-owner", "--no-privileges", `--snapshot=${moment.id}`]);
 		writeFileSync(join(host, "schema.sql"), schema);
 		// Every sequence, read from the sequence itself: its last value and whether that value was given out. An identity
 		// column's sequence and one owned by no column are sequences like any other. A sequence is not part of a moment:
@@ -233,7 +262,7 @@ async function exportSnapshot(name, cuts, { only, beforeLock, afterMoment, after
 		for (const file of files) parts[table].push({ file, ...(await hashFile(join(host, table, file))) });
 	}
 	const bytes = Object.values(parts).flat().reduce((total, part) => total + part.bytes, 0);
-	return { name, ms, truth, parts, bytes, schema, sequences, plan, moment, momentAt, commitSentAt, endedAt, tries, tables };
+	return { name, ms, truth, parts, bytes, schema, sequences, plan, moment, momentAt, commitSentAt, endedAt, tries, tables, restarts };
 }
 
 const sum = (parts) => parts.reduce((total, part) => total + part.bytes, 0);
@@ -289,6 +318,9 @@ await withAdmin("cds", async (db) => {
 		-- A small table another session drops while the export runs.
 		create table shop.notes (id int primary key, body text not null);
 		insert into shop.notes select n, 'Note ' || n from generate_series(1, 1000) n;
+		-- A small table another session empties, queued before the export has read the shape.
+		create table shop.queued_first (id int primary key, body text not null);
+		insert into shop.queued_first select n, 'Row ' || n from generate_series(1, 500) n;
 		analyze;
 	`);
 });
@@ -334,18 +366,21 @@ const writer = (async () => {
 	await db.end();
 })();
 const others = [];
-async function another(label, sql) {
+async function another(label, sql, list = others) {
 	const db = admin("cds");
 	await db.connect();
 	const pid = (await db.query("select pg_backend_pid() as pid")).rows[0].pid;
+	const issued = now();
 	const done = db.query(sql).then(
 		() => ({ ok: true, at: now(), message: "done" }),
 		(error) => ({ ok: false, at: now(), message: error.message }),
 	);
-	const entry = { label, pid, done: done.finally(() => db.end()), waits: [] };
-	others.push(entry);
+	const entry = { label, pid, issued, done: done.finally(() => db.end()), waits: [] };
+	list.push(entry);
 	return entry;
 }
+// A change queued for a table after the export's lock and before the export reads the shape.
+const early = [];
 const counts = {};
 await sleep(500);
 const late = admin("cds");
@@ -355,8 +390,24 @@ const moment = await exportSnapshot("one-moment", cuts, {
 	beforeLock: async (tries) => {
 		if (tries === 1) await late.query("create table shop.made_between (id int)");
 	},
-	// A table made after the moment began must not be in the shape.
-	afterMoment: () => late.query("create table shop.arrived_late (id int)"),
+	afterMoment: async (at, tries) => {
+		// A table made after the moment began must not be in the shape.
+		await late.query(`create table shop.arrived_late_${tries} (id int)`);
+		if (early.length > 0) return;
+		// The second try: another session's truncate queues for a table now, before the shape is read. It waits for the
+		// export's lock; pg_dump's own lock request will stand behind it.
+		const queued = await another("truncate shop.queued_first", "truncate shop.queued_first", early);
+		for (let look = 0; look < 100; look++) {
+			const found = await late.query("select wait_event_type, pg_blocking_pids(pid) as by from pg_stat_activity where pid = $1", [queued.pid]);
+			if (found.rows[0]?.wait_event_type === "Lock") {
+				queued.waits.push(`Lock/${found.rows[0].by.join(" ")}`);
+				queued.heldBy = found.rows[0].by.map(Number);
+				queued.exportPid = at.pid;
+				break;
+			}
+			await sleep(20);
+		}
+	},
 	afterSchema: async (at) => {
 		// How many rows the moment holds, counted on a second connection that joined the same snapshot before anyone
 		// tried to empty a table: so an emptied read could not vouch for itself.
@@ -383,12 +434,33 @@ const moment = await exportSnapshot("one-moment", cuts, {
 writes.stop = true;
 await writer;
 const finished = await Promise.all(others.map((entry) => entry.done));
-await late.query("drop table if exists shop.arrived_late; drop table if exists shop.made_between");
+const queuedFirst = { ...early[0], ...(await early[0].done) };
+await late.query("drop table if exists shop.arrived_late_1, shop.arrived_late_2, shop.arrived_late_3, shop.made_between");
+// The last use of this connection: left open, it keeps the process alive after the last check.
+await late.end();
 const movedDuring = writes.moves.filter((move) => move.issued > moment.momentAt);
 const committedDuring = writes.commits.filter((at) => at > moment.momentAt && at < moment.endedAt).length;
-note(`the export took ${moment.tries} tries; the moment's tables: ${moment.tables.join(", ")}`);
+note(`the export took ${moment.tries} tries (${moment.restarts.map((restart) => restart.why).join("; ")}); the moment's tables: ${moment.tables.join(", ")}`);
 check("a table made between the list and the locks makes the export start again, and the next try holds it",
-	moment.tries === 2 && moment.tables.includes("shop.made_between"), `${moment.tries} tries`);
+	moment.restarts[0]?.why === "the tables changed between the list and the locks" && moment.tables.includes("shop.made_between"), `${moment.tries} tries`);
+// The review's case (round 3, F6): the truncate waits for the export, pg_dump waits for the truncate, the export waits
+// for pg_dump. Without a bound on pg_dump's lock wait this never ends.
+const gaveUp = moment.restarts[1];
+note(`the queued truncate waited for ${queuedFirst.waits.join(", ") || "nothing"} (the export is ${queuedFirst.exportPid}); pg_dump said: ${String(gaveUp?.message).split("\n").slice(0, 2).join(" | ")}`);
+check("a truncate queued before the shape is read waits for the export's lock",
+	queuedFirst.heldBy?.includes(queuedFirst.exportPid) === true, queuedFirst.waits.join(", "));
+check("the shape's dump then gives up its lock wait in bounded time, and the export lets go and starts again",
+	moment.tries === 3 && gaveUp?.why === "the shape's dump could not lock a table in time" && /canceling statement due to (lock|statement) timeout/.test(gaveUp.message) && /LOCK TABLE/.test(gaveUp.message)
+		&& gaveUp.ms >= DUMP_LOCK_WAIT_MS && gaveUp.ms < DUMP_LOCK_WAIT_MS + 5000,
+	`${moment.tries} tries; gave up after ${Math.round(gaveUp?.ms ?? 0)} ms`);
+// The truncate's answer reaches its caller a little after its lock is free again (PostgreSQL removes the old files
+// after it lets the lock go), so the next try's moment is not compared with that time: the next check reads the
+// snapshot itself.
+check("the queued truncate went through once the export let go, and not before",
+	queuedFirst.ok === true && queuedFirst.at >= gaveUp?.letGoAt && queuedFirst.at - gaveUp.letGoAt < 5000,
+	`${queuedFirst.message} ${Math.round(queuedFirst.at - queuedFirst.issued)} ms after it was sent, ${Math.round(queuedFirst.at - (gaveUp?.letGoAt ?? 0))} ms after the export let go`);
+check("the snapshot of the next try holds that table as the truncate left it: empty, so the truncate came before its moment",
+	moment.truth["shop.queued_first"] === "0/0", moment.truth["shop.queued_first"]);
 note(`while the export ran the writer committed ${committedDuring} of its ${writes.rounds} transactions: ${writes.inserted} new events in all, ${writes.moves.length} keys moved from a late part into an early one (${movedDuring.length} after the moment began), ${writes.deleted} events deleted`);
 check("the export's locks do not hold back the writer: its transactions commit while parts are written",
 	committedDuring > 50 && movedDuring.length > 50 && writes.deleted > 0, `${committedDuring} commits, ${movedDuring.length} moves after the moment`);
@@ -401,7 +473,7 @@ for (const [index, entry] of others.entries()) {
 }
 note(`one-moment export: ${BIG.map((table) => `${table} ${moment.parts[table].length} parts`).join(", ")}; ${Math.round(moment.bytes / MIB)} MiB in ${(moment.ms / 1000).toFixed(1)} s (${Math.round(moment.bytes / MIB / (moment.ms / 1000))} MiB/s)`);
 check("the shape is read at the export's moment: a table made after it is not in schema.sql",
-	moment.schema.includes("CREATE TABLE shop.events") && moment.schema.includes("CREATE TABLE shop.notes") && !moment.schema.includes("arrived_late"),
+	moment.schema.includes("CREATE TABLE shop.events") && moment.schema.includes("CREATE TABLE shop.notes") && !moment.schema.includes(`arrived_late_${moment.tries}`),
 	`${moment.schema.length} bytes`);
 check("sequences.sql puts back every sequence, read from the sequence itself",
 	moment.sequences.length === 6 && ["clicks_n_seq", "events_id_seq", "tickets_id_seq', 5000000, false", "invoices_id_seq', 7000000, true", "later_seq', 1000, false", "order_numbers', 324, true"]
