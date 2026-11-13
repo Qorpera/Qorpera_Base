@@ -1923,6 +1923,13 @@ only after durable storage.
   of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
   401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
   looks again at once.
+- `POST /v1/company-data/<environmentId>/query`, `/watch`, `/apply` and `/describe` (not the object gateway's: the
+  node's mux sends them to the data gateway, `deploy/company-data/`; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`
+  §3 and §5) — a member's question to the company's databases, a held watch of questions, steps to apply, or what a
+  database holds, with the member's token, `content-type: application/json` and a JSON body: at most 1 MiB for
+  `apply`, 64 KiB for the others. Answers are JSON with `cache-control: no-store`, passed back with their status. A
+  watch is held up to 20 s by the data gateway; the bridge allows it the default 25 s. Behind the member company
+  gateway, which reads a body only for a signed-in member.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
