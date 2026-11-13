@@ -17,6 +17,7 @@ import {
 	CLOUD_MACHINE_SCREEN_DESCRIPTION,
 	CLOUD_MACHINE_START_ANSWER_MS,
 	CLOUD_MACHINE_START_DESCRIPTION,
+	CLOUD_MACHINE_START_WORKER_DESCRIPTION,
 	type CloudMachineCodingValues,
 	cloudMachineTools,
 } from "../src/cloud-machine-tools.ts";
@@ -1302,6 +1303,14 @@ describe("machine tools", () => {
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
 			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program on it");
+			// The size is chosen for the job (Jonas, 13 Nov 2026: custom machines are "built, just not used well
+			// enough"): what uses every cpu, what a larger machine costs, and that it is stopped after. Workers read it too.
+			for (const description of [CLOUD_MACHINE_START_DESCRIPTION, CLOUD_MACHINE_START_WORKER_DESCRIPTION]) {
+				expect(description).toContain(
+					"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8. Hours count size times time awake, so that costs the same: for such work start a machine of 8 cpus and 8 GiB, tell the program to use them all, and stop it with machine_stop when done. ",
+				);
+				expect(Buffer.byteLength(description)).toBeLessThanOrEqual(4096);
+			}
 		} finally {
 			f.boundary.close();
 		}

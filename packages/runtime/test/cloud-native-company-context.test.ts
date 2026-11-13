@@ -1597,12 +1597,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // (13 November 2026) the instructions and prompts were measured once more.
 // With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
 // 13 November 2026) merged with that master, the staff instructions were measured once more.
+// With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
+// processors busy in the staff's (Jonas, 13 November 2026), all three instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "ddb3f028a768e6031c5596d269060a8742ae9d1b1039030c017a98978ec4c65a",
+			instructions: "0185648e1202298775e6f4287e64a66f3734e59d7e61fec8e18f954a03ebb14a",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1610,7 +1612,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "e2fe3cab44030d38f34c28980e5601cd26e323a40efc05fe8748fb0886cc258d",
+			instructions: "3fdfeb6f63488c958734d615f38420fdea83b1bf9e76e80a8c61dd3844f69733",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1618,7 +1620,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "ddb3f028a768e6031c5596d269060a8742ae9d1b1039030c017a98978ec4c65a",
+			instructions: "0185648e1202298775e6f4287e64a66f3734e59d7e61fec8e18f954a03ebb14a",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1746,6 +1748,36 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
+});
+
+// Jonas, 13 November 2026, on a company whose pictures came out of Blender and still looked drawn: "how come we seem
+// to not get very realistic animations for anything, even the things we want to make realistic?" Its agent had lit
+// boxes and spheres with one emitter against a black world, at 32 samples on a default machine's two processors, and
+// had written "illustrative" over the result. The same scene measured both ways (deploy/machine/README.md, "Sizing a
+// machine for the job"): the light and the materials make the frame; the processors only make it quicker.
+it("has a render lit and looked at like a photograph, on a machine sized for it (13 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	// A worker renders too: how a render is lit and looked at is in what every run reads.
+	for (const instructions of [staff, worker])
+		for (const rule of [
+			"A render meant to look real is lit and looked at like a photograph: light it with a real environment (an HDRI) and give its surfaces textured materials, such as Poly Haven's free ones (CC0), never plain colours in a dark, empty world.",
+			"Before anyone sees it, render one small frame into the company folder, open it with company_read and name what gives it away as computer-made, such as flat light, an empty background, surfaces that are too clean, edges that are too sharp or things that float",
+			"fix the weakest thing and render again, and render the final frames only when the small one holds up, on a machine sized for it (machine_start with cpus 8 or more), because a render uses every processor it is given.",
+		])
+			expect(instructions).toContain(rule);
+	// Choosing the machine is the staff agent's judgement: what it costs, and what to do when it waits for room.
+	const sized =
+		"- Work that keeps processors busy for minutes, such as a render, encoding a film or a large build: a machine sized for it (machine_start with cpus 8 and memoryGiB 8), with the program told to use every processor, stopped when the work is done. Computer hours count a machine's size times the time it is awake, so a larger machine for a shorter time costs the same, and the work is done in a quarter of the time; when it is refused as too large or has to wait in line for room, start a smaller one instead of waiting.";
+	expect(staff).toContain(sized);
+	expect(worker).not.toContain("Work that keeps processors busy for minutes");
+	// It follows the page's own look step, which stays as it was.
+	expect(staff.indexOf("Checking how a page looks, taking pictures of it or filming it")).toBeLessThan(
+		staff.indexOf(sized),
+	);
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {
