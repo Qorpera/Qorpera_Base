@@ -574,8 +574,9 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 	};
 	function tellFoot(about, id, ask) {
 		if (!canTell() || !about) return null;
+		// \`at\` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = \`\${at || ""}\\n\${about}\`;
+		const key = \`\${id}\\n\${about}\`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
@@ -1305,12 +1306,10 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.tip = h("div", "mk-tip");
 		ui.tip.setAttribute("role", "tooltip");
 		ui.tip.addEventListener("keydown", (e) => {
-			const lab = ui.noteFor;
-			if (!lab || (e.key !== "Escape" && e.key !== "Tab")) return;
-			// out of the note: back to its label, and Tab goes on from there
+			if (!ui.noteFor || (e.key !== "Escape" && e.key !== "Tab")) return;
+			// out of the note: hideTip puts the focus back on its label, and Tab goes on from there
 			if (e.key === "Escape" || e.shiftKey) e.preventDefault();
 			hideTip();
-			lab.focus({ preventScroll: true });
 		});
 		D.body.append(root, ui.tip);
 		ui.err.textContent = M.errs.length ? \`\${W.error}: \${M.errs[0]}\${M.errs.length > 1 ? \` (+\${M.errs.length - 1})\` : ""}\` : "";
@@ -2201,11 +2200,15 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	}
 	function hideTip() {
 		if (!ui || !ui.tip) return;
+		// a closed tip is hidden, so nothing in it takes the focus: what was focused in it goes back to its label
+		const inside = ui.tip.contains(D.activeElement);
 		hushTold();
 		ui.tip.classList.remove("mk-on");
 		if (ui.noteFor) ui.noteFor.setAttribute("aria-expanded", "false");
+		const lab = ui.noteFor;
 		ui.tipFor = null;
 		ui.noteFor = null;
+		if (inside && lab) lab.focus({ preventScroll: true });
 	}
 	function toggleNote(lab, inp) {
 		if (ui.noteFor === lab) return hideTip();
@@ -3068,8 +3071,9 @@ body{margin:0}
 	}
 	function tellFoot(about, id, ask) {
 		if (!canTell() || !about) return null;
+		// \`at\` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = \`\${at || ""}\\n\${about}\`;
+		const key = \`\${id}\\n\${about}\`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
@@ -4624,8 +4628,9 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	};
 	function tellFoot(words, about, id, ask) {
 		if (!canTell() || !about) return null;
+		// \`at\` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = \`\${at || ""}\\n\${about}\`;
+		const key = \`\${id}\\n\${about}\`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
@@ -5966,8 +5971,8 @@ body{margin:0}
 .ok-tag{font-size:11px;line-height:1;padding:3px 6px;border-radius:999px;border:1px dashed color-mix(in srgb,var(--q-text) 40%,var(--q-bg));color:var(--q-muted)}
 .ok-unk{display:inline-grid;place-items:center;min-width:2.1em;padding:0 .45em;border-radius:.45em;border:1px dashed color-mix(in srgb,var(--q-text) 32%,var(--q-bg));color:var(--q-muted);font-weight:650;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--q-text) 13%,transparent) 0 1.5px,transparent 1.5px 6px)}
 .ok-val .ok-unk{font-size:11px;line-height:16px;min-width:22px}
-.ok-note{position:absolute;z-index:3;left:50%;bottom:6px;width:min(440px,calc(100% - 8px));transform:translate(-50%,8px);opacity:0;pointer-events:none;background:var(--q-surface);border-radius:16px;padding:13px 46px 14px 16px;box-shadow:0 0 0 1px var(--q-line),0 18px 40px -22px color-mix(in srgb,var(--q-text) 55%,transparent);transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1)}
-.ok-note.open{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.ok-note{position:absolute;z-index:3;left:50%;bottom:6px;width:min(440px,calc(100% - 8px));transform:translate(-50%,8px);opacity:0;visibility:hidden;pointer-events:none;background:var(--q-surface);border-radius:16px;padding:13px 46px 14px 16px;box-shadow:0 0 0 1px var(--q-line),0 18px 40px -22px color-mix(in srgb,var(--q-text) 55%,transparent);transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1),visibility 0s linear .25s}
+.ok-note.open{opacity:1;visibility:visible;transform:translate(-50%,0);pointer-events:auto;transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1)}
 .ok-note-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px;font-weight:650;line-height:1.3}
 .ok-note-h .ok-val{font-size:14px;font-weight:500}
 .ok-note p{margin:5px 0 0;font-size:15px;line-height:1.45;color:var(--q-text)}
@@ -6060,8 +6065,9 @@ body{margin:0}
 	};
 	function tellFoot(words, about, id, ask) {
 		if (!canTell() || !about) return null;
+		// \`at\` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = \`\${at || ""}\\n\${about}\`;
+		const key = \`\${id}\\n\${about}\`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
@@ -6275,6 +6281,7 @@ body{margin:0}
 		data: null,
 		vi: 0,
 		sel: null,
+		was: null, // the part whose note was open, so the focus can go back to what opened it
 		hot: null,
 		ang: 0,
 		vel: 0,
@@ -6318,7 +6325,9 @@ body{margin:0}
 		const hint = h("div", "ok-hint", { "aria-hidden": "true" });
 		hint.innerHTML = \`<svg width="22" height="10" viewBox="0 0 22 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h20M5 1 1 5l4 4M17 1l4 4-4 4"/></svg>\`;
 		hint.append(h("span", null, null, d.words.drag));
-		const note = h("div", "ok-note", { role: "status", "aria-live": "polite" });
+		// closed, it is inert as well as unseen: nothing in it takes the focus or is read out (a note faded out but
+		// still in the page was reachable by Shift+Tab, and its button asked about a part no longer open)
+		const note = h("div", "ok-note", { role: "status", "aria-live": "polite", inert: true });
 		view.append(shadow, object, lines, hint, note);
 		const strip = h("div", "ok-strip", { role: "group" });
 		const chips = h("div", "ok-chips", { role: "group" });
@@ -6927,10 +6936,17 @@ body{margin:0}
 		const d = S.data;
 		const part = S.sel ? V().parts.find((p) => p.id === S.sel) : null;
 		if (!part) {
+			const inside = R.note.contains(D.activeElement);
 			R.note.classList.remove("open");
+			R.note.setAttribute("inert", "");
 			hushTold();
+			// the focus goes back to what opened the note, never onto a part that is no longer shown
+			if (inside) openerOf(S.was)?.focus({ preventScroll: true });
+			S.was = null;
 			return;
 		}
+		S.was = part.id;
+		R.note.removeAttribute("inert");
 		const head = h("div", "ok-note-h", null, [markOf(part.state), h("span", null, null, part.name)]);
 		const v = valueOf(part, d.words);
 		if (v.childNodes.length) head.append(v);
@@ -6942,6 +6958,12 @@ body{margin:0}
 		const tell = tellFoot(d.words, noteAbout(part.name, d.variants.length > 1 ? V().name : ""), part.id, part.ask);
 		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), ...(tell ? [tell] : []), close);
 		R.note.classList.add("open");
+	}
+	/** What opens a part's note: its name beside the object, or its button in the strip on a phone. */
+	function openerOf(id) {
+		if (!id || !R) return null;
+		if (S.box?.phone) return R.strip.querySelector(\`[data-id="\${CSS.escape(id)}"]\`);
+		return (R.labels.find((it) => it.part.id === id) || {}).el ?? null;
 	}
 	function chooseVariant(i) {
 		if (i === S.vi) return;

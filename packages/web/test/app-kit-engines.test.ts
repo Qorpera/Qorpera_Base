@@ -408,24 +408,25 @@ describe("each data kit's note to the app's owner", () => {
 		readonly name: string;
 		readonly ask?: unknown;
 	}
-	/** Each kit's data with one thing in it, how a member opens the thing's detail, what then shows and how it closes,
-	 * what the note is about and which thing it names, and an id the kit keeps that the call's pattern does not take. */
+	/** Each kit's data with the given things in it, how a member opens a thing's detail, what then shows and how it
+	 * closes, what the note is about and which thing it names, and an id the kit keeps that the call's pattern does
+	 * not take (two of them, so two such things can be told apart). */
 	const KIT_THING: Readonly<
 		Record<
 			Kit,
 			{
-				readonly data: (thing: Thing, words: unknown) => string;
-				readonly open: (thing: Thing) => void;
+				readonly data: (things: readonly Thing[], words: unknown) => string;
+				readonly open: (thing: Thing, index: number) => void;
 				readonly shown: string;
 				readonly close: () => void;
 				readonly about: (thing: Thing) => string;
 				readonly at: (thing: Thing) => string;
-				readonly odd: string;
+				readonly odd: readonly [string, string];
 			}
 		>
 	> = {
 		model: {
-			data: (thing, words) =>
+			data: (things, words) =>
 				JSON.stringify({
 					lang: "en",
 					title: "Prices",
@@ -433,77 +434,85 @@ describe("each data kit's note to the app's owner", () => {
 					groups: [
 						{
 							label: "Numbers",
-							inputs: [
-								{
-									id: thing.id,
-									label: thing.name,
-									unit: "kr",
-									min: 0,
-									max: 100,
-									value: 40,
-									state: "known",
-									note: "From the supplier's list",
-									ask: thing.ask,
-								},
-							],
+							inputs: things.map((thing) => ({
+								id: thing.id,
+								label: thing.name,
+								unit: "kr",
+								min: 0,
+								max: 100,
+								value: 40,
+								state: "known",
+								note: "From the supplier's list",
+								ask: thing.ask,
+							})),
 						},
 					],
 				}),
-			open: () => press(".mk-label"),
+			open: (_thing, index) => pressNth(".mk-label", index),
 			shown: ".mk-tip.mk-on",
 			// a second tap on the label closes its note
 			close: () => press(".mk-label"),
 			about: (thing) => `${thing.name} · 40 kr`,
 			at: (thing) => thing.id,
-			odd: "_price",
+			// a model's own ids may start with an underscore, which the call's pattern does not take
+			odd: ["_price_one", "_price_two"],
 		},
 		board: {
-			data: (thing, words) =>
+			data: (things, words) =>
 				JSON.stringify({
 					lang: "en",
 					mode: "scale",
 					title: "Prices",
 					words,
-					items: [{ id: thing.id, name: thing.name, value: 10, ask: thing.ask }],
+					items: things.map((thing) => ({ id: thing.id, name: thing.name, value: 10, ask: thing.ask })),
 				}),
 			open: (thing) => press(`.bk-item[data-id="${thing.id}"]`),
 			shown: ".bk-sheet.is-open",
 			close: () => press(".bk-sheet .bk-x"),
 			about: (thing) => thing.name,
 			at: (thing) => thing.id,
-			odd: "two words",
+			odd: ["supplier 1", "supplier 2"],
 		},
 		path: {
-			data: (thing, words) =>
+			data: (things, words) =>
 				JSON.stringify({
 					lang: "en",
 					title: "Customers",
 					words,
 					steps: [{ id: "look", name: "Look" }],
-					lanes: [{ id: thing.id, name: thing.name, steps: { look: { state: "known", ask: thing.ask } } }],
+					lanes: things.map((thing) => ({
+						id: thing.id,
+						name: thing.name,
+						steps: { look: { state: "known", ask: thing.ask } },
+					})),
 				}),
 			open: (thing) => press(`.pk-node[data-key="n:${thing.id}:look"]`),
 			shown: ".pk-sheet",
 			close: () => press(".pk-sheet .pk-x"),
 			about: (thing) => `Look · ${thing.name}`,
 			at: (thing) => `${thing.id}:look`,
-			odd: "two words",
+			odd: ["lane one", "lane two"],
 		},
 		object: {
-			data: (thing, words) =>
+			data: (things, words) =>
 				JSON.stringify({
 					lang: "en",
 					title: "Box",
 					picture: "pictures/box.webp",
 					words,
-					parts: [{ id: thing.id, name: thing.name, track: [[0.5, 0.5, 1]], ask: thing.ask }],
+					parts: things.map((thing) => ({
+						id: thing.id,
+						name: thing.name,
+						track: [[0.5, 0.5, 1]],
+						ask: thing.ask,
+					})),
 				}),
 			open: (thing) => press(`.ok-strip button[data-id="${thing.id}"]`),
 			shown: ".ok-note.open",
 			close: () => press(".ok-close"),
 			about: (thing) => thing.name,
 			at: (thing) => thing.id,
-			odd: "two words",
+			odd: ["part one", "part two"],
 		},
 	};
 	const BUTTON = ".bk-tell-b, .pk-tell-b, .ok-tell-b, .mk-tell-b";
@@ -511,12 +520,14 @@ describe("each data kit's note to the app's owner", () => {
 	const WORDS = { tell: "Ask Ida", told: "Sent to Ida" };
 	const LYS: Thing = { id: "lys", name: "Lys", ask: "Get a quote from them" };
 	const press = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
+	const pressNth = (selector: string, index: number) =>
+		document.querySelectorAll<HTMLElement>(selector)[index]?.click();
 	const button = () => document.querySelector<HTMLButtonElement>(BUTTON);
 
 	it.each(KITS)("of %s draws no button for a note where the page's bridge has no tell", async (kit) => {
 		const thing = KIT_THING[kit];
-		await open(kit, thing.data(LYS, WORDS));
-		thing.open(LYS);
+		await open(kit, thing.data([LYS], WORDS));
+		thing.open(LYS, 0);
 		expect(document.querySelector(thing.shown)).not.toBeNull();
 		expect(button()).toBeNull();
 	});
@@ -526,8 +537,8 @@ describe("each data kit's note to the app's owner", () => {
 		async (kit) => {
 			const thing = KIT_THING[kit];
 			const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
-			await open(kit, thing.data(LYS, WORDS), undefined, tell);
-			thing.open(LYS);
+			await open(kit, thing.data([LYS], WORDS), undefined, tell);
+			thing.open(LYS, 0);
 			// Nothing asks by itself: not when the page opens, not when a thing opens, not on a timer.
 			await settle(60000);
 			expect(tell).not.toHaveBeenCalled();
@@ -557,8 +568,8 @@ describe("each data kit's note to the app's owner", () => {
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
 			throw new Error("The member said not now.");
 		});
-		await open(kit, thing.data(LYS, WORDS), undefined, tell);
-		thing.open(LYS);
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
 		const why = document.querySelector(WHY);
 		expect(why?.textContent).toBe("");
 		expect(why?.getAttribute("aria-live")).toBe("polite");
@@ -588,13 +599,65 @@ describe("each data kit's note to the app's owner", () => {
 		expect(why?.textContent).toBe("");
 	});
 
+	it.each(KITS)("of %s keeps each thing's note its own, also where the call takes neither thing's id", async (kit) => {
+		// Two things of the same name whose ids the call cannot take: both send no `at`, and the note of one said
+		// nothing about the other (their state was once kept under what went out, which was empty for both).
+		const thing = KIT_THING[kit];
+		const [one, two] = thing.odd.map((id) => ({ id, name: "Lys", ask: "Get a quote from them" }));
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+		await open(kit, thing.data([one, two], WORDS), undefined, tell);
+		thing.open(one, 0);
+		button()?.click();
+		await settle();
+		expect(tell).toHaveBeenCalledWith({ about: thing.about(one), text: "Get a quote from them" });
+		expect(button()?.textContent).toBe("Sent to Ida");
+		thing.close();
+		// The other thing offers its own button, and sends its own note.
+		thing.open(two, 1);
+		expect(button()?.textContent).toBe("Ask Ida");
+		button()?.click();
+		await settle();
+		expect(tell).toHaveBeenCalledTimes(2);
+		expect(button()?.textContent).toBe("Sent to Ida");
+		// And the first one is still sent: each thing keeps its own.
+		thing.close();
+		thing.open(one, 0);
+		expect(button()?.textContent).toBe("Sent to Ida");
+	});
+
+	it.each(KITS)("of %s takes nothing of a closed detail into the member's way", async (kit) => {
+		// A detail faded out but left in the page kept its note's button in the tab order, so Shift+Tab reached it and
+		// asked about a thing no longer open.
+		const thing = KIT_THING[kit];
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
+		const opened = button() as HTMLButtonElement;
+		opened.focus();
+		expect(document.activeElement).toBe(opened);
+		thing.close();
+		// What the member can reach: the detail is gone, or hidden and inert, and the focus is back in the page.
+		const detail = document.querySelector(thing.shown);
+		expect(detail).toBeNull();
+		for (const node of document.querySelectorAll(BUTTON)) {
+			const hidden = node.closest("[inert]") !== null || getComputedStyle(node).visibility === "hidden";
+			expect(hidden || node.isConnected === false, `${kit}: a closed detail's button is still in the page`).toBe(
+				true,
+			);
+		}
+		// And the focus went back to what opened the detail, never left on a button nobody can see.
+		expect(document.activeElement).not.toBe(opened);
+		expect(document.activeElement?.closest("[inert]") ?? null).toBeNull();
+		expect(tell).not.toHaveBeenCalled();
+	});
+
 	it.each(KITS)("of %s takes the reason a note did not go away at once when the detail closes", async (kit) => {
 		const thing = KIT_THING[kit];
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
 			throw new Error("The member said not now.");
 		});
-		await open(kit, thing.data(LYS, WORDS), undefined, tell);
-		thing.open(LYS);
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
 		button()?.click();
 		await settle();
 		expect(document.querySelector(WHY)?.textContent).toBe("The member said not now.");
@@ -602,7 +665,7 @@ describe("each data kit's note to the app's owner", () => {
 		expect(document.querySelector(thing.shown)).toBeNull();
 		for (const line of document.querySelectorAll(WHY)) expect(line.textContent).toBe("");
 		// Opened again before the six seconds are up, the thing shows its button and no reason.
-		thing.open(LYS);
+		thing.open(LYS, 0);
 		expect(document.querySelector(WHY)?.textContent).toBe("");
 		expect(button()?.textContent).toBe("Ask Ida");
 	});
@@ -611,11 +674,11 @@ describe("each data kit's note to the app's owner", () => {
 		"of %s names no thing the call cannot take, sends no draft past 40 characters, and draws a mark without words",
 		async (kit) => {
 			const thing = KIT_THING[kit];
-			const odd: Thing = { id: thing.odd, name: "Lys", ask: "x".repeat(41) };
+			const odd: Thing = { id: thing.odd[0], name: "Lys", ask: "x".repeat(41) };
 			const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
 			// Words that are no text are left out, as a kit's other words are.
-			await open(kit, thing.data(odd, { tell: ["Ask Ida"], told: { text: "Sent" } }), undefined, tell);
-			thing.open(odd);
+			await open(kit, thing.data([odd], { tell: ["Ask Ida"], told: { text: "Sent" } }), undefined, tell);
+			thing.open(odd, 0);
 			expect(button()?.textContent).toBe("");
 			expect(button()?.getAttribute("aria-label")).toBe("Send a note");
 			expect(button()?.querySelector("svg")).not.toBeNull();

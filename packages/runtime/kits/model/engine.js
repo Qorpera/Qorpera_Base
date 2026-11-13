@@ -305,8 +305,9 @@
 	};
 	function tellFoot(about, id, ask) {
 		if (!canTell() || !about) return null;
+		// `at` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = `${at || ""}\n${about}`;
+		const key = `${id}\n${about}`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
@@ -1036,12 +1037,10 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.tip = h("div", "mk-tip");
 		ui.tip.setAttribute("role", "tooltip");
 		ui.tip.addEventListener("keydown", (e) => {
-			const lab = ui.noteFor;
-			if (!lab || (e.key !== "Escape" && e.key !== "Tab")) return;
-			// out of the note: back to its label, and Tab goes on from there
+			if (!ui.noteFor || (e.key !== "Escape" && e.key !== "Tab")) return;
+			// out of the note: hideTip puts the focus back on its label, and Tab goes on from there
 			if (e.key === "Escape" || e.shiftKey) e.preventDefault();
 			hideTip();
-			lab.focus({ preventScroll: true });
 		});
 		D.body.append(root, ui.tip);
 		ui.err.textContent = M.errs.length ? `${W.error}: ${M.errs[0]}${M.errs.length > 1 ? ` (+${M.errs.length - 1})` : ""}` : "";
@@ -1932,11 +1931,15 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	}
 	function hideTip() {
 		if (!ui || !ui.tip) return;
+		// a closed tip is hidden, so nothing in it takes the focus: what was focused in it goes back to its label
+		const inside = ui.tip.contains(D.activeElement);
 		hushTold();
 		ui.tip.classList.remove("mk-on");
 		if (ui.noteFor) ui.noteFor.setAttribute("aria-expanded", "false");
+		const lab = ui.noteFor;
 		ui.tipFor = null;
 		ui.noteFor = null;
+		if (inside && lab) lab.focus({ preventScroll: true });
 	}
 	function toggleNote(lab, inp) {
 		if (ui.noteFor === lab) return hideTip();

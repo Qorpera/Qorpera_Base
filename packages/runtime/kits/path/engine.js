@@ -316,8 +316,9 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	};
 	function tellFoot(words, about, id, ask) {
 		if (!canTell() || !about) return null;
+		// `at` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
 		const at = TELL_AT.test(id || "") ? id : null;
-		const key = `${at || ""}\n${about}`;
+		const key = `${id}\n${about}`;
 		// a new view of the thing starts without the reason an earlier one showed
 		if ((TOLD.get(key) || {}).why) {
 			clearTimeout(QUIET.get(key));
