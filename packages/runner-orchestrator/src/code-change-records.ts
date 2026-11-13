@@ -10,13 +10,15 @@ import {
 	type writeCodeChangeRecords,
 } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { codeSiteNameValid } from "./code-site.ts";
 import { CodingControlBusy } from "./coding-executor.ts";
 
 /** The change record's files (own code storage, step 2b): the coding executor's side. The kernel keeps a numbered row
  * for every movement of a repository's main, and for every landing that was refused (`qorpera_code_changes`, migration
  * `20260930720000`). Each row has a file, `code/<owner>/<name>/changes/<n>.md`, and the newest hundred are listed in
  * `changes/index.md`, under two lines that say which version of the repository's site is live and which change is ready
- * in What's new (step 4), for 30 days after a restore under one that names the changes it took out of main (step 6),
+ * in What's new (step 4), and while sites have hosts of their own a third, which change's site is being prepared for it
+ * (step 5), for 30 days after a restore under one that names the changes it took out of main (step 6),
  * and for 30 days after an import that brought other lines of work under one that counts them. The kernel says which
  * are due and what they hold; this renders them; a code host job writes them:
  *
@@ -664,22 +666,38 @@ const LISTED: Readonly<Record<CodeChangeFile["state"], string>> = {
 };
 
 /** What of a repository's site the list says (own code storage, step 4; migration `20260930729000`): the version that
- * is live, and the change that is ready in What's new. The kernel sends each in the list's `index`, and it is never
- * checked on the way in: a value of a shape the list cannot show reads as absent there, and stops nothing. A key the
- * kernel does not send (a kernel from before step 4, or a repository that makes no site) is no line; null says that
- * nothing is live yet, or that nothing is ready. */
+ * is live, and the change that is ready in What's new; from step 5 (migration `20260930756000`), while sites have hosts
+ * of their own, also the change whose site is being prepared for What's new. The kernel sends each in the list's
+ * `index`, and it is never checked on the way in: a value of a shape the list cannot show reads as absent there, and
+ * stops nothing. A key the kernel does not send (a kernel from before step 4, or a repository that makes no site) is
+ * no line; null says that nothing is live yet, or that nothing is ready (and, for `preparing`, is no line either). */
 export interface CodeChangeReleases {
 	/** `{version, kind: "release" | "back", change, since, by, url}`: `by` is the member's name, null once the member
 	 * left; a go-back shows the number of the version it put back. */
 	live?: unknown;
 	/** `{change}`. */
 	ready?: unknown;
+	/** `{change}`: the change due in What's new whose site is not ready yet, between its landing and the upload. */
+	preparing?: unknown;
 }
 
 /** A time as the kernel sends one (a `timestamptz` in JSON): a day, a time and its offset. */
 const TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}(:?\d{2})?)$/;
 /** A site's link as `qorpera_site_url` makes one for a site of files: the sites' origin, then the site's name. */
 const SITE_LINK = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\/[a-z0-9][a-z0-9-]{1,46}[a-z0-9]\/$/;
+/** A site's own host, as `qorpera_site_url` makes its link while sites have hosts of their own (step 5, migration
+ * `20260930756000`), by the one host rule (STEP5-BUILD.md): one label before `.qorpera.com`, of runs of a-z and 0-9
+ * joined by single hyphens (so never a next host, `<name>--next`), whose name is 3 to 48 long and one a site may have
+ * (`codeSiteNameValid`), then `/`. */
+const SITE_HOST_LINK = /^https:\/\/([a-z0-9]+(?:-[a-z0-9]+)*)\.qorpera\.com\/$/;
+
+/** Whether `url` is a site's link as the list shows one: today's form, or a site's own host. */
+function siteLink(url: unknown): url is string {
+	if (typeof url !== "string") return false;
+	if (SITE_LINK.test(url)) return true;
+	const name = SITE_HOST_LINK.exec(url)?.[1];
+	return name !== undefined && codeSiteNameValid(name);
+}
 
 /** The line of what is live: undefined when there is none to write. The member's name is their own text: one line of
  * words, "a member" when there is none; a link that is not a site's is left off. */
@@ -698,7 +716,7 @@ function liveLine(live: unknown): string | undefined {
 		return undefined;
 	const back = kind === "back";
 	const name = (typeof by === "string" && words(by, 200)) || "a member";
-	const link = typeof url === "string" && SITE_LINK.test(url) ? ` ${url}` : "";
+	const link = siteLink(url) ? ` ${url}` : "";
 	return `Live: version ${version}${back ? " again" : ""}, made at change ${change}, since ${minute(since)}; ${name} ${back ? "went back" : "said go"}.${link}`;
 }
 
@@ -706,6 +724,14 @@ function liveLine(live: unknown): string | undefined {
 function readyLine(ready: unknown): string | undefined {
 	if (ready === null) return "Ready in What's new: nothing.";
 	return isRecord(ready) && whole(ready.change, 1) ? `Ready in What's new: change ${ready.change}.` : undefined;
+}
+
+/** The line of the change whose site is being prepared for What's new (step 5, while sites have hosts of their own):
+ * undefined when nothing is, or the kernel does not say. */
+function preparingLine(preparing: unknown): string | undefined {
+	return isRecord(preparing) && whole(preparing.change, 1)
+		? `Being prepared for What's new: change ${preparing.change} (about a minute).`
+		: undefined;
 }
 
 /** How long after a restore the list opens with the changes it took out of main. */
@@ -787,7 +813,9 @@ export function codeChangeIndexText(
 	now: number = Date.now(),
 ): string {
 	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
-	const site = [liveLine(head.live), readyLine(head.ready)].filter((line) => line !== undefined);
+	const site = [liveLine(head.live), readyLine(head.ready), preparingLine(head.preparing)].filter(
+		(line) => line !== undefined,
+	);
 	const opening = [restoreLine(newest, now), importedLine(head.imported, now)].filter((line) => line !== undefined);
 	return `${[
 		`# Changes in ${words(`${repository.owner}/${repository.name}`, 200)}`,
@@ -995,11 +1023,13 @@ function filesOf(
 				: {
 						version: index.version as number,
 						lines: (index.lines as unknown[]).map(lineOf),
-						// What is live and what is ready (step 4), and the import while it is new (step 6), as the kernel
-						// sends them: the list reads them leniently, and a kernel from before sends none.
+						// What is live and what is ready (step 4), the import while it is new (step 6), and what is being
+						// prepared while sites have hosts of their own (step 5), as the kernel sends them: the list reads them
+						// leniently, and a kernel from before sends none.
 						live: index.live,
 						ready: index.ready,
 						imported: index.imported,
+						preparing: index.preparing,
 					},
 	};
 }
@@ -1275,7 +1305,12 @@ export class CodeChangeRecords {
 			? codeChangeIndexText(
 					target,
 					due.index.lines,
-					{ live: due.index.live, ready: due.index.ready, imported: due.index.imported },
+					{
+						live: due.index.live,
+						ready: due.index.ready,
+						imported: due.index.imported,
+						preparing: due.index.preparing,
+					},
 					this.#now(),
 				)
 			: null;

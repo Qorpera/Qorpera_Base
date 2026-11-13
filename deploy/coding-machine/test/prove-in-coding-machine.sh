@@ -15,7 +15,8 @@
 #   user's home, LibreOffice converting a document, and sqlite3, zip and unzip;
 # - a repository's checks and site (own code storage, steps 3 and 4): the executor's own clean copy, collect and drop
 #   (QORPERA_PROOF_SCRIPTS, printed by test/code-checks-scripts.mjs), run as the session's commands are, on a
-#   repository's storage in the session's /company;
+#   repository's storage in the session's /company; and step 5's: links from the root taken only while the host says
+#   QORPERA_SITE_ROOT_LINKS=allowed, and a site drill's folder said not to be there;
 # - the machine's package caches (own code storage, step 6): the guest agent itself (QORPERA_PROOF_GUEST, its source)
 #   makes them and two more sessions' users with its mount; the second user installs what the first did with npm, pnpm,
 #   pip, uv and Playwright, from the cache, and adds to it; the trim empties the least recently used tool folder;
@@ -404,7 +405,22 @@ SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c \
 	'printf "<link rel=\"stylesheet\" href=\"/css/app.css\">\n" >dist/index.html'
 collect 0000000003-0001
 [[ $CODE == 3 && $OUT == "SITE_LINKS_FROM_ROOT index.html 1" ]] || fail "a link from the root gave $CODE: $OUT"
+collect 0000000003-0001 QORPERA_SITE_ROOT_LINKS=refused
+[[ $CODE == 3 && $OUT == "SITE_LINKS_FROM_ROOT index.html 1" ]] || fail "a link from the root, refused, gave $CODE: $OUT"
 pass "the collect refuses a site whose page links from the top of the domain, by its file and how many (never the link)"
+# Once sites have hosts of their own (own code storage, step 5), a site is served at the top of its own host, where
+# that link is its own: the host says so in QORPERA_SITE_ROOT_LINKS, and the collect then takes the site.
+collect 0000000003-0001 QORPERA_SITE_ROOT_LINKS=allowed
+[[ $CODE == 0 && $OUT =~ ^tree\ [0-9a-f]{40}$'\n'files\ 2$'\n'bytes\ [0-9]+$ ]] ||
+	fail "a link from the root, allowed, gave $CODE: $OUT"
+drop 0000000003-0001
+[[ $CODE == 0 && $OUT =~ ^dropped\ [0-9]+$ ]] || fail "the drop after it gave $CODE: $OUT"
+store fsck --no-dangling --connectivity-only >/dev/null || fail "the storage does not check after it"
+pass "the collect takes a site whose page links from the top of the domain only while QORPERA_SITE_ROOT_LINKS is allowed"
+# An operator's drill of a site (step 5) names a folder no repository has, in the recipe's place.
+collect 0000000003-0001 QORPERA_SITE_FOLDER=qorpera-drill-missing
+[[ $CODE == 3 && $OUT == SITE_FOLDER_MISSING ]] || fail "the site drill's folder gave $CODE: $OUT"
+pass "the collect says a site drill's folder is not there"
 as_session rm -r "$CHECKS/0000000003-0001/src/dist"
 collect 0000000003-0001
 [[ $CODE == 3 && $OUT == SITE_FOLDER_MISSING ]] || fail "a missing folder gave $CODE: $OUT"
