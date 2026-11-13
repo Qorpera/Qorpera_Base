@@ -4,6 +4,9 @@ import {
 	askingCues,
 	askingStill,
 	BECOME,
+	GAZES,
+	type Gaze,
+	gazeOf,
 	HOP_LAND,
 	hop,
 	hoppingDots,
@@ -169,35 +172,74 @@ describe("a working figure", () => {
 			}
 		}
 	});
-	it("bounces from side to side under them and follows them with its eyes", () => {
+	it("bounces from side to side under them", () => {
 		const acts = samples(4 * BEAT, 8 * BEAT, 0.01).map((t) => working(t, 5));
 		// Leaning left and right, up between the beats.
 		expect(Math.min(...acts.map((act) => act.body.turn))).toBeLessThan(-3);
 		expect(Math.max(...acts.map((act) => act.body.turn))).toBeGreaterThan(3);
 		expect(Math.min(...acts.map((act) => act.body.y))).toBeLessThan(-3);
-		// The eyes look up, and to both sides.
-		expect(Math.min(...acts.map((act) => act.eyes![0].x))).toBeLessThan(-0.3);
-		expect(Math.max(...acts.map((act) => act.eyes![0].x))).toBeGreaterThan(0.3);
-		// As a star is at the top, the eyes are on it: near the middle, looking up.
-		const star = samples(4, 7, 0.01).map((q) => working(q * BEAT, 1));
-		const top = star.reduce((best, act) => (act.props![1]!.y < best.props![1]!.y ? act : best));
-		expect(Math.abs(top.eyes![0].x)).toBeLessThan(0.2);
-		expect(top.eyes![0].y).toBeLessThan(-0.4);
 	});
-	it("goes through all ten tricks, in an order of its own, before it shows any again", () => {
-		expect(TRICKS).toHaveLength(10);
+	it("looks somewhere else every phrase of four beats, never the same way twice running", () => {
+		for (const seed of [0, 1, 2, 3]) {
+			const gazes = Array.from({ length: 60 }, (_, phrase) => gazeOf(phrase, seed));
+			expect([...new Set(gazes)].sort()).toEqual([...GAZES].sort());
+			// Seldom the same twice running.
+			expect(gazes.slice(1).filter((gaze, index) => gaze === gazes[index]).length).toBeLessThan(6);
+		}
+		// The second phrase (beats 4 to 8, before any trick) of a seed that looks `gaze` there.
+		const phrase = (gaze: Gaze) => {
+			const seed = Array.from({ length: 300 }, (_, index) => index).find((each) => gazeOf(1, each) === gaze)!;
+			return { seed, acts: samples(5 * BEAT, 8 * BEAT, 0.01).map((t) => working(t, seed)) };
+		};
+		const xs = (acts: ReturnType<typeof phrase>["acts"]) => acts.map((act) => act.eyes![0].x);
+		const ys = (acts: ReturnType<typeof phrase>["acts"]) => acts.map((act) => act.eyes![0].y);
+		// Over the top with each star: both sides, looking up.
+		const sweep = phrase("sweep").acts;
+		expect(Math.min(...xs(sweep))).toBeLessThan(-0.3);
+		expect(Math.max(...xs(sweep))).toBeGreaterThan(0.3);
+		expect(Math.max(...ys(sweep))).toBeLessThan(-0.2);
+		// On one star all the way: up over the top with it and down to its shoulder.
+		const follow = phrase("follow").acts;
+		expect(Math.min(...ys(follow))).toBeLessThan(-0.5);
+		expect(Math.max(...ys(follow))).toBeGreaterThan(-0.25);
+		// Up at the top of the arc, steady.
+		const top = phrase("top").acts;
+		expect(Math.max(...ys(top))).toBeLessThan(-0.5);
+		expect(Math.max(...xs(top).map(Math.abs))).toBeLessThan(0.15);
+		// On the member: level, in the middle.
+		const member = phrase("member").acts;
+		expect(Math.max(...ys(member).map(Math.abs))).toBeLessThan(0.06);
+		expect(Math.max(...xs(member).map(Math.abs))).toBeLessThan(0.02);
+		// One shoulder, then the other.
+		const sides = phrase("sides").acts;
+		expect(Math.min(...xs(sides))).toBeLessThan(-0.4);
+		expect(Math.max(...xs(sides))).toBeGreaterThan(0.4);
+		// The eyes never jump from one gaze to the next.
+		for (const seed of [0, 1]) {
+			let before = working(4 * BEAT, seed).eyes![0];
+			for (const t of samples(4 * BEAT + 0.01, 8 * BEAT, 0.01)) {
+				const now = working(t, seed).eyes![0];
+				expect(Math.hypot(now.x - before.x, now.y - before.y)).toBeLessThan(0.12);
+				before = now;
+			}
+		}
+	});
+	it("goes through all its tricks, in an order of its own, before it shows any again", () => {
+		expect(TRICKS).toHaveLength(13);
 		for (const seed of [0, 1, 2, 3]) {
 			// None in the first round: the stars are only just out.
 			expect(trickOf(0, seed)).toBeUndefined();
-			const shown = Array.from({ length: 40 }, (_, index) => trickOf(index + 1, seed)!);
+			const shown = Array.from({ length: 4 * TRICKS.length }, (_, index) => trickOf(index + 1, seed)!);
 			for (let block = 0; block < 4; block++)
-				expect([...shown.slice(block * 10, block * 10 + 10)].sort()).toEqual([...TRICKS].sort());
+				expect([...shown.slice(block * TRICKS.length, (block + 1) * TRICKS.length)].sort()).toEqual(
+					[...TRICKS].sort(),
+				);
 			shown.slice(1).forEach((trick, index) => {
 				expect(trick).not.toBe(shown[index]);
 			});
 		}
-		expect(Array.from({ length: 10 }, (_, index) => trickOf(index + 1, 1))).not.toEqual(
-			Array.from({ length: 10 }, (_, index) => trickOf(index + 1, 2)),
+		expect(Array.from({ length: TRICKS.length }, (_, index) => trickOf(index + 1, 1))).not.toEqual(
+			Array.from({ length: TRICKS.length }, (_, index) => trickOf(index + 1, 2)),
 		);
 		// A trick is on in the middle of its round and off at the round's ends.
 		expect(workingTrick(8 * BEAT + 0.5 * BEAT, 1)).toBeUndefined();
@@ -207,7 +249,7 @@ describe("a working figure", () => {
 		// The middle of the round in which a seed shows `trick`, as samples over the trick's beats.
 		const during = (trick: Trick) => {
 			for (const seed of [0, 1, 2, 3, 4, 5]) {
-				for (let round = 1; round <= 10; round++) {
+				for (let round = 1; round <= TRICKS.length; round++) {
 					if (trickOf(round, seed) !== trick) continue;
 					return samples((round * 8 + 2) * BEAT, (round * 8 + 6) * BEAT, 0.01).map((t) => working(t, seed));
 				}
@@ -221,7 +263,8 @@ describe("a working figure", () => {
 		// Higher throws, and one far higher than any.
 		const top = (acts: ReturnType<typeof during>) =>
 			Math.min(...acts.flatMap((act) => act.props!.map((star) => star.y)));
-		expect(top(during("high"))).toBeLessThan(top(during("smile")) - 3);
+		// (A round throws 0.92 to 1.08 of the usual height; a high one 1.16 of its own.)
+		expect(top(during("high"))).toBeLessThan(33 - 35 * 0.92 * 1.16 + 0.5);
 		expect(top(during("sky"))).toBeLessThan(-22);
 		// The sky star is watched all the way up: the eyes go as high as they go.
 		expect(Math.min(...during("sky").map((act) => act.eyes![0].y))).toBeLessThan(-0.6);
@@ -249,6 +292,37 @@ describe("a working figure", () => {
 		const merge = middle(during("merge"));
 		expect(merge.props![0]!.scale).toBeGreaterThan(1.8);
 		expect(merge.props![1]!.scale).toBeLessThan(0.3);
+		// Round the figure: wide of it on both sides, in front of it and behind, each star in turn.
+		for (const trick of ["orbit", "swirl", "spiral"] as const) {
+			const round = during(trick);
+			const all = round.flatMap((act) => act.props!);
+			expect(Math.min(...all.map((star) => star.x)), trick).toBeLessThan(12);
+			expect(Math.max(...all.map((star) => star.x)), trick).toBeGreaterThan(88);
+			for (const star of [0, 1, 2]) {
+				expect(
+					round.some((act) => act.props![star]!.behind),
+					trick,
+				).toBe(true);
+				expect(
+					round.some((act) => !act.props![star]!.behind),
+					trick,
+				).toBe(true);
+			}
+			// A star changes sides only out at the edge, clear of the figure, so it never pops through it.
+			round.slice(1).forEach((act, index) => {
+				act.props!.forEach((star, which) => {
+					const before = round[index]!.props![which]!;
+					if (Boolean(star.behind) !== Boolean(before.behind) && star.y > 25)
+						expect(Math.abs(star.x - 50), trick).toBeGreaterThan(30);
+				});
+			});
+		}
+		// Level for the orbit; tipped one way and the other for the swirl; up over the head for the spiral.
+		const heights = (trick: Trick) => during(trick).flatMap((act) => act.props!.map((star) => star.y));
+		expect(Math.max(...heights("orbit")) - Math.min(...heights("orbit"))).toBeLessThan(45);
+		expect(Math.min(...heights("spiral"))).toBeLessThan(5);
+		expect(Math.max(...heights("spiral"))).toBeGreaterThan(55);
+		expect(during("swirl").some((act) => act.eyes![0].smile === 1)).toBe(true);
 	});
 	it("catches its stars and becomes its ask for a moment when something also waits on the member", () => {
 		const symbols = (ask?: "question" | "bang") =>

@@ -431,12 +431,16 @@ function juggle(entry: LiveMotion, props: Prop[] | undefined): void {
 		const prop = props?.[index];
 		// The frame is the canvas, which stands 6% proud of the figure's box on every side.
 		const at = (value: number) => round(((value / 100) * 1.12 - 0.06) * side, 1);
-		const posed =
-			prop && prop.scale > 0.001
-				? `translate(${at(prop.x)}px, ${at(prop.y)}px) translate(-50%, -50%) rotate(${round(prop.turn, 0)}deg) scale(${round(prop.scale, 3)})`
-				: "scale(0)";
+		const shown = prop && prop.scale > 0.001;
+		const transform = shown
+			? `translate(${at(prop.x)}px, ${at(prop.y)}px) translate(-50%, -50%) rotate(${round(prop.turn, 0)}deg) scale(${round(prop.scale, 3)})`
+			: "scale(0)";
+		// A star on the far side of the figure goes under the figure's canvas (styles/app.css).
+		const behind = Boolean(shown && prop.behind);
+		const posed = `${transform}${behind ? " behind" : ""}`;
 		if (posed !== entry.propsPosed[index]) {
-			star.style.transform = posed;
+			star.style.transform = transform;
+			star.classList.toggle("is-behind", behind);
 			entry.propsPosed[index] = posed;
 		}
 	});

@@ -288,6 +288,8 @@ describe("2D studio playback in the shell", () => {
 		const stars = [...rail.querySelectorAll<HTMLElement>(".figure-prop")];
 		expect(stars).toHaveLength(3);
 		expect(stars.every((star) => /^translate\(.*scale\(1\)$/.test(star.style.transform))).toBe(true);
+		// In the cascade no star is behind the figure.
+		expect(stars.some((star) => star.classList.contains("is-behind"))).toBe(false);
 		expect(new Set(stars.map((star) => star.style.transform)).size).toBe(3);
 		// It goes on working past any length of time.
 		advance(60_000);
