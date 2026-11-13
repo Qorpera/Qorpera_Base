@@ -166,6 +166,10 @@ node's budget for agents' machines.
 - A company's roles cannot read or write server files, run programs, add an extension, a C function, a database or a
   role, or change server settings (proven). Extensions come from a short list Qorpera installs when `database.toml`
   asks; none in the first slice.
+- A company's sessions leave nothing in the store's log: no statement, no error with its text or context, no lock
+  wait, also when the watcher ends one. The log is read by whoever runs the store, so it must hold no company's rows
+  or SQL. These are settings of the company's database that no company role can change; the gateway answers the
+  caller with PostgreSQL's message instead (the store kit's drill proves it on the real compose project).
 
 ### Limits per company
 
@@ -246,9 +250,14 @@ logged in as the folder's owner role, one transaction each. A step runs inside a
 transaction and go on outside it. The caller lists the step files with their hashes as the folder gave them; the gateway
 checks each entry as the caller and asks for the texts it does not hold.
 
-1. The step runs.
+1. The step runs. Then its deferred work runs at once (`set constraints all immediate`): a deferred trigger or
+   foreign key would otherwise run at commit, after the check.
 2. The triggers of `qorpera_data` have recorded what it destroyed: a dropped table, column or schema, deleted rows
-   with their count, an emptied table, also when the delete sits inside a function.
+   with their count, an emptied table, also when the delete sits inside a function. A column or table is recorded
+   whether the step named it or it went with something else: a column whose type or domain was dropped with
+   `cascade`, a table of a dropped schema. The gateway reads the record and **seals** the transaction in the same
+   call. The seal is one way: anything that destroys data after it, also at commit (a deferred trigger that queues
+   another), aborts the transaction, so nothing is destroyed that the check did not see.
 3. If it destroyed nothing, it commits and is recorded as applied, with its hash, in the company's own database in
    the same transaction.
 4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy. In
@@ -406,9 +415,9 @@ or a node.
 | --- | --- | --- |
 | P1 | one gateway of our own against a PostgREST per company, 50 company databases | ours: a call p50 1.5 ms, p95 2.8 ms, 142 MiB for all 50, idle connections given back. PostgREST: p50 1.1 ms, 36 to 55 MiB and 3 held connections for each company |
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
-| P3 | limits and walls, 128 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge` and inside a function), an emptied table and a dropped column or table are recorded, so the step is held, and it lands after a yes |
-| P4 | the snapshot of a 1,020 MiB database, written to files and loaded back | 932 MiB in 60 parts in 5.1 s while another connection wrote 200 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw, each moved row in it once at its old key. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. After loading, a new row's number is above every loaded one. A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 12 s |
-| E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 43 of 43 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
+| P3 | limits and walls, 135 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge`, inside a function and by a deferred trigger), an emptied table and a dropped column, table or schema (also a column that goes with its type or domain) are recorded, so the step is held, and it lands after a yes. A deferred trigger that queues a second one to delete after the check aborts the commit; a step whose deferred work only inserts lands |
+| P4 | the snapshot of a 1,020 MiB database, written to files and loaded back, 25 checks | 932 MiB in 60 parts in 4.5 s while another connection committed 942 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw and what a second connection counted at that moment, each moved row in it once at its old key. The export holds its tables: a truncate, a rewrite and a drop by another session each waited until it was done, then completed, and the files hold those tables' rows as of the moment; a table made between the list and the locks makes the export start again. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. Every sequence gives next what the source gives next (after `setval` with and without `is_called`, never used, an identity's, one no column owns). A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 13 s |
+| E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 44 of 44 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
 
 ## 12. Build order
 
