@@ -3,7 +3,7 @@
 // own token, which proves the member may read them and gives each file's hash. It uses a file's text only when its
 // hash is the folder's. It holds no service key and no login to the platform's database.
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import http from "node:http";
 import pg from "pg";
 import { readStatement, VIEWER } from "./sql-text.mjs";
@@ -442,14 +442,21 @@ export class Gateway {
 			// answer's size: a question whose rows are huge cannot fill the gateway's memory. There is always one row at
 			// least, carrying how many rows the question made: with no answer row in it (all its answer columns null)
 			// when the question made none, or when its first row alone is past the answer's size.
+			// A question's own columns may carry any name, so every name the gateway adds ends in a tag made for this
+			// call, which no question can know, and the whole row is `row(alias.*)`, which no column can stand for. The
+			// gateway's three added columns are taken off by their place, last.
+			const tag = randomBytes(8).toString("hex");
+			const [asked, inner, sized, madeAs, at, bytesSoFar, rowsMade] = ["asked", "inner", "sized", "made", "at", "bytes", "rows"].map(
+				(name) => `qorpera_${name}_${tag}`,
+			);
 			const result = await client.query({
 				text:
-					`with qorpera_asked as (select * from (\n${ready.sql}\n) qorpera_inner limit ${this.#limits.questionRows + 1}), ` +
-					`qorpera_sized as (select qorpera_asked.*, row_number() over () as qorpera_at, ` +
-					`sum(octet_length(qorpera_asked::text)) over (rows between unbounded preceding and current row) as qorpera_bytes_so_far ` +
-					`from qorpera_asked) ` +
-					`select qorpera_sized.*, qorpera_made.qorpera_rows_made from (select count(*) as qorpera_rows_made from qorpera_asked) qorpera_made ` +
-					`left join qorpera_sized on qorpera_sized.qorpera_bytes_so_far <= ${this.#limits.questionBytes} order by qorpera_sized.qorpera_at`,
+					`with ${asked} as (select * from (\n${ready.sql}\n) ${inner} limit ${this.#limits.questionRows + 1}), ` +
+					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
+					`sum(octet_length(row(${asked}.*)::text)) over (rows between unbounded preceding and current row) as ${bytesSoFar} ` +
+					`from ${asked}) ` +
+					`select ${sized}.*, ${madeAs}.${rowsMade} from (select count(*) as ${rowsMade} from ${asked}) ${madeAs} ` +
+					`left join ${sized} on ${sized}.${bytesSoFar} <= ${this.#limits.questionBytes} order by ${sized}.${at}`,
 				values: ready.values,
 				rowMode: "array",
 				queryMode: "extended",
@@ -700,7 +707,11 @@ export class Gateway {
 				await admin.query(
 					`alter database ${quoted(database)} connection limit ${COMPANY_CONNECTIONS}; ` +
 						`alter database ${quoted(database)} set temp_file_limit = '256MB'; alter database ${quoted(database)} set work_mem = '16MB'; ` +
-						`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0`,
+						`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0; ` +
+						// No session in a company's database writes its errors or its statements into the server's log: they
+						// carry the company's values. The caller hears the error through the gateway.
+						`alter database ${quoted(database)} set log_min_messages = 'fatal'; alter database ${quoted(database)} set log_min_error_statement = 'panic'; ` +
+						`alter database ${quoted(database)} set log_min_duration_statement = -1; alter database ${quoted(database)} set log_statement = 'none'`,
 				);
 				await admin.query(`revoke all on database ${quoted(database)} from public`);
 				await this.#onProvision(database, "revoked");

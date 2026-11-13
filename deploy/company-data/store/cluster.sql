@@ -13,6 +13,9 @@
 create role qorpera_data_admin login createdb createrole password :'admin_password';
 alter role qorpera_data_admin set createrole_self_grant = 'set, inherit';
 grant set on parameter temp_file_limit to qorpera_data_admin;
+-- And keep a company's errors and statements out of the server's log: they carry the company's values. A company's
+-- errors reach the caller through the gateway, and the watcher sees slow statements.
+grant set on parameter log_min_messages, log_min_error_statement, log_min_duration_statement, log_statement to qorpera_data_admin;
 -- The gateway's own records in each company's database (its folders, the steps it applied, the texts it holds by
 -- hash) and its LISTEN. It never runs a company's SQL, and is a member of nothing.
 create role qorpera_data_keeper login noinherit password :'keeper_password';

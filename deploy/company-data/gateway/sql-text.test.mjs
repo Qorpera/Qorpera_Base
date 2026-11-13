@@ -140,4 +140,11 @@ describe("one statement", () => {
 		refused("select 1\0", /not text/);
 		assert.equal(readStatement(undefined).ok, false);
 	});
+
+	it("refuses parentheses that do not close in order, counting none in strings, names, dollar quotes or comments", () => {
+		read("select (1 + (2)) as a, ')' as b, \")\" as c, $$($$ as d /* ( */ -- )\n");
+		refused("select 1 as a) x, (select 2", /closed that was not opened/);
+		refused("select (1", /parenthesis is not closed/);
+		refused("select count(*) from t where (a = 1", /parenthesis is not closed/);
+	});
 });

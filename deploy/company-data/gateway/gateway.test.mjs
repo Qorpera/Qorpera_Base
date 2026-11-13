@@ -113,6 +113,19 @@ select 'Customer ' || n, 100 + (n % 7) * 25, case when n % 5 = 0 then 'shipped' 
 from generate_series(1, 240) n;
 `;
 const COUNT = "-- How many orders there are.\nselect count(*) as orders from orders;\n";
+/** Every name a question's statement in the gateway has used for its own: aliases, CTEs and added columns. */
+const NAMES = [
+	"qorpera_asked",
+	"qorpera_inner",
+	"qorpera_sized",
+	"qorpera_made",
+	"qorpera_answer",
+	"qorpera_at",
+	"qorpera_bytes_so_far",
+	"qorpera_rows_made",
+	"qorpera_bytes",
+	"qorpera_rows",
+];
 put(ENV_A, {
 	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
 	"data/shop/tables/001-orders.sql": ORDERS,
@@ -137,6 +150,11 @@ select 9007199254740993::bigint as big, 42::bigint as small, 7::int as whole, 1.
 	"data/shop/queries/huge.sql": "select repeat('x', 1048576) as text from generate_series(1, 8);\n",
 	"data/shop/queries/huge-first.sql": "select repeat('x', 1048576) as text union all select 'small';\n",
 	"data/shop/queries/none.sql": "select n from generate_series(1, 0) n;\n",
+	// Columns named like the names the gateway's statement uses, the old ones and the ones it has now.
+	"data/shop/queries/shadow.sql": "select '' as qorpera_asked, repeat('x', 1048576) as payload;\n",
+	"data/shop/queries/names.sql": `select ${NAMES.map((name, index) => `${index + 1} as ${name}`).join(", ")} from generate_series(1, 100);\n`,
+	"data/shop/queries/names-wide.sql":
+		"select repeat('x', 300) as qorpera_bytes_so_far, 1 as qorpera_rows_made, n - n + 1 as qorpera_at from generate_series(1, 40) n;\n",
 	"data/shop/queries/slow.sql": "select pg_sleep(5) as waited;\n",
 	"data/shop/queries/nap.sql": "select pg_sleep(0.2) as napped, :k::int as k;\n",
 	"data/shop/queries/stubborn.sql": "select stubborn() as never;\n",
@@ -286,7 +304,9 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			const started = spawnSync(
 				"docker",
 				["run", "-d", "--name", container, "--cpus", "2", "--memory", "4g", "--shm-size", "256m", "-e", `POSTGRES_PASSWORD=${superPassword}`,
-					...POSTGRES_LOCALE, "-p", "127.0.0.1::5432", POSTGRES_IMAGE, "-c", "max_connections=100"],
+					...POSTGRES_LOCALE, "-p", "127.0.0.1::5432", POSTGRES_IMAGE, "-c", "max_connections=100",
+					// The server logs every statement and error, so a test can show that a company's database writes none.
+					"-c", "log_statement=all", "-c", "log_min_duration_statement=0"],
 				{ encoding: "utf8" },
 			);
 			if (started.status !== 0) throw new Error(`PostgreSQL did not start: ${started.stderr}`);
@@ -503,6 +523,29 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.deepEqual([none.value.rows, none.value.more, none.value.columns], [[], false, ["n"]]);
 	});
 
+	it("counts a question's size by its whole row, whatever its columns are named", async () => {
+		// A column named like the gateway's own words cannot stand for the whole row: 1 MiB still never comes over.
+		const before = gateway.taken.bytes;
+		const shadow = await ask(viewer, "query", { database: "shop", question: "shadow" });
+		assert.equal(shadow.status, 200, JSON.stringify(shadow.value).slice(0, 200));
+		assert.deepEqual([shadow.value.rows, shadow.value.more, shadow.value.columns], [[], true, ["qorpera_asked", "payload"]]);
+		assert.equal(gateway.taken.bytes - before, 0);
+		// Columns named like every name the gateway adds: the question answers its own values, and the limits hold.
+		const names = await ask(viewer, "query", { database: "shop", question: "names" });
+		assert.equal(names.status, 200, JSON.stringify(names.value).slice(0, 300));
+		assert.deepEqual(names.value.columns, NAMES);
+		assert.equal(names.value.rows.length, LIMITS_HERE.questionRows);
+		assert.deepEqual(names.value.rows[0], NAMES.map((_, index) => index + 1));
+		assert.equal(names.value.more, true);
+		const wide = await ask(viewer, "query", { database: "shop", question: "names-wide" });
+		assert.equal(wide.status, 200, JSON.stringify(wide.value).slice(0, 300));
+		assert.deepEqual(wide.value.columns, ["qorpera_bytes_so_far", "qorpera_rows_made", "qorpera_at"]);
+		assert.equal(wide.value.more, true);
+		assert.ok(wide.value.rows.length > 0 && wide.value.rows.length < 40);
+		assert.deepEqual(wide.value.rows[0].slice(1), [1, 1]);
+		assert.ok(Buffer.byteLength(JSON.stringify(wide.value.rows)) <= LIMITS_HERE.questionBytes);
+	});
+
 	// ---- steps that must not land
 	it("holds a step that destroys data, with what it would destroy, and changes nothing", async () => {
 		const risky = await ask(contributor, "apply", { database: "risky" });
@@ -708,6 +751,8 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			assert.equal(await code(writer.query("delete from shop.orders where customer = 'w'")), "done");
 			assert.equal((await reader.query("show temp_file_limit")).rows[0].temp_file_limit, "256MB");
 			assert.equal(await code(reader.query("set temp_file_limit = '1GB'")), "42501");
+			for (const setting of ["log_min_messages = 'debug1'", "log_min_error_statement = 'error'", "log_min_duration_statement = 0", "log_statement = 'all'"])
+				assert.equal(await code(reader.query(`set ${setting}`)), "42501", setting);
 			assert.equal(await code(reader.query(`set role "${role("payroll", "r")}"`)), "42501");
 		} finally {
 			await reader.end().catch(() => undefined);
@@ -952,8 +997,15 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		const [{ acl }] = await asAdmin("postgres", "select datacl::text as acl from pg_database where datname = $1", [database]);
 		assert.match(acl, /qorpera_data_keeper=c\//);
 		assert.match(acl, /qorpera_data_watch=c\//);
-		const settings = await asAdmin("postgres", "select array_to_string(setconfig, ',') as s from pg_db_role_setting r join pg_database d on d.oid = r.setdatabase where d.datname = $1 and r.setrole = 0", [database]);
-		assert.equal(settings[0].s, "temp_file_limit=256MB,work_mem=16MB,max_parallel_workers_per_gather=0");
+		// Set on a database made whole again, as on one made at once.
+		for (const made of [database, companyDatabase(ENV_A)]) {
+			const settings = await asAdmin("postgres", "select array_to_string(setconfig, ',') as s from pg_db_role_setting r join pg_database d on d.oid = r.setdatabase where d.datname = $1 and r.setrole = 0", [made]);
+			assert.equal(
+				settings[0].s,
+				"temp_file_limit=256MB,work_mem=16MB,max_parallel_workers_per_gather=0,log_min_messages=fatal,log_min_error_statement=panic,log_min_duration_statement=-1,log_statement=none",
+				made,
+			);
+		}
 		// The first gateway, which never made it, asks it as any other.
 		const count = await ask(owner, "query", { database: "shop", question: "count" }, ENV_C);
 		assert.deepEqual(count.value.rows, [[240]]);
@@ -1088,5 +1140,28 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		// Left running, the other 12 would take 0.8 s three at a time.
 		assert.ok(Date.now() - ended < 300, `${Date.now() - ended} ms`);
 		assert.equal(await until(listening, 0), 0);
+	});
+
+	it("writes none of a company's values into the server's log", async () => {
+		const marker = `mark${randomBytes(6).toString("hex")}`;
+		put(ENV_A, {
+			"data/shop/queries/cast.sql": "select :v::int as n;\n",
+			"data/shop/queries/slow-mark.sql": `select pg_sleep(1) as waited, '${marker}-slow' as m;\n`,
+			"data/shop/queries/fast-mark.sql": `select '${marker}-fast' as m;\n`,
+			"data/shop/tables/006-try.sql": `insert into orders (customer, amount) values ('${marker}-row', -5);\n`,
+		});
+		const cast = await ask(viewer, "query", { database: "shop", question: "cast", params: { v: `${marker}-cast` } });
+		assert.equal(cast.status, 400);
+		assert.match(cast.value.error, new RegExp(`${marker}-cast`), "the caller hears the error");
+		const step = await ask(owner, "apply", { database: "shop" });
+		assert.equal(states(step).at(-1), "006-try failed", JSON.stringify(step.value));
+		remove(ENV_A, "data/shop/tables/006-try.sql");
+		assert.equal((await ask(viewer, "query", { database: "shop", question: "slow-mark" })).status, 408);
+		assert.equal((await ask(viewer, "query", { database: "shop", question: "fast-mark" })).status, 200);
+		const logs = spawnSync("docker", ["logs", container], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+		const all = `${logs.stdout}${logs.stderr}`;
+		// The server does log: the test's own statements in another database are there.
+		assert.match(all, /statement: /);
+		assert.equal(all.includes(marker), false, all.split("\n").filter((line) => line.includes(marker)).slice(0, 5).join("\n"));
 	});
 });
