@@ -36,7 +36,8 @@
 # (Cycles on the processors, OpenImageDenoise), a starter set of light, materials and furniture at /opt/qorpera-assets
 # (Poly Haven, CC0: every file fetched from where deploy/machine/render-assets.tsv says and checked against its
 # sha-256), and the picture tools beside ffmpeg (ImageMagick, WebP, Pillow and numpy for Python). Agents fetched
-# Blender onto every machine by themselves and lit boxes against a black world.
+# Blender onto every machine by themselves and lit boxes against a black world. And the font and PDF tools they
+# installed again and again: fonttools with brotli (a brand font cut down and written as WOFF2), poppler-utils and pypdf.
 #
 # The builder runs in the node's declared image build space (the observer
 # policy's buildSpace: its project and its only network) as a build machine:
@@ -142,6 +143,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		imagemagick webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1 \
+		poppler-utils python3-fonttools python3-brotli python3-pypdf \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
 		adwaita-icon-theme \
 		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor earlyoom \
@@ -408,6 +410,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(file -b /tmp/render-check.webp) == *"Web/P image"* ]] || { echo "ImageMagick wrote no WebP" >&2; exit 1; }
 	cwebp -quiet /tmp/render-check.png -o /tmp/render-check-2.webp
 	python3 -c "from PIL import Image; import numpy; picture = Image.open(\"/tmp/render-check.webp\"); picture.load(); assert picture.size == (320, 180) and numpy.asarray(picture).shape[:2] == (180, 320)"
+	# Fonts and PDFs: what agents installed onto their machines again and again besides (the heads of production
+	# machine commands, 4 to 13 Nov 2026). A font is written as WOFF2, which fonttools does only with brotli; a PDF
+	# that pypdf writes is read back by pypdf and by poppler.
+	python3 -c "from fontTools.ttLib import TTFont; font = TTFont(\"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf\"); font.flavor = \"woff2\"; font.save(\"/tmp/font-check.woff2\")"
+	[[ $(head -c 4 /tmp/font-check.woff2) == wOF2 ]] || { echo "fonttools wrote no WOFF2" >&2; exit 1; }
+	python3 -c "import pypdf; pdf = pypdf.PdfWriter(); pdf.add_blank_page(width=200, height=200); pdf.write(\"/tmp/pdf-check.pdf\"); assert len(pypdf.PdfReader(\"/tmp/pdf-check.pdf\").pages) == 1"
+	pdftotext /tmp/pdf-check.pdf /tmp/pdf-check.txt
+	rm -f /tmp/font-check.woff2 /tmp/pdf-check.pdf /tmp/pdf-check.txt
 	# The builder has the smallest machine disk: say what the render tools take of it, and refuse an image that
 	# leaves that machine too little room to work in.
 	echo "Blender takes $(du -sm /opt/blender/ | cut -f1) MiB and the starter set $(du -sm /opt/qorpera-assets | cut -f1) MiB of the image" >&2

@@ -206,6 +206,10 @@ test("the image has Blender pinned, a starter set fetched by its pinned list, an
 	for (const name of ["libxrender1", "libxxf86vm1", "libxi6", "libsm6", "libice6", "libgl1", "libxfixes3", "libxkbcommon0"])
 		assert.ok(apt.includes(name), `apt installs ${name}, which Blender needs to start`);
 	for (const name of ["imagemagick", "webp", "python3-pil", "python3-numpy", "ffmpeg"]) assert.ok(apt.includes(name), `apt installs ${name}`);
+	// What agents installed onto their machines again and again besides: the font and PDF tools, each used in the build's checks.
+	for (const name of ["python3-fonttools", "python3-brotli", "poppler-utils", "python3-pypdf"]) assert.ok(apt.includes(name), `apt installs ${name}`);
+	assert.ok(imageScript.includes('font.flavor = \\"woff2\\"') && imageScript.includes("[[ $(head -c 4 /tmp/font-check.woff2) == wOF2 ]]"));
+	assert.ok(imageScript.includes("pypdf.PdfReader(") && imageScript.includes("\tpdftotext /tmp/pdf-check.pdf /tmp/pdf-check.txt\n"));
 
 	// The starter set's list: a path inside the set, Poly Haven's own address for that very file, a sha-256 and a size;
 	// each path once, in order; 10 lights, 14 materials and 10 things at 2k, under 256 MiB together.
