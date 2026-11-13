@@ -4637,6 +4637,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		]).buffer;
 	const bodies = (s: Setup) => s.pointers.map((one) => one.body);
 	const tickets = (s: Setup) => bodies(s).filter((body) => "stream" in body);
+	const hover = (p: ComputerPanel, x: number, y: number) => canvas(p).dispatchEvent(pointer("pointermove", x, y));
 	/** The stream shows the screen: its size and the whole screen came. */
 	async function live(s: Setup, socket = s.sockets.at(-1)!) {
 		socket.message(size());
