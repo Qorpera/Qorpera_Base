@@ -1722,6 +1722,13 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
   new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted: members may still
   take it offline in Sites. Only the operator takes a site down or restores it.
+- What an agent reads (the platform's calls, not a client's): every refusal of a site's name (`SITE_NAME_INVALID`,
+  22023, by `publish_site`, `share_app` and `unpublish_site`) says the rule in one sentence
+  (`qorpera_site_name_words()`, which the coding executor and the runtime say byte for byte). A site of the company
+  taken down takes nothing from an agent: `publish_site`'s and `share_app`'s calls refuse it with `SITE_TAKEN_DOWN: This
+  site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
+  company.` (55000, no address, nothing written); a repository's site takes no upload while it is down, and its list
+  file's `index` then has `live` null, no `preparing` and `takenDown: {reason}`.
 - **The cookie invariant (D22).** Sites are sibling hosts of the app and the API under qorpera.com, so no Qorpera
   program takes a cookie, HTTP auth, a client certificate or anything else a browser sends by itself as proof of who is
   calling, on any qorpera.com host, except the sites' and the app links' own `__Host-` gate cookies

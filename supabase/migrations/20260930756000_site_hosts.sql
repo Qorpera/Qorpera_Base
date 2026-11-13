@@ -34,7 +34,7 @@
 -- 6. The operator's calls (no API role may call them, the service role neither), run as the database owner:
 --      select public.qorpera_site_take_down('<slug>', '<reason, one line>');  select public.qorpera_site_restore('<slug>');
 --      select public.qorpera_code_set_drill('<environment id>', '<owner>', '<name>', 'check' | 'site' | null);
--- 7. Eleven existing functions change, each by anchors on its definition as the migrations before this one leave it (an
+-- 7. Twenty existing functions change, each by anchors on its definition as the migrations before this one leave it (an
 --    anchor that is not found exactly once fails the migration); each changed body carries the marker 20260930756000 and
 --    keeps every marker it had:
 --    * qorpera_site_slug_valid: the name rule (3);
@@ -44,9 +44,17 @@
 --    * qorpera_site_app_live: an app link taken down answers as off;
 --    * qorpera_code_site_slugs: the derived names (3);
 --    * qorpera_code_checks_switch: rootLinks while hosts are on, and an operator's drill, taken once;
---    * qorpera_code_release_index: preparing, while hosts are on;
+--    * qorpera_code_release_index: preparing, while hosts are on; for a site taken down, no live version, no link,
+--      nothing being prepared, and takenDown with the reason;
 --    * qorpera_list_code_releases: preview, while hosts are on;
---    * qorpera_put_code_release_live and qorpera_code_release_back: refused (SITE_TAKEN_DOWN) for a site taken down.
+--    * qorpera_put_code_release_live and qorpera_code_release_back: refused (SITE_TAKEN_DOWN) for a site taken down;
+--    * an agent's calls, publish_site's (qorpera_site_publish_check, _begin, _put, _finish), share_app's
+--      (qorpera_site_share_check, qorpera_site_share_app) and unpublish_site's (qorpera_site_unpublish): a name that
+--      breaks the rule is refused with the rule in one sentence (qorpera_site_name_words); a site of the company that
+--      Qorpera took down takes nothing, refused SITE_TAKEN_DOWN with the reason in plain words and no address
+--      (qorpera_site_taken_down_words), writing nothing;
+--    * a repository's site's upload pass (qorpera_code_sites_due, qorpera_code_site_begin): never a site taken down.
+--    The operator's takedown and restore write a repository's list file again (its index_version).
 --
 -- Locks, by the first statements and in this order (the order the executor's site calls take rows in), each waiting 3 s
 -- at most and held to the end of the transaction the file runs in: ACCESS EXCLUSIVE on qorpera_code_repositories, then
@@ -167,8 +175,36 @@ begin
 	return jsonb_build_object('slug', v_label, 'scope', case when v_next then 'next' else 'site' end);
 end $$;
 
+-- What an agent reads when a site's name breaks the rule, in one sentence: every SITE_NAME_INVALID refusal of
+-- publish_site, share_app and unpublish_site below, and, byte for byte, the coding executor's words for a checks file's
+-- site.name (CODE_SITE_NAME_RULE) and the runtime's for a slug of the wrong shape (SITE_NAME_RULE); a test of each
+-- compares its text with this one.
+create function public.qorpera_site_name_words() returns text language sql immutable set search_path = '' as $$
+	-- 20260930756000
+	select 'A site''s name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).'::text
+$$;
+
+-- What an agent reads when it would publish to, share, or upload to a site Qorpera took down: a refusal in plain words
+-- it can pass on, with the operator's reason (characters the runtime relays as they are, any other one a ?), and no
+-- address.
+create function public.qorpera_site_taken_down_words(p_reason text) returns text language sql immutable set search_path = '' as $$
+	-- 20260930756000
+	select 'SITE_TAKEN_DOWN: This site was taken down by Qorpera ('
+		|| regexp_replace(coalesce(p_reason, ''), '[^ -~À-ÿ]', '?', 'g')
+		|| ') and cannot be published until Qorpera restores it. Tell a member of the company.'
+$$;
+
+-- The operator's reason when the site p_site_id is taken down (qorpera_site_take_down); null while it is up, or for no
+-- site.
+create function public.qorpera_site_down_reason(p_site_id uuid) returns text language sql stable set search_path = '' as $$
+	-- 20260930756000
+	select site.taken_down_reason from public.qorpera_company_sites as site
+	where site.id = p_site_id and site.taken_down_at is not null
+$$;
+
 revoke all on function public.qorpera_site_reserved_names(), public.qorpera_site_hosts_on(),
-	public.qorpera_site_host_pattern(text), public.qorpera_site_host(text)
+	public.qorpera_site_host_pattern(text), public.qorpera_site_host(text), public.qorpera_site_name_words(),
+	public.qorpera_site_taken_down_words(text), public.qorpera_site_down_reason(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- 2. Existing functions ------------------------------------------------------------------------------------------------
@@ -284,18 +320,28 @@ select pg_temp.site_hosts_patch('public.qorpera_code_checks_switch(uuid,uuid)'::
 	end if;
 	return v_answer;$new$]);
 
--- The list file says, while hosts are on, what is being prepared for What's new.
+-- The list file says, while hosts are on, what is being prepared for What's new; and, for a site Qorpera took down,
+-- that it is (no live version, no link, nothing being prepared).
 select pg_temp.site_hosts_patch('public.qorpera_code_release_index(public.qorpera_code_repositories)'::regprocedure, array[
+	$old$	return jsonb_build_object('live', case when v_live.n is not null then jsonb_build_object('version', v_live.version,$old$,
+	$new$	-- 20260930756000: a site Qorpera took down has nothing live and no link (takenDown below says why).
+	return jsonb_build_object('live', case when v_live.n is not null
+			and public.qorpera_site_down_reason(p_repository.site_id) is null then jsonb_build_object('version', v_live.version,$new$,
 	$old$		'ready', case when v_point is not null then jsonb_build_object('change', v_point -> 'change') end);$old$,
 	$new$		'ready', case when v_point is not null then jsonb_build_object('change', v_point -> 'change') end)
 		-- 20260930756000: while hosts are on (qorpera_site_hosts_on), what is being prepared for What's new: the change due
-		-- now (the due list's point) while its version is not ready yet, the repository's sites are on and the upload pass
-		-- has not given it up; else null.
+		-- now (the due list's point) while its version is not ready yet, the repository's sites are on, the upload pass
+		-- has not given it up and Qorpera did not take the site down; else null.
 		|| case when public.qorpera_site_hosts_on() then jsonb_build_object('preparing', (select case
 				when due.point is not null and due.point ->> 'versionId' is null and p_repository.site_enabled
 					and not public.qorpera_code_site_given_up(p_repository, due.point)
+					and public.qorpera_site_down_reason(p_repository.site_id) is null
 				then jsonb_build_object('change', due.point -> 'change') end
 			from (select public.qorpera_code_release_point(p_repository, null, false) as point) due))
+			else '{}'::jsonb end
+		-- 20260930756000: a site Qorpera took down, hosts on or off: {"reason"}, the operator's.
+		|| case when public.qorpera_site_down_reason(p_repository.site_id) is not null
+			then jsonb_build_object('takenDown', jsonb_build_object('reason', public.qorpera_site_down_reason(p_repository.site_id)))
 			else '{}'::jsonb end;$new$]);
 
 -- What's new says, while hosts are on, whether the caller may look at a ready version first.
@@ -322,6 +368,94 @@ select pg_temp.site_hosts_patch('public.qorpera_code_release_back(uuid,text,text
 	-- 20260930756000: Qorpera took the site down (qorpera_site_take_down): nothing goes live until it is restored.
 	if v_site.taken_down_at is not null then
 		return '{"schema":"qorpera.code-release/v1","state":"refused","code":"SITE_TAKEN_DOWN"}'::jsonb; end if;$new$]);
+
+-- The agents' calls (the cross-check of 13 Nov 2026, the lead's calls on its seams 2 and 7): a refused name says the
+-- rule in one sentence; a site Qorpera took down takes nothing from an agent (publish_site's check, begin, put and
+-- finish, share_app's check and share, a repository's site's upload pass), and the refusal says why in plain words,
+-- with no address. Nothing is written by a refused call.
+select pg_temp.site_hosts_patch('public.qorpera_site_publish_check(jsonb,text)'::regprocedure, array[
+	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, and not a reserved word'
+			using errcode = '22023'; end if;$old$,
+	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as the executor and the runtime say it.
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;$new$,
+	$old$	-- 20260930562000: an app link of the company keeps its name; a website never takes it over.$old$,
+	$new$	-- 20260930756000: a site of the company that Qorpera took down takes nothing until Qorpera restores it.
+	if found and v_site.profile_id = v_run.profile_id and v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	-- 20260930562000: an app link of the company keeps its name; a website never takes it over.$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)'::regprocedure, array[
+	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, and not a reserved word'
+			using errcode = '22023'; end if;$old$,
+	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as the executor and the runtime say it.
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;
+	-- 20260930756000: a site of the company that Qorpera took down takes nothing until Qorpera restores it, not even the
+	-- same call again (read here, and again under the site's lock below).
+	select site.* into v_site from public.qorpera_company_sites as site
+	where site.slug = v_slug and site.profile_id = v_run.profile_id and site.taken_down_at is not null;
+	if found then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	v_site := null;$new$,
+	$old$	if v_site.kind = 'app' then$old$,
+	$new$	-- 20260930756000: taken down meanwhile (under the lock): nothing is written.
+	if v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	if v_site.kind = 'app' then$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_publish_put(jsonb,uuid,jsonb)'::regprocedure, array[
+	$old$	if v_version.state = 'live' then return public.qorpera_site_publish_receipt(v_site, v_version); end if;$old$,
+	$new$	-- 20260930756000: taken down while the upload was on its way: nothing more of it is kept.
+	if v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	if v_version.state = 'live' then return public.qorpera_site_publish_receipt(v_site, v_version); end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_publish_finish(jsonb,uuid)'::regprocedure, array[
+	$old$	if v_version.state = 'live' then
+		return public.qorpera_site_publish_receipt(v_site, v_version);
+	end if;$old$,
+	$new$	-- 20260930756000: taken down while the upload was on its way: it never goes live, and no link is given.
+	if v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	if v_version.state = 'live' then
+		return public.qorpera_site_publish_receipt(v_site, v_version);
+	end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_share_check(jsonb,text,text,integer)'::regprocedure, array[
+	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, and not a reserved word'
+			using errcode = '22023'; end if;$old$,
+	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as the executor and the runtime say it.
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;$new$,
+	$old$	if found and v_site.profile_id = v_run.profile_id then
+		if v_site.kind <> 'app' then return$old$,
+	$new$	-- 20260930756000: a site of the company that Qorpera took down takes nothing until Qorpera restores it.
+	if found and v_site.profile_id = v_run.profile_id and v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	if found and v_site.profile_id = v_run.profile_id then
+		if v_site.kind <> 'app' then return$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_share_app(jsonb,text,jsonb,uuid)'::regprocedure, array[
+	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, and not a reserved word'
+			using errcode = '22023'; end if;$old$,
+	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as the executor and the runtime say it.
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;$new$,
+	$old$	if v_site.id is not null and v_site.kind <> 'app' then$old$,
+	$new$	-- 20260930756000: a site of the company that Qorpera took down (under the lock): nothing is written.
+	if v_site.id is not null and v_site.taken_down_at is not null then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
+	if v_site.id is not null and v_site.kind <> 'app' then$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_unpublish(jsonb,text)'::regprocedure, array[
+	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens' using errcode = '22023'; end if;$old$,
+	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as every other refusal of a name says it.
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_code_sites_due(text,text,integer)'::regprocedure, array[
+	$old$			or public.qorpera_code_site_given_up(v_repository, v_point);$old$,
+	$new$			or public.qorpera_code_site_given_up(v_repository, v_point)
+			-- 20260930756000: never a site Qorpera took down: nothing is uploaded to it until it is restored.
+			or public.qorpera_site_down_reason(v_repository.site_id) is not null;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_code_site_begin(text,text,uuid,text,text,integer,jsonb)'::regprocedure, array[
+	$old$		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
+	end if;$old$,
+	$new$		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
+	end if;
+	-- 20260930756000: a site Qorpera took down takes no upload until it is restored (the due list leaves it out; this is
+	-- for an upload that was due before): nothing is written.
+	if v_site.taken_down_at is not null then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TAKEN_DOWN'); end if;$new$]);
 
 drop function pg_temp.site_hosts_patch(regprocedure, text[]);
 
@@ -576,11 +710,17 @@ declare v_site public.qorpera_company_sites%rowtype; v_reason text := btrim(p_re
 begin
 	if v_reason is null or char_length(v_reason) not between 1 and 300 or v_reason ~ '[[:cntrl:]]' then
 		raise exception 'A takedown''s reason is one line of 1 to 300 characters' using errcode = '22023'; end if;
+	-- A repository's site: its registry row first (the order the executor's site calls take rows in).
+	perform 1 from public.qorpera_code_repositories as repository
+	where repository.site_id = (select site.id from public.qorpera_company_sites as site where site.slug = p_slug) for update;
 	update public.qorpera_company_sites set taken_down_at = coalesce(taken_down_at, clock_timestamp()),
 		taken_down_reason = v_reason
 	where slug = p_slug returning * into v_site;
 	if v_site.id is null then raise exception 'No site has this name' using errcode = 'P0002'; end if;
 	delete from public.qorpera_company_site_tickets where site_id = v_site.id;
+	-- Its list file is written again (changes/index.md says it was taken down, and no link).
+	update public.qorpera_code_repositories as repository set index_version = repository.index_version + 1
+	where repository.site_id = v_site.id;
 	return jsonb_build_object('schema', 'qorpera.site-take-down/v1', 'slug', v_site.slug, 'state', 'down');
 end $$;
 
@@ -590,9 +730,13 @@ returns jsonb language plpgsql volatile security definer set search_path = '' as
 -- 20260930756000
 declare v_site public.qorpera_company_sites%rowtype;
 begin
+	perform 1 from public.qorpera_code_repositories as repository
+	where repository.site_id = (select site.id from public.qorpera_company_sites as site where site.slug = p_slug) for update;
 	update public.qorpera_company_sites set taken_down_at = null, taken_down_reason = null
 	where slug = p_slug returning * into v_site;
 	if v_site.id is null then raise exception 'No site has this name' using errcode = 'P0002'; end if;
+	update public.qorpera_code_repositories as repository set index_version = repository.index_version + 1
+	where repository.site_id = v_site.id;
 	return jsonb_build_object('schema', 'qorpera.site-take-down/v1', 'slug', v_site.slug, 'state', 'up');
 end $$;
 
@@ -634,7 +778,16 @@ begin
 		('public.qorpera_code_release_index(public.qorpera_code_repositories)', array[]::text[]),
 		('public.qorpera_list_code_releases(uuid)', array[]::text[]),
 		('public.qorpera_put_code_release_live(uuid,text,text,jsonb)', array[]::text[]),
-		('public.qorpera_code_release_back(uuid,text,text,jsonb)', array[]::text[])) checked(signature, markers)
+		('public.qorpera_code_release_back(uuid,text,text,jsonb)', array[]::text[]),
+		('public.qorpera_site_publish_check(jsonb,text)', array['20260930550000', '20260930562000', '20260930729000']),
+		('public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)', array['20260930550000', '20260930562000', '20260930729000']),
+		('public.qorpera_site_publish_put(jsonb,uuid,jsonb)', array['20260930550000']),
+		('public.qorpera_site_publish_finish(jsonb,uuid)', array['20260930550000']),
+		('public.qorpera_site_share_check(jsonb,text,text,integer)', array['20260930562000']),
+		('public.qorpera_site_share_app(jsonb,text,jsonb,uuid)', array['20260930562000', '20260930729000']),
+		('public.qorpera_site_unpublish(jsonb,text)', array['20260930550000', '20260930562000', '20260930729000']),
+		('public.qorpera_code_sites_due(text,text,integer)', array[]::text[]),
+		('public.qorpera_code_site_begin(text,text,uuid,text,text,integer,jsonb)', array[]::text[])) checked(signature, markers)
 	loop
 		foreach v_marker in array v_markers || '20260930756000'::text loop
 			if strpos((select prosrc from pg_proc where oid = v_function::regprocedure), v_marker) = 0 then

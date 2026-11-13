@@ -16,6 +16,7 @@
 --      files and 404.html, the caps of 20, a version gone, a new password.
 --   9. The old serve and unlock: a visitor's session only, and the cap of 2000 counts visitors' only.
 --  10. Takedown: refusals, gone on every host, nothing goes live, the members' read, an app link, restore.
+--  10b. The agents' calls: a refused name's one sentence; a site taken down takes nothing from an agent, its list file.
 --  11. The drill: refusals, taken once, only while its switch is on, cleared.
 --  12. Hosts off again: the way back.
 
@@ -830,6 +831,123 @@ begin
 	perform pg_temp.base_assert(pg_temp.rel_exec(format('public.qorpera_site_app_session(%L, %L)', 'link-app', repeat('L', 32))) = v_open
 		and (select item ->> 'state' from jsonb_array_elements(pg_temp.sh_sites()) item where item ->> 'slug' = 'link-app') = 'live',
 		'restored');
+end $$;
+
+-- 10b. The agents' calls (the lead's calls on the cross-check's seams 2 and 7) ------------------------------------------
+-- A name the rule refuses is refused with the rule in one sentence on every call of an agent that takes a name; a site
+-- Qorpera took down takes nothing from an agent (publish_site, share_app, a repository's site's upload pass), the
+-- refusal says why in plain words with no address, nothing is written, and the site's list file says it is down with no
+-- link. agent-shop: a website an agent publishes, its first upload open.
+insert into public.qorpera_company_sites (id, profile_id, environment_id, slug, source_path, created_by_staff_agent_id)
+values ('12520000-0000-4000-8000-000000000040', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'agent-shop', 'web', '92400000-0000-4000-8000-000000000030');
+insert into public.qorpera_company_site_secrets (site_id, password) values ('12520000-0000-4000-8000-000000000040', 'agent-shop-password');
+insert into public.qorpera_company_site_versions (id, site_id, run_id, call_id, staff_agent_id, first_publish, source_path,
+	manifest_sha256, file_count, total_bytes)
+values ('12520000-0000-4000-8000-000000000041', '12520000-0000-4000-8000-000000000040',
+	(current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid, 'agent-upload', '92400000-0000-4000-8000-000000000030',
+	true, 'web', repeat('a', 64), 1, 3);
+insert into public.qorpera_company_site_files (version_id, path, bytes, sha256, content_type)
+values ('12520000-0000-4000-8000-000000000041', 'index.html', 3, encode(extensions.digest('<p>', 'sha256'), 'hex'),
+	'text/html; charset=utf-8');
+
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_slug text;
+	v_name constant text := 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words(); v_down text; v_shop jsonb; v_app jsonb;
+	v_files jsonb; v_versions jsonb;
+begin
+	-- The rule, in the lead's one sentence (the executor's CODE_SITE_NAME_RULE and the runtime's SITE_NAME_RULE are this
+	-- text, byte for byte: their own tests read it here).
+	perform pg_temp.base_assert(public.qorpera_site_name_words() = 'A site''s name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).',
+		'the rule''s words');
+	-- Every agent call that takes a name refuses one the rule refuses with exactly those words.
+	foreach v_slug in array array['ab', 'a--b', 'shop', 'api', 'shop-preview', 'my-qorpera', 'Shop', repeat('a', 49)] loop
+		perform pg_temp.base_error(format('select public.qorpera_site_publish_check(%L, %L)', v_binding, v_slug), '22023', v_name);
+		perform pg_temp.base_error(format('select public.qorpera_site_publish_begin(%L, %L, %L, null)', v_binding, 'name-call',
+			jsonb_build_object('slug', v_slug, 'source', 'web', 'manifestSha256', repeat('a', 64), 'files', '[]'::jsonb)), '22023',
+			v_name);
+		perform pg_temp.base_error(format('select public.qorpera_site_share_check(%L, %L, %L, 3000)', v_binding, v_slug, 'link-box'),
+			'22023', v_name);
+		perform pg_temp.base_error(format('select public.qorpera_site_share_app(%L, %L, %L, null)', v_binding, 'name-call',
+			jsonb_build_object('slug', v_slug, 'machine', 'link-box', 'port', 3000)), '22023', v_name);
+		perform pg_temp.base_error(format('select public.qorpera_site_unpublish(%L, %L)', v_binding, v_slug), '22023', v_name);
+	end loop;
+
+	-- Taken down: the reason in plain words the runtime relays as they are (any other character a ?), and no address.
+	perform public.qorpera_site_take_down('agent-shop', 'Phishing — reported by a visitor, ø');
+	v_down := public.qorpera_site_taken_down_words('Phishing — reported by a visitor, ø');
+	perform pg_temp.base_assert(v_down = 'SITE_TAKEN_DOWN: This site was taken down by Qorpera (Phishing ? reported by a visitor, ø) and cannot be published until Qorpera restores it. Tell a member of the company.'
+		and strpos(v_down, 'qorpera.com') = 0 and strpos(v_down, 'https') = 0, 'the words: ' || v_down);
+	v_shop := to_jsonb(pg_temp.sh_site('agent-shop'));
+	v_files := (select jsonb_agg(to_jsonb(file) order by file.path) from public.qorpera_company_site_files file
+		where file.version_id = '12520000-0000-4000-8000-000000000041');
+	v_versions := (select jsonb_agg(to_jsonb(version) order by version.id) from public.qorpera_company_site_versions version
+		where version.site_id = '12520000-0000-4000-8000-000000000040');
+	-- publish_site: its check, its begin (the same call again too), its put and its finish refuse, and write nothing.
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_check(%L, %L)', v_binding, 'agent-shop'), '55000', v_down);
+	foreach v_slug in array array['down-call', 'agent-upload'] loop
+		perform pg_temp.base_error(format('select public.qorpera_site_publish_begin(%L, %L, %L, null)', v_binding, v_slug,
+			jsonb_build_object('slug', 'agent-shop', 'source', 'web', 'manifestSha256', repeat('a', 64), 'files', '[]'::jsonb)),
+			'55000', v_down);
+	end loop;
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_put(%L, %L, %L)', v_binding,
+		'12520000-0000-4000-8000-000000000041', '[{"path":"index.html","content":"PHA+"}]'), '55000', v_down);
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_finish(%L, %L)', v_binding,
+		'12520000-0000-4000-8000-000000000041'), '55000', v_down);
+	perform pg_temp.base_assert(to_jsonb(pg_temp.sh_site('agent-shop')) = v_shop
+		and (select jsonb_agg(to_jsonb(file) order by file.path) from public.qorpera_company_site_files file
+			where file.version_id = '12520000-0000-4000-8000-000000000041') = v_files
+		and (select jsonb_agg(to_jsonb(version) order by version.id) from public.qorpera_company_site_versions version
+			where version.site_id = '12520000-0000-4000-8000-000000000040') = v_versions, 'nothing published');
+	-- share_app: its check and its share refuse an app link taken down, and a website taken down, and write nothing.
+	perform public.qorpera_site_take_down('link-app', 'Reported.');
+	v_app := to_jsonb(pg_temp.sh_site('link-app'));
+	perform pg_temp.base_error(format('select public.qorpera_site_share_check(%L, %L, %L, 3000)', v_binding, 'link-app', 'link-box'),
+		'55000', public.qorpera_site_taken_down_words('Reported.'));
+	perform pg_temp.base_error(format('select public.qorpera_site_share_app(%L, %L, %L, null)', v_binding, 'down-share',
+		'{"slug":"link-app","machine":"link-box","port":3000}'), '55000', public.qorpera_site_taken_down_words('Reported.'));
+	perform pg_temp.base_error(format('select public.qorpera_site_share_check(%L, %L, %L, 3000)', v_binding, 'agent-shop', 'link-box'),
+		'55000', v_down);
+	perform pg_temp.base_assert(to_jsonb(pg_temp.sh_site('link-app')) = v_app and not exists (select 1
+		from public.qorpera_company_site_app_claims claim where claim.call_id = 'down-share'), 'nothing shared');
+	-- Restored, each answers as before the takedown.
+	perform public.qorpera_site_restore('agent-shop');
+	perform public.qorpera_site_restore('link-app');
+	perform pg_temp.base_assert(public.qorpera_site_publish_check(v_binding, 'agent-shop') ->> 'mode' = 'new'
+		and public.qorpera_site_share_check(v_binding, 'link-app', 'link-box', 3000) ->> 'state' = 'update', 'restored');
+end $$;
+
+-- A repository's site: change 4 lands and waits for its upload. Taken down, nothing is uploaded to it, and its list file
+-- (written again) says so with no link and no live version; restored, it is due again.
+do $$
+declare v jsonb; v_index bigint; v_states text;
+begin
+	perform pg_temp.base_assert(pg_temp.rel_land(2532, 'h3', 'h4', pg_temp.rel_made('h4', '{"name":"look-shop"}'), 'h-look')
+		= pg_temp.rec_answer('recorded', 4), 'h-look 4');
+	perform pg_temp.base_assert(position('h-look:4' in pg_temp.rel_due_names()) > 0
+		and public.qorpera_code_release_index(pg_temp.rec_shop('h-look')) -> 'preparing' = '{"change":4}', 'due');
+	v_index := (pg_temp.rec_shop('h-look')).index_version;
+	v_states := pg_temp.rel_states('h-look');
+	perform public.qorpera_site_take_down('look-shop', 'Phishing, confirmed.');
+	v := public.qorpera_code_release_index(pg_temp.rec_shop('h-look'));
+	perform pg_temp.base_assert((pg_temp.rec_shop('h-look')).index_version = v_index + 1
+		and v -> 'live' = 'null' and v -> 'preparing' = 'null' and v -> 'takenDown' = '{"reason":"Phishing, confirmed."}'
+		and v ? 'ready' and strpos(v::text, 'qorpera.com') = 0, 'the list file: ' || v::text);
+	update public.qorpera_site_settings set hosts_enabled = false;
+	v := public.qorpera_code_release_index(pg_temp.rec_shop('h-look'));
+	perform pg_temp.base_assert(v -> 'live' = 'null' and v -> 'takenDown' = '{"reason":"Phishing, confirmed."}'
+		and not v ? 'preparing' and strpos(v::text, 'sites.qorpera.com') = 0, 'the list file, hosts off: ' || v::text);
+	update public.qorpera_site_settings set hosts_enabled = true;
+	perform pg_temp.base_assert(position('h-look' in pg_temp.rel_due_names()) = 0, 'not due: ' || pg_temp.rel_due_names());
+	-- An upload that was due before: refused, nothing written.
+	v := pg_temp.rel_begin('h-look', 4, pg_temp.rel_manifest(pg_temp.rel_texts('h4')));
+	perform pg_temp.base_assert(v = '{"schema":"qorpera.code-site-begin/v1","state":"refused","code":"SITE_TAKEN_DOWN"}'
+		and pg_temp.rel_states('h-look') = v_states, 'the begin: ' || v::text);
+	perform public.qorpera_site_restore('look-shop');
+	v := public.qorpera_code_release_index(pg_temp.rec_shop('h-look'));
+	perform pg_temp.base_assert((pg_temp.rec_shop('h-look')).index_version = v_index + 2
+		and position('h-look:4' in pg_temp.rel_due_names()) > 0 and v -> 'preparing' = '{"change":4}' and not v ? 'takenDown'
+		and v -> 'live' ->> 'url' = 'https://look-shop.qorpera.com/', 'restored: ' || v::text);
 end $$;
 
 -- 11. The drill ----------------------------------------------------------------------------------------------------------
