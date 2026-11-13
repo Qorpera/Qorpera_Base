@@ -351,9 +351,13 @@ data/shop/snapshot/
   834 MiB table (§11, P4). A part past 32 MiB is cut in two. A table without a primary key is cut by its rows'
   place on disk; its parts are complete and may all change from night to night.
 - **One moment.** A database's whole snapshot, its shape, its sequences and every part, is read in one transaction
-  that sees one moment (`repeatable read`), however many rows are written meanwhile.
-- **Sequences.** `sequences.sql` puts each sequence where it stood, so the first row made after loading gets a new
-  number and not an old one. A sequence is not part of the one moment (PostgreSQL gives its newest value), so it may
+  that sees one moment (`repeatable read`), however many rows are written meanwhile. Before that moment the
+  transaction takes a share lock on every table of the database and holds it to the end, because emptying a table or
+  rebuilding it is not held back by a moment alone: such a statement by anyone else waits until the snapshot is
+  written. Rows are written and changed freely meanwhile.
+- **Sequences.** `sequences.sql` puts each sequence where it stood, read from the sequence itself (its last value
+  and whether that value was given out yet), so the first row made after loading gets a new number and not an old
+  one. A sequence is not part of the one moment (PostgreSQL gives its newest value), so it may
   stand past the newest loaded row, never before it.
 - The worst day, edits spread evenly over all history, changes every part. The folder keeps every version of a file
   for good, so **old versions under `data/<name>/snapshot/` are pruned after 7 days**, the way old versions of git's
