@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
 	CompanyMachineClipboardClear, CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
 	CompanyMachineMemberAct, CompanyMachineMemberActOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
-	CompanyMachineMemberStart, CompanyMachineMemberStartOutcome, CompanyMachineScreen, CompanyMachineScreenOutcome,
+	CompanyMachineMemberPointer, CompanyMachineMemberPointerOutcome, CompanyMachineMemberStart,
+	CompanyMachineMemberStartOutcome, CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
@@ -20,6 +22,9 @@ import {
 	type CloudMemberMachineAct,
 	type CloudMemberMachineActPeerRequest,
 	CloudMemberMachineActRefusal,
+	type CloudMemberMachinePointerMove,
+	type CloudMemberMachinePointerPeerRequest,
+	CloudMemberMachinePointerRefusal,
 	type CloudMemberMachineScreen,
 	type CloudMemberMachineScreenPeerRequest,
 	CloudMemberMachineScreenRefusal,
@@ -32,20 +37,23 @@ import {
 	isCloudMachineCodingValueRefusal,
 	isCloudMachineScreenRefusal,
 	isCloudMemberMachineActRefusal,
+	isCloudMemberMachinePointerRefusal,
 	isCloudMemberMachineStartRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import type {
-	CloudMemberMachineActRequest, CloudMemberMachineScreenLook, CloudMemberMachineStartRequest,
+	CloudMemberMachineActRequest, CloudMemberMachinePointerAnswer, CloudMemberMachinePointerRequest,
+	CloudMemberMachineScreenLook, CloudMemberMachineStartRequest,
 } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
+import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
 	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
-	authorizeMemberMachineScreen, authorizeMemberMachineStart, type MachineCodingValueAuthority, type MachineCodingValueClear,
-	type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority, type MemberMachineScreenAuthority,
-	type MemberMachineStartAuthority,
+	authorizeMemberMachinePointer, authorizeMemberMachineScreen, authorizeMemberMachineStart, type MachineCodingValueAuthority,
+	type MachineCodingValueClear, type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority,
+	type MemberMachinePointerAuthority, type MemberMachineScreenAuthority, type MemberMachineStartAuthority,
 } from "./machine-command-authority.ts";
 
 interface MachineCommandRouterOptions {
@@ -87,7 +95,31 @@ interface MachineCommandRouterOptions {
 	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string }>;
 	/** A member's start on this node's machine; absent when the executor carries no machines. */
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
+	/** A member's pointer pass (20260930744000): begun as the member (member-control.ts); absent when this executor takes
+	 * no member's requests. */
+	memberPointerBegin?(token: string, begin: { companyId: string; machineId: string;
+		hold: { generation: number } | { epoch: number; seat: number } }, signal: AbortSignal): Promise<string>;
+	/** A member's pointer move on this node's machine; absent when the executor carries no machines. */
+	memberPointerLocal?(authority: MemberMachinePointerAuthority, x: number, y: number, signal: AbortSignal): Promise<CloudMemberMachinePointerMove>;
 	fetch?: typeof fetch;
+}
+
+/** At most this many moves a second on one pointer pass (20260930744000): the window sends fewer (one in flight); past
+ * it a move is dropped, never queued. */
+export const MEMBER_POINTER_MOVES_PER_SECOND = 30;
+/** At most this many pointer passes are kept at once; the oldest goes first. */
+const MEMBER_POINTER_PASSES = 10000;
+
+/** A pointer pass this executor holds (20260930744000), in its memory only: SQL's read of it, until when it lasts, the
+ * sha-256 of the member's token that began it (on the executor that took the member's request; null where another
+ * executor forwards its moves), and its moves in the current second. */
+interface MemberPointerPass {
+	readonly authority: MemberMachinePointerAuthority;
+	readonly companyId: string | null;
+	readonly tokenSha256: string | null;
+	readonly until: number;
+	second: number;
+	moves: number;
 }
 
 /** How long the executor's word that the agent was told of a member's touch may take (20260930734000): it goes beside
@@ -106,6 +138,9 @@ function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
  * in this deployment's peer allowlist is ever a destination. */
 export class MachineCommandRouter {
 	readonly #options: MachineCommandRouterOptions;
+	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
+	readonly #pages = new CloudCommandPages();
+	readonly #pointers = new Map<string, MemberPointerPass>();
 	constructor(options: MachineCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
 	}
@@ -138,7 +173,7 @@ export class MachineCommandRouter {
 		const gateway = createHttpCloudMachineCommandGateway({
 			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
 			// The peer listener takes no holder: this executor proved the guest's at its own ingress.
-			holder: null, fetch: this.#options.fetch,
+			holder: null, fetch: this.#options.fetch, pages: this.#pages,
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
 		// its own credential, rechecks SQL and may only execute locally; its
@@ -326,6 +361,102 @@ export class MachineCommandRouter {
 		return createHttpMemberMachineScreenPeer({ url: peer.origin, token: await this.#options.credential(peer.tokenCredential),
 			fetch: this.#options.fetch }).memberStart({ startId }, signal);
 	}
+	/**
+	 * A member's pointer (20260930744000), as this executor's member listener took it. A begin asks SQL for a pass as the
+	 * member, reads it again as the executor and keeps it in memory for its 10 seconds (never stored). A move checks only
+	 * that pass, here: the member's token hashes to the one that began it, the machine is the pass's, it has not run out,
+	 * and at most MEMBER_POINTER_MOVES_PER_SECOND in a second (past it the move is dropped). No SQL, row, receipt or log
+	 * line per move. It is moved on this node, or sent to the machine's node once (a newer move replaces it).
+	 */
+	async memberPointer(request: CloudMemberMachinePointerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerAnswer> {
+		if ("begin" in request) {
+			if (!this.#options.memberPointerBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			const passId = await this.#options.memberPointerBegin(request.token, { companyId: request.companyId,
+				machineId: request.machineId, hold: request.begin }, signal);
+			const authority = await authorizeMemberMachinePointer(this.#options.control,
+				{ passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
+			if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+			this.#keepPointer(authority, request.companyId, sha256(request.token));
+			return { pass: passId, milliseconds: authority.milliseconds };
+		}
+		const kept = this.#pointerPass(request.pass);
+		if (!kept || kept.tokenSha256 !== sha256(request.token) || kept.companyId !== request.companyId ||
+			kept.authority.machineId !== request.machineId)
+			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		if (!admitMove(kept)) return { moved: false };
+		if (kept.authority.served) return this.#pointerLocal(kept, request.x, request.y, signal);
+		const peer = this.#options.peers.find((entry) => entry.owner === kept.authority.executorOwner &&
+			entry.providerId === kept.authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		try {
+			return await createHttpMemberMachineScreenPeer({ url: peer.origin, token: await this.#options.credential(peer.tokenCredential),
+				fetch: this.#options.fetch }).memberPointer({ passId: request.pass, x: request.x, y: request.y }, signal);
+		} catch (error) {
+			// The machine's node refused the pass's moves for good: it is forgotten here too, and the window begins another.
+			if (error instanceof CloudMemberMachinePointerRefusal) this.#pointers.delete(request.pass);
+			throw error;
+		}
+	}
+	/** A member's pointer move another executor sent here (the peer listener): its pass read in SQL once, kept until it
+	 * runs out, and the pointer moved on this node only. */
+	async memberPointerPeer(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove> {
+		let kept = this.#pointerPass(request.passId);
+		if (!kept) {
+			const authority = await authorizeMemberMachinePointer(this.#options.control,
+				{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
+			if (!authority.served) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			kept = this.#keepPointer(authority, null, null);
+		}
+		if (!admitMove(kept)) return { moved: false };
+		return this.#pointerLocal(kept, request.x, request.y, signal);
+	}
+	async #pointerLocal(kept: MemberPointerPass, x: number, y: number, signal: AbortSignal): Promise<CloudMemberMachinePointerMove> {
+		if (!this.#options.memberPointerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		try {
+			return await this.#options.memberPointerLocal(kept.authority, x, y, signal);
+		} catch (error) {
+			// The host refused the pass's moves (a private hold since, the screen off, a restart): forgotten.
+			if (error instanceof CloudMemberMachinePointerRefusal) this.#pointers.delete(kept.authority.passId);
+			throw error;
+		}
+	}
+	/** The pass, while it lasts. */
+	#pointerPass(passId: string): MemberPointerPass | undefined {
+		const kept = this.#pointers.get(passId);
+		if (kept && kept.until <= Date.now()) {
+			this.#pointers.delete(passId);
+			return undefined;
+		}
+		return kept;
+	}
+	/** Keeps a pass for what is left of it; the passes that ran out go, and the oldest when there are too many. */
+	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null): MemberPointerPass {
+		const now = Date.now();
+		for (const [passId, kept] of this.#pointers) if (kept.until <= now) this.#pointers.delete(passId);
+		while (this.#pointers.size >= MEMBER_POINTER_PASSES) {
+			const oldest = this.#pointers.keys().next().value;
+			if (oldest === undefined) break;
+			this.#pointers.delete(oldest);
+		}
+		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until: now + authority.milliseconds, second: now, moves: 0 };
+		this.#pointers.set(authority.passId, kept);
+		return kept;
+	}
+}
+
+/** A move of this pass within MEMBER_POINTER_MOVES_PER_SECOND (counted per second); false: dropped. */
+function admitMove(kept: MemberPointerPass): boolean {
+	const now = Date.now();
+	if (now - kept.second >= 1000) {
+		kept.second = now;
+		kept.moves = 0;
+	}
+	kept.moves++;
+	return kept.moves <= MEMBER_POINTER_MOVES_PER_SECOND;
+}
+
+function sha256(value: string): string {
+	return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 /** How a router reaches this node's machines for a wake (MachineCommandRouter's `wakeLocal`). */
@@ -448,6 +579,23 @@ export function localMemberMachineStart(host: {
 	};
 }
 
+/** How a router moves a member's pointer on this node's machines (MachineCommandRouter's `memberPointerLocal`,
+ * 20260930744000): the host's word (moved, or dropped while an action holds the desktop), its refusals as the member's,
+ * and any other code a failure. */
+export function localMemberMachinePointer(host: {
+	memberPointer(move: CompanyMachineMemberPointer): CompanyMachineMemberPointerOutcome;
+}): (authority: MemberMachinePointerAuthority, x: number, y: number, signal: AbortSignal) => Promise<CloudMemberMachinePointerMove> {
+	return async (authority, x, y) => {
+		const outcome = host.memberPointer({ placementId: authority.placementId, bootId: authority.bootId,
+			userId: authority.userId, generation: authority.generation, private: authority.private, x, y });
+		if ("refused" in outcome) {
+			if (isCloudMemberMachinePointerRefusal(outcome.refused)) throw new CloudMemberMachinePointerRefusal(outcome.refused);
+			throw new Error("MEMBER_MACHINE_POINTER_FAILED");
+		}
+		return { moved: outcome.moved };
+	};
+}
+
 /** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
  * never forwards. */
 export function machineCommandRoutes(
@@ -463,6 +611,7 @@ export function machineCommandRoutes(
 	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	memberAct?(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	memberStart?(request: CloudMemberMachineStartPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
+	memberPointer?(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove>;
 } {
 	return {
 		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
@@ -476,5 +625,7 @@ export function machineCommandRoutes(
 		...(localOnly ? { memberAct: (request: CloudMemberMachineActPeerRequest, signal: AbortSignal) => router.memberActPeer(request, signal) } : {}),
 		// And a member's start of the desktop (20260930714000).
 		...(localOnly ? { memberStart: (request: CloudMemberMachineStartPeerRequest, signal: AbortSignal) => router.memberStartPeer(request, signal) } : {}),
+		// And a member's pointer move (20260930744000).
+		...(localOnly ? { memberPointer: (request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal) => router.memberPointerPeer(request, signal) } : {}),
 	};
 }

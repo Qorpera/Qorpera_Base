@@ -16,8 +16,9 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * for every movement of a repository's main, and for every landing that was refused (`qorpera_code_changes`, migration
  * `20260930720000`). Each row has a file, `code/<owner>/<name>/changes/<n>.md`, and the newest hundred are listed in
  * `changes/index.md`, under two lines that say which version of the repository's site is live and which change is ready
- * in What's new (step 4), and for 30 days after a restore under one that names the changes it took out of main (step
- * 6). The kernel says which are due and what they hold; this renders them; a code host job writes them:
+ * in What's new (step 4), for 30 days after a restore under one that names the changes it took out of main (step 6),
+ * and for 30 days after an import that brought other lines of work under one that counts them. The kernel says which
+ * are due and what they hold; this renders them; a code host job writes them:
  *
  *   in the landing's or the undo's own job   `inJob`: what is due is written before the job saves, so the files are
  *                                            there when the agent is woken; `confirm` once the job has saved
@@ -101,8 +102,9 @@ export interface CodeChangeFile {
 	 * reads as unknown there, and stops nothing. */
 	checks: unknown;
 	/** For an import's row, where the repository came from as the kernel sends it (the registry's `imported_from`:
-	 * `branch`, the default branch it had there, and `commits`, the earlier changes on it), never checked on the way
-	 * in: a value its file cannot show is left out of its sentence, and stops nothing. */
+	 * `branch`, the default branch it had there, `commits`, the earlier changes on it, and `lines`, the other lines of
+	 * work that came with it, from migration `20260930741000`), never checked on the way in: a value its file cannot
+	 * show is left out of its words, and stops nothing. */
 	importedFrom?: unknown;
 }
 /** One line of the list. `line` is what a customer will notice, or else the change's title. */
@@ -334,9 +336,88 @@ function kindWords(change: CodeChangeFile): string {
 	}
 }
 
+/** Where the import keeps the other heads it brought (`code-import.ts`): an agent reads them there, and never changes
+ * them. */
+const IMPORTED_HEADS = "refs/qorpera/imported/heads/";
+/** How many other lines of work change 1 names at most, as the look shows them; the rest are counted. */
+const OTHER_LINES_SHOWN = 10;
+/** The longest name of a line of work the look shows (`codeImportShown`): a longer one is not shown, never cut. */
+const OTHER_LINE_NAME_BYTES = 200;
+/** The words of the other lines of work are at most this long, from their first line to their last, whatever the row
+ * holds: the lines past it are counted. (The registry keeps at most 2,048 bytes of where the code came from, so they
+ * fit for every row the kernel sends.) */
+const OTHER_LINES_BYTES = 4096;
+
+/** A line of work the look shows (`lines.shown`), or undefined when the value is not of its shape. Only what the
+ * record says is read: the kernel checked the rest when it took the look. A name that is not shown, or that the record
+ * could not show whole as it is (cut, or with a character no line holds), is null: it would name no ref. */
+function otherLineOf(
+	value: unknown,
+): { name: string | null; ahead: number; behind: number; lastAt: unknown; fits: unknown } | undefined {
+	if (!isRecord(value) || !whole(value.ahead, 1) || !whole(value.behind)) return undefined;
+	const { name } = value;
+	const shown =
+		typeof name === "string" &&
+		name !== "" &&
+		bytes(name) <= OTHER_LINE_NAME_BYTES &&
+		![...name].some((character) => {
+			const point = character.codePointAt(0) as number;
+			return halfCharacter(point) || unseen(point);
+		});
+	return {
+		name: shown ? name : null,
+		ahead: value.ahead,
+		behind: value.behind,
+		lastAt: value.lastAt,
+		fits: value.fits,
+	};
+}
+
+/** The other lines of work a repository brought in came with (the look's `lines`, as the registry keeps them), as its
+ * change 1 names them: each as the ref it is kept under, with what it has that main did not and the other way round,
+ * when it last changed, and whether the company folder can hold its files; then how many more, and how one is brought
+ * into main. At most ten are named, and at most as many as fit 4 KiB. Read leniently: no lines, none counted or a value
+ * not of their shape is no words at all, which is the record as it was before the look measured them; a line not of
+ * its shape is counted, not named. */
+function otherLinesWords(lines: unknown): string[] {
+	if (!isRecord(lines) || !whole(lines.count, 1)) return [];
+	const count = lines.count;
+	const items = (Array.isArray(lines.shown) ? lines.shown : [])
+		.map(otherLineOf)
+		.filter((line) => line !== undefined)
+		.slice(0, Math.min(OTHER_LINES_SHOWN, count))
+		.map((line) => {
+			const named = line.name === null ? "one whose name is not shown" : code(`${IMPORTED_HEADS}${line.name}`);
+			const ahead = `${line.ahead} ${line.ahead === 1 ? "change" : "changes"} main did not have`;
+			const behind = `${line.behind} of main's it did not have`;
+			const changed = typeof line.lastAt === "string" ? day(line.lastAt) : "unknown";
+			const at = changed === "unknown" ? "" : `, last changed ${changed}`;
+			const fits = line.fits === false ? "; the company folder cannot hold some of its file names" : "";
+			return `- ${named}: ${ahead}, ${behind}${at}${fits}`;
+		});
+	const listed = `git for-each-ref ${IMPORTED_HEADS} lists them`;
+	/** The words with the first `named` lines of work named, and the rest counted. */
+	const section = (named: number) => {
+		const more = count - named;
+		return [
+			"",
+			`It also brought ${count} other ${count === 1 ? "line" : "lines"} of work, kept apart from main:`,
+			"",
+			...items.slice(0, named),
+			...(more > 0 ? [named ? `- and ${more} more (${listed})` : `- ${more} not named here (${listed})`] : []),
+			"",
+			"A coding session brings one into main by merging it into its branch and finishing.",
+		];
+	};
+	let fit = items.length;
+	while (fit > 0 && bytes(section(fit).join("\n")) > OTHER_LINES_BYTES) fit -= 1;
+	return section(fit);
+}
+
 /** What came with a repository brought in, as its change 1 says it: the earlier changes on the default branch it had
- * (a name, as code), and its files. What the kernel did not send is left out of the sentence. */
-function broughtInWords(change: CodeChangeFile): string {
+ * (a name, as code), and its files; then the other lines of work that came with it, when the kernel names any. What
+ * the kernel did not send is left out of the sentence. */
+function broughtInWords(change: CodeChangeFile): string[] {
 	const from = isRecord(change.importedFrom) ? change.importedFrom : {};
 	const { commits, branch } = from;
 	const earlier = whole(commits, 1)
@@ -345,7 +426,10 @@ function broughtInWords(change: CodeChangeFile): string {
 	const on = typeof branch === "string" && branch !== "" ? ` on ${code(branch, 200)}` : "";
 	const files = change.filesChanged;
 	const and = files === null ? "" : ` and ${files} ${files === 1 ? "file" : "files"}`;
-	return `${earlier}${on}${and} came with it. Qorpera does not check code brought in.`;
+	return [
+		`${earlier}${on}${and} came with it. Qorpera does not check code brought in.`,
+		...otherLinesWords(from.lines),
+	];
 }
 
 const PICTURE_PROBLEMS: Readonly<Record<string, string>> = {
@@ -541,7 +625,7 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 		: [];
 	const sections = [
 		...head,
-		...(change.kind === "import" ? ["", broughtInWords(change)] : []),
+		...(change.kind === "import" ? ["", ...broughtInWords(change)] : []),
 		"",
 		"## What a customer will notice",
 		"",
@@ -663,23 +747,52 @@ function restoreLine(lines: readonly CodeChangeLine[], now: number): string | un
 	return `Put back to an earlier copy on ${day(restore.createdAt)}: ${one ? "change" : "changes"} ${list} ${one ? "is" : "are"} no longer in main.`;
 }
 
-/** The list's text, `changes/index.md`: for 30 days after a restore, the changes it took out of main; what of the
- * repository's site is live and what is ready, when the kernel says so; then the newest changes, one line each, newest
- * first, at most a hundred. Pure but for the time it is made at (`now`, the clock's by default). Each line's words (what
- * a customer will notice, or the title) are one line of at most 200 bytes with every Markdown character written out. */
+/** What the list's head says beside the changes, as the kernel sends it in the list's `index`: what of the site is live
+ * and what is ready (step 4), and the repository's import while it is new (step 6, migration `20260930741000`). */
+export interface CodeChangeIndexHead extends CodeChangeReleases {
+	/** `{at, lines}`: when the repository was brought in, and the other lines of work that came with it (the
+	 * registry's `imported_from.lines`: `{count, changes, shown}`). The kernel sends it for 30 days after the import, and
+	 * only when a line came; never checked on the way in: a value the list cannot show is no line. */
+	imported?: unknown;
+}
+
+/** How long after an import the list opens with the other lines of work that came with it. */
+const IMPORTED_LINE_MS = 30 * 86_400_000;
+
+/** The line that opens the list for 30 days after the repository was brought in with other lines of work, in words a
+ * member reads too (the record's files are the agents', and members can open them): when, how many lines, how many
+ * changes the main version did not have, and where they are named. Undefined when the kernel sent none, or nothing
+ * the line can say for sure (a time it cannot read, no line or change counted), or 30 days have passed by `now`. */
+function importedLine(imported: unknown, now: number): string | undefined {
+	if (!isRecord(imported) || !isRecord(imported.lines)) return undefined;
+	const { at } = imported;
+	const { count, changes } = imported.lines;
+	const time = typeof at === "string" && TIME.test(at) ? Date.parse(at) : Number.NaN;
+	if (!Number.isFinite(time) || now - time >= IMPORTED_LINE_MS || !whole(count, 1) || !whole(changes, 1))
+		return undefined;
+	const lines = `${count} other ${count === 1 ? "line" : "lines"} of work`;
+	const said = `${changes} ${changes === 1 ? "change" : "changes"}`;
+	return `Brought in on ${day(at as string)} with ${lines} that the main version did not have (${said}): changes/1.md names them.`;
+}
+
+/** The list's text, `changes/index.md`: for 30 days after a restore, the changes it took out of main; for 30 days after
+ * the repository was brought in with other lines of work, how many; what of the repository's site is live and what is
+ * ready, when the kernel says so; then the newest changes, one line each, newest first, at most a hundred. Pure but for
+ * the time it is made at (`now`, the clock's by default). Each line's words (what a customer will notice, or the
+ * title) are one line of at most 200 bytes with every Markdown character written out. */
 export function codeChangeIndexText(
 	repository: { owner: string; name: string },
 	lines: readonly CodeChangeLine[],
-	releases: CodeChangeReleases = {},
+	head: CodeChangeIndexHead = {},
 	now: number = Date.now(),
 ): string {
 	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
-	const site = [liveLine(releases.live), readyLine(releases.ready)].filter((line) => line !== undefined);
-	const restored = restoreLine(newest, now);
+	const site = [liveLine(head.live), readyLine(head.ready)].filter((line) => line !== undefined);
+	const opening = [restoreLine(newest, now), importedLine(head.imported, now)].filter((line) => line !== undefined);
 	return `${[
 		`# Changes in ${words(`${repository.owner}/${repository.name}`, 200)}`,
 		"",
-		...(restored ? [restored, ""] : []),
+		...(opening.length ? [...opening, ""] : []),
 		...(site.length ? [...site, ""] : []),
 		...(newest.length
 			? newest.map((entry) => {
@@ -857,7 +970,7 @@ function filesOf(
 	answer: unknown,
 	target: CodeChangeTarget,
 	limit: number,
-): { changes: CodeChangeFile[]; index: ({ version: number; lines: CodeChangeLine[] } & CodeChangeReleases) | null } {
+): { changes: CodeChangeFile[]; index: ({ version: number; lines: CodeChangeLine[] } & CodeChangeIndexHead) | null } {
 	if (!isRecord(answer) || answer.schema !== "qorpera.code-change-files/v1" || !Array.isArray(answer.changes))
 		throw new Error("CODE_CHANGE_FILES_UNCONFIRMED");
 	const named = isRecord(answer.repository) ? answer.repository : {};
@@ -882,9 +995,11 @@ function filesOf(
 				: {
 						version: index.version as number,
 						lines: (index.lines as unknown[]).map(lineOf),
-						// What is live and what is ready (step 4), as the kernel sends them: the list reads them leniently.
+						// What is live and what is ready (step 4), and the import while it is new (step 6), as the kernel
+						// sends them: the list reads them leniently, and a kernel from before sends none.
 						live: index.live,
 						ready: index.ready,
+						imported: index.imported,
 					},
 	};
 }
@@ -1157,7 +1272,12 @@ export class CodeChangeRecords {
 					: { n: change.n, text: codeChangeRecordText(change), ...copy(change) },
 		);
 		const index = due.index
-			? codeChangeIndexText(target, due.index.lines, { live: due.index.live, ready: due.index.ready }, this.#now())
+			? codeChangeIndexText(
+					target,
+					due.index.lines,
+					{ live: due.index.live, ready: due.index.ready, imported: due.index.imported },
+					this.#now(),
+				)
 			: null;
 		const writer = { shell: job.shell, layout: job.layout, signal };
 		const wrote = await this.#write(writer, { repository, records, index });

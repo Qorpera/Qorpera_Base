@@ -769,12 +769,11 @@ export function idleOpening(t: number): Eyes {
 
 /* ---- moments: short acts over whatever the figure is doing ----------------------------------------- */
 
-/** cheer: work done, the long one; hooray: the short one. perk: the pointer came over it. The rest are an idle
+/** cheer: work done, the long one; hooray: the short one. The rest are an idle
  * figure's own: the eyes' (blink, blinks, left, right, up, smile) and the body's (stretch, sway, skip). */
 export type Moment =
 	| "cheer"
 	| "hooray"
-	| "perk"
 	| "stretch"
 	| "sway"
 	| "skip"
@@ -787,7 +786,6 @@ export type Moment =
 export const MOMENT_LENGTH: Record<Moment, number> = {
 	cheer: 3.6,
 	hooray: 1.5,
-	perk: 0.44,
 	stretch: 1,
 	sway: 1.3,
 	skip: 0.56,
@@ -839,7 +837,6 @@ export function moment(kind: Moment, t: number): Act {
 		};
 	}
 	if (kind === "hooray") return { body: hops(t, HOORAY).body, eyes: pair({ smile: pulse(t, 0.06, 0.2, 1.08, 1.34) }) };
-	if (kind === "perk") return { body: hop(t / MOMENT_LENGTH.perk, 7, 0.1) };
 	if (kind === "skip") return { body: hop(t / MOMENT_LENGTH.skip, 8, 0.11) };
 	if (kind === "stretch") {
 		// Up on its toes and down again.

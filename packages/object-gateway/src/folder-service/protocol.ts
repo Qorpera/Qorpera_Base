@@ -330,15 +330,39 @@ export interface SearchCursor {
 	readonly line: number;
 }
 
+/** The search's own version (keyholes S4), which the hello's answer to a run's view names (`search`): version 2 takes
+ * requests that say `version: 2` (a regular expression, context lines, files only, a find by glob alone) and answers
+ * pages of about 26 KiB of hits as the run shows them. A request without `version` is version 1, answered as before,
+ * so a runtime from before keeps working against this service, and a runtime asks for version 2 only of a service
+ * whose hello said it. */
+export const SEARCH_VERSION = 2;
+/** Lines of context a version 2 hit carries, before it and after it, at most. */
+export const MAX_SEARCH_CONTEXT = 5;
+
+/** What a hello's answer says about the view's search (a run's own view only). */
+export interface SearchSupport {
+	readonly version: number;
+	/** The service runs V8's linear-time engine, so `regex` is taken (regex.ts). */
+	readonly regex: boolean;
+}
+
 export interface SearchRequest {
-	/** Literal text: in the files' lines, or with `namesOnly` in the names of files and folders. */
-	readonly query: string;
+	/** 1 without `version` on the wire. */
+	readonly version: 1 | 2;
+	/** Text, or with `regex` a pattern: in the files' lines, or with `namesOnly` in the names of files and folders.
+	 * Null (version 2, with `namesOnly`): every name the glob keeps, a find. */
+	readonly query: string | null;
+	readonly regex: boolean;
 	/** The folder (or the one file) to search: "" for the whole view. */
 	readonly path: string;
 	/** Only paths matching it: `*` and `?` within a name, `**` across folders; without a '/', the name alone. */
 	readonly glob: string | null;
 	readonly namesOnly: boolean;
+	/** Version 2: each file with a match once, with how many of its lines match, instead of the lines. */
+	readonly filesOnly: boolean;
 	readonly caseSensitive: boolean;
+	/** Version 2: lines shown before and after each hit, 0 to MAX_SEARCH_CONTEXT (a text search only). */
+	readonly context: number;
 	readonly after: SearchCursor | null;
 }
 
@@ -346,15 +370,39 @@ export const MAX_SEARCH_QUERY = 256;
 
 export function parseSearch(payload: Buffer): SearchRequest {
 	const value = object(payload);
-	exactKeys(value, ["query", "path", "glob", "namesOnly", "caseSensitive", "after"]);
+	const v2 = value.version !== undefined;
+	if (v2) {
+		exactKeys(value, [
+			"version",
+			"query",
+			"regex",
+			"path",
+			"glob",
+			"namesOnly",
+			"filesOnly",
+			"caseSensitive",
+			"context",
+			"after",
+		]);
+		if (value.version !== SEARCH_VERSION) throw new ProtocolError(ErrorCode.badRequest, "Unsupported search version");
+	} else exactKeys(value, ["query", "path", "glob", "namesOnly", "caseSensitive", "after"]);
 	const text = (v: unknown): v is string =>
 		typeof v === "string" && v.length > 0 && v.length <= MAX_SEARCH_QUERY && !/[\u0000-\u001f\u007f]/.test(v);
-	if (!text(value.query)) throw new ProtocolError(ErrorCode.badRequest, "Bad query");
+	if (!(v2 && value.query === null) && !text(value.query)) throw new ProtocolError(ErrorCode.badRequest, "Bad query");
 	if (typeof value.path !== "string" || !validPath(value.path))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad path");
 	if (value.glob !== null && !text(value.glob)) throw new ProtocolError(ErrorCode.badRequest, "Bad glob");
 	if (typeof value.namesOnly !== "boolean" || typeof value.caseSensitive !== "boolean")
 		throw new ProtocolError(ErrorCode.badRequest, "Bad flag");
+	const regex = v2 ? flag(value.regex) : false;
+	const filesOnly = v2 ? flag(value.filesOnly) : false;
+	const context = v2 ? count(value.context, MAX_SEARCH_CONTEXT) : 0;
+	// A find names paths: it has no pattern, and no lines to count or show around.
+	if (value.query === null && (!value.namesOnly || regex))
+		throw new ProtocolError(ErrorCode.badRequest, "A search without a query is a find of names");
+	if (filesOnly && value.namesOnly) throw new ProtocolError(ErrorCode.badRequest, "Files only is a text search");
+	if (context > 0 && (value.namesOnly || filesOnly))
+		throw new ProtocolError(ErrorCode.badRequest, "Context lines go with a text search");
 	let after: SearchCursor | null = null;
 	if (value.after !== null) {
 		const a = value.after as Record<string, unknown>;
@@ -372,11 +420,15 @@ export function parseSearch(payload: Buffer): SearchRequest {
 		};
 	}
 	return {
-		query: value.query,
+		version: v2 ? 2 : 1,
+		query: value.query as string | null,
+		regex,
 		path: value.path,
 		glob: value.glob as string | null,
 		namesOnly: value.namesOnly,
+		filesOnly,
 		caseSensitive: value.caseSensitive,
+		context,
 		after,
 	};
 }

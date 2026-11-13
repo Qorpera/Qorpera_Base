@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `MemberAgentMachine.others` takes at most the first 50 names of a list (the newest first, as SQL orders them from `20260930744000`): a longer list from before it is never a failed read any more (release review of v239, #1723 r1 F1).
 - `MemberAgentMachine.generation` (migration `20260930738000`): the desktop's lease generation, which moves at every seating of a member and every hand-back that ends a lease, named to owners, admins and contributors; null for a viewer and from a database before it; a value that is not a safe whole number from 0 fails the read.
 - `MemberAgentMachine.others` (migration `20260930734000`): the other members who acted on the desktop they share with the agent in the last minute, by name (empty when none, or from a database before shared control); a value that is not a list of names fails the read.
 - `app-groups.ts`: a group's `colour` (one of `AGENT_COLOURS`), read from and written to one note line of `apps/groups.md`, `<!-- group colours: <id>=<colour>, … -->`, after the list and the retired ids; a colour for no group or not in the palette is left out. A reader from before it keeps the line as a note, so every group still reads. `resolveAppGroups` carries it. `app-icons.ts` (12 Nov 2026): an app's own icon format and its reader `parseAppIcon`; `INTERFACE_EMBLEMS` has 24.

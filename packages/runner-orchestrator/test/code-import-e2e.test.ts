@@ -205,9 +205,49 @@ const pathOk = (value: unknown) =>
 const CODE = /^(IMPORT|CODE_HOST)_[A-Z0-9_]{1,100}$/;
 const AT = /^\d{4}-\d{2}-\d{2}T[0-9:.]{8,15}(Z|[+-]\d{2}:?\d{2})$/;
 
+const of = (value: unknown, key: string): unknown => (isRecord(value) ? value[key] : undefined);
+
+/** The look's other lines of work, by the lead's shapes for the follow-ups (13 Nov): `count` at most the kept heads,
+ * `changes` at least 1 exactly when `count` is, at most 10 shown and no more than `count`, each `ahead` 1 to `changes`;
+ * most `ahead` first, then the newest `lastAt` (null last), then `name` by its bytes (null last). */
+function linesValid(lines: unknown, kept: unknown): boolean {
+	const n = of(lines, "count"),
+		changes = of(lines, "changes"),
+		shown = of(lines, "shown");
+	if (
+		!only(lines, ["count", "changes", "shown"]) ||
+		!count(n) ||
+		!count(changes) ||
+		!count(kept) ||
+		(n as number) > (kept as number) ||
+		(n as number) >= 1 !== (changes as number) >= 1 ||
+		!Array.isArray(shown) ||
+		shown.length > Math.min(10, n as number)
+	)
+		return false;
+	const after = (a: unknown, b: unknown) => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : 0);
+	const order = (a: unknown, b: unknown) =>
+		(of(b, "ahead") as number) - (of(a, "ahead") as number) ||
+		after(of(a, "lastAt"), of(b, "lastAt")) ||
+		Buffer.compare(Buffer.from(String(of(b, "lastAt") ?? "")), Buffer.from(String(of(a, "lastAt") ?? ""))) ||
+		after(of(a, "name"), of(b, "name")) ||
+		Buffer.compare(Buffer.from(String(of(a, "name") ?? "")), Buffer.from(String(of(b, "name") ?? "")));
+	return shown.every(
+		(line: unknown, index: number) =>
+			only(line, ["name", "ahead", "behind", "lastAt", "fits"]) &&
+			pathOk(of(line, "name")) &&
+			count(of(line, "ahead")) &&
+			(of(line, "ahead") as number) >= 1 &&
+			(of(line, "ahead") as number) <= (changes as number) &&
+			count(of(line, "behind")) &&
+			textOrNull(of(line, "lastAt"), AT) &&
+			(of(line, "fits") === null || typeof of(line, "fits") === "boolean") &&
+			(index === 0 || order(shown[index - 1], line) <= 0),
+	);
+}
+
 /** qorpera_code_import_look_valid, key by key. */
 function lookValid(look: unknown): boolean {
-	const of = (value: unknown, key: string): unknown => (isRecord(value) ? value[key] : undefined);
 	const pair = (value: unknown) =>
 		only(value, ["seen", "kept"]) && count(of(value, "seen")) && count(of(value, "kept"));
 	const refused = of(look, "refused"),
@@ -217,6 +257,7 @@ function lookValid(look: unknown): boolean {
 		shown = of(secrets, "shown"),
 		branch = of(look, "defaultBranch");
 	return (
+		(!isRecord(look) || !("lines" in look) || linesValid(look.lines, of(of(look, "branches"), "kept"))) &&
 		only(look, [
 			"schema",
 			"bytes",
@@ -228,6 +269,7 @@ function lookValid(look: unknown): boolean {
 			"authors30d",
 			"tags",
 			"branches",
+			"lines",
 			"leftOut",
 			"files",
 			"entries",
@@ -514,7 +556,7 @@ function kernel() {
 				if (k.registry.has(place)) return k.raise("55000", "A repository is kept at that place already");
 				const from = row.input.from as Record<string, unknown>;
 				const look = row.look as Record<string, unknown>;
-				const importedFrom = {
+				const importedFrom: Record<string, unknown> = {
 					...(from.github
 						? { kind: "github", repository: from.github, via: row.input.via }
 						: { kind: "file", name: String(from.file).replace(/^.*\//, ""), sha256: row.input.fileSha256 }),
@@ -522,6 +564,14 @@ function kernel() {
 					commit: mainSha,
 					commits: look.commits,
 				};
+				// The other lines of work when there are any, shown ones dropped from the end to keep the column's 2,048
+				// bytes (here its JSON text's); count and changes always stay.
+				const lines = look.lines as { count: number; changes: number; shown: unknown[] } | undefined;
+				if (lines && lines.count >= 1) {
+					importedFrom.lines = structuredClone(lines);
+					while (Buffer.byteLength(JSON.stringify(importedFrom)) > 2048)
+						(importedFrom.lines as { shown: unknown[] }).shown.pop();
+				}
 				k.registry.set(place, { mainSha, importedFrom });
 				k.changes.push({
 					place,
@@ -675,6 +725,8 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			authors30d: 1,
 			tags: { seen: 1, kept: 1 },
 			branches: { seen: 1, kept: 1 },
+			// feature is behind master alone: no other line of work, so the record keeps none.
+			lines: { count: 0, changes: 0, shown: [] },
 			fits: true,
 			why: null,
 			lfs: { pointers: 0 },
@@ -786,6 +838,68 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		).toBe(sha256);
 		// Nothing went to GitHub.
 		expect(w.gh.seen).toEqual([]);
+		quiet(w.events);
+	});
+
+	it("measures the other line of work a bundle brings, and the record keeps it with the repository", async () => {
+		const w = await world();
+		const work = await scratch("code-import-e2e-lines-");
+		const change = async (name: string, text: string) => {
+			await writeFile(join(work, name), text);
+			await git(work, "add", ".");
+			await git(work, "commit", "--quiet", "-m", name);
+		};
+		await git(work, "init", "--quiet", "--initial-branch=main");
+		await change("app.md", "app\n");
+		await git(work, "switch", "--quiet", "-c", "draft");
+		await change("a.md", "a\n");
+		await change("b.md", "b\n");
+		await git(work, "switch", "--quiet", "main");
+		await change("app.md", "app, again\n");
+		const main = await git(work, "rev-parse", "main"),
+			draft = await git(work, "rev-parse", "draft"),
+			time = Number(await git(work, "log", "-1", "--format=%ct", "draft"));
+		const path = "code/_incoming/lines/app.bundle";
+		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
+		await git(work, "bundle", "create", join(w.companyRoot, path), "--all");
+		const sha256 = createHash("sha256")
+			.update(await readFile(join(w.companyRoot, path)))
+			.digest("hex");
+		const row = w.k.ask("acme", "app", { file: path }, { fileSha256: sha256 });
+		await w.pass();
+		expect(w.k.raised).toEqual([]);
+		expect(row.outcome).toMatchObject({ state: "done", result: "imported", mainSha: main });
+		// draft holds two changes main lacks, and lacks one of main's.
+		const lines = {
+			count: 1,
+			changes: 2,
+			shown: [
+				{
+					name: "draft",
+					ahead: 2,
+					behind: 1,
+					lastAt: `${new Date(time * 1000).toISOString().slice(0, 19)}Z`,
+					fits: true,
+				},
+			],
+		};
+		expect((row.look as Record<string, unknown>).lines).toEqual(lines);
+		expect(w.k.registry.get("acme/app")?.importedFrom).toEqual({
+			kind: "file",
+			name: "app.bundle",
+			sha256,
+			branch: "main",
+			commit: main,
+			commits: 2,
+			lines,
+		});
+		expect(await w.refs("acme", "app")).toEqual(
+			[
+				`refs/heads/main ${main}`,
+				`refs/qorpera/imported/heads/draft ${draft}`,
+				`refs/qorpera/kept-here ${main}`,
+			].sort(),
+		);
 		quiet(w.events);
 	});
 

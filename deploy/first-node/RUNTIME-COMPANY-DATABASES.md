@@ -13,9 +13,8 @@ Contract: the 2026-11-13 amendment "company databases" (section 19). It is the a
 "interfaces project company state from the company folder", item 4, left open for the table store ("The store has its
 own amendment, which says where it runs"). This file is the technical design.
 
-**Status: proposed. Nothing is built or live.** Jonas said yes to a second PostgreSQL on the nodes (13 November);
-two decisions and the store's shape are open (§13), and no slice past the documents merges before them. The open
-points of the first draft are settled by proofs on a test machine (§11).
+**Status: decided, not live.** Jonas answered all three decisions on 13 November 2026 (§13). Nothing is on production
+or a node yet; the slices are built and proven on test machines (§11, §12).
 
 ## Words
 
@@ -145,19 +144,32 @@ node's budget for agents' machines.
 - Each company gets one PostgreSQL database, named `c_` and the 32 hex digits of its folder's id (the environment
   id the folder core keys by), made from a template. Each `data/<name>/` is one schema in it. Database names say
   nothing about whose they are: a login can list them.
-- Three roles per database folder, none of which can log in: an owner role owns the schema and runs its steps, a
-  write role runs its changes, a read role runs its questions. A question so reads its own database only; reading
-  another of the company's databases from it comes later, with a check that the caller may read both.
-- The gateway has one login per door: `qorpera_data_read`, `qorpera_data_write`, `qorpera_data_owner`. Each is a
-  member only of the company roles of its own kind and inherits nothing, so a read cannot become a write by any
-  statement (proven, §11). A fourth, `qorpera_data_watch`, reads sizes and ends statements. Making and dropping
-  company databases is a fifth, used for nothing else.
-- Connecting to a company's database is revoked from everyone and granted to those logins only.
+- Three roles per database folder, each a login of its own: an owner role owns the schema and runs its steps, a
+  write role runs its changes, a read role runs its questions. The gateway connects **as the folder's own role**, with
+  a password it derives from one key it holds and stores nowhere. A session's login is then a member of no other
+  role, so no statement can become another folder's role, another company's, or a stronger one of its own folder:
+  PostgreSQL checks `SET ROLE` against the session's login, and a shared login that is a member of many roles would
+  let a step switch to any of them. A question so reads its own database only; reading another of the company's
+  databases from it comes later, with a check that the caller may read both.
+- The gateway's own logins are three: `qorpera_data_admin` makes and drops company databases and folder roles and
+  is used for nothing else; `qorpera_data_keeper` keeps the gateway's records beside the rows and listens for
+  notices, and never runs a company's SQL; `qorpera_data_watch` reads sizes and ends statements.
+- Connecting to a company's database is revoked from everyone and granted to its folders' roles, the keeper and the
+  watcher only.
 - The template holds the schema `qorpera_data`: the trigger that says a table changed, the triggers that record what
-  a step destroys, and the event triggers that put both on every new table, whoever makes it.
+  a step destroys, and the event triggers that put both on every new table, whoever makes it. A table's owner can
+  switch a table's triggers off, so further event triggers, which no company role can touch, refuse a statement at
+  the moment it disables, drops, renames or replaces one of Qorpera's triggers: after such a statement every trigger
+  of Qorpera's on the table must still be there and be the same as on Qorpera's own model table (its function, when
+  it fires, its condition), switched on. A table that is not kept logged is refused too: its rows would be in no
+  backup.
 - A company's roles cannot read or write server files, run programs, add an extension, a C function, a database or a
   role, or change server settings (proven). Extensions come from a short list Qorpera installs when `database.toml`
   asks; none in the first slice.
+- A company's sessions leave nothing in the store's log: no statement, no error with its text or context, no lock
+  wait, also when the watcher ends one. The log is read by whoever runs the store, so it must hold no company's rows
+  or SQL. These are settings of the company's database that no company role can change; the gateway answers the
+  caller with PostgreSQL's message instead (the store kit's drill proves it on the real compose project).
 
 ### Limits per company
 
@@ -165,13 +177,13 @@ Defaults, in the gateway's configuration. They are starting values, not prices.
 
 | Limit | Value | Enforced by |
 | --- | --- | --- |
-| Connections | 8 a company database | PostgreSQL (`CONNECTION LIMIT`); the 9th is refused, other companies are not touched |
+| Connections | 12 a company database, and 1, 2 and 3 for a folder's owner, write and read role | PostgreSQL (`CONNECTION LIMIT`); one past it is refused, other companies are not touched |
 | A question from an interface | 2 s, 2,000 rows, 256 KiB | the gateway's transaction (`set local statement_timeout`), then the gateway |
 | A read by an agent | 15 s, 200 rows and 24 KiB a page | the same |
 | A change | 5 s | the same |
 | A step | 60 s, 5 s for a lock | the same |
-| Temp files | 256 MiB a statement | the role's `temp_file_limit`, which the role cannot lift |
-| Memory | `work_mem` 16 MiB, no parallel workers | role settings |
+| Temp files | 256 MiB a statement | the company database's `temp_file_limit`, which no company role can lift |
+| Memory | `work_mem` 16 MiB, no parallel workers | the company database's settings |
 | Size | 1 GiB a company | the watcher: agents are told at 80 %; at 100 % writes close and reads go on |
 | Calls | an app's bridge budget (120 a minute), and 50 statements a second a company | the web, then the gateway |
 
@@ -191,9 +203,10 @@ which ends what runs too long (proven).
 
 ## 3. The data gateway
 
-One small service of our own, `deploy/company-data/` (Node 24, `pg`, no other dependency), installed on both nodes by
-the node release like the other node services; node 1's answers, since the store's primary and the members' door are
-there. It listens on loopback. It is the only thing with a login to the store.
+One small service of our own, `deploy/company-data/gateway/` (Node 24, `pg`, no other dependency). It runs beside
+the store in the store's own machine, one compose project (`deploy/company-data/kit/`), as the app relay runs beside
+the platform's database: so the store's port is published to nothing but its standby, and the machine shows only the
+gateway. Node 1's mux sends `/v1/company-data/` to it. It is the only thing with a login to the store.
 
 Not PostgREST: a PostgREST serves one database, so each company would need its own process, 36 to 55 MiB and 3 held
 connections each, and it serves tables directly (§11, P1).
@@ -221,7 +234,8 @@ folder was put there by someone the folder let write it, and applying it only ma
 2. The text for the entry's hash, from the gateway's keep or from the caller (above). The gateway finds the `:name`
    parameters outside strings, quoted names, dollar quotes and comments, and sends the statement with numbered
    parameters through the extended protocol, so PostgreSQL refuses a second statement in the text.
-3. One transaction: `begin read only`, the time limit, the database's read role, the search path, the statement.
+3. One transaction on a connection logged in as the database folder's read role: `begin read only`, the time limit,
+   the search path, the statement.
 4. The answer: `{ columns, rows, more, asOf, etag }`. Rows are arrays in column order. Whole numbers and decimals a
    double holds exactly are JSON numbers, larger ones are text; booleans are booleans; JSON is JSON; times are ISO
    8601 text; everything else is text. `etag` is a hash of the answer.
@@ -231,13 +245,19 @@ only, as the read role.
 
 ### A step
 
-Steps are applied when `apply` is called for a database: by an agent's `data_apply` (§6), in order, by the owner
-role, one transaction each. The caller lists the step files with their hashes as the folder gave them; the gateway
+Steps are applied when `apply` is called for a database: by an agent's `data_apply` (§6), in order, on a connection
+logged in as the folder's owner role, one transaction each. A step runs inside a function, so it cannot end the
+transaction and go on outside it. The caller lists the step files with their hashes as the folder gave them; the gateway
 checks each entry as the caller and asks for the texts it does not hold.
 
-1. The step runs.
+1. The step runs. Then its deferred work runs at once (`set constraints all immediate`): a deferred trigger or
+   foreign key would otherwise run at commit, after the check.
 2. The triggers of `qorpera_data` have recorded what it destroyed: a dropped table, column or schema, deleted rows
-   with their count, an emptied table, also when the delete sits inside a function.
+   with their count, an emptied table, also when the delete sits inside a function. A column or table is recorded
+   whether the step named it or it went with something else: a column whose type or domain was dropped with
+   `cascade`, a table of a dropped schema. The gateway reads the record and **seals** the transaction in the same
+   call. The seal is one way: anything that destroys data after it, also at commit (a deferred trigger that queues
+   another), aborts the transaction, so nothing is destroyed that the check did not see.
 3. If it destroyed nothing, it commits and is recorded as applied, with its hash, in the company's own database in
    the same transaction.
 4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy. In
@@ -297,9 +317,12 @@ travel in one held call, at most 24 questions; a watch costs the app one call wh
 
 **Kits.** Wherever a kit's data file takes a number it may take a binding instead:
 `{"query": "shop/sales-this-month", "params": {"since": "2026-11-01"}, "column": "total"}`, where `params` and
-`column` are optional and the default is the first column of the first row. The engines resolve bindings through one
-shared helper that calls `watch` and tells the engine to redraw. The shape was proposed to the interfaces lead on
-13 November; the engines and what a kit's data may say are that lead's.
+`column` are optional and the default is the first column of the first row. As the proof's page did it: the bridge's
+`read` of a kit's data file gives the file with each binding replaced by its current number, and the page's
+`onChange` listeners are called with `{ data: true }` when a watched value changes, so an engine keeps reading its
+data file and redrawing, and knows nothing of questions; the one change in an engine is to redraw at once for such a
+change and not wait its ten seconds. Proposed to the interfaces lead on 13 November; the engines and what a kit's
+data may say are that lead's.
 
 Latency: the store and the gateway add about 3 ms from a commit to a new answer (§11, P2); the answer's way back
 through `api.qorpera.com` adds the rest (a request on that road took 139 to 354 ms on 4 November).
@@ -325,22 +348,40 @@ Every night Qorpera writes each database that changed since its last snapshot in
 data/shop/snapshot/
   snapshot.toml          when, each table's rows and files, how to load it back
   schema.sql             the shape as SQL
+  sequences.sql          where each sequence stood
   orders/0001.csv        rows in key order, cut at fixed key values, at most 16 MiB a part
   orders/0002.csv
   customers/0001.csv
 ```
 
-- A table is cut into parts at key values that stay fixed from night to night, so a usual day (new rows, edits among
-  the newest) changes a few parts: 3 % of the bytes for a 918 MiB database (§11, P4). A part past 32 MiB is cut in
-  two. A table without a primary key is written as one file of at most 64 MiB; a larger one is left out and its
-  owner agent is told to give it a key.
+- **Every table is written, whole.** A table with a primary key is cut into parts at key values that stay fixed from
+  night to night, so a usual day (new rows, edits among the newest) changes a few parts: 3 % of the bytes of an
+  834 MiB table (§11, P4). A part past 32 MiB is cut in two. A table without a primary key is cut by its rows'
+  place on disk; its parts are complete and may all change from night to night.
+- **One moment.** A database's whole snapshot, its shape, its sequences and every part, is read in one transaction
+  that sees one moment (`repeatable read`), however many rows are written meanwhile. Before that moment the
+  transaction takes a share lock on every table of the database and holds it to the end, because emptying a table or
+  rebuilding it is not held back by a moment alone: such a statement by anyone else waits until the snapshot is
+  written. Rows are written and changed freely meanwhile.
+- **Nothing waits for good.** The shape is read by `pg_dump` on the same moment, and `pg_dump` takes its own share
+  locks. A statement that queued for a table after the snapshot's lock stands ahead of them: it waits for the
+  snapshot, `pg_dump` waits for it, the snapshot waits for `pg_dump`, and PostgreSQL sees no deadlock in that. So the
+  shape is read first, before any part, and `pg_dump` waits 2 s for a lock at most. When it gives up, the snapshot
+  lets its tables go, the waiting statement goes through, and the snapshot starts again with a new moment; after 8
+  tries it gives up for the night and says so. The same restart happens when a table is made or dropped between
+  listing the tables and locking them.
+- **Sequences.** `sequences.sql` puts each sequence where it stood, read from the sequence itself (its last value
+  and whether that value was given out yet), so the first row made after loading gets a new number and not an old
+  one. A sequence is not part of the one moment (PostgreSQL gives its newest value), so it may
+  stand past the newest loaded row, never before it.
 - The worst day, edits spread evenly over all history, changes every part. The folder keeps every version of a file
   for good, so **old versions under `data/<name>/snapshot/` are pruned after 7 days**, the way old versions of git's
   objects are (`20260928569140_folder_git_expiry`). The newest snapshot is always a full copy.
 - The platform writes it as the platform, in commits of its own, and replaces whatever else is there.
 - The folder then holds everything: the files that define the database and its rows as of last night. A database made
-  from `schema.sql` and the parts alone holds the same rows (proven). The steps stay the truth for the shape.
-- Writing 839 MiB took 7 to 9 s on a test machine. A database at the 1 GiB limit is about 60 parts.
+  from `schema.sql`, the parts and `sequences.sql` alone holds the same rows and takes new rows (proven). The steps
+  stay the truth for the shape.
+- Writing 932 MiB took 4 to 5 s on a test machine. A database at the 1 GiB limit is about 60 parts.
 
 ## 8. Named changes and routines (slice 7)
 
@@ -374,14 +415,16 @@ Then Qorpera's own numbers on Qorpera.
 ## 11. Proofs
 
 On a test machine, 13 November 2026, each against a throwaway PostgreSQL 17.6 capped at 2 CPUs and 4 GiB. Scripts:
-`deploy/company-data/proof/`. Nothing touched production or a node.
+`deploy/company-data/proof/` (P1 to P4 here; the end-to-end run with the gateway's slice). Nothing touched production
+or a node.
 
 | | What | Result |
 | --- | --- | --- |
 | P1 | one gateway of our own against a PostgREST per company, 50 company databases | ours: a call p50 1.5 ms, p95 2.8 ms, 142 MiB for all 50, idle connections given back. PostgREST: p50 1.1 ms, 36 to 55 MiB and 3 held connections for each company |
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
-| P3 | limits and walls, 39 checks | all pass: no company reaches another's database, role or statements; connection, time and temp file limits hold; a read cannot write or become the owner; a step that destroys is held with what it destroys and lands after a yes |
-| P4 | the snapshot of a 918 MiB database | 839 MiB of parts in 7 to 9 s; a usual day changes 2 of 51 parts (3 %), the worst day all of them; loaded back from the files alone with the same rows in 12 s |
+| P3 | limits and walls, 135 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge`, inside a function and by a deferred trigger), an emptied table and a dropped column, table or schema (also a column that goes with its type or domain) are recorded, so the step is held, and it lands after a yes. A deferred trigger that queues a second one to delete after the check aborts the commit; a step whose deferred work only inserts lands |
+| P4 | the snapshot of a 1,020 MiB database, written to files and loaded back, 29 checks | 932 MiB in 60 parts in 7.1 s, one given-up lock wait and two restarts included (a quiet night: 4.5 s), while another connection committed 1,071 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw and what a second connection counted at that moment, each moved row in it once at its old key. The export holds its tables: a truncate, a rewrite and a drop by another session each waited until it was done, then completed, and the files hold those tables' rows as of the moment; a table made between the list and the locks makes the export start again. A truncate queued before the shape was read did not lock the export: `pg_dump` gave up its lock wait after 2.1 s, the export let go, the truncate went through 6 ms later, and the next try's snapshot holds that table empty. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. Every sequence gives next what the source gives next (after `setval` with and without `is_called`, never used, an identity's, one no column owns). A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 14 s |
+| E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 44 of 44 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
 
 ## 12. Build order
 
@@ -391,8 +434,8 @@ registry when a slice starts.
 | Slice | What | Migrations and tests | A release rolls |
 | --- | --- | --- | --- |
 | 1 | The amendment and this design | none | nothing |
-| 2 | The store: the machine pair, PostgreSQL, the template, roles, limits, backups, the standby | none; `deploy/company-data/store/` with its scripts and a proof that runs in `changed` | both nodes: enrolment, then the machines; a drill of the backup and the take-over |
-| 3 | The gateway for members: questions, apply, the held watch, limits, the watcher; the member gateway's route | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed`; function tests | the node release on both nodes, node 1's mux route, the edge function |
+| 2 | The store: the machine pair, PostgreSQL, the template, roles, limits, backups, the standby | none; `deploy/company-data/store/` and `deploy/company-data/kit/` with a drill of the backup, the restore and the take-over on a test machine | both nodes: enrolment, then the machines; the same drill there |
+| 3 | The gateway for members: questions, apply, the held watch, limits, the watcher; the member gateway's route | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed`; function tests | the kit on the store's machines, node 1's mux route, the edge function |
 | 4 | Interfaces: `query` and `watch` in the bridge, bindings in the kits | none; web tests | the web |
 | 5 | Agents: the run's data pass, `data_describe`, `data_apply`, `data_query`, their instructions; removal with the company | one migration (the pass, the tools' names in the observation list, the removal's call), one SQL test | the migration, a runtime bundle and image, the node release |
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
@@ -404,17 +447,17 @@ Slices 2 to 5 together are "live reads": a fresh company's agents make a databas
 live. Slice 6 follows at once, since the contract asks for the snapshot. Before slice 3 is cut, the whole path runs
 on a test machine first. Live reads change nothing in the platform's database but slice 5's one migration.
 
-## 13. Decisions (Jonas)
+## 13. Decisions (Jonas, 13 November 2026)
 
-1. **A second PostgreSQL on the nodes for companies' rows. Decided, 13 November 2026**: to "Put a second Postgres on
-   your nodes for companies' data?" Jonas answered "Yes, go".
-   - **Open: its shape.** Recommended: a small machine pair of its own (§2). Cost: no money; node 1's last free
-     infrastructure room and 2 CPUs of each node's machine budget. The other way, a second server inside the platform
-     database's machine, costs no budget and shares that machine's disk and failover.
-2. **Open: agents create and change databases themselves; only what destroys data waits for a member** (§4).
-   Recommended.
-3. **Open: interfaces and the public reach rows only through named questions and changes kept as files; agents may
-   ask any read** (§4). Recommended.
+1. **A second PostgreSQL on the nodes for companies' rows.** To "Put a second Postgres on your nodes for companies'
+   data?" he answered "Yes, go". Its shape, put to him with its cost (no money; node 1's last free infrastructure
+   room and 2 CPUs of each node's machine budget): **a small machine pair of its own** (§2), not a second server
+   inside the platform database's machine.
+2. **Agents create and change databases themselves; only what destroys data waits for a member** (§4).
+3. **Interfaces and the public reach rows only through named questions and changes kept as files; agents may ask any
+   read** (§4).
+
+To 2, 3 and the shape in 1, each put with a recommendation of yes, he answered: "Yes, all three".
 
 ## 14. Not in this design
 

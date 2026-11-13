@@ -285,6 +285,14 @@ describe("public member Company File gateway", () => {
 			413,
 		],
 		["a machine start of one id", request(`/v1/member-machine-screens/${id}/start`, { method: "POST", body: "{}" }), 404],
+		["a pointer read", request(`/v1/member-machine-screens/${id}/${id}/pointer`), 405],
+		[
+			"a pointer past 256 bytes",
+			request(`/v1/member-machine-screens/${id}/${id}/pointer`, { method: "POST", body: "x".repeat(257) }),
+			413,
+		],
+		["a pointer of one id", request(`/v1/member-machine-screens/${id}/pointer`, { method: "POST", body: "{}" }), 404],
+		["a pointer with a tail", request(`/v1/member-machine-screens/${id}/${id}/pointer/1`, { method: "POST", body: "{}" }), 404],
 		...(["query", "watch", "apply", "describe"] as const).flatMap((verb) => {
 			const path = `/v1/company-data/${id}/${verb}`;
 			return [
@@ -673,6 +681,64 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(stranger.status, 401);
 		assert.equal(seen.length, 1);
+	});
+	it("forwards a member's pointer pass and moves up to 256 bytes without asking the auth service, and keeps its preflight 10 minutes (20260930744000)", async () => {
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent} ${new TextDecoder().decode(init?.body as Uint8Array)}`);
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		};
+		let asked = 0;
+		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
+		const move = JSON.stringify({ pass: id, x: 812, y: 443 });
+		const done = await forwardMemberCompanyGateway(
+			request(path, { method: "POST", body: move, headers: { "content-type": "application/json", cookie: "a=b" } }),
+			{
+				upstreamUrl,
+				fetchImplementation,
+				memberSignedIn: async () => {
+					asked++;
+					return true;
+				},
+			},
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-pointer/v1", moved: true });
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer member.jwt.token content-length=${move.length} content-type=application/json ${move}`,
+		]);
+		// The auth service is never asked for a move: the executor checks the token against the pass.
+		assert.equal(asked, 0);
+		// 256 bytes pass; the preflight is kept 10 minutes and names the route's own method and headers.
+		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256) }), { upstreamUrl, fetchImplementation });
+		assert.equal(largest.status, 200);
+		const preflight = await forward(
+			request(path, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "POST",
+					"access-control-request-headers": "authorization,content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+		assert.equal(preflight.headers.get("access-control-max-age"), "600");
+		// No other route's preflight is kept.
+		const act = await forward(
+			request(`/v1/member-machine-screens/${id}/${id}/act`, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "POST",
+					"access-control-request-headers": "authorization,content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(act.headers.get("access-control-max-age"), null);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);

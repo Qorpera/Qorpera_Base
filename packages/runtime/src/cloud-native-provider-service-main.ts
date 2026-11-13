@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
+import { CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
 	parseCompanyComputerNativeRoute,
@@ -459,6 +460,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		const codingControl = codingConfiguration
 			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: publishableKey, fetch: dispatch.fetch })
 			: undefined;
+		// What the executor said it takes for a page of a command's log (keyholes S1), learned from each of its answers
+		// to this host's coding and machine commands alike.
+		const commandPages = new CloudCommandPages();
 		const coding =
 			codingConfiguration && codingToken && codingControl
 				? new CloudNativeCodingRuntime({
@@ -479,6 +483,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								// The executor re-authorizes every command against the turn in SQL; the
 								// runner's own check is the continuous turn authority.
 								authorize: async () => {},
+								pages: commandPages,
 							}),
 						command: runtimeConfiguration.command,
 						binarySha256: runtimeConfiguration.binarySha256,
@@ -517,6 +522,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								token: codingToken,
 								binding,
 								holder,
+								pages: commandPages,
 							}),
 					}
 				: {}),

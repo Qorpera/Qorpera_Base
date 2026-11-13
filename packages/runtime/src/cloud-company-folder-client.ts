@@ -105,7 +105,8 @@ const CODE_IMPORT_REASONS = [
 	"file_missing",
 	"deleting",
 ] as const;
-const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside", "build", "open", "tidy"] as const;
+/** The steps an import's progress names (part C1's): no executor ever wrote a `tidy` step, and C1 refuses one. */
+const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside", "build", "open"] as const;
 const CODE_IMPORT_RESULTS = ["imported", "looked"] as const;
 /** A code the executor refuses an import with, as the kernel keeps it. */
 const CODE_IMPORT_CODE = /^(IMPORT|CODE_HOST)_[A-Z0-9_]{1,100}$/;
@@ -443,7 +444,7 @@ export interface CloudCompanyCodeRequest {
 /** Where an import takes the code from: a GitHub project as `Owner/Name`, or a git bundle in the company folder
  * (code/_incoming/<folder>/<name>.bundle) with, when its main branch is not clear, the branch to take. */
 export type CloudCompanyCodeImportSource =
-	| { readonly github: string }
+	| { readonly github: string; readonly branch?: string }
 	| { readonly file: string; readonly branch?: string };
 
 /** What became of an agent's ask to bring code in (`qorpera_folder_request_code_import`): the request the coding
@@ -491,6 +492,21 @@ export interface CloudCompanyCodeImportLook {
 	};
 	readonly fits: boolean;
 	readonly why: string | null;
+	/** The kept branches with work main lacks (the import's follow-ups, 20260930741000): how many, the distinct changes
+	 * among them, and at most 10 of them, most changes first. A name the look would not show is null; `fits` is whether
+	 * the company folder can hold its files, null when not measured. Absent in a look from before, or when the measure
+	 * failed. */
+	readonly lines?: {
+		readonly count: number;
+		readonly changes: number;
+		readonly shown: readonly {
+			readonly name: string | null;
+			readonly ahead: number;
+			readonly behind: number;
+			readonly lastAt: string | null;
+			readonly fits: boolean | null;
+		}[];
+	};
 }
 
 /** How an import of the run's company stands (`qorpera_folder_code_import`): the place it brings the code to, the step it
@@ -506,6 +522,10 @@ export interface CloudCompanyCodeImport {
 	readonly result: (typeof CODE_IMPORT_RESULTS)[number] | null;
 	readonly change: number | null;
 	readonly code: string | null;
+	/** The bundle a file import read, once it is in (20260930741000): its path, and the folder entry's version while
+	 * the file there is still that bundle, else null. null for GitHub code and before the end; absent from older SQL. The
+	 * version is the folder's own (a UUID): what company_read reports and company_delete takes as expectedVersion. */
+	readonly file?: { readonly path: string; readonly version: string | null } | null;
 }
 
 /** A change's description as saved (`qorpera_folder_describe_code_change`): what the change now holds, or why the
@@ -889,36 +909,77 @@ function lookTime(value: unknown): string | null {
 	return value as string | null;
 }
 
+/** The look's other lines of work (20260930741000), by part C1's rules: at most `kept` of them, distinct changes exactly
+ * when there is one, at most 10 shown and never more than there are, each with at least one change main lacks and no
+ * more than all of them. */
+function importLines(value: unknown, kept: number): NonNullable<CloudCompanyCodeImportLook["lines"]> {
+	const lines = record(value, ["count", "changes", "shown"]);
+	const count = counter(lines.count);
+	const changes = counter(lines.changes);
+	if (
+		count > kept ||
+		changes >= 1 !== count >= 1 ||
+		!Array.isArray(lines.shown) ||
+		lines.shown.length > Math.min(10, count)
+	)
+		invalid();
+	const shown = lines.shown.map((item) => {
+		const line = record(item, ["name", "ahead", "behind", "lastAt", "fits"]);
+		const ahead = counter(line.ahead);
+		if (
+			!nullableString(line.name) ||
+			ahead < 1 ||
+			ahead > changes ||
+			(line.fits !== null && typeof line.fits !== "boolean")
+		)
+			invalid();
+		return {
+			name: line.name,
+			ahead,
+			behind: counter(line.behind),
+			lastAt: lookTime(line.lastAt),
+			fits: line.fits as boolean | null,
+		};
+	});
+	return { count, changes, shown };
+}
+
 /** An import's look (`qorpera.code-import-look/v1`, 20260930736000), checked key by key as part C1's `codeImportLookOf`
  * reads it: at most 10 refused paths and 30 key-like strings, each path a string or null, and `fits` exactly when
- * nothing stops it. */
+ * nothing stops it. `lines` is optional: a look from before 20260930741000 has none. */
 function importLook(value: unknown): CloudCompanyCodeImportLook {
-	const look = record(value, [
-		"schema",
-		"bytes",
-		"defaultBranch",
-		"mainSha",
-		"commits",
-		"firstAt",
-		"lastAt",
-		"authors30d",
-		"tags",
-		"branches",
-		"leftOut",
-		"files",
-		"entries",
-		"biggest",
-		"lfs",
-		"submodules",
-		"refused",
-		"secrets",
-		"fits",
-		"why",
-	]);
+	const look = record(
+		value,
+		[
+			"schema",
+			"bytes",
+			"defaultBranch",
+			"mainSha",
+			"commits",
+			"firstAt",
+			"lastAt",
+			"authors30d",
+			"tags",
+			"branches",
+			"leftOut",
+			"files",
+			"entries",
+			"biggest",
+			"lfs",
+			"submodules",
+			"refused",
+			"secrets",
+			"fits",
+			"why",
+		],
+		["lines"],
+	);
 	const pair = (part: unknown) => {
 		const counts = record(part, ["seen", "kept"]);
 		return { seen: counter(counts.seen), kept: counter(counts.kept) };
 	};
+	const branches = pair(look.branches);
+	const lines = Object.hasOwn(look, "lines") ? importLines(look.lines, branches.kept) : undefined;
 	const biggest = record(look.biggest, ["path", "bytes"]);
 	const refused = record(look.refused, ["code", "paths", "more"]);
 	const secrets = record(look.secrets, ["found", "shown", "scan"]);
@@ -957,7 +1018,7 @@ function importLook(value: unknown): CloudCompanyCodeImportLook {
 		lastAt: lookTime(look.lastAt),
 		authors30d: counter(look.authors30d),
 		tags: pair(look.tags),
-		branches: pair(look.branches),
+		branches,
 		leftOut: counter(look.leftOut),
 		files: counter(look.files),
 		entries: counter(look.entries),
@@ -976,6 +1037,7 @@ function importLook(value: unknown): CloudCompanyCodeImportLook {
 		},
 		fits: look.why === null,
 		why: look.why as string | null,
+		...(lines === undefined ? {} : { lines }),
 	};
 }
 
@@ -1847,8 +1909,9 @@ export class CloudCompanyFolderClient {
 
 	/** Asks for existing code to be brought in as a new repository kept in Qorpera, at code/<owner>/<name>/
 	 * (`qorpera_folder_request_code_import`, 20260930736000): from a GitHub project or a git bundle in the company folder,
-	 * with `look` only read. The coding executor serves the request; `codeImport` says how it stands. The same code
-	 * asked again for the same place is answered with the request that has it. */
+	 * either with the branch to bring in as main when it is not the source's own, with `look` only read. The coding
+	 * executor serves the request; `codeImport` says how it stands. The same code asked again for the same place is
+	 * answered with the request that has it. */
 	async requestCodeImport(
 		request: {
 			readonly operationKey: string;
@@ -1860,16 +1923,14 @@ export class CloudCompanyFolderClient {
 		signal: AbortSignal,
 	): Promise<CloudCompanyCodeImportAsked> {
 		const from = request.from;
+		const branch = from.branch === undefined ? {} : { branch: from.branch };
 		return this.#codeEffect(
 			"qorpera_folder_request_code_import",
 			{
 				operationKey: request.operationKey,
 				owner: request.owner,
 				name: request.name,
-				from:
-					"github" in from
-						? { github: from.github }
-						: { file: from.file, ...(from.branch === undefined ? {} : { branch: from.branch }) },
+				from: "github" in from ? { github: from.github, ...branch } : { file: from.file, ...branch },
 				look: request.look,
 			},
 			signal,
@@ -1889,7 +1950,8 @@ export class CloudCompanyFolderClient {
 	}
 
 	/** How an import of the run's company stands (`qorpera_folder_code_import`, 20260930736000): a read, with no
-	 * receipt. A request that is not this company's import is SQL's P0002. A result comes only with `done`. */
+	 * receipt. A request that is not this company's import is SQL's P0002. A result comes only with `done`. The twelfth
+	 * key, `file` (20260930741000), is optional: SQL from before it answers eleven. */
 	async codeImport(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeImport> {
 		const input = record(
 			await this.#once(
@@ -1898,7 +1960,20 @@ export class CloudCompanyFolderClient {
 				signal,
 			),
 			["schema", "requestId", "owner", "name", "state", "step", "waiting", "look", "result", "change", "code"],
+			["file"],
 		);
+		let file: CloudCompanyCodeImport["file"];
+		if (input.file === null) file = null;
+		else if (Object.hasOwn(input, "file")) {
+			const bundle = record(input.file, ["path", "version"]);
+			if (
+				typeof bundle.path !== "string" ||
+				bundle.path === "" ||
+				(bundle.version !== null && (typeof bundle.version !== "string" || !UUID.test(bundle.version)))
+			)
+				invalid();
+			file = { path: bundle.path as string, version: bundle.version as string | null };
+		}
 		const state = CODE_REQUEST_STATES.find((known) => known === input.state);
 		const step = input.step === null ? null : CODE_IMPORT_STEPS.find((known) => known === input.step);
 		const result = input.result === null ? null : CODE_IMPORT_RESULTS.find((known) => known === input.result);
@@ -1927,6 +2002,7 @@ export class CloudCompanyFolderClient {
 			result,
 			change: input.change as number | null,
 			code: input.code,
+			...(file === undefined ? {} : { file }),
 		};
 	}
 
