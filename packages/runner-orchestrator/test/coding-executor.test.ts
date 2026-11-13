@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
+	CODING_LAND_FILE_TOO_LARGE,
+	CODING_LAND_NAMES_REFUSED,
 	CODING_LANDING_STEP,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
@@ -590,8 +592,23 @@ describe("the coding executor over a session turn", () => {
 		const w = world();
 		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
 		expect(summary).toBe(
-			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again. [code=CODING_LAND_FILE_TOO_LARGE]',
 		);
+		// A refusal for the files' names or size ends with a code of its own, which the kernel keeps as the turn's reason
+		// (migration 20260930743000) and a member's page reads; every other refusal ends with no code, as before.
+		expect(CODING_LAND_NAMES_REFUSED).toBe("CODING_LAND_NAMES_REFUSED");
+		expect(CODING_LAND_FILE_TOO_LARGE).toBe("CODING_LAND_FILE_TOO_LARGE");
+		for (const code of [
+			"CODE_HOST_NAMES_FOLDER_REFUSES",
+			"CODE_HOST_NAMES_NOT_UTF8",
+			"CODE_HOST_NAMES_NOT_NFC",
+			"CODE_HOST_NAMES_DIFFER_BY_CASE",
+		])
+			expect(landRefusal("main", code, ["bad."]), code).toMatch(
+				/ finish again\. \[code=CODING_LAND_NAMES_REFUSED\]$/,
+			);
+		for (const code of ["CODE_HOST_AREA_FROM_GITHUB", "CODE_HOST_EXPORT_MOVED", "CODE_HOST_REF_UNREADABLE"])
+			expect(landRefusal("main", code, []), code).not.toContain("[code=");
 		// A storage that is not as Qorpera left it is never a "finish again"; a code this does not know has no words.
 		expect(landRefusal("main", "CODE_HOST_AREA_FROM_GITHUB", ["code/acme/web"])).toMatch(
 			/^The change was not landed, and nothing changed on main: the repository's own storage .+ Finishing again will not help\./,
@@ -613,20 +630,22 @@ describe("the coding executor over a session turn", () => {
 			landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])!,
 		]) {
 			expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4000);
-			expect(text).toMatch(/(commit and finish again\.|Take them out, commit and finish again\.)$/);
+			expect(text).toMatch(
+				/(commit and finish again\.|Take them out, commit and finish again\.)( \[code=CODING_LAND_[A-Z_]+\])?$/,
+			);
 		}
 		expect(landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)).toContain(
-			" more. Rename them, commit and finish again.",
+			" more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",
 		);
 		expect(landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])).toContain(
 			": 1 path too long to name here. Take them out",
 		);
 		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes): "bad.", "x " and 1 more. Rename them, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
-			": 1 path not named here. Rename them, commit and finish again.",
+			": 1 path not named here. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",
 		);
 		// Any summary is cut by bytes, whole characters only.
 		expect(withinBytes("abc", 4000)).toBe("abc");
