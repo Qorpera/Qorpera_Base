@@ -26,10 +26,26 @@
 --      node only when no other enabled executor serves the harness.
 --    Sticky choices are untouched: a warm conversation's node, a machine that wakes on its own node, a member's coding
 --    machine, storage or turn, a sign-in routed to its node.
+--    A run's claim is held too (review r1 F1): ranking the placement is not enough, because a claim reaches the node
+--    around the chooser. qorpera_runtime_claim_turn answers true at once for an orchestrator with no dispatch role (how
+--    both nodes run today), after 1.5 seconds for a fast host and after 10 seconds for an overflow host, and a run
+--    claimed with a dispatch role records the claim turn's node instead of asking the chooser. The guard therefore sits
+--    at the top of the claim turn, so every path passes it: an orchestrator whose nodes are all last resort claims a run
+--    only when no node that is not a last resort could take it right now. The three cases that mean exactly that still
+--    pass: the run's own placement names this node (a warm conversation, or the only node left), another orchestrator's
+--    admission refusal (a full or retiring sandbox, the case the overflow role answers), and no regular node that is
+--    eligible, fits, takes the run's bundle and may hold the run's identity -- the node where this run's last start
+--    failed is never such a node, so the failed-start rule still prefers a healthy last-resort node over it.
 -- 4. The pull path (qorpera_admit_executor_machines): a last-resort node's executor admits a waiting machine, or gives up
 --    a stopped machine's disk for one, only when no node that is not a last resort could fit it now
 --    (qorpera_company_machine_candidates, the push path's own test, with the machine's own disk given back). One asleep on
 --    the last-resort node still wakes there. No timer.
+--    qorpera_company_machine_candidates also starts asking what the node's observation reports about its hardware
+--    (review r1 F2), as the run and sign-in candidates, the coding executor's pick and admission itself
+--    (NODE_HARDWARE_CHANGED) all do. Without it a node reporting fewer CPUs or less memory than its policy says stayed a
+--    candidate while every admission there was refused, so the push path offered a machine to a node that could not take
+--    it, and the new pull guard above would have read that node as proof that a regular node could take a waiting
+--    machine -- holding it off the last-resort node for as long as the hardware stayed down.
 --
 -- Who may call: the setter is the service role's (revoked from anon and authenticated by name); the patched functions
 -- keep their grants. Locks: the nodes table gains a column with a constant default (no rewrite) under a short
@@ -148,6 +164,44 @@ select pg_temp.node_last_resort_patch(
 		|| E'\t\tcoalesce((select last_resort_node.last_resort from public.qorpera_runtime_nodes last_resort_node\n'
 		|| E'\t\t\twhere last_resort_node.id = nodes.node_id), false),\n', '1']);
 
+-- The claim path itself (review r1 F1): every answer of the claim turn passes this guard first.
+select pg_temp.node_last_resort_patch(
+	'public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure, array[
+	$claim_old$	if v_role is null then return true; end if;
+$claim_old$,
+	$claim_new$	-- A last-resort node (20260930749000) claims a run only when no node that is not a last resort could take it right
+	-- now. This sits before every answer below, because each one reaches the node around the chooser: no dispatch role
+	-- answers true at once, a fast host after 1.5 seconds, an overflow host after 10 seconds, and a run claimed with a
+	-- role records the claim turn's node instead of asking the chooser. An adapter whose nodes are not all last resort
+	-- is not a last-resort host (the bundle declaration refuses an adapter that serves two nodes anyway).
+	if exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
+			join public.qorpera_runtime_nodes spare on spare.id = mine.node_id where spare.last_resort)
+		and not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
+			join public.qorpera_runtime_nodes spare on spare.id = mine.node_id where not spare.last_resort) then
+		v_placement := public.qorpera_runtime_run_placement(p_job, p_run);
+		-- Three cases mean no other node can take it, and each still passes: the run's own placement names this node (a
+		-- warm conversation, or the only node left once the failed node and the regular nodes are passed over); another
+		-- orchestrator refused the run's admission (a full or retiring sandbox, the case the overflow role answers), and
+		-- this one has not refused it itself recently; and no node that is not a last resort is eligible, fits, takes the
+		-- run's bundle and may hold the run's identity. The node where this run's last start failed is never such a node,
+		-- so the failed-start rule still prefers a healthy last-resort node over it.
+		if not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
+				where mine.node_id = (v_placement ->> 'nodeId')::uuid)
+			and not (v_error like 'ADMISSION_REFUSED:%' and p_job.dispatch_refused_by is distinct from p_orchestrator_id
+				and not public.qorpera_runtime_refused_recently(p_job.run_id, p_orchestrator_id))
+			and exists (select 1 from jsonb_array_elements(public.qorpera_runtime_node_placement_candidates('native')) regular
+				where (regular ->> 'eligible')::boolean and (regular ->> 'fits')::boolean
+					and not coalesce((regular ->> 'lastResort')::boolean, false)
+					and (regular ->> 'nodeId')::uuid is distinct from (select failure.node_id
+						from public.qorpera_runtime_run_start_failures failure where failure.run_id = p_run.id)
+					and public.qorpera_runtime_adapter_takes_bundle(regular ->> 'providerId', p_run.runtime_bundle_sha256)
+					and public.qorpera_runtime_run_adapter_allowed(p_run, regular ->> 'providerId')) then
+			return false;
+		end if;
+	end if;
+	if v_role is null then return true; end if;
+$claim_new$, '1']);
+
 select pg_temp.node_last_resort_patch('public.qorpera_place_runtime_office_fleet(jsonb,bigint)'::regprocedure, array[
 	$o$  order by (rank.value->>'freeSlots')::bigint desc,$o$,
 	E'  -- A last-resort node (20260930749000) ranks below every other node that is eligible and fits.\n'
@@ -157,7 +211,15 @@ select pg_temp.node_last_resort_patch(
 	'public.qorpera_company_machine_candidates(bigint,bigint,bigint,text,uuid)'::regprocedure, array[
 	E'\torder by node.memory_bytes - node.headroom_memory_bytes - used.memory desc,',
 	E'\t-- A last-resort node (20260930749000) ranks below every other node that fits.\n'
-		|| E'\torder by node.last_resort, node.memory_bytes - node.headroom_memory_bytes - used.memory desc,', '1']);
+		|| E'\torder by node.last_resort, node.memory_bytes - node.headroom_memory_bytes - used.memory desc,', '1',
+	-- The hardware the node's observation reports, as every other chooser and admission itself ask for it. The lines go
+	-- after the agent exit's, so deploy/agent-exit/undo-20260930089100.sql still finds its own text whole.
+	E'\t\tand public.qorpera_runtime_node_agent_exit_ready(node.id)\n',
+	E'\t\tand public.qorpera_runtime_node_agent_exit_ready(node.id)\n'
+		|| E'\t\t-- The node reports the hardware its policy counts on (20260930749000); admission refuses the rest as\n'
+		|| E'\t\t-- NODE_HARDWARE_CHANGED, so without this a node that cannot take a machine stayed a candidate for it.\n'
+		|| E'\t\tand (observation.observation ->> ''cpuMillis'')::bigint >= node.cpu_millis\n'
+		|| E'\t\tand (observation.observation ->> ''memoryBytes'')::bigint >= node.memory_bytes\n', '1']);
 
 select pg_temp.node_last_resort_patch('public.qorpera_coding_executor_pick(uuid)'::regprocedure, array[
 	E'\torder by least((public.qorpera_runtime_node_cpu_budget(node) - used.cpu) / provider.cpu_millis,',

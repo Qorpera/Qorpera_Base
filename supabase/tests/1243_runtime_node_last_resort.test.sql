@@ -11,6 +11,8 @@
 -- regular executor is enabled". Nodes,
 -- providers, observations, reservations and every chooser are the real functions; the machines, the coding executors,
 -- worker and session, the second company and a run's start failure are rows written as the fixtures elsewhere write them.
+-- Review r1: section 4b drives real claims through every bypass of the claim turn (F1), and section 6 proves that a
+-- regular node reporting less hardware than its policy counts on is no candidate, so the spare still admits work (F2).
 reset role;
 select pg_temp.base_claims('service_role');
 
@@ -38,19 +40,22 @@ create function pg_temp.lr_machine_policy(p_node text) returns jsonb language sq
 		'project','machines','imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0')
 $$;
 -- A fresh ready observation whose inventory reports exactly the node's reserved machines (628's mc_observe).
-create function pg_temp.lr_observe(p_node text) returns void language plpgsql as $$
+create function pg_temp.lr_observe_at(p_node text, p_cpu bigint, p_memory bigint) returns void language plpgsql as $$
 declare v_context jsonb := public.qorpera_runtime_node_inventory_context(pg_temp.lr_id(p_node));
 begin
 	perform public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
 		'nodeId',pg_temp.lr_id(p_node),'machineIdSha256',pg_temp.lr_sha(p_node),'observationId',extensions.gen_random_uuid(),
 		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-		'cpuMillis',pg_temp.lr_cpu(p_node),'memoryBytes',pg_temp.lr_memory(p_node),'state','ready'),v_context ->> 'contextSha256',
+		'cpuMillis',p_cpu,'memoryBytes',p_memory,'state','ready'),v_context ->> 'contextSha256',
 		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries',
 			coalesce((select jsonb_agg(jsonb_build_object('project','machines','name','m-' || replace(a ->> 'allocationId','-',''),
 				'physicalId',a ->> 'allocationId','type','virtual-machine','state','running','configurationSha256',repeat('7',64),
 				'cpuMillis',(a ->> 'cpuMillis')::bigint,'memoryBytes',(a ->> 'memoryBytes')::bigint,'allocation',a,'category','managed','reason',null))
 				from jsonb_array_elements(v_context -> 'allocations') a),'[]'::jsonb)));
 end $$;
+create function pg_temp.lr_observe(p_node text) returns void language sql as $$
+	select pg_temp.lr_observe_at(p_node, pg_temp.lr_cpu(p_node), pg_temp.lr_memory(p_node))
+$$;
 create function pg_temp.lr_observe_all() returns void language sql as $$
 	select pg_temp.lr_observe('a'); select pg_temp.lr_observe('b'); select pg_temp.lr_observe('c');
 $$;
@@ -105,6 +110,39 @@ create function pg_temp.lr_routes() returns uuid[] language sql as $$
 	select array[(public.qorpera_runtime_login_gateway_choose(null::text) ->> 'nodeId')::uuid,
 		(public.qorpera_runtime_account_refresh_gateway_choose(null::text) ->> 'nodeId')::uuid,
 		(public.qorpera_runtime_login_gateway_choose() ->> 'nodeId')::uuid]
+$$;
+create function pg_temp.lr_orchestrator(p_node text) returns uuid language sql immutable as $$
+	select ('12430000-0000-4000-8000-0000000005a' || p_node)::uuid
+$$;
+-- The owner's post in an agent's thread, turned into a queued run by the materializer (924's helpers).
+create function pg_temp.lr_run(p_staff uuid) returns uuid language plpgsql as $$
+declare v_pass jsonb;
+begin
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', p_staff, 'Which node takes this?');
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,
+		'The post is one queued run: ' || v_pass::text);
+	perform pg_temp.base_claims('service_role');
+	return (v_pass -> 'run_ids' ->> 0)::uuid;
+end $$;
+-- A real claim by one node's orchestrator: the run it took, or nothing.
+create function pg_temp.lr_claim(p_node text) returns text language plpgsql as $$
+declare v_work jsonb := public.qorpera_claim_runner_job_for_orchestrator(pg_temp.lr_orchestrator(p_node),
+	extensions.gen_random_uuid(), 120);
+begin
+	return case when v_work = 'null'::jsonb then 'nothing' else coalesce(v_work #>> '{work,run_id}', v_work::text) end;
+end $$;
+-- The job waited past the claim turn's 1.5 seconds; and: another node's orchestrator refused its admission.
+create function pg_temp.lr_age_job(p_run uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set queued_at = clock_timestamp() - interval '5 seconds' where run_id = p_run
+$$;
+create function pg_temp.lr_refused_by(p_run uuid, p_node text) returns void language sql as $$
+	update public.qorpera_runner_jobs set last_error = 'ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED',
+		dispatch_refused_by = pg_temp.lr_orchestrator(p_node) where run_id = p_run
+$$;
+create function pg_temp.lr_roles(p_role text) returns void language sql as $$
+	select public.qorpera_set_runner_orchestrator_dispatch_role(pg_temp.lr_orchestrator(n), p_role)
+	from unnest(array['a', 'b', 'c']) n
 $$;
 -- Where a run with orchestrator roles goes: a run of its own (no conversation, identity or bundle).
 create function pg_temp.lr_run_node() returns uuid language sql as $$
@@ -296,6 +334,71 @@ set local session_replication_role = origin;
 select pg_temp.base_assert(pg_temp.lr_run_node() = pg_temp.lr_id('c'), '(iv) The run''s start failed on node A: node C, not A again');
 rollback to savepoint fast_failed;
 
+-- 4b. The claim itself (review r1 F1): a last-resort node's orchestrator claims a run only when no regular node could
+--     take it, through every bypass of the claim turn. With dispatch roles, run placement does not look at room (it
+--     ranks live fast hosts), so a full regular node is still preferred and refuses the start; the spare comes in
+--     through that refusal, which is why the refusal must pass the guard. The no-role path, which is how both nodes run
+--     today, asks the chooser instead, so there the spare comes in as soon as no regular node fits.
+select set_config('qorpera_test.lr_run', pg_temp.lr_run('92400000-0000-4000-8000-000000000031')::text, true);
+select pg_temp.lr_observe_all();
+select pg_temp.base_assert((select count(*) = 1 from public.qorpera_runner_jobs where status = 'queued'
+		and run_id = current_setting('qorpera_test.lr_run')::uuid)
+	and (select count(*) = 1 from public.qorpera_runner_jobs where status = 'queued'),
+	'The new run is the only queued job');
+savepoint claim_fresh;
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node C''s fast host claims nothing while node A has room');
+select pg_temp.lr_expect(pg_temp.lr_claim('a'), current_setting('qorpera_test.lr_run'), '(i) Node A''s fast host claims the run');
+rollback to savepoint claim_fresh;
+-- The claim turn lets any fast host take a run that waited 1.5 seconds; the guard holds node C back anyway.
+savepoint claim_waited;
+select pg_temp.lr_age_job(current_setting('qorpera_test.lr_run')::uuid);
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node C claims nothing after the 1.5 s wait either');
+select pg_temp.lr_expect(pg_temp.lr_claim('a'), current_setting('qorpera_test.lr_run'), 'Node A still claims it');
+rollback to savepoint claim_waited;
+-- A fast host's refused admission is the "no room" case: it still lets node C in (the overflow rule, kept).
+savepoint claim_refused;
+select pg_temp.lr_refused_by(current_setting('qorpera_test.lr_run')::uuid, 'a');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(ii) Node A refused the run''s admission: node C claims it');
+rollback to savepoint claim_refused;
+savepoint claim_waited_flag_off;
+select pg_temp.lr_age_job(current_setting('qorpera_test.lr_run')::uuid);
+select pg_temp.lr_spare(false) \g /dev/null
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(iii) Flag off: node C claims the waiting run, as today');
+rollback to savepoint claim_waited_flag_off;
+-- No dispatch role, as both nodes run today: the claim turn says yes at once, and the guard asks the chooser instead.
+savepoint claim_no_role;
+select pg_temp.lr_roles(null) \g /dev/null
+select pg_temp.lr_observe_all();
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) No role: node C claims nothing while node A has room');
+select pg_temp.lr_expect(pg_temp.lr_claim('a'), current_setting('qorpera_test.lr_run'), '(i) No role: node A claims the run');
+rollback to savepoint claim_no_role;
+savepoint claim_no_role_flag_off;
+select pg_temp.lr_roles(null) \g /dev/null
+select pg_temp.lr_spare(false) \g /dev/null
+select pg_temp.lr_observe_all();
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'), '(iii) No role, flag off: node C claims it, as today');
+rollback to savepoint claim_no_role_flag_off;
+savepoint claim_no_role_full;
+select pg_temp.lr_roles(null) \g /dev/null
+select pg_temp.lr_fill('a');
+select pg_temp.lr_fill('b');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(ii) No role, nodes A and B full: node C claims it');
+rollback to savepoint claim_no_role_full;
+savepoint claim_no_role_failed;
+select pg_temp.lr_roles(null) \g /dev/null
+select pg_temp.lr_fill('b');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', 'No role: node C claims nothing while node A has room');
+set local session_replication_role = replica;
+insert into public.qorpera_runtime_run_start_failures(run_id, attempt, allocation_id, node_id)
+values (current_setting('qorpera_test.lr_run')::uuid, 1, extensions.gen_random_uuid(), pg_temp.lr_id('a'));
+set local session_replication_role = origin;
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(iv) The run''s start failed on node A: node C claims it, as the failed-start rule says');
+rollback to savepoint claim_no_role_failed;
+
 -- 5. Company Computers: every node offers computer 2.
 select set_config('qorpera_test.lr_scope', pg_temp.cs_scope(2)::text, true);
 select set_config('qorpera_test.lr_intent', (select id::text from public.qorpera_runtime_office_start_intents
@@ -383,6 +486,21 @@ select pg_temp.base_assert((public.qorpera_company_machine_placement(current_set
 	and public.qorpera_company_machine_placement_reserved(current_setting('qorpera_test.lr_placement')::uuid),
 	'on its own placement, awake');
 rollback to savepoint pull_wake;
+-- (v) A regular node that reports less hardware than its policy counts on cannot take a machine, and admission there
+--     refuses it (NODE_HARDWARE_CHANGED), so it is no candidate and the veto must not read it as room (review r1 F2).
+savepoint pull_hardware;
+select pg_temp.lr_fill('b');
+select set_config('qorpera_test.lr_machine', pg_temp.lr_machine('needs-a-node', 2, 4, 20)::text, true);
+select pg_temp.lr_observe_at('a', 8000, pg_temp.lr_memory('a'));
+select pg_temp.base_assert(not exists (select 1 from public.qorpera_company_machine_candidates(2000, 4294967296, 21474836480)
+		where owner = 'mx-a')
+	and exists (select 1 from public.qorpera_company_machine_candidates(2000, 4294967296, 21474836480) where owner = 'mx-c'),
+	'(v) Node A reports half its CPUs: no candidate, while node C still is');
+select pg_temp.lr_expect(pg_temp.lr_pull_for('a', current_setting('qorpera_test.lr_machine')::uuid), '[] on nothing',
+	'(v) Node A''s own executor cannot take the waiting machine');
+select pg_temp.lr_expect(pg_temp.lr_pull_for('c', current_setting('qorpera_test.lr_machine')::uuid), 'admitted on mx-c',
+	'(v) so node C''s executor does, instead of skipping it for ever');
+rollback to savepoint pull_hardware;
 -- Node C gives up a stopped machine's disk only for a machine no regular node could take now.
 savepoint pull_disk;
 select pg_temp.lr_spare(false) \g /dev/null
