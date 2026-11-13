@@ -327,7 +327,7 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(answered.classList.contains("is-exchange")).toBe(true);
 		const result = answered.querySelector<HTMLElement>(".interaction-result.is-said.mine")!;
 		expect(result.querySelector(".interaction-chosen.bubble")).not.toBeNull();
-		expect(result.querySelector(".interaction-attribution")?.className).toBe("interaction-attribution");
+		expect(result.querySelector(".interaction-beside")?.textContent).toBe("Sending");
 		expect(result.dataset.sentAt).toBe(at(3));
 		// Its input id arrives, then the transcript's answer: the same card, only the words that changed.
 		const settling = await thread.mutations(async () => {
@@ -341,9 +341,7 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(answered.querySelector(".interaction-attribution")?.textContent).toBe(`You · ${fmtTime(at(4))}`);
 		// Sent: nothing shows under the bubble any more, and the bubble tells its time on a hover.
 		expect(result.isConnected).toBe(true);
-		expect(result.querySelector(".interaction-attribution")?.className).toBe(
-			"interaction-attribution visually-hidden",
-		);
+		expect(result.querySelector(".interaction-beside")?.textContent).toBe("");
 		expect(result.dataset.sentAt).toBe(at(4));
 		expect(settling.added).toEqual([]);
 		expect(settling.removed).toEqual([]);

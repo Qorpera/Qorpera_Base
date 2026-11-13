@@ -297,6 +297,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		const who = answeredBy ? context.memberName(answeredBy) : t("You");
 		// Beside the answer: whose it is when it is not the member's own, and that it is on its way.
 		const beside = [own ? null : who, pending ? t("Sending") : null].filter(Boolean).join(" · ");
+		const whole = `${who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
 		result.push(
 			h(
 				"p",
@@ -311,13 +312,17 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					answerText(request, item.answer),
 				),
 				" ",
-				h(
-					"span",
-					{ class: `interaction-attribution${exchange && !beside ? " visually-hidden" : ""}` },
-					exchange && beside
-						? beside
-						: `${who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`,
-				),
+				// Who answered, when, and that it is on its way. In a thread the eye gets only `beside` (the time is on a
+				// hover) and a screen reader gets the whole line; both parts are always there, so an answer that is sent
+				// changes words only and its card is kept (views/conversation.ts sameShape).
+				exchange
+					? h(
+							"span",
+							{ class: "interaction-attribution" },
+							h("span", { class: "interaction-beside", "aria-hidden": "true" }, document.createTextNode(beside)),
+							h("span", { class: "visually-hidden" }, whole),
+						)
+					: h("span", { class: "interaction-attribution" }, whole),
 			),
 		);
 	} else if (state === "declined" && item.answer) {

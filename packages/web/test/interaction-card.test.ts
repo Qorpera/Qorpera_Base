@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { answersInteraction } from "../src/app/company.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { renderInteractionCard } from "../src/ui/interaction-card.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
@@ -314,9 +315,12 @@ describe("a card with its answer, in a thread", () => {
 		expect(result?.dataset.sentAt).toBe("2026-09-22T20:05:00Z");
 		const chosen = result?.querySelector(".interaction-chosen");
 		expect([chosen?.textContent, classes(chosen).includes("bubble")]).toEqual(["#finance", true]);
+		// Nothing shows beside it; a screen reader still hears who answered and when.
 		const attribution = result?.querySelector(".interaction-attribution");
-		expect(classes(attribution)).toContain("visually-hidden");
-		expect(attribution?.textContent).toMatch(/^You · /);
+		expect(attribution?.querySelector(".interaction-beside")?.textContent).toBe("");
+		expect(attribution?.querySelector(".visually-hidden")?.textContent).toBe(
+			`You · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
 		expect(result?.querySelector(".review-mark")).toBeNull();
 		expect(card.querySelector("button, input")).toBeNull();
 	});
@@ -325,16 +329,32 @@ describe("a card with its answer, in a thread", () => {
 		const others = renderInteractionCard(item(question, { ...answered, answeredBy: OTHER }), thread());
 		const result = others.querySelector(".interaction-result");
 		expect(classes(result)).toEqual(["interaction-result", "is-said"]);
-		const attribution = result?.querySelector(".interaction-attribution");
-		expect([attribution?.textContent, classes(attribution).includes("visually-hidden")]).toEqual(["Sofie", false]);
+		// The eye gets the name; a screen reader hears the name and the time, once (review r1 F1 on #1727).
+		const beside = result?.querySelector(".interaction-attribution > .interaction-beside");
+		expect([beside?.textContent, beside?.getAttribute("aria-hidden")]).toEqual(["Sofie", "true"]);
+		expect(result?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
 		// The member's own answer, not yet with the agent: no member is named on it yet, and it is theirs.
 		const { answeredAt: _sent, ...unsent } = answered;
 		const sending = renderInteractionCard(item(question, { ...unsent, pending: true }), thread());
 		const pending = sending.querySelector<HTMLElement>(".interaction-result");
 		expect(classes(pending)).toEqual(["interaction-result", "is-said", "mine"]);
 		expect(pending?.dataset.sentAt).toBeUndefined();
-		const mark = pending?.querySelector(".interaction-attribution");
-		expect([mark?.textContent, classes(mark).includes("visually-hidden")]).toEqual(["Sending", false]);
+		expect(pending?.querySelector(".interaction-beside")?.textContent).toBe("Sending");
+		expect(pending?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe("You · Sending");
+		// A line, too: another member's save names them beside it, with its time for a screen reader.
+		const saved = renderInteractionCard(
+			item(
+				{ surface: "secret", title: "Stripe key", payload: {} },
+				{ outcome: "provided", answer: {}, answeredBy: OTHER, answeredAt: answered.answeredAt },
+			),
+			thread(),
+		);
+		expect(saved.querySelector(".is-done .interaction-beside")?.textContent).toBe("Sofie");
+		expect(saved.querySelector(".is-done .interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
 	});
 
 	it("says anything else done with the card in one line under the question, marked as a decided approval is", () => {
@@ -387,7 +407,9 @@ describe("a card with its answer, in a thread", () => {
 		// The questions dock draws the same card with no thread around it.
 		const docked = renderInteractionCard(item(question, { ...answered, answeredBy: VIEWER }), context());
 		expect(classes(docked)).not.toContain("is-exchange");
-		expect(docked.querySelector(".bubble, .visually-hidden, .review-mark, [data-sent-at]")).toBeNull();
+		expect(
+			docked.querySelector(".bubble, .visually-hidden, .interaction-beside, .review-mark, [data-sent-at]"),
+		).toBeNull();
 		expect(classes(docked.querySelector(".interaction-result"))).toEqual(["interaction-result"]);
 		expect(docked.querySelector(".interaction-attribution")?.textContent).toMatch(/^Jonas · /);
 	});

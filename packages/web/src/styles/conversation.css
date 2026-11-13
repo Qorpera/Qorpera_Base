@@ -1442,11 +1442,13 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .is-exchange > .interaction-choices { width: min(560px, 100%); margin: 0; }
 .is-exchange > .interaction-result { display: flex; align-items: center; gap: 7px; margin: -2px 0 0; padding: 0 4px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
 .is-exchange > .interaction-result .interaction-attribution { font-size: inherit; }
-.is-exchange > .is-done .interaction-attribution:not(.visually-hidden)::before { content: "· "; }
-.is-exchange > .interaction-result.is-said { flex-direction: column; align-items: flex-start; gap: 4px; max-width: min(72%, 720px); margin: 0; padding: 0; color: inherit; font-size: inherit; line-height: inherit; }
+.is-exchange > .is-done .interaction-beside::before { content: "· "; }
+.is-exchange > .interaction-result.is-said { flex-direction: column; align-items: flex-start; gap: 0; max-width: min(72%, 720px); margin: 0; padding: 0; color: inherit; font-size: inherit; line-height: inherit; }
 .is-exchange > .interaction-result.is-said.mine { align-self: flex-end; align-items: flex-end; max-width: min(68%, 720px); }
-/* Under the answer, as a message's caption: whose it is when it is not the member's own, and "Sending". */
-.is-exchange > .is-said .interaction-attribution { padding: 0 12px; font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* Under the answer, as a message's caption. */
+.is-exchange > .is-said .interaction-beside { display: block; margin-top: 4px; padding: 0 12px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* Beside the outcome, for the eye: whose it is when it is not the member's own, and "Sending"; nothing when neither. */
+.is-exchange > .interaction-result .interaction-beside:empty { display: none; }
 @media (max-width: 900px) {
 	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
 }
