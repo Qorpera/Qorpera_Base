@@ -29,10 +29,13 @@ psql -d qorpera_company_template -v ON_ERROR_STOP=1 -f store/template.sql
 | `qorpera_data_watch` | reads sizes and running statements, and ends what runs too long |
 
 A company's database is `c_` and the 32 hex digits of its folder's id, with a connection limit of 24, a temp file
-limit of 256 MB, `work_mem` 16 MB and no parallel workers. Nothing of it goes into the server's log
-(`log_min_messages = 'fatal'`, `log_min_error_statement = 'panic'`, `log_min_duration_statement = -1`,
-`log_statement = 'none'`): errors and statements carry the company's values, and the caller hears its errors through
-the gateway. A company's login cannot lift any of these. Each database folder is one schema in it, with three
+limit of 256 MB, `work_mem` 16 MB and no parallel workers. Nothing of it goes into the server's log: errors, statements
+and their context carry the company's values, and the caller hears its errors through the gateway. It sets
+`log_min_messages = panic`, `log_error_verbosity = terse`, `log_min_error_statement = panic`, `log_statement = none`,
+`log_min_duration_statement = -1`, `log_min_duration_sample = -1`, `log_transaction_sample_rate = 0`,
+`log_lock_waits = off` and `log_temp_files = -1`; `LOG_SETTINGS` in `gateway.mjs` says why each, and why the other log
+sources (connections, autovacuum, auto_explain, a PANIC) carry no company value. A company's login cannot lift any of
+these. The store's server must never preload `auto_explain`. Each database folder is one schema in it, with three
 logins of its own: `<db>_o<n>` runs its steps, `<db>_w<n>` its changes, `<db>_r<n>` its questions. Each is a member of
 nothing, so no statement can switch to another folder's role. Their passwords are derived from the gateway's folder
 key (HMAC-SHA256 of the role's name, base64url) and never stored.
