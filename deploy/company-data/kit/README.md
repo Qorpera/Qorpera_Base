@@ -185,7 +185,7 @@ a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
 Last result: 13 November 2026, a test machine, the run door's PR after review 2 (a status that answers with no
 run-door folder, a lost key made again): 66 of 66 checks passed. Log: lanes
-`company-databases-20261113/rundoor/drill-4.log`.
+`company-databases-20261113/rundoor/drill-5.log`.
 
 ## Not done here
 

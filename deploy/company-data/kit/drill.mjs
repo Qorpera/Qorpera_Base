@@ -380,12 +380,12 @@ try {
 	const afterBack = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
 	check("(g) with the token back and the gateway made again by compose.sh, the door answers", backUp.ok && afterBack.status === 200 && script(A, "run-door.sh", ["status"]).ok,
 		`${afterBack.status} ${afterBack.error ?? ""}`);
-	// A machine with no run-door folder at all (its kit came before the door): status still answers.
+	// A machine with no run-door folder at all (its kit came before the door): status still answers. Asked while the
+	// folder is really gone and before the gateway is made again: docker would make an empty folder for the mount.
 	renameSync(RUN_SECRETS, `${RUN_SECRETS}.away`);
-	const noneUp = recreate();
 	const statusNone = script(A, "run-door.sh", ["status"]);
-	check("(g) with no run-door folder at all, run-door.sh status still counts the secrets and says the door is off",
-		noneUp.ok && !statusNone.ok && /secrets: 0 of 3/.test(statusNone.out) && /^run door: off/m.test(statusNone.out),
+	check("(g) with no run-door folder at all, run-door.sh status still answers: 0 of 3 secrets, and the gateway's last word on its door",
+		!existsSync(RUN_SECRETS) && /secrets: 0 of 3/.test(statusNone.out) && /^run door: (on|off)/m.test(statusNone.out),
 		`${`${statusNone.out}`.trim().split("\n").join(" / ")} ${tail(statusNone.err, 1)}`);
 	renameSync(`${RUN_SECRETS}.away`, RUN_SECRETS);
 	// A lost key beside a cert that is still there: make gives the door a new key and cert, the token stays.
