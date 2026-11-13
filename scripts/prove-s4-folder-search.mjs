@@ -29,6 +29,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 //   fence), says it is part of the answer and where to go on, and the calls that follow its cursors show every hit
 //   exactly once, in order; with context lines, files only, a find by glob, names and patterns too;
 // - read rights: a folder shared with another agent only is never searched, shown, counted or released;
+// - a file replaced, or deleted, between two pages of one call (the relay holds the next page while the platform changes
+//   it): the answer shows one version of it, the one there now, and releases only that;
 // - patterns: off as the unit ships (no --enable-experimental-regexp-engine): a pattern is refused in plain words, by
 //   the runtime and by the node, and everything else works; with the flag added to the unit's line (the one change
 //   that turns them on) a hostile pattern runs in linear time;
@@ -109,6 +111,11 @@ function corpus() {
 	add("docs/restricted/plan.md", "Restricted plan: the invoice for the zebra account.\n");
 	add("docs/restricted/hidden.csv", "id,amount\n9,900\n", "text/csv");
 	add("finance/2026/q1.csv", "id,amount\n3,300\n", "text/csv");
+	// Changed between two pages of one call (the relay holds the second page's request while the platform replaces or
+	// deletes the file): 200 hit lines, so an old node's page of about 6 KiB of hits ends inside each.
+	add("docs/swap/big.md", Array.from({ length: 200 }, (_, i) => `line ${i + 1}: swap the old text of the file\n`).join(""));
+	add("docs/gone/a.md", Array.from({ length: 200 }, (_, i) => `line ${i + 1}: remove me, then\n`).join(""));
+	add("docs/gone/b.md", "b 1: remove me too\nb 2: kept\nb 3: remove me as well\n");
 	add("hostile/aaaa.txt", `${"a".repeat(200_000)}\n${"a".repeat(5_000)}!\n`, "text/plain");
 	add("notes/deploy.md", "Runbook.\nThe deploy token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123 for the runner.\n");
 	for (const file of files) file.readable = !file.path.startsWith("docs/restricted/");
@@ -500,6 +507,8 @@ class Bridge {
 	#open = new Set();
 	#server;
 	target;
+	/** Called with each search frame from a machine before it is passed on, the connection's hello and the target. */
+	hold;
 
 	constructor(sockets, target) {
 		this.#sockets = sockets;
@@ -514,9 +523,29 @@ class Bridge {
 			head.writeUInt32BE(payload.length + 1, 0);
 			head[4] = KIND.bridge;
 			upstream.write(Buffer.concat([head, payload]));
-			local.pipe(upstream);
 			upstream.pipe(local);
 			const pair = [local, upstream];
+			// The machine's frames pass in order; `hold` may keep one back a while (the next page of a search), knowing the
+			// hello this connection made.
+			let buffer = Buffer.alloc(0);
+			let turn = Promise.resolve();
+			let hello;
+			local.on("data", (data) => {
+				buffer = Buffer.concat([buffer, data]);
+				while (buffer.length >= 5 && buffer.length >= 4 + buffer.readUInt32BE(0)) {
+					const frame = buffer.subarray(0, 4 + buffer.readUInt32BE(0));
+					buffer = buffer.subarray(frame.length);
+					turn = turn.then(async () => {
+						let body;
+						try {
+							body = JSON.parse(frame.subarray(5).toString("utf8"));
+						} catch {}
+						if (frame[4] === KIND.hello) hello = body;
+						if (frame[4] === KIND.search && body && this.hold) await this.hold(body, hello, this.target);
+						if (!upstream.destroyed) upstream.write(frame);
+					});
+				}
+			});
 			this.#open.add(pair);
 			const end = () => {
 				local.destroy();
@@ -719,6 +748,10 @@ function* searches(old) {
 		yield { label: "old-context", args: { query: "invoice", path: "docs/f00", context: 2 } };
 		yield { label: "old-find", args: { glob: "**/*.csv", path: "docs" } };
 		yield { label: "old-pattern", args: { query: "invoice", regex: true, path: "docs/f00" } };
+		// Old pages are about 6 KiB of hits, so one call asks several: between its first two the file it is inside
+		// is replaced (and, next, deleted).
+		yield* paged("old-swap", { query: "swap", path: "docs/swap" });
+		yield* paged("old-gone", { query: "remove me", path: "docs/gone" });
 	}
 	// The new one as it ships again (the roll forward).
 	yield { restart: "off" };
@@ -809,6 +842,14 @@ function provider(state) {
 			response.end();
 		});
 	});
+}
+
+/** SQL test 924's helpers (`base_*`), for a session after the fixture's. */
+function baseHelpers(fixture) {
+	const start = fixture.indexOf("create function pg_temp.base_claims");
+	const end = fixture.indexOf("-- END BASE HELPERS");
+	assert(start > 0 && end > start, "SQL test 924's helpers moved: update this script");
+	return fixture.slice(start, end);
 }
 
 // ---- The run ---------------------------------------------------------------------------------------------------------
@@ -1013,6 +1054,60 @@ async function main() {
 		};
 		state.bridge = relay("off");
 		await state.bridge.listen(join(scratch, "relay.sock"));
+		const direct = {};
+		for (const name of Object.keys(services)) {
+			direct[name] = relay(name);
+			await direct[name].listen(join(scratch, `relay-${name}.sock`));
+		}
+		// Between two pages of one call: the platform replaces docs/swap/big.md (or deletes docs/gone/a.md) while the
+		// relay holds the call's next page, which is passed on once the service serving the run's view has the change.
+		const SWAP = { path: "docs/swap/big.md", text: "swap new 1\nnot this one\nswap new 3\n" };
+		const changes = { swapped: 0, removed: 0 };
+		const change = async (unit, hello, target) => {
+			const seq = Number(
+				db
+					.query(`begin;
+						${baseHelpers(fixture)}
+						select pg_temp.base_claims('service_role');
+						select pg_temp.base_commit('{"kind":"platform"}', 's4-change-${randomBytes(4).toString("hex")}', jsonb_build_array(${unit})) \\g /dev/null
+						select last_seq::text from public.qorpera_folder_clocks where environment_id = '${ENV}';
+						commit;`)
+					.split("\n")
+					.at(-1),
+			);
+			for (const until = Date.now() + 30_000; ; ) {
+				const client = await RawClient.open(join(scratch, `relay-${target}.sock`));
+				client.send(KIND.hello, { protocol: 4, environmentId: ENV, viewId: hello.viewId, pass: hello.pass, role: "io" });
+				const answer = await client.next();
+				client.close();
+				if (answer.kind === KIND.helloOk && answer.body.asOfSeq >= seq) break;
+				assert(Date.now() < until, `the ${target} service did not apply change ${seq}: ${JSON.stringify(answer.body)}`);
+				await sleep(300);
+			}
+			trace(`node: change ${seq} applied on ${target}`);
+		};
+		state.bridge.hold = async (search, hello, target) => {
+			if (!changes.swapped && search.query === "swap" && search.after?.path === SWAP.path) {
+				changes.swapped++;
+				const file = { path: SWAP.path, bytes: Buffer.from(SWAP.text), mediaType: "text/markdown" };
+				const manifest = manifestOf(file);
+				await writeFile(join(share, setup.profileId, sha256(file.bytes)), file.bytes);
+				await writeFile(join(share, setup.profileId, sha256(manifest)), manifest);
+				await change(
+					`jsonb_build_object('op','write','path','${SWAP.path}','file',(pg_temp.base_seal('{"kind":"platform"}', $${tag}$${manifest}$${tag}$) -> 'file'),'expectedVersion',pg_temp.base_version('${SWAP.path}'))`,
+					hello,
+					target,
+				);
+			}
+			if (!changes.removed && search.query === "remove me" && search.after?.path === "docs/gone/a.md") {
+				changes.removed++;
+				await change(
+					"jsonb_build_object('op','delete','path','docs/gone/a.md','expectedVersion',pg_temp.base_version('docs/gone/a.md'))",
+					hello,
+					target,
+				);
+			}
+		};
 		process.stdout.write(
 			`Folder services: ${Object.entries(services).map(([name, s]) => `${name} (${s.tree === repositoryRoot ? "this tree" : "old tree"}, node ${s.flags.join(" ")})`).join("; ")}\n`,
 		);
@@ -1221,6 +1316,26 @@ async function main() {
 			pass(
 				`new runtime, old folder service: text search shows every hit under docs/f00 (${f00.length}, ${oldInvoice.length} calls of version 1 pages); context, a find by glob and a pattern are refused in words ("${notYet[0]}")`,
 			);
+
+			// A file replaced, and one deleted, between two pages of one call (release review r1 of #1731): one version
+			// only, the one there now, and nothing of a file gone.
+			assert.deepEqual(changes, { swapped: 1, removed: 1 }, "the relay changed the files between two pages of a call");
+			const swap = label("old-swap");
+			const gone = label("old-gone");
+			assert.equal(swap.length, 1, "the replaced file's search is one call: the change came between its pages");
+			assert.equal(gone.length, 1, "the deleted file's search is one call: the change came between its pages");
+			const swapTruth = SWAP.text
+				.split("\n")
+				.map((text, i) => [text, i + 1])
+				.filter(([text]) => text.includes("swap"))
+				.map(([text, n]) => `${SWAP.path}:${n}: ${text}`);
+			assert.deepEqual(hitsOf(swap), swapTruth);
+			assert(!ok(swap[0]).includes("old text"), "nothing of the old version");
+			assert.deepEqual(hitsOf(gone), ["docs/gone/b.md:1: b 1: remove me too", "docs/gone/b.md:3: b 3: remove me as well"]);
+			assert(!ok(gone[0]).includes("docs/gone/a.md"), "nothing of the deleted file");
+			pass(
+				`a file replaced between two pages of one call shows only as it is now (${swapTruth.length} lines; none of the old version's lines its first page had), and a file deleted between two pages shows nothing of what the first page had of it`,
+			);
 		}
 		const again = label("again");
 		assert.equal(again[0].phase, "off");
@@ -1261,6 +1376,23 @@ async function main() {
 		}
 		const releasedPaths = releases.flatMap((r) => r.reads.map((read) => read.path));
 		assert(!releasedPaths.some((path) => path.startsWith("docs/restricted")), "nothing of docs/restricted was released");
+		if (oldTree) {
+			// The replaced file's answer is released at the version it shows, the one there now; the deleted file's not at all.
+			const now = db.query(
+				`select version::text from public.qorpera_folder_entries where environment_id = '${ENV}' and key_text = public.qorpera_folder_key('${SWAP.path}')`,
+			);
+			const releasedOf = (call, path) =>
+				releases
+					.filter((r) => r.releaseId === envelopeOf(call).envelope.provenance.companyReadId)
+					.flatMap((r) => r.reads)
+					.filter((read) => read.path === path);
+			const swapReads = releasedOf(label("old-swap")[0], SWAP.path);
+			assert(swapReads.length >= 1 && swapReads.every((read) => read.version === now), JSON.stringify({ now, swapReads }));
+			assert.deepEqual(releasedOf(label("old-gone")[0], "docs/gone/a.md"), []);
+			pass(
+				`the replaced file's answer is released at the version it shows (${now.slice(0, 8)}, the one there now) and never at the old one; the deleted file's answer releases nothing of it`,
+			);
+		}
 		const firstReads = releases.filter((r) => r.releaseId === first.envelope.provenance.companyReadId).flatMap((r) => r.reads.map((read) => read.path));
 		const firstShown = new Set(answerLines(first.text, allPaths).lines.filter((l) => l.kind === "hit").map((l) => l.path));
 		assert([...firstShown].every((path) => firstReads.includes(path)), "the first answer's release names every file it showed");
@@ -1300,11 +1432,6 @@ async function main() {
 			client.send(KIND.hello, { protocol: 4, environmentId: ENV, viewId: view.viewId, pass: view.pass, role: "io" });
 			return { client, hello: await client.next() };
 		};
-		const direct = {};
-		for (const name of Object.keys(services)) {
-			direct[name] = relay(name);
-			await direct[name].listen(join(scratch, `relay-${name}.sock`));
-		}
 		const viewed = {};
 		for (const name of Object.keys(services)) {
 			const view = await run.folder.openRunView(AbortSignal.timeout(60_000));

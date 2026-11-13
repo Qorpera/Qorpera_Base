@@ -128,6 +128,17 @@ interface SearchPage {
 	readonly longLines?: number;
 	readonly reads: readonly CloudCompanyFolderRelease[];
 	readonly next: SearchCursor | null;
+	/** The runtime's, never the node's: files an earlier answer showed part of that this one could not go on in. */
+	readonly restarted?: readonly SearchRestart[];
+}
+
+/** A file an earlier answer ended inside, that the search could not go on in at the version that answer showed: it
+ * changed meanwhile (the node searched its new version from its start), or it is not there to search any more (gone,
+ * emptied, or no longer the run's to read). */
+interface SearchRestart {
+	readonly path: string;
+	/** The node read another version of it. */
+	readonly changed: boolean;
 }
 
 interface Frame {
@@ -362,6 +373,10 @@ export class CloudFolderSearch {
 		signal.throwIfAborted();
 		const started = this.#now();
 		let answer = await this.#page(ask, signal);
+		// The file the call's cursor is inside, of which an earlier answer showed part: the node goes on in it only at
+		// that version, and says nothing when it did not, so the answer does.
+		const earlier = ask.after && (ask.after.offset > 0 || ask.after.line > 0) ? ask.after : undefined;
+		if (earlier && !wentOn(earlier, answer)) answer = { ...answer, restarted: [restartOf(earlier, answer)] };
 		for (
 			let pages = 1;
 			answer.next && pages < CALL_PAGES && shownBytes(answer) < CALL_FILL && this.#now() - started < CALL_MS;
@@ -374,6 +389,15 @@ export class CloudFolderSearch {
 				if (signal.aborted || !(error instanceof FolderLinkError || error instanceof CloudCompanyFolderError))
 					throw error;
 				break;
+			}
+			// The file this answer ended inside changed or went away before the next page: what the answer showed of its
+			// old version is left out, and not released, so one answer never shows two versions of a file (the node
+			// searched the new one from its start). When an earlier answer showed part of it too, the answer says so.
+			const at = answer.next as SearchCursor;
+			if (!wentOn(at, page)) {
+				answer = without(answer, at);
+				if (earlier && earlier.path === at.path && earlier.version === at.version)
+					answer = { ...answer, restarted: [...(answer.restarted ?? []), restartOf(at, page)] };
 			}
 			answer = mergePages(answer, page);
 		}
@@ -441,6 +465,28 @@ export class CloudFolderSearch {
 	}
 }
 
+/** Whether a page went on in the file a cursor names at the cursor's version: a node reads (and so names among its
+ * reads) every file it searches, the one it goes on in too. */
+function wentOn(at: SearchCursor, page: SearchPage): boolean {
+	return page.reads.some((read) => read.path === at.path && read.version === at.version);
+}
+
+/** An answer without what it showed of one version of a file, and without its read of it. */
+function without(page: SearchPage, at: SearchCursor): SearchPage {
+	const other = (item: { readonly path: string; readonly version: string | null }) =>
+		item.path !== at.path || item.version !== at.version;
+	return {
+		...page,
+		hits: page.hits.filter(other),
+		files: (page.files ?? []).filter(other),
+		reads: page.reads.filter(other),
+	};
+}
+
+function restartOf(at: SearchCursor, page: SearchPage): SearchRestart {
+	return { path: at.path, changed: page.reads.some((read) => read.path === at.path) };
+}
+
 /** Two pages as one answer: a file the first page ended inside, counted on by the second, is one file. */
 function mergePages(a: SearchPage, b: SearchPage): SearchPage {
 	const files = [...(a.files ?? [])];
@@ -459,6 +505,7 @@ function mergePages(a: SearchPage, b: SearchPage): SearchPage {
 		longLines: (a.longLines ?? 0) + (b.longLines ?? 0),
 		reads: [...a.reads, ...b.reads],
 		next: b.next,
+		...(a.restarted || b.restarted ? { restarted: [...(a.restarted ?? []), ...(b.restarted ?? [])] } : {}),
 	};
 }
 
@@ -661,6 +708,15 @@ export function folderSearchText(
 ): string {
 	const units = unitsOf(page);
 	const longLines = page.longLines ?? 0;
+	// A file an earlier answer showed part of that is not as that answer saw it: said before the counts, whatever is cut.
+	const restarted = (page.restarted ?? []).map((r) => {
+		const chars = Array.from(r.path);
+		const path = chars.length > 300 ? `${chars.slice(0, 300).join("")}…` : r.path;
+		return r.changed
+			? `${path} changed since the last answer: it is searched again from its start.`
+			: `${path} is not as the last answer saw it (changed, emptied, gone, or no longer yours to read): what that answer showed of it may not hold.`;
+	});
+	const notes = restarted.length > 0 ? `${restarted.join("\n")}\n\n` : "";
 	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
 	const lay = (shown: number, first?: Unit, token = "x".repeat(16)) => {
 		const lines = joined(units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u)));
@@ -679,7 +735,10 @@ export function folderSearchText(
 				(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
 				passed;
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
-		return { text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`, next };
+		return {
+			text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${notes}${counts}${more}`,
+			next,
+		};
 	};
 	const last = page.files?.at(-1);
 	const sealed = (shown: number, first?: Unit): string => {

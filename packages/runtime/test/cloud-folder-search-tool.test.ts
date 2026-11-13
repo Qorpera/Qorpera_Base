@@ -620,7 +620,11 @@ describe("company_search", () => {
 							searched: 1,
 							next: { path: "big.md", version: VERSION, offset: 900, line: 80 },
 						})
-					: found({ files: [{ path: "big.md", version: VERSION, count: 2 }], searched: 1 }),
+					: found({
+							files: [{ path: "big.md", version: VERSION, count: 2 }],
+							searched: 1,
+							reads: [read("big.md")],
+						}),
 			V2,
 		);
 		const c = tool(counts.path, folder().client);
@@ -735,7 +739,11 @@ describe("company_search", () => {
 			(search) =>
 				search.after === null
 					? found({ files: [{ path: "big.md", version: VERSION, count: 2, partial: true }], next: mid(900) })
-					: found({ files: [{ path: "big.md", version: VERSION, count: 0 }], searched: 1 }),
+					: found({
+							files: [{ path: "big.md", version: VERSION, count: 0 }],
+							searched: 1,
+							reads: [read("big.md")],
+						}),
 			V2,
 		);
 		const w = tool(within.path, folder().client);
@@ -752,7 +760,11 @@ describe("company_search", () => {
 			(search) =>
 				search.after === null
 					? found({ files: [{ path: "big.md", version: VERSION, count: 40, partial: true }], next: mid(900) })
-					: found({ files: [{ path: "big.md", version: VERSION, count: 2 }], searched: 1 }),
+					: found({
+							files: [{ path: "big.md", version: VERSION, count: 2 }],
+							searched: 1,
+							reads: [read("big.md")],
+						}),
 			V2,
 		);
 		const f = folder();
@@ -777,6 +789,147 @@ describe("company_search", () => {
 		const l = tool(longs.path, folder().client);
 		expect((await l.execute(l.parseArguments({ query: "pl.n", regex: true }), context())).value).toBe(
 			"a.md:3: plan\n\n1 file searched; 2 lines over 1 MiB not searched by the pattern (search them as text, or read them). Nothing more.",
+		);
+	});
+
+	it("never shows two versions of a file: one replaced between two pages of a call shows as it is now, and only that is released (release review r1 of #1731)", async () => {
+		const V2 = { version: 2, regex: true };
+		const NEW = "81100000-0000-4000-8000-0000000000b2";
+		const inside = (version: string, offset: number) => ({ path: "big.md", version, offset, line: 40 });
+		const readAt = (path: string, version: string) => ({ path, kind: "file", version, authority: RECEIPT });
+		const released = (f: ReturnType<typeof folder>) => f.releases.flatMap((r) => r.reads);
+		// Files only: page one counts 40 lines of the old version and ends inside it; the file is replaced, so the node
+		// counts the new version from its start (2), and the old count, unfinished, is not shown.
+		const counts = await node(
+			(search) =>
+				search.after === null
+					? found({
+							files: [{ path: "big.md", version: VERSION, count: 40, partial: true }],
+							reads: [read("big.md")],
+							next: inside(VERSION, 900),
+						})
+					: found({
+							files: [{ path: "big.md", version: NEW, count: 2 }],
+							searched: 1,
+							reads: [readAt("big.md", NEW)],
+						}),
+			V2,
+		);
+		const c = folder();
+		const ct = tool(counts.path, c.client);
+		expect((await ct.execute(ct.parseArguments({ query: "plan", files_only: true }), context())).value).toBe(
+			"big.md: 2\n\n1 file searched. Nothing more.",
+		);
+		expect(counts.searches[1]).toMatchObject({ after: inside(VERSION, 900) });
+		expect(released(c)).toEqual([{ path: "big.md", version: NEW, authority: RECEIPT }]);
+		// Lines: what page one showed of the old version is left out with its read; the new version shows from line 1.
+		const lines = await node(
+			(search) =>
+				search.after === null
+					? found({
+							hits: [hit("a.md", 2, "plan a"), hit("big.md", 3, "plan one"), hit("big.md", 7, "plan two")],
+							searched: 1,
+							reads: [read("a.md"), read("big.md")],
+							next: inside(VERSION, 400),
+						})
+					: found({
+							hits: [{ ...hit("big.md", 1, "plan, new"), version: NEW }],
+							searched: 1,
+							reads: [readAt("big.md", NEW)],
+						}),
+			V2,
+		);
+		const l = folder();
+		const lt = tool(lines.path, l.client);
+		expect((await lt.execute(lt.parseArguments({ query: "plan" }), context())).value).toBe(
+			"a.md:2: plan a\nbig.md:1: plan, new\n\n2 files searched. Nothing more.",
+		);
+		expect(released(l)).toEqual([
+			{ path: "a.md", version: VERSION, authority: RECEIPT },
+			{ path: "big.md", version: NEW, authority: RECEIPT },
+		]);
+		// Version 1 pages (an old node) go the same way.
+		const old = await node((search) =>
+			search.after === null
+				? found({ hits: [hit("big.md", 3, "plan one")], reads: [read("big.md")], next: inside(VERSION, 400) })
+				: found({
+						hits: [{ ...hit("big.md", 1, "plan, new"), version: NEW }],
+						searched: 1,
+						reads: [readAt("big.md", NEW)],
+					}),
+		);
+		const ot = tool(old.path, folder().client);
+		expect((await ot.execute(ot.parseArguments({ query: "plan" }), context())).value).toBe(
+			"big.md:1: plan, new\n\n1 file searched. Nothing more.",
+		);
+	});
+
+	it("leaves out what it showed of a file gone between two pages of a call, and its read (release review r1 of #1731)", async () => {
+		const gone = await node(
+			(search) =>
+				search.after === null
+					? found({
+							hits: [hit("a.md", 2, "plan a"), hit("big.md", 3, "plan one")],
+							searched: 1,
+							reads: [read("a.md"), read("big.md")],
+							next: { path: "big.md", version: VERSION, offset: 400, line: 3 },
+						})
+					: // The walk goes on at the next path: big.md is gone, or no longer the run's to read.
+						found({ hits: [hit("c.md", 5, "plan c")], searched: 1, reads: [read("c.md")] }),
+			{ version: 2, regex: true },
+		);
+		const g = folder();
+		const gt = tool(gone.path, g.client);
+		expect((await gt.execute(gt.parseArguments({ query: "plan" }), context())).value).toBe(
+			"a.md:2: plan a\nc.md:5: plan c\n\n2 files searched. Nothing more.",
+		);
+		expect(g.releases.flatMap((r) => r.reads).map((r) => r.path)).toEqual(["a.md", "c.md"]);
+	});
+
+	it("says so when the file the last answer ended inside changed or went away before the next call", async () => {
+		const V2 = { version: 2, regex: true };
+		const NEW = "81100000-0000-4000-8000-0000000000b2";
+		const inside = { path: "big.md", version: VERSION, offset: 400, line: 3 };
+		const twice = async (next: Record<string, unknown>) => {
+			const n = await node(
+				(search) =>
+					search.after === null
+						? found({ hits: [hit("big.md", 3, "plan one")], reads: [read("big.md")], next: inside })
+						: found(next),
+				V2,
+			);
+			// One page a call: the clock passes a call's 10 s at each look.
+			let t = 0;
+			const f = folder();
+			const search = new CloudFolderSearch({
+				socketPath: n.path,
+				folder: f.client,
+				environmentId: ENV,
+				now: () => {
+					t += 20_000;
+					return t;
+				},
+			});
+			const s = cloudFolderSearchTool({ search, folder: f.client, runId: RUN });
+			const first = (await s.execute(s.parseArguments({ query: "plan" }), context())).value as string;
+			const cursor = /cursor (\S+)$/.exec(first)![1]!;
+			return (await s.execute(s.parseArguments({ query: "plan", cursor }), context("call-2"))).value;
+		};
+		expect(
+			await twice({
+				hits: [{ ...hit("big.md", 1, "plan, new"), version: NEW }],
+				searched: 1,
+				reads: [{ ...read("big.md"), version: NEW }],
+			}),
+		).toBe(
+			"big.md:1: plan, new\n\nbig.md changed since the last answer: it is searched again from its start.\n\n1 file searched. Nothing more.",
+		);
+		expect(await twice({ hits: [hit("c.md", 5, "plan c")], searched: 1, reads: [read("c.md")] })).toBe(
+			"c.md:5: plan c\n\nbig.md is not as the last answer saw it (changed, emptied, gone, or no longer yours to read): what that answer showed of it may not hold.\n\n1 file searched. Nothing more.",
+		);
+		// Unchanged, it simply goes on.
+		expect(await twice({ hits: [hit("big.md", 9, "plan three")], searched: 1, reads: [read("big.md")] })).toBe(
+			"big.md:9: plan three\n\n1 file searched. Nothing more.",
 		);
 	});
 });
