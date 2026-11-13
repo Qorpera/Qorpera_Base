@@ -35,6 +35,9 @@
 		saved: "Saved",
 		error: "Can't compute",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = ["known", "assumed", "unknown"];
 	const RANK = { known: 0, yours: 1, assumed: 2, unknown: 3 };
@@ -264,6 +267,79 @@
 		return NaN;
 	}
 
+	// ---------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of an input's note, which a tap on
+	// its label opens, drawn only where the bridge has `tell` (an older web, or the page opened outside Qorpera, has none).
+	// It asks from a press on it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return `${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\s·]+$/, "")}…`;
+	}
+	// a draft for the note, as a thing's `ask` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+		return Array.from(t).length <= 40 ? t : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = `${at || ""}\n${about}`;
+		const b = h("button", "mk-tell-b");
+		b.type = "button";
+		const why = h("p", "mk-tell-why");
+		why.setAttribute("role", "status");
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? M.words.told : M.words.tell;
+			const mark = sv("svg", null, { viewBox: "0 0 24 24", "aria-hidden": "true" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(label);
+			b.classList.toggle("mk-bare", !label);
+			b.classList.toggle("mk-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const x of D.querySelectorAll(".mk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "mk-tell", [b, why]);
+	}
+
 	// ---------- the data, made safe
 	function normInput(r, M) {
 		if (!r || typeof r !== "object") return null;
@@ -303,6 +379,7 @@
 			state,
 			value: v1,
 			note: cut(r.note, 90),
+			ask: askOf(r.ask),
 			source: safeHref(r.source),
 			marks: [],
 		};
@@ -685,9 +762,26 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk-mark[data-st=assumed]::before{background:linear-gradient(var(--ink) 0 3.5px,transparent 3.5px 5.5px,var(--ink) 5.5px)}
 .mk-mark:hover::before,.mk-mark:focus-visible::before{background:var(--q-accent);box-shadow:none;transform:scaleY(1.3)}
 .mk-mark:focus-visible{outline:none}
-.mk-tip{position:fixed;z-index:60;left:0;top:0;max-width:300px;padding:7px 11px;border-radius:12px;background:var(--q-bg);border:1px solid var(--q-line);box-shadow:0 8px 28px color-mix(in srgb,var(--q-text) 14%,transparent);font:13px/1.4 var(--q-font);color:var(--q-text);pointer-events:none;opacity:0;transform:translate(-50%,calc(-100% - 8px));transition:opacity .14s}
-.mk-tip.mk-on{opacity:1}
+.mk-tip{position:fixed;z-index:60;left:0;top:0;max-width:300px;padding:7px 11px;border-radius:12px;background:var(--q-bg);border:1px solid var(--q-line);box-shadow:0 8px 28px color-mix(in srgb,var(--q-text) 14%,transparent);font:13px/1.4 var(--q-font);color:var(--q-text);pointer-events:none;opacity:0;visibility:hidden;transform:translate(-50%,calc(-100% - 8px));transition:opacity .14s,visibility 0s .14s}
+.mk-tip.mk-on{opacity:1;visibility:visible;transition:opacity .14s}
 .mk-tip.mk-note{transform:translate(0,6px);font-size:14px}
+.mk-tip.mk-note.mk-on{pointer-events:auto}
+.mk-tip.mk-note:has(.mk-tell){padding:7px}
+.mk-tip:has(.mk-tell) .mk-tip-txt{padding:2px 4px 0}
+.mk-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.mk-tip-txt+.mk-tell{margin-top:8px}
+.mk-tell-b{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:550 14px/1.2 var(--q-font);cursor:pointer;transition:background .2s,opacity .2s}
+.mk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.mk-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.mk-tell-b.mk-bare{padding:0}
+.mk-tell-b svg{flex:none;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.mk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.mk-tell-b.mk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
+.mk-tell-b.mk-told.mk-bare{padding:0}
+.mk-tell-b.mk-told svg{color:var(--q-good)}
+.mk-tell-why{flex:1 1 130px;margin:0 4px 0 0;font-size:13px;line-height:1.4;color:var(--q-muted)}
+.mk-tell-why:empty{display:none}
+.mk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 .mk-tip b{font-weight:620;font-variant-numeric:tabular-nums}
 .mk-tip span{display:block;color:var(--q-muted)}
 .mk-top{grid-area:top;display:flex;align-items:flex-end;gap:0 24px;min-width:0}
@@ -918,6 +1012,14 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		root.append(ui.live);
 		ui.tip = h("div", "mk-tip");
 		ui.tip.setAttribute("role", "tooltip");
+		ui.tip.addEventListener("keydown", (e) => {
+			const lab = ui.noteFor;
+			if (!lab || (e.key !== "Escape" && e.key !== "Tab")) return;
+			// out of the note: back to its label, and Tab goes on from there
+			if (e.key === "Escape" || e.shiftKey) e.preventDefault();
+			hideTip();
+			lab.focus({ preventScroll: true });
+		});
 		D.body.append(root, ui.tip);
 		ui.err.textContent = M.errs.length ? `${W.error}: ${M.errs[0]}${M.errs.length > 1 ? ` (+${M.errs.length - 1})` : ""}` : "";
 		// sizes
@@ -936,19 +1038,28 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		const row = h("div", "mk-row");
 		row.style.setProperty("--i", i);
 		const r = { inp, row };
-		const lab = h("span", inp.note ? "mk-label mk-noted" : "mk-label", inp.label);
-		if (inp.note) {
+		// a label opens the input's note, and where the bridge takes a note to the app's owner, its button
+		const opens = !!inp.note || canTell();
+		const lab = h("span", opens ? "mk-label mk-noted" : "mk-label", inp.label);
+		if (opens) {
 			lab.setAttribute("role", "button");
 			lab.tabIndex = 0;
 			lab.setAttribute("aria-expanded", "false");
 			lab.addEventListener("click", (e) => {
 				e.stopPropagation();
-				toggleNote(lab, inp.note);
+				toggleNote(lab, inp);
 			});
 			lab.addEventListener("keydown", (e) => {
 				if (e.key === "Enter" || e.key === " ") {
 					e.preventDefault();
-					toggleNote(lab, inp.note);
+					toggleNote(lab, inp);
+				} else if (e.key === "Tab" && !e.shiftKey && ui.noteFor === lab) {
+					// the open note's button comes next
+					const b = ui.tip.querySelector(".mk-tell-b");
+					if (b) {
+						e.preventDefault();
+						b.focus({ preventScroll: true });
+					}
 				}
 			});
 		}
@@ -1783,6 +1894,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	function showTip(b, m, inp) {
 		const t = ui.tip;
 		t.classList.remove("mk-note");
+		t.setAttribute("role", "tooltip");
+		t.removeAttribute("aria-label");
 		const val = fin(m.v) ? `${m.st === "assumed" ? "≈ " : ""}${fmt(m.v, inp.dec)} ${inp.unit}`.trim() : "–";
 		t.replaceChildren(h("b", null, m.label), ` · ${val}`, m.note ? h("span", null, m.note) : null);
 		const r = b.getBoundingClientRect();
@@ -1801,23 +1914,33 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.tipFor = null;
 		ui.noteFor = null;
 	}
-	function toggleNote(lab, note) {
+	function toggleNote(lab, inp) {
 		if (ui.noteFor === lab) return hideTip();
 		hideTip();
 		const t = ui.tip;
 		t.classList.add("mk-note");
-		t.replaceChildren(note);
+		// what the note is about: the input and its value as the member sees it now
+		const st = stOf(inp.id);
+		const shown = st === "unknown" ? "?" : `${fmt(S.values[inp.id], inp.vdec)} ${inp.unit}`.trim();
+		const tell = tellFoot(noteAbout(inp.label, shown), inp.id, inp.ask);
+		t.replaceChildren(...(inp.note ? [h("div", "mk-tip-txt", inp.note)] : []), ...(tell ? [tell] : []));
+		t.setAttribute("role", tell ? "dialog" : "tooltip");
+		if (tell) t.setAttribute("aria-label", inp.label);
+		else t.removeAttribute("aria-label");
 		const r = lab.getBoundingClientRect();
 		t.style.left = "0px";
+		t.style.top = "0px";
 		t.classList.add("mk-on");
 		const w = t.offsetWidth;
+		const ht = t.offsetHeight;
 		t.style.left = `${clamp(r.left, 8, innerWidth - w - 8)}px`;
-		t.style.top = `${r.bottom}px`;
+		// under the label, or over it where the window has no room under it
+		t.style.top = `${r.bottom + 6 + ht > innerHeight - 8 && r.top - ht - 12 >= 8 ? r.top - ht - 12 : r.bottom}px`;
 		ui.noteFor = lab;
 		lab.setAttribute("aria-expanded", "true");
 	}
 	function onDocDown(e) {
-		if (ui && ui.noteFor && !ui.noteFor.contains(e.target)) hideTip();
+		if (ui && ui.noteFor && !ui.noteFor.contains(e.target) && !ui.tip.contains(e.target)) hideTip();
 	}
 	function onDocKey(e) {
 		if (e.key === "Escape") hideTip();

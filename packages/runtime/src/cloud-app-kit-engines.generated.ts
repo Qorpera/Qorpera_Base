@@ -14,7 +14,7 @@ Write \`model.json\`. Every number comes from the company's files. What is not k
   \`https:\` link (↗).
 - \`words\`: optional, the page's words in the company's language: \`example\`, \`hint\` ("{n}" = count), \`hintLast\`,
   \`assumed\`, \`unknown\`, \`known\`, \`yours\`, \`provisional\`, \`reset\`, \`resetOne\`, \`breakEven\`, \`never\`, \`below\`, \`save\`,
-  \`saving\`, \`saved\`, \`error\`, \`empty\`.
+  \`saving\`, \`saved\`, \`error\`, \`empty\`, \`tell\`, \`told\`.
 - \`groups\`: up to 6 \`{label (≤28), inputs: [...]}\`, 16 inputs in all. An input:
   - \`id\` (letters, digits, \`_\`), \`label\` (≤28), \`unit\` (≤10), \`min\`, \`max\`, \`step\`.
   - \`state\`: \`"known"\` (a fact), \`"assumed"\` (someone's assumption), \`"unknown"\` (not known yet).
@@ -71,7 +71,8 @@ app folder and are named by their path, such as \`pictures/a.webp\`. Text over i
 - \`lang\`: language code, such as \`"da"\`. \`mode\`: \`"scale"\`, \`"choose"\` or \`"wall"\`.
 - \`title\` (40) and \`line\` (60): the page's name and one quiet line. No other text on the page.
 - \`words\`: the page's own words in your language. Keys: \`assumed\`, \`unknown\`, \`notKnown\`, \`all\`, \`close\`, \`source\`,
-  \`choose\`, \`recommended\`, \`chosen\`, \`saving\`, \`back\`, \`colours\`, \`type\`, \`film\`, \`previous\`, \`next\`, \`keep\`, \`drop\`, \`empty\`.
+  \`choose\`, \`recommended\`, \`chosen\`, \`saving\`, \`back\`, \`colours\`, \`type\`, \`film\`, \`previous\`, \`next\`, \`keep\`, \`drop\`, \`empty\`,
+  \`tell\`, \`told\`.
 - \`items\`: the things. Every item has \`id\` and \`name\` (28).
 
 ## scale: things on one true scale (a shelf)
@@ -138,7 +139,7 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 - \`lang\`: language code, such as \`"da"\`.
 - \`title\`: up to 40 characters. \`line\`: one quiet line, up to 60.
 - \`words\`: the page's own words in your language: \`known\`, \`assumed\`, \`unknown\`, \`total\` ("in all"), \`noMarks\`,
-  \`close\`, \`next\`, \`empty\`.
+  \`close\`, \`next\`, \`empty\`, \`tell\`, \`told\`.
 - \`markWord\`: what a mark is called, \`{"one": "source", "many": "sources"}\`.
 - \`steps\`: 1 to 6 steps in order, \`{"id", "name"}\`. \`name\` up to 22 characters.
 - \`lanes\`: 1 to 3 groups, each:
@@ -237,7 +238,7 @@ its name beside it. Big facts sit under it. You write only \`object.json\` and r
   "parts"?, "facts"?}\`. Render them with the same camera and frame size. Leave out \`parts\`/\`facts\` to keep the main
   ones (their tracks must then fit the variant's frames).
 - \`words\`: the page's own words in your language: \`assumed\`, \`unknown\`, \`drag\` ("Drag to turn"), \`close\`,
-  \`source\`, \`turn\` (the turntable's name for screen readers), \`empty\`.
+  \`source\`, \`turn\` (the turntable's name for screen readers), \`empty\`, \`tell\`, \`told\`.
 
 The page turns slowly by itself until touched. Tapping a part or its name turns the thing the short way to where that
 part faces the viewer best, and shows its note. Never invent a value: a figure the documents do not give is
@@ -303,6 +304,9 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 		saved: "Saved",
 		error: "Can't compute",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = ["known", "assumed", "unknown"];
 	const RANK = { known: 0, yours: 1, assumed: 2, unknown: 3 };
@@ -532,6 +536,79 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 		return NaN;
 	}
 
+	// ---------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of an input's note, which a tap on
+	// its label opens, drawn only where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none).
+	// It asks from a press on it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return \`\${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\\s·]+$/, "")}…\`;
+	}
+	// a draft for the note, as a thing's \`ask\` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const t = typeof v === "string" ? v.replace(/\\s+/g, " ").trim() : "";
+		return Array.from(t).length <= 40 ? t : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${at || ""}\\n\${about}\`;
+		const b = h("button", "mk-tell-b");
+		b.type = "button";
+		const why = h("p", "mk-tell-why");
+		why.setAttribute("role", "status");
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? M.words.told : M.words.tell;
+			const mark = sv("svg", null, { viewBox: "0 0 24 24", "aria-hidden": "true" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(label);
+			b.classList.toggle("mk-bare", !label);
+			b.classList.toggle("mk-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const x of D.querySelectorAll(".mk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "mk-tell", [b, why]);
+	}
+
 	// ---------- the data, made safe
 	function normInput(r, M) {
 		if (!r || typeof r !== "object") return null;
@@ -571,6 +648,7 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 			state,
 			value: v1,
 			note: cut(r.note, 90),
+			ask: askOf(r.ask),
 			source: safeHref(r.source),
 			marks: [],
 		};
@@ -953,9 +1031,26 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk-mark[data-st=assumed]::before{background:linear-gradient(var(--ink) 0 3.5px,transparent 3.5px 5.5px,var(--ink) 5.5px)}
 .mk-mark:hover::before,.mk-mark:focus-visible::before{background:var(--q-accent);box-shadow:none;transform:scaleY(1.3)}
 .mk-mark:focus-visible{outline:none}
-.mk-tip{position:fixed;z-index:60;left:0;top:0;max-width:300px;padding:7px 11px;border-radius:12px;background:var(--q-bg);border:1px solid var(--q-line);box-shadow:0 8px 28px color-mix(in srgb,var(--q-text) 14%,transparent);font:13px/1.4 var(--q-font);color:var(--q-text);pointer-events:none;opacity:0;transform:translate(-50%,calc(-100% - 8px));transition:opacity .14s}
-.mk-tip.mk-on{opacity:1}
+.mk-tip{position:fixed;z-index:60;left:0;top:0;max-width:300px;padding:7px 11px;border-radius:12px;background:var(--q-bg);border:1px solid var(--q-line);box-shadow:0 8px 28px color-mix(in srgb,var(--q-text) 14%,transparent);font:13px/1.4 var(--q-font);color:var(--q-text);pointer-events:none;opacity:0;visibility:hidden;transform:translate(-50%,calc(-100% - 8px));transition:opacity .14s,visibility 0s .14s}
+.mk-tip.mk-on{opacity:1;visibility:visible;transition:opacity .14s}
 .mk-tip.mk-note{transform:translate(0,6px);font-size:14px}
+.mk-tip.mk-note.mk-on{pointer-events:auto}
+.mk-tip.mk-note:has(.mk-tell){padding:7px}
+.mk-tip:has(.mk-tell) .mk-tip-txt{padding:2px 4px 0}
+.mk-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.mk-tip-txt+.mk-tell{margin-top:8px}
+.mk-tell-b{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:550 14px/1.2 var(--q-font);cursor:pointer;transition:background .2s,opacity .2s}
+.mk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.mk-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.mk-tell-b.mk-bare{padding:0}
+.mk-tell-b svg{flex:none;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.mk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.mk-tell-b.mk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
+.mk-tell-b.mk-told.mk-bare{padding:0}
+.mk-tell-b.mk-told svg{color:var(--q-good)}
+.mk-tell-why{flex:1 1 130px;margin:0 4px 0 0;font-size:13px;line-height:1.4;color:var(--q-muted)}
+.mk-tell-why:empty{display:none}
+.mk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 .mk-tip b{font-weight:620;font-variant-numeric:tabular-nums}
 .mk-tip span{display:block;color:var(--q-muted)}
 .mk-top{grid-area:top;display:flex;align-items:flex-end;gap:0 24px;min-width:0}
@@ -1186,6 +1281,14 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		root.append(ui.live);
 		ui.tip = h("div", "mk-tip");
 		ui.tip.setAttribute("role", "tooltip");
+		ui.tip.addEventListener("keydown", (e) => {
+			const lab = ui.noteFor;
+			if (!lab || (e.key !== "Escape" && e.key !== "Tab")) return;
+			// out of the note: back to its label, and Tab goes on from there
+			if (e.key === "Escape" || e.shiftKey) e.preventDefault();
+			hideTip();
+			lab.focus({ preventScroll: true });
+		});
 		D.body.append(root, ui.tip);
 		ui.err.textContent = M.errs.length ? \`\${W.error}: \${M.errs[0]}\${M.errs.length > 1 ? \` (+\${M.errs.length - 1})\` : ""}\` : "";
 		// sizes
@@ -1204,19 +1307,28 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		const row = h("div", "mk-row");
 		row.style.setProperty("--i", i);
 		const r = { inp, row };
-		const lab = h("span", inp.note ? "mk-label mk-noted" : "mk-label", inp.label);
-		if (inp.note) {
+		// a label opens the input's note, and where the bridge takes a note to the app's owner, its button
+		const opens = !!inp.note || canTell();
+		const lab = h("span", opens ? "mk-label mk-noted" : "mk-label", inp.label);
+		if (opens) {
 			lab.setAttribute("role", "button");
 			lab.tabIndex = 0;
 			lab.setAttribute("aria-expanded", "false");
 			lab.addEventListener("click", (e) => {
 				e.stopPropagation();
-				toggleNote(lab, inp.note);
+				toggleNote(lab, inp);
 			});
 			lab.addEventListener("keydown", (e) => {
 				if (e.key === "Enter" || e.key === " ") {
 					e.preventDefault();
-					toggleNote(lab, inp.note);
+					toggleNote(lab, inp);
+				} else if (e.key === "Tab" && !e.shiftKey && ui.noteFor === lab) {
+					// the open note's button comes next
+					const b = ui.tip.querySelector(".mk-tell-b");
+					if (b) {
+						e.preventDefault();
+						b.focus({ preventScroll: true });
+					}
 				}
 			});
 		}
@@ -2051,6 +2163,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	function showTip(b, m, inp) {
 		const t = ui.tip;
 		t.classList.remove("mk-note");
+		t.setAttribute("role", "tooltip");
+		t.removeAttribute("aria-label");
 		const val = fin(m.v) ? \`\${m.st === "assumed" ? "≈ " : ""}\${fmt(m.v, inp.dec)} \${inp.unit}\`.trim() : "–";
 		t.replaceChildren(h("b", null, m.label), \` · \${val}\`, m.note ? h("span", null, m.note) : null);
 		const r = b.getBoundingClientRect();
@@ -2069,23 +2183,33 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.tipFor = null;
 		ui.noteFor = null;
 	}
-	function toggleNote(lab, note) {
+	function toggleNote(lab, inp) {
 		if (ui.noteFor === lab) return hideTip();
 		hideTip();
 		const t = ui.tip;
 		t.classList.add("mk-note");
-		t.replaceChildren(note);
+		// what the note is about: the input and its value as the member sees it now
+		const st = stOf(inp.id);
+		const shown = st === "unknown" ? "?" : \`\${fmt(S.values[inp.id], inp.vdec)} \${inp.unit}\`.trim();
+		const tell = tellFoot(noteAbout(inp.label, shown), inp.id, inp.ask);
+		t.replaceChildren(...(inp.note ? [h("div", "mk-tip-txt", inp.note)] : []), ...(tell ? [tell] : []));
+		t.setAttribute("role", tell ? "dialog" : "tooltip");
+		if (tell) t.setAttribute("aria-label", inp.label);
+		else t.removeAttribute("aria-label");
 		const r = lab.getBoundingClientRect();
 		t.style.left = "0px";
+		t.style.top = "0px";
 		t.classList.add("mk-on");
 		const w = t.offsetWidth;
+		const ht = t.offsetHeight;
 		t.style.left = \`\${clamp(r.left, 8, innerWidth - w - 8)}px\`;
-		t.style.top = \`\${r.bottom}px\`;
+		// under the label, or over it where the window has no room under it
+		t.style.top = \`\${r.bottom + 6 + ht > innerHeight - 8 && r.top - ht - 12 >= 8 ? r.top - ht - 12 : r.bottom}px\`;
 		ui.noteFor = lab;
 		lab.setAttribute("aria-expanded", "true");
 	}
 	function onDocDown(e) {
-		if (ui && ui.noteFor && !ui.noteFor.contains(e.target)) hideTip();
+		if (ui && ui.noteFor && !ui.noteFor.contains(e.target) && !ui.tip.contains(e.target)) hideTip();
 	}
 	function onDocKey(e) {
 		if (e.key === "Escape") hideTip();
@@ -2322,6 +2446,9 @@ export const BOARD_ENGINE_JS = `/* Qorpera interface kit "board": real things as
 		keep: "Keep",
 		drop: "Drop",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	let WORDS = { ...BASE_WORDS };
 	let LANG = "en";
@@ -2397,6 +2524,9 @@ body{margin:0}
 .bk-sheet{position:fixed;z-index:20;top:16px;right:16px;bottom:16px;width:min(392px,36vw);display:flex;flex-direction:column;background:var(--q-surface);color:var(--q-text);border-radius:18px;box-shadow:0 0 0 1px var(--hair),0 30px 70px -24px var(--shade);transform:translateX(calc(100% + 40px));visibility:hidden;transition:transform .5s var(--ease),visibility 0s linear .5s;overflow:hidden}
 .bk-sheet.is-open{transform:none;visibility:visible;transition:transform .5s var(--ease)}
 .bk-sbody{flex:1;overflow:auto;overscroll-behavior:contain;padding:20px 24px 28px}
+.bk-sfoot{flex:none;padding:12px 24px 20px;box-shadow:0 -1px 0 var(--hair)}
+.bk-sfoot:empty{display:none}
+.bk-sfoot .bk-tell{margin-top:0}
 .bk-x{position:absolute;z-index:3;top:10px;right:10px;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;color:var(--q-muted)}
 .bk-x:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 7%,transparent)}
 .bk-x svg{width:16px;height:16px}
@@ -2450,6 +2580,7 @@ body{margin:0}
 .bk-sheet::before{content:"";position:absolute;top:8px;left:50%;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--hair)}
 .bk-scale.has-sheet .bk-scrim{opacity:1;pointer-events:auto}
 .bk-sbody{padding:22px 20px 28px}
+.bk-sfoot{padding:12px 20px calc(16px + env(safe-area-inset-bottom,0px))}
 }
 
 /* choose */
@@ -2584,6 +2715,27 @@ body{margin:0}
 .bk-light .bk-x{top:var(--pad);right:var(--pad);background:var(--q-surface);box-shadow:inset 0 0 0 1px var(--hair)}
 @media (max-width:640px){.bk-wall{columns:2 140px;column-gap:10px}.bk-tile{margin-bottom:10px}.bk-tov{opacity:1;transform:none;padding:22px 10px 9px}.bk-tnote{display:none}.bk-nav{top:auto;bottom:var(--pad)}}
 
+/* a note to the app's owner, at the foot of a thing's detail: the reason a note did not go stands beside the button
+   where there is room, so the foot keeps its height */
+.bk-tell{--tk:var(--q-text);display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:22px}
+.bk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border-radius:999px;font-size:14px;font-weight:550;line-height:1.2;color:var(--tk);background:color-mix(in srgb,var(--tk) 7%,transparent);transition:background .2s,opacity .2s}
+.bk-tell-b:hover{background:color-mix(in srgb,var(--tk) 12%,transparent)}
+.bk-tell-b.is-bare{padding:0}
+.bk-tell-b svg{flex:none;width:17px;height:17px}
+.bk .bk-tell-b:focus-visible{border-radius:999px}
+.bk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.bk-tell-b.is-told{background:none;color:color-mix(in srgb,var(--tk) 66%,transparent);cursor:default;padding-left:4px}
+.bk-tell-b.is-told.is-bare{padding:0}
+.bk-tell-b.is-told svg{color:var(--q-good)}
+.bk-tell-why{flex:1 1 150px;margin:0;max-width:40ch;font-size:13px;line-height:1.4;color:color-mix(in srgb,var(--tk) 70%,transparent)}
+.bk-tell-why:empty{display:none}
+.bk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.bk-world .bk-tell{--tk:var(--ink);margin-top:0}
+.bk-act .bk-tell{align-self:stretch;margin-top:4px}
+.bk-light .bk-tell{justify-content:center;margin-top:0}
+.bk-light .bk-tell-why{flex:0 1 auto}
+.bk-light.has-tell figure>img,.bk-light.has-tell figure>.bk-ph{max-height:calc(100vh - 230px)}
+
 @media (prefers-reduced-motion:reduce){
 .bk *,.bk *::before,.bk *::after{animation:none!important;transition-duration:0s!important;transition-delay:0s!important}
 .bk-rail{transform:translateX(100%)}
@@ -2623,6 +2775,7 @@ body{margin:0}
 		strike: () => icon(["M6 12h12"]),
 		play: () => icon(["M8 5.5v13l11-6.5z"]),
 		picture: () => icon(["M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z", "M4 16l4.5-4.5 4 4 2.5-2.5L20 18"]),
+		note: () => icon(["M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"]),
 	};
 	const txt = (v) => (typeof v === "string" ? v.replace(/\\s+/g, " ").trim() : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
 	function clip(v, max) {
@@ -2858,6 +3011,70 @@ body{margin:0}
 		return head;
 	}
 
+	/* A note to the app's owner (qorpera.tell, RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a
+	   thing's detail, drawn only where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none).
+	   It asks from a press on it alone, once per press; the member writes the note on Qorpera's bar above the page. */
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	/** Each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go). */
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	/** What a note is about, as one line of at most 60 characters, cut at a word. */
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return \`\${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\\s·]+$/, "")}…\`;
+	}
+	/** A draft for the note, as a thing's \`ask\` gives it: one line of at most 40 characters, or none. */
+	function askOf(v) {
+		const s = typeof v === "string" ? txt(v) : "";
+		return Array.from(s).length <= 40 ? s : "";
+	}
+	function tellFoot(about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${at || ""}\\n\${about}\`;
+		const b = h("button", "bk-tell-b", { type: "button" });
+		const why = h("p", "bk-tell-why", { role: "status" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? WORDS.told : WORDS.tell;
+			b.replaceChildren(st.done ? ICON.tick() : ICON.note());
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("is-bare", !label);
+			b.classList.toggle("is-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const el of D.querySelectorAll(".bk-tell-b")) if (el.__tell && el.__tell.key === key) el.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: clip((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "bk-tell", null, b, why);
+	}
+
 	/* ---------------------------------------------------------------- data */
 
 	function normalize(d) {
@@ -2920,6 +3137,7 @@ body{margin:0}
 					recommended: rec,
 					by: clip(x.by, 24),
 					mark: x.mark === "keep" || x.mark === "drop" ? x.mark : null,
+					ask: askOf(x.ask),
 				};
 			});
 		const vals = items.map((it) => it.value).filter((v) => v !== null);
@@ -3217,7 +3435,9 @@ body{margin:0}
 		const sheet = h("aside", "bk-sheet", { role: "dialog", "aria-modal": "false", "aria-hidden": "true", "aria-label": m.title || "" });
 		const x = h("button", "bk-x", { type: "button", "aria-label": WORDS.close, title: WORDS.close }, ICON.close());
 		const body = h("div", "bk-sbody");
-		sheet.append(x, body);
+		// the sheet's foot stays in view under what scrolls: the note to the app's owner
+		const foot = h("div", "bk-sfoot");
+		sheet.append(x, body, foot);
 		root.append(scrim, sheet);
 		x.addEventListener("click", () => close(true), on);
 		scrim.addEventListener("click", () => close(true), on);
@@ -3280,6 +3500,8 @@ body{margin:0}
 				body.append(route);
 			}
 			if (d.note) body.append(h("p", "bk-note", null, d.note));
+			const tell = tellFoot(noteAbout(d.name), d.id, d.ask);
+			foot.replaceChildren(...(tell ? [tell] : []));
 			body.scrollTop = 0;
 		}
 		function open(id) {
@@ -3757,6 +3979,8 @@ body{margin:0}
 				side.append(h("section", "bk-sec", null, h("h3", null, null, WORDS.type), ty));
 			}
 			const act = h("div", "bk-act", { "aria-live": "polite" });
+			const tell = tellFoot(noteAbout(o.name), o.id, o.ask);
+			if (tell) act.append(tell);
 			side.append(act);
 			bodyEl.append(viewer.childNodes.length ? viewer : h("div"), side);
 			inner.append(bodyEl);
@@ -3764,9 +3988,11 @@ body{margin:0}
 			root.append(w);
 			function update() {
 				chosenMark.classList.toggle("is-on", S.chosen === o.id);
-				act.replaceChildren();
+				// the note's button stays where it is (and keeps the focus): only what answers the question is drawn again
+				for (const c of [...act.childNodes]) if (c !== tell) c.remove();
+				const put = (el) => act.insertBefore(el, tell);
 				if (S.chosen === o.id) {
-					act.append(h("span", "bk-done", null, ICON.tick(), \`\${WORDS.chosen}: \${o.name}\`));
+					put(h("span", "bk-done", null, ICON.tick(), \`\${WORDS.chosen}: \${o.name}\`));
 					return;
 				}
 				if (S.chosen || !canAnswer(o)) return;
@@ -3774,8 +4000,8 @@ body{margin:0}
 				const b = h("button", "bk-pick", { type: "button", "aria-busy": String(busy) }, busy ? WORDS.saving : \`\${WORDS.choose} \${o.name}\`);
 				if (busy) b.setAttribute("aria-disabled", "true");
 				b.addEventListener("click", () => choose(o), on);
-				act.append(b);
-				if (S.reason[o.id]) act.append(h("p", "bk-reason", null, S.reason[o.id]));
+				put(b);
+				if (S.reason[o.id]) put(h("p", "bk-reason", null, S.reason[o.id]));
 				if (!busy && act.dataset.focus === "1") b.focus({ preventScroll: true });
 			}
 			const rect = () => {
@@ -3897,6 +4123,9 @@ body{margin:0}
 			const src = sourceLink(d.source, d.name);
 			if (src) cap.append(src);
 			fig.append(cap);
+			const tell = tellFoot(noteAbout(d.name), d.id, d.ask);
+			if (tell) fig.append(tell);
+			light.classList.toggle("has-tell", !!tell);
 			const x = h("button", "bk-x", { type: "button", "aria-label": WORDS.close }, ICON.close());
 			x.addEventListener("click", hide, on);
 			light.replaceChildren(fig, x);
@@ -4052,6 +4281,9 @@ export const PATH_ENGINE_JS = `// The path kit's engine: "How does it go, and wh
 		next: "Next",
 		empty: "Nothing to show yet.",
 		more: "more",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = ["known", "assumed", "unknown"];
 	const reduceMQ = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
@@ -4220,6 +4452,21 @@ a.pk-row:hover .go{color:var(--q-accent)}
 .pk-tip a{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:var(--q-accent);text-decoration:none;font-size:16px}
 .pk-tip a:hover{background:var(--q-surface)}
 .pk-sheet.dock{position:fixed;left:12px;right:12px;bottom:12px;top:auto;width:auto;max-height:62vh;overflow:auto}
+/* a note to the app's owner, at the foot of a step's sheet */
+/* the reason a note did not go stands beside the button where there is room, so the sheet keeps its height */
+.pk-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0}
+.pk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:inherit;font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.pk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.pk-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.pk-tell-b.pk-bare{padding:0}
+.pk-tell-b svg{position:static;flex:none;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.pk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.pk-tell-b.pk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
+.pk-tell-b.pk-told.pk-bare{padding:0}
+.pk-tell-b.pk-told svg{color:var(--q-good)}
+.pk-tell-why{flex:1 1 140px;margin:0;font-size:13px;line-height:1.4;color:var(--q-muted)}
+.pk-tell-why:empty{display:none}
+.pk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 /* motion */
 @keyframes pk-pulse{0%{transform:scale(1);opacity:.6}70%,100%{transform:scale(1.75);opacity:0}}
 @keyframes pk-sheet{from{opacity:0;transform:translateY(4px)}}
@@ -4293,6 +4540,77 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		return measureCtx.measureText(str).width;
 	}
 
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a step's sheet, drawn only
+	// where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return \`\${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\\s·]+$/, "")}…\`;
+	}
+	// a draft for the note, as a thing's \`ask\` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const s = typeof v === "string" ? v.replace(/\\s+/g, " ").trim() : "";
+		return Array.from(s).length <= 40 ? s : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${at || ""}\\n\${about}\`;
+		const b = el("button", "pk-tell-b", { type: "button" });
+		const why = el("p", "pk-tell-why", { role: "status" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			const mark = sv("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(el("span", null, null, label));
+			b.classList.toggle("pk-bare", !label);
+			b.classList.toggle("pk-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (ev) => {
+			ev.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const x of document.querySelectorAll(".pk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return el("div", "pk-tell", null, [b, why]);
+	}
+
 	// ---------------------------------------------------------------- the data
 	function markWords(v, fallback) {
 		if (typeof v === "string" && v.trim()) return { one: cut(v, MAX.word), many: cut(v, MAX.word) };
@@ -4364,6 +4682,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 					value: num,
 					valueText: num == null ? cut(e.value, MAX.figValue) : "",
 					note: cut(e.note, MAX.note),
+					ask: askOf(e.ask),
 					marks: [],
 				});
 			}
@@ -5287,6 +5606,10 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		if (m.next && m.next.step === stepId && (m.next.lane === "all" || m.next.lane === laneId)) {
 			sh.append(el("div", "pk-none", null, [el("span", null, { "aria-hidden": "true", style: "color:var(--q-accent)" }, "⚑"), \`\${m.words.next}: \${m.next.text}\${m.next.by ? \` (\${m.next.by})\` : ""}\`]));
 		}
+		// a path with no lanes of its own is one lane for all: its steps are named alone
+		const one = laneId === "_";
+		const tell = tellFoot(m.words, noteAbout(step.name, one ? "" : lane.name), one ? stepId : \`\${laneId}:\${stepId}\`, e.ask);
+		if (tell) sh.append(tell);
 		sh.addEventListener("click", (ev) => ev.stopPropagation());
 		sheetEl = sh;
 		const g = geom;
@@ -5493,6 +5816,9 @@ export const OBJECT_ENGINE_JS = `/* Qorpera interface kit: object. "What is the 
 		source: "Source",
 		turn: "Turn the object",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = { known: 1, assumed: 1, unknown: 1 };
 	const SVGNS = "http://www.w3.org/2000/svg";
@@ -5581,6 +5907,21 @@ body{margin:0}
 .ok-note p{margin:5px 0 0;font-size:15px;line-height:1.45;color:var(--q-text)}
 .ok-close{position:absolute;right:6px;top:6px;width:40px;height:40px;border:0;background:none;border-radius:12px;color:var(--q-muted);cursor:pointer;display:grid;place-items:center}
 .ok-close:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 6%,transparent)}
+/* a note to the app's owner, at the foot of a part's note: the reason a note did not go stands beside the button where
+   there is room, so the note (anchored by its foot on a wide screen) keeps its height */
+.ok-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:10px}
+.ok .ok-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.ok .ok-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.ok .ok-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.ok .ok-tell-b.ok-bare{padding:0}
+.ok .ok-tell-b svg{flex:none;width:17px;height:17px}
+.ok .ok-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.ok .ok-tell-b.ok-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
+.ok .ok-tell-b.ok-told.ok-bare{padding:0}
+.ok .ok-tell-b.ok-told svg{color:var(--q-good)}
+.ok-note .ok-tell-why{flex:1 1 120px;margin:0;font-size:13px;line-height:1.35;color:var(--q-muted)}
+.ok-tell-why:empty{display:none}
+.ok-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 .ok-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;font-size:13px;color:var(--q-muted);white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .6s ease}
 .ok.in .ok-hint.show{opacity:1}
 .ok-below{display:flex;flex-direction:column;align-items:center;gap:clamp(10px,1.8vh,20px)}
@@ -5615,6 +5956,77 @@ body{margin:0}
 @media (prefers-reduced-motion:reduce){.ok *,.ok *::before,.ok *::after{transition:none!important;animation:none!important}}
 \`;
 
+	// ------------------------------------------------------------------ a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a part's note, drawn only
+	// where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return \`\${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\\s·]+$/, "")}…\`;
+	}
+	// a draft for the note, as a thing's \`ask\` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const t = typeof v === "string" ? v.replace(/\\s+/g, " ").trim() : "";
+		return Array.from(t).length <= 40 ? t : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${at || ""}\\n\${about}\`;
+		const b = h("button", "ok-tell-b", { type: "button" });
+		const why = h("p", "ok-tell-why", { role: "status" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			const mark = s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("ok-bare", !label);
+			b.classList.toggle("ok-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "ok-tell", null, [b, why]);
+	}
+
 	// ------------------------------------------------------------------ data
 	function picOf(tt, still) {
 		if (tt && typeof tt === "object" && typeof tt.picture === "string") {
@@ -5644,6 +6056,7 @@ body{margin:0}
 					id,
 					name: cut(p.name, 22) || "—",
 					note: cut(p.note, 90),
+					ask: askOf(p.ask),
 					state,
 					value: state === "unknown" ? "" : cut(p.value, 16),
 					source: link(p.source),
@@ -6439,7 +6852,9 @@ body{margin:0}
 		const close = h("button", "ok-close", { type: "button", "aria-label": d.words.close, title: d.words.close });
 		close.innerHTML = \`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 2l10 10M12 2 2 12"/></svg>\`;
 		close.addEventListener("click", () => select(null));
-		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), close);
+		// with variants to choose from, the note names the one shown
+		const tell = tellFoot(d.words, noteAbout(part.name, d.variants.length > 1 ? V().name : ""), part.id, part.ask);
+		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), ...(tell ? [tell] : []), close);
 		R.note.classList.add("open");
 	}
 	function chooseVariant(i) {

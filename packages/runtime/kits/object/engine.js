@@ -18,6 +18,9 @@
 		source: "Source",
 		turn: "Turn the object",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = { known: 1, assumed: 1, unknown: 1 };
 	const SVGNS = "http://www.w3.org/2000/svg";
@@ -106,6 +109,21 @@ body{margin:0}
 .ok-note p{margin:5px 0 0;font-size:15px;line-height:1.45;color:var(--q-text)}
 .ok-close{position:absolute;right:6px;top:6px;width:40px;height:40px;border:0;background:none;border-radius:12px;color:var(--q-muted);cursor:pointer;display:grid;place-items:center}
 .ok-close:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 6%,transparent)}
+/* a note to the app's owner, at the foot of a part's note: the reason a note did not go stands beside the button where
+   there is room, so the note (anchored by its foot on a wide screen) keeps its height */
+.ok-tell{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:10px}
+.ok .ok-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.ok .ok-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.ok .ok-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.ok .ok-tell-b.ok-bare{padding:0}
+.ok .ok-tell-b svg{flex:none;width:17px;height:17px}
+.ok .ok-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.ok .ok-tell-b.ok-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
+.ok .ok-tell-b.ok-told.ok-bare{padding:0}
+.ok .ok-tell-b.ok-told svg{color:var(--q-good)}
+.ok-note .ok-tell-why{flex:1 1 120px;margin:0;font-size:13px;line-height:1.35;color:var(--q-muted)}
+.ok-tell-why:empty{display:none}
+.ok-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 .ok-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;font-size:13px;color:var(--q-muted);white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .6s ease}
 .ok.in .ok-hint.show{opacity:1}
 .ok-below{display:flex;flex-direction:column;align-items:center;gap:clamp(10px,1.8vh,20px)}
@@ -140,6 +158,77 @@ body{margin:0}
 @media (prefers-reduced-motion:reduce){.ok *,.ok *::before,.ok *::after{transition:none!important;animation:none!important}}
 `;
 
+	// ------------------------------------------------------------------ a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a part's note, drawn only
+	// where the bridge has `tell` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return `${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\s·]+$/, "")}…`;
+	}
+	// a draft for the note, as a thing's `ask` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+		return Array.from(t).length <= 40 ? t : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = `${at || ""}\n${about}`;
+		const b = h("button", "ok-tell-b", { type: "button" });
+		const why = h("p", "ok-tell-why", { role: "status" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			const mark = s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("ok-bare", !label);
+			b.classList.toggle("ok-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "ok-tell", null, [b, why]);
+	}
+
 	// ------------------------------------------------------------------ data
 	function picOf(tt, still) {
 		if (tt && typeof tt === "object" && typeof tt.picture === "string") {
@@ -169,6 +258,7 @@ body{margin:0}
 					id,
 					name: cut(p.name, 22) || "—",
 					note: cut(p.note, 90),
+					ask: askOf(p.ask),
 					state,
 					value: state === "unknown" ? "" : cut(p.value, 16),
 					source: link(p.source),
@@ -964,7 +1054,9 @@ body{margin:0}
 		const close = h("button", "ok-close", { type: "button", "aria-label": d.words.close, title: d.words.close });
 		close.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 2l10 10M12 2 2 12"/></svg>`;
 		close.addEventListener("click", () => select(null));
-		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), close);
+		// with variants to choose from, the note names the one shown
+		const tell = tellFoot(d.words, noteAbout(part.name, d.variants.length > 1 ? V().name : ""), part.id, part.ask);
+		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), ...(tell ? [tell] : []), close);
 		R.note.classList.add("open");
 	}
 	function chooseVariant(i) {

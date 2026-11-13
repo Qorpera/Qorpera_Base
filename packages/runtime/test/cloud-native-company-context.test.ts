@@ -1555,14 +1555,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
 // tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for
 // what an interface app is (an object, a model, an app or a video, one app a thing, drawn by a kit of save_app, never
-// a document or the state of someone's work; overlay v16; Jonas, 13 November 2026). A change to any is a change to
+// a document or the state of someone's work; overlay v16; Jonas, 13 November 2026), and for a member's note sent from
+// an app's page (its first line names the app and the thing; Jonas, 13 November 2026). A change to any is a change to
 // every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "22be8a2d8609356ff68781f6ab9f13556457c50f76c7b2482d4e14598b06a5c0",
+			instructions: "55c668cedd480fa5f812a3e6a54e266d5d2849260157a652ff017772cb56f544",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1570,7 +1571,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "915afe73b91cb6362d491a84881d7db27d23b48e62cecad4b62050e0270e1979",
+			instructions: "e2fe3cab44030d38f34c28980e5601cd26e323a40efc05fe8748fb0886cc258d",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1578,7 +1579,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "22be8a2d8609356ff68781f6ab9f13556457c50f76c7b2482d4e14598b06a5c0",
+			instructions: "55c668cedd480fa5f812a3e6a54e266d5d2849260157a652ff017772cb56f544",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1976,6 +1977,11 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Link an app in your message as [Title](app:<name>) instead of pasting long text.",
+	);
+	// A note a member sent from an app's page (qorpera.tell; Jonas, 13 November 2026: "you can't act very much inside
+	// of the interfaces"): the web puts the app and the thing on the message's first line.
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"A member's message whose first line is \"> app:<name>#<id> · <about>\" was sent from that app's page about that thing: act on it as on any message from that member, and show what came of it in the app.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",

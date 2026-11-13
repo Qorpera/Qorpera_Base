@@ -33,6 +33,9 @@
 		keep: "Keep",
 		drop: "Drop",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	let WORDS = { ...BASE_WORDS };
 	let LANG = "en";
@@ -108,6 +111,9 @@ body{margin:0}
 .bk-sheet{position:fixed;z-index:20;top:16px;right:16px;bottom:16px;width:min(392px,36vw);display:flex;flex-direction:column;background:var(--q-surface);color:var(--q-text);border-radius:18px;box-shadow:0 0 0 1px var(--hair),0 30px 70px -24px var(--shade);transform:translateX(calc(100% + 40px));visibility:hidden;transition:transform .5s var(--ease),visibility 0s linear .5s;overflow:hidden}
 .bk-sheet.is-open{transform:none;visibility:visible;transition:transform .5s var(--ease)}
 .bk-sbody{flex:1;overflow:auto;overscroll-behavior:contain;padding:20px 24px 28px}
+.bk-sfoot{flex:none;padding:12px 24px 20px;box-shadow:0 -1px 0 var(--hair)}
+.bk-sfoot:empty{display:none}
+.bk-sfoot .bk-tell{margin-top:0}
 .bk-x{position:absolute;z-index:3;top:10px;right:10px;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;color:var(--q-muted)}
 .bk-x:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 7%,transparent)}
 .bk-x svg{width:16px;height:16px}
@@ -161,6 +167,7 @@ body{margin:0}
 .bk-sheet::before{content:"";position:absolute;top:8px;left:50%;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--hair)}
 .bk-scale.has-sheet .bk-scrim{opacity:1;pointer-events:auto}
 .bk-sbody{padding:22px 20px 28px}
+.bk-sfoot{padding:12px 20px calc(16px + env(safe-area-inset-bottom,0px))}
 }
 
 /* choose */
@@ -295,6 +302,27 @@ body{margin:0}
 .bk-light .bk-x{top:var(--pad);right:var(--pad);background:var(--q-surface);box-shadow:inset 0 0 0 1px var(--hair)}
 @media (max-width:640px){.bk-wall{columns:2 140px;column-gap:10px}.bk-tile{margin-bottom:10px}.bk-tov{opacity:1;transform:none;padding:22px 10px 9px}.bk-tnote{display:none}.bk-nav{top:auto;bottom:var(--pad)}}
 
+/* a note to the app's owner, at the foot of a thing's detail: the reason a note did not go stands beside the button
+   where there is room, so the foot keeps its height */
+.bk-tell{--tk:var(--q-text);display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:22px}
+.bk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border-radius:999px;font-size:14px;font-weight:550;line-height:1.2;color:var(--tk);background:color-mix(in srgb,var(--tk) 7%,transparent);transition:background .2s,opacity .2s}
+.bk-tell-b:hover{background:color-mix(in srgb,var(--tk) 12%,transparent)}
+.bk-tell-b.is-bare{padding:0}
+.bk-tell-b svg{flex:none;width:17px;height:17px}
+.bk .bk-tell-b:focus-visible{border-radius:999px}
+.bk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.bk-tell-b.is-told{background:none;color:color-mix(in srgb,var(--tk) 66%,transparent);cursor:default;padding-left:4px}
+.bk-tell-b.is-told.is-bare{padding:0}
+.bk-tell-b.is-told svg{color:var(--q-good)}
+.bk-tell-why{flex:1 1 150px;margin:0;max-width:40ch;font-size:13px;line-height:1.4;color:color-mix(in srgb,var(--tk) 70%,transparent)}
+.bk-tell-why:empty{display:none}
+.bk-tell-why::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
+.bk-world .bk-tell{--tk:var(--ink);margin-top:0}
+.bk-act .bk-tell{align-self:stretch;margin-top:4px}
+.bk-light .bk-tell{justify-content:center;margin-top:0}
+.bk-light .bk-tell-why{flex:0 1 auto}
+.bk-light.has-tell figure>img,.bk-light.has-tell figure>.bk-ph{max-height:calc(100vh - 230px)}
+
 @media (prefers-reduced-motion:reduce){
 .bk *,.bk *::before,.bk *::after{animation:none!important;transition-duration:0s!important;transition-delay:0s!important}
 .bk-rail{transform:translateX(100%)}
@@ -334,6 +362,7 @@ body{margin:0}
 		strike: () => icon(["M6 12h12"]),
 		play: () => icon(["M8 5.5v13l11-6.5z"]),
 		picture: () => icon(["M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z", "M4 16l4.5-4.5 4 4 2.5-2.5L20 18"]),
+		note: () => icon(["M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"]),
 	};
 	const txt = (v) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
 	function clip(v, max) {
@@ -569,6 +598,70 @@ body{margin:0}
 		return head;
 	}
 
+	/* A note to the app's owner (qorpera.tell, RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a
+	   thing's detail, drawn only where the bridge has `tell` (an older web, or the page opened outside Qorpera, has none).
+	   It asks from a press on it alone, once per press; the member writes the note on Qorpera's bar above the page. */
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	/** Each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go). */
+	const TOLD = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	/** What a note is about, as one line of at most 60 characters, cut at a word. */
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return `${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\s·]+$/, "")}…`;
+	}
+	/** A draft for the note, as a thing's `ask` gives it: one line of at most 40 characters, or none. */
+	function askOf(v) {
+		const s = typeof v === "string" ? txt(v) : "";
+		return Array.from(s).length <= 40 ? s : "";
+	}
+	function tellFoot(about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = `${at || ""}\n${about}`;
+		const b = h("button", "bk-tell-b", { type: "button" });
+		const why = h("p", "bk-tell-why", { role: "status" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? WORDS.told : WORDS.tell;
+			b.replaceChildren(st.done ? ICON.tick() : ICON.note());
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("is-bare", !label);
+			b.classList.toggle("is-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				TOLD.set(key, next);
+				for (const el of D.querySelectorAll(".bk-tell-b")) if (el.__tell && el.__tell.key === key) el.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: clip((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "bk-tell", null, b, why);
+	}
+
 	/* ---------------------------------------------------------------- data */
 
 	function normalize(d) {
@@ -631,6 +724,7 @@ body{margin:0}
 					recommended: rec,
 					by: clip(x.by, 24),
 					mark: x.mark === "keep" || x.mark === "drop" ? x.mark : null,
+					ask: askOf(x.ask),
 				};
 			});
 		const vals = items.map((it) => it.value).filter((v) => v !== null);
@@ -928,7 +1022,9 @@ body{margin:0}
 		const sheet = h("aside", "bk-sheet", { role: "dialog", "aria-modal": "false", "aria-hidden": "true", "aria-label": m.title || "" });
 		const x = h("button", "bk-x", { type: "button", "aria-label": WORDS.close, title: WORDS.close }, ICON.close());
 		const body = h("div", "bk-sbody");
-		sheet.append(x, body);
+		// the sheet's foot stays in view under what scrolls: the note to the app's owner
+		const foot = h("div", "bk-sfoot");
+		sheet.append(x, body, foot);
 		root.append(scrim, sheet);
 		x.addEventListener("click", () => close(true), on);
 		scrim.addEventListener("click", () => close(true), on);
@@ -991,6 +1087,8 @@ body{margin:0}
 				body.append(route);
 			}
 			if (d.note) body.append(h("p", "bk-note", null, d.note));
+			const tell = tellFoot(noteAbout(d.name), d.id, d.ask);
+			foot.replaceChildren(...(tell ? [tell] : []));
 			body.scrollTop = 0;
 		}
 		function open(id) {
@@ -1468,6 +1566,8 @@ body{margin:0}
 				side.append(h("section", "bk-sec", null, h("h3", null, null, WORDS.type), ty));
 			}
 			const act = h("div", "bk-act", { "aria-live": "polite" });
+			const tell = tellFoot(noteAbout(o.name), o.id, o.ask);
+			if (tell) act.append(tell);
 			side.append(act);
 			bodyEl.append(viewer.childNodes.length ? viewer : h("div"), side);
 			inner.append(bodyEl);
@@ -1475,9 +1575,11 @@ body{margin:0}
 			root.append(w);
 			function update() {
 				chosenMark.classList.toggle("is-on", S.chosen === o.id);
-				act.replaceChildren();
+				// the note's button stays where it is (and keeps the focus): only what answers the question is drawn again
+				for (const c of [...act.childNodes]) if (c !== tell) c.remove();
+				const put = (el) => act.insertBefore(el, tell);
 				if (S.chosen === o.id) {
-					act.append(h("span", "bk-done", null, ICON.tick(), `${WORDS.chosen}: ${o.name}`));
+					put(h("span", "bk-done", null, ICON.tick(), `${WORDS.chosen}: ${o.name}`));
 					return;
 				}
 				if (S.chosen || !canAnswer(o)) return;
@@ -1485,8 +1587,8 @@ body{margin:0}
 				const b = h("button", "bk-pick", { type: "button", "aria-busy": String(busy) }, busy ? WORDS.saving : `${WORDS.choose} ${o.name}`);
 				if (busy) b.setAttribute("aria-disabled", "true");
 				b.addEventListener("click", () => choose(o), on);
-				act.append(b);
-				if (S.reason[o.id]) act.append(h("p", "bk-reason", null, S.reason[o.id]));
+				put(b);
+				if (S.reason[o.id]) put(h("p", "bk-reason", null, S.reason[o.id]));
 				if (!busy && act.dataset.focus === "1") b.focus({ preventScroll: true });
 			}
 			const rect = () => {
@@ -1608,6 +1710,9 @@ body{margin:0}
 			const src = sourceLink(d.source, d.name);
 			if (src) cap.append(src);
 			fig.append(cap);
+			const tell = tellFoot(noteAbout(d.name), d.id, d.ask);
+			if (tell) fig.append(tell);
+			light.classList.toggle("has-tell", !!tell);
 			const x = h("button", "bk-x", { type: "button", "aria-label": WORDS.close }, ICON.close());
 			x.addEventListener("click", hide, on);
 			light.replaceChildren(fig, x);
