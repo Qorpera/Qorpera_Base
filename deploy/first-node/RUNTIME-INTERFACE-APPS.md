@@ -133,6 +133,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | --- | --- | --- |
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
+| `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3b) | `internal`; `delegation` into another agent's or a member's app |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
@@ -312,6 +313,69 @@ web does not already answer. What the kit adds is that the agent writes one file
     (`NATIVE_CODEX_REALTIME_EGRESS_HOSTS`, `allowRealtime` in `cloud-native-egress.ts`). Only a Codex login's relay
     can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
   - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
+
+## 3b. Pictures: make_picture (13 November 2026)
+
+Jonas, 13 November 2026, after the interfaces preview: "I would also turn on agents generating images of course."
+His rule for such a capability (10 November, for the voice): one Qorpera tool, so the engine behind it can change.
+
+`make_picture {operationKey, path, prompt, expectedVersion?}` makes one picture and saves it as a PNG file in the
+company folder (`cloud-folder-picture-tool.ts`; the lane in `cloud-picture-channel.ts` and `cloud-codex-tool-session.ts`;
+migration `20260930746000`, which only names the tool among a run's observations).
+
+- **Who has it.** A run on a Codex login (the run's identity root has no `chatgpt-plan/`); a run on a member's ChatGPT
+  plan has neither the tool nor the lane, and a Claude sign-in never reaches this runtime. A read-only worker does not
+  have it (`cloudWorkerToolFilter`). No count of pictures per run: the member's plan is the limit.
+- **Arguments.** `path` is a company path ending in `.png`, not under an app's `icons/` (save_app's SVGs). `prompt` is
+  plain text, 1 to 4096 bytes, line breaks allowed. `expectedVersion` is company_write's: left out or null for a new
+  file, the version company_read reported to replace one.
+- **Where it may be saved** is company_write's rule, decided by the folder core at the commit: a protected path parks
+  the change for review (the answer's `state` is `proposed`), a missing folder is refused, a stale or present file is a
+  conflict. Before the picture is made, the tool refuses a path whose folder is not there and a path that is a folder or
+  a link: each picture costs the member's plan. Exists and version are checked at the commit only, so a repeat of a
+  saved call reaches its receipt (it makes a picture it then throws away, and shows none).
+- **An app's owner.** Under `apps/<name>/`, a manifest that names another owner makes the call delegation (`prepare`
+  adds `foreignOwner`), as for save_app; its own app's, and any other path's, is `internal`. The card: "Put a picture
+  into another agent's app" (or "Make a picture"), the path, the prompt quoted.
+- **The side thread.** A fresh thread of the run's own app-server, as auto-review's, the compactor's and the voice's:
+  the run's model, `environments: []`, no workspace roots, read-only, ephemeral, no dynamic tools,
+  `CLOUD_PICTURE_MAKER_RULE` as its instructions, and the only thread config the runtime ever sends,
+  `{"features.image_generation": true, "features.omit_app_server_notification_media": true}` (Codex merges a thread's
+  config after the command line's; the field is not experimental). The agent's thread is started with none: the
+  process's configuration keeps `image_generation` false, and `verifyConfiguration` still holds every disabled feature
+  to false. One turn, effort low, whose input is the prompt; its model calls Codex's `image_gen.imagegen` once.
+- **The picture's bytes** come from the file Codex saves, never from the notification: with the media switch on,
+  `item/completed` of type `imageGeneration` carries `savedPath` and an empty `result` (without it, the base64 picture
+  would be one stdout line past the bound that fails the run). The file must be
+  `<CODEX_HOME>/generated_images/<thread>/<item>.png` (each id with what is not a letter, digit, `-` or `_` made `_`),
+  that path once links are resolved, a regular file of one link, opened without following a link, 12 MiB at most,
+  starting as a PNG does. It is then removed, and its two folders when empty, each only after `lstat` shows a real
+  folder; nothing else is read or removed. A picture saved after its call ended is removed the same way.
+- **The lane is quiet.** Every request on the picture's thread is refused; its model requests (prewarm, the turn's
+  first, and the one after the picture) bind to a lane that never throws, are never composed from the agent's run, and
+  get nothing of the agent's (each output `{"available":false}`). The request after the picture carries Codex's own
+  tool output, `[image, hint]`, which the pinned fence refuses inside Codex (an image is taken only behind a host
+  envelope): the picture's turn ends there, or at the interrupt the lane sends once the picture is in. Its words,
+  usage and errors reach no one. The one exception to "never fails the run" is the 120 seconds every side thread has to
+  start. One picture at a time; the run's end ends a call.
+- **The relay** of a Codex login lets every connection be silent for 5 minutes instead of 30 s while a picture call
+  lasts (`allowLongWaits`, nested windows as `allowRealtime`'s): the images request answers only once the picture
+  exists, and Codex keeps no ping on it. It widens no host.
+- **Failures** are refusals, nothing saved and no receipt taken (the picture is made before the receipt: one left
+  executing would stop the run's later changes): the member's picture limit (`usageLimitExceeded`, `limitId`
+  `image_gen`: "the member's ChatGPT has no pictures left for now", with when it resets), the member's usage limit,
+  the generator refused or failed, no picture made (the model would not, or a Free plan makes none), none within 4
+  minutes, not a usable PNG, over 12 MiB, the login cannot make pictures.
+- **The answer** is company_write's (`state`, `version`, `receiptId`, `outcome`, `next`) with `kind: "picture"`,
+  `mediaType`, `bytes`, `fileSha256`, the picture's and the shown size, `imageSha256` of the shown PNG, `transparent`
+  when the generator said, and `revisedPrompt` when the model gave the generator other words. The picture follows it,
+  fitted as company_read fits an image (`folderImageView`: at most 1920×1200 and 1 MiB), when it was saved or parked
+  and is the one made now. The context view takes it as machine_screen's screen: this run's own answer, source
+  `runtime`, no read, naming the picture's hash (`kind: "picture"`).
+- **What the agent is told** is the tool's description alone: what pictures are for (what does not exist yet), that a
+  real thing is shown by its real picture and a generated one is never passed off as a photo (an app says drawn or
+  illustration), one picture per call, how to write the prompt, to look at the picture and try again, and that an
+  app's pictures go into its folder before save_app.
 
 ## 4. Web
 

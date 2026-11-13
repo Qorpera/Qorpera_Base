@@ -1093,6 +1093,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// A picture the agent makes, on a Codex login's run (20260930746000).
+				"make_picture",
 				"company_account",
 				"ask_member",
 				"create_group_chat",
@@ -3249,6 +3251,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
 	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
 	// again.
+	// On 13 November 2026 make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3261,6 +3264,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"make_picture",
 		"update_wall",
 		"read_context",
 		"company_account",
@@ -3295,9 +3299,29 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"413603241623974ce678f2da5f29d477b212cb25a65570c769e8a53a50261250",
+		"7649a9001405540b750c73ff0fd423333503275213ad34208348c97f6c549a64",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"ccd9bd0f1dbabfd5f4c74393645ad1b0b8d7081ed4e34b4fa97d57fd0e766dad",
+		"c9849f02c6e8e394811aaf48c0ddb9eec4a27614649c0fe2279f2492659ddf3e",
 	);
+});
+
+it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {
+	const codex = await fixture("company-runtime");
+	await codex.runtime.execute(codex.request, codex.identityRoot, new AbortController().signal);
+	const offered = JSON.parse(await readFile(codex.evidence, "utf8")).threadParameters.dynamicTools[0].tools;
+	expect(offered.map((tool: { name: string }) => tool.name)).toContain("make_picture");
+	await rm(codex.identityRoot, { recursive: true, force: true });
+	await rm(codex.companyRoot, { recursive: true, force: true });
+	// A plan run's identity root holds the plan's token and an empty Codex home.
+	const plan = await fixture("company-runtime");
+	await rm(join(plan.identityRoot, "codex", "auth.json"));
+	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
+	await writeFile(join(plan.identityRoot, "chatgpt-plan", "access-token"), "plan-access-1", { mode: 0o600 });
+	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
+	const names = JSON.parse(await readFile(plan.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
+		(tool: { name: string }) => tool.name,
+	);
+	expect(names).toContain("save_app");
+	expect(names).not.toContain("make_picture");
 });

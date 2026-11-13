@@ -460,8 +460,8 @@ function layoutAuthoring(unit: CloudCompanyFolderUnitResult): boolean {
 	);
 }
 
-/** What the folder core's answer to a change means, for the model. */
-function mutationText(
+/** What the folder core's answer to a change means, for the model (make_picture's answer starts from company_write's). */
+export function mutationText(
 	tool: MutationTool,
 	request: { operationKey: string; path: string },
 	receiptId: string,

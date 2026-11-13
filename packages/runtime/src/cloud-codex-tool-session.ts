@@ -1,10 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
-import { createReadStream, existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, constants as fsConstants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -47,6 +47,18 @@ import {
 	redactCloudWebhookSecrets,
 	redactCloudWebhookSecretsIn,
 } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_PICTURE_MAKER_RULE,
+	CLOUD_PICTURE_MS,
+	type CloudPictureChannel,
+	CloudPictureFailure,
+	type CloudPictureInput,
+	type CloudPictureMade,
+	CloudPictureUnavailable,
+	cloudPictureInput,
+	isCloudPicturePng,
+	MAX_CLOUD_PICTURE_BYTES,
+} from "./cloud-picture-channel.ts";
 import {
 	CloudRuntimeDiagnosticError,
 	type CloudRuntimeErrorCategory,
@@ -171,6 +183,20 @@ const MAX_VOICE_TRANSCRIPT_BYTES = 4 * 1024;
 const VOICE_STOP_MS = 10_000;
 /** What ends a voice call whose voice started a turn: it may only read. */
 const VOICE_ACTED = "Native voice tried to act";
+/** What a refused request of a voice call, or of a picture call, rejects with: the call's failure, never the run's. */
+const VOICE_REJECTED = "Native voice request rejected";
+const PICTURE_REJECTED = "Native picture request rejected";
+/** The only thread config a side thread is started with: the picture thread's (cloud-picture-channel.ts). Codex's
+ * image tool is on there alone, and the picture's bytes stay out of its notifications, which would otherwise carry them
+ * as base64 on one line, past the bound that fails the run. They come from the file Codex saves instead. */
+const PICTURE_THREAD_CONFIG = Object.freeze({
+	"features.image_generation": true,
+	"features.omit_app_server_notification_media": true,
+});
+/** Where Codex 0.155.1 keeps a picture it made: `<codex home>/generated_images/<thread>/<call>.png`, each id with
+ * every character but letters, digits, `-` and `_` made `_` (ext/image-generation/src/artifact.rs). */
+const PICTURE_FOLDER = "generated_images";
+const pictureName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/gu, "_") || "generated_image";
 
 /** What binds a model request: a context composition request has no outputs. */
 type ModelRequestIdentity = Pick<CloudNativeFenceRequest, "threadId" | "turnId" | "purpose"> & {
@@ -187,8 +213,9 @@ interface ReviewThread {
 	reject(error: Error): void;
 }
 
-/** The threads a run's app-server holds beside the agent's: auto-review's, the memory compactor's and a voice call's. */
-type SideThreadKind = "review" | "compact" | "voice";
+/** The threads a run's app-server holds beside the agent's: auto-review's, the memory compactor's, a voice call's and a
+ * picture call's. */
+type SideThreadKind = "review" | "compact" | "voice" | "picture";
 /** What a control request starts: the handshake's requests start nothing of a run's, a thread's start the agent's
  * thread or a side thread (one at a time), a turn's start the agent's turn or a side thread's. */
 type ControlStart = "handshake" | "agent-thread" | "agent-turn" | "side-thread" | `side-turn:${string}`;
@@ -226,6 +253,34 @@ interface VoiceThread {
 	/** Confirms its stop, from a `thread/realtime/closed`. */
 	confirm?: () => void;
 	/** Closes the relay's window for the call's control connection (#voiceEgressEnd). */
+	egress?: () => void;
+}
+
+/** What Codex said of the picture it made: where it saved it, under which item, and with what prompt. */
+interface PictureFound {
+	readonly itemId: string;
+	readonly savedPath: string;
+	readonly revisedPrompt?: string;
+	readonly transparent?: boolean;
+}
+
+/** A picture call's thread (cloud-picture-channel.ts): one turn whose model makes one picture with Codex's image tool,
+ * the one thread of the run where that tool is on. */
+interface PictureThread {
+	readonly threadId: string;
+	turnId?: string;
+	/** Settles the call with the picture Codex saved, or why there is none; set once. */
+	readonly settle: { resolve(found: PictureFound): void; reject(error: Error): void };
+	/** The item of the picture the call takes: another the model makes in the same turn is no one's. */
+	foundItem?: string;
+	/** Codex said the turn's model request hit the member's usage limit. */
+	usageLimit: boolean;
+	ended: boolean;
+	/** The turn's interrupt was sent. */
+	interrupted: boolean;
+	/** Stops watching the signal the call was made with. */
+	release?: () => void;
+	/** Closes the relay's long-wait window the call opened (NativeEgressRelay.allowLongWaits). */
 	egress?: () => void;
 }
 
@@ -647,10 +702,11 @@ class CodexBoundaryRpc {
 	/** Codex's last terminal error discriminant as a fixed name (nativeCodexErrorToken); a name is kept over `unknown`
 	 * and `null`, which say nothing of the cause. */
 	#providerErrorToken?: string;
-	/** `quiet`: a voice call's request, whose refusal is the call's and never the run's. */
+	/** `quiet`: a voice call's or a picture call's request, whose refusal is the call's and never the run's: the words
+	 * it rejects with. */
 	readonly #pending = new Map<
 		number,
-		{ resolve: (value: unknown) => void; reject: (error: Error) => void; quiet?: boolean }
+		{ resolve: (value: unknown) => void; reject: (error: Error) => void; quiet?: string }
 	>();
 	/** The deadlines of the control requests Codex has not answered yet, by request id, each with what it starts. */
 	readonly #controlDeadlines = new Map<number, { starts: ControlStart; timer: ReturnType<typeof setTimeout> }>();
@@ -714,6 +770,21 @@ class CodexBoundaryRpc {
 	/** Opens the relay's window for a voice call's control connection (NativeEgressRelay.allowRealtime); none without
 	 * isolation, where nothing filters the process's network. */
 	readonly #realtimeEgress?: () => () => void;
+	/** The picture call (cloud-picture-channel.ts): at most one at a time, starting or making. Its model requests, a
+	 * prewarm, its turn's and the one Codex sends after the picture, pass the fence on its own lane with nothing
+	 * released, and never fail the run. */
+	#picture?: PictureThread;
+	#pictureStarting = false;
+	/** Ended picture threads: what Codex still says on one stays on the picture's lane. */
+	readonly #endedPictures = new Set<string>();
+	/** How long a picture call waits for its picture (CloudPictureChannel.timeoutMs). */
+	pictureMs = CLOUD_PICTURE_MS;
+	/** The Codex home the run's pictures are saved in, once a call named it: a picture saved after its call ended is
+	 * removed from there too. */
+	#pictureHome?: string;
+	/** Opens the relay's window that lets a connection wait for a picture (NativeEgressRelay.allowLongWaits); none
+	 * without isolation. */
+	readonly #pictureEgress?: () => () => void;
 	#startingSide?: StartingSide;
 	/** The latest side thread start, settled or not: the next one waits for it. */
 	#sideStarting: Promise<void> = Promise.resolve();
@@ -728,11 +799,13 @@ class CodexBoundaryRpc {
 		boundary?: CloudNativeToolBoundary,
 		observability?: CloudRuntimeObservability,
 		realtimeEgress?: () => () => void,
+		pictureEgress?: () => () => void,
 	) {
 		this.#child = child;
 		this.#boundary = boundary;
 		this.#observability = observability;
 		this.#realtimeEgress = realtimeEgress;
+		this.#pictureEgress = pictureEgress;
 		this.#completed = this.#awaitCompletion();
 		child.on("error", () => this.fail("Native boundary process unavailable", "transport_unavailable"));
 		child.stdin.on("error", () => this.fail("Native boundary transport unavailable", "transport_unavailable"));
@@ -966,6 +1039,17 @@ class CodexBoundaryRpc {
 		);
 	}
 
+	/** A model request of a picture call's thread. */
+	isPictureRequest(request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
+		return (
+			request.threadId !== this.#threadId &&
+			request.threadId !== this.#prewarmThreadId &&
+			(this.#picture?.threadId === request.threadId ||
+				this.#endedPictures.has(request.threadId) ||
+				this.#startingPrewarm("picture", request))
+		);
+	}
+
 	/** The prewarm of the side thread of this kind now starting: the first one while it starts, then only its own. A
 	 * known side thread's late prewarm is never it. */
 	#startingPrewarm(kind: SideThreadKind, request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
@@ -978,7 +1062,7 @@ class CodexBoundaryRpc {
 		);
 	}
 
-	/** A reviewer's, a compactor's or a voice call's thread, live or ended. */
+	/** A reviewer's, a compactor's, a voice call's or a picture call's thread, live or ended. */
 	#sideThread(threadId: string): boolean {
 		return (
 			this.#reviews.has(threadId) ||
@@ -986,7 +1070,9 @@ class CodexBoundaryRpc {
 			this.#compactions.has(threadId) ||
 			this.#endedCompactions.has(threadId) ||
 			this.#voice?.threadId === threadId ||
-			this.#endedVoices.has(threadId)
+			this.#endedVoices.has(threadId) ||
+			this.#picture?.threadId === threadId ||
+			this.#endedPictures.has(threadId)
 		);
 	}
 
@@ -1057,6 +1143,22 @@ class CodexBoundaryRpc {
 
 	/** Released outputs of a voice request: its thread has no tools, so each one is unavailable. */
 	releaseVoiceOutputs(request: CloudNativeFenceRequest): CloudNativeFencedResult[] {
+		return this.releaseCompactOutputs(request);
+	}
+
+	/** The picture's lane: its thread's prewarm and its one turn. Never a throw: what a picture call does never fails
+	 * the run. */
+	#assertPictureRequest(request: ModelRequestIdentity): void {
+		if (request.purpose !== "prewarm") return;
+		const starting = this.#startingSide;
+		if (starting?.kind === "picture" && !this.#sideThread(request.threadId))
+			starting.prewarmThreadId = request.threadId;
+	}
+
+	/** Released outputs of a picture request: its thread has no tools of the host's, so each one is unavailable. The
+	 * output of Codex's own image tool never gets here: the pinned fence refuses it inside Codex, and the picture's turn
+	 * ends there. */
+	releasePictureOutputs(request: CloudNativeFenceRequest): CloudNativeFencedResult[] {
 		return this.releaseCompactOutputs(request);
 	}
 
@@ -1238,17 +1340,16 @@ class CodexBoundaryRpc {
 			const starting: StartingSide = { kind };
 			this.#startingSide = starting;
 			try {
+				const quiet = kind === "voice" ? VOICE_REJECTED : kind === "picture" ? PICTURE_REJECTED : undefined;
 				const id = identifier(
-					object(object(await this.#send("thread/start", params, "side-thread", kind === "voice")).thread).id,
+					object(object(await this.#send("thread/start", params, "side-thread", quiet)).thread).id,
 				);
 				if (
 					id === this.#threadId ||
 					this.#sideThread(id) ||
 					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
 				)
-					throw new Error(
-						`Native ${kind === "review" ? "review" : kind === "voice" ? "voice" : "compaction"} binding failed`,
-					);
+					throw new Error(`Native ${kind === "compact" ? "compaction" : kind} binding failed`);
 				return id;
 			} finally {
 				if (this.#startingSide === starting) this.#startingSide = undefined;
@@ -1533,7 +1634,7 @@ class CodexBoundaryRpc {
 					initialItems: [{ role: "developer", text: CLOUD_VOICE_READER_RULE }],
 				},
 				undefined,
-				true,
+				VOICE_REJECTED,
 			);
 			const [, answerSdp] = await Promise.all([starting, answer]);
 			return { answerSdp, speak: (text, speakSignal) => this.#voiceSpeak(voice, text, speakSignal), close };
@@ -1568,7 +1669,7 @@ class CodexBoundaryRpc {
 				"thread/realtime/appendSpeech",
 				{ threadId: voice.threadId, text },
 				undefined,
-				true,
+				VOICE_REJECTED,
 			);
 			const [, said] = await Promise.all([appended, spoken]);
 			return said;
@@ -1603,7 +1704,7 @@ class CodexBoundaryRpc {
 		this.#voiceStopping = voice;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const confirmed = await Promise.race([
-			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, true).then(
+			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, VOICE_REJECTED).then(
 				() => true,
 				// A process that ended can say no more, and opens no more calls.
 				() => (this.#failure || this.#closed ? true : closed),
@@ -1660,7 +1761,7 @@ class CodexBoundaryRpc {
 	 * ends. */
 	#voiceActed(threadId: string, turnId: unknown): void {
 		if (typeof turnId === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(turnId))
-			void this.#send("turn/interrupt", { threadId, turnId }, undefined, true).catch(() => undefined);
+			void this.#send("turn/interrupt", { threadId, turnId }, undefined, VOICE_REJECTED).catch(() => undefined);
 		const voice = this.#voice;
 		if (voice?.threadId === threadId) void this.#closeVoice(voice, new Error(VOICE_ACTED));
 	}
@@ -1730,9 +1831,330 @@ class CodexBoundaryRpc {
 		return true;
 	}
 
+	/** Makes one picture (cloud-picture-channel.ts): a fresh thread with Codex's image tool on and nothing else of the
+	 * agent's, one turn whose model calls that tool once, and the file Codex saved, read and removed. What goes wrong
+	 * with it rejects the call, never the run. */
+	async picture(
+		input: CloudPictureInput & { cwd: string; model: string; codexHome: string },
+		signal: AbortSignal,
+	): Promise<CloudPictureMade> {
+		signal.throwIfAborted();
+		const { prompt } = cloudPictureInput(input);
+		if (this.#failure || this.#closed || !this.#boundary) throw new CloudPictureUnavailable();
+		if (this.#picture || this.#pictureStarting) throw new CloudPictureFailure("busy");
+		this.#pictureStarting = true;
+		// The call's own time: past it, no picture came back in time.
+		const time = new AbortController();
+		const timer = setTimeout(() => time.abort(), this.pictureMs);
+		timer.unref?.();
+		const until = AbortSignal.any([signal, time.signal]);
+		let picture: PictureThread | undefined;
+		try {
+			const started = this.#startSide("picture", until, {
+				// provider-default omits the model, as for the agent's thread: the picture's model takes images as the
+				// agent's does, which Codex's image tool asks of it.
+				...(input.model === "provider-default" ? {} : { model: input.model }),
+				cwd: input.cwd,
+				runtimeWorkspaceRoots: [],
+				environments: [],
+				ephemeral: true,
+				approvalPolicy: "never",
+				approvalsReviewer: "user",
+				sandbox: "read-only",
+				developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+				dynamicTools: [],
+				config: PICTURE_THREAD_CONFIG,
+			});
+			let threadId: string;
+			try {
+				threadId = await untilAborted(started, until, "Native picture cancelled");
+			} catch (error) {
+				// A thread that starts after its caller stopped is retired at once: its messages stay on this lane.
+				void started.then(
+					(id) => this.#retirePicture(id),
+					() => undefined,
+				);
+				throw error;
+			}
+			let settle: PictureThread["settle"] = { resolve: () => undefined, reject: () => undefined };
+			const found = new Promise<PictureFound>((resolve, reject) => {
+				settle = { resolve, reject };
+			});
+			void found.catch(() => undefined);
+			const opened: PictureThread = { threadId, settle, usageLimit: false, ended: false, interrupted: false };
+			picture = opened;
+			this.#picture = opened;
+			const abort = (): void => this.#endPicture(opened, new Error("Native picture cancelled"));
+			until.addEventListener("abort", abort, { once: true });
+			opened.release = () => until.removeEventListener("abort", abort);
+			if (until.aborted) abort();
+			// The images request answers only once the picture exists, silent until then: the relay lets a connection wait
+			// that long while the call lasts.
+			if (!opened.ended && !this.#failure && !this.#closed) opened.egress = this.#pictureEgress?.();
+			this.#pictureHome = input.codexHome;
+			// No control deadline: Codex answers a turn's start at once, and the call's own time bounds it.
+			const starting = this.#send(
+				"turn/start",
+				{
+					threadId,
+					input: [{ type: "text", text: prompt, text_elements: [] }],
+					effort: "low",
+					environments: [],
+					runtimeWorkspaceRoots: [],
+					sandboxPolicy: { type: "readOnly", networkAccess: false },
+				},
+				undefined,
+				PICTURE_REJECTED,
+			);
+			// A turn whose start is answered after the call ended is interrupted once its id is known.
+			void starting.then(
+				(value) => {
+					const id = (value as { turn?: { id?: unknown } } | null)?.turn?.id;
+					if (opened.turnId === undefined && typeof id === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(id))
+						opened.turnId = id;
+					if (opened.ended) this.#interruptPicture(opened);
+				},
+				() => undefined,
+			);
+			const turn = object(await untilAborted(starting, until, "Native picture cancelled"));
+			const turnId = identifier(object(turn.turn).id);
+			if (opened.turnId !== undefined && opened.turnId !== turnId) throw new Error("Native picture binding failed");
+			opened.turnId = turnId;
+			return await this.#pictureFile(await found, threadId, input.codexHome);
+		} catch (error) {
+			if (this.#failure || this.#closed) throw new CloudPictureUnavailable();
+			if (error instanceof CloudPictureFailure || error instanceof CloudPictureUnavailable) throw error;
+			if (time.signal.aborted && !signal.aborted) throw new CloudPictureFailure("timeout");
+			if (signal.aborted) throw new Error("Native picture cancelled");
+			throw new CloudPictureFailure("failed");
+		} finally {
+			clearTimeout(timer);
+			if (picture) this.#endPicture(picture);
+			this.#pictureStarting = false;
+		}
+	}
+
+	/** The picture Codex saved, from the one place it keeps a picture of this thread and item: its bytes, once they are
+	 * a regular file there of one link, within the bound, that starts as a PNG. Whatever it is, that one file is removed,
+	 * and its two folders when empty; nothing else Codex names is read or touched. */
+	async #pictureFile(found: PictureFound, threadId: string, codexHome: string): Promise<CloudPictureMade> {
+		const folder = join(await realpath(codexHome), PICTURE_FOLDER);
+		const expected = join(folder, pictureName(threadId), `${pictureName(found.itemId)}.png`);
+		try {
+			if (
+				!isAbsolute(found.savedPath) ||
+				basename(found.savedPath) !== basename(expected) ||
+				basename(dirname(found.savedPath)) !== pictureName(threadId) ||
+				basename(dirname(dirname(found.savedPath))) !== PICTURE_FOLDER ||
+				(await realpath(found.savedPath).catch(() => undefined)) !== expected
+			)
+				throw new CloudPictureFailure("invalid");
+			const handle = await open(expected, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+				throw new CloudPictureFailure("invalid");
+			});
+			try {
+				const metadata = await handle.stat();
+				if (!metadata.isFile() || metadata.nlink !== 1) throw new CloudPictureFailure("invalid");
+				if (metadata.size > MAX_CLOUD_PICTURE_BYTES) throw new CloudPictureFailure("too_large");
+				// One byte more than the file says it holds tells a file that grew since.
+				const png = Buffer.alloc(metadata.size + 1);
+				let read = 0;
+				while (read < png.length) {
+					const { bytesRead } = await handle.read(png, read, png.length - read, read);
+					if (bytesRead === 0) break;
+					read += bytesRead;
+				}
+				if (read !== metadata.size || !isCloudPicturePng(png.subarray(0, read)))
+					throw new CloudPictureFailure("invalid");
+				return {
+					png: png.subarray(0, read),
+					...(found.revisedPrompt !== undefined ? { revisedPrompt: found.revisedPrompt } : {}),
+					...(found.transparent !== undefined ? { transparent: found.transparent } : {}),
+				};
+			} finally {
+				await handle.close();
+			}
+		} finally {
+			await this.#removePicture(folder, expected);
+		}
+	}
+
+	/** Removes the one file a picture call reads and its two folders when empty, each only as itself: a folder that is
+	 * a link is never gone through. */
+	async #removePicture(folder: string, expected: string): Promise<void> {
+		// lstat follows no link: a link to a folder is no folder here.
+		const real = async (path: string): Promise<boolean> =>
+			(await lstat(path).catch(() => undefined))?.isDirectory() === true;
+		if (!(await real(folder)) || !(await real(dirname(expected)))) return;
+		await rm(expected, { force: true }).catch(() => undefined);
+		await rmdir(dirname(expected)).catch(() => undefined);
+		await rmdir(folder).catch(() => undefined);
+	}
+
+	/** Removes the file of a picture no call takes (made after its call ended, or a second one of a turn), so the Codex
+	 * home holds no more than before. */
+	#removeUnusedPicture(threadId: string, itemId: string): void {
+		const home = this.#pictureHome;
+		if (!home) return;
+		void realpath(home)
+			.then((real) => {
+				const folder = join(real, PICTURE_FOLDER);
+				return this.#removePicture(folder, join(folder, pictureName(threadId), `${pictureName(itemId)}.png`));
+			})
+			.catch(() => undefined);
+	}
+
+	/** Ends a picture call's lane, once: its pending picture is rejected (unless it came), its turn interrupted, its
+	 * relay window closed and its thread retired. */
+	#endPicture(picture: PictureThread, error: Error = new Error("Native picture ended")): void {
+		if (picture.ended) return;
+		picture.ended = true;
+		if (this.#picture === picture) this.#picture = undefined;
+		this.#retirePicture(picture.threadId);
+		picture.release?.();
+		picture.settle.reject(error);
+		this.#pictureEgressEnd(picture);
+		this.#interruptPicture(picture);
+	}
+
+	/** Interrupts a picture's turn once its id is known, once. */
+	#interruptPicture(picture: PictureThread): void {
+		if (picture.interrupted || picture.turnId === undefined || this.#failure || this.#closed) return;
+		picture.interrupted = true;
+		void this.#send(
+			"turn/interrupt",
+			{ threadId: picture.threadId, turnId: picture.turnId },
+			undefined,
+			PICTURE_REJECTED,
+		).catch(() => undefined);
+	}
+
+	/** Closes a picture call's relay window, once. */
+	#pictureEgressEnd(picture: PictureThread): void {
+		const end = picture.egress;
+		picture.egress = undefined;
+		end?.();
+	}
+
+	#retirePicture(threadId: string): void {
+		this.#endedPictures.add(threadId);
+		if (this.#endedPictures.size > TRACKED_REQUESTS)
+			this.#endedPictures.delete(this.#endedPictures.values().next().value as string);
+	}
+
+	/** Messages of a picture call's thread. Returns false when the message is not the picture's. Nothing on it fails the
+	 * run: what is malformed ends only the call. */
+	#pictureMessage(message: Record<string, unknown>): boolean {
+		const params =
+			message.params && typeof message.params === "object" && !Array.isArray(message.params)
+				? (message.params as Record<string, unknown>)
+				: undefined;
+		const threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
+		if (
+			!threadId ||
+			threadId === this.#threadId ||
+			!(this.#picture?.threadId === threadId || this.#endedPictures.has(threadId))
+		)
+			return false;
+		if (message.id !== undefined) {
+			// The picture's model has Codex's image tool and nothing of the host's: every request of its thread is refused.
+			this.#write({
+				id: message.id,
+				error: { code: -32601, message: "Operation not available in this cloud picture" },
+			});
+			return true;
+		}
+		const picture = this.#picture?.threadId === threadId ? this.#picture : undefined;
+		if (!picture) {
+			// A picture saved after its call ended is no one's.
+			const item = message.method === "item/completed" ? params?.item : undefined;
+			if (
+				item &&
+				typeof item === "object" &&
+				!Array.isArray(item) &&
+				(item as Record<string, unknown>).type === "imageGeneration" &&
+				typeof (item as Record<string, unknown>).id === "string"
+			)
+				this.#removeUnusedPicture(threadId, (item as Record<string, unknown>).id as string);
+			return true;
+		}
+		try {
+			this.#pictureNotification(picture, message.method, params!);
+		} catch {
+			this.#endPicture(picture, new CloudPictureFailure("failed"));
+		}
+		// The picture's text, reasoning, usage and diagnostics are never delivered or kept.
+		return true;
+	}
+
+	#pictureNotification(picture: PictureThread, method: unknown, params: Record<string, unknown>): void {
+		if (method === "turn/started") {
+			const turnId = identifier(object(params.turn).id);
+			if (picture.turnId !== undefined && picture.turnId !== turnId)
+				throw new Error("Native picture binding failed");
+			picture.turnId = turnId;
+			return;
+		}
+		if (method === "error" && params.willRetry === false) {
+			if (nativeRuntimeUsageSignal(object(params.error).codexErrorInfo) === "usage_limit") picture.usageLimit = true;
+			return;
+		}
+		if (method === "turn/completed") {
+			// The turn ended without its picture: the model made none, or the member's usage limit stopped it.
+			const turn = object(params.turn);
+			const error =
+				turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
+					? (turn.error as Record<string, unknown>)
+					: undefined;
+			const limited =
+				picture.usageLimit ||
+				(error?.codexErrorInfo !== undefined && nativeRuntimeUsageSignal(error.codexErrorInfo) === "usage_limit");
+			this.#endPicture(picture, new CloudPictureFailure(limited ? "usage_limit" : "no_picture"));
+			return;
+		}
+		if (method !== "item/completed") return;
+		const item = object(params.item);
+		if (item.type !== "imageGeneration") return;
+		const itemId = identifier(item.id);
+		// The model made a second picture in the same turn: the call took the first.
+		if (picture.foundItem !== undefined) {
+			if (itemId !== picture.foundItem) this.#removeUnusedPicture(picture.threadId, itemId);
+			return;
+		}
+		if (item.status === "completed" && typeof item.savedPath === "string") {
+			picture.foundItem = itemId;
+			picture.settle.resolve({
+				itemId,
+				savedPath: item.savedPath,
+				...(typeof item.revisedPrompt === "string" ? { revisedPrompt: item.revisedPrompt } : {}),
+				...(typeof item.transparentBackground === "boolean" ? { transparent: item.transparentBackground } : {}),
+			});
+			// The picture is all the call wants: stop before the turn's next model request, which the fence refuses anyway.
+			this.#interruptPicture(picture);
+			return;
+		}
+		const failure =
+			item.failure && typeof item.failure === "object" && !Array.isArray(item.failure)
+				? (item.failure as Record<string, unknown>)
+				: undefined;
+		const resetsAt =
+			typeof failure?.resetsAt === "number" && Number.isSafeInteger(failure.resetsAt) && failure.resetsAt > 0
+				? failure.resetsAt
+				: undefined;
+		this.#endPicture(
+			picture,
+			item.status === "completed"
+				? // Made, but Codex could not save it: there is nothing to read.
+					new CloudPictureFailure("invalid")
+				: failure?.type === "usageLimitExceeded" && failure.limitId === "image_gen"
+					? new CloudPictureFailure("picture_limit", resetsAt)
+					: new CloudPictureFailure("refused"),
+		);
+	}
+
 	/** A model request's thread and turn: the run's, its prewarm's, a reviewer's or the compactor's. Both requests
 	 * Codex makes before a provider request, its context composition and then its fence, are bound here. */
-	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "voice" | "prewarm" | "turn" {
+	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "voice" | "picture" | "prewarm" | "turn" {
 		if (this.#failure || this.#closed) throw new Error("Native result boundary stopped");
 		// A side thread's prewarm while that thread starts, as against a known thread's late one.
 		const sideStarting = request.purpose === "prewarm" && !this.#sideThread(request.threadId);
@@ -1749,6 +2171,12 @@ class CodexBoundaryRpc {
 			this.#assertVoiceRequest(request);
 			this.#underWay(request.purpose === "prewarm" && sideStarting && "side-thread");
 			return "voice";
+		}
+		// So may a picture's turn, whose request after the picture Codex sends once the call has its answer.
+		if (this.isPictureRequest(request)) {
+			this.#assertPictureRequest(request);
+			this.#underWay(request.purpose === "prewarm" && sideStarting && "side-thread");
+			return "picture";
 		}
 		if (this.#finished) throw new Error("Native result boundary stopped");
 		if (this.isReviewRequest(request)) {
@@ -1807,7 +2235,7 @@ class CodexBoundaryRpc {
 
 	assertModelRequest(request: CloudNativeFenceRequest): void {
 		const lane = this.#bindModelRequest(request);
-		if (lane === "review" || lane === "compact" || lane === "voice") return;
+		if (lane === "review" || lane === "compact" || lane === "voice" || lane === "picture") return;
 		if (lane === "prewarm") {
 			this.#observeFence(request);
 			return;
@@ -1852,6 +2280,7 @@ class CodexBoundaryRpc {
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
+		if (this.#picture) this.#endPicture(this.#picture, new CloudPictureUnavailable());
 		this.#threadStarted?.();
 		this.#rejectCompleted(this.#failure);
 	}
@@ -1860,11 +2289,16 @@ class CodexBoundaryRpc {
 	 * no model request for what it starts reaching the fence meanwhile (#underWay), fails the boundary, and with it
 	 * the run, as a step that got no answer in time. */
 	request(method: string, params: JsonValue, starts?: ControlStart): Promise<unknown> {
-		return this.#send(method, params, starts, false);
+		return this.#send(method, params, starts, undefined);
 	}
 
-	/** `quiet`: a refusal rejects with fixed words and leaves the run's failure category as it is. */
-	async #send(method: string, params: JsonValue, starts: ControlStart | undefined, quiet: boolean): Promise<unknown> {
+	/** `quiet`: a refusal rejects with these fixed words and leaves the run's failure category as it is. */
+	async #send(
+		method: string,
+		params: JsonValue,
+		starts: ControlStart | undefined,
+		quiet: string | undefined,
+	): Promise<unknown> {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
@@ -1948,6 +2382,7 @@ class CodexBoundaryRpc {
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
+		if (this.#picture) this.#endPicture(this.#picture, new CloudPictureUnavailable());
 		this.#threadStarted?.();
 		this.#child.stdin.end();
 	}
@@ -2086,7 +2521,10 @@ class CodexBoundaryRpc {
 		this.#lastActivityAt = Date.now();
 		if (
 			message.method !== undefined &&
-			(this.#reviewMessage(message) || this.#compactMessage(message) || this.#voiceMessage(message))
+			(this.#reviewMessage(message) ||
+				this.#compactMessage(message) ||
+				this.#voiceMessage(message) ||
+				this.#pictureMessage(message))
 		)
 			return;
 		if (message.method === undefined) {
@@ -2096,7 +2534,7 @@ class CodexBoundaryRpc {
 			if (message.error === undefined && !Object.hasOwn(message, "result"))
 				throw new Error("Missing native response");
 			this.#pending.delete(message.id);
-			if (message.error !== undefined && pending.quiet) pending.reject(new Error("Native voice request rejected"));
+			if (message.error !== undefined && pending.quiet !== undefined) pending.reject(new Error(pending.quiet));
 			else if (message.error !== undefined) {
 				this.#failureCategory = "provider_failed";
 				pending.reject(new CloudRuntimeDiagnosticError("provider_failed", "Native boundary request rejected"));
@@ -2288,6 +2726,8 @@ interface CloudCodexProcess {
 	readonly key: string;
 	readonly identityRoot?: string;
 	readonly workspace: string;
+	/** The process's CODEX_HOME, as the host names it: where Codex saves a picture it made. */
+	readonly codexHome: string;
 	readonly rpc: CodexBoundaryRpc;
 	readonly userAgent: string;
 	readonly binding: CloudCodexRunBinding;
@@ -2430,15 +2870,21 @@ async function startCloudCodexProcess(
 						? rpc.releaseCompactOutputs(request)
 						: rpc?.isVoiceRequest(request)
 							? rpc.releaseVoiceOutputs(request)
-							: undefined,
+							: rpc?.isPictureRequest(request)
+								? rpc.releasePictureOutputs(request)
+								: undefined,
 			context: {
 				assertRequest: (request) => {
 					if (!rpc?.bound) throw new Error("Native result boundary not initialized");
 					rpc.assertContextRequest(request);
 				},
-				// A reviewer's, the compactor's or a voice call's request is its own, never composed from the agent's run.
+				// A reviewer's, the compactor's, a voice call's or a picture call's request is its own, never composed from the
+				// agent's run.
 				compose: (request, composeSignal) =>
-					rpc?.isReviewRequest(request) || rpc?.isCompactRequest(request) || rpc?.isVoiceRequest(request)
+					rpc?.isReviewRequest(request) ||
+					rpc?.isCompactRequest(request) ||
+					rpc?.isVoiceRequest(request) ||
+					rpc?.isPictureRequest(request)
 						? undefined
 						: binding.composeContext?.(request, composeSignal),
 			},
@@ -2490,7 +2936,7 @@ async function startCloudCodexProcess(
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
-		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime);
+		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime, isolated?.allowLongWaits);
 		rpc.chatGptPlan = plan !== undefined;
 		const handshake = rpc;
 		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");
@@ -2546,6 +2992,7 @@ async function startCloudCodexProcess(
 			key: cloudCodexProcessKey(inputs),
 			...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 			workspace,
+			codexHome,
 			rpc: handshake,
 			userAgent,
 			binding,
@@ -2766,6 +3213,9 @@ export async function runCloudCodexToolSession(options: {
 	/** A voice call's lane (cloud-voice-channel.ts): open from the agent's thread to the process's end, and only for a
 	 * Codex login's run; a run on a member's ChatGPT plan has none. */
 	voice?: CloudVoiceChannel;
+	/** The picture lane (cloud-picture-channel.ts), as the voice's: open from the agent's thread to the process's end,
+	 * and only for a Codex login's run. */
+	pictures?: CloudPictureChannel;
 	/** Closing (§7.1): runs once the agent's turn has completed and been checked, before the process goes. What it
 	 * throws never fails the run: the lines it left unbuilt stay missing, for a settle to build (§5.4). */
 	closing?: (signal: AbortSignal) => Promise<void>;
@@ -2944,6 +3394,16 @@ export async function runCloudCodexToolSession(options: {
 			if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
 			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
 		}
+		// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
+		if (!rpc.chatGptPlan && options.pictures) {
+			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
+			options.pictures.attach((input, pictureSignal) =>
+				rpc.picture(
+					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
+					pictureSignal,
+				),
+			);
+		}
 		const startTurn = async (text: string): Promise<void> => {
 			const turnStarted = object(
 				await rpc.request(
@@ -3017,6 +3477,7 @@ export async function runCloudCodexToolSession(options: {
 		options.reviewer?.attach(undefined);
 		options.compactor?.attach(undefined);
 		options.voice?.attach(undefined);
+		options.pictures?.attach(undefined);
 		if (idleWatch !== undefined) clearInterval(idleWatch);
 		signal.removeEventListener("abort", abort);
 		options.boundary.close();

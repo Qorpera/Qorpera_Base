@@ -32,6 +32,7 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
+import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
@@ -109,6 +110,8 @@ export async function runCloudNativeRunToolSession(options: {
 	compactor?: MemoryCompactChannel;
 	/** A voice call's lane, as runCloudCodexToolSession takes it. */
 	voice?: CloudVoiceChannel;
+	/** The picture lane, as runCloudCodexToolSession takes it. */
+	pictures?: CloudPictureChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
 	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
 	 * runCloudCodexToolSession takes it. */
@@ -263,6 +266,7 @@ export async function runCloudNativeRunToolSession(options: {
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
 			...(options.voice ? { voice: options.voice } : {}),
+			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
