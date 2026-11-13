@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { CODE_BUNDLE_MAXIMUM_BYTES, type CodeBundleRef } from "./code-bundle-store.ts";
-import { codeFolderRefuses } from "./code-folder-names.ts";
+import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 import {
 	type CodeAreaRef,
 	type CodeBundleSink,
@@ -484,7 +484,9 @@ async function mainTree(run: Run, proof: string, mainSha: string): Promise<MainT
 		);
 	}
 	if (refused === null) {
-		const paths = codeFolderRefuses(run.area, records);
+		// Where every session's worktree would hold it, 42 bytes longer than main/: what comes in as the default branch,
+		// every session can check out (code-folder-names.ts).
+		const paths = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
 		if (paths.length) refused = { code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths };
 	}
 	let files = 0,
@@ -778,7 +780,7 @@ function measuring(run: Run, seconds: number, bound: number): Run {
  * when its listing is over the measure's bound; a listing that fails is the measure's failure. */
 async function lineFits(measure: Run, proof: string, sha: string): Promise<boolean | null> {
 	try {
-		return codeFolderRefuses(measure.area, await measure.checkNames(proof, sha)).length === 0;
+		return codeFolderRefuses(measure.area, await measure.checkNames(proof, sha), CODE_FOLDER_ANY_SESSION).length === 0;
 	} catch (error) {
 		if (error instanceof CodeHostRefusal) return false;
 		if (error instanceof Over) return null;

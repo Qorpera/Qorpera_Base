@@ -953,15 +953,16 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		await refusedFor({ "tab\there.txt": "t\n" }, [null]);
 		// An NFD name is `checkNames`'s own refusal, before the folder's rule.
 		await refusedFor({ "café.txt": "nfd\n" }, ["café.txt"], "CODE_HOST_NAMES_NOT_NFC");
-		// The folder program's bound on one name (255 bytes), and the folder's on the whole path where main stands:
-		// code/acme/shop/main/ is 20 bytes, so 4,076 bytes of path fit and 4,077 do not. Paths over 200 bytes show null.
+		// The folder program's bound on one name (255 bytes), and the folder's on the whole path where every session's
+		// worktree would hold it (CODE_FOLDER_ANY_SESSION): code/acme/shop/worktrees/<a 36-character id>/ is 62 bytes, so
+		// 4,034 bytes of path fit and 4,035 do not (under main/ alone, 20 bytes, 4,076 would). Paths over 200 bytes show null.
 		const deep = Array.from({ length: 20 }, () => "p".repeat(200)).join("/");
 		await refusedFor({ [`${"n".repeat(252)}.txt`]: "n\n" }, [null]);
-		await refusedFor({ [`${deep}/${"q".repeat(57)}`]: "q\n" }, [null]);
+		await refusedFor({ [`${deep}/${"q".repeat(15)}`]: "q\n" }, [null]);
 		const fits = await looked(
 			{
 				[`${"n".repeat(251)}.txt`]: "n\n",
-				[`${deep}/${"q".repeat(56)}`]: "q\n",
+				[`${deep}/${"q".repeat(14)}`]: "q\n",
 				// What the folder takes under code/ alone: a device name, a colon, a percent sign.
 				"con.txt": "c\n",
 				"a:b.txt": "a\n",
