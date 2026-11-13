@@ -271,7 +271,9 @@ export interface LxdExecPipeRequest {
 	readonly user?: number;
 	readonly group?: number;
 	/** Each chunk of stdout as it arrives, for a command whose output is a stream and not a result (the home's
-	 * channel). With it nothing is kept, and `stdout` in the result is empty; `maxStdoutBytes` still bounds the whole. */
+	 * channel). With it nothing is kept here, `stdout` in the result is empty and `maxStdoutBytes` bounds nothing: a
+	 * channel lives as long as a turn and carries every command's output, so what bounds it is the consumer's own
+	 * buffer of what it has not read yet (machine-exec-server.ts). */
 	readonly onStdout?: (chunk: Buffer) => void;
 	/** The command's environment, over LXD's defaults (`PATH`, `LANG`, `HOME` and `USER` where not given) and the
 	 * instance's `environment.*` keys. */
@@ -3770,9 +3772,12 @@ export class LxdUnixClient
 						binary: (payload) => {
 							if (failure) return;
 							if (stream.name === "stdout" && !stdoutEnded) {
+								if (request.onStdout) {
+									request.onStdout(payload);
+									return;
+								}
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
-								else if (request.onStdout) request.onStdout(payload);
 								else stdout.push(payload);
 							} else if (stream.name === "stderr" && !stderrEnded) {
 								const kept = Buffer.concat([stderrTail, payload]);

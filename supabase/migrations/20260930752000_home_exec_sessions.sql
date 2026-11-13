@@ -9,8 +9,9 @@
 --   (qorpera_home_settings, qorpera_home_companies). With no rows at all, every company is as it is today: no
 --   environment, no channel, the same tools and the same provider request.
 -- * One session belongs to exactly one run, on one boot of one machine, and a run has one open per boot. A second
---   run cannot take it, a boot that ended takes its sessions with it, and a session
---   of a boot that ended is refused: its home is gone with the boot, as a command's output is.
+--   run cannot take it; the same run coming back with a new session id supersedes its own; and a session of a boot
+--   that ended is refused: its home is gone with the boot, as a command's output is. The executor's guest shell
+--   checks the boot again when it starts the exec-server.
 -- * The session row is where the folder window of slice 3 is named (folder_window_id), so a write that arrives from
 --   a home can be credited to the call that made it. Slice 3 owns that column's use; nothing here writes it.
 -- * Nothing in this migration lets a command reach a sign-in, and nothing shows a member a command or a step.
@@ -175,7 +176,9 @@ begin
 end
 $$;
 
--- The run's slot closes its own session when its turn ends; the executor closes one whose boot or run is gone.
+-- The run's host closes its own session when the run ends or is stopped. A session nothing closed (its host was
+-- killed) is superseded when the same run comes back, and a session of a boot that ended is refused HOME_SESSION_ENDED
+-- whatever its row says, so no row has to be closed by hand.
 create function public.qorpera_close_home_session(p_binding jsonb, p_session_id uuid, p_reason text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_identity jsonb; v_session public.qorpera_company_home_sessions%rowtype;

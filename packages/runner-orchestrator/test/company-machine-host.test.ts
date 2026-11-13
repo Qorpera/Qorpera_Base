@@ -6586,7 +6586,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		const { f, exec, session, opens } = await home();
 		f.homeSessions.push(session());
 		const before = f.order.length;
-		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		expect(f.order.slice(before)).toEqual([
 			"sql:qorpera_folder_home_session_window",
 			"folder:open",
@@ -6636,7 +6636,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {
 		const { f, exec, session } = await home();
 		f.homeSessions.push(session());
-		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		const lines = channel.lines[Symbol.asyncIterator]();
 		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
 		exec.request?.onStdout?.(Buffer.from('{"id":2,"result":"a secret"}\n'));
@@ -6651,7 +6651,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 	it("closes again a window whose channel ended while a pass was opening it again (review r10 F1)", async () => {
 		const { f, session, opens } = await home();
 		f.homeSessions.push(session());
-		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		let answer = (): void => undefined;
 		f.service.opening = new Promise<void>((resolve) => {
 			answer = resolve;
@@ -6671,9 +6671,9 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		const { f, pipe, session } = await home();
 		f.homeSessions.push(session());
 		f.service.down = true;
-		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
-			"FOLDER_CONTROL_UNANSWERED",
-		);
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
 		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
 			["open", "close"],
 		);
@@ -6691,9 +6691,9 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		});
 		Object.assign(f.client, { execInstancePipe: pipe });
 		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
-		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
-			"HOME_NOT_SHARED",
-		);
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_NOT_SHARED");
 		expect(pipe).not.toHaveBeenCalled();
 		f.homeSessions.push({
 			schema: "qorpera.folder-home-session/v1",
@@ -6704,9 +6704,9 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 			requestedByUserId: id(33),
 			machineId: id(2),
 			placementId: id(6),
-			bootId: id(34),
+			bootId: f.boot,
 		});
-		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		expect(pipe).toHaveBeenCalledTimes(1);
 		// No folder here: no window and no release, only the ask.
 		expect(f.service.requests).toEqual([]);
@@ -6717,21 +6717,25 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 	it("starts no channel when SQL refuses the session, or when the disk's reads cannot be taken in", async () => {
 		const { f, pipe, session, opens } = await home();
 		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
-		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
-			"HOME_NOT_SHARED",
-		);
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_NOT_SHARED");
 		expect(opens()).toBe(0);
-		// An answer about another placement is no answer.
+		// An answer about another boot is an ended session; one about another placement is no answer.
+		f.homeSessions.push({ ...session(), bootId: id(35) });
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_SESSION_ENDED");
 		f.homeSessions.push({ ...session(), placementId: id(9) });
-		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
-			"HOME_FOLDER_SESSION_INVALID",
-		);
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_FOLDER_SESSION_INVALID");
 		// The take-in before the channel holds: the window it opened closes again.
 		f.homeSessions.push(session());
 		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
-		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
-			"HOME_FOLDER_HELD",
-		);
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_FOLDER_HELD");
 		expect(opens()).toBe(1);
 		expect(
 			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),

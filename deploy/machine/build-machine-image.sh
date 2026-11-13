@@ -185,8 +185,6 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	unzip -q /tmp/chromium.zip -d /tmp/chromium
 	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
 	rm -rf /tmp/chromium.zip /tmp/chromium
-	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
-	useradd --create-home --shell /bin/bash --user-group desktop
 	# The home of an agent (slice 1) runs the exec-server of Codex as this account: the shell and file tools of the
 	# model go through it. A non-root default, so what it writes is owned by the agent and tools that refuse root work;
 	# with a way to root of its own (qorpera-agent.sudoers, pushed below), because that shell must be able to do on the
@@ -194,6 +192,8 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# executor names them to LXD without reading anything of the guest.
 	groupadd --gid 2000 qorpera-agent
 	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
+	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
+	useradd --create-home --shell /bin/bash --user-group desktop
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
 	# (desktop-look, which the package brings), from the pictures unpacked here; nothing of it is kept in the account.
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder /usr/share/qorpera-desktop
@@ -295,25 +295,27 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		{ echo "the unit that hears a press on the dock is not enabled, or its service starts by itself" >&2; exit 1; }
 	[[ -d /etc/qorpera-machine && -z $(ls -A /etc/qorpera-machine) ]] ||
 		{ echo "the image names a figure of its own" >&2; exit 1; }
-	# The agent'"'"'s home (13 Nov 2026): Codex'"'"'s own shell runs as qorpera-agent and must be able to do everything
-	# machine_run does on this machine as root, so the account reaches root without a password, as a coding session'"'"'s
-	# user does. The desktop'"'"'s account must not: Chromium keeps its sandbox there, and the root helpers are hardened
-	# against it.
+	# The home of an agent (13 Nov 2026): Codex runs its own shell as qorpera-agent, which must be able to do all that
+	# machine_run does on this machine as root, so the account reaches root without a password, as the user of a coding
+	# session does. The desktop account must not: Chromium keeps its sandbox there, and the root helpers are hardened
+	# against it. (No apostrophe in this block: it is one single-quoted script.)
 	visudo -cf /etc/sudoers.d/qorpera-agent
+	[[ $(stat -c "%U:%G %a" /etc/sudoers.d/qorpera-agent) == "root:root 440" ]] ||
+		{ echo "the sudo rule of the agent account is not a root file of mode 0440" >&2; exit 1; }
 	[[ $(runuser -u qorpera-agent -- sudo -n id -u) == 0 ]] ||
-		{ echo "the agent'"'"'s account cannot reach root: Codex'"'"'s own shell would be weaker than machine_run" >&2; exit 1; }
+		{ echo "the agent account cannot reach root: the shell of Codex would be weaker than machine_run" >&2; exit 1; }
 	runuser -u qorpera-agent -- sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-agent-root-check ||
-		{ echo "the agent'"'"'s account cannot write under /etc" >&2; exit 1; }
+		{ echo "the agent account cannot write under /etc" >&2; exit 1; }
 	rm -f /etc/qorpera-agent-root-check
-	# A file root wrote (as a machine_run command does) is changed from that shell through its way to root.
+	# A file root wrote (as a machine_run command does) refuses a plain write from that shell and takes it through sudo.
 	install -o root -g root -m 0644 /dev/null /company/root-owned-check
-	runuser -u qorpera-agent -- bash -lc '"'"'echo changed | sudo -n tee -a /company/root-owned-check >/dev/null'"'"' ||
-		{ echo "the agent'"'"'s account cannot change a file root wrote" >&2; exit 1; }
+	! runuser -u qorpera-agent -- sh -c "echo plain >>/company/root-owned-check" 2>/dev/null ||
+		{ echo "the agent account wrote a root file without sudo" >&2; exit 1; }
+	runuser -u qorpera-agent -- sh -c "echo changed | sudo -n tee -a /company/root-owned-check >/dev/null" ||
+		{ echo "the agent account cannot change a root file through sudo" >&2; exit 1; }
 	rm -f /company/root-owned-check
 	! runuser -u desktop -- sudo -n true 2>/dev/null ||
-		{ echo "the desktop'"'"'s account can reach root" >&2; exit 1; }
-	[[ $(stat -c "%U:%G %a" /etc/sudoers.d/qorpera-agent) == "root:root 440" ]] ||
-		{ echo "the agent'"'"'s sudo rule is not root'"'"'s own file" >&2; exit 1; }
+		{ echo "the desktop account can reach root" >&2; exit 1; }
 	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
 	# every machine without compressed memory, with only a line in each journal to say so.
 	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }

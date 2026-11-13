@@ -827,11 +827,25 @@ export function describeCloudAction(
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
 	} else if (tool.name === "home_command" || tool.name === "home_change") {
-		// The agent's home: what the model itself asked of its machine, in the words of the thing it asked for. The
-		// card shows the whole of it that fits; the approval's identity covers all of it (`action`, hashed).
+		// The agent's home (cloud-codex-home.ts): what the model itself asked of its machine, in the words of the thing
+		// it asked for. The card shows the command, the shell a typed line goes into, or the patch itself, as much of
+		// each as fits; the approval's identity covers all of it.
 		title = tool.name === "home_command" ? "Run a command on its own machine" : "Change files on its own machine";
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
+		const into = record(args.into ?? null);
+		if (typeof into.command === "string") quote("typed into", into.command, 2000);
+		if (Array.isArray(args.changes))
+			quote(
+				"patch",
+				args.changes
+					.map((entry) => {
+						const change = record(entry);
+						const diff = typeof change.diff === "string" ? change.diff : text(record(change.diff ?? null).head);
+						return `${text(change.path ?? change.machinePath)} (${text(change.kind)})\n${diff}`;
+					})
+					.join("\n"),
+			);
 	} else if (tool.name === "machine_screen") {
 		// 20260930708000: one action on a company machine's desktop. The card says where it lands, the window the agent last
 		// saw there and what it is for; the screen's pixels never reach the card or the reviewer.

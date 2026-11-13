@@ -10,7 +10,7 @@ import type { CloudHomeSessionAuthorized } from "../../packages/runtime/src/clou
 import type { CloudNativeToolBinding } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 
 /** The ingress's own types, so the executor and the service agree on one shape (cloud-home-channel.ts). */
-export type HomeSessionAuthority = CloudHomeSessionAuthorized & { readonly bootId: string; readonly runId: string };
+export type HomeSessionAuthority = CloudHomeSessionAuthorized & { readonly runId: string };
 export type HomeSessionAnswer = HomeSessionAuthority | { readonly state: "refused"; readonly reason: string };
 
 const REFUSALS = new Set(["MACHINE_NOT_RUNNING", "HOME_SESSION_ENDED"]);

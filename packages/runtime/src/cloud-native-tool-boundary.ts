@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
-import type { CloudCodexHomeSteps } from "./cloud-codex-home.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
 	CloudCompanyPathParentMissing,
@@ -281,9 +280,20 @@ export interface CloudNativeActionReview {
 			argumentsText: string;
 			argumentSha256: string;
 			callId: string;
+			/** How the agent makes this action happen once its card is approved, when calling the same tool again is
+			 * not what it would do (the agent's home: CloudActionCall.repeat). */
+			repeat?: string;
 		},
 		signal: AbortSignal,
 	): Promise<CloudActionGateResult>;
+}
+
+/** The run's home as the result fence sees it (cloud-codex-home.ts): the words it has for a call of Codex's own, shown
+ * first in that call's output, and the release that finishes the call's step with the envelope the model got. */
+export interface CloudNativeHomeRelease {
+	noteFor(callId: string): string | undefined;
+	/** `native`: the output is Codex's own tool's, not one this host issued for a tool of ours. */
+	released(callId: string, envelope: string, native: boolean): void;
 }
 
 export interface CloudToolResult {
@@ -543,8 +553,8 @@ export class CloudNativeToolBoundary {
 	readonly #captures?: CloudNativeCaptureImages;
 	readonly #review?: CloudNativeActionReview;
 	readonly #runLog?: CloudRunLog;
-	/** The run's native steps, when it has a home: each one is finished with the envelope released below (slice 2). */
-	readonly #homeSteps?: CloudCodexHomeSteps;
+	/** The run's home, when it has one: its words for a call it refused or lost, and the step each release finishes. */
+	readonly #home?: CloudNativeHomeRelease;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
 	readonly #calls = new Map<string, CloudNativeCall>();
@@ -583,8 +593,8 @@ export class CloudNativeToolBoundary {
 		review?: CloudNativeActionReview;
 		/** The run's work log: every call is a step, and an acting call is committed before it runs. */
 		runLog?: CloudRunLog;
-		/** The home's steps (cloud-codex-home.ts), for a run whose company has the switch on. */
-		homeSteps?: CloudCodexHomeSteps;
+		/** The run's home (cloud-codex-home.ts), for a run whose company has the switch on. */
+		home?: CloudNativeHomeRelease;
 		/** The run's desktop folder reports (F3 4f-2b): a call that runs shows the one since the last in its result. */
 		folderReports?: CloudNativeFolderReports;
 	}) {
@@ -608,7 +618,7 @@ export class CloudNativeToolBoundary {
 		this.#captures = options.captures;
 		this.#review = options.review;
 		this.#runLog = options.runLog;
-		this.#homeSteps = options.homeSteps;
+		this.#home = options.home;
 		this.#folderReports = options.folderReports;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
@@ -758,17 +768,20 @@ export class CloudNativeToolBoundary {
 			const issued =
 				text !== undefined &&
 				this.#issuedResults.has(`${input.callId}:${createHash("sha256").update(text).digest("hex")}`);
+			// What the run's home had to say about this call (it was refused, or its machine went away under it) comes
+			// first, in its own words: Codex's own output for a failed patch drops them ("Failed to write file X").
+			const note = issued ? undefined : this.#home?.noteFor(input.callId);
 			const output = issued
 				? text!
 				: this.#result(input.callId, undefined, null, "unconfirmed", {
 						kind: "text",
-						value: text ?? wire,
+						value: note ? `${note}\n\n${text ?? wire}` : (text ?? wire),
 					}).contentItems[0].text;
 			this.#nativeResults.set(key, { digest, output, ...(imageSha256 ? { imageSha256 } : {}) });
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			// The first release of one of Codex's own calls: its step keeps the exact envelope the model is shown. A
 			// later request carrying the same output is a replay above, which finishes nothing twice.
-			this.#homeSteps?.finish(input.callId, output);
+			this.#home?.released(input.callId, output, !issued);
 			return release({ kind: input.kind, callId: input.callId, output, ...image });
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);

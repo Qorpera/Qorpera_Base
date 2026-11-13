@@ -8,9 +8,8 @@
 
 import { StringDecoder } from "node:string_decoder";
 
-/** A command's own output can be large (P1 saw 2.4 MB from one `seq`), and its lines are bounded again at both ends. */
-export const EXEC_SERVER_OUTPUT_BYTES = 64 * 1024 * 1024;
-/** What may wait unread in one direction before the channel is ended. */
+/** What may wait unread in one direction before the channel is ended. A command's output can be large (P1 saw 2.4 MB
+ * from one `seq`), but it is read as it comes; this bounds only what the other side has not taken yet. */
 const PIPE_BYTES = 16 * 1024 * 1024;
 
 /**

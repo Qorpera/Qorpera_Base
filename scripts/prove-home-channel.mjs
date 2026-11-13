@@ -575,6 +575,7 @@ function standInMachine(machine, logDir, state) {
 		{ stdio: ["pipe", "pipe", "pipe"], env: {} },
 	);
 	child.stderr.on("data", (data) => appendFileSync(join(logDir, "machine-stderr.log"), data));
+	state.machines?.push(child);
 	const note = (direction) => {
 		let rest = "";
 		return (chunk) => {
@@ -662,7 +663,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 	mkdirSync(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
 	chmodSync(identityRoot, 0o700);
 	writeFileSync(join(identityRoot, "codex/auth.json"), JSON.stringify({ OPENAI_API_KEY: CANARY_AUTH }), { mode: 0o600 });
-	const state = { agent: [], calls: [], compactor: [], httpRequests: [], failure: null, items: [], deltas: 0, approvals: [], fence: [], exec: [], reviews: [], logDir, codexHome: join(identityRoot, "codex") };
+	const state = { agent: [], calls: [], compactor: [], httpRequests: [], failure: null, items: [], deltas: 0, approvals: [], fence: [], exec: [], reviews: [], machines: [], logDir, codexHome: join(identityRoot, "codex") };
 	let closeIngress;
 	fenceTrace = state.fence;
 	const server = provider(state, calls);
@@ -686,7 +687,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 			modelCatalog,
 		}),
 	);
-	const record = { name, home: { ...home, onApproval: undefined, onItem: undefined, decide: undefined } };
+	const record = { name, home: { ...home, onApproval: undefined, onItem: undefined, decide: undefined, refuse: home?.refuse } };
 	evidence.scenarios[name] = record;
 	try {
 		const made = db.json(`${readFileSync(join(repositoryRoot, "supabase/tests/924_folder_runtime_base.test.sql"), "utf8").split("-- The checks start here: a test that runs after this file's fixture part stops at this line.")[0]}
@@ -728,6 +729,11 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 					},
 					home: {
 						authorize: async (asked, signal) => {
+							// A scenario may stand in for a machine that is not running: the ingress then refuses as SQL does.
+							if (home.refuse) {
+								record.authority = { state: "refused", reason: home.refuse };
+								return { state: "refused", reason: home.refuse };
+							}
 							const answer = await code.authorizeHomeSession(
 								{ call: async (method, args) => db.direct(method, args) },
 								asked,
@@ -740,6 +746,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 							try {
 								const side = standInMachine(machine, logDir, state);
 								record.opened = { sessionId: authority.sessionId, machine: authority.machine };
+								record.opens = (record.opens ?? 0) + 1;
 								return side;
 							} catch (error) {
 								record.openFailed = String(error?.message ?? error).slice(0, 300);
@@ -770,9 +777,12 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 						machine: { id: machine.id, name: machine.name },
 						review: {
 							check: async (action, signal) => {
+								const parsed = JSON.parse(action.argumentsText);
 								state.reviews.push({
 									tool: action.tool,
+									callId: action.callId,
 									summary: action.summary.slice(0, 200),
+									...(parsed.into === undefined ? {} : { into: parsed.into }),
 									// The identity an approval covers: the whole action, not the words on the card (F1).
 									argumentSha256: action.argumentSha256,
 									argumentsBytes: Buffer.byteLength(action.argumentsText),
@@ -831,6 +841,9 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 		// much went each way.
 		record.homeCause = state.homes?.map((home) => ({ cause: home.cause ?? null, failure: home.failure ?? null, counts: home.counts })) ?? [];
 		process.stdout.write(`home: ${JSON.stringify(record.homeCause)}; reviews ${state.reviews.length}; exec lines ${state.exec.length}\n`);
+		record.exec = state.exec.map((line) => ({ direction: line.direction, method: line.method, bytes: line.bytes, line: (line.line ?? "").slice(0, 300) }));
+		for (const line of state.exec.slice(-12))
+			process.stdout.write(`exec ${line.direction} ${line.method ?? "-"} ${(line.line ?? "").slice(0, 200)}\n`);
 		for (const refusal of db.refusals) process.stdout.write(`refused ${refusal.slice(0, 400)}\n`);
 		process.stdout.write(`codex stderr (last 3000):\n${logs.codexStderr.slice(-3000)}\n`);
 		process.stdout.write(`machine stderr (last 3000):\n${logs.machineStderr.slice(-3000)}\n`);
@@ -1022,6 +1035,12 @@ async function attemptRun(code, { db, binding, scratch, identityRoot, nativeBina
 // ---- The scenarios -------------------------------------------------------------------------------------------------
 
 const exec = (args) => () => ({ name: "exec_command", arguments: args });
+/** A write into the shell the last command left running: its session id, as Codex's own output names it. */
+const stdin = (outputs, chars) => {
+	const id = outputs.map((output) => /session ID (\d+)|"session_id"\s*:\s*(\d+)/i.exec(output.output)).filter(Boolean).at(-1);
+	if (!id) throw new Error(`no running shell to type into: ${outputs.map((output) => output.output.slice(0, 300)).join(" | ")}`);
+	return { name: "write_stdin", arguments: { session_id: Number(id[1] ?? id[2]), chars, yield_time_ms: 500 } };
+};
 /** The slot's scratch root, from the bwrap arguments the slot logged (its workspace is the namespace's --chdir). */
 const slotRootOf = (state) => {
 	const bwrap = readFileSync(join(state.logDir, "slot.jsonl"), "utf8")
@@ -1171,9 +1190,10 @@ async function main() {
 		await run("review", {
 			home: {
 				// What the run's own review gate would answer for this action. A command Codex itself refuses by its own
-				// policy (`rm -rf`) never reaches this host at all, so the proof declines one Codex allows.
-				decide: (call) =>
-					/declined\.txt/.test(call.summary)
+				// policy (`rm -rf`) never reaches this host at all, so the proof declines what Codex allows: a command, a
+				// line typed into a running shell, and a patch.
+				decide: (action) =>
+					/declined\.txt|forbidden-typed|declined\.md/.test(action.argumentsText)
 						? { run: false, text: "REVIEW_DENIED: this action was not allowed. The action did not happen. Do not retry it." }
 						: undefined,
 			},
@@ -1181,8 +1201,16 @@ async function main() {
 				exec({ cmd: "touch /company/reviewed.txt && echo touched" }),
 				exec({ cmd: "touch /company/declined.txt && echo oops" }),
 				exec({ cmd: "ls /company" }),
+				// A shell that keeps running, and what the model types into it (review round 1, F2).
+				(_outputs, state) => ({ name: "exec_command", arguments: { cmd: "cat > /company/typed.txt", yield_time_ms: 1000, ...tty(state) } }),
+				(outputs) => stdin(outputs, "typed by the model\n"),
+				(outputs) => stdin(outputs, "forbidden-typed\n"),
+				(outputs) => stdin(outputs, "\u0004"),
+				// A patch the review declines, and one it allows: each reviewed once, whole.
+				() => ({ custom: "apply_patch", input: "*** Begin Patch\n*** Add File: notes/declined.md\n+never written\n*** End Patch\n" }),
+				() => ({ custom: "apply_patch", input: "*** Begin Patch\n*** Add File: notes/allowed.md\n+written once reviewed\n*** Add File: notes/also.md\n+the same patch\n*** End Patch\n" }),
 			],
-			check: async ({ state, record, machine }) => {
+			check: async ({ state, record, machine, stored }) => {
 				assert(existsSync(join(machine.company, "reviewed.txt")), "the allowed command ran");
 				assert(!existsSync(join(machine.company, "declined.txt")), "the declined command did not");
 				const declined = shown(state, state.calls[1].callId)?.text ?? "";
@@ -1192,12 +1220,84 @@ async function main() {
 				const listed = shown(state, state.calls[2].callId)?.text ?? "";
 				assert(listed.includes("reviewed.txt") && !listed.includes("declined.txt"), listed);
 				for (const review of state.reviews)
-					assert(review.argumentSha256?.length === 64 && review.argumentsBytes > review.summary.length,
+					assert(review.argumentSha256?.length === 64 && review.argumentsBytes >= review.summary.length,
 						`each review's identity is the whole action, not the card's words: ${JSON.stringify(review)}`);
-				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.tool}: ${review.summary.slice(0, 48)}`).join("; ")}); the declined one never reached it (${starts.length} of ${state.reviews.length} were started there), the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
+				const commands = state.reviews.filter((review) => review.tool === "home_command" && review.summary.startsWith("touch "));
+				pass(`the review at the host: ${commands.length} commands were reviewed before the machine saw them (${commands.map((review) => review.summary.slice(0, 48)).join("; ")}); the declined one never reached it, the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
+				// What the model typed into the running shell: each line reviewed with the shell it went into.
+				const typed = readFileSync(join(machine.company, "typed.txt"), "utf8");
+				assert(typed.includes("typed by the model") && !typed.includes("forbidden-typed"), `typed.txt: ${JSON.stringify(typed)}`);
+				const writes = state.reviews.filter((review) => review.into !== undefined);
+				assert(writes.some((review) => review.summary === "typed by the model\n" && review.into?.command === "cat > /company/typed.txt"),
+					`the line typed was reviewed with its shell: ${JSON.stringify(writes)}`);
+				const refusedTyping = shown(state, state.calls[5].callId)?.text ?? "";
+				assert(refusedTyping.includes("REVIEW_DENIED"), `the model was told its typing was declined: ${refusedTyping.slice(0, 300)}`);
+				assert(!state.exec.some((line) => line.method === "process/write" && line.decoded.includes("forbidden-typed")),
+					"no byte of the declined typing reached the machine");
+				// The patches: the declined one wrote nothing; the allowed one wrote both files after ONE review.
+				assert(!existsSync(join(machine.company, "notes/declined.md")), "the declined patch wrote nothing");
+				const refusedPatch = shown(state, state.calls[7].callId)?.text ?? shown(state, state.calls[7].callId)?.output ?? "";
+				const told = refusedPatch.includes("REVIEW_DENIED");
+				assert(readFileSync(join(machine.company, "notes/allowed.md"), "utf8").includes("written once reviewed"));
+				assert(existsSync(join(machine.company, "notes/also.md")), "the allowed patch wrote both its files");
+				const allowedReviews = state.reviews.filter((review) => review.callId === state.calls[8].callId);
+				assert.equal(allowedReviews.length, 1, `one review for the whole patch: ${JSON.stringify(allowedReviews)}`);
+				assert(allowedReviews[0].summary === "Change 2 files: notes/allowed.md, notes/also.md", allowedReviews[0].summary);
+				pass(`the review covers what is typed and what is patched: ${writes.length} lines typed into a running shell were reviewed with the shell they went into (the declined one never reached the machine, and the model was told REVIEW_DENIED); a patch of 2 files was reviewed once, whole ("${allowedReviews[0].summary}"), and the declined patch wrote nothing${told ? ", its refusal reaching the model in the review's words" : ` (the model was shown ${JSON.stringify(refusedPatch.slice(0, 160))})`}`);
+				if (!told) note(`a declined patch: Codex gave the model ${JSON.stringify(refusedPatch.slice(0, 600))}`);
+				record.reviewDetail = { writes, allowedReviews, refusedPatch: refusedPatch.slice(0, 2000) };
+				// The run's record of all of it: every call of the model's that acted or was refused is a step, the typed
+				// lines included (the pinned Codex's stdin requests name no call; each is bound to its write_stdin).
+				const tools = stored.steps.map((step) => step.tool);
+				assert.equal(tools.filter((tool) => tool === "write_stdin").length, 2, `both typed lines are steps: ${JSON.stringify(stored.steps)}`);
+				assert(stored.steps.some((step) => step.call === state.calls[5].callId && step.tool === "write_stdin"), "the refused line is the step of its own call");
+				assert(stored.steps.some((step) => step.call === state.calls[1].callId), "the refused command is a step of its own call");
+				assert(stored.steps.some((step) => step.call === state.calls[7].callId), "the refused patch is a step of its own call");
+				pass(`the run's record holds what was refused too: ${stored.steps.length} steps (${tools.join(", ")}), the refused command, typed line and patch each under its own call`);
 			},
 		});
-		// 5. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the
+		// 5. When the home is not there (the lead's question of 13 Nov 2026): what the agent sees and does. First a machine
+		// that is not running when the model first uses its own tools; then a machine that goes away in the middle of a
+		// command and comes back for the next one. Each time the model must be told something it can act on, and its
+		// turn must go on.
+		await run("home-not-running", {
+			home: { refuse: "MACHINE_NOT_RUNNING" },
+			calls: [
+				exec({ cmd: "echo hello from the home" }),
+				() => ({ namespace: "qorpera", name: "company_read", arguments: { path: "docs/readme.md" } }),
+			],
+			check: async ({ state, record }) => {
+				const told = shown(state, state.calls[0].callId);
+				const text = told?.text ?? told?.output ?? "";
+				assert(text.includes("HOME_NOT_RUNNING"), `the model was told its machine is not running: ${text.slice(0, 600)}`);
+				assert.equal(shown(state, state.calls[1].callId)?.envelope?.status, "ok", "and its turn went on with the company's own tools");
+				assert.equal(record.exec.length, 0, "nothing reached a machine");
+				pass(`a home that is not running: the model was shown ${JSON.stringify(text.slice(0, 200))}, and its next call (company_read) answered ok in the same turn`);
+			},
+		});
+		await run("home-lost", {
+			home: {},
+			calls: [
+				(_outputs, state) => ({ name: "exec_command", arguments: { cmd: "echo started; sleep 30; echo late", yield_time_ms: 1500, ...tty(state) } }),
+				(outputs, state) => {
+					// The machine goes away while the command runs (as a stop, a restart or a roll of its node would do it).
+					for (const child of state.machines) child.kill("SIGKILL");
+					return stdin(outputs, "");
+				},
+				exec({ cmd: "echo back again" }),
+			],
+			check: async ({ state, record }) => {
+				const lost = shown(state, state.calls[1].callId);
+				const lostText = lost?.text ?? lost?.output ?? "";
+				assert(lostText.includes("HOME_LOST"), `the model was told its machine went away mid-command: ${lostText.slice(0, 600)}`);
+				const back = shown(state, state.calls[2].callId)?.text ?? "";
+				assert(back.includes("back again") && !back.includes("HOME_"), `the next command ran on a new channel: ${back.slice(0, 400)}`);
+				assert(record.opens >= 2, `the channel was opened again: ${record.opens}`);
+				pass(`a home lost mid-command: the model was shown ${JSON.stringify(lostText.slice(0, 200))}; its next command opened the channel again (${record.opens} opens) and answered ${JSON.stringify(back.slice(0, 80))}`);
+			},
+		});
+
+		// 6. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the
 		// agent can do everything a `machine_run` command can do there as root — including changing a file root wrote.
 		// It needs the real account and the image's own sudo rule, so this scenario runs only as root.
 		if (!AS_ROOT) {
