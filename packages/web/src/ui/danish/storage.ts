@@ -23,6 +23,7 @@ export const STORAGE: Record<string, string> = {
 	"List view": "Listevisning",
 	"No files of this type in this folder.": "Ingen filer af denne type i mappen.",
 	"{shown} of {count} loaded items": "{shown} af {count} indlæste elementer",
+	"1 item": "1 element",
 	"{count} items": "{count} elementer",
 	"{shown} of {count} items": "{shown} af {count} elementer",
 	Yesterday: "I går",

@@ -3,6 +3,7 @@ import { webcrypto } from "node:crypto";
 import type {
 	CloudMemberFolderChangesPage,
 	CloudMemberFolderEntry,
+	CloudMemberFolderHistory,
 	CloudMemberFolderListPage,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,8 +97,12 @@ function callsFake(list: CodeRepositories = codeList()) {
 }
 
 /** The company folder: the code kept in Qorpera at code/qorpera/notes, a GitHub copy at code/qorpera/saml-storefront,
- * the place code/acme/shop that an import fills, the platform's set-aside folder, and a folder beside the code. */
+ * the place code/acme/shop that an import fills, the platform's set-aside folder, and a folder beside the code. A test
+ * changes `folders` and `files` (path → text) as the code host would, and moves the folder's sequence on (`seq`); no hint
+ * or feed says so. Recents holds one change. */
 function folderFake() {
+	const files = new Map<string, string>();
+	let asOfSeq = 4;
 	const folders = new Set([
 		"notes",
 		"code",
@@ -112,23 +117,62 @@ function folderFake() {
 		"code/acme/shop/main",
 	]);
 	const parentOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
-	const entry = (path: string): CloudMemberFolderEntry | null =>
-		folders.has(path)
+	const entry = (path: string): CloudMemberFolderEntry | null => {
+		const text = files.get(path);
+		if (text !== undefined)
+			return {
+				path,
+				kind: "file",
+				version: id(101),
+				seq: 1,
+				updatedAt: at,
+				file: {
+					manifestSha256: "a".repeat(64),
+					fileSha256: "b".repeat(64),
+					bytes: text.length,
+					mediaType: "application/json",
+					executable: false,
+				},
+				target: null,
+			};
+		return folders.has(path)
 			? { path, kind: "folder", version: id(100), seq: 1, updatedAt: at, file: null, target: null }
 			: null;
+	};
 	return {
+		folders,
+		files,
+		seq(next: number) {
+			asOfSeq = next;
+		},
 		list: vi.fn(
 			async (parent: string | null): Promise<CloudMemberFolderListPage> => ({
-				asOfSeq: 4,
-				entries: [...folders].filter((path) => parentOf(path) === (parent ?? "")).map((path) => entry(path)!),
+				asOfSeq,
+				entries: [...folders, ...files.keys()]
+					.filter((path) => parentOf(path) === (parent ?? ""))
+					.map((path) => entry(path)!),
 				next: null,
 			}),
 		),
-		read: vi.fn(async (path: string) => ({ asOfSeq: 4, entry: entry(path) })),
+		read: vi.fn(async (path: string) => ({ asOfSeq, entry: entry(path) })),
 		readFile: vi.fn(async () => new Uint8Array()),
 		readFilePieces: vi.fn(async () => {}),
 		pathHistory: vi.fn(),
-		history: vi.fn(),
+		history: vi.fn(
+			async (): Promise<CloudMemberFolderHistory> => ({
+				asOfSeq,
+				items: [
+					{
+						seq: 3,
+						at,
+						by: { kind: "platform" },
+						paths: [{ path: "notes/plan.md", op: "write", kind: "file", version: id(103) }],
+						more: false,
+					},
+				],
+				next: null,
+			}),
+		),
 		changes: vi.fn(
 			async (): Promise<CloudMemberFolderChangesPage> => ({
 				asOfSeq: 4,
@@ -203,7 +247,13 @@ async function storage(calls: CodeDownloadCalls) {
 		question()!.requestSubmit();
 		await settle();
 	};
-	return { host, browser, stop, go, button, line, question, field, pressed, send };
+	/** The open folder's rows, by name, and its count. */
+	const names = () =>
+		[...host.querySelectorAll<HTMLElement>(".files-list > .files-row .files-name")].map((name) => name.textContent);
+	const count = () => host.querySelector(".storage-count")?.textContent;
+	/** How often the folder at `path` was listed. */
+	const listed = (path: string) => folder.list.mock.calls.filter(([parent]) => parent === path).length;
+	return { host, browser, stop, go, button, line, question, field, pressed, send, folder, names, count, listed };
 }
 
 describe("a GitHub address, as a member pastes it", () => {
@@ -1175,5 +1225,268 @@ describe("Bring code in, in Storage", () => {
 		await go("code/qorpera/saml-storefront");
 		expect(visibleText(button())).toBe("Hent det ind i Qorpera");
 		expect(visibleText(line())).toBe("Kopi af GitHub-projektet saml-storefront");
+	});
+});
+
+describe("the place's folder while code is brought in", () => {
+	/** The place after the set-aside: only its mark is left. */
+	const setAside = (folder: ReturnType<typeof folderFake>) => {
+		folder.folders.delete("code/acme/shop/main");
+		folder.files.set("code/acme/shop/restoring.json", '{"main":null}');
+	};
+
+	it("reads the place's folder again when its import moves a step and when it is in, with no word from the folder", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("set-aside")] }));
+		const { go, line, folder, names, count, listed } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		expect(visibleText(line())).toBe("Bringing in Shop: Putting it in place…");
+		expect(names()).toEqual([]);
+		expect(count()).toBe("0 items");
+		// The build writes the place's history: the next read of the list shows the step, and the folder is read again.
+		folder.folders.add("code/acme/shop/repo.git");
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("build")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(names()).toEqual(["repo.git"]);
+		expect(count()).toBe("1 item");
+		// The same step again: the folder is not read again.
+		const atBuild = listed("code/acme/shop");
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(listed("code/acme/shop")).toBe(atBuild);
+		// In: the open puts the main version and the record in place, and the mark goes. Storage shows it at once, as it
+		// does once the folder is opened again.
+		folder.folders.add("code/acme/shop/main");
+		folder.folders.add("code/acme/shop/changes");
+		folder.files.delete("code/acme/shop/restoring.json");
+		calls.list.mockResolvedValue(codeList({ repositories: [{ owner: "qorpera", name: "notes" }, keptShop] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(names()).toEqual(["changes", "main", "repo.git"]);
+		expect(count()).toBe("3 items");
+		expect(visibleText(line())).toBe(
+			"Brought in from GitHub on November 12, 2026. 1,204 earlier changes came with it. The copy on GitHub stays as it is.",
+		);
+		// The folder's hint and feed said nothing of it.
+		expect(folder.changes).not.toHaveBeenCalled();
+	});
+
+	it("reads a folder below the place again too, and goes up when the step took it away", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("close")] }));
+		const { go, host, folder, names } = await storage(calls);
+		await go("code/acme/shop/main");
+		expect(host.querySelector(".storage-title")?.textContent).toBe("main");
+		setAside(folder);
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("set-aside")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(host.querySelector(".storage-title")?.textContent).toBe("shop");
+		expect(names()).toEqual([]);
+	});
+
+	it("reads it again when the import ends not brought in, and the mark shows again once it is not being brought in", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("build")] }));
+		const { go, line, folder, names, count } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		expect(names()).toEqual([]);
+		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_SOURCE_EMPTY", "Acme/Shop") }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(visibleText(line())).toBe("Shop was not brought in: there is nothing in it yet.");
+		expect(names()).toEqual(["restoring.json"]);
+		expect(count()).toBe("1 item");
+	});
+
+	it("does not read another folder again when an import moves elsewhere", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("close")] }));
+		const { go, line, listed } = await storage(calls);
+		await go("code/qorpera");
+		await go("code/acme");
+		const before = { owner: listed("code/qorpera"), acme: listed("code/acme") };
+		for (const step of ["set-aside", "build", "open"]) {
+			calls.list.mockResolvedValue(codeList({ bringing: [bringingShop(step)] }));
+			await vi.advanceTimersByTimeAsync(5000);
+		}
+		calls.list.mockResolvedValue(codeList({ repositories: [keptShop] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(visibleText(line())).toBe("Shop is brought in.Open");
+		expect({ owner: listed("code/qorpera"), acme: listed("code/acme") }).toEqual(before);
+	});
+
+	it("keeps a step that came while the folder was being read, and reads the place again after", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("set-aside")] }));
+		const { go, folder, names } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		// The build's read of the folder is slow, and answers what the place held when it was asked.
+		folder.folders.add("code/acme/shop/repo.git");
+		const slow = deferred<CloudMemberFolderListPage>();
+		const atBuild = await folder.list("code/acme/shop");
+		folder.list.mockReturnValueOnce(slow.promise);
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("build")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		// The open, while that read is out.
+		folder.folders.add("code/acme/shop/main");
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("open")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		slow.resolve(atBuild);
+		await settle();
+		await settle();
+		expect(names()).toEqual(["main", "repo.git"]);
+	});
+
+	it("reads the place again when its import ended before the page's first read of the list", async () => {
+		// The place's folder is read while the import puts it in place; the list's first answer comes after it ended.
+		type Folder = ReturnType<typeof folderFake>;
+		const ends: [CodeRepositories, (folder: Folder) => void, string[], string][] = [
+			[
+				codeList({ repositories: [keptShop] }),
+				(folder) => {
+					folder.files.delete("code/acme/shop/restoring.json");
+					folder.folders.add("code/acme/shop/main");
+					folder.folders.add("code/acme/shop/changes");
+				},
+				["changes", "main", "repo.git"],
+				"Brought in from GitHub on November 12, 2026. 1,204 earlier changes came with it. The copy on GitHub stays as it is.",
+			],
+			[
+				// Not brought in: the place as it was before, here with its mark still there.
+				codeList({ last: lastShop("IMPORT_SOURCE_EMPTY", "Acme/Shop") }),
+				(folder) => {
+					folder.folders.delete("code/acme/shop/repo.git");
+					folder.folders.add("code/acme/shop/main");
+				},
+				["main", "restoring.json"],
+				"Shop was not brought in: there is nothing in it yet.",
+			],
+		];
+		for (const [after, end, shown, words] of ends) {
+			const calls = callsFake();
+			const first = deferred<CodeRepositories>();
+			calls.list.mockReturnValueOnce(first.promise);
+			const opened = await storage(calls);
+			setAside(opened.folder);
+			opened.folder.folders.add("code/acme/shop/repo.git");
+			await opened.go("code/acme/shop");
+			expect(opened.names()).toEqual(["repo.git", "restoring.json"]);
+			end(opened.folder);
+			first.resolve(after);
+			await settle();
+			await settle();
+			expect(opened.names()).toEqual(shown);
+			expect(visibleText(opened.line())).toBe(words);
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+		}
+	});
+
+	it("draws nothing again when a place read again for its import holds what is shown", async () => {
+		// Code brought in long ago: the page's first read of the list reads its folder again, which is the same.
+		const calls = callsFake(codeList({ repositories: [keptShop] }));
+		const first = deferred<CodeRepositories>();
+		calls.list.mockReturnValueOnce(first.promise);
+		const { go, host, listed } = await storage(calls);
+		await go("code/acme/shop");
+		const row = host.querySelector<HTMLElement>(".files-row-main");
+		expect(row?.dataset.path).toBe("code/acme/shop/main");
+		expect(document.activeElement).toBe(row);
+		first.resolve(codeList({ repositories: [keptShop] }));
+		await settle();
+		await settle();
+		expect(listed("code/acme/shop")).toBe(2);
+		expect(row?.isConnected).toBe(true);
+		expect(document.activeElement).toBe(row);
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// The same rows, but now a page more: drawn again, with More files.
+		const more = callsFake(codeList({ repositories: [keptShop] }));
+		const answer = deferred<CodeRepositories>();
+		more.list.mockReturnValueOnce(answer.promise);
+		const again = await storage(more);
+		await again.go("code/acme/shop");
+		const shown = again.host.querySelector<HTMLElement>(".files-row-main");
+		const page = await again.folder.list("code/acme/shop");
+		again.folder.list.mockResolvedValueOnce({ ...page, next: "code/acme/shop/main" });
+		answer.resolve(codeList({ repositories: [keptShop] }));
+		await settle();
+		await settle();
+		expect(shown?.isConnected).toBe(false);
+		expect(again.host.querySelector<HTMLElement>(".files-list-more button")?.hidden).toBe(false);
+	});
+
+	it("leaves Recents as it is while an import moves the place, and reads the place once Documents shows it again", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(codeList({ bringing: [bringingShop("set-aside")] }));
+		const { go, browser, host, folder, names, listed } = await storage(calls);
+		setAside(folder);
+		await go("code/acme/shop");
+		await settle();
+		browser.showRecents();
+		await settle();
+		const recents = () => visibleText(host.querySelector(".storage-recents"));
+		expect(recents()).toContain("plan.md");
+		const before = listed("code/acme/shop");
+		// The build writes the place, and the folder's sequence moves on past the feed's.
+		folder.folders.add("code/acme/shop/repo.git");
+		folder.seq(5);
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("build")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(recents()).toContain("plan.md");
+		expect(listed("code/acme/shop")).toBe(before);
+		// Back in Documents without a read of the folder (here the mark, opened by its path from Recents' window): the
+		// place is read then.
+		browser.reveal("code/acme/shop/restoring.json");
+		await settle();
+		await settle();
+		expect(names()).toEqual(["repo.git"]);
+	});
+
+	it("leaves the mark out only while the list says that place is being brought in", async () => {
+		vi.useFakeTimers();
+		// Opened before the list was read: the first read that shows the import reads the folder again without it.
+		const calls = callsFake(codeList({ bringing: [bringingShop("build")] }));
+		const first = await storage(calls);
+		first.folder.files.set("code/acme/shop/restoring.json", "{}");
+		first.folder.files.set("code/acme/shop/main/restoring.json", "{}");
+		first.folder.files.set("code/qorpera/notes/restoring.json", "{}");
+		await first.go("code/acme/shop");
+		await settle();
+		expect(first.names()).toEqual(["main"]);
+		expect(first.count()).toBe("1 item");
+		// A file of that name further down, or outside the code, is not a mark; another place's mark (a restore there,
+		// say) shows, under the same owner or with the same name too.
+		await first.go("code/acme/shop/main");
+		expect(first.names()).toEqual(["restoring.json"]);
+		await first.go("code/qorpera/notes");
+		expect(first.names()).toEqual(["main", "restoring.json"]);
+		for (const place of ["code/acme/web", "code/qorpera/shop", "notes/acme/shop"]) {
+			first.folder.folders.add(place);
+			first.folder.files.set(`${place}/restoring.json`, "{}");
+			await first.go(place);
+			expect(first.names(), place).toEqual(["restoring.json"]);
+		}
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// A cloud that cannot bring code in shows it as any file.
+		const old = await storage(callsFake(codeList({ imports: false })));
+		old.folder.files.set("code/acme/shop/restoring.json", "{}");
+		await old.go("code/acme/shop");
+		await settle();
+		expect(old.names()).toEqual(["main", "restoring.json"]);
+		expect(old.count()).toBe("2 items");
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// What is below a folder of that name is no mark either.
+		const below = await storage(callsFake(codeList({ bringing: [bringingShop("build")] })));
+		below.folder.folders.add("code/acme/shop/restoring.json");
+		below.folder.files.set("code/acme/shop/restoring.json/restoring.json", "{}");
+		await below.go("code/acme/shop/restoring.json");
+		await settle();
+		expect(below.names()).toEqual(["restoring.json"]);
 	});
 });
