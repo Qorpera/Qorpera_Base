@@ -1677,6 +1677,61 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		}
 	});
 
+	it("keeps a folding group's way out when another group opens meanwhile, so it opens whole again", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		controller.store.set({
+			appGroups: parseAppGroups(
+				"- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n- group trips: Trips\n  - app:trips Trips\n",
+			),
+		});
+		await settle();
+		const groupNamed = (name: string) =>
+			element.querySelector<HTMLButtonElement>(`.rail-apps-grid > .rail-app-group[data-app-key='group:${name}']`)!;
+		groupNamed("market").click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips", "Members"]);
+		const folds: { element: Element; cancel: ReturnType<typeof vi.fn> }[] = [];
+		const own = Element.prototype.animate;
+		Element.prototype.animate = vi.fn(function (this: Element, frames: Keyframe[]) {
+			const cancel = vi.fn();
+			if (frames.at(-1)?.scale === "0.2") folds.push({ element: this, cancel });
+			return { finish() {}, cancel, finished: Promise.resolve() } as unknown as Animation;
+		}) as unknown as Element["animate"];
+		const boxes = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			const tile = this.closest<HTMLElement>(".rail-app");
+			const index = tile?.parentElement ? [...tile.parentElement.children].indexOf(tile) : 0;
+			return new DOMRect(index * 70, 0, 60, 60);
+		});
+		vi.useFakeTimers();
+		try {
+			// Market folds, and Trips opens before Market's apps are gone.
+			groupNamed("market").click();
+			expect(folds).toHaveLength(2);
+			vi.advanceTimersByTime(50);
+			groupNamed("trips").click();
+			expect(tiles(element)).toEqual(["Market", "Trips+", "Trips", "Members"]);
+			// Market's apps are still on their first way out: no second one, their folds still running.
+			expect(folds).toHaveLength(2);
+			expect(folds.every((fold) => fold.cancel.mock.calls.length === 0)).toBe(true);
+			vi.advanceTimersByTime(400);
+			// Their way out ended: gone, the folds cancelled, so Market opens with them whole.
+			for (const fold of folds) {
+				expect(fold.cancel).toHaveBeenCalledOnce();
+				expect(fold.element.isConnected).toBe(false);
+			}
+			groupNamed("market").click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips+", "Trips", "Members"]);
+			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
+				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+			boxes.mockRestore();
+			if (own) Element.prototype.animate = own;
+			else delete (Element.prototype as { animate?: unknown }).animate;
+			localStorage.clear();
+		}
+	});
+
 	it("stands What's new loose after the company's apps, orange, with its count (own code storage step 4)", async () => {
 		localStorage.clear();
 		const { element, controller } = drawer();
