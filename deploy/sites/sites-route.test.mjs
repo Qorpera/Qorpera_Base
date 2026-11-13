@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	API,
+	API_HOST,
 	APP_HEALTH_URL,
 	APPS_HOST,
 	CACHE_RULE,
@@ -9,9 +10,14 @@ import {
 	describeIngress,
 	dnsPlan,
 	HOST,
+	lastGroupDisallowsAll,
+	lockedSitePage,
 	main,
+	probeName,
 	readToken,
 	SERVICE,
+	WEB_MARKER,
+	WEB_ORIGIN,
 	withAppsIngress,
 	withSitesIngress,
 } from "./sites-route.mjs";
@@ -26,6 +32,29 @@ const API_RULE = {
 const CATCH_ALL = { service: "http_status:404" };
 const SITES_RULE = { hostname: HOST, service: SERVICE };
 const APPS_RULE = { hostname: APPS_HOST, service: SERVICE };
+/** The made-up site name a check run probes (a new random one in real runs). */
+const PROBE = "zz-check-test";
+/** site-serve's page for a site host without a session, as release 5.1 answers it. */
+const LOCKED = {
+	status: 401,
+	headers: {
+		"content-type": "text/html; charset=utf-8",
+		"x-robots-tag": "noindex, nofollow, noarchive",
+		"cache-control": "private, no-cache, no-transform",
+	},
+	text: "<!doctype html><title>Private site</title>",
+};
+/** The live web once E1a is live: its marker in one of the scripts web-deployment.json lists (build5/E1a.md). */
+const WEB_LIVE = {
+	"index.html": "<script src=build/main-A.js></script>",
+	"build/chunk-B.js": "export {};",
+	"build/main-A.js": `const bj=/^([a-z0-9]+(?:-[a-z0-9]+)*)${WEB_MARKER}/;`,
+};
+/** What Cloudflare's managed robots.txt puts before the origin's own file (its shape, 13 Nov 2026). */
+const MANAGED_ROBOTS =
+	"# As a condition of accessing this website, you agree to abide by the following content signals:\n" +
+	"User-agent: *\nContent-Signal: search=yes,ai-train=no\nAllow: /\n\n" +
+	"User-agent: Amazonbot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /\n\n";
 
 /** A fake Cloudflare: the zone, the tunnel, its configuration, the DNS records (listed by name) and the zone's cache
  * rules ruleset, as the API answers them, for a token that may edit, only read or not touch Cache Rules; and the two
@@ -37,6 +66,9 @@ function cloudflare({
 	cacheAccess = "edit",
 	robots = { status: 200, text: "User-agent: *\nDisallow: /\n" },
 	health = { status: 200, text: "ok\n" },
+	siteHost = LOCKED,
+	apiSite = { status: 404, headers: {}, text: "" },
+	web = WEB_LIVE,
 } = {}) {
 	const state = {
 		config: { ingress, "warp-routing": { enabled: false } },
@@ -79,9 +111,30 @@ function cloudflare({
 	};
 	const fetcher = async (input, init = {}) => {
 		const url = String(input);
-		sent.push({ url, method: init.method ?? "GET", body: init.body, authorization: init.headers?.authorization });
+		sent.push({
+			url,
+			method: init.method ?? "GET",
+			body: init.body,
+			authorization: init.headers?.authorization,
+			forwardedHost: init.headers?.["x-forwarded-host"],
+		});
 		if (url === `https://${HOST}/robots.txt`) return new Response(robots.text, { status: robots.status });
 		if (url === APP_HEALTH_URL) return new Response(health.text, { status: health.status });
+		const answer = ({ status, headers, text }) => new Response(text, { status, headers });
+		for (const host of [`${PROBE}.qorpera.com`, `${PROBE}--next.qorpera.com`])
+			if (url === `https://${host}/` || url === `https://${host}/rest/v1/`)
+				return answer(typeof siteHost === "function" ? siteHost(url) : siteHost);
+		if (url === `https://${API_HOST}/functions/v1/site-serve/`) return answer(apiSite);
+		if (url === `${WEB_ORIGIN}/web-deployment.json`)
+			return web === null
+				? new Response("", { status: 404 })
+				: Response.json({
+						version: 1,
+						sourceCommit: "e1a0000",
+						files: Object.fromEntries(Object.keys(web).map((file) => [file, { sha256: "x" }])),
+					});
+		if (url.startsWith(`${WEB_ORIGIN}/`) && Object.hasOwn(web, url.slice(WEB_ORIGIN.length + 1)))
+			return new Response(web[url.slice(WEB_ORIGIN.length + 1)]);
 		assert.ok(url.startsWith(API), url);
 		const path = url.slice(API.length);
 		if (path === "/zones?name=qorpera.com")
@@ -118,7 +171,7 @@ function cloudflare({
 
 async function run(argv, fake, env = { CF_API_TOKEN: TOKEN }) {
 	const lines = [];
-	const code = await main(argv, { env, fetcher: fake.fetcher, log: (line) => lines.push(line) });
+	const code = await main(argv, { env, fetcher: fake.fetcher, log: (line) => lines.push(line), siteName: PROBE });
 	return { code, output: lines.join("\n") };
 }
 
@@ -228,6 +281,62 @@ describe("sites-route: the DNS record", () => {
 	});
 });
 
+describe("sites-route: what --check reads of the site hosts and robots.txt", () => {
+	it("takes site-serve's page for a site without a session, and nothing else", () => {
+		const headers = (extra = {}) => new Headers({ ...LOCKED.headers, ...extra });
+		assert.equal(lockedSitePage(401, headers()), true);
+		assert.equal(lockedSitePage(401, headers({ "content-type": "TEXT/HTML" })), true);
+		assert.equal(lockedSitePage(401, headers({ "cache-control": "no-transform, no-store" })), true);
+		assert.equal(lockedSitePage(401, headers({ "x-robots-tag": "noindex" })), true);
+		for (const [label, status, extra] of [
+			["envoy's 404", 404, { "content-type": "" }],
+			["a page", 200, {}],
+			["the password limit", 429, {}],
+			["JSON", 401, { "content-type": "application/json" }],
+			["an HTML-ish type", 401, { "content-type": "text/htmlx" }],
+			["no robots tag", 401, { "x-robots-tag": "" }],
+			["another robots word", 401, { "x-robots-tag": "noindexed, nofollow" }],
+			["no cache-control", 401, { "cache-control": "" }],
+			["no no-transform", 401, { "cache-control": "private, no-cache" }],
+			["a longer word", 401, { "cache-control": "private, no-transformed" }],
+		])
+			assert.equal(lockedSitePage(status, headers(extra)), false, label);
+	});
+
+	it("makes a made-up name that passes the name rule, a new one each run", () => {
+		const names = new Set(Array.from({ length: 20 }, () => probeName()));
+		assert.ok(names.size > 1);
+		for (const name of names) {
+			assert.match(name, /^[a-z0-9]+(-[a-z0-9]+)*$/);
+			assert.ok(name.length >= 3 && name.length <= 48 - "--next".length, name);
+			assert.ok(!name.includes("qorpera") && !name.endsWith("-preview"), name);
+		}
+		assert.equal(
+			probeName(() => Buffer.from([0, 1, 254, 255])),
+			"zz-check-0001feff",
+		);
+	});
+
+	it("reads robots.txt's last group: only '*' and only Disallow: /", () => {
+		assert.equal(lastGroupDisallowsAll("User-agent: *\nDisallow: /\n"), true);
+		assert.equal(lastGroupDisallowsAll(`${MANAGED_ROBOTS}User-agent: *\nDisallow: /\n`), true);
+		assert.equal(lastGroupDisallowsAll("# a comment\r\nuser-agent:*\r\ndisallow:/ # all\r\n\r\n"), true);
+		for (const text of [
+			"",
+			"Disallow: /",
+			MANAGED_ROBOTS,
+			`${MANAGED_ROBOTS}User-agent: *\nAllow: /\n`,
+			"User-agent: *\nAllow: /\n",
+			"User-agent: *\nDisallow: /\nAllow: /\n",
+			"User-agent: *\nDisallow: /private\n",
+			"User-agent: *\nUser-agent: GPTBot\nDisallow: /\n",
+			"User-agent: *\n",
+			"User-agent: *\nDisallow: /\nUser-agent: GPTBot\n",
+		])
+			assert.equal(lastGroupDisallowsAll(text), false, JSON.stringify(text));
+	});
+});
+
 describe("sites-route: the script", () => {
 	it("dry-runs by default: reads only, and prints the plan without the token", async () => {
 		const fake = cloudflare();
@@ -271,11 +380,170 @@ describe("sites-route: the script", () => {
 		assert.equal(again.code, 0);
 		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes, "a second apply writes nothing");
 		assert.match(again.output, /is there already/);
+		const before = fake.sent.length;
 		const check = await run(["--check"], fake);
 		assert.equal(check.code, 0);
-		assert.match(check.output, /check: PASS/);
+		assert.match(check.output, /\ncheck: PASS$/);
 		// The check makes no change.
 		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes);
+		// The site hosts: a made-up name's own and next host and its /rest/v1/ are site-serve's locked page; the API name
+		// answers 404 for site-serve with that name forged. Nothing but Cloudflare's API ever gets the token.
+		for (const line of [
+			`site hosts, own host: https://${PROBE}.qorpera.com/: 401 ok`,
+			`site hosts, next host: https://${PROBE}--next.qorpera.com/: 401 ok`,
+			`site hosts, the API's path on a site host: https://${PROBE}.qorpera.com/rest/v1/: 401 ok`,
+			`site hosts, site-serve on the API name, X-Forwarded-Host forged: https://api.qorpera.com/functions/v1/site-serve/: 404 ok`,
+		])
+			assert.ok(check.output.split("\n").includes(line), line);
+		assert.ok(
+			check.output
+				.split("\n")
+				.includes(
+					"https://app.qorpera.com, the Sites page takes a site's own host (E1a): source e1a0000, marker 1 time(s) in 2 script(s)",
+				),
+		);
+		const probes = fake.sent.slice(before).filter((call) => !call.url.startsWith(API));
+		assert.equal(probes.length, 6 + 3);
+		assert.ok(probes.every((call) => call.method === "GET" && call.authorization === undefined));
+		assert.deepEqual(
+			probes.filter((call) => call.forwardedHost !== undefined).map((call) => [call.url, call.forwardedHost]),
+			[[`https://${API_HOST}/functions/v1/site-serve/`, `${PROBE}.qorpera.com`]],
+		);
+	});
+
+	it("fails the check while a site host is not site-serve's: the 404 of before, the API, a page served, no no-transform", async () => {
+		const fake = cloudflare();
+		await run(["--apply"], fake);
+		const done = {
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			cacheRuleset: fake.state.cacheRuleset,
+		};
+		const html = { "content-type": "text/html; charset=utf-8", "x-robots-tag": "noindex, nofollow, noarchive" };
+		for (const [label, siteHost, line] of [
+			// api-front before 5.1: its others host's empty 404.
+			["envoy's 404", { status: 404, headers: {}, text: "" }, "own host"],
+			// The front changed, the function not yet: the old site-serve's not-found page.
+			[
+				"the old site-serve",
+				{ status: 404, headers: { ...html, "cache-control": "no-store" }, text: "<h1>" },
+				"own host",
+			],
+			// The API behind a site host: Kong's key refusal.
+			[
+				"the API",
+				(url) =>
+					url.endsWith("/rest/v1/")
+						? {
+								status: 401,
+								headers: { "content-type": "application/json" },
+								text: '{"message":"No API key found"}',
+							}
+						: LOCKED,
+				"the API's path on a site host",
+			],
+			["a page served", { status: 200, headers: { ...LOCKED.headers }, text: "<h1>shop</h1>" }, "own host"],
+			[
+				"no no-transform (D23)",
+				{ status: 401, headers: { ...html, "cache-control": "no-store" }, text: "" },
+				"own host",
+			],
+			[
+				"not noindex",
+				{ status: 401, headers: { ...LOCKED.headers, "x-robots-tag": "none-at-all" }, text: "" },
+				"own host",
+			],
+			[
+				"a next host served",
+				(url) => (url.includes("--next.") ? { status: 200, headers: LOCKED.headers, text: "" } : LOCKED),
+				"next host",
+			],
+		]) {
+			const result = await run(["--check"], cloudflare({ ...done, siteHost }));
+			assert.equal(result.code, 1, label);
+			assert.match(result.output, /\ncheck: FAILED$/, label);
+			assert.match(
+				result.output,
+				new RegExp(
+					`site hosts, ${line}: [^\\n]*: \\d+ NOT site-serve's page for a site without a session \\(401, HTML, noindex, no-transform\\)`,
+				),
+				label,
+			);
+		}
+		// The API name serving site-serve for a forged name.
+		const served = await run(["--check"], cloudflare({ ...done, apiSite: LOCKED }));
+		assert.equal(served.code, 1);
+		assert.match(
+			served.output,
+			/site hosts, site-serve on the API name, X-Forwarded-Host forged: \S+: 401 NOT 404\n/,
+		);
+		// No answer at all.
+		const gone = cloudflare({ ...done });
+		const unreachable = async (input, init) => {
+			if (String(input).includes(PROBE)) throw new TypeError("fetch failed");
+			return gone.fetcher(input, init);
+		};
+		const lines = [];
+		assert.equal(
+			await main(["--check"], {
+				env: { CF_API_TOKEN: TOKEN },
+				fetcher: unreachable,
+				log: (line) => lines.push(line),
+				siteName: PROBE,
+			}),
+			1,
+		);
+		assert.ok(
+			lines.includes(
+				`site hosts, own host: https://${PROBE}.qorpera.com/: TypeError NOT site-serve's page for a site without a session (401, HTML, noindex, no-transform)`,
+			),
+		);
+	});
+
+	it("fails the check until the live web takes a site's own host (E1a's marker)", async () => {
+		const fake = cloudflare();
+		await run(["--apply"], fake);
+		const done = {
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			cacheRuleset: fake.state.cacheRuleset,
+		};
+		const before = await run(
+			["--check"],
+			cloudflare({ ...done, web: { ...WEB_LIVE, "build/main-A.js": "const bj=/^x$/;" } }),
+		);
+		assert.equal(before.code, 1);
+		assert.match(before.output, /\(E1a\): source e1a0000, marker 0 time\(s\) in 2 script\(s\): NOT live\n/);
+		assert.match(before.output, /\ncheck: FAILED$/);
+		// In a chunk of its own, not the main script: found.
+		const chunk = await run(["--check"], cloudflare({ ...done, web: { "build/chunk-C.js": `x=/${WEB_MARKER}/` } }));
+		assert.equal(chunk.code, 0, chunk.output);
+		// The deployment file unreadable: not live.
+		const unread = await run(["--check"], cloudflare({ ...done, web: {} }));
+		assert.match(unread.output, /\(E1a\): source e1a0000, marker 0 time\(s\) in 0 script\(s\): NOT live/);
+		assert.equal(unread.code, 1);
+		const none = await run(["--check"], cloudflare({ ...done, web: null }));
+		assert.match(none.output, /\(E1a\): not read \(web-deployment\.json: 404\): NOT live\n/);
+		assert.equal(none.code, 1);
+	});
+
+	it("reads robots.txt's last group, the origin's own file, not Cloudflare's groups before it", async () => {
+		const fake = cloudflare();
+		await run(["--apply"], fake);
+		const done = {
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			cacheRuleset: fake.state.cacheRuleset,
+		};
+		const managed = await run(
+			["--check"],
+			cloudflare({ ...done, robots: { status: 200, text: `${MANAGED_ROBOTS}User-agent: *\nDisallow: /\n` } }),
+		);
+		assert.equal(managed.code, 0, managed.output);
+		// The origin answered nothing of its own: Cloudflare's file alone holds Disallow lines, none for every crawler.
+		const alone = await run(["--check"], cloudflare({ ...done, robots: { status: 200, text: MANAGED_ROBOTS } }));
+		assert.equal(alone.code, 1);
+		assert.match(alone.output, /robots\.txt: 200\n/);
 	});
 
 	it("fails the check before the rollout and when the public name does not answer", async () => {
@@ -340,7 +608,7 @@ describe("sites-route: the script", () => {
 		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes);
 	});
 
-	it("makes everything else, and says so plainly, when the token may not touch Cache Rules; the check fails", async () => {
+	it("makes everything else, and says so plainly, when the token may not touch Cache Rules; the check warns", async () => {
 		for (const cacheAccess of ["none", "read"]) {
 			const fake = cloudflare({ cacheAccess });
 			const applied = await run(["--apply"], fake);
@@ -354,9 +622,41 @@ describe("sites-route: the script", () => {
 			assert.equal(fake.state.cacheRuleset, null);
 			assert.ok(!applied.output.includes(TOKEN));
 		}
-		const check = await run(["--check"], cloudflare({ cacheAccess: "none" }));
-		assert.equal(check.code, 1);
-		assert.match(check.output, /cache rule: not checked: the token may not read or write Cache Rules/);
+		// Before the rollout the check fails for the rest; the cache rule's line says it was not readable.
+		const before = await run(["--check"], cloudflare({ cacheAccess: "none" }));
+		assert.equal(before.code, 1);
+		assert.match(before.output, /cache rule: not readable: the token may not read or write Cache Rules/);
+		assert.match(before.output, /\ncheck: FAILED$/);
+		// After it, with the rule made by hand: a warning in the result, never a silent pass, and not a failure alone.
+		const fake = cloudflare({ cacheAccess: "none" });
+		await run(["--apply"], fake);
+		const check = await run(["--check"], fake);
+		assert.equal(check.code, 0, check.output);
+		assert.match(check.output, /cache rule: not readable: the token may not read or write Cache Rules/);
+		assert.match(check.output, /\ncheck: PASS, with a warning: the cache rule was not readable$/);
+		// A warning hides no failure.
+		const down = cloudflare({
+			cacheAccess: "none",
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			siteHost: { status: 404, headers: {}, text: "" },
+		});
+		const failed = await run(["--check"], down);
+		assert.equal(failed.code, 1);
+		assert.match(failed.output, /\ncheck: FAILED$/);
+		// A token that may read Cache Rules and finds the rule: no warning.
+		const read = cloudflare({
+			cacheAccess: "read",
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			cacheRuleset: {
+				id: "rs1",
+				kind: "zone",
+				phase: "http_request_cache_settings",
+				rules: [{ id: "r1", ...CACHE_RULE }],
+			},
+		});
+		assert.match((await run(["--check"], read)).output, /\ncheck: PASS$/);
 	});
 
 	it("changes nothing when another record holds *", async () => {

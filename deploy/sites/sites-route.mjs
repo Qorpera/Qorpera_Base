@@ -14,23 +14,35 @@
  *    host, made before the DNS records: Cloudflare's cache sits in front of the password, so nothing an app answers may
  *    be kept there. The relay's own `cdn-cache-control: no-store` on every forwarded answer is the first layer.
  * api-front (envoy-front-sites.yaml) then sends sites.qorpera.com to the site-serve function, *-preview.qorpera.com to
- * the app relay, and answers 404 for every other name under qorpera.com.
+ * the app relay, and every other name under qorpera.com (a company site's own host <slug>.qorpera.com and its next host
+ * <slug>--next.qorpera.com, step 5's release 5.1, SITE-HOSTS.md) to the site-serve function as well. The site hosts need
+ * nothing more here: the wildcard record and the tunnel rule that carry app links carry them.
  *
  *   node deploy/sites/sites-route.mjs           dry run: reads, prints the plan (names, ids, the ingress before and
  *                                              after, the cache rule), changes nothing
  *   node deploy/sites/sites-route.mjs --apply   makes the changes; safe to run again (it changes only what differs)
  *   node deploy/sites/sites-route.mjs --check   read-only: the DNS records, the ingress rules, the cache rule, an
- *                                              HTTPS GET of https://sites.qorpera.com/robots.txt and one of an app
- *                                              host's /.qorpera/health; exit 1 unless all hold
+ *                                              HTTPS GET of https://sites.qorpera.com/robots.txt (its last group: the
+ *                                              origin's own file, after what Cloudflare puts first), one of an app
+ *                                              host's /.qorpera/health, and the site hosts: a made-up name's own host,
+ *                                              its next host and its /rest/v1/ answer site-serve's page for a site
+ *                                              without a session (401, HTML, noindex, Cache-Control no-transform), and
+ *                                              api.qorpera.com/functions/v1/site-serve/ with a forged X-Forwarded-Host
+ *                                              answers 404; and the live web at app.qorpera.com holds E1a's marker
+ *                                              (the Sites page takes a site's own host as its link); exit 1 unless all
+ *                                              hold
  *
  * The token: CF_API_TOKEN, else the Mac Keychain item com.qorpera.dbhome.cf-token (Tunnel, Pages and DNS edit on
  * qorpera.com, and Cache Rules edit for the cache rule), read with `security`. It is never printed, never put on a
- * command line and never in an error. A token without Cache Rules permission: --apply makes everything else and says
- * plainly that the cache rule was not made (and how to make it by hand); --check says it could not check it, and fails.
- * It refuses, changing nothing, when another rule or record already holds a name (sites, or *). Note: the DB move's
- * `cf.py tunnel-ensure` writes the tunnel's whole ingress (api only); run this again after it. */
+ * command line and never in an error. It stays on the operator's Mac: the platform holds no token that may edit
+ * qorpera.com's DNS (SITE-HOSTS.md). A token without Cache Rules permission: --apply makes everything else and says
+ * plainly that the cache rule was not made (and how to make it by hand); --check says the cache rule was not readable,
+ * as a warning in its result ("PASS, with a warning"), and does not fail for it alone. It refuses, changing nothing,
+ * when another rule or record already holds a name (sites, or *). Note: the DB move's `cf.py tunnel-ensure` writes the
+ * tunnel's whole ingress (api only); run this again after it. */
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const API = "https://api.cloudflare.com/client/v4";
@@ -42,6 +54,12 @@ export const SERVICE = "http://api-front:8080";
 export const APPS_HOST = "*.qorpera.com";
 /** An app host's health, which the relay answers on every app host (no slug needs to exist). */
 export const APP_HEALTH_URL = "https://qorpera-health-preview.qorpera.com/.qorpera/health";
+/** The API's own name, which never serves site-serve whatever a visitor's X-Forwarded-Host says. */
+export const API_HOST = "api.qorpera.com";
+/** The web app, and the text its Sites page's host rule leaves in its scripts once it takes a site's own host as the
+ * site's link (E1a, build5/E1a.md): hosts must never be on before it is live. */
+export const WEB_ORIGIN = "https://app.qorpera.com";
+export const WEB_MARKER = String.raw`(--next)?\.qorpera\.com$`;
 export const CACHE_PHASE = "http_request_cache_settings";
 /** The app links' cache rule: every app host bypasses Cloudflare's cache. `contains` (every plan has it) on the
  * suffix: inside the zone only <slug>-preview.qorpera.com names hold it. */
@@ -282,6 +300,30 @@ export async function apply(cf, planned) {
 	return { cache };
 }
 
+/** Whether a robots.txt's last group is for every crawler and holds only `Disallow: /`. The origin's own file comes
+ * last: Cloudflare's managed robots.txt puts its own groups first (an `Allow: /` for `*`, and `Disallow: /` for a list
+ * of crawlers), so a `Disallow: /` anywhere in the text proves nothing about the origin. */
+export function lastGroupDisallowsAll(text) {
+	const agent = (line) => /^user-agent\s*:/i.test(line);
+	const lines = String(text)
+		.split(/\r?\n/)
+		.map((line) => line.replace(/#.*/, "").trim())
+		.filter(Boolean);
+	let rules = lines.length;
+	while (rules > 0 && !agent(lines[rules - 1])) rules--;
+	let first = rules - 1;
+	while (first > 0 && agent(lines[first - 1])) first--;
+	if (first < 0) return false;
+	const agents = lines.slice(first, rules).map((line) => line.slice(line.indexOf(":") + 1).trim());
+	const after = lines.slice(rules);
+	return (
+		agents.length === 1 &&
+		agents[0] === "*" &&
+		after.length > 0 &&
+		after.every((line) => /^disallow\s*:\s*\/$/i.test(line))
+	);
+}
+
 /** The public name answers: robots.txt from the site-serve function, over HTTPS. */
 export async function robotsAnswer(fetcher = fetch) {
 	try {
@@ -290,9 +332,99 @@ export async function robotsAnswer(fetcher = fetch) {
 			signal: AbortSignal.timeout(30_000),
 		});
 		const text = await response.text();
-		return { ok: response.status === 200 && /Disallow: \//.test(text), status: response.status };
+		return { ok: response.status === 200 && lastGroupDisallowsAll(text), status: response.status };
 	} catch (error) {
 		return { ok: false, status: error instanceof Error ? error.name : "error" };
+	}
+}
+
+/** A made-up site name for the site hosts' check: one that passes the name rule (SITE-HOSTS.md) and that no site has, a
+ * new one each run, so it answers as every site does for a visitor without a session (existence never shows). */
+export function probeName(random = randomBytes) {
+	return `zz-check-${random(4).toString("hex")}`;
+}
+
+/** Whether an answer is site-serve's page for a site host without a session: 401, HTML, noindex, and an explicit
+ * Cache-Control with no-transform (D23; the zone would add a browser cache time to an answer without one). Envoy's 404
+ * from before 5.1, an older site-serve's 404, the API's JSON 401 and a site's own 200 all fail it. */
+export function lockedSitePage(status, headers) {
+	return (
+		status === 401 &&
+		/^text\/html\s*(;|$)/i.test(headers.get("content-type") ?? "") &&
+		/(?:^|[\s,])noindex(?:$|[\s,])/i.test(headers.get("x-robots-tag") ?? "") &&
+		/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(headers.get("cache-control") ?? "")
+	);
+}
+
+const LOCKED = "site-serve's page for a site without a session (401, HTML, noindex, no-transform)";
+
+/** One GET over HTTPS, its body read and dropped: the status (or the error's name) and the headers. */
+async function probe(fetcher, url, headers = {}) {
+	try {
+		const response = await fetcher(url, { redirect: "manual", signal: AbortSignal.timeout(30_000), headers });
+		await response.text();
+		return { status: response.status, headers: response.headers };
+	} catch (error) {
+		return { status: error instanceof Error ? error.name : "error", headers: new Headers() };
+	}
+}
+
+/** The site hosts answer (release 5.1): through the wildcard record, the tunnel rule and api-front's `site-hosts`
+ * virtual host, a made-up name's own host, its next host and its /rest/v1/ come from site-serve as for a site without a
+ * session; and the API name never serves site-serve, whatever X-Forwarded-Host a visitor sends. */
+export async function siteHostAnswers(fetcher = fetch, name = probeName()) {
+	const own = `https://${name}.${ZONE}`;
+	const checks = [];
+	for (const [what, url] of [
+		["own host", `${own}/`],
+		["next host", `https://${name}--next.${ZONE}/`],
+		["the API's path on a site host", `${own}/rest/v1/`],
+	]) {
+		const answer = await probe(fetcher, url);
+		checks.push({
+			what,
+			url,
+			status: answer.status,
+			ok: lockedSitePage(answer.status, answer.headers),
+			expected: LOCKED,
+		});
+	}
+	const forged = `https://${API_HOST}/functions/v1/site-serve/`;
+	const answer = await probe(fetcher, forged, { "x-forwarded-host": `${name}.${ZONE}` });
+	checks.push({
+		what: "site-serve on the API name, X-Forwarded-Host forged",
+		url: forged,
+		status: answer.status,
+		ok: answer.status === 404,
+		expected: "404",
+	});
+	return checks;
+}
+
+/** The live web holds E1a's marker: read without signing in, through web-deployment.json and every script it lists
+ * (a later split may move the Sites page out of the main script). */
+export async function webMarkerAnswer(fetcher = fetch) {
+	const get = async (path) => {
+		const response = await fetcher(`${WEB_ORIGIN}/${path}`, {
+			redirect: "manual",
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (response.status !== 200) throw new Error(`${path}: ${response.status}`);
+		return response.text();
+	};
+	try {
+		const deployment = JSON.parse(await get("web-deployment.json"));
+		const scripts = Object.keys(deployment?.files ?? {}).filter(
+			(file) => /^[\w./-]+\.js$/.test(file) && !file.includes(".."),
+		);
+		let found = 0;
+		for (const file of scripts) found += (await get(file)).split(WEB_MARKER).length - 1;
+		return {
+			ok: found > 0,
+			status: `source ${deployment?.sourceCommit ?? "?"}, marker ${found} time(s) in ${scripts.length} script(s)`,
+		};
+	} catch (error) {
+		return { ok: false, status: `not read (${error instanceof Error ? error.message : "error"})` };
 	}
 }
 
@@ -319,7 +451,10 @@ export function readToken(env = process.env, spawn = spawnSync) {
 	return token;
 }
 
-export async function main(argv, { env = process.env, fetcher = fetch, log = console.log, spawn = spawnSync } = {}) {
+export async function main(
+	argv,
+	{ env = process.env, fetcher = fetch, log = console.log, spawn = spawnSync, siteName = probeName() } = {},
+) {
 	const modes = argv.filter((item) => ["--apply", "--check"].includes(item));
 	if (modes.length > 1 || argv.some((item) => !["--apply", "--check"].includes(item)))
 		throw new Error("Usage: sites-route.mjs [--apply | --check]");
@@ -347,7 +482,7 @@ export async function main(argv, { env = process.env, fetcher = fetch, log = con
 	const cache = planned.cache;
 	log(
 		cache.action === "unknown"
-			? `cache rule: not checked: ${cache.reason}`
+			? `cache rule: not readable: ${cache.reason}`
 			: cache.action === "none"
 				? `cache rule ${CACHE_RULE.ref}: there already (${CACHE_RULE.expression}: bypass)`
 				: `cache rule ${CACHE_RULE.ref}: to be ${cache.action === "update" ? "set right" : "made"}${cache.action === "create-ruleset" ? " (with the zone's cache rules ruleset)" : ""}`,
@@ -357,14 +492,24 @@ export async function main(argv, { env = process.env, fetcher = fetch, log = con
 		log(`https://${HOST}/robots.txt: ${robots.status}`);
 		const health = await appHealthAnswer(fetcher);
 		log(`${APP_HEALTH_URL}: ${health.status}`);
+		const sites = await siteHostAnswers(fetcher, siteName);
+		for (const site of sites)
+			log(`site hosts, ${site.what}: ${site.url}: ${site.status} ${site.ok ? "ok" : `NOT ${site.expected}`}`);
+		const web = await webMarkerAnswer(fetcher);
+		log(`${WEB_ORIGIN}, the Sites page takes a site's own host (E1a): ${web.status}${web.ok ? "" : ": NOT live"}`);
+		// A token that may not read Cache Rules leaves the rule unread: said as a warning, never a silent pass, and never
+		// the check's failure on its own (the relay's own no-store is the first layer; SITE-HOSTS.md).
+		const warnings = cache.action === "unknown" ? ["the cache rule was not readable"] : [];
 		const ok =
 			!planned.ingressChanged &&
 			planned.dns.action === "none" &&
 			planned.appsDns.action === "none" &&
-			cache.action === "none" &&
+			(cache.action === "none" || cache.action === "unknown") &&
 			robots.ok &&
-			health.ok;
-		log(`check: ${ok ? "PASS" : "FAILED"}`);
+			health.ok &&
+			sites.every((site) => site.ok) &&
+			web.ok;
+		log(`check: ${ok ? (warnings.length ? `PASS, with a warning: ${warnings.join("; ")}` : "PASS") : "FAILED"}`);
 		return ok ? 0 : 1;
 	}
 	if (mode === "dry-run") {
