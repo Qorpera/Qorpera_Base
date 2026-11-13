@@ -27,9 +27,10 @@ $$;
 create function pg_temp.fu_takes(p_lines jsonb) returns boolean language sql as $$
 	select public.qorpera_code_import_look_valid(pg_temp.imp_look(jsonb_build_object('lines', p_lines)))
 $$;
--- Ten lines with names of 200 bytes, most ahead first.
+-- Ten lines with names of 200 bytes, most ahead first. The names are of quotes, each 2 bytes of JSON text (B's widest:
+-- 400 bytes a name as JSON): a jsonb value keeps a string's own bytes, so the kernel's bounds count 200.
 create function pg_temp.fu_ten() returns jsonb language sql immutable as $$
-	select jsonb_agg(jsonb_build_object('name', lpad(n::text, 200, 'n'), 'ahead', 40 - n, 'behind', n * 1000,
+	select jsonb_agg(jsonb_build_object('name', lpad(n::text, 200, '"'), 'ahead', 40 - n, 'behind', n * 1000,
 		'lastAt', '2026-11-01T10:00:00.123456+01:00', 'fits', case n % 3 when 0 then true when 1 then false end) order by n)
 	from generate_series(1, 10) n
 $$;
@@ -43,11 +44,11 @@ create function pg_temp.fu_widest() returns jsonb language sql as $$
 		'tags', '{"seen":999999999999999,"kept":999999999999999}'::jsonb,
 		'branches', '{"seen":999999999999999,"kept":999999999999999}'::jsonb,
 		'lfs', '{"pointers":999999999999999}'::jsonb,
-		'biggest', jsonb_build_object('path', repeat('p', 200), 'bytes', 999999999999999),
+		'biggest', jsonb_build_object('path', repeat('"', 200), 'bytes', 999999999999999),
 		'refused', jsonb_build_object('code', 'IMPORT_' || repeat('X', 100), 'paths',
-			(select jsonb_agg(lpad(n::text, 200, 'r')) from generate_series(1, 10) n), 'more', 999999999999999),
+			(select jsonb_agg(lpad(n::text, 200, '\')) from generate_series(1, 10) n), 'more', 999999999999999),
 		'secrets', jsonb_build_object('found', 999999999999999, 'shown', (select jsonb_agg(jsonb_build_object(
-				'kind', 'k' || repeat('y', 39), 'path', lpad(n::text, 200, 's'), 'inMain', true)) from generate_series(1, 30) n),
+				'kind', 'k' || repeat('y', 39), 'path', lpad(n::text, 200, '"'), 'inMain', true)) from generate_series(1, 30) n),
 			'scan', '{"blobs":999999999999999,"bytes":999999999999999,"all":true}'::jsonb),
 		'why', 'IMPORT_' || repeat('W', 100), 'fits', false,
 		'lines', pg_temp.fu_lines(200, 999999999999999, pg_temp.fu_ten())))
