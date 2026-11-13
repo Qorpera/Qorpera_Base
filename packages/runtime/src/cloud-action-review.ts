@@ -243,6 +243,9 @@ export function cloudActionEffect(
 		case "table_read":
 		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
 		case "zoom":
+		// Company databases (slice 5): what they hold, and a question or a read, as the database folder's read login.
+		case "data_describe":
+		case "data_query":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
@@ -262,6 +265,9 @@ export function cloudActionEffect(
 		case "good_will_mark":
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
+		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
+		// that would destroy data is held until a member says yes.
+		case "data_apply":
 		case "send_message":
 		case "ask_member":
 		case "report_work":

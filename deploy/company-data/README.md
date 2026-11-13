@@ -46,9 +46,12 @@ or drops it, or that makes an unlogged table, is refused the moment it runs.
 
 ## The gateway
 
-`new Gateway({ store: { host, port, logins: { admin, keeper, watch, folderKey } }, platform, limits })`, where
-`platform` is `new Platform({ url, publishableKey })` and `folderKey` is 32 random bytes as hex. `serve(gateway)`
-answers on loopback; `startWatcher(gateway)` looks every 10 s.
+`new Gateway({ store: { host, port, logins: { admin, keeper, watch, folderKey } }, platform, limits, runs })`, where
+`platform` is `new Platform({ url, publishableKey })`, `folderKey` is 32 random bytes as hex and `runs` is `{ token }`,
+the run door's own token, which each provider host holds as its systemd credential `qorpera-company-data` and no other
+service takes (leave it out and the run door answers nothing). `serve(gateway)` answers
+members on loopback; `serveRuns(gateway, { host, port, cert, key })` is the run door, its own listener (TLS with the PEM
+`cert` and `key`; without them only on loopback); `startWatcher(gateway)` looks every 10 s.
 
 Every call is `POST /v1/company-data/<environment id>/<call>` with the member's own token (`authorization: Bearer
 …`) and a JSON body. The gateway reads the files it needs as the member. When it does not hold a file's text yet, it
@@ -58,8 +61,31 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | --- | --- | --- |
 | `query` | `{ database, question, params?, etag? }` | `{ columns, rows, more, asOf, etag }`, or `{ same: true, etag }` |
 | `watch` | `{ watches: [{ database, question, params?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait |
-| `apply` | `{ database }` | `{ applied, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed` or `missing` |
+| `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
 | `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows, columns }], companyBytes }` |
+
+### The run door (agents)
+
+An agent's tool (`data_describe`, `data_apply`, `data_query`, `packages/runtime/src/cloud-data-tools.ts`) calls `POST
+/v1/run-data/<call>` on the run door with the run door's token (`authorization: Bearer …`) and, in the body, a data
+pass the platform made for its run (`qorpera_run_data_pass`, migration `20260930750000`). The gateway redeems the pass
+once with the publishable key alone (`qorpera_data_pass_redeem`): it names the company, the member who asked the run and
+each file the run may read under `data/<name>/` (its `database.toml` and the files directly in `tables/`, `queries/`
+and `actions/`) with its hash. The gateway reads nothing else as the run: a file is the run's when the pass kept it, and
+a text is used only when its hash is the kept one. One pass serves one call; a `need` answer is asked again with a new
+pass and the texts. A wrong token, no pass and a pass that redeems to nothing (redeemed, unknown, expired, or its run's
+job ended) all answer 401 `{ error: "Not allowed" }`.
+
+| Call | Body (with `pass`, and `texts` after a `need`) | Answer |
+| --- | --- | --- |
+| `describe` | `{ database? }` | `{ databases: [{ database, name, about, steps: { applied, waiting, changed, missing }, tables, questions: [{ name, words, parameters }] }], companyBytes, limitBytes }` |
+| `apply` | `{ database }` | as a member's `apply` |
+| `query` | `{ database, question, params? }` or `{ database, sql, params? }` | `{ columns, rows, more, asOf }` |
+
+A run's question or own read runs as a question does (the database folder's read login, read only, one statement), with
+an agent's limits: 15 s, 200 rows and 24 KiB an answer, `more: true` past them. `:viewer` is the member who asked the run
+unless the run names one in `params.viewer`. The watcher gives a read login's backend an agent's limit while the gateway
+runs an agent's read on it, known by its pid.
 
 A refusal is `{ error }` with its status: 400 (the call or the SQL), 401 (sign in), 404 (no such question or database
 that you may read), 405 (not POST), 408 (past the time limit), 409 (no step applied yet), 413 (body too large), 429
@@ -70,8 +96,9 @@ that you may read), 405 (not POST), 408 (past the time limit), 409 (no step appl
 | Limit | Value |
 | --- | --- |
 | A question | 2 s, 2,000 rows, 256 KiB; past those rows or bytes the answer says `more: true` |
+| An agent's question or own read | 15 s, 200 rows, 24 KiB, with `more: true` |
 | A change | 5 s |
-| A step | 60 s, 5 s for a lock |
+| A step | 60 s, 5 s for a lock; an apply call starts no step after 45 s (`applyMs`) |
 | A file | a question 16 KiB, a step 64 KiB, 500 steps a database |
 | A watch | 24 questions, held 20 s, asked again at most every 500 ms |
 | A member's folder read | kept 10 s |
