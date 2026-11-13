@@ -316,6 +316,77 @@ describe("public member Company File gateway", () => {
 		],
 		["a pointer of one id", request(`/v1/member-machine-screens/${id}/pointer`, { method: "POST", body: "{}" }), 404],
 		["a pointer with a tail", request(`/v1/member-machine-screens/${id}/${id}/pointer/1`, { method: "POST", body: "{}" }), 404],
+		...(["query", "watch", "apply", "describe"] as const).flatMap((verb) => {
+			const path = `/v1/company-data/${id}/${verb}`;
+			return [
+				[`a company data ${verb} read`, request(path), 405],
+				[`a company data ${verb} put`, request(path, { method: "PUT", body: "{}" }), 405],
+				[`a company data ${verb} with a query`, request(`${path}?wait=1`, { method: "POST", body: "{}" }), 404],
+				[
+					`a company data ${verb} with a tail`,
+					request(`${path}/${id}`, { method: "POST", body: "{}" }),
+					404,
+				],
+				[
+					`a company data ${verb} without a bearer`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "" } }),
+					401,
+				],
+				[
+					`a company data ${verb} with a basic login`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "Basic bWU6cGFzcw==" } }),
+					401,
+				],
+				[
+					`a company data ${verb} with a bearer of two words`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "Bearer member jwt" } }),
+					401,
+				],
+				[
+					`a company data ${verb} from a foreign origin`,
+					request(path, { method: "POST", body: "{}", headers: { origin: "https://evil.test" } }),
+					403,
+				],
+			] as const;
+		}),
+		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
+		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
+		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
+		[
+			"a company data call of an upper case environment",
+			request(`/v1/company-data/${id.replace(/1/g, "A")}/query`, { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data call of a name for an environment",
+			request("/v1/company-data/shop/query", { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data call of a path for an environment",
+			request(`/v1/company-data/..%2F${id}/query`, { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data query past 64 KiB",
+			request(`/v1/company-data/${id}/query`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data watch past 512 KiB",
+			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data describe past 64 KiB",
+			request(`/v1/company-data/${id}/describe`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data apply past 1 MiB",
+			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			413,
+		],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forward(req, {
@@ -984,6 +1055,201 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(down.status, 503);
 		assert.match(await down.text(), /Chat images are unavailable/);
+	});
+	it("forwards a member's calls to the company's databases with the member's token and its JSON alone", async () => {
+		const seen: string[] = [];
+		const bodies: string[] = [];
+		let answer: () => Response = () =>
+			Response.json({ columns: ["total"], rows: [[12]], more: false }, { headers: { "cache-control": "no-store" } });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			assert.equal(init?.redirect, "error");
+			assert.equal(init?.credentials, "omit");
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${String(url)} ${sent}`);
+			bodies.push(new TextDecoder().decode(init?.body as Uint8Array));
+			return answer();
+		};
+		const body = JSON.stringify({ name: "shop/sales-this-month", params: { since: "2026-11-01" } });
+		const length = new TextEncoder().encode(body).byteLength;
+		for (const verb of ["query", "watch", "apply", "describe"]) {
+			const path = `/v1/company-data/${id}/${verb}`;
+			const done = await forward(
+				request(path, {
+					method: "POST",
+					body,
+					headers: { "content-type": "application/json", cookie: "a=b", apikey: "ignore", "x-qorpera-company": id },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(done.status, 200, verb);
+			assert.equal(done.headers.get("content-type"), "application/json");
+			assert.equal(done.headers.get("cache-control"), "no-store");
+			assert.equal(done.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+			assert.deepEqual(await done.json(), { columns: ["total"], rows: [[12]], more: false });
+		}
+		assert.deepEqual(
+			seen,
+			["query", "watch", "apply", "describe"].map(
+				(verb) =>
+					`POST ${upstreamUrl}/v1/company-data/${id}/${verb} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+			),
+		);
+		assert.deepEqual(bodies, [body, body, body, body]);
+		// A refusal passes back as the data gateway gave it, a held step with what it would destroy.
+		answer = () =>
+			Response.json(
+				{ error: "The step would destroy data", destroys: [{ table: "orders", rows: 3 }] },
+				{ status: 409, headers: { "x-node": "node-01", "set-cookie": "node=1" } },
+			);
+		const held = await forward(
+			request(`/v1/company-data/${id}/apply`, {
+				method: "POST",
+				body: "{}",
+				headers: { "content-type": "application/json" },
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(held.status, 409);
+		assert.equal(held.headers.get("content-type"), "application/json");
+		assert.equal(held.headers.get("x-node"), null);
+		assert.equal(held.headers.get("set-cookie"), null);
+		assert.deepEqual(await held.json(), {
+			error: "The step would destroy data",
+			destroys: [{ table: "orders", rows: 3 }],
+		});
+		answer = () => {
+			throw new TypeError("node unreachable");
+		};
+		const down = await forward(
+			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "{}" }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(down.status, 503);
+		assert.match(await down.text(), /Steps sent may still apply/);
+		const watchDown = await forward(
+			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "{}" }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(watchDown.status, 503);
+		assert.match(await watchDown.text(), /Company data is unavailable just now/);
+		assert.equal(seen.length, 7);
+	});
+	it("bounds a company data call's body: 64 KiB for a question or a look, 512 KiB for a watch, 1 MiB for steps", async () => {
+		const sizes: number[] = [];
+		const fetchImplementation: typeof fetch = async (_url, init) => {
+			sizes.push((init?.body as Uint8Array).byteLength);
+			return Response.json({ ok: true });
+		};
+		for (const [verb, limit] of [
+			["query", 64 * 1024],
+			["watch", 512 * 1024],
+			["describe", 64 * 1024],
+			["apply", 1024 * 1024],
+		] as const) {
+			const path = `/v1/company-data/${id}/${verb}`;
+			const full = await forward(request(path, { method: "POST", body: "x".repeat(limit) }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(full.status, 200, verb);
+			const over = await forward(request(path, { method: "POST", body: "x".repeat(limit + 1) }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(over.status, 413, verb);
+		}
+		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024]);
+	});
+	it("reads a company data call's body only for a signed-in member, a watch too", async () => {
+		const fetchImplementation = async () => assert.fail("unchecked company data call forwarded");
+		for (const verb of ["query", "watch", "apply", "describe"])
+			for (const [memberSignedIn, status] of [
+				[async () => false, 401],
+				[
+					async () => {
+						throw new Error("auth down");
+					},
+					503,
+				],
+				[undefined, 503],
+			] as const) {
+				const state = { pulled: false, cancelled: false };
+				const body = new ReadableStream<Uint8Array>(
+					{
+						pull() {
+							state.pulled = true;
+						},
+						cancel() {
+							state.cancelled = true;
+						},
+					},
+					{ highWaterMark: 0 },
+				);
+				const init: RequestInit & { duplex: "half" } = {
+					method: "POST",
+					body,
+					duplex: "half",
+					headers: { "content-type": "application/json", "content-length": "1024" },
+				};
+				const response = await forwardMemberCompanyGateway(request(`/v1/company-data/${id}/${verb}`, init), {
+					upstreamUrl,
+					fetchImplementation,
+					memberSignedIn,
+				});
+				assert.equal(response.status, status, verb);
+				assert.deepEqual(state, { pulled: false, cancelled: true }, verb);
+			}
+	});
+	it("answers a company data call's preflight for POST with the token and the content type alone", async () => {
+		const fetchImplementation = async () => assert.fail("preflight forwarded");
+		for (const verb of ["query", "watch", "apply", "describe"]) {
+			const preflight = (method: string, headers: string, origin = "https://app.qorpera.com") =>
+				forward(
+					request(`/v1/company-data/${id}/${verb}`, {
+						method: "OPTIONS",
+						headers: { origin, "access-control-request-method": method, "access-control-request-headers": headers },
+					}),
+					{ upstreamUrl, fetchImplementation },
+				);
+			const allowed = await preflight("POST", "authorization, content-type");
+			assert.equal(allowed.status, 204, verb);
+			assert.equal(allowed.headers.get("access-control-allow-methods"), "POST");
+			assert.equal(allowed.headers.get("access-control-allow-headers"), "authorization, content-type");
+			assert.equal(allowed.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+			assert.equal((await preflight("GET", "authorization")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization,if-none-match")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization,x-qorpera-company-path")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization", "https://evil.test")).status, 403, verb);
+		}
+		const drop = await forward(
+			request(`/v1/company-data/${id}/drop`, {
+				method: "OPTIONS",
+				headers: { "access-control-request-method": "POST", "access-control-request-headers": "authorization" },
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(drop.status, 404);
+	});
+	it("gives a held watch 30 s, past the data gateway's 20 s hold and the sign-in check, and the others 25 s", async () => {
+		const original = AbortSignal.timeout;
+		const deadlines: number[] = [];
+		AbortSignal.timeout = (ms: number) => {
+			deadlines.push(ms);
+			return original.call(AbortSignal, ms);
+		};
+		try {
+			for (const verb of ["watch", "query", "apply", "describe"]) {
+				const response = await forward(
+					request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }),
+					{ upstreamUrl, fetchImplementation: async () => Response.json({ same: true }) },
+				);
+				assert.equal(response.status, 200, verb);
+			}
+		} finally {
+			AbortSignal.timeout = original;
+		}
+		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000]);
 	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;

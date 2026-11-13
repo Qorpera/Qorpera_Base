@@ -387,6 +387,20 @@ call the web does not already answer.
 - **What a member does** goes through the bar (§5), from a button that says what it does: `board`'s `choose` answers
   the agent's open question that points at the app (`answers`), and `model`'s `save` keeps a member's numbers in a
   company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app.
+- **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
+  interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
+  (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
+  and `model`'s note under an input's label (with `tell` every label opens one). A press asks
+  `tell({about, at, text})`: `about` is the thing's name (`path`: "step · lane", the lane left out on a path with no
+  lanes; `object`: the part, and the variant shown when there are several; `model`: "label · the value as shown"),
+  one line cut at a word to 60 characters; `at` its id (`path`: `lane:step`, or the step's id on a path with no lanes),
+  sent only where it fits the call's pattern; `text` the thing's `ask` (a draft, at most 40 characters). The data's
+  `words.tell` is the button's label, written by the agent naming itself ("Spørg Luna"), and `words.told` what it
+  says once the note went or waits in the thread; without `tell` the button is a speech-bubble mark with an English
+  name for screen readers. A refusal (most often the member's own "Not now") shows the bridge's sentence quietly
+  beside the button, read out and moving nothing, for six seconds, or until the next press or the detail closes; the
+  button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
+  outside Qorpera, show none.
 - **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
   shows. How the page looks stays the agent's to check on a machine.
 
