@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
@@ -12,6 +13,16 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
+import {
+	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
+	CLOUD_HOME_CHANNEL_LINE_BYTES,
+	CLOUD_HOME_CHANNEL_PATH,
+	CLOUD_HOME_CHANNEL_PROTOCOL,
+	type CloudHomeChannelSide,
+	type CloudHomeSessionAnswer,
+	type CloudHomeSessionAuthorized,
+	parseCloudHomeChannelHandshake,
+} from "./cloud-home-channel.ts";
 import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
@@ -311,8 +322,36 @@ export interface CloudCodingCommandServiceOptions {
 	/** Company machines' commands on the same ingress (/v1/machine-commands/*),
 	 * when this executor routes them. */
 	machines?: CloudMachineCommandServiceOptions;
+	/**
+	 * The agent's home on the same ingress (slice 1): the one route that keeps a channel open, so a run's Codex can
+	 * run its own shell and file tools on its machine. `authorize` is SQL's
+	 * (`qorpera_authorize_home_session`), asked after the holder is proven and before a byte reaches the machine;
+	 * `open` is the executor's own host, which starts `codex exec-server --listen stdio` there as the agent's user.
+	 */
+	home?: {
+		authorize(
+			request: { binding: CloudNativeToolBinding; machineId: string; sessionId: string },
+			signal: AbortSignal,
+		): Promise<CloudHomeSessionAnswer>;
+		open(authority: CloudHomeSessionAuthorized, signal: AbortSignal): Promise<CloudHomeChannelSide>;
+	};
 	host?: "127.0.0.1" | "::1";
 	port?: number;
+}
+
+/** Each complete line of an upgraded socket; a line over the bound ends the channel. */
+async function* homeLines(socket: Socket): AsyncGenerator<string> {
+	let rest = "";
+	for await (const chunk of socket) {
+		rest += (chunk as Buffer).toString("utf8");
+		if (Buffer.byteLength(rest) > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error(ERROR);
+		let end = rest.indexOf("\n");
+		while (end >= 0) {
+			yield rest.slice(0, end);
+			rest = rest.slice(end + 1);
+			end = rest.indexOf("\n");
+		}
+	}
 }
 
 async function readRequest(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
@@ -370,12 +409,95 @@ export class HttpCloudCodingCommandService {
 		this.#options = Object.freeze({ ...options });
 		this.#token = Buffer.from(`Bearer ${options.token}`);
 	}
+	/**
+	 * One run's channel to its home (slice 1), on an upgraded socket: the transport token, then the run's holder
+	 * proven as every other route proves it, then the handshake line, then SQL's authority for this session, and only
+	 * then the machine. Anything that does not hold ends the socket with one line saying why, in the words the host
+	 * gives the model, and never an address, a token or a session of another run.
+	 */
+	async #home(request: IncomingMessage, socket: Socket): Promise<void> {
+		const home = this.#options.home;
+		const controller = new AbortController();
+		this.#controllers.add(controller);
+		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
+		const holder = request.headers["x-qorpera-identity"];
+		socket.on("error", () => undefined);
+		const refuse = (reason: string): void => {
+			// Before the upgrade is completed there is no channel to answer on, so the socket simply ends.
+			socket.end(
+				`HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\nx-qorpera-home: ${reason}\r\n\r\n`,
+			);
+		};
+		let side: CloudHomeChannelSide | undefined;
+		try {
+			if (
+				!home ||
+				request.method !== "GET" ||
+				request.url !== CLOUD_HOME_CHANNEL_PATH ||
+				String(request.headers.upgrade ?? "").toLowerCase() !== CLOUD_HOME_CHANNEL_PROTOCOL ||
+				bearer.length !== this.#token.length ||
+				!timingSafeEqual(bearer, this.#token) ||
+				typeof holder !== "string" ||
+				!isNativeJobHolder(holder)
+			) {
+				refuse("unavailable");
+				return;
+			}
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nupgrade: ${CLOUD_HOME_CHANNEL_PROTOCOL}\r\nconnection: Upgrade\r\n\r\n`,
+			);
+			const reader = homeLines(socket);
+			const first = await Promise.race([
+				reader.next(),
+				new Promise<never>((_resolve, reject) =>
+					setTimeout(() => reject(new Error(ERROR)), CLOUD_HOME_CHANNEL_HANDSHAKE_MS).unref(),
+				),
+			]);
+			const handshake = first.done ? undefined : parseCloudHomeChannelHandshake(first.value);
+			if (!handshake) {
+				socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
+				return;
+			}
+			const binding = parseCloudNativeToolBinding(handshake.binding);
+			if (this.#options.proveBinding) await this.#options.proveBinding(binding, holder, controller.signal);
+			const authority = await home.authorize(
+				{ binding, machineId: handshake.machineId, sessionId: handshake.sessionId },
+				controller.signal,
+			);
+			if (authority.state !== "authorized") {
+				socket.end(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+				return;
+			}
+			side = await home.open(authority, controller.signal);
+			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
+			const machine = side;
+			const fromMachine = (async () => {
+				for await (const line of machine.lines) {
+					if (!socket.writable) break;
+					socket.write(`${line}\n`);
+				}
+			})();
+			for await (const line of reader) machine.write(line);
+			await fromMachine.catch(() => undefined);
+		} catch {
+			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
+		} finally {
+			this.#controllers.delete(controller);
+			controller.abort();
+			await side?.close().catch(() => undefined);
+			socket.destroy();
+		}
+	}
+
 	async start(signal?: AbortSignal): Promise<number> {
 		if (this.#server) throw new Error(ERROR);
 		signal?.throwIfAborted();
 		const server = createServer((request, reply) => {
 			void this.#handle(request, reply);
 		});
+		// The home's channel (slice 1). An upgraded socket leaves the per-request bounds below behind, which a channel
+		// that lives as long as a model's turn cannot keep; every other route stays exactly as it is.
+		if (this.#options.home) server.on("upgrade", (request, socket) => void this.#home(request, socket as Socket));
 		this.#server = server;
 		server.requestTimeout = 15000;
 		server.headersTimeout = 10000;

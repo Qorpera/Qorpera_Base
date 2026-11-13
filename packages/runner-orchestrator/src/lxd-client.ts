@@ -264,8 +264,15 @@ export interface LxdInstanceExecStreamClient {
 }
 
 export interface LxdExecPipeRequest {
-	/** Run as root, at most 64 arguments. */
+	/** At most 64 arguments; run as root unless `user` says otherwise. */
 	readonly command: readonly string[];
+	/** The account inside the instance, by uid and gid. Root (0) unless given: an agent's home runs Codex's own
+	 * exec-server as the machine's unprivileged agent account (lanes/agent-box-20261113, slice 1). */
+	readonly user?: number;
+	readonly group?: number;
+	/** Each chunk of stdout as it arrives, for a command whose output is a stream and not a result (the home's
+	 * channel). With it nothing is kept, and `stdout` in the result is empty; `maxStdoutBytes` still bounds the whole. */
+	readonly onStdout?: (chunk: Buffer) => void;
 	/** The command's environment, over LXD's defaults (`PATH`, `LANG`, `HOME` and `USER` where not given) and the
 	 * instance's `environment.*` keys. */
 	readonly environment: Readonly<Record<string, string>>;
@@ -1406,7 +1413,9 @@ function projectPath(path: string, project: string): string {
 /** At most 64 arguments and 256 environment variables, nothing with a NUL, each argument and value at most 64 KiB and
  * all of them together at most 256 KiB (well under the kernel's limit for a new program). */
 function validExecPipe(request: LxdExecPipeRequest): boolean {
-	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, user, group } = request;
+	for (const id of [user, group])
+		if (id !== undefined && (!Number.isSafeInteger(id) || id < 0 || id > 65535)) return false;
 	if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command[0]) return false;
 	if (typeof environment !== "object" || environment === null) return false;
 	const variables = Object.entries(environment);
@@ -3691,8 +3700,8 @@ export class LxdUnixClient
 				interactive: false,
 				"wait-for-websocket": true,
 				"record-output": false,
-				user: 0,
-				group: 0,
+				user: request.user ?? 0,
+				group: request.group ?? 0,
 				cwd,
 				environment: { ...environment },
 			},
@@ -3763,6 +3772,7 @@ export class LxdUnixClient
 							if (stream.name === "stdout" && !stdoutEnded) {
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
+								else if (request.onStdout) request.onStdout(payload);
 								else stdout.push(payload);
 							} else if (stream.name === "stderr" && !stderrEnded) {
 								const kept = Buffer.concat([stderrTail, payload]);

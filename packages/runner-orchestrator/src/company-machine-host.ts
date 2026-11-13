@@ -9,6 +9,7 @@ import {
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
 	CLOUD_MACHINE_GUEST_PATHS,
+	CLOUD_MACHINE_HOME,
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
 	type CloudMachineCommandFolder,
@@ -39,6 +40,7 @@ import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
+import { EXEC_SERVER_OUTPUT_BYTES, LinePipe } from "./machine-exec-server.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -3525,6 +3527,70 @@ export class LxdCompanyMachineHost {
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
 	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
 	 * and a restart of its guest waits for it (#delivered). */
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): `codex exec-server --listen stdio` inside the machine, as
+	 * the machine's own unprivileged agent account, with its lines carried both ways for as long as the run's channel
+	 * lasts. The caller (the ingress) has proven the run's holder and SQL has authorized this session.
+	 *
+	 * This is the only command of a machine that is not a `machine_run`: it starts no unit, writes no inbox file and
+	 * leaves no command row. What the model does through it is reviewed by the run's own host before a line gets here
+	 * (slice 4) and recorded as the run's steps (slice 2); the changes it makes land in the company folder through the
+	 * machine's `/company` mount, as every change on a machine does.
+	 */
+	async execServer(
+		input: { readonly placementId: string; readonly sessionId: string },
+		signal: AbortSignal,
+	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
+		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId))
+			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const name = lxdCompanyMachineName(input.placementId);
+		const toMachine = new LinePipe();
+		const fromMachine = new LinePipe();
+		const run = new AbortController();
+		const stop = (): void => run.abort();
+		signal.addEventListener("abort", stop, { once: true });
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const pipe = exec(
+			this.#policy.project,
+			name,
+			{
+				command: [CLOUD_MACHINE_HOME.codex, "exec-server", "--listen", "stdio"],
+				user: CLOUD_MACHINE_HOME.uid,
+				group: CLOUD_MACHINE_HOME.gid,
+				environment: {
+					HOME: CLOUD_MACHINE_HOME.home,
+					USER: CLOUD_MACHINE_HOME.account,
+					CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
+					PATH: "/usr/local/bin:/usr/bin:/bin",
+					LANG: "C.UTF-8",
+					TZ: "UTC",
+					NO_COLOR: "1",
+				},
+				cwd: CLOUD_MACHINE_HOME.cwd,
+				stdin: toMachine.read(),
+				onStdout: (chunk) => fromMachine.push(chunk),
+				maxStdoutBytes: EXEC_SERVER_OUTPUT_BYTES,
+				stderrTailBytes: 4096,
+			},
+			run.signal,
+		)
+			.catch(() => undefined)
+			.finally(() => {
+				fromMachine.end();
+				toMachine.end();
+			});
+		return {
+			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
+			lines: fromMachine.lines(),
+			close: async () => {
+				signal.removeEventListener("abort", stop);
+				toMachine.end();
+				run.abort();
+				await pipe;
+			},
+		};
+	}
 	async command(
 		authority: CompanyMachineCommandAuthority,
 		request: CompanyMachineCommand,

@@ -64,6 +64,9 @@ interface MachineCommandRouterOptions {
 	credential(name: string): Promise<string>;
 	/** This node's machines; absent when the executor carries no machines. */
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it, as the agent's
+	 * user, for as long as the run's turn. Absent when the executor carries no machines. */
+	execServerLocal?(authority: { sessionId: string; placementId: string }, signal: AbortSignal): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
@@ -160,6 +163,23 @@ export class MachineCommandRouter {
 		}).map((asked) => asked.catch(() => false));
 		const asked = local ? [local, ...peers] : peers;
 		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
+	}
+	/**
+	 * One run's channel to its home (slice 1). The ingress proved the run's holder and `authorizeHomeSession` named
+	 * the machine's placement; a machine of another node is not reached from here, because that run's slot talks to
+	 * its own node's ingress (a channel is not a request, so there is nothing to forward).
+	 */
+	async execServer(
+		authority: { sessionId: string; placementId: string; executorOwner: string; providerId: string },
+		signal: AbortSignal,
+	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
+		if (
+			!this.#options.execServerLocal ||
+			authority.executorOwner !== this.#options.owner ||
+			authority.providerId !== this.#options.providerId
+		)
+			throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		return await this.#options.execServerLocal(authority, signal);
 	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);

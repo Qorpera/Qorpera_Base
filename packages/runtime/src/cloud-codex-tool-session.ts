@@ -13,6 +13,12 @@ import {
 	type CloudActionReviewChannel,
 	type CloudActionReviewer,
 } from "./cloud-action-review.ts";
+import {
+	CLOUD_HOME_CWD,
+	CLOUD_HOME_ENVIRONMENT_ID,
+	type CloudCodexHome,
+	cloudHomeEnvironmentsToml,
+} from "./cloud-codex-home.ts";
 import { CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY } from "./cloud-native-capture-images.ts";
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
@@ -362,15 +368,38 @@ export function cloudCodexBoundaryConfig(
 	effort: CloudRuntimeReasoningEffort,
 	serviceTier: CloudRuntimeServiceTier = "standard",
 	plan?: CloudCodexChatGptPlan,
+	home = false,
 ): readonly string[] {
 	return Object.freeze([
 		`model_reasoning_effort="${effort}"`,
 		// Fast mode is a Codex login's feature; a plan run always asks for standard routing.
 		`service_tier="${codexServiceTier(plan ? "standard" : serviceTier)}"`,
 		...(plan ? chatGptPlanProviderConfig(plan) : []),
-		...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG,
+		...(home ? cloudCodexHomeConfig() : CLOUD_CODEX_BOUNDARY_FIXED_CONFIG),
 	]);
 }
+
+/**
+ * The run's fixed configuration when it has a home (lanes/agent-box-20261113, slice 1). Three features of Codex's own
+ * are on, and its sandbox is off because the home IS the sandbox: a company machine of this company, reached through
+ * one socket, whose commands are reviewed by this host before they get there (cloud-codex-home.ts).
+ *
+ * What stays exactly as it is without a home: no network in the box, no MCP, no apps, no skills, no sub-agents, no
+ * code mode, the 32 KiB result fence, `approval_policy="never"` (Codex asks nobody; the host reviews every action,
+ * which sees them all, not only the ones a rule names) and `view_image=false`, so a tool whose output the fence
+ * cannot admit is never offered at all (P1 section 3; its fix is a Codex rebuild, slice 5).
+ */
+function cloudCodexHomeConfig(): readonly string[] {
+	const on = new Set(["shell_tool", "unified_exec"]);
+	return CLOUD_CODEX_BOUNDARY_FIXED_CONFIG.map((line) => {
+		if (line === 'sandbox_mode="read-only"') return 'sandbox_mode="danger-full-access"';
+		const feature = /^features\.([a-z_0-9]+)=false$/.exec(line)?.[1];
+		return feature && on.has(feature) ? `features.${feature}=true` : line;
+	});
+}
+
+/** The features a home turns on, for the check below and for the PR's "what OpenAI sees". */
+export const CLOUD_CODEX_HOME_FEATURES: readonly string[] = Object.freeze(["shell_tool", "unified_exec"]);
 
 /**
  * Whether an identity root is a ChatGPT plan run's: its host wrote the plan's access token in a private
@@ -560,6 +589,7 @@ function verifyConfiguration(
 	effort: CloudRuntimeReasoningEffort,
 	serviceTier: CloudRuntimeServiceTier,
 	plan?: CloudCodexChatGptPlan,
+	home = false,
 ): void {
 	const config = object(object(value).config);
 	if (!verifyChatGptPlanProvider(config, plan)) throw new Error("Native boundary configuration was not applied");
@@ -568,11 +598,13 @@ function verifyConfiguration(
 	const orchestrator = object(config.orchestrator);
 	const codeMode = object(features.code_mode);
 	if (
-		DISABLED_FEATURES.some((feature) => features[feature] !== false) ||
+		DISABLED_FEATURES.some(
+			(feature) => features[feature] !== (home && CLOUD_CODEX_HOME_FEATURES.includes(feature)),
+		) ||
 		Object.keys(object(config.mcp_servers)).length !== 0 ||
 		config.approval_policy !== "never" ||
 		config.approvals_reviewer !== "user" ||
-		config.sandbox_mode !== "read-only" ||
+		config.sandbox_mode !== (home ? "danger-full-access" : "read-only") ||
 		config.web_search !== "disabled" ||
 		config.model_reasoning_effort !== effort ||
 		config.service_tier !== codexServiceTier(plan ? "standard" : serviceTier) ||
@@ -788,6 +820,8 @@ class CodexBoundaryRpc {
 	 * stops the work (2026-10-01), never a rate limit. A Codex pinned with the usage-limit codes reports that
 	 * code itself as `usageLimitExceeded`; an older pin reported a 429 it gave up on, which this still reads. */
 	chatGptPlan = false;
+	/** The run's home, when it has one: Codex's own item notifications become its steps (slice 2). */
+	home?: CloudCodexHome;
 
 	get usageSignal(): NativeRuntimeUsageSignal | null {
 		return this.chatGptPlan && this.#providerUsageSignal === "rate_limited"
@@ -2221,6 +2255,13 @@ class CodexBoundaryRpc {
 				typeof params.delta === "string"
 			)
 				this.#boundary?.runLog?.agentText(params.delta);
+		} else if (this.home && message.method.startsWith("item/")) {
+			// What the model did on its home, as Codex says it happened: a command with its exit code, a file change
+			// with its paths. The run's work log keeps it as a step of its own (slice 2). Nothing is delivered from
+			// here to the model or the provider, and a notification this host cannot read is passed over.
+			const params = message.params;
+			if (params && typeof params === "object" && !Array.isArray(params) && !this.#finished)
+				this.home.noteItem(message.method, params as Record<string, unknown>);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -2251,6 +2292,9 @@ interface CloudCodexProcessInputs {
 	serviceTier: CloudRuntimeServiceTier;
 	identityRoot?: string;
 	isolation?: NativeIsolationConfiguration;
+	/** The agent's home for this run (slice 1). A run with one never takes a spare process and never leaves one:
+	 * its socket, its environment file and its configuration belong to this run alone. */
+	home?: CloudCodexHome;
 	/** How a plan run's Codex gets the plan's token (the host's setting; unused for a Codex login). */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
 }
@@ -2407,6 +2451,20 @@ async function startCloudCodexProcess(
 			),
 		);
 		signal.throwIfAborted();
+		// The agent's home (slice 1): its socket in this run's own scratch root, and the one environment Codex may
+		// reach, written by this host after the auth-only check above, never by the model or a company file.
+		if (inputs.home) {
+			progress.stage = "codex-home";
+			await inputs.home.listen(root);
+			await writeFile(
+				join(codexHome, "environments.toml"),
+				cloudHomeEnvironmentsToml(inputs.home.program ?? command, inputs.home.socketPath),
+				{
+					mode: 0o400,
+					flag: "wx",
+				},
+			);
+		}
 		progress.stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
 			root,
@@ -2458,7 +2516,9 @@ async function startCloudCodexProcess(
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan).flatMap((config) => ["-c", config]),
+			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier, plan, inputs.home !== undefined).flatMap(
+				(config) => ["-c", config],
+			),
 		];
 		progress.stage = "codex-process-start";
 		if (inputs.isolation) {
@@ -2469,6 +2529,7 @@ async function startCloudCodexProcess(
 				scratchRoot: root,
 				codexHome,
 				fenceSocket: fence.path,
+				...(inputs.home ? { homeSocket: inputs.home.socketPath } : {}),
 				...(planAccess ? { chatGptPlan: planAccess } : {}),
 				signal: lifetime.signal,
 			});
@@ -2492,6 +2553,7 @@ async function startCloudCodexProcess(
 			});
 		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime);
 		rpc.chatGptPlan = plan !== undefined;
+		rpc.home = inputs.home;
 		const handshake = rpc;
 		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");
 		if (signal.aborted) stop();
@@ -2525,6 +2587,7 @@ async function startCloudCodexProcess(
 			inputs.effort,
 			inputs.serviceTier,
 			plan,
+			inputs.home !== undefined,
 		);
 		progress.stage = "codex-skills";
 		const skills = object(
@@ -2744,6 +2807,12 @@ export async function runCloudCodexToolSession(options: {
 	identityRoot?: string;
 	/** Required by the production company-path entrypoint; omitted only by synthetic/native component probes. */
 	isolation?: NativeIsolationConfiguration;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): Codex's own shell and file tools, run on this run's
+	 * machine through the host's socket. Absent for every company whose switch is off, which is every company
+	 * until an operator turns it on: then the thread has no environment and the provider's request is today's.
+	 */
+	home?: CloudCodexHome;
 	/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
 	/**
@@ -2831,12 +2900,15 @@ export async function runCloudCodexToolSession(options: {
 		serviceTier,
 		...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
 		...(options.isolation ? { isolation: options.isolation } : {}),
+		...(options.home ? { home: options.home } : {}),
 		...(options.chatGptPlanAuth ? { chatGptPlanAuth: options.chatGptPlanAuth } : {}),
 	};
 	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
 	let started: CloudCodexProcess;
 	try {
-		const spare = await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
+		// A home is this run's own (its socket, its environment file, its configuration), so a run with one starts its
+		// own process and never leaves it for another run.
+		const spare = inputs.home ? undefined : await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
 		if (spare) started = spare;
 		else {
 			if (options.identityRoot) {
@@ -2901,6 +2973,8 @@ export async function runCloudCodexToolSession(options: {
 		signal.throwIfAborted();
 		if (!sized(opening)) throw new Error("Invalid native boundary input");
 		if (opening.composeContext) started.binding.composeContext = opening.composeContext;
+		// This run has its home, or it has none: the thread below gets one environment or the empty list of today.
+		const home = options.home !== undefined;
 		stage = "codex-identity";
 		// Generate one host-owned bootstrap and explicitly load these exact bytes.
 		// Ambient project/home instruction discovery remains disabled: a Company
@@ -2922,11 +2996,13 @@ export async function runCloudCodexToolSession(options: {
 					...(options.model === "provider-default" ? {} : { model: options.model }),
 					cwd: started.workspace,
 					runtimeWorkspaceRoots: [],
-					environments: [],
+					// The agent's home, or none at all (slice 1). A reviewer's, the compactor's and a voice call's
+					// threads never get one: they are not the agent's run.
+					environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
 					ephemeral: true,
 					approvalPolicy: "never",
 					approvalsReviewer: "user",
-					sandbox: "read-only",
+					sandbox: home ? "danger-full-access" : "read-only",
 					developerInstructions: nativeInstructions,
 					dynamicTools: [options.boundary.specification],
 				},
@@ -2952,9 +3028,9 @@ export async function runCloudCodexToolSession(options: {
 						threadId,
 						input: [{ type: "text", text, text_elements: [] }],
 						effort,
-						environments: [],
+						environments: home ? [{ environmentId: CLOUD_HOME_ENVIRONMENT_ID, cwd: CLOUD_HOME_CWD }] : [],
 						runtimeWorkspaceRoots: [],
-						sandboxPolicy: { type: "readOnly", networkAccess: false },
+						sandboxPolicy: home ? { type: "dangerFullAccess" } : { type: "readOnly", networkAccess: false },
 					},
 					"agent-turn",
 				),
