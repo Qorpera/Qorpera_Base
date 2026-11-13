@@ -11,6 +11,7 @@ import type { QuestionDockHost } from "../src/app/views/question-dock.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
+import { icon } from "../src/ui/dom.ts";
 import { COMPACT, DEFAULT, MIN, STORAGE_KEY } from "../src/ui/rail-layout.ts";
 import { folderFake } from "./folder-fake.ts";
 
@@ -201,5 +202,54 @@ describe("the Concepts viewer's side panel", () => {
 		expect(view.el.classList.contains("is-collapsed")).toBe(false);
 		expect(view.el.style.getPropertyValue("--concepts-width")).toBe(`${DEFAULT}px`);
 		expect(localStorage.getItem(STORAGE_KEY)).toBe(String(COMPACT));
+	});
+
+	it("opens a concept's row menu with a long press on a touch screen, and the press opens nothing else", async () => {
+		const { open, panel } = company();
+		const view = open("koncepter");
+		await vi.waitFor(() => {
+			if (!view.el.querySelector('a.concepts-item[data-concept="udtryk"]')) throw new Error("no rows yet");
+		});
+		const row = view.el.querySelector<HTMLAnchorElement>('a.concepts-item[data-concept="udtryk"]')!;
+		vi.useFakeTimers();
+		try {
+			row.dispatchEvent(
+				new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 30, clientY: 90 }),
+			);
+			await vi.advanceTimersByTimeAsync(600);
+			const menu = document.querySelector<HTMLElement>(".context-menu");
+			expect([...(menu?.querySelectorAll("[role=menuitem]") ?? [])].map((item) => item.textContent)).toEqual([
+				"Show in Storage",
+			]);
+			// The tap that ends the press neither follows the row's link nor closes the phone's list.
+			const tap = new MouseEvent("click", { bubbles: true, cancelable: true });
+			row.dispatchEvent(tap);
+			expect(tap.defaultPrevented).toBe(true);
+			menu?.querySelector<HTMLButtonElement>("[role=menuitem]")?.click();
+			expect(panel.openInStorage).toHaveBeenCalledExactlyOnceWith("apps/udtryk");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("the sidebar toggle's glyph", () => {
+	it("is drawn on a 20 px grid of its own, its lines on quarter pixels, as one glyph wherever it is used", () => {
+		const glyph = icon("navigation");
+		expect(glyph.getAttribute("viewBox")).toBe("0 0 20 20");
+		expect(glyph.getAttribute("stroke-width")).toBe("1.5");
+		expect(glyph.getAttribute("stroke-linejoin")).toBe("round");
+		expect(glyph.getAttribute("stroke-linecap")).toBe("round");
+		// The outline: outer edges on whole pixels (2 to 18 across, 3 to 17 down), outer corners of 3.5.
+		const outline = glyph.querySelector("rect")!;
+		const at = (name: string) => Number(outline.getAttribute(name));
+		expect([at("x"), at("y"), at("width"), at("height"), at("rx")]).toEqual([2.75, 3.75, 14.5, 12.5, 2.75]);
+		expect(at("x") - 0.75).toBe(2);
+		expect(at("rx") + 0.75).toBe(3.5);
+		// The divider: a third in from the panel's side, its centre on a quarter pixel.
+		expect([...glyph.querySelectorAll("path")].map((path) => path.getAttribute("d"))).toEqual(["M7.75 3.75v12.5"]);
+		// Every other icon keeps Lucide's grid.
+		expect(icon("search").getAttribute("viewBox")).toBe("0 0 24 24");
+		expect(icon("search").getAttribute("stroke-width")).toBe("1.8");
 	});
 });

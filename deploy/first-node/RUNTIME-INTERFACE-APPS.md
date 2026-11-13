@@ -443,9 +443,14 @@ app's screenshot by someone other than its maker.
   only furniture is the side panel, which stands where the company rail stands and is the rail: the member's own
   width for the expanded rail (a compact rail's strip is no width for it: the rail's default stands in, and the
   panel's own fold stays its own), its surface, its rows, its hover and its selection (Jonas, 13 November 2026:
-  "match the style and width of the regular sidepanel"). It holds the way back, each concept (cover or emblem, title, `about`, who made it), Reload
-  and Show in Storage for the open one, and the strip that says whose the concept is and that Qorpera never asks for
-  passwords there (§7 H2). It folds to the compact rail's strip; at phone width it is a top bar with a menu.
+  "match the style and width of the regular sidepanel"). It holds the way back and each concept (cover or emblem,
+  title, `about`, who made it), and it ends with its list (Jonas, 13 November 2026, on the controls and the strip
+  under it: "get rid of this at the bottom of the concepts sidepanel"). A concept's row has the rail's menu (a
+  right-click, a long press on a touch screen, or Shift+F10 or the menu key on the focused row): Show in Storage, and
+  for the open concept Reload, which also lets a concept that was told "Not now" three times ask again. The strip
+  that said whose the open concept is and that Qorpera never asks for passwords there was removed on 13 November 2026
+  on the founder's word (§6 H2); who made each concept still stands in its row. Its toggle is the sidebar's ("Hide
+  sidebar", "Show sidebar"). It folds to the compact rail's strip; at phone width it is a top bar with a menu.
 - **Questions dock.** The agents' open question cards stand over the corner of an app's page or the Concepts viewer's
   stage, outside the frame: one tap answers, as in the chat. The dock heads the card itself — the agent's figure
   waiting and "<Agent> asks you" — and the card below is the question alone: its title, body, app links, options and
@@ -747,9 +752,9 @@ internet (through the logged agent exit). The frame keeps the app from the membe
 this app's DOM), from acting as the member (a page only asks; the member's yes is given outside the frame), and from
 reaching what the platform keeps out of it.
 Two things the frame adds that the agent doesn't have are guarded: what the member types into the page (beside the
-chat and in the Concepts viewer, Qorpera says whose page it is and that it never asks for passwords there; an app's
-own page has said neither since it lost its header on 10 November 2026, §6 H2), and the member's authority
-(reads only of the allowed sources; a change only of what `writes` names, one at a time, shown in full and allowed by
+chat, Qorpera says whose page it is and that it never asks for passwords there; an app's own page has said neither
+since it lost its header on 10 November 2026, and a concept neither since 13 November 2026, §6 H2), and the member's
+authority (reads only of the allowed sources; a change only of what `writes` names, one at a time, shown in full and allowed by
 the member each time; a note only in the member's own words, to the app's owner or the Co-Founder). What a
 prompt-injected agent can still do is ask: a member who allows a bar without reading it makes that change, as theirs,
 to an answer the agent itself asked for or to a row of a table the app names, or sends the app's owner the page's
@@ -766,7 +771,7 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | Finding | Done |
 | --- | --- |
 | H1 the bridge must not ride on window messages | one port per frame, handed over once; second "ready" or third load tears it down |
-| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here". **Since 10 November 2026 an app's own page has no header** (Jonas's decision, §4), so the line stands beside the chat and in the Concepts viewer's side panel only. On an app's own page nothing replaces it yet: a page that draws a sign-in there has the rail beside it and nothing else of Qorpera's. A guard that costs no header is a follow-up (§7): the line shown above the page only while the page has a password field on screen |
+| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here". **Since 10 November 2026 an app's own page has no header** (Jonas's decision, §4), so the line stands beside the chat only. **Removed from the Concepts viewer on 13 November 2026 on the founder's word**: its side panel had carried the line in a strip of its own (#1539 round 1), and that strip is gone (§4). Who made a concept still stands in its row. What protects a member is unchanged: a page has no network and submits no form (the frame is sandboxed with scripts only, `default-src 'none'`, `form-action 'none'`), and nothing leaves it except through Qorpera's own bar, with the member's yes. Nothing replaces the line on a concept: a detector for password fields would be defeated by a hostile page. On an app's own page nothing replaces it yet: a page that draws a sign-in there has the rail beside it and nothing else of Qorpera's. A guard that costs no header is a follow-up (§7): the line shown above the page only while the page has a password field on screen |
 | H3 the Allow bar is too weak | no writes until step 5, which builds the review's gate: see the table below |
 | M1 threat model | corrected above; side channels are best effort |
 | M2 reads: allow list, path checks, never-in-bridge | platform folders refused, host path checks, the list above |
