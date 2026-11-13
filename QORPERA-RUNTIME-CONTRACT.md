@@ -6517,9 +6517,11 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    most 32 wait, each up to 20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
    its runs, is a later step.
 5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
-   `files_only` are new, and `query` is no longer required. Nothing else.
-6. **Rolling.** The folder service on each node first (with the unit's new flag, and only while no company machine
-   runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
+   `files_only` are new, and `query` is no longer required; the description offers a pattern only where the node's
+   search runs them (`REGEX_OFF` otherwise). Nothing else. Turning patterns on later is the folder service unit's
+   flag (`--enable-experimental-regexp-engine`) and its installer pin, with no change the provider sees.
+6. **Rolling.** The folder service on each node first (its unit unchanged, so patterns stay off, and only while no
+   company machine runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
    slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
    hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
    what it takes and says so for the rest.
