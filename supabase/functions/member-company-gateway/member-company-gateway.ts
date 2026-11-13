@@ -21,6 +21,11 @@ const MAX_ACT_BYTES = 16 * 1024;
  * open), at most 1 KiB, which the executor checks. The node's mux passes POST for this location. */
 const MACHINE_START = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/start$`);
 const MAX_START_BYTES = 1024;
+/** A member's call to the company's databases, for one environment (RUNTIME-COMPANY-DATABASES.md section 3): a
+ * question, a held watch, steps to apply, or what a database holds. The node's mux sends it to the data gateway. */
+const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe)$`);
+/** A question, a watch or a look at a database: names, parameters and etags, and a question's text when asked for. */
+const MAX_DATA_BYTES = 64 * 1024;
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -99,6 +104,19 @@ function route(path: string): RoutePolicy | undefined {
 			headers: ["authorization", "content-type"],
 			maxBody: MAX_START_BYTES,
 			unavailable: "The computer is unavailable just now.",
+		};
+	// Steps to apply may carry their texts, at most 1 MiB. The data gateway holds a watch for up to 20 s before it
+	// answers the same, so a watch keeps the default 25 s.
+	const data = COMPANY_DATA.exec(path);
+	if (data)
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : MAX_DATA_BYTES,
+			unavailable:
+				data[1] === "apply"
+					? "Company data is unavailable just now. Steps sent may still apply."
+					: "Company data is unavailable just now.",
 		};
 	const erase = ERASE.exec(path);
 	if (erase)
@@ -238,8 +256,8 @@ export async function forwardMemberCompanyGateway(
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
 		return fail(503, "Member gateway is not configured");
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
-	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report or a
-	// chat image. A chunked body of unknown length is refused unread.
+	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report, a chat
+	// image or a call to the company's data. A chunked body of unknown length is refused unread.
 	const length = request.headers.get("content-length");
 	const refuse = (status: number, error: string) => {
 		void request.body?.cancel().catch(() => {});
