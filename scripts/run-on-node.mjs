@@ -53,8 +53,9 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
                                     in one slot and takes up to 3 as they free (one such run per machine), each only
                                     while the machine has 2 GiB available. A --front run takes them ahead of the queue,
                                     the slot kept for --front runs first. Any other takes only slots 1-4, once its steps
-                                    run side by side and only while no other run waits for a slot or is being copied
-                                    there. --cores 2 keeps to one slot
+                                    run side by side, only while no other run waits for a slot or is being copied there,
+                                    and only while another of them stays free for the next run. --cores 2 keeps to one
+                                    slot
          --parts N                  changed: split the steps into N parts by their CPU work, each a run of its own, all
                                     at once (N at most the machines' count). Each waits on every machine and runs on the
                                     first with a slot for it, the part with the most work queued first. One exit code,
@@ -190,8 +191,8 @@ export const FRONT = "0-";
 export const WIDE_SLOTS = 3;
 const WIDE = `${LOCKS}/qorpera-test-machine-wide.lock`;
 /** A changed run without --front asks for this many cores unless --cores says otherwise: WIDE_SLOTS slots' worth. Past its
- * first slot it takes only free ones, and only while no other run waits (freeGrowScript), so on a busy machine it keeps
- * to one slot's cores as before. Such runs took a median of 10 minutes in one slot (117 passed changed runs on node02,
+ * first slot it takes only free ones, only while no other run waits and another stays free (freeGrowScript), so on a busy
+ * machine it keeps to one slot's cores as before. Such runs took a median of 10 minutes in one slot (117 passed changed runs on node02,
  * 12-13 Nov) while the machines were mostly free: of 75 runs of one lane in 12 hours, 74 started with nobody waiting and
  * the median busy slots were 0. The founder's word of 13 Nov. */
 export const FREE_CORES = WIDE_SLOTS * CHANGED_CORES;
@@ -651,7 +652,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 								freeGrowScript({ allStarted: `${runDir}/${ALL_STARTED}`, sideBySide: `${runDir}/${SIDE_BY_SIDE}` }),
 								`want=$(( (${cores} + per - 1) / per )); [ "$want" -gt ${WIDE_SLOTS} ] && want=${WIDE_SLOTS}`,
 								'if [ "$want" -gt 1 ]; then',
-								`\tif { exec 6>"${FREE_WIDE}"; } 2>/dev/null && flock -n 6; then echo "== run-on-node: side by side in up to $want slots of $per cores: once its steps run side by side, it takes free ones of slots 1-${CPU_SLOTS - KEPT_SLOTS} while no other run waits for one here"; exec 4> >(grow)`,
+								`\tif { exec 6>"${FREE_WIDE}"; } 2>/dev/null && flock -n 6; then echo "== run-on-node: side by side in up to $want slots of $per cores: once its steps run side by side, it takes free ones of slots 1-${CPU_SLOTS - KEPT_SLOTS} while no other run waits here and another stays free"; exec 4> >(grow)`,
 								`\telse echo "== run-on-node: another run takes this machine's free slots: side by side in this one slot ($per cores)"; fi`,
 								"fi",
 							]),
@@ -797,7 +798,10 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
  * ticket, and takes a slot only while no run waits for one on the machine (a live ticket in either lane's queue, a --front
  * run's own included) and none is being copied there (`arriving`, read first: a copy's marker goes only once its run holds
  * a ticket, so a run between the two is seen). It takes only the slots before the kept ones, never an extra one, and only
- * once its steps run side by side (`sideBySide`): before that they run one at a time and more cores would start nothing. */
+ * while another of them stays free after it, for the next run that comes: on 13 Nov a run that took its second slot with
+ * nobody waiting held it through a burst, and runs of a few seconds waited 193-264 s behind it (node02, 08:39Z). And only
+ * once its steps run side by side (`sideBySide`): before that they run one at a time and more cores would start nothing.
+ * It says why it takes no more once per reason, again only after it has taken a slot. */
 export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, meminfo = "/proc/meminfo", arriving = ARRIVING }) {
 	const queues = [LANES.cpu.queue, LANES.quick.queue].map((queue) => `${shellQuote(`${locks}/${queue}`)}/*`).join(" ");
 	return [
@@ -811,16 +815,20 @@ export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, meminfo 
 		// A ticket nobody holds belongs to a run that died; with none, the unmatched pattern opens no file.
 		`\t\t\tfor t in ${queues}; do { flock -n 5 || waiting=$(( waiting + 1 )); } 2>/dev/null 5<"$t"; done`,
 		`\t\t\tavailable=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null)`,
+		// How many of those slots are free, each held for an instant only, as the probe does; a slot whose file no run has
+		// made yet is free.
+		`\t\t\tfree=0; for candidate in $(seq 1 ${CPU_SLOTS - KEPT_SLOTS}); do lock="${locks}/${LANES.cpu.slot}$candidate.lock"; if [ -e "$lock" ]; then { flock -n 5 && free=$(( free + 1 )); } 2>/dev/null 5<"$lock"; else free=$(( free + 1 )); fi; done`,
 		'\t\t\tif [ "$waiting" -gt 0 ]; then',
 		'\t\t\t\t[ "$said" = waits ] || { said=waits; echo "== run-on-node: another run waits for a slot here or is being copied: no more slots while one does"; }',
 		`\t\t\telif [ "\${available:-0}" -lt ${GROW_MEMORY_MIB} ]; then`,
 		`\t\t\t\t[ "$said" = low ] || { said=low; echo "== run-on-node: \${available:-no} MiB available, under ${GROW_MEMORY_MIB}: no more slots until there is more"; }`,
-		"\t\t\telse",
-		'\t\t\t\t[ -z "$said" ] || { said=""; echo "== run-on-node: no run waits and $available MiB available: taking free slots again"; }',
+		'\t\t\telif [ "$free" = 1 ]; then',
+		`\t\t\t\t[ "$said" = last ] || { said=last; echo "== run-on-node: one of slots 1-${CPU_SLOTS - KEPT_SLOTS} is free here: it stays free for the next run"; }`,
+		'\t\t\telif [ "$free" -gt 1 ]; then',
 		`\t\t\t\tfor candidate in $(seq ${CPU_SLOTS - KEPT_SLOTS} -1 1); do`,
 		`\t\t\t\t\tlock="${locks}/${LANES.cpu.slot}$candidate.lock"; { exec {fd}<"$lock" || exec {fd}>"$lock"; } 2>/dev/null || continue`,
 		'\t\t\t\t\tif flock -n "$fd"; then',
-		'\t\t\t\t\t\theld=$(( held + 1 )); echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
+		'\t\t\t\t\t\theld=$(( held + 1 )); said=""; echo $(( held * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"',
 		'\t\t\t\t\t\techo "== run-on-node: slot $candidate too: $held slots, $(( held * per )) cores"',
 		// One slot a turn: who waits and the memory are read again before the next.
 		"\t\t\t\t\t\tbreak",

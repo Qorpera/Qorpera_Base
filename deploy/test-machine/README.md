@@ -154,9 +154,10 @@ Any other `changed` run takes free slots too, never ahead of another run (since 
 10 minutes in one slot while the machines were mostly idle). With `--cores` 6, the default, it may hold up to three
 slots: once its tree-wide parts are done and its steps run side by side, it takes a free one of slots 1-4, one at a
 time, only while no other run waits for a slot on that machine (in either lane's queue, a `--front` run included) or is
-being copied there, and the machine has 2 GiB available. It never takes the kept slot or an extra one, it holds no queue
-ticket, and one such run per machine at a time widens. It keeps what it took until it ends, so a run that arrives later
-may wait for those slots as for any run's. `--cores 2` keeps a run to its one slot. The record says how many slots a run
+being copied there, another of slots 1-4 stays free after it for the next run, and the machine has 2 GiB available. So
+it reaches three slots only on an idle machine, two beside one other run. It never takes the kept slot or an extra one,
+it holds no queue ticket, and one such run per machine at a time widens. It keeps what it took until it ends, so a burst
+of runs that arrives later may wait for those slots as for any run's. `--cores 2` keeps a run to its one slot. The record says how many slots a run
 held at most (`slots`) and the cores they gave (`slotCores`).
 
 Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least
