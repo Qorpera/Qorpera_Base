@@ -2293,10 +2293,14 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 
 	it("begins a pass as the member, reads it once as the executor, and moves on it with no SQL per move", async () => {
 		const f = fixture();
-		expect(await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)).toEqual({
-			pass: f.passId,
-			milliseconds: 10000,
-		});
+		// What is left of its 10 s once SQL's answer came (v242 release review r1 F2).
+		const begun = (await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)) as {
+			pass: string;
+			milliseconds: number;
+		};
+		expect(begun.pass).toBe(f.passId);
+		expect(begun.milliseconds).toBeGreaterThan(9900);
+		expect(begun.milliseconds).toBeLessThanOrEqual(10000);
 		expect(f.memberPointerBegin).toHaveBeenCalledWith(
 			"eyJh.eyJz.c2ln",
 			{ companyId: f.companyId, machineId: f.machineId, hold: { generation: 4 } },
@@ -2388,15 +2392,79 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		// Past the bound in one second: dropped, never queued.
 		expect(moves.filter((move) => move.moved)).toHaveLength(MEMBER_POINTER_MOVES_PER_SECOND);
 		expect(f.host.memberPointer).toHaveBeenCalledTimes(MEMBER_POINTER_MOVES_PER_SECOND);
-		// A pass that ran out moves nothing.
+		// A pass that ran out moves nothing: refused at its begin (v242 release review r1 F2), never kept.
 		const short = fixture();
 		short.call.mockImplementation(async (_method: string, args: Record<string, unknown>) =>
 			short.answer(args.p_owner as string, { milliseconds: 0 }),
 		);
-		await short.router.memberPointer({ ...short.where, begin: { generation: 4 } }, short.signal);
+		await expect(
+			short.router.memberPointer({ ...short.where, begin: { generation: 4 } }, short.signal),
+		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
 		await expect(
 			short.router.memberPointer({ ...short.where, pass: short.passId, x: 1, y: 1 }, short.signal),
 		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+		expect(short.host.memberPointer).not.toHaveBeenCalled();
+	});
+
+	it("counts a pass's time from when SQL was asked, not from its answer, and refuses one with nothing left before its first move, here and on the machine's node (v242 release review r1 F2)", async () => {
+		vi.useFakeTimers();
+		try {
+			/** SQL answers after `delay` ms, with `left` ms of the pass. */
+			const slow = (f: ReturnType<typeof fixture>, delay: number, left: number) =>
+				f.call.mockImplementation(
+					(_method: string, args: Record<string, unknown>) =>
+						new Promise((resolve) =>
+							setTimeout(() => resolve(f.answer(args.p_owner as string, { milliseconds: left })), delay),
+						),
+				);
+			// 600 ms left when SQL was asked, its answer 500 ms on the way: 100 ms of it are left, and said so.
+			const f = fixture();
+			slow(f, 500, 600);
+			const begun = f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
+			await vi.advanceTimersByTimeAsync(500);
+			expect(await begun).toEqual({ pass: f.passId, milliseconds: 100 });
+			await vi.advanceTimersByTimeAsync(50);
+			expect(await f.router.memberPointer({ ...f.where, pass: f.passId, x: 1, y: 1 }, f.signal)).toEqual({
+				moved: true,
+			});
+			await vi.advanceTimersByTimeAsync(60);
+			await expect(
+				f.router.memberPointer({ ...f.where, pass: f.passId, x: 2, y: 1 }, f.signal),
+			).rejects.toMatchObject({
+				code: "POINTER_PASS_ENDED",
+			});
+			expect(f.host.memberPointer).toHaveBeenCalledTimes(1);
+			// 400 ms left, 500 ms on the way: nothing left, refused at the begin, never kept.
+			const late = fixture();
+			slow(late, 500, 400);
+			const refused = expect(
+				late.router.memberPointer({ ...late.where, begin: { generation: 4 } }, late.signal),
+			).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+			await vi.advanceTimersByTimeAsync(500);
+			await refused;
+			// The machine's node, on the first move it is sent: none left, or all of it gone on the way, moves nothing.
+			for (const [delay, left] of [
+				[0, 0],
+				[500, 300],
+			] as const) {
+				const node = fixture("mx-a");
+				slow(node, delay, left);
+				const request = parseCloudMemberMachinePointerPeerRequest({
+					schema: "qorpera.member-machine-pointer-http/v1",
+					passId: node.passId,
+					x: 9,
+					y: 10,
+				});
+				const moved = expect(node.router.memberPointerPeer(request, node.signal)).rejects.toMatchObject({
+					code: "POINTER_PASS_ENDED",
+				});
+				await vi.advanceTimersByTimeAsync(delay);
+				await moved;
+				expect(node.host.memberPointer).not.toHaveBeenCalled();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("tells SQL's refusals and a pass SQL no longer holds, and forgets a pass the host refused", async () => {
@@ -3005,6 +3073,12 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		expect(await peer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
 			"STREAM_UNAVAILABLE",
 		);
+		// A pass with nothing left once SQL answered: refused before anything is shown (v242 release review r1 F2).
+		a.reads((owner) => a.answer(owner, { milliseconds: 0 }));
+		expect(await peer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
+			"POINTER_PASS_ENDED",
+		);
+		expect(a.streamed).toHaveLength(1);
 		// On the ingress (not the peer listener): no such route.
 		const ingress = new HttpCloudCodingCommandService({
 			token,

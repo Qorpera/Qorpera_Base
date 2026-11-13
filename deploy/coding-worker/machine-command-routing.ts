@@ -147,9 +147,10 @@ interface MemberStreamTicket {
 	readonly epoch: number | null;
 }
 
-/** A pointer pass this executor holds (20260930744000), in its memory only: SQL's read of it, until when it lasts, the
- * sha-256 of the member's token that began it (on the executor that took the member's request; null where another
- * executor forwards its moves), and its moves in the current second. */
+/** A pointer pass this executor holds (20260930744000), in its memory only: SQL's read of it, until when it lasts (on
+ * the monotonic clock, counted from when SQL was asked: v242 release review r1 F2), the sha-256 of the member's token
+ * that began it (on the executor that took the member's request; null where another executor forwards its moves), and
+ * its moves in the current second. */
 interface MemberPointerPass {
 	readonly authority: MemberMachinePointerAuthority;
 	readonly companyId: string | null;
@@ -427,11 +428,13 @@ export class MachineCommandRouter {
 			try {
 				const passId = await this.#options.memberPointerBegin(request.token, { companyId: request.companyId,
 					machineId: request.machineId, hold: request.begin }, signal);
+				const askedAt = performance.now();
 				const authority = await authorizeMemberMachinePointer(this.#options.control,
 					{ passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 				if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
-				this.#keepPointer(authority, request.companyId, tokenSha256);
-				return { pass: passId, milliseconds: authority.milliseconds };
+				const kept = this.#keepPointer(authority, request.companyId, tokenSha256, askedAt);
+				// What is left of it now, not what SQL said before its answer travelled.
+				return { pass: passId, milliseconds: Math.floor(kept.until - performance.now()) };
 			} finally {
 				this.#beginsInFlight.delete(tokenSha256);
 			}
@@ -459,10 +462,11 @@ export class MachineCommandRouter {
 	async memberPointerPeer(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove> {
 		let kept = this.#pointerPass(request.passId);
 		if (!kept) {
+			const askedAt = performance.now();
 			const authority = await authorizeMemberMachinePointer(this.#options.control,
 				{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 			if (!authority.served) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			kept = this.#keepPointer(authority, null, null);
+			kept = this.#keepPointer(authority, null, null, askedAt);
 		}
 		if (!admitMove(kept)) return { moved: false };
 		return this.#pointerLocal(kept, request.x, request.y, signal);
@@ -566,16 +570,21 @@ export class MachineCommandRouter {
 	 * the desktop streamed from this node until the asking executor closes its request or it ends. */
 	async memberStreamPeer(request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink,
 		signal: AbortSignal): Promise<string> {
+		const askedAt = performance.now();
 		const authority = await authorizeMemberMachinePointer(this.#options.control,
 			{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 		if (!authority.served || !this.#options.memberStreamLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 		if ((request.epoch !== null) !== authority.private) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		// A pass with nothing left once SQL's answer came (none, or all of it gone on the way) shows nothing (as a move's:
+		// v242 release review r1 F2).
+		if (authority.milliseconds <= 0 || askedAt + authority.milliseconds <= performance.now())
+			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
 		return this.#options.memberStreamLocal({ placementId: authority.placementId, bootId: authority.bootId,
 			userId: authority.userId, generation: authority.generation, epoch: request.epoch }, sink, signal);
 	}
 	/** The member's newest live pointer pass of the stream's hold, on this executor; none when it ran out. */
 	#streamPass(asked: MemberStreamTicket): MemberPointerPass | undefined {
-		const now = Date.now();
+		const now = performance.now();
 		let newest: MemberPointerPass | undefined;
 		for (const kept of this.#pointers.values())
 			if (kept.until > now && kept.tokenSha256 === asked.tokenSha256 && kept.companyId === asked.companyId &&
@@ -587,22 +596,30 @@ export class MachineCommandRouter {
 	/** The pass, while it lasts. */
 	#pointerPass(passId: string): MemberPointerPass | undefined {
 		const kept = this.#pointers.get(passId);
-		if (kept && kept.until <= Date.now()) {
+		if (kept && kept.until <= performance.now()) {
 			this.#pointers.delete(passId);
 			return undefined;
 		}
 		return kept;
 	}
-	/** Keeps a pass for what is left of it; the passes that ran out go, and the oldest when there are too many. */
-	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null): MemberPointerPass {
-		const now = Date.now();
+	/**
+	 * Keeps a pass for what is left of it: SQL's milliseconds counted from `askedAt`, when SQL was asked (the monotonic
+	 * clock), so the time its answer took is not added to the pass (v242 release review r1 F2). A pass with nothing left
+	 * (none, or all of it gone on the way) is refused before its first move: POINTER_PASS_ENDED, never kept. The passes
+	 * that ran out go, and the oldest when there are too many.
+	 */
+	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null,
+		askedAt: number): MemberPointerPass {
+		const now = performance.now();
+		const until = askedAt + authority.milliseconds;
+		if (authority.milliseconds <= 0 || until <= now) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
 		for (const [passId, kept] of this.#pointers) if (kept.until <= now) this.#pointers.delete(passId);
 		while (this.#pointers.size >= MEMBER_POINTER_PASSES) {
 			const oldest = this.#pointers.keys().next().value;
 			if (oldest === undefined) break;
 			this.#pointers.delete(oldest);
 		}
-		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until: now + authority.milliseconds, second: now, moves: 0 };
+		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until, second: now, moves: 0 };
 		this.#pointers.set(authority.passId, kept);
 		return kept;
 	}
@@ -610,7 +627,7 @@ export class MachineCommandRouter {
 
 /** A move of this pass within MEMBER_POINTER_MOVES_PER_SECOND (counted per second); false: dropped. */
 function admitMove(kept: MemberPointerPass): boolean {
-	const now = Date.now();
+	const now = performance.now();
 	if (now - kept.second >= 1000) {
 		kept.second = now;
 		kept.moves = 0;
