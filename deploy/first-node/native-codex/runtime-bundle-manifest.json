@@ -849,7 +849,7 @@
     "packages/runtime/src/cloud-folder-proposals.ts": "7b69a09ce6b816fd93b92cb5ced6aea63e175264714dd5ac543ee066f0b85bb5",
     "packages/runtime/src/cloud-folder-routine-decision.ts": "c15482dc18de1daed47492ec36629ff405859bdcb4aadf92a09105294512dfdf",
     "packages/runtime/src/cloud-folder-routines.ts": "1e81b9fdd3ab5489d89bc25e341900be2ca1124c68c27d56ea8162d8a1d6f10a",
-    "packages/runtime/src/cloud-folder-search-tool.ts": "1712ba138f484e30f4b3f3bf1104030c070d9ad7c92e3779f5625595a780c036",
+    "packages/runtime/src/cloud-folder-search-tool.ts": "129df78214e20ff32a13f5dc1df124e5e9a3959dc5abb7a229b769b3b47d887e",
     "packages/runtime/src/cloud-folder-sidebar.ts": "376c0ef2297785d5582afc8d41bdbc505a7f756118c7a8c911ac28e0f1d460f4",
     "packages/runtime/src/cloud-folder-todos.ts": "89634c802c5c95701020eaed0c860178be019920a259414dfaffc0b821bffa64",
     "packages/runtime/src/cloud-folder-wall.ts": "7a413f26cb1a1d4011eaf7bf4b9722c25e379350106ab048a10ad3e33da40902",
