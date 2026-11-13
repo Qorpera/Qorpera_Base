@@ -7,6 +7,7 @@ import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_REALTIME_EGRESS_HOSTS,
+	NATIVE_EGRESS_LONG_IDLE_MS,
 	type NativeEgressTransport,
 	nativeClientHelloServerName,
 	nativeEgressPublicAddress,
@@ -478,6 +479,49 @@ describe("private native egress relay", () => {
 			const { server } = await relay(transport, hosts);
 			expect(server.allowRealtime).toBeUndefined();
 			expect("allowRealtime" in server).toBe(false);
+			expect("allowLongWaits" in server).toBe(false);
+		});
+
+		// A picture call (cloud-picture-channel.ts): the images request is silent until the picture exists.
+		it("lets a Codex login's connections wait for a picture while a window is open, and lets no other host through", async () => {
+			expect(NATIVE_EGRESS_LONG_IDLE_MS).toBe(300_000);
+			const transport = await target();
+			const { client, path, server } = await relay(transport);
+			client.destroy();
+			if (!server.allowLongWaits) throw new Error("A Codex login's relay has a picture window");
+			const timeouts = vi.spyOn(Socket.prototype, "setTimeout");
+			cleanup.push(async () => timeouts.mockRestore());
+			const login = await tunnel(path, "chatgpt.com");
+			// The connection and its upstream are each held to 30 s of silence.
+			expect(timeouts.mock.calls.map(([ms]) => ms)).toEqual([30_000, 30_000]);
+			timeouts.mockClear();
+			const first = server.allowLongWaits();
+			const second = server.allowLongWaits();
+			// Open connections may wait five minutes once a window opens; a second window changes nothing.
+			expect(timeouts.mock.calls.map(([ms]) => ms)).toEqual([
+				NATIVE_EGRESS_LONG_IDLE_MS,
+				NATIVE_EGRESS_LONG_IDLE_MS,
+			]);
+			timeouts.mockClear();
+			// So may new ones, while the list's hosts stay the list's.
+			const picture = await tunnel(path, "chatgpt.com");
+			expect(timeouts.mock.calls.map(([ms]) => ms)).toEqual([
+				NATIVE_EGRESS_LONG_IDLE_MS,
+				NATIVE_EGRESS_LONG_IDLE_MS,
+			]);
+			await rejected(await open(path), connect("api.openai.com"));
+			expect(transport.resolve).toHaveBeenCalledTimes(2);
+			timeouts.mockClear();
+			// A closer counts once; with the last one, every connection's 30 s count starts again.
+			first();
+			first();
+			expect(timeouts).not.toHaveBeenCalled();
+			second();
+			const counted = timeouts.mock.calls.map(([ms]) => ms);
+			expect(counted.length).toBeGreaterThanOrEqual(4);
+			expect(counted.every((ms) => ms === 30_000)).toBe(true);
+			await answered(login, "more");
+			await answered(picture, "more");
 		});
 	});
 });

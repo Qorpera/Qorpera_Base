@@ -389,6 +389,10 @@ export function cloudActionEffect(
 		// review of course"); posting another agent's or a member's app is delegation (post_app's prepare says which).
 		case "post_app":
 			return args.foreignOwner === true ? "delegation" : "internal";
+		// A picture the agent makes is written as company_write writes a file (20260930746000); one put into another
+		// agent's or a member's app changes that app, as save_app does (make_picture's prepare says which).
+		case "make_picture":
+			return args.foreignOwner === true ? "delegation" : "internal";
 		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
 		case "update_wall":
 			return "internal";
@@ -920,6 +924,12 @@ export function describeCloudAction(
 				"effect",
 				"Members see the changed app under its maker's name, as a page of its own and in their apps if it is posted",
 			);
+	} else if (tool.name === "make_picture") {
+		title = args.foreignOwner === true ? "Put a picture into another agent's app" : "Make a picture";
+		target = text(args.path) || null;
+		quote("picture", args.prompt);
+		if (args.foreignOwner === true)
+			add("effect", "Members see the picture in that app, which shows it under its maker's name");
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
 		target = text(args.name) || null;

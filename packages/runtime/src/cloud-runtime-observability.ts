@@ -106,6 +106,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"data_describe",
 	"data_apply",
 	"data_query",
+	// A picture the agent makes, saved in the company folder and shown to the model (20260930746000).
+	"make_picture",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
