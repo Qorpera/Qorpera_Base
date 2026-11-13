@@ -324,6 +324,9 @@ export function pressToOpenMenu(list: HTMLElement, signal: AbortSignal, open: (e
 		clearTimeout(timer);
 		timer = undefined;
 	};
+	// A press still held when its owner goes (the rail, the drawer or the Concepts viewer put away) opens nothing: the
+	// timer stops with the listeners, and one that already fired checks again (review r1 of #1767, F1).
+	signal.addEventListener("abort", clear, { once: true });
 	list.addEventListener(
 		"pointerdown",
 		(event) => {
@@ -333,6 +336,7 @@ export function pressToOpenMenu(list: HTMLElement, signal: AbortSignal, open: (e
 			const target = event.target as Element;
 			timer = setTimeout(() => {
 				timer = undefined;
+				if (signal.aborted) return;
 				opened = performance.now();
 				const synthetic = new MouseEvent("contextmenu", {
 					clientX: start!.x,

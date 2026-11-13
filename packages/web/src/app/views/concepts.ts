@@ -28,9 +28,12 @@ import { QuestionDock } from "./question-dock.ts";
  *   screen, or Shift+F10 or the menu key on the focused row. It has Show in Storage, and for the open concept Reload,
  *   which also lets a concept that was told "Not now" three times ask again (views/app-ask-bar.ts).
  * - The strip that said whose the open concept is and that Qorpera never asks for passwords in it (security review r1
- *   H2, #1539 round 1) is gone on Jonas's word of 13 November 2026. Who made each concept still stands in its row; what
- *   keeps a member safe is as it was: the page has no network and submits no form, and nothing leaves it except through
- *   Qorpera's own bar, with the member's yes (RUNTIME-INTERFACE-APPS.md §6 H2).
+ *   H2, #1539 round 1) is gone on Jonas's word of 13 November 2026, and nothing replaces it: nothing on screen tells a
+ *   member that a sign-in the page draws is not Qorpera's. Who made each concept still stands in its row. What else
+ *   guards a member is as it was (RUNTIME-INTERFACE-APPS.md §6 H2): a change to the company and a note to an agent go
+ *   only through Qorpera's own bar, with the member's yes, and the page has no network of its own and submits no form.
+ *   But a web link the member clicks opens in a new tab at the address the page gave it, which may carry what the
+ *   member typed, and the side channels the contract names stand.
  * - A cover is read by its file's version: a cover made or replaced shows once the folder says it changed, and a read
  *   that failed is tried again then.
  * - An item is a link to its concept's route: pressing it switches the concept in place, the panel as it is.

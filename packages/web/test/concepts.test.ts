@@ -233,6 +233,31 @@ describe("the Concepts viewer's side panel", () => {
 	});
 });
 
+describe("a long press on a concept's row (review r1 of #1767, F1)", () => {
+	it("opens nothing once the viewer is put away while the press is held", async () => {
+		const { open, panel } = company();
+		const view = open("koncepter");
+		await vi.waitFor(() => {
+			if (!view.el.querySelector('a.concepts-item[data-concept="udtryk"]')) throw new Error("no rows yet");
+		});
+		const row = view.el.querySelector<HTMLAnchorElement>('a.concepts-item[data-concept="udtryk"]')!;
+		vi.useFakeTimers();
+		try {
+			row.dispatchEvent(
+				new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 30, clientY: 90 }),
+			);
+			await vi.advanceTimersByTimeAsync(300);
+			// The member goes elsewhere mid-press: the viewer is put away.
+			view.dispose();
+			await vi.advanceTimersByTimeAsync(600);
+			expect(document.querySelector(".context-menu")).toBeNull();
+			expect(panel.openInStorage).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("the sidebar toggle's glyph", () => {
 	it("is drawn on a 20 px grid of its own, its lines on quarter pixels, as one glyph wherever it is used", () => {
 		const glyph = icon("navigation");
