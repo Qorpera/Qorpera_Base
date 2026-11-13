@@ -50,6 +50,7 @@ import {
 	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
+	parseCompanyTimeZone,
 	parseEvents,
 	parseFriends,
 	parseIncomingInvitations,
@@ -374,6 +375,18 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_profile_team_info", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseTeam);
+	}
+
+	/** Hands in the time zone this member's app shows times in, for a company that has none (migration
+	 * 20260930739000): an owner, admin or contributor; taken only while the company has none. Answers the company's
+	 * zone either way. A name the cloud does not know is refused (22023). */
+	ensureCompanyTimeZone(profileId: string, timeZone: string): Promise<string> {
+		return this.cloud
+			.rpc("qorpera_ensure_company_time_zone", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_time_zone: timeZone,
+			})
+			.then(parseCompanyTimeZone);
 	}
 
 	inviteMember(

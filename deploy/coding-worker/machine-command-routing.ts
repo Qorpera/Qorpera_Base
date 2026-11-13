@@ -75,6 +75,11 @@ interface MachineCommandRouterOptions {
 	 * when this executor takes no member's requests. */
 	memberActBegin?(token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
 		seat: number }, signal: AbortSignal): Promise<string>;
+	/** A member's shared action (20260930734000): begun as the member with no hold of theirs, recorded without its text,
+	 * under the lease generation its input was made under when the page sent one (20260930738000; member-control.ts);
+	 * absent when this executor takes no member's requests. */
+	memberShareBegin?(token: string, share: { companyId: string; machineId: string; action: MachineScreenAction;
+		generation?: number }, signal: AbortSignal): Promise<string>;
 	/** A member's action on this node's machine; absent when the executor carries no machines. */
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
@@ -84,6 +89,10 @@ interface MachineCommandRouterOptions {
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	fetch?: typeof fetch;
 }
+
+/** How long the executor's word that the agent was told of a member's touch may take (20260930734000): it goes beside
+ * the agent's answer and never holds it (review r2 F2 of #1701). */
+export const MEMBER_TOUCHED_TOLD_MS = 3000;
 
 /** True as soon as one is true, false once all said no. */
 function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
@@ -172,12 +181,16 @@ export class MachineCommandRouter {
 	}
 	/** machine_screen (20260930708000): SQL names the machine's executor, as for a command. This node runs the helper; another
 	 * node's executor is sent the request once (it reads SQL again and only runs it locally): an action is never sent twice.
-	 * Its refusal reaches the agent as the same refusal (a 409 with its code). */
+	 * Its refusal reaches the agent as the same refusal (a 409 with its code). A member's touch of the shared screen
+	 * (20260930734000) rides the answer, and only once that answer is ready does this executor tell SQL the agent was told
+	 * (review r1 F4 of #1701): a refusal or a failure leaves it for the agent's next call. */
 	async screen(request: CloudMachineScreenHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineScreenAnswer> {
 		const authority = await authorizeMachineScreen(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.screenLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			return this.#options.screenLocal(authority, signal);
+			const answer = await this.#options.screenLocal(authority, signal);
+			this.#told(authority);
+			return answer;
 		}
 		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
@@ -187,7 +200,30 @@ export class MachineCommandRouter {
 			holder: null, fetch: this.#options.fetch,
 		});
 		if (!gateway.screen) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-		return gateway.screen(request.scope, request.input, signal);
+		const answer = await gateway.screen(request.scope, request.input, signal);
+		// The peer's own read says it too (and the peer tells SQL); an answer without it (a peer from before) carries this
+		// read's.
+		const told = authority.memberTouched && answer.memberTouched === undefined
+			? { ...answer, memberTouched: { name: authority.memberTouched.name, secondsAgo: authority.memberTouched.secondsAgo } }
+			: answer;
+		this.#told(authority);
+		return told;
+	}
+	/** The agent's answer carries the member's touch SQL's read gave (20260930734000): SQL hears it was told, up to that
+	 * action's time. Beside the answer, never before it (review r2 F2 of #1701): the answer goes at once, and the word has
+	 * MEMBER_TOUCHED_TOLD_MS of its own. When SQL does not hear it (it failed, or took longer), its next read says it
+	 * again: said twice, never lost, and never a picture lost to it. */
+	#told(authority: MachineScreenAuthority): void {
+		const touched = authority.memberTouched;
+		if (!touched) return;
+		try {
+			void this.#options.control
+				.call("qorpera_machine_desktop_shared_told", { p_machine_id: authority.machineId, p_at: touched.at },
+					AbortSignal.timeout(MEMBER_TOUCHED_TOLD_MS))
+				.catch(() => undefined);
+		} catch {
+			// Not marked: the agent's next call says it again.
+		}
 	}
 	/** A member's look at a desktop (20260930712000), as this executor's member listener took it: begun as the member (the
 	 * database checks their token and answers a single-use id), then read again as the executor, and looked at on this
@@ -217,11 +253,23 @@ export class MachineCommandRouter {
 		return createHttpMemberMachineScreenPeer({ url: peer.origin, token: await this.#options.credential(peer.tokenCredential),
 			fetch: this.#options.fetch }).memberScreen({ useId, etag }, signal);
 	}
-	/** A member's action on a desktop they hold (20260930713000), as this executor's member listener took it: begun as the
-	 * member (the database checks their token and their hold, records the action without its text and answers a
-	 * single-use id), then read again as the executor, and run on this node or sent once to the machine's node. What the
-	 * member typed goes only to the machine. */
+	/** A member's action on a desktop they hold (20260930713000), or on the desktop they share with the agent
+	 * (20260930734000), as this executor's member listener took it: begun as the member (the database checks their token
+	 * and their hold, or that no one holds it, records the action without its text and answers a single-use id), then
+	 * read again as the executor, and run on this node or sent once to the machine's node. What the member typed goes only
+	 * to the machine. */
 	async memberAct(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct> {
+		if (request.shared === true) {
+			// A shared action (20260930734000): no hold of the member's; SQL refuses it while anyone holds the desktop
+			// privately, and serves it only while no one took it since.
+			if (!this.#options.memberShareBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			// The lease generation the input was made under goes to SQL, which refuses it once someone held the desktop
+			// privately since (20260930738000); a page before it sends none and is served as before.
+			const actionId = await this.#options.memberShareBegin(request.token, { companyId: request.companyId,
+				machineId: request.machineId, action: request.action,
+				...(request.generation === undefined ? {} : { generation: request.generation }) }, signal);
+			return this.#memberActServe(actionId, request.action, signal, false);
+		}
 		if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		// The epoch and the seat of the hold the page captured it under go to SQL, which runs it only under that hold (F24,
 		// F26).
@@ -340,7 +388,11 @@ export function localMachineScreen(host: {
 			throw new Error("MACHINE_SCREEN_FAILED");
 		}
 		return { schema: CLOUD_MACHINE_SCREEN_SCHEMA, commandId: authority.receiptId, header: parseMachineScreenHeader(outcome.header),
-			png: outcome.png ? outcome.png.toString("base64") : null, ...(outcome.heldBack !== undefined ? { heldBack: outcome.heldBack } : {}) };
+			png: outcome.png ? outcome.png.toString("base64") : null, ...(outcome.heldBack !== undefined ? { heldBack: outcome.heldBack } : {}),
+			// A member touched the shared screen since an agent was last told (20260930734000): who and how long ago, never what.
+			...(authority.memberTouched
+				? { memberTouched: { name: authority.memberTouched.name, secondsAgo: authority.memberTouched.secondsAgo } }
+				: {}) };
 	};
 }
 
@@ -368,7 +420,9 @@ export function localMemberMachineAct(host: {
 }): (authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal) => Promise<CloudMemberMachineAct> {
 	return async (authority, action, signal) => {
 		const outcome = await host.memberAct({ placementId: authority.placementId, bootId: authority.bootId,
-			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId }, signal);
+			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId,
+			// A shared action (20260930734000): the host's fence names no member, so any private hold since stops it.
+			...(authority.shared ? { shared: true } : {}) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineActRefusal(outcome.refused)) throw new CloudMemberMachineActRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_ACT_FAILED");

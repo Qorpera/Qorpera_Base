@@ -329,8 +329,13 @@ export const WORKSPACE: Record<string, string> = {
 	"to {who}": "til {who}",
 	"cc {who}": "cc {who}",
 	"Not known who used the account": "Det vides ikke, hvem der brugte kontoen",
-	"Tell {name} what to answer": "Fortæl {name}, hvad der skal svares",
-	"About the email {subject} from {from_name}: ": "Om e-mailen {subject} fra {from_name}: ",
+	"Reply all": "Svar alle",
+	Forward: "Videresend",
+	"Forwarded message": "Videresendt besked",
+	Date: "Dato",
+	"Write your reply": "Skriv dit svar",
+	"Your reply is on its way": "Dit svar er på vej",
+	"Please answer the email {subject} from {from_name}: ": "Svar venligst på e-mailen {subject} fra {from_name}: ",
 	"{name} has your note": "{name} har fået din besked",
 	"Send to {name}": "Send til {name}",
 	"{name} answers it": "{name} svarer på den",
@@ -514,22 +519,32 @@ export const WORKSPACE: Record<string, string> = {
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
 	"Choose a computer": "Vælg en computer",
-	// A member's take-over of the desktop (20260930713000).
-	"Hand back": "Giv tilbage",
-	"You are using the computer. {name} gets no pictures of the screen while you use it.":
-		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
-	"You are using the computer. Choose Enter to click and type.":
-		"Du bruger computeren. Vælg Gå ind for at klikke og skrive.",
-	"{member} is using the computer. The screen is hidden meanwhile.":
-		"{member} bruger computeren. Skærmen er skjult imens.",
-	"Someone is using the computer. The screen is hidden meanwhile.":
-		"En anden bruger computeren. Skærmen er skjult imens.",
+	// A member shares the desktop with the agent (20260930734000); typing privately is the take-over (20260930713000).
+	"You and {name} share this computer: you can both click and type.":
+		"Du og {name} deler denne computer: I kan begge klikke og skrive.",
+	"{member} is using it too.": "{member} bruger den også.",
+	"{members} are using it too.": "{members} bruger den også.",
+	"You can watch. Someone with edit access can use the computer.":
+		"Du kan se med. En med redigeringsadgang kan bruge computeren.",
+	"Type privately": "Skriv privat",
+	"For passwords: {name} gets no pictures of the screen until you're done.":
+		"Til adgangskoder: {name} får ingen billeder af skærmen, før du er færdig.",
+	"Typing privately. {name} gets no pictures of the screen until you're done.":
+		"Du skriver privat. {name} får ingen billeder af skærmen, før du er færdig.",
+	"Typing privately. Choose Enter to click and type.": "Du skriver privat. Vælg Gå ind for at klikke og skrive.",
+	"{member} is typing privately. The screen is hidden until they're done.":
+		"{member} skriver privat. Skærmen er skjult imens.",
+	"Someone is typing privately. The screen is hidden until they're done.":
+		"En anden skriver privat. Skærmen er skjult imens.",
 	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
-	"The computer could not be taken over. Try again.": "Computeren kunne ikke overtages. Prøv igen.",
-	"You are using this computer in another window.": "Du bruger denne computer i et andet vindue.",
-	"Giving the computer back…": "Giver computeren tilbage…",
-	"The computer could not be given back yet. It goes back by itself within 5 minutes.":
-		"Computeren kunne ikke gives tilbage endnu. Den går tilbage af sig selv inden for 5 minutter.",
+	"The computer was busy, so your last input did not go through. Try again.":
+		"Computeren var optaget, så dit sidste input gik ikke igennem. Prøv igen.",
+	"Your last input did not go through. Try again.": "Dit sidste input gik ikke igennem. Prøv igen.",
+	"Private typing could not start. Try again.": "Privat skrivning kunne ikke starte. Prøv igen.",
+	"You are typing privately in another window.": "Du skriver privat i et andet vindue.",
+	"Ending private typing…": "Afslutter privat skrivning…",
+	"Private typing could not be ended yet. It ends by itself within 5 minutes.":
+		"Privat skrivning kunne ikke afsluttes endnu. Den slutter af sig selv inden for 5 minutter.",
 	"computer screen": "computerskærm",
 	"Your clicks and keys go to the computer. Shift+Escape leaves it.":
 		"Dine klik og taster går til computeren. Shift+Escape forlader den.",
@@ -685,8 +700,6 @@ export const WORKSPACE: Record<string, string> = {
 	// The drawer's Icon and colour panel (12 Nov 2026), its icons' names and Generate icon's message.
 	"Icon and colour": "Ikon og farve",
 	"Colour \u00b7 {group}": "Farve · {group}",
-	"Apps in {group} take its colour, so this changes all of them.":
-		"Apps i {group} får dens farve, så dette ændrer dem alle.",
 	"Made for this app": "Lavet til denne app",
 	"None yet.": "Ingen endnu.",
 	"All icons": "Alle ikoner",

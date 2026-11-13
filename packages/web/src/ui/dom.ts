@@ -279,6 +279,10 @@ const ICON_PATHS: Record<string, string[]> = {
 	"chevron-down": ["m6 9 6 6 6-6"],
 	search: ["M18 11a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z", "m20 20-3.9-3.9"],
 	back: ["m14 5-7 7 7 7M7 12h14"],
+	// Lucide reply, reply-all and forward: a mail app's three answers.
+	reply: ["m9 17-5-5 5-5", "M20 18v-2a4 4 0 0 0-4-4H4"],
+	reply_all: ["m7 17-5-5 5-5", "m12 17-5-5 5-5", "M22 18v-2a4 4 0 0 0-4-4H7"],
+	forward: ["m15 17 5-5-5-5", "M4 18v-2a4 4 0 0 1 4-4h12"],
 	computer: ["M4 3h16a1 1 0 0 1 1 1v12H3V4a1 1 0 0 1 1-1Z", "M8 21h8M12 16v5"],
 	attach: ["m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8", "m8 12 5-5"],
 	more: ["M5 12h.01M12 12h.01M19 12h.01"],

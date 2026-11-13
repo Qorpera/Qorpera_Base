@@ -72,6 +72,11 @@ Slate took the places of Coral, Teal and Gray, and Green, Purple and Pink moved
 apart, so that no two colours read alike on a figure. The names an `agent.md`
 writes did not change (`src/cloud/agent-colours.ts`).
 
+On November 13, 2026 the last three figures whose own shade sat outside that row
+moved onto it: the Planet from the retired teal (#5ec0b5) to Sky, the Flame
+(#fa752e) to Orange and the Heart (#fb672a) to Red. The artwork did not change;
+`avatar-appearance.js` keeps those three drawn shades only to find the eyes.
+
 ## Working as sequenced pieces (September 22, 2026)
 
 The recording's last Working frame holds the eyes at rest, lower left, while

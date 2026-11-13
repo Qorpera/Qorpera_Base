@@ -885,7 +885,17 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
   name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
   switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
-  error's message. No reply to a received email and no attachments yet. In `qorpera_member_mail_thread` a sent
+  error's message. No attachments yet. With `replyTo` (20260930740000_member_mail_reply; Jonas, 12 November 2026),
+  `{kind, id}`, the email answers a message of a thread as `qorpera_member_mail_thread` names it: `kind` `received`
+  with that message's `deliveryId`, or `sent` with its `mailId`. It then joins that thread (`thread` in the answer is
+  the answered message's) and carries the message's ids, so the other side's mail program threads it; `from`, `to`,
+  `cc`, `subject` and `text` are still the client's to give (the sender for a reply, "Re: " before the subject).
+  42501 "The email this answers is not one the company can answer" for a message that is not this company's, is no
+  longer kept or is account mail; 22023 for a `replyTo` of another shape, and from a cloud before this migration. A
+  forward is a new email without `replyTo`. From the same migration a received message of
+  `qorpera_member_mail_thread` carries `replyTo` (a different thing: the addresses its Reply-To header names, at most
+  10, while its stored message is kept; absent otherwise and for account mail): a reply goes to them, and to
+  `fromAddress` when there are none. Outside words, to show as text only. In `qorpera_member_mail_thread` a sent
   message a member sent themself carries `member` (`{userId, name?}`; the name is theirs in the company now, absent
   once they have left) and no `staffAgent`; in `qorpera_member_mail_threads` a thread whose newest message is such
   an email carries `sentBy`, the same shape.
@@ -1282,6 +1292,14 @@ request of another shape.
   while a member holds its desktop (`mine` when it is the caller; `name` the holder's; `until` when the lease runs out
   unless renewed: read the list again then). The caller's own hold also says `epoch`, the epoch it was taken under,
   `seat`, its seat, and `press`, the id of the take-over that seated it (never for another member's).
+- Shared control (20260930734000, 20260930738000): owners, admins and contributors act on an agent's desktop beside the
+  agent with no hold, through the executor (`qorpera_member_machine_desktop_share_begin`, which the executor calls with
+  the member's token). The list also names, per machine, `others` (the other members who acted on it in the last
+  minute, by name) and, to those who may act, `generation`: the desktop's lease generation, which moves at every
+  seating and every hand-back that ends a lease. A page sends each shared action with the generation the list named
+  when its input was made; the begin refuses it `DESKTOP_HELD_SINCE` once that is not the current one (someone held the
+  desktop privately since), and the page then reads the list again and goes on under the new one. A begin without a
+  generation (a page before 20260930738000) is served as before.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes
@@ -1459,6 +1477,30 @@ stops and deletes it as one it started.
   answers. A busy record moves its last use only
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
+
+### The company's time zone (20260930739000_company_time_zone)
+
+A company has one time zone, an IANA name (`qorpera_profiles.time_zone`, null while it is not known), taken once from
+a member's browser (Jonas, 12 Nov 2026: "Yes, from the browser"). There is no setting. An agent's desktop computer
+shows its clock in it: the executor's list of machines names it with each placement, and the executor writes it into
+the machine. A routine's own time zone is not touched and does not take it as a default.
+
+- `qorpera_profile_team_info(profile)` answers `time_zone` beside its other keys: the name, or null. A cloud before
+  this migration answers no such key.
+- `qorpera_ensure_company_time_zone(profile, zone)` (authenticated): owners, admins and contributors
+  (`qorpera_can_write_profile`; a viewer and an outsider get 42501, whatever they hand in). The zone is taken only
+  while the company has none, in one statement (of two members at once the first is taken); a later call changes
+  nothing. Answers `{schema: "qorpera.company-time-zone/v1", timeZone, taken}`: the company's zone either way, and
+  whether this call's was taken. Refused with 22023 "Time zone is unknown": no name, a name that is not exactly one of
+  `pg_timezone_names` (read from `qorpera_runtime_time_zone_names`, as a routine's zone is), or one of another shape
+  than letters, digits, `_`, `+`, `-` in at most three parts with `/` between, 64 characters at most.
+- The client calls it when a company opens whose team read says `time_zone` null and the member may write: once, with
+  the zone it shows times in (the member's saved choice, else the device's as the browser reports it; nothing when
+  the browser reports none). It never calls for a viewer, for a company that has a zone, or on a cloud whose team
+  read has no `time_zone`; a refused zone is not handed in again by that browser.
+- Nothing else changes the zone in this version. A later change is one more function (a setting, or an agent's tool)
+  that updates the column: the executor writes a changed zone into the machine on its next pass, and a desktop shows
+  it from its next start.
 
 #### Member contacts' places (20260930717000_member_contact_places)
 

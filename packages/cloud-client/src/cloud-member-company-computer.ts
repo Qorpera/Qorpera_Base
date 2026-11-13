@@ -82,6 +82,13 @@ export interface MemberAgentMachine {
 	/** The caller's own hand-back epoch for the machine (review r5 of #1661): a take-over is accepted only at it, and only
 	 * the database moves it (0 when never handed back, or from a database before it). */
 	epoch: number;
+	/** The other members who acted on the desktop they share with the agent in the last minute, by name
+	 * (20260930734000); never the caller. Empty when none (or from a database before shared control). */
+	others: string[];
+	/** The desktop's lease generation (20260930738000): a number that moves at every seating of a member and every
+	 * hand-back that ends a lease. Each shared action carries the one its input was made under, and SQL refuses it once
+	 * that moved. Null for a viewer, and from a database before it. */
+	generation: number | null;
 }
 export interface MemberAgentMachineControl {
 	mine: boolean;
@@ -401,7 +408,14 @@ export class CloudMemberCompanyComputerClient {
 				(row.screenUsedAt !== null && !text(row.screenUsedAt, 64)) ||
 				(row.screenAgentName !== null && !text(row.screenAgentName, 160)) ||
 				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room") ||
-				(row.epoch !== undefined && !epochOf(row.epoch))
+				(row.epoch !== undefined && !epochOf(row.epoch)) ||
+				// The other members using the shared desktop (20260930734000); absent before shared control.
+				(row.others !== undefined &&
+					(!Array.isArray(row.others) ||
+						row.others.length > 50 ||
+						!row.others.every((name) => text(name, 256)))) ||
+				// The desktop's lease generation (20260930738000); absent (or null) for a viewer and before it.
+				(row.generation !== undefined && row.generation !== null && !epochOf(row.generation))
 			)
 				throw new Error(invalid);
 			// Who holds the desktop (20260930713000); absent before the take-over migration.
@@ -441,6 +455,8 @@ export class CloudMemberCompanyComputerClient {
 				waitingFor: row.waitingFor as "hours" | "room" | null,
 				control,
 				epoch: epochOf(row.epoch) ? row.epoch : 0,
+				others: Array.isArray(row.others) ? [...(row.others as string[])] : [],
+				generation: epochOf(row.generation) ? row.generation : null,
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
