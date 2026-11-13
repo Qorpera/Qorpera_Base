@@ -285,6 +285,56 @@ begin
 		octet_length((pg_temp.fu_widest() -> 'lines')::text);
 end $$;
 
+-- 2b. The looks the executor writes (the cross-check of the merged parts): what codeImportLook makes of no measure, a
+-- measure that found no other line, one line, ten shown of twelve with names of 200 bytes (one of them with quotes,
+-- one of two-byte letters), and a name not shown beside fits false and null and a time not shown, each taken whole and
+-- within the 16,000 bytes qorpera_code_import_looked keeps; and lines this rule refuses. The lists between the markers
+-- are shared: runner-orchestrator's test/code-import.test.ts makes each look from its facts with codeImportLook and
+-- refuses each of the refused lines with codeImportLookOf (the executor's look always passes it, so it never writes
+-- one), and runtime's test/cloud-company-folder-client.test.ts reads each look as the agent's read hands it on.
+do $$
+declare v text;
+begin
+	foreach v in array array[
+-- BEGIN THE LOOKS PART B WRITES
+	'{"schema":"qorpera.code-import-look/v1","bytes":2048,"defaultBranch":"main","mainSha":"cccccccccccccccccccccccccccccccccccccccc","commits":7,"firstAt":"2025-01-02T03:04:05Z","lastAt":"2026-11-12T10:00:00Z","authors30d":1,"tags":{"seen":1,"kept":1},"branches":{"seen":14,"kept":12},"leftOut":2,"files":9,"entries":11,"biggest":{"path":"README.md","bytes":300},"lfs":{"pointers":0},"submodules":0,"refused":{"code":null,"paths":[],"more":0},"secrets":{"found":0,"shown":[],"scan":{"blobs":9,"bytes":3000,"all":true}},"fits":true,"why":null}',
+	'{"schema":"qorpera.code-import-look/v1","bytes":2048,"defaultBranch":"main","mainSha":"cccccccccccccccccccccccccccccccccccccccc","commits":7,"firstAt":"2025-01-02T03:04:05Z","lastAt":"2026-11-12T10:00:00Z","authors30d":1,"tags":{"seen":1,"kept":1},"branches":{"seen":14,"kept":12},"lines":{"count":0,"changes":0,"shown":[]},"leftOut":2,"files":9,"entries":11,"biggest":{"path":"README.md","bytes":300},"lfs":{"pointers":0},"submodules":0,"refused":{"code":null,"paths":[],"more":0},"secrets":{"found":0,"shown":[],"scan":{"blobs":9,"bytes":3000,"all":true}},"fits":true,"why":null}',
+	'{"schema":"qorpera.code-import-look/v1","bytes":2048,"defaultBranch":"main","mainSha":"cccccccccccccccccccccccccccccccccccccccc","commits":7,"firstAt":"2025-01-02T03:04:05Z","lastAt":"2026-11-12T10:00:00Z","authors30d":1,"tags":{"seen":1,"kept":1},"branches":{"seen":14,"kept":12},"lines":{"count":1,"changes":2,"shown":[{"name":"feature/cart","ahead":2,"behind":3,"lastAt":"2025-11-12T14:00:00Z","fits":true}]},"leftOut":2,"files":9,"entries":11,"biggest":{"path":"README.md","bytes":300},"lfs":{"pointers":0},"submodules":0,"refused":{"code":null,"paths":[],"more":0},"secrets":{"found":0,"shown":[],"scan":{"blobs":9,"bytes":3000,"all":true}},"fits":true,"why":null}',
+	'{"schema":"qorpera.code-import-look/v1","bytes":2048,"defaultBranch":"main","mainSha":"cccccccccccccccccccccccccccccccccccccccc","commits":7,"firstAt":"2025-01-02T03:04:05Z","lastAt":"2026-11-12T10:00:00Z","authors30d":1,"tags":{"seen":1,"kept":1},"branches":{"seen":14,"kept":12},"lines":{"count":12,"changes":90,"shown":[{"name":"feature/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ahead":12,"behind":1,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"øøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøøø","ahead":11,"behind":2,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"it''s \"q\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","ahead":10,"behind":3,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"04/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":9,"behind":4,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"05/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":8,"behind":5,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"06/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":7,"behind":6,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"07/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":6,"behind":7,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"08/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":5,"behind":8,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"09/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":4,"behind":9,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"10/yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","ahead":3,"behind":10,"lastAt":"2025-11-12T14:00:00Z","fits":true}]},"leftOut":2,"files":9,"entries":11,"biggest":{"path":"README.md","bytes":300},"lfs":{"pointers":0},"submodules":0,"refused":{"code":null,"paths":[],"more":0},"secrets":{"found":0,"shown":[],"scan":{"blobs":9,"bytes":3000,"all":true}},"fits":true,"why":null}',
+	'{"schema":"qorpera.code-import-look/v1","bytes":2048,"defaultBranch":"main","mainSha":"cccccccccccccccccccccccccccccccccccccccc","commits":7,"firstAt":"2025-01-02T03:04:05Z","lastAt":"2026-11-12T10:00:00Z","authors30d":1,"tags":{"seen":1,"kept":1},"branches":{"seen":14,"kept":12},"lines":{"count":3,"changes":3,"shown":[{"name":"release/1.x","ahead":2,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":false},{"name":null,"ahead":1,"behind":4,"lastAt":"2025-11-12T14:00:00Z","fits":null},{"name":"old-work","ahead":1,"behind":9,"lastAt":null,"fits":true}]},"leftOut":2,"files":9,"entries":11,"biggest":{"path":"README.md","bytes":300},"lfs":{"pointers":0},"submodules":0,"refused":{"code":null,"paths":[],"more":0},"secrets":{"found":0,"shown":[],"scan":{"blobs":9,"bytes":3000,"all":true}},"fits":true,"why":null}'
+-- END THE LOOKS PART B WRITES
+	] loop
+		perform pg_temp.base_assert(public.qorpera_code_import_look_valid(v::jsonb) and pg_column_size(v::jsonb) <= 16000,
+			'the executor''s look: ' || left(v, 400));
+	end loop;
+	foreach v in array array[
+-- BEGIN LINES THE LOOK REFUSES
+	'{"count":1,"changes":1,"shown":[{"name":"","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":1,"changes":1,"shown":[{"name":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":201,"changes":201,"shown":[]}',
+	'{"count":1,"changes":0,"shown":[]}',
+	'{"count":0,"changes":1,"shown":[]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":0,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":2,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":2,"changes":3,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"b","ahead":2,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":11,"changes":11,"shown":[{"name":"n00","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n01","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n02","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n03","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n04","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n05","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n06","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n07","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n08","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n09","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"n10","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":1,"changes":2,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true},{"name":"b","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"yesterday","fits":true}]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":"yes"}]}',
+	'{"count":0,"changes":0,"shown":[],"more":1}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z"}]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":1,"behind":0,"lastAt":"2025-11-12T14:00:00Z","fits":true,"more":1}]}',
+	'{"count":-1,"changes":0,"shown":[]}',
+	'{"count":1.5,"changes":1,"shown":[]}',
+	'{"count":"1","changes":1,"shown":[]}',
+	'{"count":1,"changes":1,"shown":[{"name":"a","ahead":1,"behind":-1,"lastAt":"2025-11-12T14:00:00Z","fits":true}]}',
+	'{"count":1,"changes":1,"shown":{}}'
+-- END LINES THE LOOK REFUSES
+	] loop
+		perform pg_temp.base_assert(not pg_temp.fu_takes(v::jsonb), 'refused lines: ' || left(v, 400));
+	end loop;
+end $$;
+
 -- 3. Code brought in -------------------------------------------------------------------------------------------------
 -- Alice brings Acme/Mine in (no other line came); the owner brings Acme/Theirs in (two other lines); Alice brings
 -- Acme/Big in (its look at every bound); Alice brings a bundle in from the folder (a look without lines).

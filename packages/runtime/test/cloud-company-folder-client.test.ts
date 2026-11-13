@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { COMPANY_STATE_PARSER_VERSION, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import {
@@ -2883,5 +2884,30 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			await expect(read(stands({ file })), JSON.stringify(file)).rejects.toThrow(
 				"Company folder response is invalid",
 			);
+	});
+
+	// The cross-check of the merged parts: the looks the coding executor writes (runner-orchestrator's codeImportLook,
+	// pinned there against these same literals), which SQL test 1235 section 2b takes, are read as they were written.
+	it("reads every look the executor writes, as the kernel keeps it", async () => {
+		const sql = readFileSync(
+			new URL("../../../supabase/tests/1235_code_import_follow_ups.test.sql", import.meta.url),
+			"utf8",
+		);
+		const section = sql.slice(
+			sql.indexOf("-- BEGIN THE LOOKS PART B WRITES\n"),
+			sql.indexOf("-- END THE LOOKS PART B WRITES\n"),
+		);
+		const looks = [...section.matchAll(/^\t'(\{.*\})',?$/gm)].map(
+			(match) => JSON.parse((match[1] as string).replaceAll("''", "'")) as Record<string, unknown>,
+		);
+		expect(looks).toHaveLength(5);
+		for (const sent of looks) {
+			const read = await fixture(() =>
+				stands({ state: "done", step: "open", look: sent, result: "imported", change: 1 }),
+			).client.codeImport(REQUEST, signal());
+			if (Object.hasOwn(sent, "lines")) expect(read.look?.lines, JSON.stringify(sent.lines)).toEqual(sent.lines);
+			else expect(Object.hasOwn(read.look ?? {}, "lines")).toBe(false);
+			expect(read.look?.branches).toEqual(sent.branches);
+		}
 	});
 });

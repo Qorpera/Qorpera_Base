@@ -2070,6 +2070,118 @@ describe("the look", () => {
 	});
 });
 
+/** A list of SQL test 1235 between its markers, each entry a JSON text (shared with runtime's
+ * test/cloud-company-folder-client.test.ts). */
+function shapesOf1235(marker: string): unknown[] {
+	const sql = readFileSync(
+		new URL("../../../supabase/tests/1235_code_import_follow_ups.test.sql", import.meta.url),
+		"utf8",
+	);
+	const section = sql.slice(sql.indexOf(`-- BEGIN ${marker}\n`), sql.indexOf(`-- END ${marker}\n`));
+	return [...section.matchAll(/^\t'(\{.*\})',?$/gm)].map((match) =>
+		JSON.parse((match[1] as string).replaceAll("''", "'")),
+	);
+}
+
+// The import's follow-ups, the cross-check of the merged parts: the looks this executor writes are the ones the kernel's
+// rule takes (migration 20260930741000, SQL test 1235 section 2b, which holds them as literals) and the agent's read
+// hands on (runtime), and no line the kernel refuses is ever written.
+describe("the look's lines as the kernel takes them", () => {
+	const T = 1_762_956_000;
+	const base: CodeImportLookFacts = {
+		bytes: 2048,
+		defaultBranch: "main",
+		mainSha: "c".repeat(40),
+		commits: 7,
+		firstAt: "2025-01-02T03:04:05Z",
+		lastAt: "2026-11-12T10:00:00Z",
+		authors30d: 1,
+		tags: { seen: 1, kept: 1 },
+		branches: { seen: 14, kept: 12 },
+		leftOut: 2,
+		files: 9,
+		entries: 11,
+		biggest: { path: "README.md", bytes: 300 },
+		lfsPointers: 0,
+		submodules: 0,
+		refused: null,
+		secrets: [],
+		scan: { blobs: 9, bytes: 3000, all: true },
+		why: null,
+	};
+	const line = (
+		name: string,
+		ahead: number,
+		behind: number,
+		time: number,
+		fits: boolean | null,
+	): CodeImportLineSeen => ({
+		name,
+		ahead,
+		behind,
+		time,
+		fits,
+	});
+	/** Twelve names of 200 bytes: one with quotes, one of two-byte letters. */
+	const named = (n: number) =>
+		n === 1
+			? `feature/${"a".repeat(192)}`
+			: n === 2
+				? "ø".repeat(100)
+				: n === 3
+					? `it's "q"${"x".repeat(192)}`
+					: `${String(n).padStart(2, "0")}/${"y".repeat(197)}`;
+
+	it("writes exactly the looks SQL test 1235 takes, and none of the lines it refuses", () => {
+		const made = [
+			// No measure (a look from before, or one that did not end well), and a measure that found no other line.
+			codeImportLook(base),
+			codeImportLook({ ...base, lines: { count: 0, changes: 0, shown: [] } }),
+			codeImportLook({ ...base, lines: { count: 1, changes: 2, shown: [line("feature/cart", 2, 3, T, true)] } }),
+			// Twelve lines, ten shown, each name 200 bytes.
+			codeImportLook({
+				...base,
+				lines: {
+					count: 12,
+					changes: 90,
+					shown: Array.from({ length: 12 }, (_, k) => line(named(k + 1), 12 - k, k + 1, T, true)),
+				},
+			}),
+			// A name over 200 bytes (not shown), fits false and null, and a time past the year 9999 (not shown).
+			codeImportLook({
+				...base,
+				lines: {
+					count: 3,
+					changes: 3,
+					shown: [
+						line("old-work", 1, 9, 253_402_300_800, true),
+						line("x".repeat(201), 1, 4, T, null),
+						line("release/1.x", 2, 0, T, false),
+					],
+				},
+			}),
+		];
+		for (let n = 1; n <= 12; n++) expect(Buffer.byteLength(named(n))).toBe(200);
+		const looks = shapesOf1235("THE LOOKS PART B WRITES");
+		expect(looks).toHaveLength(made.length);
+		expect(made.map((look) => JSON.parse(JSON.stringify(look)))).toEqual(looks);
+		expect(made[3]?.lines?.shown).toHaveLength(10);
+		expect(made[4]?.lines?.shown.map((each) => [each.name, each.lastAt, each.fits])).toEqual([
+			["release/1.x", codeImportTime(T), false],
+			[null, codeImportTime(T), null],
+			["old-work", null, true],
+		]);
+		// What the kernel refuses, against a look that keeps 200 heads as 1235's does: the executor's own reader refuses it
+		// too, and every look the executor writes is one that reader took (codeImportLook ends with codeImportLookOf).
+		const kept = JSON.parse(JSON.stringify(codeImportLook({ ...base, branches: { seen: 300, kept: 200 } })));
+		expect(codeImportLookOf(kept)).toEqual(kept);
+		const refused = shapesOf1235("LINES THE LOOK REFUSES");
+		expect(refused.length).toBeGreaterThanOrEqual(20);
+		for (const lines of refused)
+			expect(() => codeImportLookOf({ ...kept, lines }), JSON.stringify(lines)).toThrow("INVALID_CODE_IMPORT_LOOK");
+	});
+});
+
 describe("the request's shapes", () => {
 	const input = { from: { github: "Qorpera/saml-storefront" }, via: "connection", look: false, maximumBytes: GiB };
 	const file = {
