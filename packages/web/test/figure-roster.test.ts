@@ -52,6 +52,15 @@ describe("the figures the web draws", () => {
 		}
 	});
 
+	it("each start in a colour the picker offers", () => {
+		// A figure's own shade is its default colour, so it is one of the palette's swatches (November 13, 2026).
+		const source = readFileSync(new URL("avatar-appearance.js", AVATARS), "utf8");
+		const row = /const palette = Object\.freeze\(\[([^\]]*)\]/.exec(source)?.[1] ?? "";
+		const palette = [...row.matchAll(/color: "(#[\da-f]{6})"/g)].map(([, hex]) => hex);
+		expect(palette).toHaveLength(11);
+		for (const { id, color } of model().avatars) expect(palette, id).toContain(color);
+	});
+
 	it("each have a white-eye threshold in the painting", () => {
 		// Without one the eyes' whiteness is not a number, and the body paints over them.
 		const source = readFileSync(new URL("avatar-appearance.js", AVATARS), "utf8");

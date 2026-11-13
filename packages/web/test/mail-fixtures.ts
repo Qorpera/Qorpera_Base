@@ -163,7 +163,8 @@ export interface MailFake {
 	gone: Set<string>;
 	/** What the Digital Post read answers; unset, the cloud has no such call. */
 	digitalPost?: Record<string, unknown>;
-	/** What a member's own send is refused with; unset, it is queued and its thread is the newest. */
+	/** What a member's own send is refused with; unset, it is queued: a new email's thread is the newest, and an answer
+	 * (`replyTo`) is the newest message of the thread it answers in. */
 	sendError?: { message: string; code: string };
 	/** A member's own send answers only after this. */
 	sendHold?: Promise<void>;
@@ -214,8 +215,67 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			await fake.sendHold;
 			if (fake.sendError) throw new CloudRpcError(fn, fake.sendError, 400);
 			if (fake.sendStatus) return { mailId: id(899), thread: thread(899), status: fake.sendStatus };
-			// A member's own email starts a thread of its own: theirs, with its first recipient as the outside party.
-			const request = args.p_request as { from: string; to: string[]; subject: string; text: string };
+			const request = args.p_request as {
+				from: string;
+				to: string[];
+				cc?: string[];
+				subject: string;
+				text: string;
+				replyTo?: { kind: string; id: string };
+			};
+			const { replyTo } = request;
+			if (replyTo) {
+				// An answer joins the thread of the message it answers, as the member's own.
+				const messagesOf = (item: Record<string, unknown>) =>
+					(fake.reads[String(item.thread)]?.messages as Record<string, unknown>[] | undefined) ?? [
+						received(Number(String(item.thread).slice("thread-".length))),
+					];
+				const answered = fake.threads.find((item) =>
+					messagesOf(item).some((message) => (message.deliveryId ?? message.mailId) === replyTo.id),
+				);
+				if (!answered)
+					throw new CloudRpcError(
+						fn,
+						{ message: "The email this answers is not one the company can answer", code: "42501" },
+						403,
+					);
+				const answeredThread = String(answered.thread);
+				const mailId = id(900 + fake.calls.length);
+				fake.reads[answeredThread] = {
+					thread: answeredThread,
+					address: ADDRESS.address,
+					more: false,
+					waiting: [],
+					...fake.reads[answeredThread],
+					messages: [
+						...messagesOf(answered),
+						{
+							kind: "sent",
+							mailId,
+							fromName: "Account A at Acme",
+							fromAddress: request.from,
+							to: request.to,
+							cc: request.cc ?? [],
+							subject: request.subject,
+							text: request.text,
+							status: "queued",
+							at: at(-1),
+							member: { userId: userA.id, name: "Account A" },
+							attachments: [],
+						},
+					],
+				};
+				Object.assign(answered, {
+					direction: "sent",
+					state: "handled",
+					lastAt: at(-1),
+					messages: Number(answered.messages) + 1,
+					snippet: request.text,
+					sentBy: { userId: userA.id, name: "Account A" },
+				});
+				return { mailId, thread: answeredThread, status: "queued" };
+			}
+			// A member's own new email starts a thread of its own: theirs, with its first recipient as the outside party.
 			const n = 900 + fake.threads.length;
 			fake.threads.unshift(
 				summary(n, {

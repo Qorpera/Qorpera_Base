@@ -386,9 +386,13 @@ interface RailParts {
 	appTiles: AppTile[];
 	/** The member's places the arrangement refused; the next change leaves them out. */
 	appRefused: ReadonlySet<string>;
+	/** Each of the agents' apps in the drawer as it is drawn there, by the app's name (`appLook`). */
+	appLooks: ReadonlyMap<string, AppLook>;
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
+	/** The group folding as the drawer is drawn next (its drawer key): its apps go back into its tile. */
+	appFolding: string | undefined;
 	/** Dragging the drawer's icons to reorder them. */
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
@@ -664,9 +668,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appTree: [],
 			appTiles: [],
 			appRefused: new Set(),
+			appLooks: new Map(),
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
+			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
@@ -1994,6 +2000,18 @@ function drawInterfaces(
 	// Apps in a group take the group's colour; the member's own colours over the drawer's (Jonas, 12 Nov 2026).
 	const resolved = appColours(tree, state.appLayout?.layout ?? EMPTY_APP_LAYOUT, (key) => colours.get(drawerKey(key)));
 	const colourOf = (key: string) => colourHex(resolved.get(key));
+	// Each agent's app as it is drawn here, for whatever else shows the app (`appLook`).
+	parts.appLooks = new Map(
+		apps.flatMap((app): [string, AppLook][] => {
+			const manifest = app.manifest;
+			if (!manifest) return [];
+			const key = `app:${app.name}`;
+			const choice = emblemChoice(key);
+			const colour = colourOf(key);
+			const emblem = choice.draw ?? (() => interfaceEmblem(manifest.emblem, 34));
+			return [[app.name, { key: JSON.stringify([choice.model || manifest.emblem, colour ?? ""]), colour, emblem }]];
+		}),
+	);
 	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
 	const drawn = tiles.map((tile) => {
 		let element: HTMLElement;
@@ -2042,6 +2060,31 @@ function countBadge(count: number): HTMLElement | null {
 		: null;
 }
 
+/** How an agent's app is drawn: its emblem and the colour of it. `key` changes when either does. */
+export interface AppLook {
+	readonly key: string;
+	/** The emblem's colour, or undefined for the text's own. */
+	readonly colour: string | undefined;
+	/** The emblem, drawn anew at each call. */
+	readonly emblem: () => SVGSVGElement;
+}
+
+/** An agent's app as the drawer draws it, for its card in a message (app/application.ts): the member's own icon and
+ * colour for it, or its group's colour (Jonas, 12 Nov 2026). An app that is not in the drawer (not posted, a concept,
+ * or the rail not drawn yet) is drawn as its manifest says. Undefined for an app with no manifest. */
+export function appLook(company: CompanyController, app: CompanyApp): AppLook | undefined {
+	const manifest = app.manifest;
+	if (!manifest) return undefined;
+	const drawer = railParts.get(company)?.appLooks.get(app.name);
+	if (drawer) return drawer;
+	const colour = colourHex(manifest.colour ?? undefined);
+	return {
+		key: JSON.stringify([manifest.emblem, colour ?? ""]),
+		colour,
+		emblem: () => interfaceEmblem(manifest.emblem, 34),
+	};
+}
+
 /** Each page's colour; an agent's app takes the colour its manifest names (Jonas, 11 Nov 2026: black only had
  * "little distinction and contrast"). Charcoal and none draw in the text's colour. */
 const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple", bank: "green" };
@@ -2083,6 +2126,19 @@ function groupIcon(name: string, count: number, colour: string | undefined): HTM
 	return tile;
 }
 
+/** Each tile on its way out of the drawer, and its fold into a group if it has one. The drawer draws a tile it shows
+ * again with the same element, so a tile that comes back, or goes at the end of its way out, loses its fold (`fill`
+ * holds the fold's end, small and clear, until cancelled), and only the latest way out ends one (review F1 on #1729). */
+const leavingTiles = new WeakMap<HTMLElement, { readonly fold?: Animation }>();
+
+/** A tile out of its way out: whole again, in the grid's flow, its fold cancelled. */
+function unleave(element: HTMLElement): void {
+	leavingTiles.get(element)?.fold?.cancel();
+	leavingTiles.delete(element);
+	element.classList.remove("is-leaving", "is-folding");
+	for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+}
+
 /** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
  * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
 function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
@@ -2096,13 +2152,15 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		: undefined;
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
-	for (const element of drawn)
-		if (element.classList.contains("is-leaving")) {
-			element.classList.remove("is-leaving");
-			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
-		}
+	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
 	reconcile(grid, drawn);
+	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
+	// collapsing").
+	const folding = parts.appFolding;
+	parts.appFolding = undefined;
 	if (!before || !box) return;
+	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
+	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
 	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
@@ -2124,8 +2182,24 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				easing: easing("--ease-out"),
 			});
 	}
-	for (const [element, was] of before) {
-		if (kept.has(element)) continue;
+	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
+	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
+	for (const element of before.keys())
+		if (!kept.has(element) && leavingTiles.has(element)) {
+			// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
+			element.removeAttribute("data-app-key");
+			if (element.parentElement !== grid) grid.append(element);
+		}
+	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
+	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
+	// wraps).
+	const into = target ? centre(target) : undefined;
+	const far = (rect: DOMRect) => (into ? Math.hypot(centre(rect).x - into.x, centre(rect).y - into.y) : 0);
+	const turn = new Map(
+		[...leaving].sort(([, a], [, b]) => far(a) - far(b)).map(([element], index) => [element, index] as const),
+	);
+	for (const [element, was] of leaving) {
 		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
 		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
@@ -2133,9 +2207,33 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.top = `${was.top - box.top}px`;
 		element.style.width = `${was.width}px`;
 		grid.append(element);
+		let ms = 240;
+		let fold: Animation | undefined;
+		if (into) {
+			// Into the group's tile: each app shrinks and goes back behind it, a moment after the one nearer it.
+			const from = centre(element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was);
+			const dx = into.x - from.x;
+			const dy = into.y - from.y;
+			const delay = Math.min(turn.get(element) ?? 0, 6) * 18;
+			element.classList.add("is-folding");
+			fold = element.animate(
+				[
+					{ translate: "0 0", scale: "1", opacity: 1 },
+					{ opacity: 1, offset: 0.4 },
+					{ translate: `${dx}px ${dy}px`, scale: "0.2", opacity: 0 },
+				],
+				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
+			);
+			ms = 340 + delay + 20;
+		}
+		const leave = { fold };
+		leavingTiles.set(element, leave);
 		setTimeout(() => {
-			if (element.classList.contains("is-leaving")) element.remove();
-		}, 240);
+			// Come back meanwhile, or gone again on a newer way out: not this one's to end.
+			if (leavingTiles.get(element) !== leave) return;
+			element.remove();
+			unleave(element);
+		}, ms);
 	}
 }
 
@@ -2161,6 +2259,7 @@ function toggleAppGroup(company: CompanyController, parts: RailParts, id: string
 			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
 			: undefined;
 		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+		parts.appFolding = groupKey(id);
 	} else parts.appGroupsOpen.add(id);
 	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
 	parts.redraw();
@@ -2896,7 +2995,7 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	// group sets the group's colour.
 	const items: MenuEntry[] = isGroupKey(key)
 		? groupMenu(company, parts, groupIdOf(key))
-		: [moveToMenu(company, parts, key), lookMenu(company, parts, key, name), ...pageMenuItems(company, parts, tile)];
+		: [moveToMenu(company, parts, key), lookMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, tile);
@@ -2938,7 +3037,7 @@ function moveToMenu(company: CompanyController, parts: RailParts, key: string): 
 
 /** Colour for a group: the member's own colour for it and so for everything in it (Jonas, 12 Nov 2026), from the
  * palette row the apps' Icon and colour panel has; Default takes the member's choice away. */
-function groupColourMenu(company: CompanyController, parts: RailParts, id: string, name: string): MenuEntry {
+function groupColourMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry {
 	const key = groupKey(id);
 	return {
 		kind: "panel",
@@ -2947,7 +3046,6 @@ function groupColourMenu(company: CompanyController, parts: RailParts, id: strin
 		panel: () =>
 			appLookPanel(
 				() => ({
-					title: name,
 					ink:
 						parts.appsGrid
 							.querySelector<HTMLElement>(`[data-app-key="${key}"]`)
@@ -2969,7 +3067,7 @@ function groupColourMenu(company: CompanyController, parts: RailParts, id: strin
 /** Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the member's own colour (an app in a group: the group's) and
  * icon for an entry of the drawer, and for an agent's app its own icons and Generate icon. Each choice is written to
  * the member's own layout at once; the panel follows the store while it is open. */
-function lookMenu(company: CompanyController, parts: RailParts, key: string, name: string): MenuEntry {
+function lookMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
 	const appName = key.startsWith("app:") ? key.slice("app:".length) : undefined;
 	const tileOf = () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawerKey(key)}"]`);
 	return {
@@ -2992,7 +3090,6 @@ function lookMenu(company: CompanyController, parts: RailParts, key: string, nam
 						? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
 						: undefined;
 					return {
-						title: name,
 						ink: tileOf()?.style.getPropertyValue("--app-colour") || undefined,
 						colour: {
 							chosen: layout?.colours?.[colourKey] ?? null,
@@ -3056,7 +3153,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
 			},
 		},
-		groupColourMenu(company, parts, id, group.name),
+		groupColourMenu(company, parts, id),
 		{
 			label: t("Ungroup"),
 			icon: "grid",

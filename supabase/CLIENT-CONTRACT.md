@@ -885,7 +885,17 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
   name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
   switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
-  error's message. No reply to a received email and no attachments yet. In `qorpera_member_mail_thread` a sent
+  error's message. No attachments yet. With `replyTo` (20260930740000_member_mail_reply; Jonas, 12 November 2026),
+  `{kind, id}`, the email answers a message of a thread as `qorpera_member_mail_thread` names it: `kind` `received`
+  with that message's `deliveryId`, or `sent` with its `mailId`. It then joins that thread (`thread` in the answer is
+  the answered message's) and carries the message's ids, so the other side's mail program threads it; `from`, `to`,
+  `cc`, `subject` and `text` are still the client's to give (the sender for a reply, "Re: " before the subject).
+  42501 "The email this answers is not one the company can answer" for a message that is not this company's, is no
+  longer kept or is account mail; 22023 for a `replyTo` of another shape, and from a cloud before this migration. A
+  forward is a new email without `replyTo`. From the same migration a received message of
+  `qorpera_member_mail_thread` carries `replyTo` (a different thing: the addresses its Reply-To header names, at most
+  10, while its stored message is kept; absent otherwise and for account mail): a reply goes to them, and to
+  `fromAddress` when there are none. Outside words, to show as text only. In `qorpera_member_mail_thread` a sent
   message a member sent themself carries `member` (`{userId, name?}`; the name is theirs in the company now, absent
   once they have left) and no `staffAgent`; in `qorpera_member_mail_threads` a thread whose newest message is such
   an email carries `sentBy`, the same shape.
