@@ -375,6 +375,91 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	// The import's follow-ups, item 3 (20260930741000; STEP6-BUILD.md "The shapes, exactly"): code a member or another
+	// agent brought in, told once at the agent's next run. The runtime that reads the key goes live before the SQL that
+	// marks it told, so without it the counts read as before.
+	it("passes on the code brought in since the agent last ran, and refuses a list it does not know", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const signal = new AbortController().signal;
+		const counts = { todos: { open: 1, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+		const github = {
+			owner: "acme",
+			name: "shop",
+			from: { github: "Acme/Shop" },
+			by: "member",
+			at: "2026-11-13T09:00:00.123456+00:00",
+			earlierChanges: 1,
+			otherWork: { lines: 1, changes: 2 },
+		};
+		const file = {
+			owner: "acme",
+			name: "tools.v2",
+			from: { file: "tools.bundle" },
+			by: "agent",
+			at: "2026-11-13T09:30:00+00:00",
+			earlierChanges: null,
+			otherWork: null,
+		};
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			codeBroughtIn: [github, file],
+		}));
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual({
+			...counts,
+			codeBroughtIn: [github, file],
+		});
+		// Today's answer has no such key: the counts alone, as before.
+		call.mockResolvedValueOnce({ schema: "qorpera.agent-open-work/v1", runId: binding.runId, ...counts });
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual(counts);
+		const eight = Array.from({ length: 8 }, () => github);
+		call.mockResolvedValueOnce({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			codeBroughtIn: eight,
+		});
+		expect((await describeCloudAgentOpenWork(binding, { call }, signal)).codeBroughtIn).toHaveLength(8);
+		const without = (key: string) => Object.fromEntries(Object.entries(github).filter(([name]) => name !== key));
+		for (const broken of [
+			null,
+			[],
+			Array.from({ length: 9 }, () => github),
+			{ ...github },
+			[{ ...github, extra: 1 }],
+			...["owner", "name", "from", "by", "at", "earlierChanges", "otherWork"].map((key) => [without(key)]),
+			[{ ...github, owner: "Acme" }],
+			[{ ...github, owner: 7 }],
+			[{ ...github, name: "shop/" }],
+			[{ ...github, from: { github: "Acme/Shop", file: "tools.bundle" } }],
+			[{ ...github, from: {} }],
+			[{ ...github, from: { url: "https://github.com/Acme/Shop" } }],
+			[{ ...github, from: { github: 7 } }],
+			[{ ...github, from: "Acme/Shop" }],
+			[{ ...github, by: "system" }],
+			[{ ...github, at: 7 }],
+			[{ ...github, at: null }],
+			[{ ...github, earlierChanges: -1 }],
+			[{ ...github, earlierChanges: "1" }],
+			[{ ...github, earlierChanges: 1.5 }],
+			[{ ...github, otherWork: { lines: 0, changes: 0 } }],
+			[{ ...github, otherWork: { lines: 1, changes: 0 } }],
+			[{ ...github, otherWork: { lines: 0, changes: 1 } }],
+			[{ ...github, otherWork: { lines: 1 } }],
+			[{ ...github, otherWork: { lines: 1, changes: 2, shown: [] } }],
+			[{ ...github, otherWork: 1 }],
+		]) {
+			call.mockResolvedValueOnce({
+				schema: "qorpera.agent-open-work/v1",
+				runId: binding.runId,
+				...counts,
+				codeBroughtIn: broken,
+			});
+			await expect(describeCloudAgentOpenWork(binding, { call }, signal), JSON.stringify(broken)).rejects.toThrow();
+		}
+	});
+
 	it("hands a complete dispatch to the worker writer and refuses an incomplete or widened one before any writer call", async () => {
 		const f = await fixture();
 		try {

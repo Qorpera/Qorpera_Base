@@ -855,6 +855,17 @@ describe("the store's import writer", () => {
 		expect(fromFile.from).toEqual({ file: "code/_incoming/drop/shop.bundle", branch: "trunk" });
 		expect(fromFile.refs).toEqual(refs.slice(0, 2_000));
 		expect(fromFile.refsCount).toBe(2_101);
+		expect(fromFile).not.toHaveProperty("sourceBranch");
+
+		// The source's own default beside a branch brought in as main (review round 1 of #1725, F1): kept, and read back.
+		const named = await store.begin(TARGET, { kind: "import" });
+		await named.write(bytes);
+		const withSource = await named.commit(
+			codeImportBundleName(at(4), MAIN),
+			importFacts(bytes, at(4), { from: { github: "Acme/App", branch: "main" }, sourceBranch: "master" }),
+		);
+		expect(withSource).toMatchObject({ defaultBranch: "main", sourceBranch: "master" });
+		expect((await store.readImport(TARGET, codeImportBundleName(at(4), MAIN))).manifest).toEqual(withSource);
 
 		// No more than its maximum; a writer a piece failed takes nothing more.
 		const small = await store.begin(TARGET, { kind: "import", maximumBytes: 4 });
@@ -886,6 +897,10 @@ describe("the store's import writer", () => {
 			[codeImportBundleName(at(2), MAIN), { environmentId: "environment" }],
 			[codeImportBundleName(at(2), MAIN), { executorOwner: "x".repeat(201) }],
 			[codeImportBundleName(at(2), MAIN), { sha256: "d".repeat(63) }],
+			[codeImportBundleName(at(2), MAIN), { sourceBranch: "main" }],
+			[codeImportBundleName(at(2), MAIN), { sourceBranch: "a..b" }],
+			[codeImportBundleName(at(2), MAIN), { sourceBranch: "ghp_0123456789abcdefghijABCDEFGHIJ012345" }],
+			[codeImportBundleName(at(2), MAIN), { sourceBranch: 7 as never }],
 		];
 		for (const [label, extra] of wrong) {
 			const failing = await store.begin(TARGET, { kind: "import" });
@@ -901,7 +916,9 @@ describe("the store's import writer", () => {
 				failing.commit(codeImportBundleName(at(2), MAIN), importFacts(bytes, at(2), extra)),
 			).rejects.toThrow("CODE_BUNDLE_DIFFERS");
 		}
-		expect(files(folder)).toEqual([...both(name), ...both(codeImportBundleName(at(1), MAIN))].sort());
+		expect(files(folder)).toEqual(
+			[...both(name), ...both(codeImportBundleName(at(1), MAIN)), ...both(codeImportBundleName(at(4), MAIN))].sort(),
+		);
 
 		// Never over a stored one.
 		const again = await store.begin(TARGET, { kind: "import" });
@@ -974,8 +991,18 @@ describe("the store's import writer", () => {
 		await expect(store.readImport({ ...TARGET, name: "site" }, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
 		for (const bad of ["", "import-x", `${name}.bundle`, "import-20261111T020000Z-AAAAAAAAAAAA"])
 			await expect(store.readImport(TARGET, bad)).rejects.toThrow("INVALID_CODE_BUNDLE");
-		// A manifest marked verified is no first bundle's; a file cut short is none either.
+		// A manifest from before the source's own default was kept reads as it is (every import before it); one whose
+		// source branch is not a name the import keeps, or is the default branch itself, is no first bundle's.
 		const json = join(folder, `${name}.json`);
+		expect(manifest).not.toHaveProperty("sourceBranch");
+		for (const sourceBranch of ["main", "a..b", 7, null]) {
+			writeFileSync(json, JSON.stringify({ ...manifest, sourceBranch }));
+			await expect(store.readImport(TARGET, name), String(sourceBranch)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		}
+		writeFileSync(json, JSON.stringify({ ...manifest, sourceBranch: "trunk" }));
+		expect((await store.readImport(TARGET, name)).manifest).toEqual({ ...manifest, sourceBranch: "trunk" });
+		writeFileSync(json, JSON.stringify(manifest));
+		// A manifest marked verified is no first bundle's; a file cut short is none either.
 		writeFileSync(json, JSON.stringify({ ...manifest, verified: true }));
 		await expect(store.readImport(TARGET, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
 		writeFileSync(json, JSON.stringify(manifest));

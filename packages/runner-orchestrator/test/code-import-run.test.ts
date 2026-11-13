@@ -340,6 +340,7 @@ function memoryStore(tick: (label: string) => void) {
 									createdAt: facts.createdAt,
 									from: facts.from,
 									defaultBranch: facts.defaultBranch,
+									...(facts.sourceBranch === undefined ? {} : { sourceBranch: facts.sourceBranch }),
 									mainSha: facts.mainSha,
 									refs: facts.refs,
 									refsCount: facts.refs.length,
@@ -630,6 +631,8 @@ async function world(
 	};
 	const b = {
 		looks: [] as { look: boolean; now: number }[],
+		/** The source's own default the fetch or read named beside the branch asked for, which raw carries to the look. */
+		sourceBranch: undefined as string | undefined,
 		reads: [] as CodeImportReadValue[],
 		/** The look job's answer: the look alone, or the restore-shaped bundle with it. */
 		look: async (
@@ -664,6 +667,7 @@ async function world(
 				mainSha: s.mainSha,
 				refs: 3,
 				leftOut: 0,
+				...(b.sourceBranch === undefined ? {} : { sourceBranch: b.sourceBranch }),
 			});
 			expect(digest(await collect(source))).toBe(value.raw.sha256);
 			return await b.look(value, sink);
@@ -938,7 +942,16 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 	it("a public project: the public transport, with nothing at the place to set aside", async () => {
 		const x = await world({ input: "public" });
 		(x.input.from as Record<string, unknown>).branch = "trunk";
+		// The fetch names GitHub's own default beside the branch asked for: raw keeps it for the look's refs plan, which
+		// keeps that head whatever its age (the lead's call 6a of the import's follow-ups).
+		const writes = x.fetching.writes;
+		x.fetching.writes = async (options, writer) => ({ ...(await writes(options, writer)), sourceBranch: "dev" });
+		x.b.sourceBranch = "dev";
 		expect(await x.run()).toMatchObject({ state: "done", result: "imported", setAside: null, bundle: x.s.keptName });
+		const saved = x.kernel.steps.filter((step) => "raw" in step).map((step) => step.raw as Record<string, unknown>);
+		expect(saved.length).toBeGreaterThan(0);
+		expect(saved.every((raw) => raw.sourceBranch === "dev")).toBe(true);
+		expect(x.b.looks).toHaveLength(1);
 		expect(x.transports.made).toEqual(["public Acme/Shop"]);
 		expect(x.fetching.options.map((options) => options.branch)).toEqual(["trunk"]);
 		expect(x.kernel.relay).toEqual([]);
@@ -1057,6 +1070,26 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 					};
 				},
 				outcome: { state: "refused", code: "IMPORT_BRANCH_NAME" },
+			},
+			{
+				name: "a source's own default that is the branch brought in",
+				set: (x) => {
+					x.fetching.writes = async (_options, writer) => {
+						for await (const piece of pieces(x.s.raw)) await writer.write(piece);
+						return { ...x.s.fetched, sourceBranch: x.s.fetched.defaultBranch };
+					};
+				},
+				outcome: { state: "failed", code: "IMPORT_FETCH_ANSWER_INVALID" },
+			},
+			{
+				name: "a source's own default that looks like a key",
+				set: (x) => {
+					x.fetching.writes = async (_options, writer) => {
+						for await (const piece of pieces(x.s.raw)) await writer.write(piece);
+						return { ...x.s.fetched, sourceBranch: `sk-ant-api03-${"A".repeat(30)}` };
+					};
+				},
+				outcome: { state: "failed", code: "IMPORT_FETCH_ANSWER_INVALID" },
 			},
 			{
 				name: "a file that is not the one asked for",
@@ -1666,6 +1699,64 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(await y.run()).toMatchObject({ state: "done", result: "imported", rawBundle: y.s.rawName });
 		expect([y.b.reads.length, y.fetching.calls]).toEqual([0, 0]);
 		await expectBuilt(y);
+	});
+
+	// Review round 1 of #1725, F1: the source's own default, kept beside a branch brought in as main whatever its age,
+	// goes with the first bundle's manifest, so a fresh request that finishes the half-done snapshot (the first one used
+	// up its claims after the close) looks at it as the first look did, keeps that head, and is not refused half done.
+	it("a half-done snapshot of a branch brought in as main beside an old default: a fresh request finishes it", async () => {
+		/** The fixture's code asked for at master, its source's own default dev beside it: the look keeps dev (as the
+		 * restore-shaped bundle does) only when the first bundle's facts name it, as the refs plan does for a head older
+		 * than 90 days. */
+		const asked = (x: World) => {
+			(x.input.from as Record<string, unknown>).branch = "master";
+			x.b.sourceBranch = "dev";
+			const look = x.b.look;
+			x.b.look = async (value, sink) => {
+				const answer = await look(value, sink);
+				return value.raw.sourceBranch === "dev"
+					? answer
+					: { ...answer, look: codeImportLook(lookFacts(x.s, { branches: { seen: 1, kept: 0 } })) };
+			};
+		};
+		const first = await world({ copy: true });
+		asked(first);
+		const writes = first.fetching.writes;
+		first.fetching.writes = async (options, writer) => ({ ...(await writes(options, writer)), sourceBranch: "dev" });
+		const build = first.restore.build;
+		first.restore.build = async (job, value, source, options) => {
+			const built = await build(job, value, source, options);
+			throw new CodeHostJobFailure("CODE_HOST_PUBLISH_FAILED", String(built.refs));
+		};
+		expect(await first.run()).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(await exists(first.f.mark)).toBe(true);
+		// The first bundle's manifest keeps it.
+		expect((await first.store.readImport(TARGET, first.s.rawName)).manifest).toMatchObject({
+			defaultBranch: "master",
+			sourceBranch: "dev",
+		});
+		// A fresh request for the same project and branch, an hour later: no fetch, the look made alone from the
+		// snapshot's first bundle names dev again, and the import is in.
+		const x = await world({ f: first.f, store: first.store });
+		asked(x);
+		x.input.from = { github: "acme/SHOP", branch: "master" };
+		x.clock.now = NOW + 3_600_000;
+		expect(await x.run()).toEqual({
+			schema: SCHEMA,
+			state: "done",
+			result: "imported",
+			change: 1,
+			mainSha: x.s.mainSha,
+			bundle: x.s.keptName,
+			rawBundle: x.s.rawName,
+			setAside: ASIDE,
+		});
+		expect([x.fetching.calls, x.transports.made.length]).toEqual([0, 0]);
+		expect((x.kernel.steps[1] as { raw: Record<string, unknown> }).raw).toMatchObject({ sourceBranch: "dev" });
+		expect(x.b.looks).toEqual([{ look: true, now: Math.floor(NOW / 1000) * 1000 }]);
+		expect(x.kernel.look).toEqual(first.kernel.look);
+		await expectBuilt(x);
+		expect(x.errors()).toEqual([]);
 	});
 
 	it("a half-done snapshot at a place: another source, another branch, or a snapshot whose bundles are gone or do not bind is refused before anything is fetched or touched", async () => {
