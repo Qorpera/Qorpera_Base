@@ -371,7 +371,7 @@ test("side by side within the cores the run's slots give it, read again as they 
 	const rest = (name, more) => `echo "start ${name}" >>events; ${more}; s=$?; echo "end ${name}" >>events; exit $s`;
 	// The longest step starts alone in one slot's core, then a second slot frees (the file says 4).
 	// Halfway through, it notes what the run says its running steps need (USING): its own core and b, c and d's.
-	const grow = `echo 4 >"$QORPERA_RUN_CORES_FILE.tmp" && mv -f "$QORPERA_RUN_CORES_FILE.tmp" "$QORPERA_RUN_CORES_FILE"; sleep 2.5; cp ${USING} using-seen; sleep 0.5`;
+	const grow = `echo "4 7" >"$QORPERA_RUN_CORES_FILE.tmp" && mv -f "$QORPERA_RUN_CORES_FILE.tmp" "$QORPERA_RUN_CORES_FILE"; sleep 2.5; cp ${USING} using-seen; sleep 0.5`;
 	// The side-by-side mark comes after the alone parts, before the rest.
 	const steps = [
 		{ name: "first", commands: [rest("first", `[ -e ${SIDE_BY_SIDE} ] && ${grow}`)], alone: [`[ ! -e ${SIDE_BY_SIDE} ]`], seconds: 100 },
@@ -393,10 +393,12 @@ test("side by side within the cores the run's slots give it, read again as they 
 		assert.equal(mostCores(events, cores), 4);
 		assert.equal(existsSync(join(cwd, ALL_STARTED)), true);
 		assert.equal(existsSync(join(cwd, SIDE_BY_SIDE)), true);
-		// What its running steps need, in hundredths, and how many run: four steps of one core halfway, none at the end.
+		// What its running steps need, in hundredths, how many run, and the generation of the budget they run under (7, the
+		// one the grown cores file named; 0 before, where the file held a bare number): four steps of one core halfway, none
+		// at the end.
 		assert.deepEqual(
 			["using-early", "using-seen", USING].map((file) => readFileSync(join(cwd, file), "utf8")),
-			["400 4\n", "400 4\n", "0 0\n"],
+			["400 4 7\n", "400 4 7\n", "0 0 7\n"],
 		);
 		// The most cores its slots gave, for the run's record: 4, though it asked for 6.
 		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "slot_cores=4\n");

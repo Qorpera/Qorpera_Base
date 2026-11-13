@@ -637,7 +637,8 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots + extra} in the ${lane.name}${front ? " from the front of its queue" : ""} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		...(cores
 			? [
-					// The cores the run's slots give it, which its steps read (planScript): one slot's to start with.
+					// The cores the run's slots give it, which its steps read (planScript): one slot's to start with, with no
+					// generation after it, which counts as generation 0 (freeGrowScript writes the later ones with their own).
 					`per=$(( $(nproc) / ${CPU_SLOTS} > 0 ? $(nproc) / ${CPU_SLOTS} : 1 )); cores_file=${CORES}${run}; (umask 022; echo "$per" >"$cores_file"); trap 'rm -f "$ticket" "$cores_file"' EXIT`,
 					...(front
 						? [
@@ -805,12 +806,17 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
  * steps run side by side (`sideBySide`), before which more cores would start nothing, and no more once every step has
  * started (`allStarted`).
  *
- * While a run waits, it gives its extra slots back, the last taken first, without running more than its slots give: it
- * first lowers `$cores_file` by one slot's cores, so its steps start nothing past that (planScript), and frees the slot on
- * a later turn, once the cores its running steps need (`using`, planScript's, in hundredths) fit in the slots it keeps, or
- * one step runs alone: planScript always lets one step run, so a run in one slot runs it the same way.
- * The later turn lets a step that started under the old budget show in `using` first. When nobody waits any more before
- * that, `$cores_file` goes back up. On 13 Nov (node01, 11:04Z) two runs of 30-43 s waited 412-438 s behind a run that held
+ * While a run waits, it gives its extra slots back, the last taken first, without ever running more than its slots give.
+ * It writes the cores a budget gives with a generation of its own that counts up (`$gen`), and frees a slot only once
+ * planScript has answered for that very generation: it lowers `$cores_file` by one slot's cores, so no step starts past
+ * that, and frees the slot on a turn where `using` (planScript's, `NEED STEPS GENERATION`) names the lowered budget's
+ * generation and says the steps running under it fit in the slots it keeps, or that one step runs alone (planScript
+ * always lets one step run, so a run in one slot runs it the same way). The generation is what makes the answer an
+ * acknowledgement: a line written before planScript read the lowered budget names an older generation, and a scheduler
+ * that has answered for this one starts nothing past it (it decides its starts right after it reads the budget, and
+ * writes that line after them), so a freed slot can never leave more cores running than the run holds. A budget whose
+ * write failed is not lowered: the generation does not count up and the next turn tries again. When nobody waits any
+ * more, `$cores_file` goes back up, a generation further. On 13 Nov (node01, 11:04Z) two runs of 30-43 s waited 412-438 s behind a run that held
  * three slots, though it kept one of slots 1-4 free. It says why it takes no more once per reason, again only after it
  * has taken or given back a slot, and keeps the slots it still holds until its stdin ends. */
 export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, meminfo = "/proc/meminfo", arriving = ARRIVING }) {
@@ -820,28 +826,31 @@ export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, m
 		"grow() {",
 		// The session's own locks stay the session's: its free-slots lock (fd 6), the runner user (fd 8) and its first slot (fd 9).
 		"\texec 6>&- 8>&- 9>&-; umask 022",
-		`\theld=1; said=""; lowered=""; fds=(); taken=(); trap 'rm -f "$cores_file" "$cores_file.tmp"' EXIT`,
-		'\tgive() { echo $(( $1 * per )) >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"; }',
+		`\theld=1; said=""; lowered=""; gen=0; fds=(); taken=(); trap 'rm -f "$cores_file" "$cores_file.tmp"' EXIT`,
+		// The generation counts up only once the value is in the file: planScript answers for what it can read.
+		'\tgive() { local next=$(( gen + 1 )); { echo "$(( $1 * per )) $next" >"$cores_file.tmp" && mv -f "$cores_file.tmp" "$cores_file"; } && gen=$next; }',
 		"\twhile :; do",
 		`\t\twaiting=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
 		// A ticket nobody holds belongs to a run that died; with none, the unmatched pattern opens no file.
 		`\t\tfor t in ${queues}; do { flock -n 5 || waiting=$(( waiting + 1 )); } 2>/dev/null 5<"$t"; done`,
 		'\t\tif [ "$waiting" -gt 0 ] && [ "$held" -gt 1 ]; then',
 		'\t\t\tif [ -z "$lowered" ]; then',
-		'\t\t\t\tlowered=1; give $(( held - 1 ))',
-		'\t\t\t\t[ "$said" = back ] || { said=back; echo "== run-on-node: another run waits for a slot here: no new step past $(( (held - 1) * per )) cores, and a slot goes back once its steps fit"; }',
+		'\t\t\t\tif give $(( held - 1 )); then',
+		'\t\t\t\t\tlowered=$gen',
+		'\t\t\t\t\t[ "$said" = back ] || { said=back; echo "== run-on-node: another run waits for a slot here: no new step past $(( (held - 1) * per )) cores, and a slot goes back once its steps fit"; }',
+		"\t\t\t\tfi",
 		`\t\t\telse`,
-		`\t\t\t\tneed=""; steps=""; { read -r need steps <${shellQuote(using)}; } 2>/dev/null`,
-		'\t\t\t\tif [[ "$need" =~ ^[0-9]+$ ]] && { [ "$need" -le $(( (held - 1) * per * 100 )) ] || [[ "$steps" =~ ^[01]$ ]]; }; then',
+		`\t\t\t\tneed=""; steps=""; whose=""; { read -r need steps whose <${shellQuote(using)}; } 2>/dev/null`,
+		'\t\t\t\tif [[ "$need" =~ ^[0-9]+$ ]] && [ "$whose" = "$lowered" ] && { [ "$need" -le $(( (held - 1) * per * 100 )) ] || [[ "$steps" =~ ^[01]$ ]]; }; then',
 		'\t\t\t\t\tlast=$(( ${#fds[@]} - 1 )); fd=${fds[last]}; exec {fd}>&-',
 		'\t\t\t\t\t[ "$held" = 2 ] && kept="1 slot" || kept="$(( held - 1 )) slots"',
 		'\t\t\t\t\techo "== run-on-node: slot ${taken[last]} back for a run that waits: $kept, $(( (held - 1) * per )) cores"',
 		'\t\t\t\t\tfds=("${fds[@]:0:last}"); taken=("${taken[@]:0:last}"); held=$(( held - 1 )); lowered=""; said=""',
 		"\t\t\t\tfi",
 		"\t\t\tfi",
-		// Nobody waits any more: the cores it kept go back to its steps.
+		// Nobody waits any more: the cores it kept go back to its steps, under a generation of their own.
 		'\t\telif [ -n "$lowered" ]; then',
-		'\t\t\tlowered=""; give "$held"',
+		'\t\t\tif give "$held"; then lowered=""; fi',
 		`\t\telif [ "$held" -lt "$want" ] && [ -e ${shellQuote(sideBySide)} ]; then`,
 		`\t\t\tif [ -e ${shellQuote(allStarted)} ]; then`,
 		'\t\t\t\t[ "$said" = started ] || { said=started; echo "== run-on-node: every step has started: no more slots ($held of $want)"; }',

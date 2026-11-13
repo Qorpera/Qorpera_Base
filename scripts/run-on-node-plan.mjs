@@ -475,9 +475,10 @@ export const ALL_STARTED = ".run-on-node-all-started";
 export const SIDE_BY_SIDE = ".run-on-node-side-by-side";
 
 /** A side-by-side run started by run-on-node.mjs keeps in this file of its directory the cores its running steps need, in
- * hundredths (their `cores`), and how many steps run, as `NEED STEPS`, replaced whole as it changes: a run without --front
- * gives a slot back to a run that waits only once they fit in the slots it keeps, or one step runs alone (which a run in
- * one slot runs too, whatever its cores; run-on-node.mjs freeGrowScript). */
+ * hundredths (their `cores`), how many steps run, and the generation of the cores-file budget it is running under, as
+ * `NEED STEPS GENERATION`, replaced whole as it changes. A run without --front gives a slot back to a run that waits only
+ * once a line it wrote under the lowered budget's own generation says they fit in the slots it keeps, or that one step
+ * runs alone (which a run in one slot runs too, whatever its cores; run-on-node.mjs freeGrowScript). */
 export const USING = ".run-on-node-using";
 
 /** A --fail-fast run's part stops once run-on-node.mjs makes this file in its directory: another part failed. */
@@ -503,9 +504,11 @@ const OWNED =
  * `alone` part failed, and passes only if both passed. Its output is printed whole when it ends, with its own time. A
  * step whose rest ends without a result (its worker killed, or the result not written) fails.
  *
- * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, more as further
- * slots free: the budget is the smaller of that and `cores`, read again every second. A value it cannot read keeps
- * the budget where it was, from one core. The most it read goes to the status file as `slot_cores`, for the run's
+ * Under run-on-node.mjs, the file QORPERA_RUN_CORES_FILE holds the cores the run's slots give it, and after them the
+ * generation of that value where the run writes one (freeGrowScript; growScript and the session's first write give a bare
+ * number, which counts as generation 0): the budget is the smaller of the cores and `cores`, read again every second,
+ * and from then on USING says which generation the steps run under. A value it cannot read keeps the budget where it was,
+ * from one core. The most it read goes to the status file as `slot_cores`, for the run's
  * record. Before the rest starts, it makes SIDE_BY_SIDE; while it runs, it keeps USING at the cores its running steps
  * need, after it starts steps and after they end. `stepWorkers` false: a VITEST_MAX_WORKERS the run was given
  * (run-on-node.mjs --env) wins over the steps' `workers`.
@@ -614,12 +617,12 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 			: []),
 		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
 		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
-		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0; most=0; told=""`,
-		`tell() { local steps=($running) now; now="$used \${#steps[@]}"; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ "$now" != "$told" ] && { echo "$now" >${USING}.tmp && mv -f ${USING}.tmp ${USING}; told=$now; }; }`,
+		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0; most=0; told=""; at=0`,
+		`tell() { local steps=($running) now; now="$used \${#steps[@]} $at"; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ "$now" != "$told" ] && { echo "$now" >${USING}.tmp && mv -f ${USING}.tmp ${USING}; told=$now; }; }`,
 		`[ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && : >${SIDE_BY_SIDE}`,
 		'while [ -n "${pending// }${running// }" ]; do',
 		...(failFast ? [`\tif ${halted}; then stop; break; fi`] : []),
-		`\thave=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && { budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$have" -gt "$most" ] && most=$have; }; [ "$budget" -gt "$top" ] && top=$budget`,
+		`\thave=""; whose=""; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && { read -r have whose <"$QORPERA_RUN_CORES_FILE"; } 2>/dev/null; [[ "$have" =~ ^[1-9][0-9]?$ ]] && { budget=$(( have * 100 < ${limit} ? have * 100 : ${limit} )); [ "$have" -gt "$most" ] && most=$have; at=0; [[ "$whose" =~ ^[0-9]{1,9}$ ]] && at=$whose; }; [ "$budget" -gt "$top" ] && top=$budget`,
 		'\tleft=""',
 		"\tfor i in $pending; do",
 		'\t\tif [ -z "${running// }" ] || [ $(( used + need[i] )) -le "$budget" ]; then start "$i"; running="$running $i"; used=$(( used + need[i] )); else left="$left $i"; fi',
