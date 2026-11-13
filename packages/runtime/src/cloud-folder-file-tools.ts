@@ -401,10 +401,16 @@ function fitted(text: string, least: number, render: (shown: string) => string):
  * the window and runs past that end ends the window where it starts, so the next window holds it whole. One that
  * starts the window is taken whole, past the room if need be: the answer shows its short cut form. If it goes on past
  * everything read (`more`: the file goes on), it is taken as far as read, and `runsOn` says the window ends inside it:
- * no window can hold it, and what follows is the rest of it, which nothing can cut on its own.
+ * no window can hold it, and what follows is the rest of it, which nothing can cut on its own. `secrets` are
+ * cloudSecretSpans(text), found once for a window's many fittings.
  */
-function windowEnd(text: string, end: number, more: boolean): { readonly end: number; readonly runsOn: boolean } {
-	for (const span of cloudSecretSpans(text)) {
+function windowEnd(
+	text: string,
+	end: number,
+	more: boolean,
+	secrets: ReturnType<typeof cloudSecretSpans> = cloudSecretSpans(text),
+): { readonly end: number; readonly runsOn: boolean } {
+	for (const span of secrets) {
 		if (span.start >= end) break;
 		if (span.end <= end) continue;
 		if (span.start > 0) return { end: span.start, runsOn: false };
@@ -665,6 +671,7 @@ export function cloudFolderFileTools(options: {
 			readonly field: "text" | "target";
 			readonly points: readonly string[];
 			readonly around: string;
+			readonly secrets: ReturnType<typeof cloudSecretSpans>;
 			readonly more: boolean;
 			readonly total: number;
 		};
@@ -706,6 +713,7 @@ export function cloudFolderFileTools(options: {
 					field: "target",
 					points: Array.from(entry.target),
 					around: entry.target,
+					secrets: cloudSecretSpans(entry.target),
 					more: false,
 					total: Buffer.byteLength(entry.target),
 				},
@@ -765,12 +773,14 @@ export function cloudFolderFileTools(options: {
 				},
 				release,
 			};
+		const around = text + AROUND.decode(bytes.subarray(Buffer.byteLength(text)));
 		return {
 			answer: { ...named, offset: 0 },
 			text: {
 				field: "text",
 				points: Array.from(text),
-				around: text + AROUND.decode(bytes.subarray(Buffer.byteLength(text))),
+				around,
+				secrets: cloudSecretSpans(around),
 				more: bytes.byteLength < total,
 				total,
 			},
@@ -802,7 +812,7 @@ export function cloudFolderFileTools(options: {
 					files: parts.map((part): JsonValue => {
 						if (!part.text) return part.answer;
 						const room = part.text.points.slice(0, cap).join("").length;
-						const { end, runsOn } = windowEnd(part.text.around, room, part.text.more);
+						const { end, runsOn } = windowEnd(part.text.around, room, part.text.more, part.text.secrets);
 						const shown = part.text.around.slice(0, end);
 						const bytesRead = Buffer.byteLength(shown);
 						return {
@@ -968,8 +978,9 @@ export function cloudFolderFileTools(options: {
 					const lead = windowLead(whole.subarray(0, input.offset).toString("utf8"), text + after);
 					const start = input.offset - Buffer.byteLength(lead);
 					const around = lead + text + after;
+					const secrets = cloudSecretSpans(around);
 					const render = (room: string) => {
-						const shown = around.slice(0, windowEnd(around, room.length, false).end);
+						const shown = around.slice(0, windowEnd(around, room.length, false, secrets).end);
 						const included = Buffer.byteLength(shown);
 						return cloudToolJsonText({
 							path: entry.path,
@@ -1032,8 +1043,9 @@ export function cloudFolderFileTools(options: {
 				const start = input.offset - Buffer.byteLength(lead);
 				const around = lead + text + after;
 				const more = input.offset - behind + bytes.byteLength < total;
+				const secrets = cloudSecretSpans(around);
 				const render = (room: string) => {
-					const { end, runsOn } = windowEnd(around, room.length, more);
+					const { end, runsOn } = windowEnd(around, room.length, more, secrets);
 					const shown = around.slice(0, end);
 					const included = Buffer.byteLength(shown);
 					return cloudToolJsonText({
