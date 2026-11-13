@@ -33,13 +33,23 @@
 --    at the top of the claim turn, so every path passes it: an orchestrator whose nodes are all last resort claims a run
 --    only when no node that is not a last resort could take it right now. A regular node counts as able to take it when
 --    it is eligible, fits, takes the run's bundle, may hold the run's identity, and still has a live host that has not
---    refused this run's admission in the last 15 seconds (qorpera_runtime_refused_recently, the released claim rows). A
---    refusal is evidence about the host that refused and about nothing else (review r2 F1), so it takes that host out of
---    the set instead of opening the guard: while another regular host has room, that host is preferred and the
---    last-resort node stays out; once every regular host has refused or gone ineligible the set is empty and the
---    last-resort node passes on the ordinary rule. The run's own placement naming this node (a warm conversation, or the
---    only node left) passes as before, and the node where this run's last start failed never counts as able, so the
---    failed-start rule still prefers a healthy last-resort node over it.
+--    refused this run's admission within the last minute. A refusal is evidence about the host that refused and about
+--    nothing else (review r2 F1), so it takes that host out of the set instead of opening the guard: while another
+--    regular host has room, that host is preferred and the last-resort node stays out; once every regular host has
+--    refused or gone ineligible the set is empty and the last-resort node passes on the ordinary rule. The run's own
+--    placement naming this node (a warm conversation, or the only node left) passes as before, and the node where this
+--    run's last start failed never counts as able, so the failed-start rule still prefers a healthy last-resort node.
+--    The minute is not qorpera_runtime_refused_recently's 15 seconds, and must not be (review r3 F1). A release after a
+--    refusal also defers the whole job, and the last-resort node cannot bypass that deferral: 2 seconds for a full or
+--    retiring sandbox when a member waits for the run, 5 seconds for NODE_NOT_PREFERRED and NODE_IDENTITY_ELSEWHERE, and
+--    15 seconds for every other refusal, the node ledger's NODE_CAPACITY_EXHAUSTED among them (20260928249240). With a
+--    memory of 15 seconds the two windows end at the same instant, so the last-resort node could never see both "the
+--    deferral is over" and "the regular hosts have refused": two regular hosts refusing in turn left the run queued while
+--    the spare sat idle, which is the opposite of r2's failure and the worse one. A minute clears the longest such
+--    deferral four times over, and is the window in which a node's own report counts at all (the candidates ask for an
+--    observation younger than 60 seconds), so a refusal never outlives the report that makes its node eligible. The
+--    backoff after an infrastructure failure reaches 5 minutes (qorpera_runner_dispatch_wait) and is deliberately not
+--    outlasted: a failure is not a refusal, the host stays in the set, and the regular hosts retry when it ends.
 -- 4. The pull path (qorpera_admit_executor_machines): a last-resort node's executor admits a waiting machine, or gives up
 --    a stopped machine's disk for one, only when no node that is not a last resort could fit it now
 --    (qorpera_company_machine_candidates, the push path's own test, with the machine's own disk given back). One asleep on
@@ -201,7 +211,14 @@ $claim_old$,
 					and public.qorpera_runtime_run_adapter_allowed(p_run, regular ->> 'providerId')
 					and exists (select 1 from public.qorpera_runner_orchestrators host
 						where host.provider_adapter = regular ->> 'providerId' and host.status = 'active'
-							and not public.qorpera_runtime_refused_recently(p_job.run_id, host.id))) then
+							-- A minute, not qorpera_runtime_refused_recently's 15 seconds: a refusal defers the whole job
+							-- for up to 15 seconds and this node cannot bypass that, so an equal window would always have
+							-- aged out by the time the deferral let it ask (review r3). A node's report must be younger
+							-- than a minute for it to be eligible at all, so this never outlives that.
+							and not exists (select 1 from public.qorpera_runner_job_claims refusal
+								where refusal.run_id = p_job.run_id and refusal.orchestrator_id = host.id
+									and refusal.status = 'released' and refusal.release_reason like 'ADMISSION_REFUSED:%'
+									and refusal.released_at > clock_timestamp() - interval '60 seconds'))) then
 			return false;
 		end if;
 	end if;

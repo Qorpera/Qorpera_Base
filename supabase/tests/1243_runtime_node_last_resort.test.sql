@@ -12,8 +12,9 @@
 -- providers, observations, reservations and every chooser are the real functions; the machines, the coding executors,
 -- worker and session, the second company and a run's start failure are rows written as the fixtures elsewhere write them.
 -- Review r1: section 4b drives real claims through every bypass of the claim turn (F1; r2: a refusal takes only the host
--- that refused out of the set), and section 6 proves that a regular node reporting less hardware than its policy counts
--- on is no candidate, so the spare still admits work (F2).
+-- that refused out of the set; r3: both regular hosts refuse and the deferral that follows is waited out for real, which
+-- costs this test about 17 seconds), and section 6 proves that a regular node reporting less hardware than its policy
+-- counts on is no candidate, so the spare still admits work (F2).
 reset role;
 select pg_temp.base_claims('service_role');
 
@@ -141,18 +142,44 @@ create function pg_temp.lr_age_job(p_run uuid) returns void language sql as $$
 $$;
 -- One node's orchestrator claims the run and then refuses its admission, as a host with no room does (721's pattern):
 -- the claim is released with the reason, which is what qorpera_runtime_refused_recently reads.
-create function pg_temp.lr_claim_then_refuse(p_node text) returns text language plpgsql as $$
+create function pg_temp.lr_claim_then_refuse(p_node text, p_reason text default 'NODE_CAPACITY_EXHAUSTED')
+returns text language plpgsql as $$
 declare v_work jsonb := pg_temp.lr_take(p_node);
 begin
 	if v_work = 'null'::jsonb then return 'nothing'; end if;
 	perform public.qorpera_release_runner_job_claim(pg_temp.lr_orchestrator(p_node), (v_work ->> 'claim_id')::uuid,
-		extensions.gen_random_uuid(), 'ADMISSION_REFUSED:NODE_CAPACITY_EXHAUSTED');
+		extensions.gen_random_uuid(), 'ADMISSION_REFUSED:' || p_reason);
 	return coalesce(v_work #>> '{work,run_id}', v_work::text);
 end $$;
--- The 15 seconds every host waits after a refusal, sat out (721's fa_ready). The refusals themselves stay on the
--- released claims, which is where the guard reads them.
-create function pg_temp.lr_waited_out(p_run uuid) returns void language sql as $$
-	update public.qorpera_runner_jobs set dispatch_deferred_until = null, dispatch_refused_by = null where run_id = p_run
+-- The deferral a refusal puts on the whole job, waited out as the orchestrators wait it out: really, by sleeping until
+-- it is over. Nothing is rewritten -- the refusals keep the times they were made at, which is the point of the case.
+create function pg_temp.lr_wait_out(p_run uuid) returns text language plpgsql as $$
+declare v_until timestamptz; v_left double precision;
+begin
+	select job.dispatch_deferred_until into v_until from public.qorpera_runner_jobs job where job.run_id = p_run;
+	if v_until is null then return 'no deferral'; end if;
+	v_left := extract(epoch from v_until - clock_timestamp());
+	if v_left > 0 then perform pg_sleep(v_left + 0.5); end if;
+	return format('waited %s s', round(greatest(v_left, 0)::numeric + 0.5, 1));
+end $$;
+-- The claim a node already holds, refused: for the node that has just taken the run.
+create function pg_temp.lr_refuse_held(p_run uuid, p_node text) returns text language plpgsql as $$
+declare v_claim public.qorpera_runner_job_claims%rowtype;
+begin
+	select * into v_claim from public.qorpera_runner_job_claims claim
+	where claim.run_id = p_run and claim.orchestrator_id = pg_temp.lr_orchestrator(p_node)
+		and claim.status in ('claimed', 'assigned') order by claim.created_at desc, claim.id desc limit 1;
+	if v_claim.id is null then return 'holds nothing'; end if;
+	perform public.qorpera_release_runner_job_claim(pg_temp.lr_orchestrator(p_node), v_claim.id, extensions.gen_random_uuid(),
+		'ADMISSION_REFUSED:NODE_CAPACITY_EXHAUSTED');
+	return 'refused';
+end $$;
+-- How long ago the oldest and the newest of this run's refusals were made, for the assertion's own words.
+create function pg_temp.lr_refusal_ages(p_run uuid) returns text language sql as $$
+	select format('refusals %s-%s s old', round(max(extract(epoch from clock_timestamp() - refusal.released_at))::numeric, 1),
+		round(min(extract(epoch from clock_timestamp() - refusal.released_at))::numeric, 1))
+	from public.qorpera_runner_job_claims refusal
+	where refusal.run_id = p_run and refusal.status = 'released' and refusal.release_reason like 'ADMISSION_REFUSED:%'
 $$;
 create function pg_temp.lr_roles(p_role text) returns void language sql as $$
 	select public.qorpera_set_runner_orchestrator_dispatch_role(pg_temp.lr_orchestrator(n), p_role)
@@ -378,16 +405,37 @@ select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a'), current_setting('qor
 select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node A refused, but node B has room: node C claims nothing');
 select pg_temp.lr_expect(pg_temp.lr_claim('b'), current_setting('qorpera_test.lr_run'), '(i) Node B claims it instead');
 rollback to savepoint claim_refused;
--- No dispatch role, as both nodes run today: the same, and then the case that matters -- once every regular host has
--- refused, the set is empty and node C claims on the ordinary rule.
+-- Both regular hosts refuse in turn, and time passes as it really passes (review r3 F1). The second refusal clears
+-- dispatch_refused_by, so node C must sit out the deferral that refusal put on the job, and its refusals must still
+-- count when that deferral ends. A full or retiring sandbox defers a run a member waits for by 2 seconds, so this case
+-- costs the suite about 2 seconds; the 15-second deferral of the node ledger's own refusal is the no-role case below.
+savepoint claim_refused_twice;
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a', 'SANDBOX_CAPACITY_EXHAUSTED'), current_setting('qorpera_test.lr_run'),
+	'Node A claims it and its sandbox is full');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node B still has room: node C claims nothing');
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('b', 'SANDBOX_CAPACITY_EXHAUSTED'), current_setting('qorpera_test.lr_run'),
+	'Node B claims it and its sandbox is full too');
+select pg_temp.lr_wait_out(current_setting('qorpera_test.lr_run')::uuid);
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(ii) Both fast hosts refused and the deferral is over (' || pg_temp.lr_refusal_ages(current_setting('qorpera_test.lr_run')::uuid)
+		|| '): node C claims it');
+-- Node C's own cooldown is untouched: the guard only ever holds a claim back, it never opens one.
+select pg_temp.lr_expect(pg_temp.lr_refuse_held(current_setting('qorpera_test.lr_run')::uuid, 'c'), 'refused',
+	'Node C cannot take it either and refuses the claim it holds');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', 'and does not take it again while its own refusal defers the job');
+rollback to savepoint claim_refused_twice;
+-- No dispatch role, as both nodes run today, and the refusal of a node whose ledger is full: that one defers the job for
+-- 15 seconds, exactly as long as qorpera_runtime_refused_recently counts a refusal, which is why the guard keeps its own
+-- memory (review r3 F1). This case costs the suite about 15 seconds and is the one that caught it.
 savepoint claim_refused_no_role;
 select pg_temp.lr_roles(null) \g /dev/null
-select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a'), current_setting('qorpera_test.lr_run'), 'No role: node A refuses');
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a'), current_setting('qorpera_test.lr_run'), 'No role: node A''s node is full');
 select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) No role: node B has room, so node C claims nothing');
-select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('b'), current_setting('qorpera_test.lr_run'), 'Node B claims it and refuses too');
-select pg_temp.lr_waited_out(current_setting('qorpera_test.lr_run')::uuid);
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('b'), current_setting('qorpera_test.lr_run'), 'Node B claims it and is full too');
+select pg_temp.lr_wait_out(current_setting('qorpera_test.lr_run')::uuid);
 select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
-	'(ii) Every regular host has refused: node C claims it');
+	'(ii) No role, both regular hosts refused and the 15 s deferral is over ('
+		|| pg_temp.lr_refusal_ages(current_setting('qorpera_test.lr_run')::uuid) || '): node C claims it');
 rollback to savepoint claim_refused_no_role;
 savepoint claim_waited_flag_off;
 select pg_temp.lr_age_job(current_setting('qorpera_test.lr_run')::uuid);
@@ -426,6 +474,15 @@ set local session_replication_role = origin;
 select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
 	'(iv) The run''s start failed on node A: node C claims it, as the failed-start rule says');
 rollback to savepoint claim_no_role_failed;
+
+-- The guard keeps its own memory of a refusal, longer than every deferral a refusal can set (review r3 F1).
+-- The guard runs before the role check; the overflow branch after it keeps qorpera_runtime_refused_recently, whose
+-- window is the deferral's own and must not become the guard's.
+select pg_temp.base_assert(position('interval ''60 seconds''' in d) between 1 and position(v_role_check in d)
+	and position('public.qorpera_runtime_refused_recently(' in d) > position(v_role_check in d),
+	'The claim guard remembers a refusal for a minute, not for the deferral''s own 15 seconds')
+from pg_get_functiondef('public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure) d,
+	(select 'if v_role is null then return true; end if;') marker(v_role_check);
 
 -- 5. Company Computers: every node offers computer 2.
 select set_config('qorpera_test.lr_scope', pg_temp.cs_scope(2)::text, true);
