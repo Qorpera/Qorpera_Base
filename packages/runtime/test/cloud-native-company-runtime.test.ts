@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v15",
+			schema: "qorpera.hire-overlay/v16",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3279,8 +3279,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
 	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
 	// The same day send_message, ask_member and update_wall no longer say the final send is the last act (the answer
-	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on the tree where that
-	// change meets master's agent names by work (13 November 2026).
+	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on each tree where that
+	// change meets master's own: agent names by work, then the kits that draw an interface app (13 November 2026).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3327,9 +3327,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"3012ce65aa04e40f96aa59c919db2d2f4a367f77c9d09d439f41f190ed8eb74e",
+		"3716b8e865376622c605bca5eaf49e622468ad20ae105c178a95e772aa3482d5",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"1fb373334051bea1a27a0e8e7a7ea96a0db8eefb7209f41468e564f37533d9cb",
+		"97e25056651fae8203e24a844e35fb07d20f5c482e55746d9ca8c1250439d867",
 	);
 });
