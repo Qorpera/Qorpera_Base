@@ -5740,6 +5740,23 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			switched = answer;
 			expect(await ask(), JSON.stringify(answer)).toStrictEqual(read);
 		}
+		// What migration 20260930756000 adds to the answer, read from its text: rootLinks only as true (while sites have
+		// hosts of their own), a drill only as check or site (the column's own rule); every combination reads as said.
+		const migration = await readFile(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		expect(migration).toContain(
+			`if public.qorpera_site_hosts_on() then v_answer := v_answer || '{"rootLinks":true}'::jsonb; end if;`,
+		);
+		expect(migration).toContain("v_answer := v_answer || jsonb_build_object('drill', v_drill);");
+		expect(migration).toContain("add column drill text check (drill is null or drill in ('check', 'site')),");
+		for (const rootLinks of [undefined, true] as const)
+			for (const drill of [undefined, "check", "site"] as const) {
+				const said = { ...(rootLinks ? { rootLinks } : {}), ...(drill ? { drill } : {}) };
+				switched = { schema, enabled: true, site: true, ...said };
+				expect(await ask(), JSON.stringify(said)).toStrictEqual({ checks: true, site: true, ...said });
+			}
 		// A value of either that is not the kernel's: the answer is not the switch's, and reads as on (no drill, links
 		// from the root refused), as a lost answer does.
 		for (const odd of [

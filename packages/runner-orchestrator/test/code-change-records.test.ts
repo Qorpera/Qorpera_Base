@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -27,6 +28,25 @@ import {
 import { CODE_HOST_LAYOUT, type CodeHostJobOptions, type CodeHostJobs } from "../src/code-host-views.ts";
 import { CodingControlBusy } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
+
+/** The one host list of SQL test 1252 (own code storage step 5.1's cross-check), which every reader of a site host runs:
+ * a host, the slug and scope the one host rule reads in it, and its verdict (1252 says what each means). */
+function oneHostList(): { host: string; slug: string; scope: string; verdict: string }[] {
+	const lines = readFileSync(
+		new URL("../../../supabase/tests/1252_site_hosts.test.sql", import.meta.url),
+		"utf8",
+	).split("\n");
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	expect(begin > 0 && end > begin, "1252's one host list").toBe(true);
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		expect(entry, line).not.toBeNull();
+		return { host: entry?.[1] ?? "", slug: entry?.[2] ?? "", scope: entry?.[3] ?? "", verdict: entry?.[4] ?? "" };
+	});
+	expect(list.length).toBeGreaterThanOrEqual(50);
+	return list;
+}
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT = "33333333-3333-4333-8333-333333333333";
@@ -1200,6 +1220,42 @@ describe("codeChangeIndexText: a site's own host and what is being prepared (ste
 			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, url } }).split("\n")[2], JSON.stringify(url)).toBe(
 				unlinked,
 			);
+	});
+
+	it("writes the line for what migration 20260930756000 says is being prepared, read from its text", () => {
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		// Only while hosts are on, preparing: null, or the due change's number (a ready point's change, a whole number).
+		expect(migration).toContain(
+			"|| case when public.qorpera_site_hosts_on() then jsonb_build_object('preparing', (select case",
+		);
+		expect(migration).toContain("then jsonb_build_object('change', due.point -> 'change') end");
+		expect(migration.split("'preparing'")).toHaveLength(2);
+		expect(
+			codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, preparing: { change: 17 } }).split("\n")[4],
+		).toBe("Being prepared for What's new: change 17 (about a minute).");
+		expect(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, preparing: null })).toBe(
+			codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null }),
+		);
+	});
+
+	it("links exactly the own hosts of the one host list (SQL test 1252) on the Live line, and none of its other hosts", () => {
+		const unlinked = "Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go.";
+		const list = oneHostList();
+		for (const verdict of ["taken", "name", "shape", "case", "port", "dot"])
+			expect(
+				list.some((entry) => entry.verdict === verdict),
+				verdict,
+			).toBe(true);
+		for (const { host, scope, verdict } of list) {
+			// The executor holds the whole rule, the name rule too (codeSiteNameValid): only a taken own host is a link.
+			const url = `https://${host}/`;
+			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, url } }).split("\n")[2], url).toBe(
+				verdict === "taken" && scope === "site" ? `${unlinked} ${url}` : unlinked,
+			);
+		}
 	});
 });
 
