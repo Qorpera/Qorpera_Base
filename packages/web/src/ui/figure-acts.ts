@@ -689,6 +689,40 @@ export function workingCues(from: number, to: number, seed = 0, ask?: Ask): Cue[
 	return within(cues, from, to);
 }
 
+/* ---- writing, with something waiting: the dots become the ask ------------------------------------------
+ * A figure that writes is its three dots. When its work also waits on the member, the dots jump, spin
+ * and come down as its "?" or "!" every few seconds, stay a moment, and go back to writing: what waits
+ * is never out of sight for long (the badge this replaces was always there). */
+
+const WRITE_SPELL = 5.2;
+const WRITE_ASK_HOLD = 2.4;
+const WRITE_PERIOD = WRITE_SPELL + BECOME + WRITE_ASK_HOLD + RETURN;
+
+/** A writing figure whose work also waits on the member, `t` seconds in: no symbol while the dots write (the
+ * studio's pose draws them), the ask's symbol in between. */
+export function writingAsk(t: number, ask: Ask): Act {
+	const at = Math.max(0, t) % WRITE_PERIOD;
+	if (at < WRITE_SPELL) return { body: REST };
+	const s = at - WRITE_SPELL;
+	if (s < BECOME) {
+		const { body, swapped } = change(s / BECOME, 20);
+		return swapped ? { body, symbol: ask } : { body };
+	}
+	if (s < BECOME + WRITE_ASK_HOLD) return { body: askingSymbol(ask, s - BECOME, 0), symbol: ask };
+	const { body, swapped } = change((s - BECOME - WRITE_ASK_HOLD) / RETURN, 15);
+	return swapped ? { body } : { body, symbol: ask };
+}
+/** What goes off around it in (`from`, `to`]: stars and dust as the dots become the ask and come back. */
+export function writingAskCues(from: number, to: number): Cue[] {
+	const cues: Cue[] = [];
+	for (let cycle = Math.floor(Math.max(0, from) / WRITE_PERIOD); cycle * WRITE_PERIOD < to; cycle++) {
+		const asks = cycle * WRITE_PERIOD + WRITE_SPELL;
+		cues.push(...changeCues(asks, BECOME, true), ...changeCues(asks + BECOME + WRITE_ASK_HOLD, RETURN, false));
+		cues.push(...landings(ASK_HOPS, asks + BECOME + ASK_BEAT_FIRST));
+	}
+	return within(cues, from, to);
+}
+
 /* ---- writing: the three dots hop ---------------------------------------------------------------- */
 
 export interface Dot {

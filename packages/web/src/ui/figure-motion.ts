@@ -24,6 +24,8 @@ import {
 	working,
 	workingCues,
 	workingStill,
+	writingAsk,
+	writingAskCues,
 } from "./figure-acts.ts";
 import { alignRegion, boxCanvas, bucketOf, level, type Region } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
@@ -130,8 +132,9 @@ interface LiveMotion {
 	boxes: Map<number, HTMLCanvasElement>;
 	ask?: Ask;
 	alive: boolean;
-	/** A one-play act, `t` seconds in; `cued` is how far its effects have gone off. */
-	moment?: { kind: Moment; t: number; cued: number };
+	/** A one-play act, `t` seconds in; `cued` is how far its effects have gone off, `asked` when it was asked for
+	 * (performance.now()): one that could not start in time, on a figure out of view, is dropped. */
+	moment?: { kind: Moment; t: number; cued: number; asked: number };
 	/** How far the activity's own effects have gone off, in its clock's seconds. */
 	cued: number;
 	/** The transform on the canvas, so an unchanged pose writes nothing. */
@@ -340,28 +343,40 @@ const signature = (poses: EyePose[]) =>
 /* ---- acting: the body, the eyes, the symbol and the air around the figure (figure-acts.ts) ---- */
 
 const round = (value: number, places = 2) => Number(value.toFixed(places));
+/** The longest stretch of an activity's clock whose effects a figure still shows: past it, it missed them. */
+const EFFECTS_GAP = 0.5;
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
 	if (reduced) {
+		// What waits on the member shows at rest whatever the figure is busy with: the symbol alone, as the badge
+		// that stood beside a working or a writing figure did.
 		if (activity === "Waiting") return askingStill(entry.ask ?? "bang");
+		if (entry.ask && (activity === "Working" || activity === "Thinking")) return askingStill(entry.ask);
 		if (activity === "Working") return workingStill();
 		return { body: REST, eyes: activity === "Idle" ? openEyes() : undefined };
 	}
 	const effects: Effect[] = [];
 	let act: Act = { body: REST };
+	// The effects since this figure last showed them. A figure that was out of view while another view of the
+	// agent kept the clock going, or a frame that came late, has a gap: nothing in it goes off now.
+	const since = elapsed - entry.cued > EFFECTS_GAP || elapsed < entry.cued ? elapsed : entry.cued;
 	if (activity === "Waiting") {
 		act = asking(elapsed, entry.ask ?? "bang", clock.seed);
-		for (const cue of askingCues(entry.cued, elapsed, clock.seed)) effects.push(cue.effect);
+		for (const cue of askingCues(since, elapsed, clock.seed)) effects.push(cue.effect);
 	} else if (activity === "Working") {
 		act = working(elapsed, clock.seed, entry.ask);
-		for (const cue of workingCues(entry.cued, elapsed, clock.seed, entry.ask)) effects.push(cue.effect);
+		for (const cue of workingCues(since, elapsed, clock.seed, entry.ask)) effects.push(cue.effect);
+	} else if (activity === "Thinking" && entry.ask) {
+		// The dots write on; every few seconds they become what waits on the member.
+		act = writingAsk(elapsed, entry.ask);
+		for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {
 		// The studio's flourish, with the short cheer's jump under it.
 		act.body = moment("hooray", elapsed - 0.12).body;
-		for (const cue of momentCues("hooray", entry.cued - 0.12, elapsed - 0.12)) effects.push(cue.effect);
+		for (const cue of momentCues("hooray", since - 0.12, elapsed - 0.12)) effects.push(cue.effect);
 	}
 	entry.cued = elapsed;
 	// An idle figure's own moves: the eyes' on every figure, the body's on figures large enough to show them.
@@ -770,8 +785,9 @@ function paint(entry: LiveMotion): void {
 		activity === "Thinking" && !reduced
 			? hoppingDots(p.dots, elapsed)
 			: p.dots.map((dot) => ({ ...dot, scaleX: 1, scaleY: 1 }));
+	// A writing figure that has become its ask for a moment shows the symbol, not its dots.
 	for (const dot of dots)
-		if (dot.r > 0) {
+		if (dot.r > 0 && !symbol) {
 			ctx.globalAlpha = dot.alpha;
 			ctx.beginPath();
 			ctx.ellipse(dot.x, dot.y, dot.r * dot.scaleX, dot.r * dot.scaleY, 0, 0, Math.PI * 2);
@@ -850,18 +866,31 @@ function advance(clock: Clock, activity: Activity, passed: number, now: number):
 		clock.next = { at: now + drawn.wait * 1000, kind: drawn.kind };
 	} else if (clock.next && now >= clock.next.at) clock.idle = { kind: clock.next.kind, t: 0 };
 }
+/** How long a one-play act waits for its figure to come on screen before it is dropped, in milliseconds. */
+const MOMENT_WAITS = 2000;
 function tick(now: number): void {
 	frame = 0;
 	if (document.hidden) return;
 	const elapsed = (now - last) / 1000;
 	last = now;
 	const advanced = new Set<LiveMotion["clock"]>();
-	// An idle figure that cheers starts its opening blink once the cheer is over.
+	const shown = (entry: LiveMotion) => entry.ready && entry.visible && entry.host.isConnected;
+	for (const entry of live) {
+		// A one-play act asked for on a figure that was out of view is stale by the time the figure shows: it goes.
+		const asked = entry.moment;
+		if (asked && asked.t === 0 && now - asked.asked > MOMENT_WAITS) entry.moment = undefined;
+	}
+	// An idle figure that cheers starts its opening blink once the cheer is over: its clock waits for it. Only a
+	// figure on screen holds the clock, so one out of view never stops the other views of its agent.
 	for (const entry of live)
-		if (entry.activity === "Idle" && (entry.moment?.kind === "cheer" || entry.moment?.kind === "hooray"))
+		if (
+			shown(entry) &&
+			entry.activity === "Idle" &&
+			(entry.moment?.kind === "cheer" || entry.moment?.kind === "hooray")
+		)
 			advanced.add(entry.clock);
 	for (const entry of live) {
-		if (!entry.ready || !entry.visible || !entry.host.isConnected) continue;
+		if (!shown(entry)) continue;
 		if (moving(entry, now) && !advanced.has(entry.clock)) {
 			advance(entry.clock, entry.activity, elapsed, now);
 			advanced.add(entry.clock);
@@ -981,6 +1010,8 @@ export function mountFigureMotion(
 			for (const record of records)
 				for (const item of live)
 					if (item.host === record.target) {
+						// Back in view: what went off around the agent's other views while it was away stays missed.
+						if (record.isIntersecting && !item.visible) item.cued = item.clock.elapsed;
 						item.visible = record.isIntersecting;
 						if (item.ready && item.visible) paint(item);
 					}
@@ -1049,7 +1080,7 @@ export function mountFigureMotion(
 				(entry.moment && kind !== "cheer" && kind !== "hooray")
 			)
 				return;
-			entry.moment = { kind, t: 0, cued: 0 };
+			entry.moment = { kind, t: 0, cued: 0, asked: performance.now() };
 			schedule();
 		},
 	};

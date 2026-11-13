@@ -27,6 +27,8 @@ import {
 	workingCues,
 	workingStill,
 	workingTrick,
+	writingAsk,
+	writingAskCues,
 } from "../src/ui/figure-acts.ts";
 
 const samples = (from: number, to: number, step = 0.02) =>
@@ -349,6 +351,34 @@ describe("a working figure", () => {
 		expect(still.body).toBe(REST);
 		expect(still.eyes![0].y).toBeLessThan(0);
 		expect(still.props!.map((star) => star.scale)).toEqual([1, 1, 1]);
+	});
+});
+
+describe("a writing figure whose work also waits on the member", () => {
+	const period = 5.2 + BECOME + 2.4 + 0.72;
+	it("writes as its dots, and every few seconds becomes its ask for a moment", () => {
+		// No symbol while the dots write: the studio's pose draws them.
+		for (const t of samples(0, 5.19, 0.05)) expect(writingAsk(t, "question")).toEqual({ body: REST });
+		// Then the dots jump (thin at the swap) and the ask stands, hops, and goes.
+		const change = samples(5.2, 5.2 + BECOME, 0.005).map((t) => writingAsk(t, "question"));
+		expect(Math.min(...change.map((act) => act.body.y))).toBeLessThan(-15);
+		expect(change.find((act) => act.symbol)!.body.scaleX).toBeLessThan(0.25);
+		const hold = samples(5.2 + BECOME + 0.01, 5.2 + BECOME + 2.39, 0.01).map((t) => writingAsk(t, "bang"));
+		expect(hold.every((act) => act.symbol === "bang")).toBe(true);
+		expect(hold.some((act) => act.body.y < -5)).toBe(true);
+		// Back to the dots, and again a round later.
+		expect(writingAsk(period - 0.01, "bang").symbol).toBeUndefined();
+		expect(writingAsk(period + 5.2 + BECOME + 0.5, "bang").symbol).toBe("bang");
+		// The ask shows for over a quarter of the time.
+		const shown = samples(0, period * 4, 0.02).filter((t) => writingAsk(t, "question").symbol).length;
+		expect(shown / (period * 4 * 50)).toBeGreaterThan(0.25);
+	});
+	it("sets off stars as the dots become the ask, and dust where it lands, each once", () => {
+		expect(writingAskCues(0, 5.2)).toEqual([]);
+		expect(writingAskCues(5.2, period).map((cue) => cue.effect)).toEqual(["pop", "dust", "dust", "dust", "dust"]);
+		let framed = 0;
+		for (let frame = 0; frame < 30 * 60; frame++) framed += writingAskCues(frame / 60, (frame + 1) / 60).length;
+		expect(framed).toBe(writingAskCues(0, 30).length);
 	});
 });
 

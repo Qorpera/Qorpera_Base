@@ -220,6 +220,106 @@ describe("2D studio playback in the shell", () => {
 		advance(1000);
 		expect(frames.size).toBe(0);
 	});
+	it("keeps what waits on the member in sight while the figure writes, and at rest for a member who wants no motion", async () => {
+		// The symbols are drawn with these: the question mark's dot, the exclamation mark's stem.
+		const questionDot = () => vi.mocked(context.arc!).mock.calls.some((call) => call[0] === 50.5 && call[2] === 9.3);
+		const bangStem = () =>
+			vi.mocked(context.roundRect!).mock.calls.some((call) => call[0] === 41.25 && call[2] === 17.5);
+		const writing = mount("Thinking", "writes-and-asks", { ask: "question" });
+		await settle();
+		show([writing]);
+		vi.mocked(context.arc!).mockClear();
+		// It writes first: its dots, no symbol.
+		for (let frame = 0; frame < 120; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(false);
+		// A few seconds on the dots have become the question mark, in the figure's colour.
+		for (let frame = 0; frame < 270; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(true);
+		expect(context.fillStyle).toBe("#fcb51b");
+		// A writing figure with nothing waiting never draws one.
+		const plain = mount("Thinking", "only-writes");
+		await settle();
+		show([writing], false);
+		show([plain]);
+		vi.mocked(context.arc!).mockClear();
+		for (let frame = 0; frame < 600; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(false);
+		// No motion: the symbol stands in place of a working figure and of a writing one, with no stars beside it.
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		advance(1000);
+		const working = mount("Working", "works-and-asks", { ask: "bang" });
+		working.style.width = "50px";
+		await settle();
+		vi.mocked(context.roundRect!).mockClear();
+		vi.mocked(context.arc!).mockClear();
+		show([working, writing]);
+		expect(bangStem()).toBe(true);
+		expect(questionDot()).toBe(true);
+		expect(working.querySelector(".figure-prop")).toBeNull();
+		// With nothing waiting, a working figure at rest keeps itself and its three stars.
+		const busy = mount("Working", "only-works");
+		await settle();
+		vi.mocked(context.roundRect!).mockClear();
+		show([busy]);
+		expect(bangStem()).toBe(false);
+		expect(busy.querySelectorAll(".figure-prop")).toHaveLength(3);
+	});
+	it("shows a figure that was out of view none of the effects it missed", async () => {
+		// The effects are elements with an animation each; here an animation never ends, so they can be counted.
+		HTMLElement.prototype.animate = vi.fn(() => ({
+			onfinish: null,
+			oncancel: null,
+		})) as unknown as HTMLElement["animate"];
+		try {
+			const rail = mount("Waiting", "asks-twice", { ask: "bang" }),
+				card = mount("Waiting", "asks-twice", { ask: "bang" });
+			await settle();
+			show([rail, card]);
+			const effects = (host: HTMLElement) => host.querySelectorAll(".figure-bit:not(.figure-prop)").length;
+			for (let frame = 0; frame < 90; frame++) advance(1000 / 60);
+			// Both showed the same: the stars of the change and the dust of its landing.
+			expect(effects(rail)).toBeGreaterThan(0);
+			expect(effects(card)).toBe(effects(rail));
+			// The card scrolls away; the rail's figure keeps their clock going for minutes.
+			show([card], false);
+			const before = effects(card);
+			for (let frame = 0; frame < 60 * 180; frame++) advance(1000 / 60);
+			expect(effects(rail)).toBeGreaterThan(before + 20);
+			// Back in view: nothing it missed goes off, and from here it shows what the rail shows.
+			const railThen = effects(rail);
+			show([card]);
+			advance(1000 / 60);
+			expect(effects(card)).toBe(before);
+			for (let frame = 0; frame < 60 * 12; frame++) advance(1000 / 60);
+			expect(effects(card) - before).toBe(effects(rail) - railThen);
+			// A frame that comes very late sets off nothing either.
+			const late = effects(rail);
+			advance(120_000);
+			expect(effects(rail)).toBe(late);
+		} finally {
+			Reflect.deleteProperty(HTMLElement.prototype, "animate");
+		}
+	});
+	it("lets no cheer on a figure out of view stop the agent's other views, and drops it when it comes too late", async () => {
+		const header = mount("Idle", "shared-idle"),
+			row = mount("Idle", "shared-idle");
+		await settle();
+		// Only the header is on screen; the row's figure is asked to cheer while it is out of view.
+		show([header]);
+		mounted[mounted.length - 1]!.play("cheer");
+		for (let frame = 0; frame < 60 * 5; frame++) advance(1000 / 60);
+		// The header's figure played its opening (2.2 s, to the studio's frame 132) and rests: the clock ran, and no
+		// frame is asked for any more.
+		expect(header.querySelector("canvas")!.dataset.frame).toBe("132");
+		expect(frames.size).toBe(0);
+		// The row comes into view long after: no late cheer.
+		show([row]);
+		advance(1000 / 60);
+		advance(1000 / 60);
+		expect(row.querySelector("canvas")!.style.transform).toBe("");
+		expect(frames.size).toBe(0);
+	});
 	it("cheers once when asked to, smiling, and comes back to rest", async () => {
 		const host = mount("Idle", "cheers");
 		await settle();
