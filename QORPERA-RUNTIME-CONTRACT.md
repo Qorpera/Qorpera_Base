@@ -6404,6 +6404,40 @@ each step. It now leaves the envelope.
      database writes a run's log only for the platform or that run), so they need no step of their own and take the
      change with their next build. The web shows a log's files as text and parses none.
 
+### 2026-11-12 amendment: a command's output fills one result
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slice S1): "Yes, build them". No migration and no Codex rebuild. It goes live with
+> the coding executor on each node first, then a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result;
+> a company machine's guest takes larger pages from the machine image built after it. It amends the 2026-11-08
+> amendment's item 1 for `machine_read` and coding commands ("within its own limit").
+
+1. **One read, one result.** `machine_read` and `coding_read_command` ask for one result's room when the agent names no
+   `limit` (31,968 bytes; `limit` 4 to 32,768 asks for less; it was 4,096 by default and 16,384 at most), and cut the
+   page that comes back to what fits one result, once, at an exact cursor: the start of the page for a read from an
+   offset, its end for a tail. Plain output shows up to about 31 KiB a call, less where characters need escaping. A
+   page is asked again only when its cut's cursor cannot be told from the page (U+FFFD, which also stands for a byte
+   that is not UTF-8, on both sides of the cut), for exactly the bytes that fit. The answer says where the output goes
+   on (`log.nextOffset`, or `log.offset` for a tail), as before; nothing is left out without its cursor.
+2. **A short command in one call.** `machine_run` reads its command once, at once, when its start shows less than a
+   read can (on a machine with the company folder a start holds its output back; a command that already ended may
+   have printed more than the start's first page); `coding_run_command` does when its command already ended with more
+   output than its start shows. Nothing waits for the command, and the start's receipt is unchanged: the read's page
+   is the answer in its place, and a refused or failed read leaves the start's own answer.
+3. **Asked only for what each side takes.** A page holds up to 65,536 bytes of output on the wire
+   (`CLOUD_CODING_COMMAND_PAGE_BYTES`; it was 16,384), and a guest's page also stays within 60,000 bytes as JSON
+   writes it. An executor or guest from before refuses a larger read, so each caller asks only for what the other side
+   said it takes, and 16,384 when it said nothing:
+   - the executor's command service answers every call with `x-qorpera-command-page-bytes` (65,536); the runtime's
+     gateways, and an executor's gateways to its peers, learn it per executor from each answer;
+   - a company machine's guest helper says `pageBytes` in its answer to the boot's claim (`prepare`), which the
+     executor keeps per placement; the coding image's helper (the NAS model) is asked for 16,384.
+   - A smaller page than asked answers a read as well, so old and new parts work in any order. An executor that stops
+     saying what it takes (one rolled back under a running runtime) refuses a larger read once, without the header:
+     the gateway asks that read once more, in the same call, for what the executor takes now.
+4. **What the provider sees.** The descriptions of `machine_run`, `machine_read`, `coding_run_command` and
+   `coding_read_command`, and the two read tools' `limit` maximum (32,768). Nothing else.
+
 ### 2026-11-10 amendment: members message each other
 
 > **Asked for by Jonas, 10 November 2026** ("for multiplayer companies, I should also have a contact for the members I
@@ -6498,6 +6532,176 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    `ungroup` takes it away with the group. The tool's rules say to give every group a colour that sets it apart and
    fits its product or area, and to leave a group inside a group unset, so it takes its parent's. The Co-Founder's
    tidy pass (`qorpera.hire-overlay/v15`) takes a top-level group without a colour as a sign to sort the drawer.
+
+### 2026-11-12 amendment: more of the company folder in one call
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slices S2 and S3): "Yes, build them". Runtime only: no migration and no Codex
+> rebuild. It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB
+> too, with less a call). It amends the 2026-10-21 amendment's item 5 for listings and reads.
+
+1. **A listing shows a tree.** `company_list` takes `depth` (1 to 8; default 1, or 8 with a glob) and `glob`
+   (`company_search`'s syntax: `*` and `?` within a name, `**` across folders, a glob without `/` matches names
+   alone; matched on folder keys, so case does not matter), and `after` and `limit` may be left out. A call without
+   them lists one level, as before.
+   - One call shows up to 500 entries (`limit`, default 500), as many as fit one result, one short line each: a
+     file's path and size in bytes, a folder's path and `/`, a link's path and the first 512 bytes of its target. A
+     listing no longer shows each entry's version; `company_read` does.
+   - Past depth 1 the runtime filters the folder core's subtree listing (`p_recursive`, which the native host's
+     entry point passes by its declared name, 20260928409985) by depth and glob. One call looks through at most
+     5,000 entries, or stops after about 2 s of pages, and then says where it got to.
+   - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
+     stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
+     the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
+   - One answer is one moment of the folder (13 November 2026, owed from v240: a rename between two of a call's
+     pages showed a path twice or not at all). A look whose pages answered at different folder clocks is taken
+     again, at most three looks a call, all within about 4 s; the answer is a look whose pages answered at one clock
+     (each page is one statement, so that look is the folder at that moment). If no look was, the answer says so in
+     one line and to call again the same way for a clean listing.
+   - `asOfSeq` is the folder clock of the first page of the look the call answers with, as `company_move` takes it.
+2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
+   `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
+   - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
+     largest that fits: small files are whole and the larger ones share what is left alike. Each file says what a
+     read of it alone would: its version, `offset` 0, `bytesRead`, `totalBytes` and `nextOffset`, from which it is
+     read on with `path` and `offset`. A link's target is shown the same way.
+   - Each path is answered on its own: absent (also for a path the run may not read, as today), a folder, a file
+     that is not text or an image format not shown (`refused`, with today's words), or one the folder could not
+     read now (its own failure, or a request that timed out or lost its connection, also after the answer began).
+     A company whose work is stopped, a cancel, bytes that fail their check, or a read the run may no longer show
+     at its release, shows nothing.
+   - An image among several is named, never shown (`kind: "image"`, its media type and size, `shown: false`): one
+     result shows one picture, after the answer that names it. Read alone from offset 0, it is shown as before.
+   - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,
+     and the answer cites the first, as `company_search` cites its first part: the context view cites one release an
+     output, and the run log keeps every release of the step. No SQL changes.
+   - The paths' entries are read side by side, and their bytes one file at a time: the object gateway serves bytes
+     from two NAS lanes, one operation at a time on any one object, and answers 503 for a file with no Storage copy
+     yet (one just written) when it cannot take it now. Files of the same content share objects, so one call never
+     contends with itself there.
+   - A secret the boundary cuts out of an answer (#1721) is cut before the answer is hashed and released, for a read
+     of several files as for one, so the context view cites what the model was shown.
+   - A window never starts or ends inside a secret, for a file read from any offset, files read together and cut
+     alike, a link's target, and a listed target's start (keyholes S3, 13 November 2026). A window's end that falls
+     inside one moves to where it starts, so the next window holds it whole and the boundary cuts it; a window that
+     starts at one takes it whole, past `limit` if need be (shown cut); an offset inside one starts the window where it
+     starts, and the answer's `offset` says so. To see them the read takes 1 KiB past the window and before it.
+     `nextOffset` stays an exact byte position in the file. A secret-shaped run longer than a window plus that 1 KiB
+     (no real key is) is shown cut as far as read, and the answer says in `secretRun` that reading on shows the rest
+     of it, which nothing can cut on its own; a read asked to start more than 1 KiB inside such a run cannot see it.
+   - Codex still sends one call a model response, so this is what lets one round read several files.
+3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
+   `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`
+   added; no property is required).
+### 2026-11-12 amendment: folder search for every run, and wider
+
+> **Proposed, not approved.** The keyholes lane, slice S4 (12 November 2026): Jonas said "Yes, build them" to the
+> plan's slices S1 to S4; its decision 6 (search on for every company, at about 1 GiB per node per 16 large searching
+> runs) is his. It amends the 2026-10-21 amendment's item 6 ("off until the coordinator switches it on … so no chat
+> run had it") and goes live only with the release below. Nothing else changes: read rights per path, the release of
+> every read before the model sees an answer, and the review class `read` stay as they are.
+
+1. **Every run on a shared execution host has `company_search`.** The host's folder search is on unless an operator
+   sets `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off`. A run the fresh-VM overflow path takes has no relay to the node's
+   folder service, so its catalog has no `company_search` (never a failed run); giving it one is a slice of its own
+   (runner image, LXD provider and the folder service's admission).
+2. **What it finds.** Literal text, or with `regex` a regular expression of RE2's kind (no back-references, no
+   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine, where
+   the node's folder service runs that engine (off as it first ships, 13 Nov 2026: a pattern is then refused in words,
+   `REGEX_OFF`; which engine is the founder's choice); `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
+   number of matching lines, and a `glob` without a `query` lists every path it matches. `names_only` is as before.
+3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
+   asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result
+   (32 KiB, the 2026-11-08 amendment) and gives a cursor when there is more. Nothing is left out silently: an answer
+   shown in part goes on from the first hit it left out, a count of a file the answer ended inside says it goes on,
+   and a regular expression, which sees whole lines only, does not search a line over 1 MiB: the answer says how many
+   such lines it left, to search as text or read. A file that changes while a search is inside it shows in one
+   version only, the one there now: what the same call had shown of the old version is left out and not released,
+   and when an earlier answer showed part of it, the answer says it changed (searched again from its start) or is no
+   longer as that answer saw it (gone, emptied or no longer the run's to read). A cursor inside a file does not tell
+   that: the run keeps, with each cursor, whether an answer showed part of that file at that version (13 November
+   2026, the v240 release review's finding), and says nothing of a file no answer showed. A search whose own path
+   is gone by a later page answers that there is no such path, and shows and releases nothing.
+4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
+   searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
+   (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,
+   is closed, and its run is refused another while the node is full. At most 4 pages run at once on the node and at
+   most 32 wait, each up to 20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
+   its runs, is a later step.
+5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
+   `files_only` are new, and `query` is no longer required; the description offers a pattern only where the node's
+   search runs them (`REGEX_OFF` otherwise). Nothing else. Turning patterns on later is the folder service unit's
+   flag (`--enable-experimental-regexp-engine`) and its installer pin, with no change the provider sees.
+6. **Rolling.** The folder service on each node first (its unit unchanged, so patterns stay off, and only while no
+   company machine runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
+   slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
+   hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
+   what it takes and says so for the rest.
+
+### 2026-11-13 amendment: company databases
+
+Ratified 13 November 2026 (Jonas). To "Put a second Postgres on your nodes for companies' data?" he answered "Yes,
+go". The three points the design then left open were put to him with a recommendation each: the store as a small
+machine pair of its own (item 2), agents making and changing databases themselves with only what destroys data
+waiting for a member (item 5), and named questions and changes as the only road for interfaces (item 6). He
+answered: "Yes, all three".
+
+Jonas, 13 November 2026: "you can't act very much inside of the interfaces and [...] the numbers are never live. since
+we now host our own database, I think it's obvious that as long as we build the tools needed for companies to build
+their own databases on our servers too, we should absolutely be able to provide live numbers. if a company
+folder/file could contain databases that lived on our servers, and the interfaces could then project those
+numbers/values we would have it. that's a top priority item too. [...] I just like having the entire company inside
+the company folder/files, aiming for full centralization of data."
+
+This is the amendment the 2026-10-02 amendment "interfaces project company state from the company folder", item 4,
+left open: "A table that outgrows a file waits for the company's table store. The store has its own amendment, which
+says where it runs." It puts the store back in scope (the 2026-10-17 scope amendment had taken it out) and grows it
+from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`.
+
+1. **A company database is a folder of the company folder**, `data/<name>/`. Its files say everything it is:
+   - `database.toml`: its name, what it holds, who reads it and who changes it;
+   - `tables/NNN-<name>.sql`: numbered steps that make and change its tables, each applied once, in order;
+   - `queries/<name>.sql`: named questions, each one read with named parameters;
+   - `actions/<name>.sql`: named changes, each one write, with the words a member is shown;
+   - `snapshot/`: its rows, written by the platform at least daily (item 8).
+
+   `data/` joins the top of the folder (5.6) as the company's own work: agents and members write it, and the platform
+   writes `snapshot/`. They are plain files, and the folder stays their one truth: the platform uses a file's text
+   only when its hash is the live file's, read with the caller's own rights. A step that was applied is never applied
+   again; when one was changed afterwards, applying stops and says so.
+2. **The rows live in the company data store**: a PostgreSQL on Qorpera's own nodes that holds companies' rows and
+   nothing else, with a standby on the other node and backups on Qorpera's own storage. It is not the platform's
+   database and shares no server process with it. Each company has one database there, each `data/<name>/` one schema
+   in it. "It holds all company state" keeps the one exception the 2026-10-02 amendment gave it, now for these rows.
+3. **The rows belong to the company like the folder.** They never go to the platform's database. Deleting a
+   database's folder removes its rows; deleting or erasing the company removes all of them, and the store's backups
+   hold them no longer than those backups are kept.
+4. **One gateway is the only door.** No member, agent, machine or service holds a login to the store; the data
+   gateway does, and every caller goes through it with their own proven identity. A company is bounded there in
+   connections, time per statement, memory, temporary files and size, so no company's work reaches another's or the
+   platform's.
+5. **Agents make and change databases without a member.** They write the files as they write any of the company's
+   work. What destroys data waits for a member: a step that drops or empties a table, drops a column or deletes rows,
+   and deleting a database's folder. Until that approval is built these are refused with their reason. The rule that
+   agents do not define the earlier tables and pages (`QorperaOS/tables`, `QorperaOS/interfaces`) is unchanged.
+6. **Interfaces reach rows only through the named questions and changes.** A page never sends SQL of its own. A
+   question runs with the rights of the member looking: the folder's path authority for the question's file. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
+   amendment: the platform draws every confirmation), with the file's own words. Agents may also ask any read, because they analyse. Nothing is
+   public unless a file marks it public, and that road has its own design first.
+7. **Interfaces show the values live.** When rows change, a notice that carries no rows reaches the open page, and
+   the page shows the new answers within about a second of the change. Notices do not pass through the platform's
+   database.
+8. **The folder gets a snapshot of each database that changed, at least daily**: its shape as SQL and its rows as
+   text files, enough to make the database again from the folder alone. The platform writes it. Path versions are
+   kept for good (the 2026-09-27 amendment "every machine works in the company folder", item 6) with one exception
+   so far, git's objects (the same amendment, item 9); the old versions of files under `data/<name>/snapshot/` are
+   the second: they are pruned after 7 days. The newest snapshot is always whole.
+9. **The earlier tables stay.** `QorperaOS/tables/<table>/` (the 2026-10-02 amendment, item 4) is unchanged: rows in
+   a file, `rows = "store"` still refused. A table moves into a database by a step and a copy, when a company wants it.
+10. **Order.** Live reads first (the store, the files, the gateway, the agents' tools, the bridge and the kits, the
+    snapshot); then named changes from interfaces and routines that wake on a change; then the product's doors (a
+    server's own connection, public questions and changes, hooks into tables), each after its own design; then what
+    Qorpera holds about a company (bank, mail, todos, agents, usage) as read-only tables in its database.
 
 ## 20. Enforcement matrix
 

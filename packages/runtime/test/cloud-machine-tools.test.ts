@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
+import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
 	CloudMachineCodingValueRefusal,
@@ -273,23 +274,46 @@ describe("machine tools", () => {
 		}
 	});
 
-	it("offers waiting to workers only: an agent is woken instead", () => {
+	it("lets a conversation's run wait for its machine to start, for up to a minute; only a worker waits for commands", () => {
 		const agent = fixture();
 		const helper = fixture(undefined, true);
 		try {
-			for (const tool of ["machine_start", "machine_read"]) {
-				const agentTool = agent.tools.find((entry) => entry.name === tool)!;
-				expect(agentTool.inputSchema.properties).not.toHaveProperty("waitSeconds");
-				expect(agentTool.description).not.toContain("waitSeconds");
-				expect(helper.tools.find((entry) => entry.name === tool)!.inputSchema.properties).toHaveProperty(
-					"waitSeconds",
-				);
-			}
-			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
-			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
+			// agent-box B1: machine_start waits in place in a conversation's run too, for about a boot.
 			const start = agent.tools.find((tool) => tool.name === "machine_start")!;
-			expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 5 })).toThrow();
+			expect(start.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 1,
+				maximum: 60,
+			});
+			expect(start.description).toContain(
+				"With waitSeconds (1 to 60) the call waits while it starts, and no model turn is spent; if it is not running yet, finish this run normally: you are woken when it runs.",
+			);
+			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 60 })).toEqual({
+				operationKey: "k",
+				machine: "build-a",
+				waitSeconds: 60,
+			});
+			for (const waitSeconds of [0, 61, 1.5, "5"])
+				expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds })).toThrow();
+			const helperStart = helper.tools.find((tool) => tool.name === "machine_start")!;
+			expect(helperStart.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 1,
+				maximum: 300,
+			});
+			expect(helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 300 })).toMatchObject({
+				waitSeconds: 300,
+			});
+			expect(() =>
+				helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 301 }),
+			).toThrow();
+			// Its commands still wake it (notify): only a worker waits for a command in machine_read.
+			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
+			expect(read.inputSchema.properties).not.toHaveProperty("waitSeconds");
+			expect(read.description).not.toContain("waitSeconds");
+			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
 			const helperRead = helper.tools.find((tool) => tool.name === "machine_read")!;
+			expect(helperRead.inputSchema.properties).toHaveProperty("waitSeconds");
 			for (const waitSeconds of [0, 301, 1.5, "5"])
 				expect(() =>
 					helperRead.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds }),
@@ -297,6 +321,53 @@ describe("machine tools", () => {
 		} finally {
 			agent.boundary.close();
 			helper.boundary.close();
+		}
+	});
+
+	it("says in one sentence that a new task machine is the agent's own free one again, to agents and workers", () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			for (const tools of [agent.tools, helper.tools])
+				expect(tools.find((tool) => tool.name === "machine_start")!.description).toContain(
+					"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name.",
+				);
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
+	it("answers a start that got the agent's own machine again as the kernel says it, reused and its name", async () => {
+		const f = fixture([{ name: "web-tests", state: "stopped" }]);
+		try {
+			f.started.state = "starting";
+			f.started.queuePosition = null;
+			const reused =
+				"your own free machine web-tests of this size was given to you again instead of a new one: use the name web-tests";
+			f.control.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+				if (method !== "qorpera_native_machine_start") throw new Error(`unexpected ${method}`);
+				return args.p_action === "authorize"
+					? { state: "authorized" }
+					: { schema: "qorpera.machine-start/v1", machine: { ...f.listed[0], state: "starting" }, reused };
+			});
+			const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+				operationKey: "market",
+				name: "market-research",
+				purpose: "Read the market reports",
+			});
+			expect(result.success).toBe(true);
+			expect(f.content(result as never)).toMatchObject({
+				machine: { name: "web-tests", state: "starting" },
+				reused,
+			});
+			// The model asked for a new machine: the arguments are the ask's, the kernel chose.
+			expect(f.execute.mock.calls[0][0].operation.arguments).toMatchObject({
+				name: "market-research",
+				lifetime: "task",
+			});
+		} finally {
+			f.boundary.close();
 		}
 	});
 
@@ -1024,6 +1095,103 @@ describe("machine tools", () => {
 		});
 	});
 
+	describe("a conversation's run waiting for its machine (agent-box B1)", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("waits in place while its machine starts, told at once by the executor's word, outside the receipt", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				let say = (_told: boolean) => {};
+				f.gateway.wake.mockImplementationOnce(
+					() =>
+						new Promise<boolean>((settle) => {
+							say = settle;
+						}),
+				);
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "report",
+					name: "report-1",
+					purpose: "Build the report",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				say(true);
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await start;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("running");
+				// Its last look saw it running: that look is what keeps the kernel's word for this run from waking it later.
+				expect(f.looks()).toHaveLength(2);
+				expect(f.execute.mock.calls[0][0].operation.arguments).not.toHaveProperty("waitSeconds");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers starting at the minute's end, and in line at once, so the run ends and is woken when it runs", async () => {
+			const f = fixture();
+			const lined = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push(...Array.from({ length: 20 }, () => f.status({ ...f.listed[0], state: "starting" })));
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "slow",
+					machine: "build-a",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(60_000);
+				expect(f.content((await start) as never).machine.state).toBe("starting");
+				// Looks at 0, 5, ... 55 and at the deadline.
+				expect(f.looks()).toHaveLength(13);
+				const inLine = await lined.boundary.invoke("s2", "qorpera", "machine_start", {
+					operationKey: "lined",
+					machine: "build-a",
+					waitSeconds: 60,
+				});
+				expect(lined.content(inLine as never).machine).toMatchObject({ state: "waiting", queuePosition: 2 });
+				expect(lined.looks()).toHaveLength(0);
+			} finally {
+				f.boundary.close();
+				lined.boundary.close();
+			}
+		});
+
+		it("tells a run a member stopped that its work stopped, beside the machine it started", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push({ schema: "qorpera.machine-status/v1", workStopped: true });
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "stopped",
+					machine: "build-a",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				const answer = f.content((await start) as never);
+				expect(answer.machine.state).toBe("starting");
+				expect(answer.workStopped).toBe(
+					"your work was stopped (a member stopped it, or the company paused work); end your run",
+				);
+			} finally {
+				f.boundary.close();
+			}
+		});
+	});
+
 	it("are the seven machine operations the runtime observes by name", () => {
 		const f = fixture();
 		expect(f.tools.map((tool) => tool.name)).toEqual([
@@ -1270,6 +1438,8 @@ describe("machine tools", () => {
 				arguments: args,
 				target: { realm: "company_machine", machineId: f.listed[0].machineId },
 			});
+			// A start that shows a running command, with nothing held back, is not read again.
+			expect(f.gateway.read).not.toHaveBeenCalled();
 		} finally {
 			f.boundary.close();
 		}
@@ -1397,7 +1567,7 @@ describe("machine tools", () => {
 			).toBe(true);
 			expect(f.gateway.read).toHaveBeenCalledWith(
 				{ machineId: f.listed[0].machineId },
-				{ commandId, tail: true, limit: 4096 },
+				{ commandId, tail: true, limit: CLOUD_COMMAND_PAGE_ASK },
 				expect.any(AbortSignal),
 			);
 			expect(
@@ -1425,7 +1595,100 @@ describe("machine tools", () => {
 		}
 	});
 
-	it("shows what the company folder said, and keeps the paths not saved when a read asks again for a smaller page (F3 6e-2a)", async () => {
+	it("shows as much of a long log as one result holds in one read, and asks for less only when told (keyholes S1)", async () => {
+		const f = fixture();
+		try {
+			const machineId = f.listed[0].machineId;
+			const commandId = randomUUID();
+			let log = "";
+			for (let n = 0; log.length < 60_000; n++) log += `step ${n}: built "pkg-${n}" <ok>\n`;
+			log = log.slice(0, 60_000);
+			f.gateway.read.mockImplementation(async (_scope, input) => {
+				const offset = input.offset ?? 0;
+				const output = log.slice(offset, offset + (input.limit ?? 4096));
+				return {
+					...f.receipt(machineId, commandId, "succeeded"),
+					output,
+					truncated: offset + output.length < log.length,
+					log: {
+						offset,
+						nextOffset: offset + output.length,
+						totalBytes: log.length,
+						limitBytes: 67108864,
+						limitReached: false,
+					},
+				} as never;
+			});
+			const first = f.content(
+				(await f.boundary.invoke("a", "qorpera", "machine_read", { machine: "build-a", commandId })) as never,
+			);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({ commandId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK });
+			// More than the old 16,384 at most, though its quotes, < and > escape to several bytes each.
+			expect(first.output.length).toBeGreaterThan(16_384);
+			expect(log.startsWith(first.output)).toBe(true);
+			expect(first.log.nextOffset).toBe(first.output.length);
+			expect(first.truncated).toBe(true);
+			const next = f.content(
+				(await f.boundary.invoke("b", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId,
+					offset: first.log.nextOffset,
+					limit: 500,
+				})) as never,
+			);
+			expect(f.gateway.read.mock.calls[1][1]).toEqual({ commandId, offset: first.log.nextOffset, limit: 500 });
+			expect(next.output).toBe(log.slice(first.log.nextOffset, first.log.nextOffset + 500));
+			const tooLarge = await f.boundary.invoke("c", "qorpera", "machine_read", {
+				machine: "build-a",
+				commandId,
+				limit: 32769,
+			});
+			expect(tooLarge.success).toBe(false);
+			expect(f.gateway.read).toHaveBeenCalledTimes(2);
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows a command that already ended at its start with as much output as one result holds; a refused read keeps the start", async () => {
+		const f = fixture();
+		try {
+			const machineId = f.listed[0].machineId;
+			const ended = {
+				...f.receipt(machineId, f.receiptId, "succeeded"),
+				output: "x".repeat(4096),
+				truncated: true,
+				log: { offset: 0, nextOffset: 4096, totalBytes: 50_000, limitBytes: 67108864, limitReached: false },
+			};
+			f.gateway.start.mockResolvedValue(ended as never);
+			f.gateway.read.mockResolvedValueOnce({
+				...ended,
+				output: "x".repeat(20_000),
+				log: { ...ended.log, nextOffset: 20_000 },
+			} as never);
+			const run = { operationKey: "suite:1", machine: "build-a", command: "cat big.log" };
+			const shown = f.content((await f.boundary.invoke("r1", "qorpera", "machine_run", run)) as never);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({
+				commandId: f.receiptId,
+				offset: 0,
+				limit: CLOUD_COMMAND_PAGE_ASK,
+			});
+			expect(shown).toMatchObject({ machine: "build-a", commandId: f.receiptId, state: "succeeded" });
+			expect(shown.output).toBe("x".repeat(20_000));
+			// The machine stopped right after: the start's own answer stands, with its handle.
+			f.gateway.read.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING"));
+			const kept = f.content(
+				(await f.boundary.invoke("r2", "qorpera", "machine_run", { ...run, operationKey: "suite:2" })) as never,
+			);
+			expect(kept).toMatchObject({ commandId: f.receiptId, output: "x".repeat(4096) });
+			expect(f.gateway.read).toHaveBeenCalledTimes(2);
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows what the company folder said, and keeps the paths not saved when a read asks again for what fits (F3 6e-2a)", async () => {
 		const f = fixture();
 		try {
 			const machineId = f.listed[0].machineId;
@@ -1455,7 +1718,17 @@ describe("machine tools", () => {
 				machine: "build-a",
 				command: "npm test",
 			});
+			// A start that holds its output back is read once at once, from the log's start (keyholes S1); this read says
+			// nothing of the folder, so the start's report stays with its answer.
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read).toHaveBeenCalledWith(
+				{ machineId },
+				{ commandId: f.receiptId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK },
+				expect.any(AbortSignal),
+			);
+			expect(f.content(ran as never)).toMatchObject({ commandId: f.receiptId, state: "succeeded" });
 			expect(f.content(ran as never).companyFolder).toEqual(pending);
+			f.gateway.read.mockClear();
 			const none = {
 				company: "none",
 				why: "the company folder refused this machine's view",
@@ -1468,15 +1741,34 @@ describe("machine tools", () => {
 				commandId,
 			});
 			expect(f.content(cancelled as never).companyFolder).toEqual(none);
-			// Each page is as long as the read asks: the first is too large for the result (each < escapes to six bytes), so
-			// the read asks again. The executor said its paths not saved on the first page only.
+			// Each page is as long as the read asks, and too large for the result (each < escapes to six bytes). A U+FFFD,
+			// which may stand for one byte of the log, on both sides of the cut leaves its cursor unknown from the page, so
+			// the read asks again for exactly the bytes that fit. The executor said its paths not saved on the first page
+			// only.
+			const unit = Array.from(`\uFFFD${"<".repeat(9)}`);
+			const text = (bytes: number) => {
+				let out = "";
+				for (let i = 0, used = 0; ; i++) {
+					used += Buffer.byteLength(unit[i % unit.length]);
+					if (used > bytes) return out;
+					out += unit[i % unit.length];
+				}
+			};
 			const folders: Record<string, unknown>[] = [];
 			// What a try after those reports: the paths still not saved, which every try says again.
 			let after: Record<string, unknown> = { company: "mounted" };
 			f.gateway.read.mockImplementation(
-				async (_scope, input) =>
-					page("succeeded", "<".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
+				async (_scope, input) => page("succeeded", text(input.limit ?? 4096), folders.shift() ?? after) as never,
 			);
+			/** The limits the reads asked for: the read's own, then exactly what fit, less again when a try's report grew;
+			 * the last one's. */
+			const asked = () => {
+				const limits = f.gateway.read.mock.calls.map(([, input]) => input.limit as number);
+				expect(limits[0]).toBe(8192);
+				expect(limits.length).toBeGreaterThanOrEqual(2);
+				for (let i = 1; i < limits.length; i++) expect(limits[i]).toBeLessThan(limits[i - 1]);
+				return limits.at(-1) as number;
+			};
 			const plan = { path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" };
 			const pay = { path: "people/pay.md", outcome: "denied" };
 			folders.push({ company: "mounted", notSaved: [plan, pay] });
@@ -1489,8 +1781,8 @@ describe("machine tools", () => {
 					})) as never,
 				);
 			const shown = await read("a");
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([8192, 4096]);
-			expect(shown.output).toBe("<".repeat(4096));
+			expect(shown.output).toBe(text(asked()));
+			expect(shown.log.nextOffset).toBe(Buffer.byteLength(shown.output));
 			expect(shown.companyFolder).toEqual({ company: "mounted", notSaved: [plan, pay] });
 			// Paths from every try, within the report's limits; the rest are counted.
 			f.gateway.read.mockClear();
@@ -1505,7 +1797,7 @@ describe("machine tools", () => {
 				{ company: "mounted", notSaved: many("b") },
 			);
 			const merged = (await read("b")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			const listed = merged.notSaved as { path: string }[];
 			expect(listed.length).toBeGreaterThan(5);
 			expect(listed.length).toBeLessThan(CLOUD_MACHINE_FOLDER_LIMITS.notSaved);
@@ -1521,7 +1813,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: still, moreStillNotSaved: 3 };
 			folders.push({ ...after, notSaved: [plan] }, { ...after, notSaved: [pay] });
 			const again = (await read("e")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			expect(again).toEqual({
 				company: "mounted",
 				notSaved: [plan, pay],
@@ -1539,7 +1831,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: long("s", 2) };
 			folders.push({ ...after, notSaved: long("a", 3) }, { ...after, notSaved: long("b", 3) });
 			const full = (await read("f")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			expect(full.notSaved).toEqual([...long("a", 3), ...long("b", 3)]);
 			expect(full).not.toHaveProperty("moreNotSaved");
 			expect(full).not.toHaveProperty("stillNotSaved");

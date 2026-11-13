@@ -927,7 +927,12 @@ export class CodeImport {
 				!Array.isArray(fetched.refs) ||
 				fetched.refs.length < 1 ||
 				!Number.isSafeInteger(fetched.leftOut) ||
-				fetched.leftOut < 0
+				fetched.leftOut < 0 ||
+				(fetched.sourceBranch !== undefined &&
+					fetched.sourceBranch !== null &&
+					(typeof fetched.sourceBranch !== "string" ||
+						!codeImportBranchValid(fetched.sourceBranch) ||
+						fetched.sourceBranch === fetched.defaultBranch))
 			)
 				throw new Error("IMPORT_FETCH_ANSWER_INVALID");
 			const createdAt = new Date(this.#now()).toISOString(),
@@ -939,6 +944,9 @@ export class CodeImport {
 					createdAt,
 					from: input.from,
 					defaultBranch: fetched.defaultBranch,
+					// Kept with the bundle too, so a later import that goes on from it as a half-done snapshot looks as this one
+					// did (review round 1 of #1725, F1).
+					...(typeof fetched.sourceBranch === "string" ? { sourceBranch: fetched.sourceBranch } : {}),
 					mainSha: fetched.mainSha,
 					refs: fetched.refs.map(({ name, sha }) => ({ name, sha })),
 					leftOut: fetched.leftOut,
@@ -957,6 +965,9 @@ export class CodeImport {
 				mainSha: fetched.mainSha,
 				refs: fetched.refs.length,
 				leftOut: fetched.leftOut,
+				// The source's own default when the request named another branch: the look's refs plan keeps it whatever
+				// its age (the lead's call 6a of the import's follow-ups).
+				...(typeof fetched.sourceBranch === "string" ? { sourceBranch: fetched.sourceBranch } : {}),
 			};
 		} finally {
 			await writer?.abort().catch((error: unknown) => this.#failed(run, run.step, error));
@@ -1030,6 +1041,9 @@ export class CodeImport {
 					mainSha: first.mainSha,
 					refs: first.refsCount,
 					leftOut: first.leftOut,
+					// The source's own default the first look kept beside main, when the request named another branch: the look
+					// made again for this snapshot keeps it too, or it would not be the look of that code (F1).
+					...(typeof first.sourceBranch === "string" ? { sourceBranch: first.sourceBranch } : {}),
 				},
 				kept: {
 					name,

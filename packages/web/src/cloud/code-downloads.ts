@@ -9,7 +9,8 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
  * the folder, piece by piece (app/views/code-download.ts). The list also names the company's GitHub copies (migration
  * 20260930735000): folders under code/ that hold a project's working copy from GitHub, not code kept in Qorpera. And
  * with migration 20260930736000 an owner or admin brings code in from GitHub (app/views/code-import.ts): the list says
- * what is being brought in, the last one that was not, and per repository where it came from. */
+ * what is being brought in, the last one that was not, and per repository where it came from; with migration
+ * 20260930741000 also the other lines of work that came with it. */
 
 export const CODE_DOWNLOAD_KINDS = ["files", "history"] as const;
 export type CodeDownloadKind = (typeof CODE_DOWNLOAD_KINDS)[number];
@@ -45,6 +46,19 @@ export interface CodeImported {
 	readonly at: string;
 	/** The changes on its main line that came with it; null when the list does not say. */
 	readonly earlierChanges: number | null;
+	/** The other lines of work that came with it, with changes its main line did not have (migration 20260930741000);
+	 * absent when the list does not say, or says there were none. */
+	readonly otherWork?: CodeOtherWork;
+	/** The number of the repository's last change (the list's `changes`): 1 while nothing has changed since it came
+	 * in. Absent when the list does not say. */
+	readonly lastChange?: number;
+}
+
+export interface CodeOtherWork {
+	/** The lines of work, at least 1. */
+	readonly lines: number;
+	/** The changes on them that the main line did not have, each counted once; at least 1. */
+	readonly changes: number;
 }
 
 export interface CodeImports {
@@ -143,7 +157,13 @@ export function parseCodeRepositories(value: unknown): CodeRepositories {
 		canDownload: input.canDownload,
 		repositories: array(input.repositories, "code repositories").map((entry) => {
 			const item = record(entry, "code repository");
-			const imported = codeImported(item.importedFrom, item.importedAt, item.earlierChanges);
+			const imported = codeImported(
+				item.importedFrom,
+				item.importedAt,
+				item.earlierChanges,
+				item.otherWork,
+				item.changes,
+			);
 			return {
 				owner: nonEmptyString(item.owner, "code repository owner", 256),
 				name: nonEmptyString(item.name, "code repository name", 256),
@@ -192,13 +212,37 @@ function codeImportEnd(value: unknown): CodeImportEnd | null {
 		: null;
 }
 
-/** Where a repository came from, or nothing for code that began here or a key that is not as expected. */
-function codeImported(from: unknown, at: unknown, earlier: unknown): CodeImported | null {
+/** Where a repository came from, or nothing for code that began here or a key that is not as expected. The other work
+ * that came with it and the last change's number are read leniently: one that is not as expected is left out alone. */
+function codeImported(
+	from: unknown,
+	at: unknown,
+	earlier: unknown,
+	other: unknown,
+	last: unknown,
+): CodeImported | null {
 	if (!from || typeof from !== "object" || typeof at !== "string" || Number.isNaN(Date.parse(at))) return null;
 	const kind = (from as Record<string, unknown>).kind;
 	if (kind !== "github" && kind !== "file") return null;
 	const earlierChanges = Number.isSafeInteger(earlier) && (earlier as number) >= 0 ? (earlier as number) : null;
-	return { from: kind, at, earlierChanges };
+	const otherWork = codeOtherWork(other);
+	const lastChange = Number.isSafeInteger(last) && (last as number) >= 1 ? (last as number) : null;
+	return {
+		from: kind,
+		at,
+		earlierChanges,
+		...(otherWork ? { otherWork } : {}),
+		...(lastChange !== null ? { lastChange } : {}),
+	};
+}
+
+/** `otherWork: {lines, changes}`, each a whole number of at least 1; anything else (null, the key missing on a cloud from
+ * before 20260930741000) is none. */
+function codeOtherWork(value: unknown): CodeOtherWork | null {
+	if (!value || typeof value !== "object") return null;
+	const { lines, changes } = value as Record<string, unknown>;
+	const counted = (count: unknown): count is number => Number.isSafeInteger(count) && (count as number) >= 1;
+	return counted(lines) && counted(changes) ? { lines, changes } : null;
 }
 
 export function parseCodeImportAnswer(value: unknown): CodeImportAnswer {

@@ -58,7 +58,7 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
-import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
+import { type AgentState, agentWorks, type CompanyController, isAgentPairSession } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
@@ -597,13 +597,13 @@ function changedRow(
 				? "state-failed"
 				: was.state === "failed"
 					? "state-recovered"
-					: now.state === "working"
+					: now.state === "working" || now.state === "computer"
 						? "state-working"
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
 	// Its work is done: the figure cheers.
-	if ((was.state === "working" || was.state === "writing") && now.state === "idle")
+	if (was.state && agentWorks(was.state) && now.state === "idle")
 		playFigure(element.querySelector(".figure"), "cheer");
 }
 
@@ -967,7 +967,8 @@ function railLabel(
 	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
 }
 
-/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone), and asking when its
+/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone; the pointer over its row
+ * moves nothing: Jonas, 13 Nov 2026, "It shouldn't be doing anything"), and asking when its
  * work waits on this member. Stopped at them, the figure becomes a "?" for a question to answer and a "!" for
  * anything else (an approval, a secret, a takeover, a draft, a decision with no words); working on something
  * else meanwhile, it comes back as that symbol between its spells of work. Its words are in the link's name. */
@@ -979,12 +980,6 @@ function railFigure(model: AgentModel, size: number, look: AgentLook): HTMLEleme
 		alive: true,
 		ask: ask ?? (model.state === "decision" ? "bang" : undefined),
 	});
-}
-function perksUp(link: HTMLElement): HTMLElement {
-	link.addEventListener("pointerenter", (event) => {
-		if (event.pointerType === "mouse") playFigure(link.querySelector(".figure"), "perk");
-	});
-	return link;
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -1017,25 +1012,23 @@ interface SessionModel {
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return perksUp(
+	return h(
+		"a",
+		{
+			class: "cofounder-home",
+			href,
+			draggable: "false",
+			"data-cofounder-id": model.id,
+			...railLabel(model, look),
+		},
 		h(
-			"a",
-			{
-				class: "cofounder-home",
-				href,
-				draggable: "false",
-				"data-cofounder-id": model.id,
-				...railLabel(model, look),
-			},
-			h(
-				"span",
-				{ class: "cofounder-stand" },
-				railFigure(model, 82, look),
-				statusDisc(look, "cofounder-status"),
-				mentionBadge(model.mentioned),
-			),
-			h("strong", null, model.displayName),
+			"span",
+			{ class: "cofounder-stand" },
+			railFigure(model, 82, look),
+			statusDisc(look, "cofounder-status"),
+			mentionBadge(model.mentioned),
 		),
+		h("strong", null, model.displayName),
 	);
 }
 
@@ -1065,26 +1058,24 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 /** A pinned agent: a square card with the figure over the name, as in Grok Bot. */
 function pinCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return perksUp(
+	return h(
+		"a",
+		{
+			class: "rail-pin",
+			href,
+			draggable: "false",
+			"data-agent-id": model.id,
+			style: `--agent-color: ${agentColor(model)}`,
+			...railLabel(model, look),
+		},
 		h(
-			"a",
-			{
-				class: "rail-pin",
-				href,
-				draggable: "false",
-				"data-agent-id": model.id,
-				style: `--agent-color: ${agentColor(model)}`,
-				...railLabel(model, look),
-			},
-			h(
-				"span",
-				{ class: "rail-pin-stand" },
-				railFigure(model, 52, look),
-				statusDisc(look, "rail-row-status"),
-				mentionBadge(model.mentioned),
-			),
-			h("strong", { class: "rail-pin-name" }, model.displayName),
+			"span",
+			{ class: "rail-pin-stand" },
+			railFigure(model, 52, look),
+			statusDisc(look, "rail-row-status"),
+			mentionBadge(model.mentioned),
 		),
+		h("strong", { class: "rail-pin-name" }, model.displayName),
 	);
 }
 
@@ -1097,30 +1088,28 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
 	const line = live ?? model.idle?.text;
 	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
-	return perksUp(
+	return h(
+		"a",
+		{
+			class: "rail-row rail-row-agent",
+			href,
+			draggable: "false",
+			"data-agent-id": model.id,
+			style: `--agent-color: ${agentColor(model)}`,
+			...railLabel(model, look, model.idle),
+		},
 		h(
-			"a",
-			{
-				class: "rail-row rail-row-agent",
-				href,
-				draggable: "false",
-				"data-agent-id": model.id,
-				style: `--agent-color: ${agentColor(model)}`,
-				...railLabel(model, look, model.idle),
-			},
-			h(
-				"span",
-				{ class: "rail-row-stand" },
-				railFigure(model, 50, look),
-				statusDisc(look, "rail-row-status"),
-				mentionBadge(model.mentioned),
-			),
-			h(
-				"span",
-				{ class: "rail-row-copy" },
-				h("strong", null, model.displayName),
-				line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
-			),
+			"span",
+			{ class: "rail-row-stand" },
+			railFigure(model, 50, look),
+			statusDisc(look, "rail-row-status"),
+			mentionBadge(model.mentioned),
+		),
+		h(
+			"span",
+			{ class: "rail-row-copy" },
+			h("strong", null, model.displayName),
+			line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
 		),
 	);
 }

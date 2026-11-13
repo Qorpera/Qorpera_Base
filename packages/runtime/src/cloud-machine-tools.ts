@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
+	type CloudCodingCommandRead,
 	type CloudMachineCommandFolder,
 	type CloudMachineCommandReceipt,
 	cloudMachineFolderBytes,
@@ -20,6 +21,7 @@ import type {
 	CodingValuePrepareAnswer,
 	CodingValueRefusal,
 } from "./cloud-coding-value-vault.ts";
+import { CLOUD_COMMAND_PAGE_ASK, cloudCommandFits, fitCloudCommandPage } from "./cloud-command-page-fit.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { FolderImageRefusal, folderImageView, oneImageAtATime } from "./cloud-folder-images.ts";
 import {
@@ -52,7 +54,6 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
-	CLOUD_TOOL_RESULT_RESERVE_BYTES,
 	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	type CloudToolContent,
@@ -164,6 +165,12 @@ export const CLOUD_MACHINE_DESKTOP_LEAST = Object.freeze({ cpus: 2, memoryGiB: 4
 const SHARE_APP_START =
 	"To let members open a server in their browser, run it on an always-on machine and share its port with share_app. ";
 const SHARE_APP_RUN = "To let members open one in their browser, share its port with share_app. ";
+/** How long machine_start's waitSeconds may wait in one call (agent-box B1, 13 Nov 2026). A worker has no conversation to
+ * be woken in. A conversation's run may wait in place too, for about a boot (p50 15 to 23 s, p90 28 to 31 s): it holds
+ * its slot and its conversation meanwhile (one run of an agent at a time, a member's next message waits for it), so the
+ * wait is short and a machine in line answers at once; past it the run is woken when the machine runs, as before. */
+export const CLOUD_MACHINE_START_WAIT_SECONDS = Object.freeze({ worker: 300, conversation: 60 });
+const CONVERSATION_START_WAIT = `With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.conversation}) the call waits while it starts, and no model turn is spent; if it is not running yet, finish this run normally: you are woken when it runs. `;
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
@@ -175,24 +182,23 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
-	"To wake a stopped machine, pass only machine with its name. " +
+	"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait). " +
+	"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
 	SHARE_APP_START +
 	"The result says its state. When no server has room it waits in line and the result gives its place. " +
 	"When the company is out of computer hours it waits until hours are added (waitingFor COMPUTER_HOURS_EXHAUSTED); an hour after the company runs out, its running machines sleep, keeping their disks, and wake by themselves once hours are added. " +
-	"If it is not running yet, finish this run normally: you are woken when it runs. " +
+	CONVERSATION_START_WAIT +
 	"A result with refused started nothing and says why (the name is taken, too large for any server, no such machine). Keep operationKey stable after an uncertain result.";
 /** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
-export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(SHARE_APP_START, "")
-	.replace(
-		"To wake a stopped machine, pass only machine with its name.",
-		"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait).",
-	)
-	.replace(
-		"If it is not running yet, finish this run normally: you are woken when it runs.",
-		"You are a worker: nothing wakes you. With waitSeconds (1 to 300) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). " +
-			"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
-	);
+export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
+	SHARE_APP_START,
+	"",
+).replace(
+	CONVERSATION_START_WAIT,
+	`You are a worker: nothing wakes you. With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.worker}) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). ` +
+		"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry. ",
+);
 /** What a command's result says of the company folder (F3 6e-2a). */
 const FOLDER_REPORT =
 	"On a machine with the company folder, the result has companyFolder: company says whether this boot of the machine has /company (mounted, pending, or none with why); heldBack says why the output and the end are not shown yet; " +
@@ -200,7 +206,7 @@ const FOLDER_REPORT =
 	"stillNotSaved lists files it did not save but holds to try again, with why, said on every result while that lasts (moreStillNotSaved counts the rest); " +
 	"lost says why the machine lost a lost command, also on a MACHINE_COMMAND_ENDED refusal.";
 export const CLOUD_MACHINE_RUN_DESCRIPTION =
-	"Run a shell command as root on a running machine (a bash login shell in /root). It returns a durable command handle; running is not success. " +
+	"Run a shell command as root on a running machine (a bash login shell in /root). It returns a durable command handle, read once at once as machine_read reads it (nothing waits for the command): one that already ended shows its exit status and as much output as one result holds; running is not success. " +
 	"The command has no time limit unless you set timeoutMs. It keeps running after your turn ends, until it exits, you cancel it or the machine stops. " +
 	"Start servers and stacks with it too (docker compose up -d, npm run dev); on a task machine one that only waits stops when the machine sleeps, so keep a server up on an always-on machine. " +
 	SHARE_APP_RUN +
@@ -215,7 +221,7 @@ export const CLOUD_MACHINE_RUN_WORKER_DESCRIPTION = CLOUD_MACHINE_RUN_DESCRIPTIO
 );
 export const CLOUD_MACHINE_READ_DESCRIPTION =
 	"Read a machine command's retained output and status, whoever started it. Use log.nextOffset as the next byte cursor, or tail true for recent output; offset and tail cannot be combined. " +
-	"Pages may be smaller than limit. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused). " +
+	"A page shows as much as one result holds, up to about 31 KiB of plain output (less where characters need escaping); limit (4 to 32768) asks for less. Logs keep 64 MiB; limitReached means later output was dropped. running or unconfirmed is not success; lost means the machine stopped or restarted under it. After the machine moved to another server, its earlier commands have no log (refused). " +
 	FOLDER_REPORT;
 /** A worker waits for its commands within its own run. */
 export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCRIPTION} waitSeconds (1 to 300) waits until the command ends or that time passes, and answers at once when it has already ended; no model turn is spent.`;
@@ -302,7 +308,8 @@ export function cloudMachineTools(options: {
 	control: CloudCompanyPathControl;
 	operations: Pick<CloudNativeToolOperations, "execute">;
 	gateway: CloudMachineCommandGateway;
-	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. */
+	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. Any other
+	 * run may wait inside machine_start only, and less long (CLOUD_MACHINE_START_WAIT_SECONDS). */
 	worker?: boolean;
 	/** The vault (20260930705000): with it, and a gateway that runs the machine's clipboard helper, a company agent's
 	 * own run (never a worker's) is offered save_coding_value. */
@@ -377,11 +384,12 @@ export function cloudMachineTools(options: {
 			return refused(refusal, `${machine} stopped; its commands stopped with it`);
 		throw error;
 	};
-	const workStopped = () =>
-		refused(
-			"WORK_STOPPED",
-			"your work was stopped (your agent cancelled it, or the company paused work); end your run",
-		);
+	/** What a run is told when the kernel says it may no longer work: a worker's agent cancels it; a conversation's run is
+	 * stopped by a member. */
+	const stoppedText = worker
+		? "your work was stopped (your agent cancelled it, or the company paused work); end your run"
+		: "your work was stopped (a member stopped it, or the company paused work); end your run";
+	const workStopped = () => refused("WORK_STOPPED", stoppedText);
 	/** One machine's state and, with commandId, how that command stands as the executor last recorded it. */
 	const status = async (
 		machine: string,
@@ -473,31 +481,137 @@ export function cloudMachineTools(options: {
 		options.gateway.wake
 			? options.gateway.wake({ machineId: machine.machineId }, wait, signal).catch(() => false)
 			: Promise.resolve(false);
+	/** A worker waits in machine_start and machine_read; a conversation's run only in machine_start, and less long. */
+	const waitMost = worker ? CLOUD_MACHINE_START_WAIT_SECONDS.worker : CLOUD_MACHINE_START_WAIT_SECONDS.conversation;
 	const waitSecondsOf = (value: JsonValue): number => {
-		if (!worker || !Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 300)
+		if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > waitMost)
 			throw new Error("Invalid machine wait");
 		return Number(value);
 	};
-	const waitSchema = { type: "integer", minimum: 1, maximum: 300 };
-	const fits = (value: unknown): boolean =>
-		Buffer.byteLength(
-			JSON.stringify(cloudToolJsonText(value as JsonValue, 131072)).replace(
-				/[<>&\u2028\u2029]/g,
-				(c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
-			),
-		) <=
-		MAX_CLOUD_TOOL_RESULT_BYTES - CLOUD_TOOL_RESULT_RESERVE_BYTES;
+	const waitSchema = { type: "integer", minimum: 1, maximum: waitMost };
+	const fits = cloudCommandFits;
 	const receipt = (value: CloudMachineCommandReceipt, machine: string) => {
-		let shown: CloudMachineCommandReceipt = value;
-		// A handle without a preview is still a complete, honest cursor.
-		if (!fits({ machine, ...shown }))
-			shown = {
-				...shown,
-				output: "",
-				log: { ...shown.log, nextOffset: shown.log.offset },
-				truncated: shown.log.offset < shown.log.totalBytes || shown.log.limitReached,
-			};
+		// As much of a start's or a cancel's first page as fits; a handle without a preview is still a complete, honest
+		// cursor.
+		const fitted = fitCloudCommandPage(value, false, (page) => fits({ machine, ...page }));
+		const shown: CloudMachineCommandReceipt =
+			fitted && "page" in fitted
+				? fitted.page
+				: {
+						...value,
+						output: "",
+						log: { ...value.log, nextOffset: value.log.offset },
+						truncated: value.log.offset < value.log.totalBytes || value.log.limitReached,
+					};
 		return { kind: "text" as const, value: cloudToolJsonText({ machine, ...shown } as unknown as JsonValue) };
+	};
+	/** `answer` with the company folder's report the executor told on this call's reads (6e-2a), when it told one. */
+	const withFolder = (answer: CloudToolContent, folder: CloudMachineCommandFolder | undefined): CloudToolContent =>
+		folder === undefined || answer.kind !== "text"
+			? answer
+			: {
+					kind: "text",
+					value: cloudToolJsonText({
+						...(JSON.parse(answer.value) as Record<string, JsonValue>),
+						companyFolder: folder as unknown as JsonValue,
+					}),
+				};
+	/**
+	 * One page of a command's log, as much as one result holds or the read's own smaller limit: asked once and cut to fit
+	 * at an exact cursor, and asked again only for exactly the bytes that fit when the page cannot tell its cut's cursor
+	 * (fitCloudCommandPage). What the executor reports once (6e-2a) stays in `reported`, across the reads of one call,
+	 * whichever read it came on: it spends a report when it tells it. `refused`: the executor refused the read, for the
+	 * command or its machine ended.
+	 */
+	const readPage = async (
+		machine: MachineView,
+		query: CloudCodingCommandRead,
+		reported: { folder?: CloudMachineCommandFolder },
+		context: CloudToolContext,
+	): Promise<{ content: CloudToolContent; ended: boolean; refused: boolean }> => {
+		for (let limit = Number(query.limit); ; ) {
+			let read: unknown;
+			try {
+				read = await cloudToolRequest(
+					(signal) =>
+						options.gateway.read(
+							{ machineId: machine.machineId },
+							parseCloudCodingCommandRead({ ...query, limit }),
+							signal,
+						),
+					context.signal,
+					CLOUD_MACHINE_READ_MS,
+				);
+			} catch (error) {
+				return {
+					content: withFolder(commandGone(error, machine.name), reported.folder),
+					ended: true,
+					refused: true,
+				};
+			}
+			const got = parseCloudMachineCommandReceipt(read);
+			check(context);
+			reported.folder = carried(reported.folder, got.companyFolder);
+			const shown: CloudMachineCommandReceipt = reported.folder ? { ...got, companyFolder: reported.folder } : got;
+			const fitted = fitCloudCommandPage(shown, query.tail === true, (page) =>
+				fits({ machine: machine.name, ...page }),
+			);
+			if (fitted && "page" in fitted)
+				return {
+					content: {
+						kind: "text",
+						value: cloudToolJsonText({ machine: machine.name, ...fitted.page } as unknown as JsonValue),
+					},
+					// Running and unconfirmed may yet go either way (the tool's own words).
+					ended: got.state !== "running" && got.state !== "unconfirmed",
+					refused: false,
+				};
+			// Each ask is less than the page before it held, so this ends.
+			if (!fitted || fitted.ask >= limit) throw new Error("Machine command page exceeds result budget");
+			limit = fitted.ask;
+		}
+	};
+	/** A start's answer, or in its place one read of its command at once from the start of its log, as much as one result
+	 * holds, when the start shows less than a read can: on a machine with the company folder a start holds its output
+	 * back (heldBack), and a command that already ended may have printed more than a start's first page. Nothing waits
+	 * for the command: the read shows it running when it runs. A refused or failed read keeps the start's answer. */
+	const readStarted = async (
+		machine: MachineView,
+		content: CloudToolContent,
+		context: CloudToolContext,
+	): Promise<CloudToolContent> => {
+		let started: CloudMachineCommandReceipt;
+		try {
+			if (content.kind !== "text") return content;
+			const { machine: _machine, ...answer } = JSON.parse(content.value) as Record<string, unknown>;
+			started = parseCloudMachineCommandReceipt(answer);
+		} catch {
+			return content;
+		}
+		if (
+			started.companyFolder?.heldBack === undefined &&
+			!(
+				["succeeded", "failed", "cancelled", "lost"].includes(started.state) &&
+				started.log.nextOffset < started.log.totalBytes
+			)
+		)
+			return content;
+		const reported: { folder?: CloudMachineCommandFolder } = started.companyFolder
+			? { folder: started.companyFolder }
+			: {};
+		try {
+			const read = await readPage(
+				machine,
+				{ commandId: started.commandId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK },
+				reported,
+				context,
+			);
+			if (!read.refused) return read.content;
+		} catch {
+			context.signal.throwIfAborted();
+		}
+		// What a read reported once before it failed still reaches the agent (6e-2a), with the start's own answer.
+		return withFolder(content, reported.folder);
 	};
 	const closed = (
 		value: JsonValue,
@@ -543,24 +657,14 @@ export function cloudMachineTools(options: {
 				lifetime: { type: "string", enum: ["task", "always-on"] },
 				desktop: { type: "boolean" },
 				machine: machineName,
-				...(worker ? { waitSeconds: waitSchema } : {}),
+				waitSeconds: waitSchema,
 			},
 		},
 		parseArguments(value): JsonValue {
 			const input = closed(
 				value,
 				["operationKey"],
-				[
-					"name",
-					"purpose",
-					"cpus",
-					"memoryGiB",
-					"diskGiB",
-					"lifetime",
-					"desktop",
-					"machine",
-					...(worker ? ["waitSeconds"] : []),
-				],
+				["name", "purpose", "cpus", "memoryGiB", "diskGiB", "lifetime", "desktop", "machine", "waitSeconds"],
 			);
 			key(input.operationKey);
 			// The wait is how this call answers, never part of the start or its receipt.
@@ -654,7 +758,10 @@ export function cloudMachineTools(options: {
 					return { content: { kind: "json", value: result } };
 				},
 			});
-			// A worker waits while its machine starts; one waiting in line for room answers at once.
+			// A run that asks (waitSeconds) waits while its machine starts; one waiting in line for room answers at once. A
+			// conversation's run stays on the machine's list of runs to tell (the kernel's, at the start): when its wait ends
+			// first, it is woken when the machine runs, and its look that sees it running keeps it from being woken for it
+			// (20260930747000).
 			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
 			const machine = started?.machine as MachineView | undefined;
 			if (waitSeconds === undefined || machine?.state !== "starting") {
@@ -679,18 +786,13 @@ export function cloudMachineTools(options: {
 			);
 			stopWord.abort();
 			check(context);
-			// The machine was started either way: a stopped worker is told so beside it, not refused.
+			// The machine was started either way: a stopped run is told so beside it, not refused.
 			return {
 				kind: "json",
 				value: {
 					...started,
 					machine: latest,
-					...(outcome === "stopped"
-						? {
-								workStopped:
-									"your work was stopped (your agent cancelled it, or the company paused work); end your run",
-							}
-						: {}),
+					...(outcome === "stopped" ? { workStopped: stoppedText } : {}),
 				} as JsonValue,
 			};
 		},
@@ -742,7 +844,7 @@ export function cloudMachineTools(options: {
 			if (machine.state !== "running")
 				return refused("MACHINE_NOT_RUNNING", `${machine.name} is ${machine.state}`, { state: machine.state });
 			const scope = { machineId: machine.machineId };
-			return options.operations.execute({
+			const started = await options.operations.execute({
 				operation: {
 					tool: "machine_run",
 					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
@@ -807,6 +909,7 @@ export function cloudMachineTools(options: {
 					return { content: receipt(started, machine.name) };
 				},
 			});
+			return readStarted(machine, started, context);
 		},
 	};
 
@@ -822,7 +925,7 @@ export function cloudMachineTools(options: {
 				machine: machineName,
 				commandId,
 				offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
-				limit: { type: "integer", minimum: 4, maximum: 16384 },
+				limit: { type: "integer", minimum: 4, maximum: MAX_CLOUD_TOOL_RESULT_BYTES },
 				tail: { type: "boolean" },
 				...(worker ? { waitSeconds: waitSchema } : {}),
 			},
@@ -835,10 +938,15 @@ export function cloudMachineTools(options: {
 			);
 			name(input.machine);
 			const { machine, waitSeconds, ...rest } = input;
+			// Without a limit, a read asks for what one result holds; a limit asks for less, up to one result's bound.
+			const read = parseCloudCodingCommandRead(rest);
+			if (rest.limit !== undefined && Number(rest.limit) > MAX_CLOUD_TOOL_RESULT_BYTES)
+				throw new Error("Invalid coding log read");
 			return {
 				machine,
 				...(waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(waitSeconds) }),
-				...parseCloudCodingCommandRead(rest),
+				...read,
+				limit: rest.limit === undefined ? CLOUD_COMMAND_PAGE_ASK : Number(read.limit),
 			} as unknown as JsonValue;
 		},
 		async execute(value, context) {
@@ -856,49 +964,9 @@ export function cloudMachineTools(options: {
 				);
 			// What the executor reports once stays with the answer, whichever read it came on, a refusal or a stop too: it
 			// spends a report when it tells it (6e-2a).
-			let folder: CloudMachineCommandFolder | undefined;
-			const told = (answer: CloudToolContent): CloudToolContent =>
-				folder === undefined || answer.kind !== "text"
-					? answer
-					: {
-							kind: "text",
-							value: cloudToolJsonText({
-								...(JSON.parse(answer.value) as Record<string, JsonValue>),
-								companyFolder: folder as unknown as JsonValue,
-							}),
-						};
-			const page = async (): Promise<{ content: CloudToolContent; ended: boolean }> => {
-				let limit = Number(query.limit ?? 4096);
-				for (;;) {
-					let read: unknown;
-					try {
-						read = await cloudToolRequest(
-							(signal) =>
-								options.gateway.read(
-									{ machineId: machine.machineId },
-									parseCloudCodingCommandRead({ ...query, limit }),
-									signal,
-								),
-							context.signal,
-							CLOUD_MACHINE_READ_MS,
-						);
-					} catch (error) {
-						return { content: told(commandGone(error, machine.name)), ended: true };
-					}
-					const got = parseCloudMachineCommandReceipt(read);
-					check(context);
-					folder = carried(folder, got.companyFolder);
-					const shown: CloudMachineCommandReceipt = folder ? { ...got, companyFolder: folder } : got;
-					if (fits({ machine: machine.name, ...shown }))
-						return {
-							content: receipt(shown, machine.name),
-							// Running and unconfirmed may yet go either way (the tool's own words).
-							ended: got.state !== "running" && got.state !== "unconfirmed",
-						};
-					if (limit === 4) throw new Error("Machine command page exceeds result budget");
-					limit = Math.max(4, Math.floor(limit / 2));
-				}
-			};
+			const reported: { folder?: CloudMachineCommandFolder } = {};
+			const told = (answer: CloudToolContent): CloudToolContent => withFolder(answer, reported.folder);
+			const page = () => readPage(machine, query as unknown as CloudCodingCommandRead, reported, context);
 			if (waitSeconds !== undefined) {
 				// A worker waits until the executor recorded the command's end (a pass every 10 s), its machine stopped
 				// or the time passed. It looks at the kernel's status, which also says whether its work was stopped. A
@@ -927,7 +995,7 @@ export function cloudMachineTools(options: {
 				// The executor has spent what it reports once, on a read before this one, and a run that is still going can
 				// act on it, so it gets it now. A stopped run's goes with it: nothing would read it.
 				context.signal.throwIfAborted();
-				if (!folder?.notSaved?.length && !folder?.moreNotSaved) throw error;
+				if (!reported.folder?.notSaved?.length && !reported.folder?.moreNotSaved) throw error;
 				return told(
 					refused(
 						"MACHINE_READ_UNANSWERED",

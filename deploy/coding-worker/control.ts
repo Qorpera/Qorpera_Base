@@ -19,16 +19,19 @@ export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...C
 	// A member's start of a desktop (20260930714000; it was missing, as F33 of #1661 found for take-over's record).
 	"qorpera_member_machine_desktop_start_authority", "qorpera_native_binding_proven",
 	// The agent was told a member touched the shared screen (20260930734000, review r1 F4 of #1701).
-	"qorpera_machine_desktop_shared_told"]);
+	"qorpera_machine_desktop_shared_told",
+	// A member's pointer pass, read once per pass (20260930744000).
+	"qorpera_member_machine_desktop_pointer_authority"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
  * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d), and a
  * run's take-in of a test machine's reads, whose refusal of a read no longer readable moves the machine to a new disk
  * (F3 6d-3b). The code host's open (F3 5e-3b) is the same call as the first; it fails on a refusal as on any other
  * failure (`CODE_HOST_VIEW_UNAVAILABLE`). A member's read check of a machine's reads (20260930712000), whose refusal
- * hides that member's picture and nothing else. */
+ * hides that member's picture and nothing else. A member's pointer pass SQL no longer holds (replaced by a newer one,
+ * older than 10 s, a member made a viewer: 20260930744000), which the window begins again. */
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads",
-	"qorpera_folder_member_machine_reads"]);
+	"qorpera_folder_member_machine_reads", "qorpera_member_machine_desktop_pointer_authority"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
 /** A turn's lease renewal and describe (R2, 31 Oct 2026): the kernel's refusal says the lease is gone, and the executor

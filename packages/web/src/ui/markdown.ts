@@ -226,17 +226,24 @@ function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, b
 /** An agent's interface app linked in a message (`app:<name>`): a card the app answers by opening the app's own page
  * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). It is drawn plain here, as this has no company: a page's emblem
  * and "App" under the name. Once the company's apps are read it shows the app as the drawer does, its own emblem in
- * its own colour, and what the app is about in one line (app/application.ts). */
-function appCard(app: string, name: string | Node[]): HTMLElement {
+ * its own colour, and what the app is about in one line (app/application.ts).
+ * A member's note sent from an app's page (§5 "tell") opens with the same card (views/conversation.ts), with what the
+ * note is about as its line (`about`), which stays: once the apps are read, its title becomes the app's own name. */
+export function appCard(app: string, name: string | Node[], about?: string): HTMLElement {
 	return h(
 		"button",
-		{ type: "button", class: "app-card", "data-app-name": app, title: t("Open {name}", { name: app }) },
+		{
+			type: "button",
+			class: about === undefined ? "app-card" : "app-card is-note",
+			"data-app-name": app,
+			title: t("Open {name}", { name: app }),
+		},
 		h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 34)),
 		h(
 			"span",
 			{ class: "app-card-copy" },
 			h("strong", { class: "app-card-title" }, name),
-			h("small", { class: "app-card-note" }, t("App")),
+			h("small", { class: "app-card-note", title: about }, about ?? t("App")),
 		),
 		h("span", { class: "app-card-go", "aria-hidden": "true" }, icon("chevron")),
 	);

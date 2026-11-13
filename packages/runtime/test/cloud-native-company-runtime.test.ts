@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v15",
+			schema: "qorpera.hire-overlay/v16",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1619,8 +1619,9 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 		inputSchema: { required: string[] };
 	}[];
 	const list = tools.find((tool) => tool.name === "company_list");
-	// The folder core pages a folder by its last path; no listing pins a snapshot.
-	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
+	// The folder core pages a folder by its last path; no listing pins a snapshot. Since keyholes S2 (12 November 2026)
+	// depth, glob, after and limit may be left out: one level, the first 500 entries.
+	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
@@ -2525,7 +2526,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2535,9 +2536,12 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
-		"waitSeconds",
-	);
+	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
+		type: "integer",
+		minimum: 1,
+		maximum: 60,
+	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
@@ -3245,6 +3249,13 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
+	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
+	// again.
+	// On 13 November 2026 manage_code's from takes branch beside github too, and its schema says so (the import's
+	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
+	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
+	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3291,9 +3302,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"691511855979ca3e33f491db46533da241300231b0d7af8304a71ccbb2506a8e",
+		"60e06dc6f01a8bfc7658cc0d6d639cf7a13bf6a48aba46a71e7a4bdfae7c02ab",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"12b5fae5d4a4fec24ad9dbd397592d895adea0f0aea7bb54808c0e76e2169247",
+		"2c604264ac21ef49fd869d4f8b3aad9fabd21eaf41c7a3d7ac93b3ebfd6e12a4",
 	);
 });
