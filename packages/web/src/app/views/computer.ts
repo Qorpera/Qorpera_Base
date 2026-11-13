@@ -8,6 +8,7 @@ import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type {
 	MachineActAnswer,
 	MachineDesktopAction,
+	MachinePointerAnswer,
 	MachineScreenLook,
 	MachineStartAnswer,
 } from "../../cloud/machine-screens.ts";
@@ -47,6 +48,15 @@ export const KEEP_EVERY_MS = 60_000;
  * hold it 11 s past an end that was not clean) before it is dropped. */
 const BUSY_GIVE_UP_MS = 15_000;
 const BUSY_RETRY_MS = 1000;
+/** The member's pointer (20260930744000): at most one move every this long (30 a second, the executor's bound), one in
+ * flight, the newest position replacing one not sent yet. */
+const POINTER_EVERY_MS = 34;
+/** A pointer pass is begun again when less than this is left of it (it lasts 10 s). */
+const POINTER_RENEW_MS = 2500;
+/** While the member's pointer moved in the last POINTER_MOVING_MS, the window looks every POINTER_LOOK_MS (one in
+ * flight), so a hover shows soon: at the last move's end the next look is at most this far off. */
+const POINTER_LOOK_MS = 250;
+const POINTER_MOVING_MS = 1000;
 /** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
  * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
  * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
@@ -157,6 +167,8 @@ interface PageHold {
 	/** Where the picture gives the input it gathers under this hold: to this hold alone, while it is the page's (review r2
 	 * F1 of #1701: what the picture still gathers when the hold ends goes nowhere, never out shared). */
 	readonly input: MachineScreenInput;
+	/** The member's pointer under this hold (20260930744000): on a private pass of its own epoch and seat. */
+	readonly pointer: PointerLane;
 }
 
 /** The member's input on the desktop they share with the agent (20260930734000): its machine, the input not answered yet,
@@ -185,6 +197,23 @@ interface SharedInput {
 	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
 	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
 	readonly input: MachineScreenInput;
+	/** The member's pointer while this computer is shared (20260930744000): on a shared pass of this sharing's generation. */
+	readonly pointer: PointerLane;
+}
+
+/** The member's pointer under a hold or a sharing (20260930744000): the pass it moves on (from the executor, for 10 s), the
+ * newest position not sent yet (a newer one replaces it: never a queue), whether a request is on its way, when the last
+ * move went, and whether this hold's or sharing's pointer is done for (a refusal that a new pass would only repeat). */
+interface PointerLane {
+	pass: { readonly id: string; readonly until: number } | null;
+	pending: { readonly x: number; readonly y: number } | null;
+	inFlight: boolean;
+	sentAt: number;
+	done: boolean;
+}
+
+function pointerLane(): PointerLane {
+	return { pass: null, pending: null, inFlight: false, sentAt: Number.NEGATIVE_INFINITY, done: false };
 }
 
 /** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
@@ -314,6 +343,10 @@ export class ComputerPanel {
 	#listStale = true;
 	/** List reads begun so far, and the shared senders waiting for one begun after a moment (#freshList). */
 	#listReads = 0;
+	/** The member's pointer (20260930744000): the last time a move went through (the window looks sooner while it moves),
+	 * and whether the page has no pointer route (a bridge or an executor from before it: today's way, quietly). */
+	#movedAt = Number.NEGATIVE_INFINITY;
+	#pointerOff = false;
 	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
 	 * until one begun after it has answered, with the generation that stands now. */
 	#heldSince: number | undefined;
@@ -830,7 +863,10 @@ export class ComputerPanel {
 				continue;
 			}
 			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
-			const due = this.#lastLook + this.#delay;
+			// While the member's pointer moves, the window looks more often, so a hover shows (20260930744000).
+			const delay =
+				Date.now() - this.#movedAt < POINTER_MOVING_MS ? Math.min(this.#delay, POINTER_LOOK_MS) : this.#delay;
+			const due = this.#lastLook + delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
 				continue;
@@ -1059,7 +1095,11 @@ export class ComputerPanel {
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action, made) => this.#enqueue(hold, action, made) },
+			input: {
+				act: (action, made) => this.#enqueue(hold, action, made),
+				point: (at) => this.#point(hold, at),
+			},
+			pointer: pointerLane(),
 		};
 		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
@@ -1189,7 +1229,9 @@ export class ComputerPanel {
 				act: (action, made) => this.#share(shared, action, made),
 				// A press the picture dropped unfinished as this sharing ended.
 				lost: () => this.#toldLost(shared),
+				point: (at) => this.#point(shared, at),
 			},
+			pointer: pointerLane(),
 		};
 		this.#shared = shared;
 		return shared;
@@ -1211,6 +1253,8 @@ export class ComputerPanel {
 				made: joinInputs(last.made, made),
 			};
 		else sender.queue.push({ action, made });
+		// An action moves the pointer where it acts: a move not sent yet goes nowhere (20260930744000).
+		sender.pointer.pending = null;
 		if (this.#lostShown) {
 			this.#lostShown = false;
 			this.#controlNote.textContent = "";
@@ -1459,7 +1503,112 @@ export class ComputerPanel {
 			}
 		} finally {
 			sender.sending = false;
+			// Moves wait while actions go (20260930744000): once the queue is empty, the newest position goes.
+			void this.#pumpPointer(sender);
 		}
+	}
+
+	/** Where the member's own pointer is over the picture (20260930744000), for the hold or the sharing it was gathered
+	 * for, while that is the window's: the newest position replaces one not sent yet. Null (it left the picture) sends
+	 * nothing more. */
+	#point(sender: PageHold | SharedInput, at: { readonly x: number; readonly y: number } | null): void {
+		const lane = sender.pointer;
+		if (!at || lane.done || this.#pointerOff || sender.stop.signal.aborted || !this.#pointerCurrent(sender)) {
+			lane.pending = null;
+			return;
+		}
+		lane.pending = { x: at.x, y: at.y };
+		void this.#pumpPointer(sender);
+	}
+
+	/** Whether this hold or sharing is the window's own now, as for its actions. */
+	#pointerCurrent(sender: PageHold | SharedInput): boolean {
+		return "seat" in sender
+			? this.#hold === sender && this.#current(sender) && this.#pick()?.machineId === sender.machineId
+			: this.#sharingOf(sender);
+	}
+
+	/**
+	 * Sends the member's pointer (20260930744000): one request at a time, at most one move every POINTER_EVERY_MS, the
+	 * newest position only, never while an action of the same hold or sharing waits or goes (an action moves the pointer
+	 * where it acts). It begins a pass first (shared: the sharing's generation; private: the hold's epoch and seat) and
+	 * again before it runs out. A route that is not there (a bridge or an executor from before 20260930744000) turns the
+	 * pointer off for the page, quietly: the window keeps today's way, the desktop's pointer drawn in its pictures. A
+	 * refusal is told as an action's would be where it means the same; the pointer of that hold or sharing is then done.
+	 */
+	async #pumpPointer(sender: PageHold | SharedInput): Promise<void> {
+		const lane = sender.pointer;
+		const computer = this.#computer;
+		if (!computer || lane.inFlight || !lane.pending || lane.done || this.#pointerOff) return;
+		if (sender.queue.length > 0 || sender.sending || !this.#pointerCurrent(sender)) return;
+		const hold = "seat" in sender ? sender : undefined;
+		const wait = lane.sentAt + POINTER_EVERY_MS - Date.now();
+		if (wait > 0) {
+			lane.inFlight = true;
+			await new Promise((resolve) => setTimeout(resolve, wait));
+			lane.inFlight = false;
+			void this.#pumpPointer(sender);
+			return;
+		}
+		lane.inFlight = true;
+		try {
+			if (!lane.pass || lane.pass.until - Date.now() < POINTER_RENEW_MS) {
+				const shared = hold ? undefined : (sender as SharedInput);
+				const begin = hold
+					? { epoch: hold.epoch, seat: hold.seat }
+					: shared?.generation !== null && shared?.generation !== undefined
+						? { generation: shared.generation }
+						: null;
+				// A database before 20260930738000 names no generation: no pass for this sharing.
+				if (!begin) {
+					lane.done = true;
+					return;
+				}
+				const began = Date.now();
+				const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
+				if (answer.kind === "pass") lane.pass = { id: answer.pass, until: began + answer.milliseconds };
+				else this.#pointerRefused(sender, answer);
+				return;
+			}
+			const at = lane.pending;
+			lane.pending = null;
+			lane.sentAt = Date.now();
+			const answer = await computer.screens.pointer(
+				sender.machineId,
+				{ pass: lane.pass.id, x: at.x, y: at.y },
+				sender.stop.signal,
+			);
+			if (answer.kind === "moved") {
+				// The window looks sooner while the pointer moves, so a hover shows.
+				this.#movedAt = Date.now();
+				if (this.#delay > POINTER_LOOK_MS) this.#quicken();
+			} else this.#pointerRefused(sender, answer);
+		} catch {
+			// No answer (the network, a slow bridge): the newest position goes with the next move.
+		} finally {
+			lane.inFlight = false;
+			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
+		}
+	}
+
+	/** A pointer request that did not move the pointer. */
+	#pointerRefused(sender: PageHold | SharedInput, answer: MachinePointerAnswer): void {
+		const lane = sender.pointer;
+		lane.pass = null;
+		if (answer.kind === "unavailable") {
+			// No pointer route anywhere on the way: the page keeps today's way, quietly.
+			this.#pointerOff = true;
+			lane.pending = null;
+			return;
+		}
+		if (answer.kind !== "refused" || answer.code === "POINTER_PASS_ENDED") return;
+		lane.pending = null;
+		lane.done = true;
+		// Someone took the desktop since this sharing's generation, unseen: as an action's refusal, no sharing until a list
+		// read begun now names the generation that stands (20260930738000).
+		if (answer.code === "DESKTOP_HELD_SINCE" && !("seat" in sender)) this.#heldSince = this.#listReads;
+		this.#listStale = true;
+		this.#quicken();
 	}
 
 	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at

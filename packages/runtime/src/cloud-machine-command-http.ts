@@ -170,6 +170,8 @@ export function isCloudMachineScreenRefusal(code: unknown): code is CloudMachine
 export const CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT = 12 * 1024 * 1024;
 /** How long a caller gives a screen: the executor's helper, its folder release, and the way back. */
 const SCREEN_DEADLINE_MS = 30000;
+/** A pointer move between executors: a newer one replaces it, so it is never worth waiting long for. */
+const POINTER_DEADLINE_MS = 3000;
 
 // /v1/machine-commands/member-screen (20260930712000): a member's look at a desktop, sent once by the executor that took
 // the member's request (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on the peer listener
@@ -448,6 +450,105 @@ export function parseCloudMemberMachineStartAnswer(
 	)
 		throw new Error(ERROR);
 	return Object.freeze({ outcome: answer.outcome });
+}
+
+// /v1/machine-commands/member-pointer (20260930744000): a member's pointer move, sent by the executor that took it
+// (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on the peer listener only. It carries the
+// pointer pass SQL gave the member (qorpera_member_machine_desktop_pointer_begin) and where the pointer goes, in the
+// screen's own pixels: the receiving executor reads SQL once per pass (kept in its memory until the pass runs out) and
+// moves the pointer locally. No SQL, row, receipt or log line per move. The answer says whether the pointer moved or the
+// move was dropped (the desktop busy with an action, or moves too fast): a dropped move is never queued.
+export const CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA = "qorpera.member-machine-pointer-http/v1";
+export const CLOUD_MEMBER_MACHINE_POINTER_SCHEMA = "qorpera.member-machine-pointer-answer/v1";
+/** A pointer position on a screen of at most 3840 x 2160 (`desktop size`). */
+export const CLOUD_MEMBER_MACHINE_POINTER_MAX_X = 3839;
+export const CLOUD_MEMBER_MACHINE_POINTER_MAX_Y = 2159;
+export interface CloudMemberMachinePointerPeerRequest {
+	readonly schema: typeof CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA;
+	readonly passId: string;
+	readonly x: number;
+	readonly y: number;
+}
+/** A move's end: the pointer was given the position (`moved`), or the move was dropped. */
+export interface CloudMemberMachinePointerMove {
+	readonly moved: boolean;
+}
+/** Why a member's pointer does not move, sent back as 409 with its code: the pass's own refusals as SQL gives them (the
+ * machine not running, a disk the member may not see, too small, someone typing privately, someone who typed privately
+ * since the window last knew it, the member's own private hold ended), the screen off, the machine restarted, an image
+ * without what moves the pointer, and a pass this executor does not hold or that ran out (POINTER_PASS_ENDED: begin
+ * another). */
+export const CLOUD_MEMBER_MACHINE_POINTER_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_HELD_SINCE",
+	"DESKTOP_CONTROL_ENDED",
+	"DESKTOP_NOT_RUNNING",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"POINTER_PASS_ENDED",
+] as const;
+export type CloudMemberMachinePointerRefusalCode = (typeof CLOUD_MEMBER_MACHINE_POINTER_REFUSALS)[number];
+export class CloudMemberMachinePointerRefusal extends Error {
+	readonly code: CloudMemberMachinePointerRefusalCode;
+	constructor(code: CloudMemberMachinePointerRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMemberMachinePointerRefusal(code: unknown): code is CloudMemberMachinePointerRefusalCode {
+	return (CLOUD_MEMBER_MACHINE_POINTER_REFUSALS as readonly unknown[]).includes(code);
+}
+/** A pointer position: whole pixels from the screen's top left, within the largest screen. */
+export function isCloudMemberMachinePointerPosition(x: unknown, y: unknown): boolean {
+	return (
+		typeof x === "number" &&
+		typeof y === "number" &&
+		Number.isInteger(x) &&
+		Number.isInteger(y) &&
+		x >= 0 &&
+		y >= 0 &&
+		x <= CLOUD_MEMBER_MACHINE_POINTER_MAX_X &&
+		y <= CLOUD_MEMBER_MACHINE_POINTER_MAX_Y
+	);
+}
+export function parseCloudMemberMachinePointerPeerRequest(value: unknown): CloudMemberMachinePointerPeerRequest {
+	const input = record(value, ["schema", "passId", "x", "y"]);
+	if (
+		input.schema !== CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA ||
+		typeof input.passId !== "string" ||
+		!UUID.test(input.passId) ||
+		!isCloudMemberMachinePointerPosition(input.x, input.y)
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA,
+		passId: input.passId,
+		x: input.x as number,
+		y: input.y as number,
+	});
+}
+/** The peer's JSON answer to exactly this request. */
+export function cloudMemberMachinePointerAnswer(
+	request: CloudMemberMachinePointerPeerRequest,
+	move: CloudMemberMachinePointerMove,
+): { schema: string; passId: string; moved: boolean } {
+	return { schema: CLOUD_MEMBER_MACHINE_POINTER_SCHEMA, passId: request.passId, moved: move.moved };
+}
+export function parseCloudMemberMachinePointerAnswer(
+	request: CloudMemberMachinePointerPeerRequest,
+	value: unknown,
+): CloudMemberMachinePointerMove {
+	const answer = record(value, ["schema", "passId", "moved"]);
+	if (
+		answer.schema !== CLOUD_MEMBER_MACHINE_POINTER_SCHEMA ||
+		answer.passId !== request.passId ||
+		typeof answer.moved !== "boolean"
+	)
+		throw new Error(ERROR);
+	return Object.freeze({ moved: answer.moved });
 }
 
 /** Host-side: the fixed gateway to the executor of the machine's node. */
@@ -1045,6 +1146,12 @@ export function createHttpMemberMachineScreenPeer(options: {
 	): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000), sent once; its refusal comes back as the same refusal. */
 	memberStart(request: { startId: string }, signal: AbortSignal): Promise<CloudMemberMachineStart>;
+	/** A member's pointer move (20260930744000), sent once and never again (a newer one replaces it); its refusal comes
+	 * back as the same refusal. */
+	memberPointer(
+		request: { passId: string; x: number; y: number },
+		signal: AbortSignal,
+	): Promise<CloudMemberMachinePointerMove>;
 } {
 	const base = origin(options.url, options.allowLoopback ?? false);
 	if (!validToken(options.token)) throw new Error(ERROR);
@@ -1211,6 +1318,61 @@ export function createHttpMemberMachineScreenPeer(options: {
 				throw new Error(ERROR);
 			}
 		},
+		memberPointer: async (input: { passId: string; x: number; y: number }, signal: AbortSignal) => {
+			try {
+				const admitted = parseCloudMemberMachinePointerPeerRequest({
+					schema: CLOUD_MEMBER_MACHINE_POINTER_HTTP_SCHEMA,
+					passId: input.passId,
+					x: input.x,
+					y: input.y,
+				});
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/member-pointer`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+							body: JSON.stringify(admitted),
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown };
+							if (isCloudMemberMachinePointerRefusal(code)) throw new CloudMemberMachinePointerRefusal(code);
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMemberMachinePointerAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							),
+						);
+					},
+					POINTER_DEADLINE_MS,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMemberMachinePointerRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
 	});
 }
 
@@ -1265,6 +1427,12 @@ export interface CloudMachineCommandServiceOptions {
 	/** A member's start of the desktop (20260930714000), on the peer listener only: authorized in SQL and run on this
 	 * node; a refusal is a CloudMemberMachineStartRefusal. */
 	memberStart?(request: CloudMemberMachineStartPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
+	/** A member's pointer move (20260930744000), on the peer listener only: its pass read in SQL once and kept, and the
+	 * pointer moved on this node; a refusal is a CloudMemberMachinePointerRefusal. */
+	memberPointer?(
+		request: CloudMemberMachinePointerPeerRequest,
+		signal: AbortSignal,
+	): Promise<CloudMemberMachinePointerMove>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

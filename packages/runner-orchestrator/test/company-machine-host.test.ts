@@ -21,6 +21,8 @@ import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
+	COMPANY_MACHINE_MEMBER_POINTER,
+	COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
 	COMPANY_MACHINE_MEMBER_START,
 	COMPANY_MACHINE_MEMBER_TYPE,
 	COMPANY_MACHINE_SCREEN_HELPER,
@@ -4080,7 +4082,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		const [project, name, given] = pipe.mock.calls[0]!;
 		expect(project).toBe("machines");
 		expect(name).toBe(lxdCompanyMachineName(id(6)));
-		expect(given.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, id(7), "look"]);
+		// The pointer drawn: no member's own pointer moved this desktop (20260930744000).
+		expect(given.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, id(7), "look", "drawn"]);
 		// Nothing on stdin, no environment, the picture's own bound, no stderr kept.
 		expect(given.stdin).toBeUndefined();
 		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 8 * 1024 * 1024, stderrTailBytes: 0 });
@@ -4089,7 +4092,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		expect(f.calls[0]?.args).toEqual({ p_placement_id: id(6), p_generation: 4, p_user_id: id(21) });
 		// The member's word within 30 minutes: the desktop's idle stop is put off.
 		await f.host.memberLook(look(id(7), true), f.signal);
-		expect(pipe.mock.calls[1]![2].command.at(-1)).toBe("keep");
+		expect(pipe.mock.calls[1]![2].command.at(-2)).toBe("keep");
 		// On SQL's boot only; scrot there; the desktop's unit active and its display answering; only `keep` touches the
 		// desktop's note, and never makes one; the pointer drawn; no helper of the image, nothing started.
 		for (const part of [
@@ -4099,6 +4102,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			"|| exit 95",
 			'if [ "$1" = keep ]; then touch -c /run/qorpera-desktop/last-use; fi',
 			'scrot --pointer --overwrite --silent "$f"',
+			// The member whose own pointer moves the desktop sees no drawn one (20260930744000).
+			'if [ "$2" = plain ]; then DISPLAY=:1 scrot --overwrite --silent "$f"',
 		])
 			expect(COMPANY_MACHINE_MEMBER_LOOK).toContain(part);
 		expect(COMPANY_MACHINE_MEMBER_LOOK).not.toMatch(/desktop start|systemctl start|cloud-machine-screen|\/opt\//);
@@ -4355,6 +4360,233 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			expect(readdirSync(view).sort()).toEqual(["look-222.png", "other.png"]);
 		},
 	);
+});
+
+describe("a member's pointer on a desktop (20260930744000)", () => {
+	const png = () =>
+		Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			(() => {
+				const ihdr = Buffer.alloc(25);
+				ihdr.writeUInt32BE(13, 0);
+				ihdr.write("IHDR", 4, "latin1");
+				ihdr.writeUInt32BE(1600, 8);
+				ihdr.writeUInt32BE(1000, 12);
+				ihdr.set([8, 6, 0, 0, 0], 16);
+				return ihdr;
+			})(),
+			Buffer.alloc(64, 7),
+		]);
+	const move = (
+		change: Partial<{
+			x: number;
+			y: number;
+			generation: number;
+			private: boolean;
+			bootId: string;
+			userId: string;
+		}> = {},
+	) => ({
+		placementId: id(6),
+		bootId: id(7),
+		userId: id(21),
+		generation: 4,
+		private: false,
+		x: 812,
+		y: 443,
+		...change,
+	});
+	/** A mover's run as the machine sees it: the lines its stdin gave, and how the test ends it (its exit). */
+	interface Run {
+		request: LxdExecPipeRequest;
+		signal: AbortSignal;
+		lines: string[];
+		end(exitCode: number): void;
+	}
+	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; a look answers a picture; an agent's action
+	 * holds until released. */
+	async function piped() {
+		const f = await fixture();
+		const runs: Run[] = [];
+		const looks: LxdExecPipeRequest[] = [];
+		let releaseAction = () => {};
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (given.command[2] === COMPANY_MACHINE_MEMBER_POINTER) {
+				let finish: (exitCode: number) => void = () => {};
+				const ended = new Promise<number>((resolve) => {
+					finish = resolve;
+				});
+				const run: Run = { request: given, signal, lines: [], end: (exitCode) => finish(exitCode) };
+				runs.push(run);
+				void (async () => {
+					for await (const chunk of given.stdin as AsyncIterable<Uint8Array>)
+						run.lines.push(Buffer.from(chunk).toString("ascii"));
+					finish(0);
+				})();
+				signal.addEventListener("abort", () => finish(137), { once: true });
+				return { exitCode: await ended, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			if (given.command[2] === COMPANY_MACHINE_MEMBER_LOOK) {
+				looks.push(given);
+				return { exitCode: 0, stdout: png(), stderrTail: Buffer.alloc(0) };
+			}
+			await new Promise<void>((resolve) => {
+				releaseAction = resolve;
+			});
+			// The helper's own end (another boot, 97): the action ended cleanly, so the desktop is free at once.
+			return { exitCode: 97, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, runs, looks, release: () => releaseAction() };
+	}
+	const settle = async () => {
+		for (let n = 0; n < 5; n++) await new Promise((resolve) => setImmediate(resolve));
+	};
+
+	it("moves the pointer through one held-open mover, the newest position only, with no SQL, receipt or marker per move", async () => {
+		const { f, pipe, runs } = await piped();
+		expect(f.host.memberPointer(move({ x: 10, y: 20 }))).toEqual({ moved: true });
+		expect(f.host.memberPointer(move({ x: 11, y: 21 }))).toEqual({ moved: true });
+		expect(f.host.memberPointer(move({ x: 12, y: 22 }))).toEqual({ moved: true });
+		await settle();
+		expect(runs).toHaveLength(1);
+		// The three came before the mover read: the newest alone went.
+		expect(runs[0]!.lines).toEqual(["12 22\n"]);
+		expect(f.host.memberPointer(move({ x: 13, y: 23 }))).toEqual({ moved: true });
+		await settle();
+		expect(runs[0]!.lines).toEqual(["12 22\n", "13 23\n"]);
+		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(f.methods()).toEqual([]);
+		// As root on SQL's boot, the fixed script and its program, nothing else; nothing comes back but its exit.
+		const [project, name, given] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(given.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_MEMBER_POINTER,
+			id(7),
+			COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
+		]);
+		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 64, stderrTailBytes: 0 });
+		for (const part of [
+			'[ "$boot" = "$0" ]; } || exit 97',
+			"command -v python3 >/dev/null 2>&1 || exit 98",
+			"systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo",
+			"|| exit 95",
+			'exec python3 -c "$1"',
+		])
+			expect(COMPANY_MACHINE_MEMBER_POINTER).toContain(part);
+		// It moves the pointer and touches the idle clock; it reads nothing but two short numbers, starts nothing.
+		for (const part of [
+			"XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
+			"word.isdigit() and len(word) <= 4",
+			"os.utime('/run/qorpera-desktop/last-use')",
+			"if now - touched >= 30:",
+		])
+			expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).toContain(part);
+		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|open\(/);
+		runs[0]!.end(0);
+	});
+
+	it("drops a move, never queues it, while an action holds the desktop, and moves again after it", async () => {
+		const { f, runs, release } = await piped();
+		const acting = f.host.screen(
+			{
+				placementId: id(6),
+				bootId: id(7),
+				runId: id(9),
+				desktopGeneration: 4,
+				request: {
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: id(8),
+					action: { type: "click", x: 1, y: 1 },
+					settleMs: 0,
+					look: false,
+				},
+			},
+			f.signal,
+		);
+		await settle();
+		expect(f.host.memberPointer(move({ x: 30, y: 40 }))).toEqual({ moved: false });
+		await settle();
+		expect(runs).toHaveLength(0);
+		release();
+		await acting.catch(() => undefined);
+		// The action ended: the desktop is free again.
+		expect(f.host.memberPointer(move({ x: 31, y: 41 }))).toEqual({ moved: true });
+		await settle();
+		expect(runs[0]!.lines).toEqual(["31 41\n"]);
+		runs[0]!.end(0);
+	});
+
+	it("refuses a pass of an older lease generation once the host saw a newer one, a shared and a private one", async () => {
+		const { f, runs } = await piped();
+		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ moved: true });
+		// A member's look read at generation 6 (someone took the desktop over since).
+		await f.host.memberLook(
+			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 6 },
+			f.signal,
+		);
+		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ refused: "DESKTOP_HELD_SINCE" });
+		expect(f.host.memberPointer(move({ generation: 5, private: true }))).toEqual({
+			refused: "DESKTOP_CONTROL_ENDED",
+		});
+		// The holder's own pass at that generation moves.
+		expect(f.host.memberPointer(move({ generation: 6, private: true, userId: id(22) }))).toEqual({ moved: true });
+		for (const run of runs) run.end(0);
+	});
+
+	it("shows the member whose own pointer moves the desktop no drawn pointer, and everyone else the drawn one", async () => {
+		const { f, looks, runs } = await piped();
+		const look = (userId: string) =>
+			f.host.memberLook(
+				{ placementId: id(6), bootId: id(7), userId, keepDesktop: false, desktopGeneration: 4 },
+				f.signal,
+			);
+		await look(id(21));
+		expect(looks.at(-1)?.command.at(-1)).toBe("drawn");
+		f.host.memberPointer(move());
+		await look(id(21));
+		expect(looks.at(-1)?.command.at(-1)).toBe("plain");
+		await look(id(22));
+		expect(looks.at(-1)?.command.at(-1)).toBe("drawn");
+		for (const run of runs) run.end(0);
+	});
+
+	it("tells why a mover ended (the screen off, another boot, no X) for a moment, and starts a new one for a new boot", async () => {
+		const { f, runs } = await piped();
+		f.host.memberPointer(move());
+		await settle();
+		runs[0]!.end(95);
+		await settle();
+		expect(f.host.memberPointer(move())).toEqual({ refused: "DESKTOP_NOT_RUNNING" });
+		// Another boot: a new mover, the old one stopped.
+		expect(f.host.memberPointer(move({ bootId: id(17) }))).toEqual({ moved: true });
+		await settle();
+		expect(runs).toHaveLength(2);
+		expect(runs[1]!.request.command[3]).toBe(id(17));
+		expect(f.host.memberPointer(move({ bootId: id(27) }))).toEqual({ moved: true });
+		await settle();
+		expect(runs[1]!.signal.aborted).toBe(true);
+		for (const run of runs) run.end(0);
+	});
+
+	it("takes only a move of whole pixels within the largest screen, on ids", async () => {
+		const { f } = await piped();
+		for (const wrong of [
+			{ x: -1 },
+			{ x: 3840 },
+			{ y: 2160 },
+			{ x: 1.5 },
+			{ generation: -1 },
+			{ bootId: "boot" },
+			{ private: "no" as unknown as boolean },
+		])
+			expect(() => f.host.memberPointer(move(wrong)), JSON.stringify(wrong)).toThrow(
+				"COMPANY_MACHINE_MEMBER_POINTER_INVALID",
+			);
+	});
 });
 
 describe("a member's action on a desktop (20260930713000)", () => {

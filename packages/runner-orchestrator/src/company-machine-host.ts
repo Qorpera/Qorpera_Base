@@ -158,10 +158,75 @@ export const COMPANY_MACHINE_MEMBER_LOOK = [
 	"fi",
 	'f="$d/look-$$.png"',
 	"trap 'rm -f \"$f\"' EXIT",
-	'DISPLAY=:1 scrot --pointer --overwrite --silent "$f" 2>/dev/null || exit 1',
+	// The member who moves the pointer with their own sees no second, drawn one (20260930744000: `$2` = plain); everyone
+	// else's picture shows where it is.
+	'if [ "$2" = plain ]; then DISPLAY=:1 scrot --overwrite --silent "$f" 2>/dev/null || exit 1;',
+	'else DISPLAY=:1 scrot --pointer --overwrite --silent "$f" 2>/dev/null || exit 1; fi',
 	`s=$(stat -c %s "$f" 2>/dev/null) && [ -n "$s" ] && [ "$s" -le ${SCREEN_PNG_BYTES} ] || exit 94`,
 	'cat "$f"',
 ].join("\n");
+/** The pointer's mover (20260930744000): one held-open X connection per desktop while a member's pointer moves, run as
+ * root on exactly the boot SQL named (`$0`, else 97), with what the image has (python3, libX11, libXtst; else 98) and the
+ * desktop's display answering (else 95). It reads `X Y` lines on stdin and moves the pointer there (XTest), flushing
+ * each; nothing else is ever read or done: a line that is not two whole numbers of at most four digits is skipped. It
+ * touches the desktop's idle clock at most every 30 s (a member at the desktop). It answers nothing and prints nothing.
+ * Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, 0.004 of a core for the mover at 60
+ * moves a second, no process per move. It ends when its stdin ends (the host closes it after MEMBER_POINTER_IDLE_MS
+ * without a move) or LXD kills it. */
+export const COMPANY_MACHINE_MEMBER_POINTER = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"command -v python3 >/dev/null 2>&1 || exit 98",
+	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
+	'exec python3 -c "$1"',
+].join("\n");
+/** The mover's program (COMPANY_MACHINE_MEMBER_POINTER's `$1`). */
+export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
+	"import ctypes, os, sys, time",
+	"try:",
+	"    x11 = ctypes.CDLL('libX11.so.6')",
+	"    xtest = ctypes.CDLL('libXtst.so.6')",
+	"except OSError:",
+	"    sys.exit(98)",
+	"x11.XOpenDisplay.restype = ctypes.c_void_p",
+	"x11.XOpenDisplay.argtypes = [ctypes.c_char_p]",
+	"x11.XFlush.argtypes = [ctypes.c_void_p]",
+	"xtest.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]",
+	"display = x11.XOpenDisplay(b':1')",
+	"if not display:",
+	"    sys.exit(95)",
+	"touched = 0.0",
+	"for line in sys.stdin.buffer:",
+	"    words = line.split()",
+	"    if len(words) != 2 or not all(word.isdigit() and len(word) <= 4 for word in words):",
+	"        continue",
+	"    xtest.XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
+	"    x11.XFlush(display)",
+	"    now = time.monotonic()",
+	"    if now - touched >= 30:",
+	"        touched = now",
+	"        try:",
+	"            os.utime('/run/qorpera-desktop/last-use')",
+	"        except OSError:",
+	"            pass",
+].join("\n");
+/** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
+const MEMBER_POINTER_IDLE_MS = 20000;
+/** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
+ * move starts another. */
+const MEMBER_POINTER_FAILED_MS = 3000;
+/** The member whose pointer moved a desktop within this long sees their own pointer only (their looks are plain). */
+const MEMBER_POINTER_PLAIN_MS = 10000;
+const MEMBER_POINTER_EXITS: Readonly<
+	Record<number, "DESKTOP_NOT_RUNNING" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN">
+> = Object.freeze({ 95: "DESKTOP_NOT_RUNNING", 97: "MACHINE_BOOT_CHANGED", 98: "MACHINE_IMAGE_WITHOUT_SCREEN" });
+/** A desktop's mover (20260930744000): the boot it runs on, the newest position not given yet (a newer move replaces
+ * it: never a queue), how to wake its stdin, and how it stops. */
+interface PointerMover {
+	readonly bootId: string;
+	readonly stop: AbortController;
+	pending: { x: number; y: number } | null;
+	wake: () => void;
+}
 /** A member's look takes 42 ms on the machine; this bounds a busy one, inside the member's request of 30 s. */
 const MEMBER_LOOK_MS = 6000;
 /** The script's exits besides 0: the screen is off (95), another boot (97), an image without scrot (98). */
@@ -670,6 +735,31 @@ export interface CompanyMachineMemberAct {
 export type CompanyMachineMemberActOutcome =
 	| { readonly done: { readonly exitCode: number | null } }
 	| { readonly refused: string };
+/** A member's pointer move on a desktop of this node (20260930744000), on the pass SQL gave (read once, kept by the
+ * executor): where it runs, whose pass it is, the lease generation that stood at its read (the shared pass's generation,
+ * or the private holder's seat), and where the pointer goes, in the screen's own pixels. */
+export interface CompanyMachineMemberPointer {
+	placementId: string;
+	bootId: string;
+	userId: string;
+	generation: number;
+	private: boolean;
+	x: number;
+	y: number;
+}
+/** The pointer was given the position (`moved`), or the move was dropped (an action holds the desktop); or why the
+ * pass moves nothing any more: someone took the desktop since its generation (shared: DESKTOP_HELD_SINCE; private:
+ * DESKTOP_CONTROL_ENDED), the screen is off, the machine restarted, or its image cannot move the pointer. */
+export type CompanyMachineMemberPointerOutcome =
+	| { readonly moved: boolean }
+	| {
+			readonly refused:
+				| "DESKTOP_HELD_SINCE"
+				| "DESKTOP_CONTROL_ENDED"
+				| "DESKTOP_NOT_RUNNING"
+				| "MACHINE_BOOT_CHANGED"
+				| "MACHINE_IMAGE_WITHOUT_SCREEN";
+	  };
 /** A member's start of the desktop (20260930714000): the machine's placement and boot, and the start SQL served. */
 export interface CompanyMachineMemberStart {
 	placementId: string;
@@ -1005,6 +1095,21 @@ export class LxdCompanyMachineHost {
 	 * not. One executor process serves every screen call of a placement on its node (a peer's forwarded one too), so
 	 * this is the whole of it; a restarted executor starts with none. */
 	readonly #screenBusy = new Map<string, "acting" | number>();
+	/** Per placement (20260930744000): the newest lease generation this host saw, from every look, action and pointer pass
+	 * it served; a pointer pass of an older one moves nothing (a private hold began since). */
+	readonly #generations = new Map<string, number>();
+	/** Per placement: its pointer's mover while a member's pointer moves, the last mover's failure (its boot, reason and
+	 * when), and who moved its pointer when (their looks show no drawn pointer). */
+	readonly #movers = new Map<string, PointerMover>();
+	readonly #moverFailed = new Map<
+		string,
+		{
+			bootId: string;
+			refused: "DESKTOP_NOT_RUNNING" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN";
+			at: number;
+		}
+	>();
+	readonly #pointerUsers = new Map<string, Map<string, number>>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
@@ -1983,6 +2088,12 @@ export class LxdCompanyMachineHost {
 		this.#starting.delete(e.placementId);
 		this.#folders.delete(e.placementId);
 		this.#desktopWords.delete(e.placementId);
+		// Its pointer (20260930744000): the mover ends with the instance anyway; what was known of it goes.
+		this.#movers.get(e.placementId)?.stop.abort();
+		this.#movers.delete(e.placementId);
+		this.#moverFailed.delete(e.placementId);
+		this.#pointerUsers.delete(e.placementId);
+		this.#generations.delete(e.placementId);
 		// Its instance deleted and the placement released, no boot of it runs or is read again: its ends go with it. Only
 		// here: after a power-off, or the next boot's mark, a read let in for the boot before may still come.
 		for (const key of this.#endings.keys()) if (key.startsWith(`${e.placementId}/`)) this.#endings.delete(key);
@@ -2617,6 +2728,7 @@ export class LxdCompanyMachineHost {
 			run.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
+		this.#seeGeneration(run.placementId, run.desktopGeneration);
 		const acting = run.request.action !== null && run.request.action !== undefined;
 		if (acting && !this.#holdDesktop(run.placementId)) return { refused: "DESKTOP_BUSY" };
 		let ended = false;
@@ -2808,6 +2920,7 @@ export class LxdCompanyMachineHost {
 			(typeof text === "string" && (text.length === 0 || [...text].length > 500))
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_ACT_INVALID");
+		this.#seeGeneration(act.placementId, act.seat);
 		const pasted = typeof text === "string" && PASTED.test(text);
 		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
 		// Holding the desktop, the action's seat is asked again (round 23 of #1661): an action authorized before a hand-back
@@ -2887,6 +3000,136 @@ export class LxdCompanyMachineHost {
 	}
 
 	/**
+	 * A member's pointer move on a desktop of this node (20260930744000), on the pass SQL gave. It answers at once and
+	 * waits for nothing: the position goes to the desktop's mover (one held-open X connection per desktop while a member's
+	 * pointer moves, COMPANY_MACHINE_MEMBER_POINTER), replacing a position not given yet, so a move never waits behind a
+	 * move. No receipt, no run-once marker, no SQL and no log line.
+	 *
+	 * Refused once this host saw a newer lease generation than the pass's (a take-over since, which every look, action and
+	 * pass it serves tells it: the private holder's own window looks before it can type). Dropped, never queued, while an
+	 * action holds the desktop (#screenBusy: an agent's or a member's, and the grace after one that did not end cleanly), so
+	 * no move ever lands between an action's own move and its click. A move is never an action: it holds nothing, so it
+	 * delays no action and is never refused DESKTOP_BUSY.
+	 */
+	memberPointer(move: CompanyMachineMemberPointer): CompanyMachineMemberPointerOutcome {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_POINTER_UNAVAILABLE");
+		if (
+			![move.placementId, move.bootId, move.userId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(move.generation) ||
+			move.generation < 0 ||
+			typeof move.private !== "boolean" ||
+			![move.x, move.y].every((value) => Number.isInteger(value) && value >= 0) ||
+			move.x > SCREEN_MAX_WIDTH - 1 ||
+			move.y > SCREEN_MAX_HEIGHT - 1
+		)
+			throw new Error("COMPANY_MACHINE_MEMBER_POINTER_INVALID");
+		this.#seeGeneration(move.placementId, move.generation);
+		if ((this.#generations.get(move.placementId) ?? 0) > move.generation)
+			return { refused: move.private ? "DESKTOP_CONTROL_ENDED" : "DESKTOP_HELD_SINCE" };
+		const now = this.#options.now ?? Date.now;
+		const failed = this.#moverFailed.get(move.placementId);
+		if (failed?.bootId === move.bootId && now() - failed.at < MEMBER_POINTER_FAILED_MS)
+			return { refused: failed.refused };
+		// The member is at the desktop: their own looks show no drawn pointer.
+		let users = this.#pointerUsers.get(move.placementId);
+		if (!users) {
+			users = new Map();
+			this.#pointerUsers.set(move.placementId, users);
+		}
+		users.set(move.userId, now());
+		if (this.#acting(move.placementId)) return { moved: false };
+		let mover = this.#movers.get(move.placementId);
+		if (mover && mover.bootId !== move.bootId) {
+			mover.stop.abort();
+			this.#movers.delete(move.placementId);
+			mover = undefined;
+		}
+		mover ??= this.#startMover(pipe, move.placementId, move.bootId);
+		mover.pending = { x: move.x, y: move.y };
+		mover.wake();
+		return { moved: true };
+	}
+	/** Whether an action holds the placement's desktop now, or one that did not end cleanly may still act. */
+	#acting(placementId: string): boolean {
+		const now = this.#options.now ?? Date.now;
+		const busy = this.#screenBusy.get(placementId);
+		return busy === "acting" || (typeof busy === "number" && busy > now());
+	}
+	/** The newest lease generation of a placement this host saw. */
+	#seeGeneration(placementId: string, generation: number): void {
+		if (generation > (this.#generations.get(placementId) ?? -1)) this.#generations.set(placementId, generation);
+	}
+	/** Whether this member's own pointer moved the desktop lately (their looks are plain). */
+	#movesPointer(placementId: string, userId: string): boolean {
+		const now = this.#options.now ?? Date.now;
+		const at = this.#pointerUsers.get(placementId)?.get(userId);
+		return at !== undefined && now() - at < MEMBER_POINTER_PLAIN_MS;
+	}
+	/** Starts a desktop's mover: its stdin gives the newest position each time the program has read the last one, and
+	 * nothing while an action holds the desktop; it ends after MEMBER_POINTER_IDLE_MS without a move. */
+	#startMover(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		placementId: string,
+		bootId: string,
+	): PointerMover {
+		const mover: PointerMover = { bootId, stop: new AbortController(), pending: null, wake: () => {} };
+		this.#movers.set(placementId, mover);
+		const acting = () => this.#acting(placementId);
+		async function* positions(): AsyncGenerator<Uint8Array> {
+			while (!mover.stop.signal.aborted) {
+				const next = mover.pending;
+				if (next) {
+					mover.pending = null;
+					// Never while an action holds the desktop: the position is dropped, not kept for after.
+					if (!acting()) yield Buffer.from(`${next.x} ${next.y}\n`, "ascii");
+					continue;
+				}
+				const idle = await new Promise<boolean>((resolve) => {
+					// The timers' own (this module's setTimeout is the promise one).
+					const timer = globalThis.setTimeout(() => resolve(true), MEMBER_POINTER_IDLE_MS);
+					const stopped = () => {
+						globalThis.clearTimeout(timer);
+						resolve(true);
+					};
+					mover.stop.signal.addEventListener("abort", stopped, { once: true });
+					mover.wake = () => {
+						globalThis.clearTimeout(timer);
+						mover.stop.signal.removeEventListener("abort", stopped);
+						resolve(false);
+					};
+				});
+				mover.wake = () => {};
+				if (idle) return;
+			}
+		}
+		const now = this.#options.now ?? Date.now;
+		void pipe(
+			this.#policy.project,
+			lxdCompanyMachineName(placementId),
+			{
+				command: ["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_POINTER, bootId, COMPANY_MACHINE_MEMBER_POINTER_PROGRAM],
+				environment: {},
+				cwd: "/",
+				stdin: positions(),
+				maxStdoutBytes: 64,
+				stderrTailBytes: 0,
+			},
+			mover.stop.signal,
+		)
+			.then((result) => {
+				const refused = MEMBER_POINTER_EXITS[result.exitCode];
+				if (refused) this.#moverFailed.set(placementId, { bootId, refused, at: now() });
+			})
+			.catch(() => undefined)
+			.finally(() => {
+				mover.stop.abort();
+				if (this.#movers.get(placementId) === mover) this.#movers.delete(placementId);
+			});
+		return mover;
+	}
+
+	/**
 	 * A member's look at a desktop on this node (20260930712000): COMPANY_MACHINE_MEMBER_LOOK as root on exactly the boot
 	 * SQL named, with no helper of the image and nothing on stdin. Its stdout (the PNG) is read within its bound and never
 	 * logged, its stderr dropped; LXD records no output. It acts on nothing and starts nothing: a desktop that is off
@@ -2916,11 +3159,20 @@ export class LxdCompanyMachineHost {
 			look.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		this.#seeGeneration(look.placementId, look.desktopGeneration);
 		const result = await pipe(
 			this.#policy.project,
 			lxdCompanyMachineName(look.placementId),
 			{
-				command: ["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, look.bootId, look.keepDesktop ? "keep" : "look"],
+				command: [
+					"/bin/sh",
+					"-c",
+					COMPANY_MACHINE_MEMBER_LOOK,
+					look.bootId,
+					look.keepDesktop ? "keep" : "look",
+					// The member whose own pointer moves this desktop sees no drawn one (20260930744000).
+					this.#movesPointer(look.placementId, look.userId) ? "plain" : "drawn",
+				],
 				environment: {},
 				cwd: "/",
 				maxStdoutBytes: SCREEN_PNG_BYTES,

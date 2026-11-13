@@ -152,6 +152,10 @@ function setup(
 		/** The list names each machine's lease generation (the seats below) to a member who may act (20260930738000); off,
 		 * it is a database before that migration. */
 		listGenerations: true,
+		/** The pointer route (20260930744000): there, or missing (a bridge or an executor before it, 404); and what its
+		 * requests answer, in turn (a refusal's code; then a pass, or moved). */
+		pointerRoute: "there" as "there" | "missing",
+		pointerAnswers: [] as string[],
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
 	/** A machine's row as the database lists it to the caller: their epoch, and the lease generation to one who may act. */
@@ -181,6 +185,7 @@ function setup(
 		ran?: boolean;
 	}[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
+	const pointers: { url: string; body: Record<string, unknown> }[] = [];
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		expect(init?.redirect).toBe("error");
@@ -197,6 +202,24 @@ function setup(
 			if (state.startGate) await state.startGate;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
 			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
+		}
+		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/pointer")) {
+			// The member's pointer (20260930744000): a pass's begin or a move, numbers and an id alone.
+			expect(init?.method).toBe("POST");
+			expect(headers.get("content-type")).toBe("application/json");
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			pointers.push({ url: url.slice(bridge.length), body });
+			if (state.pointerRoute === "missing")
+				return Response.json({ error: "Member route is not available" }, { status: 404 });
+			const code = state.pointerAnswers.shift();
+			if (code) return Response.json({ code }, { status: 409 });
+			if ("begin" in body)
+				return Response.json({
+					schema: "qorpera.member-machine-pointer/v1",
+					pass: id(900 + pointers.length),
+					milliseconds: 10000,
+				});
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
 		}
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/act")) {
 			expect(init?.method).toBe("POST");
@@ -455,6 +478,7 @@ function setup(
 		acts,
 		starts,
 		rpcs,
+		pointers,
 		hints,
 		decode,
 		hint: (resource: RealtimeResource) => hint?.(resource),
@@ -3799,6 +3823,198 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 			[{ type: "click", x: 20, y: 20, button: "right" }, 0],
 			[{ type: "type", text: "b" }, 2],
 		]);
+	});
+});
+
+describe("the member's own pointer is the desktop's (20260930744000)", () => {
+	const entered = (p: ComputerPanel) =>
+		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
+	/** A window showing machine 1's picture (1600 x 1000 in an 800 x 500 box), in the large view, shared. */
+	async function inside(s: Setup = setup()) {
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		canvas(p).width = 1600;
+		canvas(p).height = 1000;
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(p)).toBe(true);
+		return { s, p };
+	}
+	const hover = (p: ComputerPanel, x: number, y: number) => canvas(p).dispatchEvent(pointer("pointermove", x, y));
+	const bodies = (s: Setup) => s.pointers.map((one) => one.body);
+
+	it("begins a pass at the sharing's generation, then sends where the member's pointer is, the newest only, one at a time", async () => {
+		const s = setup();
+		s.state.seats.set(machine(1).machineId, 3);
+		const { p } = await inside(s);
+		hover(p, 100, 100);
+		hover(p, 101, 101);
+		hover(p, 102, 102);
+		await flush();
+		const pass = bodies(s)[1]?.pass;
+		// The begin was on its way while the pointer moved: only the newest position went after it.
+		expect(bodies(s)).toEqual([{ begin: { generation: 3 } }, { pass, x: 204, y: 204 }]);
+		expect(s.pointers.every((one) => one.url.endsWith(`/${machine(1).machineId}/pointer`))).toBe(true);
+		// Further moves, one at a time and no faster than 30 a second, on the same pass.
+		await advance(40);
+		hover(p, 110, 120);
+		await flush();
+		await advance(40);
+		hover(p, 111, 121);
+		await flush();
+		expect(bodies(s).slice(2)).toEqual([
+			{ pass, x: 220, y: 240 },
+			{ pass, x: 222, y: 242 },
+		]);
+		// Leaving the picture sends nothing more; no action went for any of it.
+		canvas(p).dispatchEvent(pointer("pointerleave", 0, 0));
+		hover(p, 900, 900);
+		await advance(100);
+		expect(bodies(s)).toHaveLength(4);
+		expect(s.acts).toEqual([]);
+	});
+
+	it("sends no move from the preview, from a viewer, while a press is held, or while an action of the same sharing waits", async () => {
+		// The preview.
+		{
+			const s = setup();
+			s.state.answers.push({ picture: 1 });
+			const p = panel(s);
+			await flush();
+			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			hover(p, 100, 100);
+			await advance(100);
+			expect(s.pointers, "preview").toEqual([]);
+			p.dispose();
+		}
+		// A viewer in the large view.
+		{
+			const s = setup({ role: "viewer", canTakeOver: false });
+			s.state.answers.push({ picture: 1 });
+			const p = panel(s);
+			await flush();
+			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			press(canvas(p), 400, 250);
+			await advance(DOUBLE_CLICK_MS);
+			hover(p, 100, 100);
+			await advance(100);
+			expect(s.pointers, "viewer").toEqual([]);
+			p.dispose();
+		}
+		// A press held: its moves are the drag's.
+		{
+			const { s, p } = await inside();
+			canvas(p).dispatchEvent(pointer("pointerdown", 100, 100));
+			canvas(p).dispatchEvent(pointer("pointermove", 150, 150, { buttons: 1 }));
+			await advance(100);
+			expect(s.pointers, "pressed").toEqual([]);
+			canvas(p).dispatchEvent(pointer("pointerup", 150, 150));
+			p.dispose();
+		}
+		// An action waits on a busy desktop: the newest position waits with it, and goes once the queue is empty.
+		{
+			const { s, p } = await inside();
+			s.state.actAnswers.push({ code: "DESKTOP_BUSY" });
+			press(canvas(p), 10, 10, { button: 2 });
+			await flush();
+			hover(p, 300, 200);
+			hover(p, 301, 201);
+			await flush();
+			expect(s.pointers, "waiting").toEqual([]);
+			await advance(1000);
+			await flush();
+			expect(bodies(s)).toEqual([{ begin: { generation: 0 } }, { pass: bodies(s)[1]?.pass, x: 602, y: 402 }]);
+			expect(s.acts.map((act) => act.action.type)).toEqual(["click", "click"]);
+			p.dispose();
+		}
+	});
+
+	it("falls back to today's way quietly when the bridge or the executor has no pointer route", async () => {
+		const s = setup();
+		s.state.pointerRoute = "missing";
+		const { p } = await inside(s);
+		hover(p, 100, 100);
+		await flush();
+		hover(p, 120, 120);
+		await advance(100);
+		hover(p, 130, 130);
+		await advance(100);
+		// One begin, answered 404: no more requests for the page, nothing said, and actions go as before.
+		expect(s.pointers).toHaveLength(1);
+		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
+	});
+
+	it("begins another pass when the executor no longer holds one, and stops on a refusal another would repeat", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		hover(p, 100, 100);
+		await flush();
+		s.state.pointerAnswers.push("POINTER_PASS_ENDED");
+		await advance(40);
+		hover(p, 110, 110);
+		await flush();
+		await advance(40);
+		hover(p, 120, 120);
+		await flush();
+		expect(bodies(s).map((body) => ("begin" in body ? "begin" : "move"))).toEqual([
+			"begin",
+			"move",
+			"move",
+			"begin",
+			"move",
+		]);
+		// Someone took the desktop since this sharing's generation (it is 2 now): no more moves on that sharing; the list is
+		// read again, and the pointer goes on under the generation it names.
+		const reads = calls(s, "qorpera_list_agent_machines").length;
+		s.state.seats.set(machine(1).machineId, 2);
+		s.state.pointerAnswers.push("DESKTOP_HELD_SINCE");
+		await advance(40);
+		hover(p, 130, 130);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(calls(s, "qorpera_list_agent_machines").length).toBeGreaterThan(reads);
+		expect(bodies(s)).toHaveLength(6);
+		hover(p, 140, 140);
+		await flush();
+		expect(bodies(s).slice(6)).toEqual([{ begin: { generation: 2 } }, { pass: bodies(s)[7]?.pass, x: 280, y: 280 }]);
+	});
+
+	it("goes on a private pass of the hold's epoch and seat while the member types privately", async () => {
+		const { s, p } = await inside();
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(true);
+		hover(p, 100, 100);
+		await flush();
+		expect(bodies(s)[0]).toEqual({ begin: { epoch: 0, seat: 1 } });
+		expect(bodies(s)[1]).toMatchObject({ x: 200, y: 200 });
+	});
+
+	it("looks at least every 250 ms while the pointer moves, so a hover shows soon, and backs off once it stops", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		// Unchanged pictures: the window has backed off to a look every 2 to 3 s.
+		await advance(20_000);
+		let before = s.looks.length;
+		await advance(1000);
+		expect(s.looks.length - before).toBeLessThanOrEqual(1);
+		// The pointer moves for a second: a look at least every 250 ms (one in flight).
+		before = s.looks.length;
+		for (let n = 0; n < 25; n++) {
+			hover(p, 100 + n, 100);
+			await advance(40);
+		}
+		expect(s.looks.length - before).toBeGreaterThanOrEqual(4);
+		// It stopped: the window backs off again as before (450 ms, then 1 s, 2 s, 3 s).
+		await advance(5000);
+		before = s.looks.length;
+		await advance(2000);
+		expect(s.looks.length - before).toBeLessThanOrEqual(1);
 	});
 });
 

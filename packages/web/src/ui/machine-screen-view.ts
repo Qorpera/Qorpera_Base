@@ -101,6 +101,10 @@ export function joinInputs(a: InputSpan, b: InputSpan): InputSpan {
 export interface MachineScreenInput {
 	act(action: MachineDesktopAction, made: InputSpan): void;
 	lost?(): void;
+	/** Where the member's own pointer is over the picture, in the screen's own pixels, while no button is pressed
+	 * (20260930744000: the desktop's pointer follows it, so hover works); null once it leaves the picture. Nothing of a
+	 * key or a text is ever in it. */
+	point?(at: { readonly x: number; readonly y: number } | null): void;
 }
 
 /** A decoded picture: what a canvas draws. */
@@ -306,6 +310,7 @@ export class MachineScreenView {
 			},
 			{ signal },
 		);
+		canvas.addEventListener("pointerleave", () => this.#input?.point?.(null), { signal });
 		canvas.addEventListener("contextmenu", (event) => event.preventDefault(), { signal });
 		canvas.addEventListener("wheel", (event) => this.#wheelTurn(event), { signal, passive: false });
 		canvas.addEventListener("keydown", (event) => this.#key(event), { signal });
@@ -359,6 +364,9 @@ export class MachineScreenView {
 		const press = this.#press;
 		if (press && Math.hypot(event.clientX - press.clientX, event.clientY - press.clientY) > DRAG_PX)
 			press.moved = true;
+		// The member's own pointer is the desktop's (20260930744000): where it is goes to the input while no button is
+		// pressed (a press's moves are its drag's, sent as one action); outside the picture drawn there, nowhere.
+		if (!press && event.buttons === 0) this.#input?.point?.(this.#at(event.clientX, event.clientY));
 	}
 
 	#pointerUp(event: PointerEvent): void {

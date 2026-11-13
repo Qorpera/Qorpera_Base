@@ -7,6 +7,7 @@ import {
 	authorizeMachineCommand,
 	authorizeMachineScreen,
 	authorizeMemberMachineAct,
+	authorizeMemberMachinePointer,
 	authorizeMemberMachineScreen,
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
@@ -15,15 +16,18 @@ import {
 	localMachineScreen,
 	localMachineWake,
 	localMemberMachineAct,
+	localMemberMachinePointer,
 	localMemberMachineScreen,
 	localMemberMachineStart,
 	MachineCommandRouter,
+	MEMBER_POINTER_MOVES_PER_SECOND,
 	MEMBER_TOUCHED_TOLD_MS,
 	machineCommandRoutes,
 } from "../../../deploy/coding-worker/machine-command-routing.ts";
 import type {
 	CompanyMachineMemberActOutcome,
 	CompanyMachineMemberLookOutcome,
+	CompanyMachineMemberPointerOutcome,
 	CompanyMachineMemberStartOutcome,
 } from "../../runner-orchestrator/src/company-machine-host.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
@@ -38,6 +42,7 @@ import {
 	CloudMachineScreenRefusal,
 	type CloudMachineWakeHttpRequest,
 	CloudMemberMachineActRefusal,
+	CloudMemberMachinePointerRefusal,
 	CloudMemberMachineScreenRefusal,
 	cloudMemberMachineActRecord,
 	createHttpCloudMachineCommandGateway,
@@ -48,6 +53,8 @@ import {
 	parseCloudMemberMachineActAnswer,
 	parseCloudMemberMachineAction,
 	parseCloudMemberMachineActPeerRequest,
+	parseCloudMemberMachinePointerAnswer,
+	parseCloudMemberMachinePointerPeerRequest,
 	parseCloudMemberMachineScreenAnswer,
 	parseCloudMemberMachineScreenPeerRequest,
 	parseCloudMemberMachineStartAnswer,
@@ -2208,6 +2215,268 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			{ ...good, png: "" },
 		])
 			expect(() => parseCloudMemberMachineActAnswer(request, bad)).toThrow("Machine command gateway unavailable");
+	});
+});
+
+describe("a member's pointer on a desktop (20260930744000)", () => {
+	function fixture(owner = "mx-a") {
+		const ids = {
+			passId: randomUUID(),
+			companyId: randomUUID(),
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+			userId: randomUUID(),
+		};
+		/** SQL's read of the pass, for the machine of node A: served only to A's executor. */
+		const answer = (requestOwner: string, change: Record<string, unknown> = {}) => ({
+			schema: "qorpera.member-machine-desktop-pointer-authority/v1",
+			state: "authorized",
+			passId: ids.passId,
+			machineId: ids.machineId,
+			placementId: ids.placementId,
+			bootId: ids.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: ids.userId,
+			generation: 4,
+			private: false,
+			milliseconds: 10000,
+			served: requestOwner === "mx-a",
+			...change,
+		});
+		const call = vi.fn(
+			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
+		);
+		const host = {
+			memberPointer: vi.fn((): CompanyMachineMemberPointerOutcome => ({ moved: true })),
+		};
+		const memberPointerBegin = vi.fn(async () => ids.passId);
+		const sent: { url: string; body: unknown }[] = [];
+		let peerAnswer: () => Response = () =>
+			Response.json({ schema: "qorpera.member-machine-pointer-answer/v1", passId: ids.passId, moved: true });
+		const router = new MachineCommandRouter({
+			owner,
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
+			].filter((peer) => peer.owner !== owner),
+			control: closed({ call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			memberPointerBegin,
+			memberPointerLocal: localMemberMachinePointer(host),
+			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+				sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+				return peerAnswer();
+			}) as typeof fetch,
+		});
+		const token = "eyJh.eyJz.c2ln";
+		const where = { companyId: ids.companyId, machineId: ids.machineId, token };
+		return {
+			...ids,
+			answer,
+			call,
+			host,
+			memberPointerBegin,
+			router,
+			where,
+			sent,
+			peer: (next: () => Response) => {
+				peerAnswer = next;
+			},
+			signal: new AbortController().signal,
+		};
+	}
+
+	it("begins a pass as the member, reads it once as the executor, and moves on it with no SQL per move", async () => {
+		const f = fixture();
+		expect(await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)).toEqual({
+			pass: f.passId,
+			milliseconds: 10000,
+		});
+		expect(f.memberPointerBegin).toHaveBeenCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId, hold: { generation: 4 } },
+			f.signal,
+		);
+		expect(f.call.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+			[
+				"qorpera_member_machine_desktop_pointer_authority",
+				{ p_pass_id: f.passId, p_owner: "mx-a", p_provider_id: "machine-node" },
+			],
+		]);
+		for (let n = 0; n < 5; n++)
+			expect(await f.router.memberPointer({ ...f.where, pass: f.passId, x: 100 + n, y: 200 }, f.signal)).toEqual({
+				moved: true,
+			});
+		expect(f.call).toHaveBeenCalledTimes(1);
+		expect(f.host.memberPointer).toHaveBeenLastCalledWith({
+			placementId: f.placementId,
+			bootId: f.bootId,
+			userId: f.userId,
+			generation: 4,
+			private: false,
+			x: 104,
+			y: 200,
+		});
+	});
+
+	it("moves only on the pass's own token, company and machine, while it lasts, at most 30 a second", async () => {
+		const f = fixture();
+		await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
+		const ended = async (request: Record<string, unknown>) =>
+			expect(
+				f.router.memberPointer({ ...f.where, pass: f.passId, x: 1, y: 1, ...request } as never, f.signal),
+				JSON.stringify(request),
+			).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+		await ended({ token: "eyJh.eyJz.b3RoZXI" });
+		await ended({ companyId: randomUUID() });
+		await ended({ machineId: randomUUID() });
+		await ended({ pass: randomUUID() });
+		expect(f.host.memberPointer).not.toHaveBeenCalled();
+		const moves = [];
+		for (let n = 0; n < MEMBER_POINTER_MOVES_PER_SECOND + 5; n++)
+			moves.push(
+				(await f.router.memberPointer({ ...f.where, pass: f.passId, x: n, y: 1 }, f.signal)) as { moved: boolean },
+			);
+		// Past the bound in one second: dropped, never queued.
+		expect(moves.filter((move) => move.moved)).toHaveLength(MEMBER_POINTER_MOVES_PER_SECOND);
+		expect(f.host.memberPointer).toHaveBeenCalledTimes(MEMBER_POINTER_MOVES_PER_SECOND);
+		// A pass that ran out moves nothing.
+		const short = fixture();
+		short.call.mockImplementation(async (_method: string, args: Record<string, unknown>) =>
+			short.answer(args.p_owner as string, { milliseconds: 0 }),
+		);
+		await short.router.memberPointer({ ...short.where, begin: { generation: 4 } }, short.signal);
+		await expect(
+			short.router.memberPointer({ ...short.where, pass: short.passId, x: 1, y: 1 }, short.signal),
+		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+	});
+
+	it("tells SQL's refusals and a pass SQL no longer holds, and forgets a pass the host refused", async () => {
+		const f = fixture();
+		for (const reason of [
+			"DESKTOP_MEMBER_IN_CONTROL",
+			"DESKTOP_HELD_SINCE",
+			"DESKTOP_CONTROL_ENDED",
+			"MACHINE_NOT_RUNNING",
+		]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-desktop-pointer-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)).rejects.toMatchObject(
+				{
+					code: reason,
+				},
+			);
+		}
+		// The host saw a newer generation: refused, and the pass is forgotten here.
+		await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
+		f.host.memberPointer.mockReturnValueOnce({ refused: "DESKTOP_HELD_SINCE" });
+		await expect(f.router.memberPointer({ ...f.where, pass: f.passId, x: 1, y: 1 }, f.signal)).rejects.toMatchObject({
+			code: "DESKTOP_HELD_SINCE",
+		});
+		await expect(f.router.memberPointer({ ...f.where, pass: f.passId, x: 1, y: 1 }, f.signal)).rejects.toMatchObject({
+			code: "POINTER_PASS_ENDED",
+		});
+		// An answer of another shape fails.
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), milliseconds: 60000 });
+		await expect(f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)).rejects.toThrow(
+			"MEMBER_POINTER_AUTHORITY_INVALID",
+		);
+	});
+
+	it("sends each move to the machine's node, which reads the pass once and keeps it", async () => {
+		const front = fixture("mx-b");
+		await front.router.memberPointer({ ...front.where, begin: { generation: 4 } }, front.signal);
+		expect(
+			await front.router.memberPointer({ ...front.where, pass: front.passId, x: 7, y: 8 }, front.signal),
+		).toEqual({
+			moved: true,
+		});
+		expect(front.sent).toEqual([
+			{
+				url: "https://node-a.example/v1/machine-commands/member-pointer",
+				body: { schema: "qorpera.member-machine-pointer-http/v1", passId: front.passId, x: 7, y: 8 },
+			},
+		]);
+		expect(front.host.memberPointer).not.toHaveBeenCalled();
+		// The machine's node refuses for good: forgotten at the front too.
+		front.peer(() => Response.json({ code: "DESKTOP_HELD_SINCE" }, { status: 409 }));
+		await expect(
+			front.router.memberPointer({ ...front.where, pass: front.passId, x: 7, y: 8 }, front.signal),
+		).rejects.toMatchObject({ code: "DESKTOP_HELD_SINCE" });
+		await expect(
+			front.router.memberPointer({ ...front.where, pass: front.passId, x: 7, y: 8 }, front.signal),
+		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+		// The machine's own node: the pass read once, its moves on this node.
+		const node = fixture("mx-a");
+		const request = parseCloudMemberMachinePointerPeerRequest({
+			schema: "qorpera.member-machine-pointer-http/v1",
+			passId: node.passId,
+			x: 9,
+			y: 10,
+		});
+		expect(await node.router.memberPointerPeer(request, node.signal)).toEqual({ moved: true });
+		expect(await node.router.memberPointerPeer({ ...request, x: 11 }, node.signal)).toEqual({ moved: true });
+		expect(node.call).toHaveBeenCalledTimes(1);
+		expect(node.host.memberPointer).toHaveBeenLastCalledWith(expect.objectContaining({ x: 11, y: 10 }));
+		// Another node's pass is never moved here.
+		const wrong = fixture("mx-c");
+		await expect(wrong.router.memberPointerPeer({ ...request, passId: wrong.passId }, wrong.signal)).rejects.toThrow(
+			"MACHINE_COMMAND_WRONG_EXECUTOR",
+		);
+	});
+
+	it("parses the peer's request and answer strictly, and reads SQL's answer strictly", async () => {
+		const passId = randomUUID();
+		const request = parseCloudMemberMachinePointerPeerRequest({
+			schema: "qorpera.member-machine-pointer-http/v1",
+			passId,
+			x: 3839,
+			y: 2159,
+		});
+		for (const wrong of [{ x: 3840 }, { y: -1 }, { x: 1.5 }, { passId: "pass" }, { text: "hunter2" }])
+			expect(
+				() => parseCloudMemberMachinePointerPeerRequest({ ...request, ...wrong }),
+				JSON.stringify(wrong),
+			).toThrow();
+		expect(
+			parseCloudMemberMachinePointerAnswer(request, {
+				schema: "qorpera.member-machine-pointer-answer/v1",
+				passId,
+				moved: false,
+			}),
+		).toEqual({ moved: false });
+		expect(() =>
+			parseCloudMemberMachinePointerAnswer(request, {
+				schema: "qorpera.member-machine-pointer-answer/v1",
+				passId: randomUUID(),
+				moved: true,
+			}),
+		).toThrow();
+		const f = fixture();
+		for (const change of [
+			{ served: false },
+			{ generation: -1 },
+			{ private: "no" },
+			{ extra: 1 },
+			{ passId: randomUUID() },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), ...change });
+			await expect(
+				authorizeMemberMachinePointer(
+					closed({ call: f.call }),
+					{ passId: f.passId, owner: "mx-a", providerId: "machine-node" },
+					f.signal,
+				),
+				JSON.stringify(change),
+			).rejects.toThrow("MEMBER_POINTER_AUTHORITY_INVALID");
+		}
+		expect(new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED").code).toBe("POINTER_PASS_ENDED");
 	});
 });
 
