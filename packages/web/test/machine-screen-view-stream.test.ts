@@ -23,8 +23,11 @@ function view() {
 	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
 		return {
 			drawImage: (picture: { name: string }, x: number, y: number) => {
-				drawn.push([picture.name, x, y]);
-				strokes.push({ name: picture.name, on: this });
+				// The one canvas ever drawn FROM is the live picture's, handed back to the window's own when its stream
+				// ends (review r7 F2 of #1746); everything else is a decoded picture with a name of its own.
+				const name = picture instanceof HTMLCanvasElement ? "live-frame" : picture.name;
+				drawn.push([name, x, y]);
+				strokes.push({ name, on: this });
 			},
 			clearRect: () => {},
 		} as unknown as CanvasRenderingContext2D;
@@ -62,12 +65,16 @@ function view() {
 		if (gate) gates.set(png, gate);
 		return png;
 	};
+	/** What the picture's mark says: "Live", or "Updating…" while the last picture is held. */
+	const mark = () => mount.querySelector(".machine-screen-mark")?.textContent ?? "";
+	/** The live picture is handed back inside the painter, so the swap lands a turn later. */
+	const handedBack = () => vi.waitFor(() => expect(live.hidden).toBe(true));
 	/** How many of what was decoded is closed, and how many decodes were begun. */
 	const closed = (name: string) =>
 		[...pictures.values()]
 			.filter((picture) => picture.name === name)
 			.flatMap((picture) => (picture.close as unknown as { mock: { calls: unknown[] } }).mock.calls).length;
-	return { screen, area, look, drawn, canvas, live, on, decode, closed };
+	return { screen, area, look, drawn, canvas, live, on, mark, handedBack, decode, closed };
 }
 
 describe("the live picture in the screen view (20260930745000)", () => {
@@ -271,7 +278,7 @@ describe("the live picture in the screen view (20260930745000)", () => {
 	});
 
 	it("gives the window's own pictures and the live picture a canvas each: neither ever writes where the other draws (review r6 of #1746)", async () => {
-		const { screen, area, look, canvas, live, on } = view();
+		const { screen, area, look, canvas, live, on, handedBack } = view();
 		// Only the window's own picture: it is the one shown.
 		expect(await screen.show(look("first", 100, 100))).toBe(true);
 		expect([canvas.hidden, live.hidden]).toEqual([false, true]);
@@ -286,10 +293,12 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(await screen.show(look("meanwhile", 100, 100))).toBe(true);
 		expect([canvas.hidden, live.hidden]).toEqual([true, false]);
 		screen.streamEnded();
+		await handedBack();
 		expect([canvas.hidden, live.hidden]).toEqual([false, true]);
 		expect(screen.shown).toBe(true);
-		// Each source wrote only on its own canvas, the whole way through.
-		expect(on(canvas)).toEqual(["first", "meanwhile"]);
+		// Each source wrote only on its own canvas, the whole way through — but for the hand-back, the one copy from
+		// one canvas to the other, which goes through the painter like every other write (review r7 F2 of #1746).
+		expect(on(canvas)).toEqual(["first", "meanwhile", "live-frame"]);
 		expect(on(live)).toEqual(["pixels"]);
 	});
 
@@ -377,14 +386,16 @@ describe("the live picture in the screen view (20260930745000)", () => {
 	});
 
 	it("a renewal while the pixels of the stream before it are up: the window's own picture comes back at once, and nothing of the old stream shows through the new one", async () => {
-		const { screen, area, look, drawn, canvas, live } = view();
+		const { screen, area, look, drawn, canvas, live, handedBack } = view();
 		expect(await screen.show(look("look", 100, 100))).toBe(true);
 		await screen.stream({ kind: "size", width: 100, height: 100 });
 		expect(await screen.stream({ kind: "rects", rects: [area("first", 0, 0, 10, 10)] })).toBe("drawn");
 		expect([canvas.hidden, live.hidden]).toEqual([true, false]);
-		// The pass ran out: that socket ends while its pixels are on the screen.
+		// The pass ran out: that socket ends while its pixels are on the screen. The last frame is handed to the
+		// window's own canvas, so the picture does not jump back to the look from before the stream began.
 		screen.streamEnded();
 		expect(screen.streaming).toBe(false);
+		await handedBack();
 		expect([canvas.hidden, live.hidden]).toEqual([false, true]);
 		expect(screen.shown).toBe(true);
 		// The new socket sends the same size: it empties its canvas all the same, so not one pixel of the stream before
@@ -399,8 +410,68 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(drawn).toEqual([
 			["look", 0, 0],
 			["first", 0, 0],
+			["live-frame", 0, 0],
 			["second", 0, 0],
 		]);
+	});
+
+	it("carries the member's keyboard across both swaps, so their keys never stop reaching the computer (review r7 F1 of #1746)", async () => {
+		const { screen, area, look, canvas, live, handedBack } = view();
+		expect(await screen.show(look("look", 100, 100))).toBe(true);
+		// The member takes the computer over: the window's own picture has the keyboard.
+		screen.capture({ act: vi.fn() });
+		screen.focusScreen();
+		expect(document.activeElement).toBe(canvas);
+		// The live picture's first pixels land and it takes the screen: the keyboard goes with it. Were it left behind,
+		// the canvas it is on stops being rendered, the browser blurs it, and the member's keys reach the page instead.
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		expect(await screen.stream({ kind: "rects", rects: [area("pixels", 0, 0, 10, 10)] })).toBe("drawn");
+		expect(document.activeElement).toBe(live);
+		expect(screen.takesKeysFrom(document.activeElement)).toBe(true);
+		// And back the other way when the stream ends while they type.
+		screen.streamEnded();
+		await handedBack();
+		expect(document.activeElement).toBe(canvas);
+		expect(screen.takesKeysFrom(document.activeElement)).toBe(true);
+	});
+
+	it("leaves no swap to a picture the keyboard was not on, and none at all while the member is elsewhere", async () => {
+		const { screen, area, look, canvas, handedBack } = view();
+		expect(await screen.show(look("look", 100, 100))).toBe(true);
+		screen.capture({ act: vi.fn() });
+		// The member is typing somewhere else on the page: the swap must not take the keyboard from them.
+		const elsewhere = document.createElement("input");
+		document.body.append(elsewhere);
+		elsewhere.focus();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		expect(await screen.stream({ kind: "rects", rects: [area("pixels", 0, 0, 10, 10)] })).toBe("drawn");
+		expect(document.activeElement).toBe(elsewhere);
+		screen.streamEnded();
+		await handedBack();
+		expect(document.activeElement).toBe(elsewhere);
+		expect(canvas.hidden).toBe(false);
+		elsewhere.remove();
+	});
+
+	it("hands the live picture's last frame to the window's own canvas and stops calling it live (review r7 F2 of #1746)", async () => {
+		const { screen, area, look, canvas, live, on, mark, handedBack } = view();
+		// A look from before the stream: with the looks paused all the while, this can be minutes old by the end.
+		expect(await screen.show(look("old-look", 100, 100))).toBe(true);
+		await screen.stream({ kind: "size", width: 640, height: 480 });
+		expect(await screen.stream({ kind: "rects", rects: [area("fresh", 0, 0, 640, 480)] })).toBe("drawn");
+		expect(mark()).toBe("Live");
+		screen.streamEnded();
+		await handedBack();
+		// What the member sees is the stream's last frame, of the stream's own size, not the old look — and it says it
+		// is being updated, not that it is live. The window asks for a whole fresh look at this same moment.
+		expect(on(canvas)).toEqual(["old-look", "live-frame"]);
+		expect([canvas.width, canvas.height]).toEqual([640, 480]);
+		expect(mark()).toBe("Updating…");
+		expect(screen.shown).toBe(true);
+		expect(live.hidden).toBe(true);
+		// The fresh look lands and the picture is live again.
+		expect(await screen.show(look("new-look", 640, 480))).toBe(true);
+		expect(mark()).toBe("Live");
 	});
 
 	it("fails to the safe mode: an area outside the size the stream told is never painted (review r5 of #1746)", async () => {

@@ -158,12 +158,11 @@ interface StreamPaint {
  *    ever dropped to keep that order; a stream's work is discarded only when the WHOLE stream is dropped.
  *  - of the window's own looks only the newest paints (`#lookTurn`): an older one that decodes later is dropped, since
  *    both hold the whole screen at a moment and the newer moment is the true one.
- * `token` is the submission order, kept for the tests and for reading a trace. `pictures` holds what this job has
- * decoded so far, so a job that may no longer land closes them where they land instead of holding them behind a sibling
- * that never finishes (review r5 F1).
+ * `pictures` holds what this job has decoded so far, so a job that may no longer land closes them where they land
+ * instead of holding them behind a sibling that never finishes (review r5 F1). There is no longer a token of any kind:
+ * nothing is decided by comparing one piece of work with another (review r6).
  */
 interface PaintJob {
-	readonly token: number;
 	/** The live picture this work belongs to, or null for the window's own pictures. */
 	readonly owner: StreamPaint | null;
 	readonly pictures: Set<MachineScreenPicture>;
@@ -271,7 +270,6 @@ export class MachineScreenView {
 	 * picture have a canvas each, so no source can overwrite another's, and inside one live picture the messages apply
 	 * strictly in the order they arrived. Work is discarded only when its whole stream is dropped, or when a newer look
 	 * replaced an older one on the window's own canvas. */
-	#paintToken = 0;
 	#painting: Promise<unknown> = Promise.resolve();
 	/** The newest of the window's own pictures: an older one that decodes later does not paint over it. */
 	#lookTurn = 0;
@@ -357,6 +355,18 @@ export class MachineScreenView {
 	 * hidden one takes no pointer and is measured by nobody. */
 	get #face(): HTMLCanvasElement {
 		return this.#streamCanvas.hidden ? this.#canvas : this.#streamCanvas;
+	}
+
+	/** Shows one of the two pictures in place of the other. **Whatever the member has moves with the swap** — here the
+	 * keyboard, which is the one thing a canvas holds that the view does not: a focused element that stops being
+	 * rendered is blurred by the browser (the focus fixup rule plus `display: none`), and the member's keys would then
+	 * reach the page's own shortcuts instead of the computer until they clicked the picture again (review r7 F1 of
+	 * #1746). The one taking over is shown before the other goes, so the focus has somewhere to land. */
+	#swap(shown: HTMLCanvasElement, hidden: HTMLCanvasElement): void {
+		const held = document.activeElement === hidden;
+		shown.hidden = false;
+		hidden.hidden = true;
+		if (held) shown.focus({ preventScroll: true });
 	}
 
 	/** The machine switcher, in the titlebar beside the title while entered (the panel keeps its own on the preview). */
@@ -728,8 +738,8 @@ export class MachineScreenView {
 		job.pictures.add(picture);
 		return (
 			(await this.#commit(job, () => {
-				// A look a newer one has overtaken paints nothing.
-				if (turn !== this.#lookTurn) return "failed";
+				// A look a newer one has overtaken paints nothing: discarded work, not a failure.
+				if (turn !== this.#lookTurn) return "dropped";
 				if (this.#canvas.width !== picture.width) this.#canvas.width = picture.width;
 				if (this.#canvas.height !== picture.height) this.#canvas.height = picture.height;
 				this.#canvas.getContext("2d")?.drawImage(picture, 0, 0);
@@ -744,11 +754,14 @@ export class MachineScreenView {
 	}
 
 	/**
-	 * THE one place that writes pixels (review r5 of #1746). Work waits its turn in one ordered queue; at its commit,
-	 * anything whose token is older than what the canvas already holds is dropped, and whatever it decoded is closed
-	 * here. `paint` returns what it drew, or nothing when it decided not to draw.
+	 * THE one place that writes pixels (review r5 of #1746, in its final shape at r6). Work waits its turn in one
+	 * ordered queue and is committed in the order it was submitted; whatever it decoded is closed here. Nothing is
+	 * compared against "what the canvas already holds" any more — the two canvases and each stream's own order make
+	 * that question impossible. Work does not land for three reasons only: its stream was dropped, its job was
+	 * disposed of, or the view is gone. `paint` says what it did: `drawn`, `dropped` (it decided for itself not to
+	 * draw — a look a newer one has overtaken) or `failed` (an inconsistency: the stream ends, review r5's safe mode).
 	 */
-	async #commit(job: PaintJob, paint: () => "drawn" | "failed"): Promise<"drawn" | "dropped" | "failed"> {
+	async #commit(job: PaintJob, paint: () => "drawn" | "dropped" | "failed"): Promise<"drawn" | "dropped" | "failed"> {
 		const mine = this.#painting.then(() => {
 			// The only reasons work does not land: its stream was dropped, a newer look replaced it, or the view is gone.
 			if (job.void || job.owner?.dropped === true || this.#stop.signal.aborted) return "dropped" as const;
@@ -765,9 +778,9 @@ export class MachineScreenView {
 		}
 	}
 
-	/** One piece of work for the painter, with what the canvas held when it was submitted. */
+	/** One piece of work for the painter: whose it is, what it has decoded, and whether it may still land. */
 	#job(owner: StreamPaint | null = null): PaintJob {
-		return { token: ++this.#paintToken, owner, pictures: new Set(), void: false };
+		return { owner, pictures: new Set(), void: false };
 	}
 
 	/** Closes whatever a job decoded, wherever it is in its life, and marks it as no longer able to land. */
@@ -892,10 +905,10 @@ export class MachineScreenView {
 				if (decoded.some((each) => each === null || !fits(each.rect, each.picture))) return "failed";
 				const context = canvas.getContext("2d");
 				for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
-				// Pixels of this stream are on its canvas: now it is shown, in place of the window's own picture.
+				// Pixels of this stream are on its canvas: now it is shown, in place of the window's own picture, with
+				// the member's keyboard carried over to it.
 				paint.showing = true;
-				canvas.hidden = false;
-				this.#canvas.hidden = true;
+				this.#swap(canvas, this.#canvas);
 				this.#shown = true;
 				this.el.hidden = false;
 				this.#enter.disabled = false;
@@ -938,18 +951,8 @@ export class MachineScreenView {
 		paint.dropped = true;
 		// The size was this stream's own and goes with it; nothing else ever read it.
 		paint.size = null;
-		// Its canvas goes with it; the window's own picture is what shows from now on (review r6 of #1746). Both are
-		// swapped in one step, so the page never draws a frame with neither of them up.
-		this.#streamCanvas.hidden = true;
-		this.#canvas.hidden = false;
-		// Were the live picture's the only pixels this view ever had, there is nothing of its own to fall back to: it
-		// shows no picture until the first look lands, which the window asks for the moment a stream ends.
-		if (this.#shown && !this.#looked) {
-			this.#shown = false;
-			this.el.hidden = true;
-			this.#enter.disabled = true;
-			this.#mark.hidden = true;
-		}
+		if (paint.showing) this.#handBack();
+		else this.#streamCanvas.hidden = true;
 		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped.
 		paint.chain = Promise.resolve();
 		// What its jobs had already decoded is closed now, not left behind a sibling that may never finish.
@@ -959,6 +962,40 @@ export class MachineScreenView {
 		paint.held.clear();
 		paint.bytes = 0;
 		paint.pixels = 0;
+	}
+
+	/**
+	 * The live picture's pixels are up and its stream is over: the window's own canvas takes the screen back. Its last
+	 * frame is copied onto that canvas FIRST, inside the painter like every other write, so the picture does not jump
+	 * back in time to the look taken before the stream began — which, with the looks paused all the while, can be
+	 * minutes old (review r7 F2 of #1746). Then the two are swapped, the keyboard moving with them, and the picture is
+	 * marked as being updated rather than live: it is the screen as it was a moment ago, and the window asks for a
+	 * whole fresh look at this same moment.
+	 */
+	#handBack(): void {
+		const from = this.#streamCanvas;
+		const { width, height } = from;
+		void this.#commit(this.#job(), () => {
+			// Nothing writes that canvas between the drop and here (its stream is gone, and a new stream's own size
+			// message is committed after this one), but a size that moved all the same is not copied.
+			const copy = width > 0 && height > 0 && from.width === width && from.height === height;
+			if (copy) {
+				if (this.#canvas.width !== width) this.#canvas.width = width;
+				if (this.#canvas.height !== height) this.#canvas.height = height;
+				this.#canvas.getContext("2d")?.drawImage(from, 0, 0);
+				this.#looked = true;
+			}
+			this.#swap(this.#canvas, from);
+			// Were the live picture's the only pixels this view ever had and the copy did not happen, there is nothing
+			// of its own to fall back to: it shows no picture until the first look lands.
+			if (this.#shown && !this.#looked) {
+				this.#shown = false;
+				this.el.hidden = true;
+				this.#enter.disabled = true;
+				this.#mark.hidden = true;
+			} else this.updating();
+			return copy ? "drawn" : "dropped";
+		});
 	}
 
 	/** Whether pixels of the live picture are on the canvas: until they are, the window keeps its own pictures. */
@@ -1053,7 +1090,7 @@ export class MachineScreenView {
 		// the live picture's was dropped above with its stream, is hidden, and is emptied by the next stream's own size.
 		const turn = this.#lookTurn;
 		void this.#commit(this.#job(), () => {
-			if (turn !== this.#lookTurn) return "failed";
+			if (turn !== this.#lookTurn) return "dropped";
 			this.#canvas.getContext("2d")?.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
 			this.#looked = false;
 			return "drawn";
