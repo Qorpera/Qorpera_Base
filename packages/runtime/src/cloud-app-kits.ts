@@ -171,10 +171,14 @@ export function kitPage(
 	title: string,
 	data: Readonly<Record<string, unknown>>,
 	holds: (path: string) => boolean,
+	concept = false,
 ): string {
 	const lang = typeof data.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(data.lang) ? data.lang : "en";
 	// In a script: no `<`, so nothing in a name ends the script or opens a comment.
-	const kitJson = JSON.stringify({ app, kit, data: kitDataFile(kit) }).replace(/</g, "\\u003c");
+	const kitJson = JSON.stringify({ app, kit, data: kitDataFile(kit), ...(concept ? { concept: true } : {}) }).replace(
+		/</g,
+		"\\u003c",
+	);
 	return [
 		"<!doctype html>",
 		`<html lang="${lang}">`,

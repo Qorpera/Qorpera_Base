@@ -190,6 +190,15 @@ it("writes a kit's page that names its pictures, reads its data, and opens outsi
 	);
 	// Which app and data file the engine reads, then the engine.
 	expect(page).toContain('window.QORPERA_KIT = {"app":"marked","kit":"board","data":"board.json"};');
+	// A concept's page says so, and its engine then draws no title block and keeps almost nothing around the stage
+	// (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). Any
+	// other page is as it was, byte for byte.
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true, true)).toContain(
+		'window.QORPERA_KIT = {"app":"marked","kit":"board","data":"board.json","concept":true};',
+	);
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true, false)).toBe(
+		kitPage("marked", "board", "Marked", BOARD, () => true),
+	);
 	expect(page.trimEnd().endsWith('<script src="engine.js"></script>\n</body>\n</html>')).toBe(true);
 	// The data as it was saved, for an agent that opens the page on a machine to look at it: nothing in it ends the
 	// script, and outside Qorpera a read of the data file answers it.
@@ -301,6 +310,27 @@ it("makes an app from a data kit: the agent's data, Qorpera's engine and page", 
 	expect(f.text("apps/forretningsmodel/index.html")).toBe(
 		kitPage("forretningsmodel", "model", "Forretningsmodel", next, () => false),
 	);
+});
+
+it("tells a kit's page that its app is a concept, when it is made and when it changes", async () => {
+	const f = await fixture();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("udtryk", "make-1", { title: "Udtryk", kit: "board", concept: true, cover: "pictures/arc-one.webp" }, [
+				{ path: "board.json", text: JSON.stringify(BOARD) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", BOARD, () => false, true));
+	// New data, and the manifest is not touched: the page is written again, still as a concept.
+	const next = { ...BOARD, title: "Udtryk" };
+	await f.call("save_app", save("udtryk", "change-1", null, [{ path: "board.json", text: JSON.stringify(next) }]));
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", next, () => false, true));
+	// And no longer a concept: the page says nothing, so its engine draws the title block again.
+	await f.call("save_app", save("udtryk", "change-2", { title: "Udtryk", concept: false }, []));
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", next, () => false));
 });
 
 it("refuses a data kit's app with no data, or with data its engine cannot read", async () => {
