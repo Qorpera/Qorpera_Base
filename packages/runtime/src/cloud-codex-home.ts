@@ -179,7 +179,8 @@ const REPEAT_COMMAND =
 const REPEAT_CHANGE =
 	"When you are woken because it was approved, make that exact change again yourself with your own patch tool, unchanged. There is no tool of yours to call for it: the card names the patch you made. Made unchanged, it is applied without another review.";
 
-const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+/** A text's SHA-256, as lower-case hex. */
+const digestOf = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 /** A text as the identity carries it: whole when it fits, else its head with its size and digest, so every byte of it
  * is still covered and the identity stays within the gate's bound. */
@@ -187,7 +188,7 @@ function bounded(value: string, limit: number): JsonValue {
 	const bytes = Buffer.byteLength(value);
 	if (bytes <= limit) return value;
 	const head = new TextDecoder().decode(Buffer.from(value, "utf8").subarray(0, limit)).replace(/�$/, "");
-	return { head, bytes, sha256: sha256(value) };
+	return { head, bytes, sha256: digestOf(value) };
 }
 
 /** A path on the machine as Codex names it (`file:///company/a.md`, `/company/a.md` or relative to the folder),
@@ -242,7 +243,7 @@ function finishAction(input: {
 		tool: input.tool,
 		summary,
 		argumentsText,
-		argumentSha256: sha256(argumentsText),
+		argumentSha256: digestOf(argumentsText),
 		...(input.contents === undefined ? {} : { contents: input.contents }),
 		callId: input.callId,
 		step: {
@@ -371,7 +372,7 @@ export function cloudHomePatchAction(machine: CloudCodexHomeMachine, patch: Clou
 		identity: {
 			changes: patch.changes.map((change, at) => ({ ...shown[at], diff: bounded(change.diff, each) })),
 			// The whole patch, whatever of it the bounded diffs above leave out.
-			patchSha256: sha256(JSON.stringify(patch.changes)),
+			patchSha256: digestOf(JSON.stringify(patch.changes)),
 		},
 		callId: patch.callId,
 		step: {
@@ -453,7 +454,7 @@ export class CloudCodexHomeSteps {
 			call: action.callId,
 			tool: action.step.tool,
 			argumentsText: action.step.argumentsText,
-			argumentSha256: sha256(action.step.argumentsText),
+			argumentSha256: digestOf(action.step.argumentsText),
 		});
 		this.#open.set(action.callId, { j, paths: action.step.paths });
 		remember(this.#open, MAX_REMEMBERED);
@@ -472,7 +473,7 @@ export class CloudCodexHomeSteps {
 				call: callId,
 				tool: otherwise.tool,
 				argumentsText: otherwise.argumentsText,
-				argumentSha256: sha256(otherwise.argumentsText),
+				argumentSha256: digestOf(otherwise.argumentsText),
 			});
 			this.finished++;
 			this.#log.finish(j, envelope, [], []);
