@@ -109,6 +109,24 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	);
 });
 
+// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
+// the three tools, and never a secret in a step.
+it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
+	for (const said of [
+		"When data_query is offered, the company can keep data in databases of its own.",
+		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
+		"A file is the right home for what people read: plans, notes, documents and settings.",
+		'database.toml says what it is: format = "qorpera.database/v1"',
+		"tables/NNN-<name>.sql are its steps",
+		"Never change an applied step; write a new one with a higher number.",
+		"queries/<name>.sql are its questions: one select each",
+		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"is held until a member says yes: tell them what it would destroy.",
+		"Never put a password, key or other secret in a step, a question or a row.",
+	])
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
+});
+
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
 	const f = nativeCompanyContextFixture();
 	f.context.identity = {
@@ -1552,9 +1570,10 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
-// a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026). A change
-// to any is a change to every run's bytes.
+// a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for
+// company databases (when a database is the right home, its folder and never a secret in it; slice 5, 13 November
+// 2026). A change to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",

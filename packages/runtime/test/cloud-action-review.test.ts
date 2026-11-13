@@ -214,6 +214,9 @@ describe("which calls are reviewed", () => {
 		["good_will_mark", { marks: [] }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
 		["organize_apps", { action: "move", item: "app:sales", group: null }, "internal"],
+		["data_describe", {}, "read"],
+		["data_query", { database: "shop", sql: "select 1" }, "read"],
+		["data_apply", { database: "shop" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them

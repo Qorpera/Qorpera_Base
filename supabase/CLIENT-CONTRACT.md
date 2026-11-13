@@ -73,6 +73,10 @@ Native host entry points (G2-1, migration 20260928409985): the publishable key's
 runner guest and work only with that runner job's current lease token. Clients never call them; without the token
 they answer 42501 "native host call is refused".
 
+Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
+for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
+bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 113 functions, grouped for navigation. Signatures: see the migration that defines each.

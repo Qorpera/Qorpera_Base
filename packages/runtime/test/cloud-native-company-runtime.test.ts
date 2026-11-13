@@ -101,6 +101,7 @@ async function fixture(
 	machines = false,
 	folderSearch = false,
 	timeoutMs = 10_000,
+	companyData = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -647,6 +648,16 @@ async function fixture(
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
+		// The data gateway's run door only offers the data tools here; this suite never asks it.
+		...(companyData
+			? {
+					companyData: {
+						call: async () => {
+							throw new Error("No company data call expected");
+						},
+					},
+				}
+			: {}),
 		// Folder bytes read the files seeded; this suite saves no file, and stages bytes only for a work log.
 		folderBytes: () => ({
 			put: async (bytes: Uint8Array, mediaType: string) => {
@@ -3177,7 +3188,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {
-	const f = await fixture();
+	const f = await fixture("company-runtime", false, undefined, false, false, 10_000, true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -3245,6 +3256,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 13 November 2026 a host that names the data gateway's run door offers data_describe, data_apply and data_query
+	// after update_wall (company databases, slice 5, 20260930750000); this run's host names it, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3258,6 +3271,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"save_app",
 		"post_app",
 		"update_wall",
+		"data_describe",
+		"data_apply",
+		"data_query",
 		"read_context",
 		"company_account",
 		"send_coworker_message",

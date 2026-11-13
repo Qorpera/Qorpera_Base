@@ -1,18 +1,26 @@
 // The data gateway (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §3): the one service that connects to the company
 // data store. A member's call is begun as the member: the gateway reads the folder entries it needs with the member's
-// own token, which proves the member may read them and gives each file's hash. It uses a file's text only when its
-// hash is the folder's. It holds no service key and no login to the platform's database.
+// own token, which proves the member may read them and gives each file's hash. An agent's run is begun from a data
+// pass (SLICE5): the platform kept, as the run, each file the run may read under the database's folder, and the gateway
+// redeems the pass once for that list. It uses a file's text only when its hash is the folder's. It holds no service key
+// and no login to the platform's database.
 
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
+import https from "node:https";
 import pg from "pg";
-import { readStatement, VIEWER } from "./sql-text.mjs";
+import { leadingWords, readStatement, VIEWER } from "./sql-text.mjs";
 
 export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 export const FILE_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const STEP_NAME = /^[0-9]{3}-[a-z0-9]+(-[a-z0-9]+)*$/;
 const ENVIRONMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
+/** A data pass: 32 random bytes, base64url without padding. */
+const PASS = /^[A-Za-z0-9_-]{43}$/;
+/** A file a data pass keeps: a database's database.toml, or a file directly in its tables/, queries/ or actions/. */
+const KEPT_PATH = /^data\/[a-z][a-z0-9_]{0,39}\/(database\.toml|(tables|queries|actions)\/[^/]{1,255})$/;
+const TOML_PATH = /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/;
 /** A database folder's own login: the company's database, then o (owner), w (write) or r (read) and the folder's number. */
 const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
@@ -57,6 +65,10 @@ export const LIMITS = Object.freeze({
 	questionMs: 2_000,
 	questionRows: 2_000,
 	questionBytes: 256 * 1024,
+	/** An agent's question or read of its own (data_query): its time, and the rows and bytes of one answer. */
+	agentMs: 15_000,
+	agentRows: 200,
+	agentBytes: 24 * 1024,
 	/** A named change. */
 	changeMs: 5_000,
 	/** A step: its own time, and its wait for a lock. */
@@ -151,6 +163,58 @@ export class Platform {
 			.filter((entry) => entry.kind === "file" && SHA.test(entry.fileSha256 ?? ""))
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
 	}
+	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
+	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }> }`, or null for a pass that answers nothing. */
+	async redeemPass(pass) {
+		const headers = { apikey: this.#key, "content-type": "application/json" };
+		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
+		if (this.#key.startsWith("eyJ") && this.#key.split(".").length === 3) headers.authorization = `Bearer ${this.#key}`;
+		let response;
+		try {
+			response = await this.#fetch(`${this.#url}/rest/v1/rpc/qorpera_data_pass_redeem`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ p_pass: pass }),
+				signal: AbortSignal.timeout(8_000),
+			});
+		} catch {
+			refuse(503, "The platform did not answer");
+		}
+		if (!response.ok) refuse(503, "The platform refused the pass");
+		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
+		if (answer === null) return null;
+		const files = Array.isArray(answer?.files) ? answer.files : null;
+		if (
+			answer?.schema !== "qorpera.data-pass-redeemed/v1" ||
+			answer.kind !== "run" ||
+			!ENVIRONMENT.test(answer.environmentId ?? "") ||
+			!ENVIRONMENT.test(answer.runId ?? "") ||
+			!ENVIRONMENT.test(answer.requesterUserId ?? "") ||
+			(answer.database !== null && !DATABASE_NAME.test(answer.database ?? "")) ||
+			!files ||
+			files.length > 1000 ||
+			!files.every(
+				(file) => KEPT_PATH.test(file?.path ?? "") && SHA.test(file.sha256 ?? "") && Number.isSafeInteger(file.bytes) && file.bytes >= 0,
+			)
+		)
+			refuse(503, "The platform's answer is not a pass");
+		return {
+			environmentId: answer.environmentId,
+			runId: answer.runId,
+			requesterUserId: answer.requesterUserId,
+			database: answer.database,
+			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),
+		};
+	}
+}
+
+/** Whether a request's bearer is the token, compared in constant time. */
+function bearerIs(header, token) {
+	return (
+		typeof header === "string" &&
+		header.startsWith("Bearer ") &&
+		timingSafeEqual(createHash("sha256").update(header.slice(7)).digest(), createHash("sha256").update(token).digest())
+	);
 }
 
 /** Every value arrives as PostgreSQL's text, and is given a JSON shape here. */
@@ -242,15 +306,23 @@ export class Gateway {
 	/** Where a watch call that ran out of time stopped, so the next one goes on from there: by member, company and the
 	 * questions asked. Only a help: nothing breaks when it is lost. */
 	#resume = new Map();
+	/** The node's private token the run door takes ("a host of ours"); without it the run door answers nothing. */
+	#runToken;
+	/** Backends running an agent's read now, by pid, with how many: the watcher gives them an agent's limit. */
+	#agentReads = new Map();
+	/** Company databases this gateway has seen exist. */
+	#exists = new Set();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
 
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
-	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). */
-	constructor({ store, platform, limits = LIMITS, onProvision = () => undefined, beforeCancel = async () => undefined }) {
+	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). `runs`: { token }, the
+	 * node's private token an agent's tool brings to the run door. */
+	constructor({ store, platform, limits = LIMITS, runs = null, onProvision = () => undefined, beforeCancel = async () => undefined }) {
 		this.#store = store;
 		this.#platform = platform;
 		this.#limits = limits;
+		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
 	}
@@ -341,8 +413,10 @@ export class Gateway {
 		await Promise.all(ending);
 	}
 
-	/** The files the member may read now, each `{ sha256, bytes }` or null; kept for a few seconds per member and path. */
+	/** The files the caller may read now, each `{ sha256, bytes }` or null: a member's kept for a few seconds per member
+	 * and path, a run's from its redeemed pass. */
 	async #proven(caller, environmentId, paths) {
+		if (caller.files) return new Map(paths.map((path) => [path, caller.files.get(path) ?? null]));
 		const now = Date.now();
 		const found = new Map();
 		const ask = [];
@@ -404,13 +478,46 @@ export class Gateway {
 		return row.rows[0].n;
 	}
 
+	/** The files directly in a folder that the caller may list: a member's from the platform, a run's from its pass. */
+	async #listed(caller, environmentId, parent, limit) {
+		if (!caller.files) return this.#platform.memberList(caller.token, environmentId, parent, limit);
+		const prefix = `${parent}/`;
+		return [...caller.files]
+			.filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
+			.sort(([a], [b]) => (a < b ? -1 : 1))
+			.slice(0, limit)
+			.map(([path, file]) => ({ name: path.slice(prefix.length), sha256: file.sha256, bytes: file.bytes }));
+	}
+
+	/** A statement's values in its parameters' order. `:viewer` is the member looking; a run, which may read everything in
+	 * the database anyway, may name the member it asks for, else it is the member who asked the run. */
+	#values(caller, statement, params) {
+		if (!params || typeof params !== "object" || Array.isArray(params)) refuse(400, "Parameters are named values");
+		let viewer = caller.userId;
+		if (Object.hasOwn(params, VIEWER)) {
+			if (!caller.run) refuse(400, ":viewer is filled by Qorpera");
+			viewer = params[VIEWER];
+			if (typeof viewer !== "string" || !ENVIRONMENT.test(viewer)) refuse(400, ":viewer is a member's id");
+		}
+		const values = statement.parameters.map((parameter) => {
+			if (parameter === VIEWER) return viewer;
+			if (!Object.hasOwn(params, parameter)) refuse(400, `The question takes :${parameter}`);
+			const value = params[parameter];
+			if (value === null || typeof value === "string") return value;
+			if (typeof value === "number" && Number.isFinite(value)) return String(value);
+			if (typeof value === "boolean") return value ? "true" : "false";
+			return refuse(400, `:${parameter} is text, a number, true, false or null`);
+		});
+		for (const given of Object.keys(params)) if (!statement.parameters.includes(given)) refuse(400, `The question takes no :${given}`);
+		return values;
+	}
+
 	/** One question, ready to ask: the caller may read its file, the gateway holds its text, its parameters are filled. */
 	async #question(caller, environmentId, asked, texts, proofs = null) {
 		if (!asked || typeof asked !== "object") refuse(400, "Name a question");
 		const { database: name, question, params = {} } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof question !== "string" || !FILE_NAME.test(question) || question.length > 60)
 			refuse(400, "Name a question as <database>/<question>");
-		if (!params || typeof params !== "object" || Array.isArray(params)) refuse(400, "Parameters are named values");
 		const path = `data/${name}/queries/${question}.sql`;
 		const proof = (proofs ?? (await this.#proven(caller, environmentId, [path]))).get(path);
 		// The same answer for a question that is not there and one this member may not read.
@@ -423,30 +530,40 @@ export class Gateway {
 		if (!statement.ok) refuse(400, `${path}: ${statement.problem}`);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		const values = statement.parameters.map((parameter) => {
-			if (parameter === VIEWER) return caller.userId;
-			if (!Object.hasOwn(params, parameter)) refuse(400, `The question takes :${parameter}`);
-			const value = params[parameter];
-			if (value === null || typeof value === "string") return value;
-			if (typeof value === "number" && Number.isFinite(value)) return String(value);
-			if (typeof value === "boolean") return value ? "true" : "false";
-			return refuse(400, `:${parameter} is text, a number, true, false or null`);
-		});
-		for (const given of Object.keys(params)) {
-			if (given === VIEWER) refuse(400, ":viewer is filled by Qorpera");
-			if (!statement.parameters.includes(given)) refuse(400, `The question takes no :${given}`);
-		}
-		return { database, name, n, sql: statement.sql, values };
+		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params) };
+	}
+
+	/** An agent's read of its own, ready to ask as a question is: one statement, run as the database folder's read role
+	 * in a read-only transaction. The run must be able to read the database's database.toml. */
+	async #ownRead(caller, environmentId, asked) {
+		const { database: name, sql, params = {} } = asked;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (typeof sql !== "string" || sql.trim() === "") refuse(400, "Give one read statement");
+		if (Buffer.byteLength(sql) > this.#limits.questionTextBytes) refuse(400, `A read is at most ${this.#limits.questionTextBytes / 1024} KiB`);
+		const path = `data/${name}/database.toml`;
+		if (!(await this.#proven(caller, environmentId, [path])).get(path)) refuse(404, `No database ${name} that you may read`);
+		const statement = readStatement(sql);
+		if (!statement.ok) refuse(400, statement.problem);
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params) };
 	}
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
-	 * take, at most a question's limit. `gone`: when it aborts, the statement is cancelled. */
-	async #ask(ready, { ms = this.#limits.questionMs, gone = null } = {}) {
+	 * take, at most a question's limit. `gone`: when it aborts, the statement is cancelled. `agent`: an agent's read,
+	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. */
+	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false } = {}) {
+		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
+		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
+		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
 		const client = await this.#pool(ready.database, `${ready.database}_r${ready.n}`)
 			.connect()
 			.catch((error) => {
 				throw storeProblem(error);
 			});
+		const pid = client.processID;
+		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
 		// A connection its backend left (the watcher ended it) is not given back to the pool.
 		let lost;
 		const cancel = () => {
@@ -459,7 +576,7 @@ export class Gateway {
 		gone?.addEventListener("abort", cancel, { once: true });
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
-			const limit = Math.max(1, Math.floor(Math.min(this.#limits.questionMs, ms)));
+			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
@@ -478,12 +595,12 @@ export class Gateway {
 			);
 			const result = await client.query({
 				text:
-					`with ${asked} as (select * from (\n${ready.sql}\n) ${inner} limit ${this.#limits.questionRows + 1}), ` +
+					`with ${asked} as (select * from (\n${ready.sql}\n) ${inner} limit ${maxRows + 1}), ` +
 					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
 					`sum(octet_length(row(${asked}.*)::text)) over (rows between unbounded preceding and current row) as ${bytesSoFar} ` +
 					`from ${asked}) ` +
 					`select ${sized}.*, ${madeAs}.${rowsMade} from (select count(*) as ${rowsMade} from ${asked}) ${madeAs} ` +
-					`left join ${sized} on ${sized}.${bytesSoFar} <= ${this.#limits.questionBytes} order by ${sized}.${at}`,
+					`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes} order by ${sized}.${at}`,
 				values: ready.values,
 				rowMode: "array",
 				queryMode: "extended",
@@ -496,15 +613,15 @@ export class Gateway {
 			const given = result.rows[0][width + 1] === null ? [] : result.rows;
 			for (const row of given) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
 			this.taken.rows += given.length;
-			let more = made > this.#limits.questionRows || given.length < Math.min(made, this.#limits.questionRows);
+			let more = made > maxRows || given.length < Math.min(made, maxRows);
 			await client.query("rollback");
 			const columns = fields.map((field) => field.name);
 			const rows = [];
 			let bytes = 0;
-			for (const row of given.slice(0, this.#limits.questionRows)) {
+			for (const row of given.slice(0, maxRows)) {
 				const shapedRow = row.slice(0, width).map((value, index) => shaped(value, fields[index].dataTypeID));
 				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
-				if (bytes > this.#limits.questionBytes) {
+				if (bytes > maxBytes) {
 					more = true;
 					break;
 				}
@@ -519,6 +636,11 @@ export class Gateway {
 			throw storeProblem(error);
 		} finally {
 			gone?.removeEventListener("abort", cancel);
+			if (agent) {
+				const left = (this.#agentReads.get(pid) ?? 1) - 1;
+				if (left > 0) this.#agentReads.set(pid, left);
+				else this.#agentReads.delete(pid);
+			}
 			this.#release(client, lost);
 		}
 	}
@@ -807,7 +929,7 @@ export class Gateway {
 		if (!proof) refuse(404, `No database ${name} that you may read: it needs ${root}/database.toml`);
 		if (this.#full.has(companyDatabase(environmentId)))
 			refuse(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: delete rows or ask for more room`);
-		const listed = await this.#platform.memberList(caller.token, environmentId, `${root}/tables`, this.#limits.steps + 1);
+		const listed = await this.#listed(caller, environmentId, `${root}/tables`, this.#limits.steps + 1);
 		if (listed.length > this.#limits.steps) refuse(400, `A database holds at most ${this.#limits.steps} steps`);
 		const files = listed.filter((file) => file.name.endsWith(".sql"));
 		for (const file of files) {
@@ -937,9 +1059,20 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) return { database: name, applied: [], tables: [] };
+		const stored = await this.#stored(database, name);
+		return {
+			database: name,
+			applied: stored.applied.map((step) => ({ name: step.name, at: step.at })),
+			tables: stored.tables,
+			companyBytes: stored.companyBytes,
+		};
+	}
+
+	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size. */
+	async #stored(database, name) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns, size] = await Promise.all([
-			pool.query("select name, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
+			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
 				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.reltuples::bigint as rows
 				from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1
@@ -957,15 +1090,130 @@ export class Gateway {
 			tables.get(row.table).columns.push({ name: row.column, type: row.type });
 		}
 		return {
-			database: name,
-			applied: steps.rows.map((row) => ({ name: row.name, at: row.applied_at.toISOString() })),
+			applied: steps.rows.map((row) => ({ name: row.name, sha256: row.sha256, at: row.applied_at.toISOString() })),
 			tables: [...tables.values()],
 			companyBytes: Number(size.rows[0].bytes),
 		};
 	}
 
+	/** Whether the company's database exists yet: a company that never applied a step has none. */
+	async #companyExists(database) {
+		if (this.#exists.has(database) || this.#provisioned.has(database)) return true;
+		const found = await this.#pool("postgres", "qorpera_data_watch")
+			.query("select 1 from pg_catalog.pg_database where datname = $1", [database])
+			.catch((error) => {
+				throw storeProblem(error);
+			});
+		if (found.rowCount === 0) return false;
+		this.#exists.add(database);
+		return true;
+	}
+
+	/** data_describe (§6): the databases the run may read, or the one it names, as the folder and the store hold them:
+	 * each one's name and words from its database.toml, its steps (applied, waiting, changed after they were applied,
+	 * gone), its tables and columns, its questions with their words; and the company database's size against its
+	 * limit. The texts it does not hold come from the caller, as for a question. */
+	async runDescribe(caller, environmentId, body) {
+		const asked = body.database ?? null;
+		if (asked !== null && (typeof asked !== "string" || !DATABASE_NAME.test(asked))) refuse(400, "Name a database");
+		const names = [...caller.files.keys()].map((path) => TOML_PATH.exec(path)?.[1]).filter((name) => name !== undefined);
+		if (asked !== null && !names.includes(asked)) refuse(404, `No database ${asked} that you may read`);
+		const wanted = (asked === null ? names : [asked]).sort();
+		const database = companyDatabase(environmentId);
+		const exists = await this.#companyExists(database);
+		const texts = new Map();
+		const need = [];
+		for (const name of wanted) {
+			for (const [path, file] of caller.files) {
+				if (path !== `data/${name}/database.toml` && !(path.startsWith(`data/${name}/queries/`) && path.endsWith(".sql"))) continue;
+				if (file.bytes > this.#limits.questionTextBytes) continue;
+				let text = null;
+				if (exists) text = await this.#text(database, file.sha256, body.texts, this.#limits.questionTextBytes);
+				else {
+					const given = body.texts?.[file.sha256];
+					if (typeof given === "string" && sha256(given) === file.sha256) text = given;
+				}
+				if (text === null) need.push({ path, sha256: file.sha256 });
+				else texts.set(path, text);
+			}
+		}
+		if (need.length > 0) return { need };
+		const databases = [];
+		let companyBytes = 0;
+		if (exists)
+			companyBytes = Number(
+				(
+					await this.#pool(database, "qorpera_data_keeper")
+						.query("select pg_database_size(current_database()) as bytes")
+						.catch((error) => {
+							throw storeProblem(error);
+						})
+				).rows[0].bytes,
+			);
+		for (const name of wanted) {
+			const n = exists ? await this.#folder(database, name) : null;
+			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name);
+			const root = `data/${name}`;
+			const steps = [...caller.files]
+				.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))
+				.map(([path, file]) => ({ name: path.slice(`${root}/tables/`.length, -4), sha256: file.sha256 }))
+				.sort((a, b) => (a.name < b.name ? -1 : 1));
+			const live = new Map(steps.map((step) => [step.name, step.sha256]));
+			const applied = new Map(stored.applied.map((step) => [step.name, step]));
+			const toml = texts.get(`${root}/database.toml`) ?? "";
+			const word = (key) => {
+				const found = new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*(#.*)?$`, "m").exec(toml)?.[1];
+				try {
+					return found === undefined ? null : JSON.parse(found);
+				} catch {
+					return null;
+				}
+			};
+			databases.push({
+				database: name,
+				name: word("name"),
+				about: word("about"),
+				steps: {
+					applied: stored.applied.filter((step) => live.get(step.name) === step.sha256).map((step) => ({ name: step.name, at: step.at })),
+					waiting: steps.filter((step) => !applied.has(step.name)).map((step) => step.name),
+					changed: stored.applied.filter((step) => live.has(step.name) && live.get(step.name) !== step.sha256).map((step) => step.name),
+					missing: stored.applied.filter((step) => !live.has(step.name)).map((step) => step.name),
+				},
+				tables: stored.tables,
+				// A question's words, and its parameters when it reads as one statement; a file larger than a question may
+				// be has neither.
+				questions: [...caller.files]
+					.filter(([path]) => path.startsWith(`${root}/queries/`) && path.endsWith(".sql"))
+					.map(([path]) => {
+						const text = texts.get(path);
+						const statement = text === undefined ? null : readStatement(text);
+						return {
+							name: path.slice(`${root}/queries/`.length, -4),
+							words: text === undefined ? null : leadingWords(text).join(" "),
+							parameters: statement?.ok ? statement.parameters : null,
+							...(statement && !statement.ok ? { problem: statement.problem } : {}),
+						};
+					})
+					.sort((a, b) => (a.name < b.name ? -1 : 1)),
+			});
+		}
+		return { databases, companyBytes, limitBytes: this.#limits.companyBytes };
+	}
+
+	/** data_query (§6): a question by name or a read of the run's own, with an agent's limits. */
+	async runQuery(caller, environmentId, body) {
+		if (body.sql !== undefined && body.question !== undefined) refuse(400, "Ask a question or give a read, not both");
+		const ready =
+			body.sql !== undefined ? await this.#ownRead(caller, environmentId, body) : await this.#question(caller, environmentId, body, body.texts);
+		if (ready.need) return { need: [ready.need] };
+		const { columns, rows, more } = await this.#ask(ready, { agent: true });
+		return { columns, rows, more, asOf: new Date().toISOString() };
+	}
+
 	/** The watcher (§3), one look with `qorpera_data_watch`. It cancels any statement of a database folder's login that
-	 * has run longer than its door's limit and a margin: a limit a login could lift for itself is backed here. A
+	 * has run longer than its door's limit and a margin: a limit a login could lift for itself is backed here. A read
+	 * login's backend that runs an agent's read now has an agent's limit; the gateway knows it by its pid, which no
+	 * statement can change. A
 	 * statement still running at the next look (its code caught the cancel) has its backend ended. It reads every company database's size, and a company at its limit gets no more steps until it
 	 * makes room; its questions still answer. */
 	async watchOnce() {
@@ -978,9 +1226,10 @@ export class Gateway {
 				cross join lateral (select a.pid::text || '@' || a.query_start::text as statement) s
 				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_[owr][0-9]+$'
 				and clock_timestamp() - a.query_start > make_interval(secs => (case substring(a.usename from '_([owr])[0-9]+$')
-					when 'r' then $1::float8 when 'w' then $2::float8 when 'o' then $3::float8
+					when 'r' then case when a.pid = any($6::int[]) then $7::float8 else $1::float8 end
+					when 'w' then $2::float8 when 'o' then $3::float8
 				end + $4::float8) / 1000)`,
-				[this.#limits.questionMs, this.#limits.changeMs, this.#limits.stepMs, OVERRUN_MS, this.#cancelled],
+				[this.#limits.questionMs, this.#limits.changeMs, this.#limits.stepMs, OVERRUN_MS, this.#cancelled, [...this.#agentReads.keys()], this.#limits.agentMs],
 			);
 			this.#cancelled = ended.rows.filter((row) => row.ended && !row.terminated).map((row) => row.statement);
 			for (const row of ended.rows) if (row.ended) this.#signal(row.pid);
@@ -1039,6 +1288,39 @@ export class Gateway {
 		}
 	}
 
+	/** An agent's request on the run door (SLICE5): the node's private token as the bearer and a data pass in the body.
+	 * A wrong token, no pass and a pass that redeems to nothing get one answer, 401, with no detail. The pass names the
+	 * company, the run's requester and the files the run may read; nothing else in the request does. */
+	async handleRun(method, path, headers, read) {
+		const route = /^\/v1\/run-data\/(describe|apply|query)$/.exec(path);
+		if (!this.#runToken) refuse(404, "Not a call the data gateway answers");
+		if (!bearerIs(headers.authorization, this.#runToken)) refuse(401, "Not allowed");
+		if (!route) refuse(404, "Not a call the data gateway answers");
+		if (method !== "POST") refuse(405, "Use POST");
+		let body;
+		try {
+			body = JSON.parse(await read(this.#limits.bodyBytes));
+		} catch (error) {
+			if (error instanceof Refusal) throw error;
+			refuse(400, "The body is not JSON");
+		}
+		if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+		if (typeof body.pass !== "string" || !PASS.test(body.pass)) refuse(401, "Not allowed");
+		if (body.texts !== undefined && (typeof body.texts !== "object" || body.texts === null || Array.isArray(body.texts)))
+			refuse(400, "Texts are given by their hash");
+		const kept = await this.#platform.redeemPass(body.pass);
+		if (!kept) refuse(401, "Not allowed");
+		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files };
+		switch (route[1]) {
+			case "query":
+				return this.runQuery(caller, kept.environmentId, body);
+			case "apply":
+				return this.apply(caller, kept.environmentId, body);
+			default:
+				return this.runDescribe(caller, kept.environmentId, body);
+		}
+	}
+
 	async close() {
 		this.#closed = true;
 		for (const listener of this.#listeners.values()) {
@@ -1069,9 +1351,9 @@ export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefin
 	return () => clearInterval(timer);
 }
 
-/** The gateway's HTTP side: JSON in, JSON out, loopback. */
-export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
-	const server = http.createServer(async (request, response) => {
+/** One request to `handle(method, path, headers, read, gone)`: JSON in, JSON out. */
+function answering(handle) {
+	return async (request, response) => {
 		const gone = new AbortController();
 		response.on("close", () => {
 			if (!response.writableEnded) gone.abort();
@@ -1096,7 +1378,7 @@ export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
 		let status = 200;
 		let value;
 		try {
-			value = await gateway.handle(request.method, new URL(request.url, "http://gateway").pathname, request.headers, read, gone.signal);
+			value = await handle(request.method, new URL(request.url, "http://gateway").pathname, request.headers, read, gone.signal);
 		} catch (error) {
 			const refusal = error instanceof Refusal ? error : new Refusal(500, "The data gateway failed");
 			status = refusal.status;
@@ -1106,6 +1388,22 @@ export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
 		const text = JSON.stringify(value);
 		response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text), "cache-control": "no-store" });
 		response.end(text);
-	});
+	};
+}
+
+/** The gateway's HTTP side for members: JSON in, JSON out, loopback. */
+export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
+	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone)));
+	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
+}
+
+/** The run door (SLICE5; nodework/road.md part (c)): its own listener, on its own host and port, for agents' tools on
+ * the nodes. TLS when a certificate and key are given (PEM text); plain only for a test on loopback. It answers only
+ * `POST /v1/run-data/(describe|apply|query)`, and only when the gateway holds the node's private token. */
+export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
+	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
+	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
+	const handler = answering((method, path, headers, read) => gateway.handleRun(method, path, headers, read));
+	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
 	return new Promise((resolve) => server.listen(port, host, () => resolve(server)));
 }
