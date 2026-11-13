@@ -1233,7 +1233,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const data = runtime.companyData;
 		if (
 			data &&
-			(Object.values(credentials).includes(data.token) || data.token === office?.token || data.token === coding?.token)
+			(Object.values(credentials).includes(data.token) ||
+				data.token === office?.token ||
+				data.token === coding?.token)
 		)
 			throw new Error("Company data credential must be independent");
 		if (

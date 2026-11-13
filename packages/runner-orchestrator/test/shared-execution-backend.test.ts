@@ -488,10 +488,11 @@ describe("shared execution provider backend", () => {
 		// The CA's path is the unit's own (%d), never the slot's env.
 		expect(environment).not.toContain("QORPERA_COMPANY_DATA_CA_FILE");
 		expect(environment).not.toContain(door.token);
-		// A token another credential of the slot holds is refused before anything is written.
+		// A token another credential of the node holds is refused when the service starts.
 		const shared = { origin: "https://coding.example.test:8789", token: token() };
-		const clash = await fixture({ codingCommand: shared, companyData: { ...door, token: shared.token } });
-		await expect(clash.backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow();
+		await expect(fixture({ codingCommand: shared, companyData: { ...door, token: shared.token } })).rejects.toThrow(
+			"Company databases require",
+		);
 	});
 
 	it("gives the native host the node's folder search when it is on: the slot's relay socket, started first", async () => {
