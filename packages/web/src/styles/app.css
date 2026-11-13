@@ -658,7 +658,11 @@ label > input, label > select { font-weight: 400; }
 .figure-fx { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .figure-bit { position: absolute; display: block; pointer-events: none; }
 .figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
-.figure-sparkle { background: var(--bit); clip-path: polygon(50% 0, 63% 37%, 100% 50%, 63% 63%, 50% 100%, 37% 63%, 0 50%, 37% 37%); }
+/* A star: four full points in one flat vivid colour. The shape is on a layer inside, so the soft glow of its own
+ * colour around a burst's stars (a filter on the star itself) is not cut off with it. The juggled stars have no
+ * glow: they move every frame. */
+.figure-sparkle::before { content: ""; position: absolute; inset: 0; background: var(--bit); clip-path: polygon(50% 0, 65% 35%, 100% 50%, 65% 65%, 50% 100%, 35% 65%, 0 50%, 35% 35%); }
+.figure-sparkle:not(.figure-prop) { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bit) 55%, transparent)); }
 /* The stars a working figure juggles: placed from the figure's corner by the transform ui/figure-motion.ts writes. */
 .figure-prop { left: 0; top: 0; transform: scale(0); }
 @media (forced-colors: active) {

@@ -17,9 +17,13 @@ import {
 	nextIdle,
 	openEyes,
 	REST,
+	TRICKS,
+	type Trick,
+	trickOf,
 	working,
 	workingCues,
 	workingStill,
+	workingTrick,
 } from "../src/ui/figure-acts.ts";
 
 const samples = (from: number, to: number, step = 0.02) =>
@@ -118,7 +122,7 @@ describe("a figure that needs the member", () => {
 describe("a working figure", () => {
 	const BEAT = 0.46;
 	it("stays itself, eyes and all, and brings its three stars out one beat after another", () => {
-		for (const t of samples(0, 30, 0.05)) {
+		for (const t of samples(0, 60, 0.05)) {
 			const act = working(t, 3);
 			expect(act.symbol).toBeUndefined();
 			expect(act.eyes).toBeDefined();
@@ -131,17 +135,16 @@ describe("a working figure", () => {
 		expect(out(4 * BEAT)).toBe(3);
 	});
 	it("keeps the stars in the air: each goes from one shoulder over the top to the other, and up again", () => {
-		const path = samples(4 * BEAT, 16 * BEAT, 0.01).map((t) => working(t, 1).props!);
+		// The first round of beats, before any trick.
+		const path = samples(4 * BEAT, 8 * BEAT, 0.01).map((t) => working(t, 1).props!);
 		for (const star of [0, 1, 2]) {
 			const xs = path.map((stars) => stars[star]!.x),
 				ys = path.map((stars) => stars[star]!.y);
-			// Both shoulders, and well over the head in between.
-			expect(Math.min(...xs)).toBeLessThan(22);
-			expect(Math.max(...xs)).toBeGreaterThan(78);
-			expect(Math.min(...ys)).toBeLessThan(2);
+			expect(Math.min(...ys)).toBeLessThan(4);
 			expect(Math.max(...ys)).toBeLessThanOrEqual(36.01);
+			expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(40);
 		}
-		// Never two stars in one place: they follow each other a beat apart.
+		// Never two stars in one place: they follow each other a beat apart, on two paths.
 		for (const stars of path)
 			for (const [a, b] of [
 				[0, 1],
@@ -149,52 +152,103 @@ describe("a working figure", () => {
 				[0, 2],
 			] as const)
 				expect(Math.hypot(stars[a]!.x - stars[b]!.x, stars[a]!.y - stars[b]!.y)).toBeGreaterThan(8);
-		// No star jumps: a hundredth of a second moves it a little.
-		path.slice(1).forEach((stars, index) => {
-			for (const star of [0, 1, 2]) {
-				const before = path[index]![star]!;
-				// A bump turns a star round at its shoulder, where it changes side in place.
-				expect(Math.hypot(stars[star]!.x - before.x, stars[star]!.y - before.y)).toBeLessThan(4);
+	});
+	it("never makes a star jump, through every trick and back", () => {
+		for (const seed of [0, 1, 2]) {
+			let before = working(4 * BEAT, seed).props!;
+			for (const t of samples(4 * BEAT + 0.01, 100 * BEAT, 0.01)) {
+				const now = working(t, seed).props!;
+				for (const star of [0, 1, 2]) {
+					expect(
+						Math.hypot(now[star]!.x - before[star]!.x, now[star]!.y - before[star]!.y),
+						`seed ${seed} at ${t}`,
+					).toBeLessThan(5);
+					expect(Math.abs(now[star]!.scale - before[star]!.scale)).toBeLessThan(0.2);
+				}
+				before = now;
 			}
-		});
+		}
 	});
 	it("bounces from side to side under them and follows them with its eyes", () => {
-		const acts = samples(4 * BEAT, 12 * BEAT, 0.01).map((t) => working(t, 5));
+		const acts = samples(4 * BEAT, 8 * BEAT, 0.01).map((t) => working(t, 5));
 		// Leaning left and right, up between the beats.
 		expect(Math.min(...acts.map((act) => act.body.turn))).toBeLessThan(-3);
 		expect(Math.max(...acts.map((act) => act.body.turn))).toBeGreaterThan(3);
 		expect(Math.min(...acts.map((act) => act.body.y))).toBeLessThan(-3);
 		// The eyes look up, and to both sides.
-		const looks = acts.filter((act) => act.eyes![0].alpha === 1 && act.eyes![0].smile === 0);
-		expect(Math.min(...looks.map((act) => act.eyes![0].x))).toBeLessThan(-0.3);
-		expect(Math.max(...looks.map((act) => act.eyes![0].x))).toBeGreaterThan(0.3);
-		// As a star is at the top (a little over a beat after its bump), the eyes are on it: near the middle, looking
-		// up, and going the way the star goes (bumped at an even beat, it goes to the right).
+		expect(Math.min(...acts.map((act) => act.eyes![0].x))).toBeLessThan(-0.3);
+		expect(Math.max(...acts.map((act) => act.eyes![0].x))).toBeGreaterThan(0.3);
+		// As a star is at the top, the eyes are on it: near the middle, looking up.
 		const star = samples(4, 7, 0.01).map((q) => working(q * BEAT, 1));
 		const top = star.reduce((best, act) => (act.props![1]!.y < best.props![1]!.y ? act : best));
 		expect(Math.abs(top.eyes![0].x)).toBeLessThan(0.2);
 		expect(top.eyes![0].y).toBeLessThan(-0.4);
 	});
-	it("shows a trick every few seconds: a smile, a look at the member, a twirl, higher throws", () => {
-		const seen = new Set<string>();
-		for (const seed of [0, 1, 2, 3, 4, 5, 6, 7]) {
-			for (const t of samples(0, 24, 0.02)) {
-				const act = working(t, seed);
-				if (act.eyes![0].smile === 1) seen.add("smile");
-				if (act.eyes![0].alpha === 0) seen.add("twirl");
-				if (Math.min(...act.props!.map((star) => star.y)) < -4) seen.add("high");
-				if (t > 2 && Math.abs(act.eyes![0].y) < 0.02 && act.eyes![0].smile === 0 && act.eyes![0].alpha === 1)
-					seen.add("check");
-			}
+	it("goes through all ten tricks, in an order of its own, before it shows any again", () => {
+		expect(TRICKS).toHaveLength(10);
+		for (const seed of [0, 1, 2, 3]) {
+			// None in the first round: the stars are only just out.
+			expect(trickOf(0, seed)).toBeUndefined();
+			const shown = Array.from({ length: 40 }, (_, index) => trickOf(index + 1, seed)!);
+			for (let block = 0; block < 4; block++)
+				expect([...shown.slice(block * 10, block * 10 + 10)].sort()).toEqual([...TRICKS].sort());
+			shown.slice(1).forEach((trick, index) => {
+				expect(trick).not.toBe(shown[index]);
+			});
 		}
-		expect([...seen].sort()).toEqual(["check", "high", "smile", "twirl"]);
-		// Agents differ in what they show when.
-		const shows = (seed: number) =>
-			samples(0, 30, 0.25)
-				.map((t) => working(t, seed))
-				.map((act) => `${act.eyes![0].smile > 0.5}${act.eyes![0].alpha < 0.5}${Math.round(act.body.y)}`)
-				.join();
-		expect(new Set([1, 2, 3, 4].map(shows)).size).toBeGreaterThan(1);
+		expect(Array.from({ length: 10 }, (_, index) => trickOf(index + 1, 1))).not.toEqual(
+			Array.from({ length: 10 }, (_, index) => trickOf(index + 1, 2)),
+		);
+		// A trick is on in the middle of its round and off at the round's ends.
+		expect(workingTrick(8 * BEAT + 0.5 * BEAT, 1)).toBeUndefined();
+		expect(workingTrick(8 * BEAT + 4 * BEAT, 1)).toBe(trickOf(1, 1));
+	});
+	it("shows each trick as what it is", () => {
+		// The middle of the round in which a seed shows `trick`, as samples over the trick's beats.
+		const during = (trick: Trick) => {
+			for (const seed of [0, 1, 2, 3, 4, 5]) {
+				for (let round = 1; round <= 10; round++) {
+					if (trickOf(round, seed) !== trick) continue;
+					return samples((round * 8 + 2) * BEAT, (round * 8 + 6) * BEAT, 0.01).map((t) => working(t, seed));
+				}
+			}
+			throw new Error(`no round shows ${trick}`);
+		};
+		const middle = (acts: ReturnType<typeof during>) => acts[Math.floor(acts.length / 2)]!;
+		expect(middle(during("smile")).eyes![0].smile).toBe(1);
+		expect(Math.abs(middle(during("check")).eyes![0].y)).toBeLessThan(0.05);
+		expect(during("twirl").some((act) => act.eyes![0].alpha === 0 && act.body.scaleX < 0.3)).toBe(true);
+		// Higher throws, and one far higher than any.
+		const top = (acts: ReturnType<typeof during>) =>
+			Math.min(...acts.flatMap((act) => act.props!.map((star) => star.y)));
+		expect(top(during("high"))).toBeLessThan(top(during("smile")) - 3);
+		expect(top(during("sky"))).toBeLessThan(-22);
+		// The sky star is watched all the way up: the eyes go as high as they go.
+		expect(Math.min(...during("sky").map((act) => act.eyes![0].y))).toBeLessThan(-0.6);
+		// A header: a star on the top of the head, and a hop.
+		const header = during("header");
+		expect(
+			header.some((act) => act.props!.some((star) => Math.abs(star.x - 50) < 2 && Math.abs(star.y - 11) < 2)),
+		).toBe(true);
+		expect(Math.min(...header.map((act) => act.body.y))).toBeLessThan(-6);
+		// The stack: one over another, eyes crossed on it.
+		const stack = middle(during("stack"));
+		expect(stack.props!.every((star) => Math.abs(star.x - 50) < 5)).toBe(true);
+		expect(stack.eyes![0].x).toBeGreaterThan(0.1);
+		expect(stack.eyes![1].x).toBeLessThan(-0.1);
+		// The halo: all three overhead in a ring, a smile under it.
+		const halo = middle(during("halo"));
+		expect(halo.props!.every((star) => star.y < 13 && star.y > -3)).toBe(true);
+		expect(halo.eyes![0].smile).toBe(1);
+		// The ta-da: held out in a fan, larger.
+		const tada = middle(during("tada"));
+		expect(tada.props!.map((star) => Math.round(star.x))).toEqual([23, 50, 77]);
+		expect(tada.props!.every((star) => star.scale > 1.1)).toBe(true);
+		expect(Math.min(...during("tada").map((act) => act.body.y))).toBeLessThan(-8);
+		// Merged: one big star, the other two away inside it.
+		const merge = middle(during("merge"));
+		expect(merge.props![0]!.scale).toBeGreaterThan(1.8);
+		expect(merge.props![1]!.scale).toBeLessThan(0.3);
 	});
 	it("catches its stars and becomes its ask for a moment when something also waits on the member", () => {
 		const symbols = (ask?: "question" | "bang") =>
@@ -208,19 +262,22 @@ describe("a working figure", () => {
 		expect(working(asks, 2, "bang").props).toBeUndefined();
 		expect(working(11.6 + 3 * BEAT, 2, "bang").props!.some((star) => star.scale > 0.5)).toBe(true);
 	});
-	it("sets off dust where a twirl lands and stars as it becomes its ask, each once", () => {
+	it("sets off dust where a twirl lands, stars beside a ta-da and as it becomes its ask, each once", () => {
 		for (const ask of [undefined, "bang"] as const) {
-			const whole = workingCues(0, 60, 4, ask);
+			const whole = workingCues(0, 120, 4, ask);
 			let framed = 0;
-			for (let frame = 0; frame < 60 * 60; frame++)
+			for (let frame = 0; frame < 120 * 60; frame++)
 				framed += workingCues(frame / 60, (frame + 1) / 60, 4, ask).length;
 			expect(framed).toBe(whole.length);
-			expect(new Set(whole.map((cue) => cue.effect))).toEqual(new Set(ask ? ["dust", "pop"] : ["dust"]));
+			const effects = new Set(whole.map((cue) => cue.effect));
+			expect(effects.has("dust")).toBe(true);
+			expect(effects.has("pop")).toBe(ask !== undefined);
 		}
+		expect(new Set(workingCues(0, 120, 4).map((cue) => cue.effect))).toEqual(new Set(["dust", "twinkle"]));
 		// The dust of a twirl is where the twirl comes down.
-		const seed = [0, 1, 2, 3, 4, 5, 6, 7].find((each) => workingCues(0, 8 * BEAT, each).length)!;
-		const landing = workingCues(0, 8 * BEAT, seed)[0]!.at;
-		expect(working(landing - 0.15, seed).body.y).toBeLessThan(-4);
+		const round = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].find((each) => trickOf(each, 4) === "twirl")!;
+		const landing = workingCues(round * 8 * BEAT, (round + 1) * 8 * BEAT, 4)[0]!.at;
+		expect(working(landing - 0.15, 4).body.y).toBeLessThan(-4);
 	});
 	it("rests looking up at its three stars for a member who wants no motion", () => {
 		const still = workingStill();

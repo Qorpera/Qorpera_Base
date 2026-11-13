@@ -275,10 +275,12 @@ export function askingCues(from: number, to: number, seed = 0): Cue[] {
 /* ---- working: the figure juggles ---------------------------------------------------------------------
  * A working figure stays itself and keeps three small stars in the air. It bumps one up at every
  * beat, from its left shoulder and its right in turn, bouncing from side to side under them, and its
- * eyes follow each star over the top. Every few seconds it shows a trick, drawn from the agent's seed:
- * a smile, a look at the member, a twirl under the stars, or a round of higher throws. A figure whose
- * work also waits on the member catches its stars now and then, becomes its "?" or "!" for a moment,
- * and takes the stars up again. */
+ * eyes follow each star over the top. Every few seconds it shows a trick. There are ten, and an agent
+ * goes through all of them, in an order of its own, before it shows any again: a smile, a look at the
+ * member, a twirl under the stars, a round of higher throws, one star sent sky high, a header off the
+ * top of its head, the stars stacked and balanced, a halo of them circling overhead, a "ta-da" with
+ * the stars held out, and the three merged into one big star. A figure whose work also waits on the
+ * member catches its stars now and then, becomes its "?" or "!" for a moment, and takes them up again. */
 
 /** A bump every beat. Three stars: each is in the air for three beats. */
 const BEAT = 0.46;
@@ -288,103 +290,241 @@ const STARS = 3;
 const SHOULDER_Y = 33;
 const BUMP_X = 12;
 const LAND_X = 30;
+/** The top of the head, where a header goes off and where formations stand. */
+const HEAD_Y = 11;
 /** How high over the shoulders a star flies, and how many of its three beats it is in the air. */
 const ARC = 35;
 const FLIGHT = 2.3;
 /** The beat, after a bump, at which that star is at the top. */
 const TOP = FLIGHT / 2;
-/** A trick every this many beats, over the beats in between. */
+/** Each round of beats throws a little lower or higher than the last, by the agent's seed. */
+const ROUND_ARC = [0.92, 1, 1.08];
+/** A trick every this many beats (a round), over the beats in between. */
 const TRICK_EVERY = 8;
 const TRICK_FROM = 2;
 const TRICK_TO = 6;
-const TRICKS = ["smile", "check", "twirl", "high"] as const;
+export const TRICKS = ["smile", "check", "twirl", "high", "sky", "header", "stack", "halo", "tada", "merge"] as const;
+export type Trick = (typeof TRICKS)[number];
+/** The tricks that take the stars out of the air and hold them in a figure of their own. */
+const FORMATIONS: readonly Trick[] = ["stack", "halo", "tada", "merge"];
 /** With something waiting on the member: this many beats of juggling, then the ask for a while. */
 const JUGGLE_BEATS = 16;
 const JUGGLE_ASK_HOLD = 2.6;
 const JUGGLE_PERIOD = JUGGLE_BEATS * BEAT + BECOME + JUGGLE_ASK_HOLD + RETURN;
 
-/** The trick at beat `q` of a seed's juggling, and how far into its beats it is (0 before, 1 after). */
-function trickAt(q: number, seed: number): { kind: (typeof TRICKS)[number]; local: number; on: number } {
+const orders = new Map<string, Trick[]>();
+/** The trick of a seed's `round`: none in the first (the stars are only just out), then every trick once, in a
+ * shuffled order, before any comes again, and never the same one twice running. */
+export function trickOf(round: number, seed: number): Trick | undefined {
+	if (round < 1) return undefined;
+	const block = Math.floor((round - 1) / TRICKS.length);
+	const key = `${seed}:${block}`;
+	let order = orders.get(key);
+	if (!order) {
+		const random = mulberry32((seed ^ Math.imul(block + 1, 0x9e3779b1)) >>> 0);
+		order = [...TRICKS];
+		for (let index = order.length - 1; index > 0; index--) {
+			const other = Math.floor(random() * (index + 1));
+			[order[index], order[other]] = [order[other]!, order[index]!];
+		}
+		// A block may not open on the trick the one before it closed on.
+		const before = block > 0 ? trickOf(block * TRICKS.length, seed) : undefined;
+		if (order[0] === before) [order[0], order[1]] = [order[1]!, order[0]!];
+		orders.set(key, order);
+	}
+	return order[(round - 1) % TRICKS.length];
+}
+/** The trick at beat `q`, how far into its round that is, and how much the trick is on (0 before and after). */
+function trickAt(q: number, seed: number): { kind: Trick | undefined; round: number; local: number; on: number } {
 	const round = Math.floor(q / TRICK_EVERY);
 	const local = q - round * TRICK_EVERY;
-	return {
-		kind: TRICKS[pick(seed, round, 3, TRICKS.length)]!,
-		local,
-		on: pulse(local, TRICK_FROM, TRICK_FROM + 0.5, TRICK_TO - 0.5, TRICK_TO),
-	};
+	const kind = trickOf(round, seed);
+	return { kind, round, local, on: kind ? pulse(local, TRICK_FROM, TRICK_FROM + 0.7, TRICK_TO - 0.7, TRICK_TO) : 0 };
 }
-/** A throw made at beat `n` goes higher in a round of high throws. */
-const arcOf = (n: number, seed: number) => {
-	const trick = trickAt(n, seed);
-	return ARC * (trick.kind === "high" && trick.local >= TRICK_FROM && trick.local < TRICK_TO ? 1.16 : 1);
-};
+
+/** Where a star bumped at beat `bumped` is, `since` beats later, while it is in the air. The one bumped as a
+ * "sky" or a "header" trick starts goes its own way: far higher, or off the top of the head on the way over. */
+function flown(bumped: number, since: number, seed: number): { x: number; y: number } {
+	const way = bumped % 2 === 0 ? 1 : -1;
+	const u = since / FLIGHT;
+	const from = 50 - way * BUMP_X,
+		to = 50 + way * LAND_X;
+	const round = Math.floor(bumped / TRICK_EVERY);
+	const local = bumped - round * TRICK_EVERY;
+	const trick = trickOf(round, seed);
+	if (trick === "header" && local === TRICK_FROM) {
+		// Up to the head, off it, and down to the shoulder: two small arcs.
+		if (u < 0.5) {
+			const a = u / 0.5;
+			return { x: from + (50 - from) * a, y: SHOULDER_Y + (HEAD_Y - SHOULDER_Y) * a - 13 * 4 * a * (1 - a) };
+		}
+		const b = (u - 0.5) / 0.5;
+		return { x: 50 + (to - 50) * b, y: HEAD_Y + (SHOULDER_Y - HEAD_Y) * b - 12 * 4 * b * (1 - b) };
+	}
+	const arc =
+		ARC *
+		ROUND_ARC[pick(seed, round, 5, ROUND_ARC.length)]! *
+		(trick === "high" && local >= TRICK_FROM && local < TRICK_TO ? 1.16 : 1) *
+		(trick === "sky" && local === TRICK_FROM ? 1.8 : 1);
+	return { x: from + (to - from) * u, y: SHOULDER_Y - arc * 4 * u * (1 - u) };
+}
+
+/** Where the stars stand in a formation, `s` seconds into it. */
+function formation(kind: Trick, star: number, s: number): Prop {
+	if (kind === "stack") {
+		// One on another on the head, the higher ones swaying more.
+		const sway = Math.sin(TAU * (s / 0.95) + star * 0.8) * (0.8 + star * 1.2);
+		return { x: 50 + sway, y: HEAD_Y - 1 - star * 12, turn: sway * 5, scale: 1 };
+	}
+	if (kind === "halo") {
+		// Round and round over the head, larger as they come to the front.
+		const angle = TAU * (s / 0.85) + (star * TAU) / STARS;
+		return {
+			x: 50 + 22 * Math.cos(angle),
+			y: HEAD_Y - 6 + 6.5 * Math.sin(angle),
+			turn: (angle * 180) / Math.PI,
+			scale: 0.92 + 0.22 * Math.sin(angle),
+		};
+	}
+	if (kind === "tada") {
+		// Held out in a fan, swelling once as the figure hops.
+		return {
+			x: 50 + (star - 1) * 27,
+			y: HEAD_Y - 5 - (star === 1 ? 12 : 0),
+			turn: s * 90,
+			scale: 1.15 + 0.3 * pulse(s, 0.45, 0.7, 0.75, 1.1),
+		};
+	}
+	// Merged: one big star bouncing on the head, the other two inside it.
+	const bounce = Math.abs(Math.sin(Math.PI * (s / BEAT)));
+	return { x: 50, y: HEAD_Y - 6 - 13 * bounce, turn: s * 200, scale: star === 0 ? 1.95 : 0.2 };
+}
 
 /** The three stars at beat `q`: each bumped up from one shoulder, over the top, down onto the other, and across
- * it to be bumped again. `out` is how far the figure has them out at all (0 none, 1 all in the air). */
+ * it to be bumped again, or held in the formation of the moment. `out` is how far the figure has them out at
+ * all (0 none, 1 all in the air). */
 function stars(q: number, seed: number, out: number): Prop[] {
+	const trick = trickAt(q, seed);
+	const held = trick.kind && FORMATIONS.includes(trick.kind) ? trick.on : 0;
 	return Array.from({ length: STARS }, (_, star) => {
 		// Star `star` is bumped at beats star, star + 3, star + 6…; before its first it is still away.
 		if (q < star) return { x: 50, y: SHOULDER_Y, turn: 0, scale: 0 };
 		const bumped = star + STARS * Math.floor((q - star) / STARS);
 		const since = q - bumped;
 		const way = bumped % 2 === 0 ? 1 : -1;
-		// It pops out at its first bump.
-		const scale = out * ease(star, star + 0.6, q);
-		if (since < FLIGHT) {
-			const u = since / FLIGHT;
-			return {
-				x: 50 - way * BUMP_X + way * (BUMP_X + LAND_X) * u,
-				y: SHOULDER_Y - arcOf(bumped, seed) * 4 * u * (1 - u),
-				turn: way * 300 * u + bumped * 40,
-				scale,
+		let prop: Prop;
+		if (since < FLIGHT)
+			prop = { ...flown(bumped, since, seed), turn: way * 300 * (since / FLIGHT) + bumped * 40, scale: 1 };
+		else {
+			// On the shoulder: it sinks in a little and rolls across to where it is bumped from.
+			const w = (since - FLIGHT) / (STARS - FLIGHT);
+			prop = {
+				x: 50 + way * LAND_X - way * (LAND_X - BUMP_X) * w,
+				y: SHOULDER_Y + 3 * Math.sin(Math.PI * w),
+				turn: way * 300 - way * 100 * w + bumped * 40,
+				scale: 1,
 			};
 		}
-		// On the shoulder: it sinks in a little and rolls across to where it is bumped from.
-		const w = (since - FLIGHT) / (STARS - FLIGHT);
-		return {
-			x: 50 + way * LAND_X - way * (LAND_X - BUMP_X) * w,
-			y: SHOULDER_Y + 3 * Math.sin(Math.PI * w),
-			turn: way * 300 - way * 100 * w + bumped * 40,
-			scale,
-		};
+		if (held > 0) {
+			const to = formation(trick.kind!, star, (trick.local - TRICK_FROM) * BEAT);
+			prop = {
+				x: prop.x + (to.x - prop.x) * held,
+				y: prop.y + (to.y - prop.y) * held,
+				turn: prop.turn + (to.turn - prop.turn) * held,
+				scale: prop.scale + (to.scale - prop.scale) * held,
+			};
+		}
+		// It pops out at its first bump.
+		return { ...prop, scale: prop.scale * out * ease(star, star + 0.6, q) };
 	});
 }
+
+/** The eyes on a point of the frame. */
+const lookAt = (x: number, y: number): Partial<EyePose> => ({
+	x: clamp((x - 50) / 55, -0.5, 0.5),
+	y: clamp((y - 42) / 78, -0.64, 0.2),
+});
+/** One pair of eyes on the way to another. */
+const mixEyes = (from: Eyes, to: Eyes, w: number): Eyes =>
+	from.map((eye, index) => {
+		const other = to[index]!;
+		const mixed = { ...eye };
+		for (const key of Object.keys(eye) as (keyof EyePose)[]) mixed[key] = eye[key] + (other[key] - eye[key]) * w;
+		return mixed;
+	}) as Eyes;
 
 /** The juggling figure at beat `q`: its bounce from side to side, its eyes on the stars, and the trick of the
  * moment. `on` is how much it is at it (it eases in and out of juggling). */
 function juggling(q: number, seed: number, on: number): { body: BodyPose; eyes: Eyes } {
 	const trick = trickAt(q, seed);
-	const high = trick.kind === "high" ? trick.on : 0;
-	// On the ground at each beat, leaning to the side it bumps from; up between beats.
-	const side = -Math.cos(Math.PI * q) * on;
-	const up = Math.abs(Math.sin(Math.PI * q)) ** 1.3 * on;
-	let body: BodyPose = { x: 2.4 * side, y: -(3.4 + 2.2 * high) * up, turn: 4 * side, ...squash(0.06 * (1 - up) * on) };
+	const { kind, local } = trick;
+	const held = kind && FORMATIONS.includes(kind) ? trick.on : 0;
+	const s = (local - TRICK_FROM) * BEAT;
+	// On the ground at each beat, leaning to the side it bumps from; up between beats. It stands while it holds
+	// the stars in a formation.
+	const bounce = on * (1 - held);
+	const side = -Math.cos(Math.PI * q) * bounce;
+	const up = Math.abs(Math.sin(Math.PI * q)) ** 1.3 * bounce;
+	let body: BodyPose = {
+		x: 2.4 * side,
+		y: -(3.4 + (kind === "high" ? 2.2 * trick.on : 0)) * up,
+		turn: 4 * side,
+		...squash(0.06 * (1 - up) * bounce),
+	};
 	// A star is at the top a little over a beat after its bump: the eyes go over with it and come back for the next.
-	const sweep = Math.sin(Math.PI * (q - TOP + 0.1)) * on;
-	let eye: Partial<EyePose> = {
+	const sweep = Math.sin(Math.PI * (q - TOP + 0.1)) * bounce;
+	let eyes = pair({
 		x: 0.44 * sweep,
-		y: -(0.42 + 0.12 * Math.cos(TAU * (q - TOP))) * on,
+		y: -(0.42 + 0.12 * Math.cos(TAU * (q - TOP))) * bounce,
 		width: 1 + 0.03 * on,
 		height: (1 + 0.04 * on) * blink(q * BEAT, Math.floor((q * BEAT) / 4.1) * 4.1 + 3.2),
-	};
-	if (trick.kind === "smile") eye = { ...eye, smile: trick.on };
-	else if (trick.kind === "check") {
+	});
+	if (kind === "smile") eyes = mixEyes(eyes, pair({ ...eyes[0], smile: 1 }), trick.on);
+	else if (kind === "check") {
 		// A look down at the member and a blink, the stars still going.
-		const down = pulse(trick.local, TRICK_FROM, TRICK_FROM + 0.6, TRICK_TO - 1.2, TRICK_TO - 0.4);
-		eye = {
-			...eye,
-			x: eye.x! * (1 - down),
-			y: eye.y! * (1 - down),
-			height: eye.height! * blink(trick.local * BEAT, 3.6 * BEAT),
-		};
-	} else if (trick.kind === "twirl") {
+		const down = pulse(local, TRICK_FROM, TRICK_FROM + 0.6, TRICK_TO - 1.2, TRICK_TO - 0.4);
+		eyes = mixEyes(eyes, pair({ height: blink(local * BEAT, 3.6 * BEAT) }), down);
+	} else if (kind === "twirl") {
 		// Once round under the stars, a little off the ground.
-		const u = (trick.local - 3) / 2;
-		const turned = change(u, 12);
+		const turned = change((local - 3) / 2, 12);
 		body = both(body, turned.body);
-		eye = { ...eye, alpha: clamp((turned.facing - 0.15) / 0.3) };
+		eyes = mixEyes(eyes, pair({ ...eyes[0], alpha: 0 }), 1 - clamp((turned.facing - 0.15) / 0.3));
+	} else if (kind === "sky" || kind === "header") {
+		// All eyes on the one star that goes its own way, wide; a hop as the header goes off, or as the sky star lands.
+		const thrown = trick.round * TRICK_EVERY + TRICK_FROM;
+		const watched = pulse(local, TRICK_FROM + 0.1, TRICK_FROM + 0.5, TRICK_FROM + FLIGHT - 0.4, TRICK_FROM + FLIGHT);
+		const star = flown(thrown, clamp(q - thrown, 0, FLIGHT), seed);
+		eyes = mixEyes(eyes, pair({ ...lookAt(star.x, star.y), width: 1.07, height: 1.12 }), watched);
+		const hopAt = kind === "header" ? TRICK_FROM + TOP - 0.3 : TRICK_FROM + FLIGHT - 0.15;
+		body = both(body, hop((local - hopAt) / 1.1, kind === "header" ? 9 : 7));
+	} else if (kind === "stack") {
+		// A slow sway to keep them up, eyes crossed on the pile.
+		const sway = Math.sin(TAU * (s / 0.95)) * held;
+		body = both(body, { x: 1.3 * sway, y: 0, turn: 2.6 * sway, scale: 1, scaleX: 1, scaleY: 1 } as BodyPose);
+		eyes = mixEyes(
+			eyes,
+			[
+				{ ...EYE, x: 0.13, y: -0.56, width: 1.04, height: 1.06 },
+				{ ...EYE, x: -0.13, y: -0.56, width: 1.04, height: 1.06 },
+			],
+			held,
+		);
+	} else if (kind === "halo") {
+		// Pleased with itself: a smile, and a rock from side to side under the ring.
+		const rock = Math.sin(TAU * (s / 0.85)) * held;
+		body = both(body, { x: 1.4 * rock, y: 0, turn: 3 * rock, scaleX: 1, scaleY: 1 });
+		eyes = mixEyes(eyes, pair({ smile: 1 }), held);
+	} else if (kind === "tada") {
+		// A hop with the stars held out, looking at the member: wide eyes, then a smile.
+		body = both(body, hop((s - 0.3) / 0.7, 11));
+		eyes = mixEyes(eyes, pair({ width: 1.06, height: 1.12, smile: pulse(s, 0.75, 0.95, 1.45, 1.7) }), held);
+	} else if (kind === "merge") {
+		// A bump for each bounce of the big star, eyes on it.
+		const bounced = Math.abs(Math.sin(Math.PI * (s / BEAT)));
+		body = both(body, { x: 0, y: 0, turn: 0, ...squash(0.07 * (1 - bounced) * held) });
+		eyes = mixEyes(eyes, pair({ ...lookAt(50, HEAD_Y - 6 - 13 * bounced), width: 1.05, height: 1.08 }), held);
 	}
-	return { body, eyes: pair(eye) };
+	return { body, eyes };
 }
 
 function workAt(t: number, ask: Ask | undefined): { cycle: number; at: number } {
@@ -405,6 +545,11 @@ export function working(t: number, seed = 0, ask?: Ask): Act {
 	if (s < BECOME + JUGGLE_ASK_HOLD) return { body: askingSymbol(ask, s - BECOME, 0), symbol: ask };
 	return comeBack(ask, s - BECOME - JUGGLE_ASK_HOLD, {});
 }
+/** The trick a working figure shows at `t` seconds, if it shows one then. */
+export function workingTrick(t: number, seed = 0): Trick | undefined {
+	const trick = trickAt(Math.max(0, t) / BEAT, seed);
+	return trick.on > 0 ? trick.kind : undefined;
+}
 /** A working figure at rest, for a member who wants no motion: looking up at its three stars, held in their arc. */
 export function workingStill(): Act {
 	return {
@@ -418,8 +563,8 @@ export function workingStill(): Act {
 		})),
 	};
 }
-/** What goes off around a working figure in (`from`, `to`]: dust where a twirl lands, and stars and dust as it
- * becomes its ask and comes back. */
+/** What goes off around a working figure in (`from`, `to`]: dust where a twirl lands, a star or two beside a
+ * "ta-da", and stars and dust as it becomes its ask and comes back. */
 export function workingCues(from: number, to: number, seed = 0, ask?: Ask): Cue[] {
 	const cues: Cue[] = [];
 	const period = ask ? JUGGLE_PERIOD : TRICK_EVERY * BEAT;
@@ -428,8 +573,14 @@ export function workingCues(from: number, to: number, seed = 0, ask?: Ask): Cue[
 		const rounds = ask ? JUGGLE_BEATS / TRICK_EVERY : 1;
 		for (let round = 0; round < rounds; round++) {
 			// The seed and the round as `working` counts them: a cycle's own seed with an ask, the round alone without.
-			const twirls = TRICKS[pick(ask ? seed + cycle : seed, ask ? round : cycle, 3, TRICKS.length)] === "twirl";
-			if (twirls) cues.push({ at: start + (round * TRICK_EVERY + 3 + 2 * HOP_LAND) * BEAT, effect: "dust" });
+			const trick = trickOf(ask ? round : cycle, ask ? seed + cycle : seed);
+			const at = (beats: number) => start + (round * TRICK_EVERY + beats) * BEAT;
+			if (trick === "twirl") cues.push({ at: at(3 + 2 * HOP_LAND), effect: "dust" });
+			else if (trick === "tada")
+				cues.push(
+					{ at: at(TRICK_FROM) + 0.55, effect: "twinkle" },
+					{ at: at(TRICK_FROM) + 0.8, effect: "twinkle" },
+				);
 		}
 		if (ask) {
 			const asks = start + JUGGLE_BEATS * BEAT;

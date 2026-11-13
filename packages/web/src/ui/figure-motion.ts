@@ -411,18 +411,20 @@ function juggle(entry: LiveMotion, props: Prop[] | undefined): void {
 	if (side < 30 || (!props && !entry.props)) return;
 	if (!entry.props) {
 		const layer = effectsLayer(entry);
+		// Three of the stars' colours, an agent's own three, and never the figure's own colour: a star stands out
+		// against the body it passes.
+		const colours = ACCENTS.filter((colour) => colour !== entry.color.toLowerCase());
 		entry.props = (props ?? []).map((_, index) => {
 			const star = document.createElement("span");
 			star.className = "figure-bit figure-sparkle figure-prop";
-			// Three of the cheer's colours, an agent's own three.
-			star.style.setProperty("--bit", ACCENTS[(entry.clock.seed + index * 2) % ACCENTS.length]!);
+			star.style.setProperty("--bit", colours[(entry.clock.seed + index * 2) % colours.length]!);
 			layer.append(star);
 			return star;
 		});
 	}
 	if (entry.propsSide !== side) {
 		entry.propsSide = side;
-		const size = `${round(Math.max(6, side * 0.22), 1)}px`;
+		const size = `${round(Math.max(7, side * 0.24), 1)}px`;
 		for (const star of entry.props) star.style.width = star.style.height = size;
 	}
 	entry.props.forEach((star, index) => {
@@ -467,9 +469,12 @@ function drawSymbol(ctx: CanvasRenderingContext2D, symbol: Ask, color: string): 
 }
 
 /* The effects: a few small shapes that fly and fade (styles/app.css `.figure-bit`), each gone when its
- * animation ends. A cheer's stars take the studio's Done accents, as the stars a working figure juggles do; the
- * stars of a change into a symbol are in the figure's own colour. */
-const ACCENTS = ["#97cf66", "#a584d2", "#63bea9", "#658fd0", "#d98fa4", "#cfb94d"];
+ * animation ends. A cheer's stars and the stars a working figure juggles take the vivid colours above; the stars
+ * of a change into a symbol are in the figure's own colour. */
+/** The stars' colours: the vivid ones of the agents' own colour row (avatar-appearance.js: Gold, Pink, Sky,
+ * Green, Purple, Orange), so they stand out on the rail and on a figure of any colour (Jonas, 13 Nov 2026: "more
+ * vibrant"; the studio's Done accents were pastels). */
+const ACCENTS = ["#fcb51b", "#fa59ac", "#3faff3", "#0fbd59", "#a145f7", "#f96e2d"];
 const EASE_OUT = "cubic-bezier(0.2, 0.7, 0.2, 1)";
 const CENTRED = "translate(-50%, -50%)";
 
@@ -538,7 +543,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 			star(
 				Math.sin(angle) * reach,
 				-Math.cos(angle) * reach,
-				Math.max(5, side * 0.15),
+				Math.max(6, side * 0.18),
 				620,
 				index * 14,
 				0,
@@ -553,7 +558,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 			star(
 				Math.sin(angle) * reach,
 				-Math.cos(angle) * reach,
-				Math.max(6, side * (0.17 + 0.035 * (index % 3))),
+				Math.max(7, side * (0.2 + 0.04 * (index % 3))),
 				760 + index * 24,
 				index * 16,
 				0,
@@ -568,7 +573,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 			star(
 				Math.sin(angle) * reach,
 				-Math.cos(angle) * reach * 0.86,
-				Math.max(7, side * (0.2 + 0.05 * (index % 2))),
+				Math.max(8, side * (0.23 + 0.06 * (index % 2))),
 				1250 + index * 30,
 				index * 26,
 				side * 0.1,
@@ -578,7 +583,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 	} else {
 		// A twinkle: one star that pops beside the figure, turns on the spot and goes.
 		const way = Math.random() < 0.5 ? -1 : 1;
-		const size = Math.max(7, side * 0.2);
+		const size = Math.max(8, side * 0.24);
 		fly(
 			"figure-sparkle",
 			[side * (0.5 + way * (0.44 + 0.16 * Math.random())), side * (0.1 + 0.4 * Math.random())],
