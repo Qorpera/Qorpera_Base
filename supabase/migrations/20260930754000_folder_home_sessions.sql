@@ -15,8 +15,11 @@
 --    service, its id the session's, as it holds one for a running command. A change the machine makes meanwhile carries
 --    the session's id in its unit's credits. The commit takes a session of the view's machine, placement and boot as a
 --    credit beside a running command (20260930421000): the unit is checked for the session's agent and member, and the
---    first credit is the commit's actor, with the session's run while its job is leased. A session stays a credit after
---    it closed: its window's last boundary comes after the run closed it.
+--    first credit is the commit's actor, with the session's run while its job is leased. A session credits a change only
+--    while its run goes on (qorpera_folder_home_session_credits: its job queued or leased, or ended in the last two
+--    minutes, since the window's last boundary comes after the run closed the session). A session whose run is over (an
+--    executor that crashed left its window open in the folder service) credits nothing: it is skipped in every unit, so
+--    the unit is credited to its other credits or is the starter's, and it is closed as ended.
 -- 3. Reads: a test machine's release reaches every run with a session open on the machine, as it reaches every run with
 --    a command running there (20260930480000). The executor lets what the channel sends back leave only after a
 --    boundary released the machine's reads and the run took them in (20260930498000), as for a command's output.
@@ -131,7 +134,28 @@ revoke all on function public.qorpera_folder_home_session_window(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_folder_home_session_window(uuid) to service_role;
 
+-- Whether a session of the run p_run_id may still credit a change: its run goes on (its job queued or leased), or its
+-- job ended in the last two minutes, the bound in which the executor closes a session's window with its last boundary
+-- after the run ended. Internal; read under the commit's job locks, which a job's end waits for.
+create function public.qorpera_folder_home_session_credits(p_run_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930754000
+	select exists (select 1 from public.qorpera_execution_runs r join public.qorpera_runner_jobs j on j.id = r.job_id
+		where r.id = p_run_id and (j.status in ('queued', 'leased')
+			or coalesce(j.finished_at, j.cancelled_at) > clock_timestamp() - interval '2 minutes'))
+$$;
+revoke all on function public.qorpera_folder_home_session_credits(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- 2. The commit: a session's credit ------------------------------------------------------------------------------------
+
+-- The sessions a commit skips: credited by its units, of the view's machine, placement and boot, whose run is over.
+select pg_temp.folder_home_sessions_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	v_starter_auth jsonb; v_unit_credits text[]; v_credit_no integer;
+$old$,
+	$new$	v_starter_auth jsonb; v_unit_credits text[]; v_credit_no integer;
+	v_home_skipped text[] := '{}'; -- 20260930754000
+$new$);
 
 -- Step 2's job locks take the credited sessions' runs' jobs with the commands'.
 select pg_temp.folder_home_sessions_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
@@ -173,18 +197,39 @@ select pg_temp.folder_home_sessions_patch('public.qorpera_folder_commit(uuid,jso
 	$new$		from (select m.id, m.staff_agent_id, m.requested_by_user_id, m.run_id, m.started_at
 				from public.qorpera_company_machine_commands m
 				where m.machine_id = v_view.company_machine_id and m.placement_id = v_view.placement_id and m.ended_at is null
-			-- 20260930754000: a home session of the view's machine, placement and boot, open or closed (its window's last
-			-- boundary comes after its run closed it). It started when it opened.
+			-- 20260930754000: a home session of the view's machine, placement and boot whose run goes on, open or closed
+			-- (its window's last boundary comes after its run closed it). It started when it opened.
 			union all
 			select s.id, s.staff_agent_id, s.requested_by_user_id, s.run_id, s.opened_at
 				from public.qorpera_company_home_sessions s
 				where s.machine_id = v_view.company_machine_id and s.placement_id = v_view.placement_id
-					and s.boot_id = v_view.boot_id) c
+					and s.boot_id = v_view.boot_id and public.qorpera_folder_home_session_credits(s.run_id)) c
 		left join lateral (select r.id as run_id, j.id as job_id from public.qorpera_execution_runs r
 			join public.qorpera_runner_jobs j on j.id = r.job_id
 			where r.id = c.run_id and j.status = 'leased' and j.lease_expires_at > clock_timestamp()) live on true
 		where c.id in (select x.id::uuid from jsonb_array_elements(p_units) u
-				cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id));$new$);
+				cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id));
+		-- 20260930754000: a credited session of this view whose run is over credits nothing: each unit skips it (below),
+		-- and it is closed as ended, its rows taken in id order.
+		select coalesce(array_agg(s.id::text order by s.id), '{}') into v_home_skipped
+		from public.qorpera_company_home_sessions s
+		where s.id in (select x.id::uuid from jsonb_array_elements(p_units) u
+				cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id))
+			and s.machine_id = v_view.company_machine_id and s.placement_id = v_view.placement_id
+			and s.boot_id = v_view.boot_id and not public.qorpera_folder_home_session_credits(s.run_id);
+		if cardinality(v_home_skipped) > 0 then
+			perform 1 from (select s.id from public.qorpera_company_home_sessions s
+				where s.id::text = any (v_home_skipped) and s.closed_at is null order by s.id for update) locked;
+			update public.qorpera_company_home_sessions set closed_at = clock_timestamp(), close_reason = 'ended'
+			where id::text = any (v_home_skipped) and closed_at is null;
+		end if;$new$);
+
+-- Each unit skips the sessions whose run is over: a unit credited to them alone is the starter's, as a change made
+-- while no window was open.
+select pg_temp.folder_home_sessions_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$		v_unit_credits := array(select jsonb_array_elements_text(coalesce(v_unit -> 'credits', '[]'::jsonb)));$old$,
+	$new$		v_unit_credits := array(select c from jsonb_array_elements_text(coalesce(v_unit -> 'credits', '[]'::jsonb)) c
+			where c <> all (v_home_skipped)); -- 20260930754000$new$);
 
 -- After the anchor step a saved unit's credited command must still run; a credited session need not.
 select pg_temp.folder_home_sessions_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
@@ -238,6 +283,7 @@ do $$ declare v_owner name; begin
 		'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure,
 		'public.qorpera_company_home_available(jsonb)'::regprocedure,
 		'public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)'::regprocedure,
+		'public.qorpera_folder_home_session_credits(uuid)'::regprocedure,
 		'public.qorpera_folder_home_session_window(uuid)'::regprocedure)) loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Home session folder function has an API owner'; end if;
@@ -248,6 +294,14 @@ do $$ declare v_owner name; begin
 		'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)'::regprocedure)) loop
 		if v_owner is distinct from current_user then
 			execute format('grant select on public.qorpera_company_home_sessions, public.qorpera_folder_views to %I', v_owner);
+		end if;
+	end loop;
+	-- The commit closes a skipped session, and asks whether a session's run goes on.
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant update on public.qorpera_company_home_sessions to %I', v_owner);
+			execute format('grant execute on function public.qorpera_folder_home_session_credits(uuid) to %I', v_owner);
 		end if;
 	end loop;
 	-- The offer asks whether a machine may be shared.

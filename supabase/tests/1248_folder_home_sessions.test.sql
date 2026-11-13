@@ -8,7 +8,8 @@
 -- 2. The executor's ask before a channel starts (qorpera_folder_home_session_window): the session stands on its
 --    machine's current placement and boot and may share it, and the answer names the ids its window carries.
 -- 3. Credit: a change credited to a session of the view's machine, placement and boot saves, and the commit names it
---    and acts as the session's run; a session of another boot or placement credits nothing; a closed session still does.
+--    and acts as the session's run; a session of another boot or placement credits nothing; a closed session still does,
+--    while its run goes on (or ended a moment ago); a session whose run is over is skipped and closed as ended (3b).
 -- 4. Reads: a release reaches every run with a session open on the machine, and none whose session closed.
 -- 5. A command's own credit and fan-out are unchanged.
 -- The office, machine, run and view helpers are 510's, 639's and 632's; the command helper is 512's.
@@ -83,6 +84,7 @@ begin
 		'public.qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)',
 		'public.qorpera_company_home_available(jsonb)',
 		'public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)',
+		'public.qorpera_folder_home_session_credits(uuid)',
 		'public.qorpera_folder_home_session_window(uuid)']::regprocedure[] loop
 		if strpos(pg_get_functiondef(f), '20260930754000') = 0 then raise exception '% has no marker 20260930754000', f; end if;
 		foreach r in array array['anon','authenticated','qorpera_secret_broker']::name[] loop
@@ -91,8 +93,9 @@ begin
 		end loop;
 	end loop;
 	if has_function_privilege('service_role',
-			'public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)', 'EXECUTE') then
-		raise exception 'The service role may run the rule itself'; end if;
+			'public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)', 'EXECUTE')
+		or has_function_privilege('service_role', 'public.qorpera_folder_home_session_credits(uuid)', 'EXECUTE') then
+		raise exception 'The service role may run the rules themselves'; end if;
 	if not has_function_privilege('service_role', 'public.qorpera_folder_home_session_window(uuid)', 'EXECUTE') then
 		raise exception 'The service role may not ask'; end if;
 	-- The per-run window of the first build is gone: no view kind, no calls table.
@@ -243,6 +246,52 @@ begin
 		'22023', 'Change set unit 1 is invalid');
 	perform public.qorpera_folder_view_close((t ->> 'viewId')::uuid, t ->> 'pass');
 	perform pg_temp.hold(null);
+end $$;
+
+
+-- 3b. A session whose run is over credits nothing (review of the lead, 13 Nov): an executor that crashed leaves the
+-- session's window open in the folder service, so every later change on the machine still names it. Its run ended long
+-- ago: the session is skipped in each unit (a unit credited to it alone is the starter's, one credited to a command as
+-- well is that command's) and closed as ended. A run that ended a moment ago still credits its session's last changes.
+create function pg_temp.hs_end_job(p_run jsonb, p_ago interval) returns void language sql as $$
+	select pg_temp.fx(format('update public.qorpera_runner_jobs set status = ''completed'', result = ''{}''::jsonb,
+		finished_at = clock_timestamp() - %L::interval, lease_token_sha256 = null, lease_expires_at = null
+		where id = %L', p_ago, p_run ->> 'jobId'))
+$$;
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	gone jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	just jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	other jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hs-stale');
+	a jsonb := pg_temp.place(m); t jsonb; r jsonb; c public.qorpera_folder_commits%rowtype; stale uuid; recent uuid;
+	cmd uuid; srow public.qorpera_company_home_sessions%rowtype;
+begin
+	t := pg_temp.open('test_machine', a);
+	stale := pg_temp.hs(a, gone, clock_timestamp() - interval '2 hours');
+	recent := pg_temp.hs(a, just, clock_timestamp() - interval '1 hour');
+	cmd := pg_temp.cmd(a, other, clock_timestamp() - interval '1 minute');
+	perform pg_temp.hs_end_job(gone, interval '90 minutes');
+	perform pg_temp.hs_end_job(just, interval '30 seconds');
+	r := pg_temp.vcommit(t, 'hs-stale', jsonb_build_array(pg_temp.hs_mk('hs-stale-alone', stale),
+		pg_temp.hs_mk('hs-stale-and-cmd', stale, cmd), pg_temp.hs_mk('hs-recent', recent)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved'); perform pg_temp.expect(r, 3, 'saved');
+	c := pg_temp.last_commit(r);
+	-- The ended run's session is in no credit; the recent one's is, in start order with the command.
+	if c.credits is distinct from array[recent, cmd] then
+		raise exception 'A session of a run that is over is credited: % (stale %, recent %, cmd %)', c.credits, stale,
+			recent, cmd; end if;
+	select * into srow from public.qorpera_company_home_sessions where id = stale;
+	if srow.closed_at is null or srow.close_reason is distinct from 'ended' then
+		raise exception 'A skipped session is not closed as ended: %', to_jsonb(srow); end if;
+	if (select closed_at from public.qorpera_company_home_sessions where id = recent) is not null then
+		raise exception 'A session whose run just ended is closed'; end if;
+	-- A later change naming the stale session alone is the starter's: saved, credited to no session.
+	r := pg_temp.vcommit(t, 'hs-stale-later', jsonb_build_array(pg_temp.hs_mk('hs-stale-later', stale)));
+	perform pg_temp.expect(r, 1, 'saved');
+	c := pg_temp.last_commit(r);
+	if c.credits is not null or c.run_id is distinct from (v ->> 'runId')::uuid then
+		raise exception 'A later change is credited to a run that is over: %', to_jsonb(c); end if;
+	perform public.qorpera_folder_view_close((t ->> 'viewId')::uuid, t ->> 'pass');
 end $$;
 
 

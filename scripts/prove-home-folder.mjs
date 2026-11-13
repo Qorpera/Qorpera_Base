@@ -24,6 +24,7 @@ import { ENVIRONMENT, finish, pass, proveCompanyRun, repositoryRoot, textObjects
 //   (the view itself acts as the agent alone: its starter's run has ended), and the executor's take-in for her run,
 //   which every batch of the channel's output waits for in the executor's own gate, answers before anything leaves.
 //   Once her session is closed, a release no longer reaches her.
+// - A session left open by an executor that crashed, whose run ended long ago, credits nothing and is closed as ended.
 // - A machine the run may not share is no home: another member's machine is not offered and its session is refused;
 //   a closed session is refused as ended.
 // - The mount gives /company to the image's agent account, and a backend without the migration refuses the executor's
@@ -310,6 +311,25 @@ await finish(
 				const kept = row(`select to_jsonb(c.credits) from public.qorpera_folder_commits c where c.id = '${credited.commitId}'`);
 				assert.deepEqual(kept, [session]);
 				pass("a closed session hears it ended, its reads stop, and its credit stays");
+
+				// 4b. A session an executor that crashed left open, of a run that ended long ago (the starter's, its job
+				// cancelled two hours ago): a change that still names it is credited to no one's session, and the
+				// session is closed as ended.
+				const stale = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				service(`set local session_replication_role = replica;
+					insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id,
+						staff_agent_id, requested_by_user_id, opened_at)
+					values ('${stale}', '${HOME}', '${home.id}', '${home.boot_id}', '${STARTER_RUN}', '${AGENT}',
+						'${OWNER_USER}', clock_timestamp() - interval '2 hours');
+					select to_jsonb(1)::text`);
+				const late = commit("home-stale", [{ op: "mkdir", path: "home-proof/after-the-run", credits: [stale] }]);
+				assert.equal(late.units[0].outcome, "saved", JSON.stringify(late));
+				const lateCommit = row(`select to_jsonb(c) from public.qorpera_folder_commits c where c.id = '${late.commitId}'`);
+				assert.equal(lateCommit.credits, null, "a run that is over is credited");
+				const staleRow = row(`select to_jsonb(s) from public.qorpera_company_home_sessions s where s.id = '${stale}'`);
+				assert.notEqual(staleRow.closed_at, null);
+				assert.equal(staleRow.close_reason, "ended");
+				pass("a session whose run is over credits nothing more, and is closed as ended");
 
 				// 5. Another member's machine of the same agent is no home of this run's: A's authority would open a session
 				// there, and the executor's ask refuses it, so no channel starts.
