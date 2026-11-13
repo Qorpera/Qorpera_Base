@@ -70,7 +70,13 @@ import { uiScale } from "../../ui/scale.ts";
 import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
-import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
+import {
+	type AgentState,
+	agentWorks,
+	answersInteraction,
+	type CompanyController,
+	type ConversationState,
+} from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -480,6 +486,13 @@ export class ConversationView {
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
+		// A window that showed by itself and went by itself (computer-by-itself.ts) is no longer this thread's.
+		const letGo = this.#panels.byItself.onClose((agentId) => {
+			if (this.#panel?.agentId !== agentId) return;
+			this.#panel = undefined;
+			this.#autosize();
+		});
+		this.#lifetime.signal.addEventListener("abort", letGo, { once: true });
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -1242,6 +1255,8 @@ export class ConversationView {
 
 	#toggleComputer(): void {
 		if (this.#panel) {
+			// Closing it is the member's no for the rest of the agent's stretch at its computer (20260930742000).
+			this.#panels.byItself.closed(this.#panel.agentId, this.#company.atComputer(this.#panel.agentId)?.since);
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
@@ -1600,6 +1615,20 @@ export class ConversationView {
 		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
 		panel?.takeOver();
+	}
+
+	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
+	 * computer-by-itself.ts): small, watch only, without focus, once per stretch of the agent's use. */
+	#computerByItself(agent: HostedStaffAgent | undefined): void {
+		if (!agent || this.#disposed) return;
+		const rules = this.#panels.byItself;
+		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
+		rules.seen(agent.id, since);
+		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
+		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
+		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
+		const panel = this.#showPanel(agent, false);
+		if (panel) rules.opened(agent.id, since, panel.el);
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
@@ -2056,9 +2085,10 @@ export class ConversationView {
 			void this.#run?.refresh();
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
-		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
+		if (!room) this.#computerByItself(agent);
 		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
 		this.#syncWall(
 			room || session?.audience.kind !== "company" || company.accessLost || !company.team?.capabilities.read
