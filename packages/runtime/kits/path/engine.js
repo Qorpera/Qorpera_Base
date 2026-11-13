@@ -19,6 +19,9 @@
 		next: "Next",
 		empty: "Nothing to show yet.",
 		more: "more",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = ["known", "assumed", "unknown"];
 	const reduceMQ = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
@@ -187,6 +190,21 @@ a.pk-row:hover .go{color:var(--q-accent)}
 .pk-tip a{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:var(--q-accent);text-decoration:none;font-size:16px}
 .pk-tip a:hover{background:var(--q-surface)}
 .pk-sheet.dock{position:fixed;left:12px;right:12px;bottom:12px;top:auto;width:auto;max-height:62vh;overflow:auto}
+/* a note to the app's owner, at the foot of a step's sheet */
+/* the reason a note did not go stands quietly beside the button, over a cell that holds no height of its own, so
+   nothing moves when it comes and goes */
+.pk-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:12px;margin:6px 0}
+.pk-tell-c{position:relative;align-self:stretch}
+.pk-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;margin:0;padding:0 15px 0 11px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font:inherit;font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.pk-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.pk-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.pk-tell-b.pk-bare{padding:0}
+.pk-tell-b svg{position:static;flex:none;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.pk-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.pk-tell-b.pk-told{background:none;color:var(--q-muted);cursor:default;padding-left:3px}
+.pk-tell-b.pk-told.pk-bare{padding:0}
+.pk-tell-b.pk-told svg{color:var(--q-good)}
+.pk-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--q-muted)}
 /* motion */
 @keyframes pk-pulse{0%{transform:scale(1);opacity:.6}70%,100%{transform:scale(1.75);opacity:0}}
 @keyframes pk-sheet{from{opacity:0;transform:translateY(4px)}}
@@ -260,6 +278,97 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		return measureCtx.measureText(str).width;
 	}
 
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a step's sheet, drawn only
+	// where the bridge has `tell` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	// the timer that takes a thing's reason away again
+	const QUIET = new Map();
+	// a closed detail keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of document.querySelectorAll(".pk-tell-b")) if (x.__tell) x.__tell.paint();
+	}
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return `${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\s·]+$/, "")}…`;
+	}
+	// a draft for the note, as a thing's `ask` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const s = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+		return Array.from(s).length <= 40 ? s : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		// `at` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = `${id}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
+		const b = el("button", "pk-tell-b", { type: "button" });
+		const why = el("p", "pk-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			const mark = sv("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(el("span", null, null, label));
+			b.classList.toggle("pk-bare", !label);
+			b.classList.toggle("pk-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (ev) => {
+			ev.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of document.querySelectorAll(".pk-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return el("div", "pk-tell", null, [b, el("div", "pk-tell-c", null, why)]);
+	}
+
 	// ---------------------------------------------------------------- the data
 	function markWords(v, fallback) {
 		if (typeof v === "string" && v.trim()) return { one: cut(v, MAX.word), many: cut(v, MAX.word) };
@@ -331,6 +440,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 					value: num,
 					valueText: num == null ? cut(e.value, MAX.figValue) : "",
 					note: cut(e.note, MAX.note),
+					ask: askOf(e.ask),
 					marks: [],
 				});
 			}
@@ -1254,6 +1364,10 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		if (m.next && m.next.step === stepId && (m.next.lane === "all" || m.next.lane === laneId)) {
 			sh.append(el("div", "pk-none", null, [el("span", null, { "aria-hidden": "true", style: "color:var(--q-accent)" }, "⚑"), `${m.words.next}: ${m.next.text}${m.next.by ? ` (${m.next.by})` : ""}`]));
 		}
+		// a path with no lanes of its own is one lane for all: its steps are named alone
+		const one = laneId === "_";
+		const tell = tellFoot(m.words, noteAbout(step.name, one ? "" : lane.name), one ? stepId : `${laneId}:${stepId}`, e.ask);
+		if (tell) sh.append(tell);
 		sh.addEventListener("click", (ev) => ev.stopPropagation());
 		sheetEl = sh;
 		const g = geom;
@@ -1291,6 +1405,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	function closeSheet(refocus) {
 		const was = ui.open;
 		ui.open = null;
+		hushTold();
 		if (sheetEl) sheetEl.remove();
 		sheetEl = null;
 		if (!mapEl) return;
