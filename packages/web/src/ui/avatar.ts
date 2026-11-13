@@ -6,7 +6,14 @@ import {
 } from "@qorpera/cloud-client/staff-characters";
 import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
+import {
+	type Activity,
+	type Ask,
+	type FigureArtwork,
+	type FigureMotion,
+	type Moment,
+	mountFigureMotion,
+} from "./figure-motion.ts";
 import { phrase, t } from "./preferences.ts";
 import { designPx } from "./scale.ts";
 
@@ -204,6 +211,18 @@ export interface FigureOptions {
 	activity?: Activity;
 	identity?: string;
 	className?: string;
+	/** What waits on the member, if anything does: a question ("question") or anything else ("bang"). A figure
+	 * that needs them becomes that symbol in its own colour; one that works comes back as it now and then. */
+	ask?: Ask;
+	/** Left alone, the figure still blinks, looks around and moves now and then. */
+	alive?: boolean;
+}
+
+/** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done. Nothing happens on
+ * any other element, or for a member who wants no motion. */
+export function playFigure(host: Element | null | undefined, kind: Moment): void {
+	if (!host) return;
+	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored

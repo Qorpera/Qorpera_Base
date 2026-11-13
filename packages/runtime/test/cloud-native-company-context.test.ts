@@ -419,6 +419,23 @@ it("tells the agent's next run what the platform stopped on its computer", () =>
 	);
 });
 
+// The import's follow-ups, item 3 (20260930741000): code a member or another agent brought in reaches every other agent
+// once, at its next run, in openWork; an agent's own words to members stay plain.
+it("tells the agent's next run what code was brought in, and to read its first record before working on it", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"Start one again only if the work still needs it, and say so to a member only if they were waiting for it. openWork.codeBroughtIn, when present, lists code that a member or another agent brought into Qorpera since you last ran here, each once: its repository code/<owner>/<name>/, where it came from, how many earlier changes its main branch brought, and how many other branches came with work main lacks. Read its changes/1.md before you work on it or plan around it; tell a member only what they wait for or must decide.\n\n# Skills",
+	);
+	// A worker reports to its parent and is told none of it.
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch" } } as unknown as Parameters<
+			typeof cloudCompanyRuntimeInstructions
+		>[0],
+		false,
+	);
+	expect(worker).not.toContain("openWork.codeBroughtIn");
+});
+
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const startup = {
@@ -1552,15 +1569,17 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
-// a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026). A change
-// to any is a change to every run's bytes.
+// a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for
+// code a member or another agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups,
+// 20260930741000; a staff run's words only). A change to any is a change to every run's bytes. With master's v15 merged
+// into the import's follow-ups (13 November 2026) the staff instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			instructions: "931fa606d0762ba1b8471f4b6784f9dbb23df334f5010f2175332313bd3b7a15",
 			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
@@ -1576,7 +1595,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			instructions: "931fa606d0762ba1b8471f4b6784f9dbb23df334f5010f2175332313bd3b7a15",
 			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],

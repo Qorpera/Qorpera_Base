@@ -3251,7 +3251,12 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
 	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
 	// again.
-	// On 13 November 2026 make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again.
+	// On 13 November 2026 manage_code's from takes branch beside github too, and its schema says so (the import's
+	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
+	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
+	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
+	// The same day make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again,
+	// measured on the tree with v241.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3302,7 +3307,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"7649a9001405540b750c73ff0fd423333503275213ad34208348c97f6c549a64",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c9849f02c6e8e394811aaf48c0ddb9eec4a27614649c0fe2279f2492659ddf3e",
+		"6d880ebcaa9eb0efe32bfacfa1323bb3c7d6105465e7e510cfa9e4cb823001cc",
 	);
 });
 

@@ -166,6 +166,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_company_path_proposals(uuid,uuid,integer)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_company_paths(uuid,text,text,uuid,integer,jsonb)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_list_company_rooms(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_list_company_screens_in_use(uuid)', false, true, 'member: auth.uid() + qorpera_can_read_profile (viewers too); which agents use their running desktops within 90 s, nothing of the screen (20260930742000)'),
 	('public.qorpera_list_company_sites(uuid)', false, true, 'member: auth.uid() + membership; never a password (20260930550000)'),
 	('public.qorpera_list_compute_identities(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_list_computer_hour_offers()', false, true, 'member: auth.uid() + membership/ownership'),

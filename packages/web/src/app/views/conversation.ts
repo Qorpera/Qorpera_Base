@@ -70,7 +70,13 @@ import { uiScale } from "../../ui/scale.ts";
 import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
-import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
+import {
+	type AgentState,
+	agentWorks,
+	answersInteraction,
+	type CompanyController,
+	type ConversationState,
+} from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -480,6 +486,13 @@ export class ConversationView {
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
+		// A window that showed by itself and went by itself (computer-by-itself.ts) is no longer this thread's.
+		const letGo = this.#panels.byItself.onClose((agentId) => {
+			if (this.#panel?.agentId !== agentId) return;
+			this.#panel = undefined;
+			this.#autosize();
+		});
+		this.#lifetime.signal.addEventListener("abort", letGo, { once: true });
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -1127,7 +1140,7 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
-					computer: () => this.show(agent.id, "computer"),
+					computer: () => this.show(agent.id, "computer", true),
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1142,8 +1155,9 @@ export class ConversationView {
 	}
 
 	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
-	 * its agent yet: the card's request then waits. */
-	show(agentId: string, page: AgentPage): boolean {
+	 * its agent yet: the card's request then waits. `asked`: the member's own click asked for it just now, so a sleeping
+	 * computer wakes (computer.ts OPEN_STARTS); false, the default, for the page's own opens. */
+	show(agentId: string, page: AgentPage, asked = false): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
@@ -1152,7 +1166,12 @@ export class ConversationView {
 		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") {
+			const shown = this.#panel;
+			// Already here: the click still asks for the computer (a sleeping one wakes).
+			if (shown && asked) this.#panels.open(agent, { asked });
+			(shown ?? this.#showPanel(agent, asked))?.focus();
+		}
 		return true;
 	}
 
@@ -1236,6 +1255,8 @@ export class ConversationView {
 
 	#toggleComputer(): void {
 		if (this.#panel) {
+			// Closing it is the member's no for the rest of the agent's stretch at its computer (20260930742000).
+			this.#panels.byItself.closed(this.#panel.agentId, this.#company.atComputer(this.#panel.agentId)?.since);
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
@@ -1589,14 +1610,30 @@ export class ConversationView {
 	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
 	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
-		const panel = this.#panel ?? this.#showPanel(agent);
+		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+		if (this.#panel) this.#panels.open(agent, { asked: true });
+		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
 		panel?.takeOver();
 	}
 
-	/** Show the agent's computer here: the one already open, or one started now. */
-	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
-		const panel = this.#panels.open(agent);
+	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
+	 * computer-by-itself.ts): small, watch only, without focus, once per stretch of the agent's use. */
+	#computerByItself(agent: HostedStaffAgent | undefined): void {
+		if (!agent || this.#disposed) return;
+		const rules = this.#panels.byItself;
+		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
+		rules.seen(agent.id, since);
+		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
+		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
+		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
+		const panel = this.#showPanel(agent, false);
+		if (panel) rules.opened(agent.id, since, panel.el);
+	}
+
+	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
+	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
 		this.#panel = panel;
 		panel.attach(this.#body, () => this.#toggleComputer());
@@ -2048,9 +2085,10 @@ export class ConversationView {
 			void this.#run?.refresh();
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
-		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
+		if (!room) this.#computerByItself(agent);
 		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
 		this.#syncWall(
 			room || session?.audience.kind !== "company" || company.accessLost || !company.team?.capabilities.read
@@ -2874,9 +2912,11 @@ export class ConversationView {
 							]),
 				]);
 				// The agent's figure, waiting, as it stands beside its question in the questions dock: the head of a card
-				// that waits for the member.
+				// that waits for the member. It becomes a "?" for a question and a "!" for anything else that waits (a
+				// secret, a takeover, a draft), as in the rail.
+				const ask = item.request.surface === "question" ? "question" : "bang";
 				const waitingFigure = agent
-					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting" })
+					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
 					: undefined;
 				const card = keep(
 					item.id,

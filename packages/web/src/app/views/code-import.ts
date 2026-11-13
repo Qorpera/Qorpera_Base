@@ -202,9 +202,12 @@ export function importWhy(reason: string, file = false): string {
 	return t("it could not be brought in just now; try again");
 }
 
-/** A brought-in repository's line in its folder: from where and when, and what came with it. */
+/** A brought-in repository's line in its folder: from where and when, and what came with it. Work that came along on
+ * other lines is said in the past ("brought", "was not"), so the line stays true once an agent moves that work; the
+ * next step is suggested only while nothing has changed since change 1. */
 export function importDoneWords(imported: CodeImported): string {
 	const locale = presentationLocale();
+	const number = new Intl.NumberFormat(locale);
 	const date = new Date(imported.at).toLocaleDateString(locale, {
 		day: "numeric",
 		month: "long",
@@ -220,9 +223,39 @@ export function importDoneWords(imported: CodeImported): string {
 	else if (imported.earlierChanges !== null)
 		words.push(
 			t("{count} earlier changes came with it.", {
-				count: new Intl.NumberFormat(locale).format(imported.earlierChanges),
+				count: number.format(imported.earlierChanges),
 			}),
 		);
+	const other = imported.otherWork;
+	if (other) {
+		const lines = number.format(other.lines);
+		const changes = number.format(other.changes);
+		if (other.lines === 1 && other.changes === 1)
+			words.push(t("It also brought 1 other line of work, with 1 change that was not in the main version."));
+		else if (other.lines === 1)
+			words.push(
+				t("It also brought 1 other line of work, with {changes} changes that were not in the main version.", {
+					changes,
+				}),
+			);
+		else if (other.changes === 1)
+			words.push(
+				t("It also brought {lines} other lines of work, with 1 change that was not in the main version.", {
+					lines,
+				}),
+			);
+		else
+			words.push(
+				t(
+					"It also brought {lines} other lines of work, with {changes} changes that were not in the main version.",
+					{
+						lines,
+						changes,
+					},
+				),
+			);
+		if (imported.lastChange === 1) words.push(t("An agent can bring that work into the main version."));
+	}
 	if (imported.from === "github") words.push(t("The copy on GitHub stays as it is."));
 	return words.join(" ");
 }

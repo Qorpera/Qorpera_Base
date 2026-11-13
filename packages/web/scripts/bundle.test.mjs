@@ -40,7 +40,8 @@ function inputsOf(layout, files) {
 			.map(([path]) => path),
 	);
 }
-const MOTION_DATA = /status-2d-v1\/(?:working-frames|eye-clips|eye-tracks)\.mjs$/;
+// The figures' motion sampler and its eye tracks (the recorded clips left with the drawn eyes, 13 Nov 2026).
+const MOTION_DATA = /status-2d-v1\/(?:motion|eye-tracks)\.mjs$/;
 const NOVNC = /member-web\/ui\/(?:screen-viewer|vendor\/novnc-rfb)\.js$/;
 const VENDOR = /node_modules\/(?:@supabase\/|marked\/)/;
 
@@ -49,7 +50,7 @@ test("the first screen never downloads the figures' motion data or noVNC; main.j
 	const first = [layout.script, ...layout.preload];
 	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path) || NOVNC.test(path)), []);
 	const lazy = inputsOf(layout, layout.lazy);
-	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 3);
+	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 2);
 	// The computer window shows pictures of the screen (20260930712000): noVNC is in no chunk until the stream that
 	// uses it again (stage 2 of lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md) imports it on demand.
 	assert.equal(lazy.filter((path) => NOVNC.test(path)).length, 0);

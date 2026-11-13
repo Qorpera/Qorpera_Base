@@ -67,7 +67,7 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
-import type { WaitingWork } from "../cloud/waiting-work.ts";
+import type { WaitingKind, WaitingWork } from "../cloud/waiting-work.ts";
 import { withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
@@ -76,6 +76,7 @@ import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
+import { type AgentAtComputer, type AgentsAtComputers, AtComputerWatch } from "./agents-at-computers.ts";
 import type { MailState } from "./company-mail.ts";
 import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
 import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
@@ -104,7 +105,13 @@ import { debounce, Store, throttle } from "./state.ts";
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
 /** What a member sees of an agent's execution: see CompanyController.agentState. */
-export type AgentState = "idle" | "working" | "writing" | "decision" | "failed";
+/** `computer`: working, and using its desktop computer now (20260930742000). */
+export type AgentState = "idle" | "working" | "writing" | "computer" | "decision" | "failed";
+
+/** The states in which an agent's run works: working, writing, or working at its computer. */
+export function agentWorks(state: AgentState): boolean {
+	return state === "working" || state === "writing" || state === "computer";
+}
 
 /** A run the server holds against the agent until someone dismisses it. */
 export interface FailedRun {
@@ -295,6 +302,11 @@ export interface CompanyState {
 	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
 	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
+	/** The agents using their desktop computers now, by agent (20260930742000; app/agents-at-computers.ts). Unset until
+	 * the first read lands. */
+	atComputers?: AgentsAtComputers;
+	/** The cloud does not say which agents use their computers (before 20260930742000): no agent shows at one. */
+	atComputersUnavailable?: boolean;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
@@ -645,6 +657,8 @@ export class CompanyController {
 	readonly roomDrafts: RoomDrafts;
 	/** This member's chats with the company's other members (20260930715000). */
 	readonly memberChats: MemberChats;
+	/** Which agents use their desktop computers now (20260930742000). */
+	readonly #atComputers: AtComputerWatch;
 	#mentionReads = 0;
 	#approvalReads = 0;
 	#hoursWaitReads = 0;
@@ -716,6 +730,16 @@ export class CompanyController {
 				void this.refreshSidebar();
 			},
 		});
+		this.#atComputers = new AtComputerWatch({
+			read: () => this.#api.listScreensInUse(this.profile.profileId),
+			onChange: (atComputers) => {
+				if (!this.#stopped) this.store.set({ atComputers });
+			},
+			onUnavailable: () => {
+				if (!this.#stopped) this.store.set({ atComputers: undefined, atComputersUnavailable: true });
+			},
+			resting: () => this.#restsWhileHidden(),
+		});
 	}
 
 	get profile(): HostedProfile {
@@ -751,6 +775,7 @@ export class CompanyController {
 			},
 		);
 		await this.refreshAll();
+		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
@@ -763,6 +788,7 @@ export class CompanyController {
 						this.#hiddenAt ??= Date.now();
 						return;
 					}
+					this.#atComputers.returned();
 					// Away a whole clock period: a frozen tab's timers never fired, so no skip was noted.
 					const away = this.#hiddenAt !== undefined && Date.now() - this.#hiddenAt >= HEARTBEAT_MS;
 					this.#hiddenAt = undefined;
@@ -794,6 +820,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#atComputers.dispose();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set((state) => ({
@@ -1924,21 +1951,37 @@ export class CompanyController {
 		// A run waiting at its login's usage limit is no work in progress: the agent rests until the reset
 		// (20260930703000), and its thread says why.
 		if (pausedNow(row)) return waiting ? "decision" : "idle";
-		if (row.activity !== "needs_attention")
-			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
+		if (row.activity !== "needs_attention") {
+			if (row.jobStatus === "leased" && row.phase === "writing") return "writing";
+			// Working, and using its desktop computer now (20260930742000): only while its run works.
+			return this.atComputer(staffAgentId) ? "computer" : "working";
+		}
 		if (waiting || !isFailedRun(row)) return "decision";
 		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
 			? "decision"
 			: "failed";
 	}
 
-	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says)
-	 * and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
-	waitingFor(staffAgentId: string | undefined): { count: number; what?: string } | undefined {
+	/** The desktop computer this agent uses now, by the database's word (20260930742000), whether its run works or not;
+	 * undefined when it uses none. The rail and the thread show it only while the agent works (agentState). */
+	atComputer(staffAgentId: string | undefined): AgentAtComputer | undefined {
+		if (!staffAgentId) return undefined;
+		const entry = this.store.get().atComputers?.[staffAgentId];
+		return entry && entry.until > Date.now() ? entry : undefined;
+	}
+
+	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says),
+	 * its kind (a question, or something else), and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
+	waitingFor(staffAgentId: string | undefined): { count: number; what?: string; kind?: WaitingKind } | undefined {
 		if (!staffAgentId) return undefined;
 		const state = this.store.get();
 		const work = state.waitingOnMe?.[staffAgentId];
-		if (work) return { count: work.count, ...(work.what ? { what: work.what } : {}) };
+		if (work)
+			return {
+				count: work.count,
+				...(work.what ? { what: work.what } : {}),
+				...(work.kind ? { kind: work.kind } : {}),
+			};
 		const approvals = state.approvals?.[staffAgentId];
 		return approvals ? { count: approvals } : undefined;
 	}
@@ -3259,6 +3302,7 @@ export class CompanyController {
 		void this.refreshActivity();
 		void this.refreshMentions();
 		this.memberChats.hinted();
+		this.#atComputers.read();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
@@ -3286,6 +3330,9 @@ export class CompanyController {
 			this.#refreshSidebarSoon();
 		} else if (resource === "member-chats") {
 			this.memberChats.hinted();
+		} else if (resource === "machines") {
+			// An agent may have begun a stretch at its computer (20260930742000).
+			this.#atComputers.hinted();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -3308,6 +3355,8 @@ export class CompanyController {
 					for (const listener of this.#invalidations) {
 						listener("sessions");
 					}
+				// The `machines` hint comes by push only: without it, an agent's new stretch at its computer is read here.
+				if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
 				await (this.#sessionsFullRead ?? this.refreshSessions());
 			// Proposal comments/rejections do not all touch the Company File head.

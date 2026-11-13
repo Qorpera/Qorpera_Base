@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { COMPANY_STATE_PARSER_VERSION, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import {
@@ -2597,6 +2598,16 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 		const bare = fixture(() => queued);
 		await bare.client.requestCodeImport({ ...ask, from: { file: "code/_incoming/shop/shop.bundle" } }, signal());
 		expect(bare.calls[0]?.args.p_request).toEqual({ ...ask, from: { file: "code/_incoming/shop/shop.bundle" } });
+		// The import's follow-ups (lead's decision 3): a GitHub project with the branch to bring in as main.
+		const branch = fixture(() => queued);
+		await branch.client.requestCodeImport(
+			{ ...ask, from: { github: "Acme/Shop", branch: "feature/checkout", extra: 1 } as never },
+			signal(),
+		);
+		expect(branch.calls[0]?.args.p_request).toEqual({
+			...ask,
+			from: { github: "Acme/Shop", branch: "feature/checkout" },
+		});
 		for (const reason of [
 			"kept_here",
 			"already_here",
@@ -2670,7 +2681,7 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 		const { schema: _schema, ...read } = look();
 		await expect(
 			fixture(() =>
-				stands({ state: "done", step: "tidy", look: look(), result: "imported", change: 1 }),
+				stands({ state: "done", step: "open", look: look(), result: "imported", change: 1 }),
 			).client.codeImport(REQUEST, signal()),
 		).resolves.toMatchObject({ state: "done", result: "imported", change: 1, look: read });
 		await expect(
@@ -2711,6 +2722,8 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			stands({ owner: 1 }),
 			stands({ state: "expired" }),
 			stands({ step: "push" }),
+			// The import's follow-ups, item 7: C1 has no tidy step and refuses a progress that names one.
+			stands({ step: "tidy" }),
 			stands({ waiting: "sessions busy" }),
 			stands({ waiting: 5 }),
 			stands({ result: "imported" }),
@@ -2764,5 +2777,137 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 		await expect(fixture(() => stands()).client.codeImport("not-a-uuid", signal())).rejects.toThrow(
 			"Company folder response is invalid",
 		);
+	});
+
+	// The import's follow-ups (20260930741000; STEP6-BUILD.md "The shapes, exactly"): the look's lines and the read's
+	// twelfth key file. Both are optional, since this runtime goes live before the SQL and executors that send them, and
+	// both are read closed when sent.
+	it("reads the look's other lines of work and the bundle left behind, each only when sent", async () => {
+		const VERSION = "74100000-0000-4000-8000-00000000000b";
+		const line = (over: Record<string, unknown> = {}) => ({
+			name: "feature/checkout",
+			ahead: 2,
+			behind: 7,
+			lastAt: "2026-11-09T08:00:00Z",
+			fits: true,
+			...over,
+		});
+		const lines = (over: Record<string, unknown> = {}) => ({
+			count: 2,
+			changes: 3,
+			shown: [line(), line({ name: null, ahead: 3, behind: 0, lastAt: null, fits: null })],
+			...over,
+		});
+		const read = async (answer: Record<string, unknown>) =>
+			fixture(() => answer).client.codeImport(REQUEST, signal());
+		// Today's answer: eleven keys, no lines; the result has neither key.
+		const today = await read(stands({ state: "done", step: "open", look: look(), result: "imported", change: 1 }));
+		expect(Object.keys(today).sort()).toEqual(
+			["requestId", "owner", "name", "state", "step", "waiting", "look", "result", "change", "code"].sort(),
+		);
+		expect(Object.hasOwn(today.look ?? {}, "lines")).toBe(false);
+		// Sent: read as sent.
+		await expect(read(stands({ look: look({ lines: lines() }) }))).resolves.toMatchObject({
+			look: { lines: lines() },
+		});
+		await expect(read(stands({ look: look({ lines: { count: 0, changes: 0, shown: [] } }) }))).resolves.toMatchObject(
+			{
+				look: { lines: { count: 0, changes: 0, shown: [] } },
+			},
+		);
+		// At the bounds: as many as were kept, ten shown, a branch with every change.
+		const ten = Array.from({ length: 10 }, (_, n) => line({ name: `b${n}`, ahead: n === 0 ? 3 : 1 }));
+		await expect(
+			read(stands({ look: look({ lines: { count: 3, changes: 3, shown: ten.slice(0, 3) } }) })),
+		).resolves.toMatchObject({ look: { lines: { count: 3 } } });
+		await expect(
+			read(
+				stands({ look: look({ branches: { seen: 20, kept: 12 }, lines: { count: 12, changes: 3, shown: ten } }) }),
+			),
+		).resolves.toMatchObject({ look: { lines: { count: 12, shown: ten } } });
+		for (const file of [
+			null,
+			{ path: "code/_incoming/shop/shop.bundle", version: VERSION },
+			{ path: "x.bundle", version: null },
+		])
+			await expect(read(stands({ file }))).resolves.toMatchObject({ file });
+		for (const lines_ of [
+			null,
+			[],
+			lines({ extra: 1 }),
+			(({ shown: _shown, ...rest }) => rest)(lines()),
+			lines({ count: 4 }),
+			lines({ count: -1 }),
+			lines({ count: 2, changes: 0 }),
+			lines({ count: 0, changes: 1, shown: [] }),
+			lines({ count: 1 }),
+			lines({ shown: "none" }),
+			lines({ shown: [line({ extra: 1 })] }),
+			lines({ shown: [(({ fits: _fits, ...rest }) => rest)(line())] }),
+			lines({ shown: [line({ name: 7 })] }),
+			lines({ shown: [line({ ahead: 0 })] }),
+			lines({ shown: [line({ ahead: 4 })] }),
+			lines({ shown: [line({ ahead: 1.5 })] }),
+			lines({ shown: [line({ behind: -1 })] }),
+			lines({ shown: [line({ behind: null })] }),
+			lines({ shown: [line({ lastAt: "2026-11-09T08:00:00.000Z" })] }),
+			lines({ shown: [line({ lastAt: "yesterday" })] }),
+			lines({ shown: [line({ fits: "yes" })] }),
+			lines({ shown: [line({ fits: 0 })] }),
+		])
+			await expect(read(stands({ look: look({ lines: lines_ }) })), JSON.stringify(lines_)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		// More shown than ten, though more were kept.
+		await expect(
+			read(
+				stands({
+					look: look({
+						branches: { seen: 20, kept: 12 },
+						lines: { count: 12, changes: 3, shown: [...ten, line({ ahead: 1 })] },
+					}),
+				}),
+			),
+		).rejects.toThrow("Company folder response is invalid");
+		// The folder's version is a UUID: what company_read reports and company_delete takes.
+		for (const file of [
+			"code/_incoming/shop/shop.bundle",
+			{ path: "code/_incoming/shop/shop.bundle" },
+			{ version: VERSION },
+			{ path: "code/_incoming/shop/shop.bundle", version: VERSION, sha256: "a".repeat(64) },
+			{ path: "", version: VERSION },
+			{ path: 7, version: VERSION },
+			{ path: "code/_incoming/shop/shop.bundle", version: 3 },
+			{ path: "code/_incoming/shop/shop.bundle", version: "3" },
+			{ path: "code/_incoming/shop/shop.bundle", version: VERSION.toUpperCase() },
+		])
+			await expect(read(stands({ file })), JSON.stringify(file)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+	});
+
+	// The cross-check of the merged parts: the looks the coding executor writes (runner-orchestrator's codeImportLook,
+	// pinned there against these same literals), which SQL test 1235 section 2b takes, are read as they were written.
+	it("reads every look the executor writes, as the kernel keeps it", async () => {
+		const sql = readFileSync(
+			new URL("../../../supabase/tests/1235_code_import_follow_ups.test.sql", import.meta.url),
+			"utf8",
+		);
+		const section = sql.slice(
+			sql.indexOf("-- BEGIN THE LOOKS PART B WRITES\n"),
+			sql.indexOf("-- END THE LOOKS PART B WRITES\n"),
+		);
+		const looks = [...section.matchAll(/^\t'(\{.*\})',?$/gm)].map(
+			(match) => JSON.parse((match[1] as string).replaceAll("''", "'")) as Record<string, unknown>,
+		);
+		expect(looks).toHaveLength(5);
+		for (const sent of looks) {
+			const read = await fixture(() =>
+				stands({ state: "done", step: "open", look: sent, result: "imported", change: 1 }),
+			).client.codeImport(REQUEST, signal());
+			if (Object.hasOwn(sent, "lines")) expect(read.look?.lines, JSON.stringify(sent.lines)).toEqual(sent.lines);
+			else expect(Object.hasOwn(read.look ?? {}, "lines")).toBe(false);
+			expect(read.look?.branches).toEqual(sent.branches);
+		}
 	});
 });

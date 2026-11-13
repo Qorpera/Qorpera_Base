@@ -2,6 +2,7 @@
 @import "../../../member-web/ui/screens.css";
 @import "./settings.css";
 @import "./conversation.css";
+@import "./computer-scene.css";
 @import "./agent-wall.css";
 @import "./feedback.css";
 @import "./company-folder.css";
@@ -284,8 +285,8 @@ label > input, label > select { font-weight: 400; }
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
-	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px) and the raised hand's disc. */
-	--rail-waiting: #8f5000; --rail-waiting-mark: var(--warning);
+	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px). */
+	--rail-waiting: #8f5000;
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
 	/* Messages' sidebar: 10px insets, a darker edge line than the other dividers (Jonas, 9 Nov 2026). */
@@ -471,7 +472,7 @@ label > input, label > select { font-weight: 400; }
 .rail-drag-ghost {
 	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
 	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
-	--rail-waiting: #8f5000; --rail-waiting-mark: var(--warning);
+	--rail-waiting: #8f5000;
 	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
 	background: var(--rail); border-radius: 12px; opacity: 0.96;
 	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
@@ -537,16 +538,6 @@ label > input, label > select { font-weight: 400; }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
 .rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
-/* A raised hand: the agent's work waits on this member (a card it raised for them, or an approval card they answer;
- * Jonas, 11 Nov 2026: "it's really stopped at you"), also while it works on something else. It takes the figure's
- * top-right; a mention's "@" beside it makes way to the top-left. */
-.rail-hand { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--rail-waiting-mark); color: #3b2a00; box-shadow: 0 0 0 2px var(--rail); pointer-events: none; }
-.rail-hand .icon { width: 12px; height: 12px; stroke-width: 2.3; }
-.cofounder-stand > .rail-hand { top: 0; right: 0; width: 22px; height: 22px; }
-.cofounder-stand > .rail-hand .icon { width: 14px; height: 14px; }
-:is(.rail-row, .rail-pin, .cofounder-home):hover .rail-hand { box-shadow: 0 0 0 2px var(--rail-hover); }
-:is(.rail-row, .rail-pin, .cofounder-home).active .rail-hand { box-shadow: 0 0 0 2px var(--rail-selection); }
-:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand):has(> .rail-hand) > .rail-mention { right: auto; left: -3px; }
 /* "@": someone mentioned this member here and they have not looked yet. */
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
 /* Who is where (Jonas, 9 Nov 2026): the other members in the company now, as small pictures on the agent, group chat,
@@ -661,12 +652,28 @@ label > input, label > select { font-weight: 400; }
 .figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
+/* The figure acts (ui/figure-acts.ts): its body's jumps, spins and leans are a transform on the canvas, about the
+ * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol,
+ * the stars it juggles while it works, the stars of a cheer) fly and fade here, over the figure. */
+.figure-canvas { transform-origin: 50% 90%; }
+/* The figure stacks by itself: the effects stand over its canvas, and a juggled star that goes round the figure is
+ * under the canvas while it is on the far side. */
+.figure { isolation: isolate; }
+.figure-fx { position: absolute; inset: 0; pointer-events: none; }
+.figure-bit { position: absolute; z-index: 3; display: block; pointer-events: none; }
+.figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
+/* A star: four full points in one flat vivid colour. The shape is on a layer inside, so the soft glow of its own
+ * colour around a burst's stars (a filter on the star itself) is not cut off with it. The juggled stars have no
+ * glow: they move every frame. */
+.figure-sparkle::before { content: ""; position: absolute; inset: 0; background: var(--bit); clip-path: polygon(50% 0, 65% 35%, 100% 50%, 65% 65%, 50% 100%, 35% 65%, 0 50%, 35% 35%); }
+.figure-sparkle:not(.figure-prop) { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bit) 55%, transparent)); }
+/* The stars a working figure juggles: placed from the figure's corner by the transform ui/figure-motion.ts writes. */
+.figure-prop { left: 0; top: 0; transform: scale(0); }
+.figure-prop.is-behind { z-index: -1; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
 	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
-	/* The raised hand keeps its disc. */
-	:is(.rail, .rail-drag-ghost) .rail-hand { forced-color-adjust: none; background: Mark; color: MarkText; }
 }
 
 .avatar {

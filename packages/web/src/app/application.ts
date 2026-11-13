@@ -36,7 +36,7 @@ import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui
 import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
-import { CompanyController } from "./company.ts";
+import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
@@ -783,7 +783,17 @@ export function mountApplication(
 			// reads an open window's machines at once.
 			computerPanels = new ComputerPanels(computer, controller.signal, {
 				hints: (listener) => controller.onInvalidate(listener),
+				// The machine's clock and backdrop follow the company's time zone (20260930739000).
+				timeZone: () => controller.store.get().team?.timeZone,
 			});
+			// A window that showed by itself follows its agent's use whatever thread is shown (20260930742000).
+			const panels = computerPanels;
+			const stopFeed = controller.store.subscribe(() =>
+				panels.byItself.refresh((agentId) =>
+					controller.agentState(agentId) === "computer" ? controller.atComputer(agentId)?.since : undefined,
+				),
+			);
+			controller.signal.addEventListener("abort", stopFeed, { once: true });
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;
@@ -1115,7 +1125,7 @@ export function mountApplication(
 						return {
 							name: agent.displayName,
 							role: agent.role,
-							working: now === "working" || now === "writing",
+							working: agentWorks(now),
 						};
 					}),
 			readApps: () => companyApps?.read() ?? Promise.resolve([]),
@@ -1165,7 +1175,8 @@ export function mountApplication(
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
-			if (conversation?.show(agentId, page)) return;
+			// The member's own click: a sleeping computer wakes (computer.ts OPEN_STARTS).
+			if (conversation?.show(agentId, page, true)) return;
 			// It waits a little while for the chat; a request the member moved away from does not come back later.
 			agentPage = { agentId, page, until: Date.now() + AGENT_PAGE_WAIT_MS };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
@@ -1913,7 +1924,10 @@ export function mountApplication(
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
-				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
+				if (
+					agentPage &&
+					(Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page, true))
+				)
 					agentPage = undefined;
 				return;
 			}

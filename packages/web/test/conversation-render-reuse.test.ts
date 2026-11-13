@@ -8,7 +8,19 @@ import type { HostedProfileMember, HostedSessionEvent } from "../src/cloud/types
 import { conversationTimestampLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
-import { event, fixture, id, profileA, session, settle, staff, team, userA, userB } from "./fixtures.ts";
+import {
+	event,
+	fixture,
+	id,
+	profileA,
+	session,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	userA,
+	userB,
+} from "./fixtures.ts";
 
 /* A redraw of the thread keeps the element of every item whose content is the same, and brings
  * a changed message up to date in place: the live log reads each message once, when it first
@@ -345,6 +357,22 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(result.dataset.sentAt).toBe(at(4));
 		expect(settling.added).toEqual([]);
 		expect(settling.removed).toEqual([]);
+	});
+
+	it("makes the figure at the head of a waiting card ask with a question mark for a question and an exclamation mark for the rest", async () => {
+		const motion = stubFigureMotion();
+		const asks = () =>
+			motion.mock.calls.filter((call) => call[4]?.activity === "Waiting").map((call) => call[4]?.ask);
+		setup([message(1), question()]);
+		expect(asks()).toEqual(["question"]);
+		motion.mockClear();
+		setup([
+			message(1),
+			question({
+				request: { surface: "secret", title: "The key to the shop", payload: { name: "SHOP_KEY" } },
+			} as Partial<TranscriptItem>),
+		]);
+		expect(asks()).toEqual(["bang"]);
 	});
 
 	it("keeps an answer half made in a waiting card when the agent's look changes, and draws only the figure anew", async () => {

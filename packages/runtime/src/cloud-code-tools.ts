@@ -36,7 +36,11 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   or from a git bundle an agent wrote under code/_incoming/, to come in with its history as a new repository
  *   (`qorpera_folder_request_code_import`). The coding executor fetches it, looks at it and, unless `look` asked only
  *   for that, builds the repository. The tool looks at the request (`qorpera_folder_code_import`) as at an undo's and
- *   says what the look found and how it ended, or how far it got.
+ *   says what the look found and how it ended, or how far it got. The import's follow-ups (13 Nov 2026, migration
+ *   20260930741000; STEP6-FOLLOW-UPS-PLAN.md sections 1, 7 and 8): a GitHub project too may name the branch to bring in
+ *   as main; the answers name the other branches with work main lacks and how to go on from one; and once a file came
+ *   in, whether the file there is still the bundle that was read, with the version a removal of only that bundle names.
+ *   Every key those come from is optional, so SQL and executors from before them are answered as before.
  *
  * All three are run effects under the run's own receipt, keyed by the operation key. An agent's own company run has
  * the tool, never a worker's. None is reviewed (`cloudActionEffect`): an undo puts main back to a state it had, as a
@@ -162,37 +166,45 @@ function incoming(value: unknown): string {
 	return path;
 }
 
-/** The branch of a bundle to bring in, when the file names it: a branch's name, refs/heads/ left out. */
-function branch(value: unknown): string {
-	const name = typeof value === "string" ? value.trim().replace(/^refs\/heads\//, "") : "";
-	if (
-		Buffer.byteLength(name) > BRANCH_BYTES ||
-		!BRANCH.test(name) ||
-		name.includes("..") ||
-		name
+/** Whether SQL takes a name as the branch to bring in (`qorpera_code_import_from_valid`, by a session's base branch). */
+function branchTaken(name: string): boolean {
+	return (
+		Buffer.byteLength(name) <= BRANCH_BYTES &&
+		BRANCH.test(name) &&
+		!name.includes("..") &&
+		!name
 			.split("/")
 			.some((part) => part === "" || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))
-	)
+	);
+}
+
+/** The branch to bring in as main when it is not the source's own: a branch's name, refs/heads/ left out. */
+function branch(value: unknown): string {
+	const name = typeof value === "string" ? value.trim().replace(/^refs\/heads\//, "") : "";
+	if (!branchTaken(name))
 		throw new CloudToolArgumentRefusal(
-			"from.branch is the name of the file's branch to bring in, of at most 200 bytes: letters, digits, ., _, - and /",
+			"from.branch is the name of the branch to bring in as main, of at most 200 bytes: letters, digits, ., _, - and /",
 		);
 	return name;
 }
 
-/** Where bring_in takes the code from: exactly one of github and file, and branch only with a file. */
+/** Where bring_in takes the code from: exactly one of github and file, either with the branch to bring in as main (the
+ * lead's decision 3 of the import's follow-ups: SQL and the executor's fetch take it from GitHub too). */
 function source(value: unknown): CloudCompanyCodeImportSource {
 	const from =
 		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 	if (
 		from === undefined ||
 		Object.hasOwn(from, "github") === Object.hasOwn(from, "file") ||
-		Object.keys(from).some((key) => !["github", "file", "branch"].includes(key)) ||
-		(Object.hasOwn(from, "github") && Object.hasOwn(from, "branch"))
+		Object.keys(from).some((key) => !["github", "file", "branch"].includes(key))
 	)
 		throw new CloudToolArgumentRefusal(
-			'from is {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"}, with branch only for a file',
+			'from is {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"}, either with branch',
 		);
-	if (Object.hasOwn(from, "github")) return { github: github(from.github) };
+	if (Object.hasOwn(from, "github")) {
+		const project = github(from.github);
+		return from.branch === undefined ? { github: project } : { github: project, branch: branch(from.branch) };
+	}
 	const file = incoming(from.file);
 	return from.branch === undefined ? { file } : { file, branch: branch(from.branch) };
 }
@@ -468,7 +480,10 @@ function importStop(
 		case "IMPORT_BRANCH_NAME":
 			return "its main branch has a name Qorpera can't keep: longer than 200 bytes, or one that looks like a key";
 		case "IMPORT_BRANCH_UNKNOWN":
-			return "the file has more than one branch and none is clearly its main one: call again with from.branch, the branch to bring in, and a new operationKey";
+			// With from.branch: the source has no branch of that name (the executor's `codeImportWants`, or a file's).
+			return request.from.branch === undefined
+				? "the file has more than one branch and none is clearly its main one: call again with from.branch, the branch to bring in, and a new operationKey"
+				: `it has no branch ${JSON.stringify(request.from.branch)}: call again with from.branch set to one it has, or without from.branch, and a new operationKey`;
 		case "IMPORT_FILE_NOT_WHOLE":
 			return "the file is not a whole git bundle: make it again with git bundle create <file> --all";
 		case "IMPORT_FILE_CHANGED":
@@ -543,27 +558,81 @@ function keyLike(look: CloudCompanyCodeImportLook): string {
 	return `${named.length ? `Strings that look like keys: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : `${count(found, "string looks", "strings look")} like keys`}.${partly}`;
 }
 
+/** The other branches a look found with work main lacks (`lines`, 20260930741000), at most the ten it shows, each by its
+ * name quoted as JSON, so a name can pass for no words of the answer, then the rest counted; `item` says what each adds. */
+function lineList(
+	lines: NonNullable<CloudCompanyCodeImportLook["lines"]>,
+	item: (line: NonNullable<CloudCompanyCodeImportLook["lines"]>["shown"][number]) => string,
+): string {
+	const named = lines.shown.map(
+		(line) => `${line.name === null ? "one whose name is not shown" : JSON.stringify(line.name)} (${item(line)})`,
+	);
+	const more = lines.count - named.length;
+	return named.length ? `: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : "";
+}
+
+const CANNOT_HOLD = "the company folder cannot hold some of its file names";
+
+/** What a look says of the other branches with work main lacks, and how one comes in as main instead; nothing when it
+ * found none, or when the look has no measure of them. */
+function linesLooked(look: CloudCompanyCodeImportLook): { said: string; instead: string } {
+	const lines = look.lines;
+	if (lines === undefined || lines.count === 0) return { said: "", instead: "" };
+	const list = lineList(
+		lines,
+		(line) =>
+			`${count(line.ahead, "change", "changes")} main lacks, ${line.behind} behind main${line.fits === false ? `; ${CANNOT_HOLD}, so it cannot be merged as it is` : ""}`,
+	);
+	// Only a branch bring_in can name, and whose files the folder can hold, comes in as main.
+	const taken = lines.shown.some((line) => line.name !== null && branchTaken(line.name) && line.fits !== false);
+	return {
+		said: ` It has ${count(lines.count, "other branch", "other branches")} with work its main branch lacks, which ${lines.count === 1 ? "comes" : "come"} in under refs/qorpera/imported/heads/${list}.`,
+		instead: taken
+			? " To bring one in as the main branch instead, call bring_in with from.branch set to its name, look false and a new operationKey."
+			: "",
+	};
+}
+
+/** What came with code brought in besides its main branch, and how a coding session brings one into main. */
+function linesCame(look: CloudCompanyCodeImportLook, folder: string): string {
+	const lines = look.lines;
+	if (lines === undefined || lines.count === 0) return "";
+	const list = lineList(lines, (line) => `${line.ahead}${line.fits === false ? `; ${CANNOT_HOLD}` : ""}`);
+	return ` ${count(lines.count, "other branch", "other branches")} came with it under refs/qorpera/imported/heads/, with ${count(lines.changes, "change", "changes")} main lacks${list}. To bring one into main, have a coding session on ${folder} merge it into its branch (git merge refs/qorpera/imported/heads/<name>), run the checks and finish; changes/1.md lists them.`;
+}
+
+/** What becomes of the bundle a file import read. Qorpera leaves it where it is, and the agent that wrote it removes it,
+ * through its own view, only while it is still the bundle that was read: another file may stand at that path by now
+ * (put there while the import waited). Since 20260930741000 the read says so, with the folder's version of it while it
+ * is, and a removal under that version takes nothing else; from SQL before it, or for another path, the words say only
+ * to check. */
+function bundleLeft(path: string, file: CloudCompanyCodeImport["file"]): string {
+	if (file === undefined || file === null || file.path !== path)
+		return ` Qorpera no longer needs the bundle it read from ${path}. Delete that file only if it is still the bundle you made for this; leave any other file there.`;
+	return file.version === null
+		? ` The file at ${path} is no longer the bundle that was read, or is gone: leave it.`
+		: ` Qorpera no longer needs ${path}: it is still the bundle that was read (version ${file.version}). If you made it for this, delete it with company_delete and expectedVersion ${file.version}; that removes only that version.`;
+}
+
 /** How an import's request ended, in words the agent can pass on. */
 function importEnded(request: CodeBringIn, ended: CloudCompanyCodeImport): string {
 	const folder = `code/${ended.owner}/${ended.name}`;
 	const look = ended.look;
-	if (ended.state === "done" && ended.result === "looked")
-		return look === null
-			? "It was looked at, but what it found is not there to read."
-			: `${lookFacts(look, request)} ${keyLike(look)}${look.why === null ? " To bring it in, call bring_in with look false and a new operationKey." : ""}`;
+	if (ended.state === "done" && ended.result === "looked") {
+		if (look === null) return "It was looked at, but what it found is not there to read.";
+		const lines = linesLooked(look);
+		return `${lookFacts(look, request)}${lines.said} ${keyLike(look)}${look.why === null ? " To bring it in, call bring_in with look false and a new operationKey." : ""}${lines.instead}`;
+	}
 	if (ended.state === "done") {
 		const record = ended.change === null ? "" : `; change ${ended.change} of its record`;
 		const facts =
 			look === null
 				? `Brought in as ${folder}${record}.`
-				: `Brought in as ${folder}: ${count(look.commits, "earlier change", "earlier changes")} on ${look.defaultBranch ?? "its main branch"}, ${count(look.files, "file", "files")}${record}.`;
-		// Qorpera leaves a file source where it is, and the agent that wrote it removes it, through its own view. Only while
-		// it is still the bundle that was read: another file may stand at that path by now (put there while the import
-		// waited), and a removal takes whatever the path holds. The answer carries no SHA-256 of the file to compare.
+				: `Brought in as ${folder}: ${count(look.commits, "earlier change", "earlier changes")} on ${look.defaultBranch ?? "its main branch"}, ${count(look.files, "file", "files")}${record}.${linesCame(look, folder)}`;
 		const source =
 			"github" in request.from
 				? " The copy on GitHub stays as it was; Qorpera no longer works on it there."
-				: ` Qorpera no longer needs the bundle it read from ${request.from.file}. Delete that file only if it is still the bundle you made for this; leave any other file there.`;
+				: bundleLeft(request.from.file, ended.file);
 		return `${facts}${source} Have a coding session add its checks file.${look !== null && look.secrets.found > 0 ? ` ${keyLike(look)}` : ""}`;
 	}
 	if (ended.state === "refused") {
@@ -589,7 +658,6 @@ const IMPORT_STEPS: Readonly<Record<NonNullable<CloudCompanyCodeImport["step"]>,
 	"set-aside": "putting it in place",
 	build: "putting it in place",
 	open: "putting it in place",
-	tidy: "tidying up",
 };
 const IMPORT_WAITS: ReadonlyMap<string, string> = new Map([
 	["SESSIONS_BUSY", "until the company's coding sessions are quiet"],
@@ -705,7 +773,8 @@ export function cloudCodeTools(options: {
 							type: "string",
 							minLength: 1,
 							maxLength: BRANCH_BYTES,
-							description: "Only for a file whose main branch is not clear: the branch to bring in.",
+							description:
+								"The branch to bring in as main when it is not the source's own: one a look named, or a file's when its main branch is not clear.",
 						},
 					},
 				},

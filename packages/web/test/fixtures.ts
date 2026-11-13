@@ -132,7 +132,7 @@ export async function settle(): Promise<void> {
 export function stubFigureMotion(dispose: () => void = () => {}) {
 	vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
 	vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
+	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose, play: () => {} });
 }
 
 /** Scrolls `element` as a browser has it: one that has left the page says it is at its top, where jsdom keeps what
@@ -262,6 +262,10 @@ export function fixture() {
 	// A cloud before 20260930723000: it does not say what each agent's work waits on the member for.
 	vi.spyOn(api, "listWaitingWork").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_waiting_work", { message: "missing", code: "PGRST202" }, 404),
+	);
+	// A cloud before 20260930742000: it does not say which agents use their computers.
+	vi.spyOn(api, "listScreensInUse").mockRejectedValue(
+		new CloudRpcError("qorpera_list_company_screens_in_use", { message: "missing", code: "PGRST202" }, 404),
 	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
