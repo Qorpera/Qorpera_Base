@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
+import {
+	type CloudMemberDataAnswer,
+	CloudMemberDataError,
+	type CloudMemberDataQuestion,
+	type CloudMemberDataWatch,
+	type CloudMemberDataWatchAnswer,
+} from "@qorpera/cloud-client/cloud-member-data";
 import { type CloudMemberFolderEntry, CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
 	type AppLink,
@@ -11,6 +18,8 @@ import {
 	assembleApp,
 	type CompanyApp,
 	CompanyApps,
+	CompanyData,
+	type CompanyDataClient,
 	companyConcepts,
 	readApps,
 	resolveAppPath,
@@ -720,6 +729,369 @@ describe("the bridge", () => {
 			if (!answer.ok) refused++;
 		}
 		expect(refused).toBe(5);
+	});
+});
+
+describe("the company's databases on an app's page", () => {
+	type Answer = CloudMemberDataAnswer;
+	const asOf = "2026-11-13T10:00:00.000Z";
+	const result = (etag: string, rows: unknown[][] = [[1]], columns = ["orders"]): Answer => ({
+		columns,
+		rows,
+		more: false,
+		etag,
+		asOf,
+	});
+	const shown = (rows: Record<string, unknown>[], columns = ["orders"]) => ({ columns, rows, more: false, asOf });
+
+	/** The member's client of the company's databases: questions answered at once, each watch call held until the test
+	 * answers it or it is ended. */
+	function fakeClient(answers: Record<string, Answer | Error> = {}) {
+		const asked: CloudMemberDataQuestion[] = [];
+		const calls: {
+			watches: readonly CloudMemberDataWatch[];
+			signal: AbortSignal;
+			answer: (value: CloudMemberDataWatchAnswer) => void;
+			fail: (error: Error) => void;
+		}[] = [];
+		const client: CompanyDataClient = {
+			query: async (question) => {
+				asked.push(question);
+				const answer = answers[question.question] ?? result(`e-${question.question}`);
+				if (answer instanceof Error) throw answer;
+				return answer;
+			},
+			watch: (watches, signal) =>
+				new Promise((resolve, reject) => {
+					calls.push({ watches, signal, answer: resolve, fail: reject });
+					signal.addEventListener("abort", () => reject(signal.reason));
+				}),
+		};
+		return { client, asked, calls };
+	}
+
+	const manifest = (reads: string[]): CompanyApp & { manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest('name = "Sales"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		// The manifest's reader does not take "data" yet: the agents' slice adds it to APP_READS.
+		return {
+			name: "sales",
+			path: "apps/sales",
+			manifest: { ...parsed.manifest, reads: reads as never },
+			problems: [],
+			version: null,
+		};
+	};
+
+	function page() {
+		const stop = new AbortController();
+		const sent: { watch: number; value: unknown }[] = [];
+		return {
+			stop,
+			sent,
+			page: { signal: stop.signal, send: (watch: number, value: unknown) => sent.push({ watch, value }) },
+		};
+	}
+
+	function setup(answers: Record<string, Answer | Error> = {}) {
+		const fake = fakeClient(answers);
+		const company = new AbortController();
+		const data = new CompanyData(() => fake.client, company.signal);
+		const bridge = (on: ReturnType<typeof page>, reads = ["data"], key = crypto.randomUUID(), withData = true) =>
+			new AppBridge(
+				{ folder: () => fakeFolder({}), agents: () => [], ...(withData ? { data } : {}) },
+				manifest(reads),
+				key,
+				new AbortController().signal,
+				undefined,
+				undefined,
+				() => on.page,
+			);
+		return { ...fake, company, data, bridge };
+	}
+
+	let visibility: DocumentVisibilityState = "visible";
+	const show = (state: DocumentVisibilityState) => {
+		visibility = state;
+		document.dispatchEvent(new Event("visibilitychange"));
+	};
+
+	beforeEach(() => {
+		visibility = "visible";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const query = (name: unknown, params?: unknown) => ({ method: "query", params: { name, params } });
+	const watch = (name: unknown, params?: unknown) => ({ method: "watch", params: { name, params } });
+
+	it("refuses what a page may not ask, and costs a call of the minute", async () => {
+		const { bridge, asked } = setup();
+		const on = page();
+		expect(await bridge(on, []).answer(query("shop/sales"))).toEqual({
+			ok: false,
+			error: 'Add "data" to reads in app.toml to ask the company\'s databases',
+		});
+		expect(await bridge(on, ["files"]).answer(watch("shop/sales"))).toMatchObject({
+			ok: false,
+			error: expect.stringMatching(/^Add "data"/),
+		});
+		expect(await bridge(on, ["data"], undefined, false).answer(query("shop/sales"))).toEqual({
+			ok: false,
+			error: "This company's databases can't be asked from here",
+		});
+		const one = bridge(on);
+		for (const name of [
+			"shop",
+			"shop/sales/x",
+			"Shop/sales",
+			"1shop/sales",
+			"shop/Sales",
+			"shop/sales--x",
+			`shop/${"a".repeat(61)}`,
+			`${"a".repeat(41)}/x`,
+			7,
+			null,
+		])
+			expect(await one.answer(query(name)), String(name)).toEqual({
+				ok: false,
+				error: "Name a question as <database>/<question>",
+			});
+		expect(await one.answer(query("shop/sales", { viewer: "someone" }))).toEqual({
+			ok: false,
+			error: ":viewer is filled by Qorpera with the member looking",
+		});
+		expect(await one.answer(query("shop/sales", [1]))).toMatchObject({ ok: false });
+		expect(await one.answer(query("shop/sales", { "a-b": 1 }))).toMatchObject({ ok: false });
+		for (const value of [{}, [1], Number.NaN, Number.POSITIVE_INFINITY, "x".repeat(1025)])
+			expect(await one.answer(query("shop/sales", { since: value })), String(value)).toEqual({
+				ok: false,
+				error: ":since is short text, a number, true, false or null",
+			});
+		const many = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`p${index}`, index]));
+		expect(await one.answer(query("shop/sales", many))).toEqual({
+			ok: false,
+			error: "A question takes at most 16 parameters",
+		});
+		expect(asked).toEqual([]);
+		// A question is one call of the app's 120 a minute.
+		const key = crypto.randomUUID();
+		let refused = 0;
+		for (let index = 0; index < 122; index++)
+			if (!(await bridge(on, ["data"], key).answer(query("shop/sales"))).ok) refused++;
+		expect(refused).toBe(2);
+		expect(asked).toHaveLength(120);
+		expect(asked[0]).toEqual({ database: "shop", question: "sales", params: {} });
+	});
+
+	it("answers a question with rows as objects by column name, and passes the gateway's refusal on", async () => {
+		const { bridge, asked } = setup({
+			sales: result("e1", [[23, 4100.5, "a", "b", "x"]], ["orders", "total", "name", "name", "__proto__"]),
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const answer = await bridge(page()).answer(
+			query("shop/sales", { since: "2026-11-01", top: 5, open: true, none: null }),
+		);
+		expect(asked[0]).toEqual({
+			database: "shop",
+			question: "sales",
+			params: { since: "2026-11-01", top: 5, open: true, none: null },
+		});
+		// The later of two columns of one name stands; the names are all listed; the etag stays in the web.
+		expect(answer).toEqual({
+			ok: true,
+			value: {
+				columns: ["orders", "total", "name", "name", "__proto__"],
+				rows: [expect.objectContaining({ orders: 23, total: 4100.5, name: "b" })],
+				more: false,
+				asOf,
+			},
+		});
+		const row = (answer as { value: { rows: Record<string, unknown>[] } }).value.rows[0]!;
+		// A column named __proto__ is a plain key of the row and changes no prototype.
+		expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+		expect(Object.hasOwn(row, "__proto__")).toBe(true);
+		expect(Object.getOwnPropertyDescriptor(row, "__proto__")?.value).toBe("x");
+		expect(Object.keys(row)).toEqual(["orders", "total", "name", "__proto__"]);
+		expect(await bridge(page()).answer(query("shop/missing"))).toEqual({
+			ok: false,
+			error: "No question shop/missing that you may read",
+		});
+	});
+
+	it("watches a question: its first answer, then each new one, in one held call", async () => {
+		const { bridge, calls, asked } = setup();
+		const a = page();
+		const first = bridge(a).answer(watch("shop/sales", { since: "2026-11-01" }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toEqual({ ok: true, value: { watch: 1, answer: shown([{ orders: 1 }]) } });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.watches).toEqual([
+			{ database: "shop", question: "sales", params: { since: "2026-11-01" }, etag: "e-sales" },
+		]);
+		calls[0]?.answer({ changed: [{ index: 0, answer: result("e2", [[2]]) }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: 1, value: shown([{ orders: 2 }]) }]);
+		// The next call holds the new etag; one that says the same is followed by another.
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches[0]?.etag).toBe("e2");
+		calls[1]?.answer({ same: true });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(3);
+		expect(calls[2]?.watches[0]?.etag).toBe("e2");
+		expect(a.sent).toHaveLength(1);
+		expect(asked).toHaveLength(1);
+	});
+
+	it("shares a question two pages watch, and starts a new call when the set changes", async () => {
+		const { bridge, calls, asked, data } = setup();
+		const a = page();
+		const b = page();
+		const first = bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		const one = ((await first) as { value: { watch: number } }).value.watch;
+		expect(calls).toHaveLength(1);
+		// The same question with the same parameters: no question asked, the call stands, and the answer is the one held.
+		const second = await bridge(b).answer(watch("shop/sales", {}));
+		expect(second).toEqual({ ok: true, value: { watch: 2, answer: shown([{ orders: 1 }]) } });
+		await vi.advanceTimersByTimeAsync(600);
+		expect(asked).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect(data.questions).toBe(1);
+		// Another question: the call in flight ends and the next holds both.
+		const third = bridge(b).answer(watch("shop/by-status"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await third).toMatchObject({ ok: true, value: { watch: 3 } });
+		expect(calls[0]?.signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches.map((one) => one.question)).toEqual(["sales", "by-status"]);
+		// A new answer of the shared question reaches both pages.
+		calls[1]?.answer({ changed: [{ index: 0, answer: result("e5", [[5]]) }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: one, value: shown([{ orders: 5 }]) }]);
+		expect(b.sent).toEqual([{ watch: 2, value: shown([{ orders: 5 }]) }]);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(3);
+		// A page stops its own watch only, and that costs nothing: the shared question stays, so the call stands.
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: 2 } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: one } })).toEqual({ ok: true, value: null });
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: one } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls).toHaveLength(3);
+		expect(data.questions).toBe(2);
+		// The last watcher of a question gone: a new call without it.
+		expect(await bridge(b).answer({ method: "unwatch", params: { watch: 3 } })).toEqual({ ok: true, value: null });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls[2]?.signal.aborted).toBe(true);
+		expect(calls[3]?.watches.map((one) => one.question)).toEqual(["sales"]);
+	});
+
+	it("holds at most 8 watches a page and 24 questions a company, and a question that fails is no watch", async () => {
+		const { bridge, calls, data } = setup({
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const pages = [page(), page(), page(), page()];
+		const start = async (on: ReturnType<typeof page>, name: string) => {
+			const answer = bridge(on).answer(watch(name));
+			await vi.advanceTimersByTimeAsync(0);
+			return answer;
+		};
+		for (let index = 0; index < 8; index++)
+			expect(await start(pages[0]!, `shop/q${index}`)).toMatchObject({ ok: true });
+		expect(await start(pages[0]!, "shop/q8")).toEqual({
+			ok: false,
+			error: "A page watches at most 8 questions at once",
+		});
+		for (let index = 8; index < 24; index++)
+			expect(await start(pages[1 + Math.floor((index - 8) / 8)]!, `shop/q${index}`)).toMatchObject({ ok: true });
+		expect(data.questions).toBe(24);
+		expect(await start(pages[3]!, "shop/q24")).toEqual({
+			ok: false,
+			error: "The company's open apps watch at most 24 questions together",
+		});
+		// One already watched still may be.
+		expect(await start(pages[3]!, "shop/q3")).toMatchObject({ ok: true });
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls.at(-1)?.watches).toHaveLength(24);
+		const other = setup({ missing: new CloudMemberDataError("No question shop/missing that you may read", 404) });
+		const lone = page();
+		const failed = other.bridge(lone).answer(watch("shop/missing"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await failed).toEqual({ ok: false, error: "No question shop/missing that you may read" });
+		expect(other.data.questions).toBe(0);
+		await vi.advanceTimersByTimeAsync(600);
+		expect(other.calls).toHaveLength(0);
+	});
+
+	it("waits 2 s, 5 s, then 10 s after a call that failed, and tells no page", async () => {
+		const { bridge, calls } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(1);
+		for (const [index, wait] of [2000, 5000, 10_000, 10_000].entries()) {
+			calls[index]?.fail(new Error("The company's databases did not answer (503)"));
+			await vi.advanceTimersByTimeAsync(wait - 1);
+			expect(calls, `after failure ${index + 1}`).toHaveLength(index + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(calls).toHaveLength(index + 2);
+		}
+		expect(a.sent).toEqual([]);
+		// One that answers starts the count again.
+		calls[4]?.answer({ same: true });
+		await vi.advanceTimersByTimeAsync(500);
+		calls[5]?.fail(new Error("down"));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(calls).toHaveLength(7);
+	});
+
+	it("stops while the tab is hidden, when the company is put away, and when the page goes", async () => {
+		const { bridge, calls, company, data } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(1);
+		show("hidden");
+		expect(calls[0]?.signal.aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(1);
+		show("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches[0]?.etag).toBe("e-sales");
+		// The page goes (its app closed or reloaded): its watches with it.
+		a.stop.abort();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls[1]?.signal.aborted).toBe(true);
+		expect(data.questions).toBe(0);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(2);
+		expect(await bridge(a).answer(watch("shop/sales"))).toEqual({
+			ok: false,
+			error: "This page can't watch the company's databases",
+		});
+		// The company put away.
+		const b = page();
+		void bridge(b).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(3);
+		company.abort();
+		expect(calls[2]?.signal.aborted).toBe(true);
+		show("hidden");
+		show("visible");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(3);
+		expect(data.questions).toBe(0);
 	});
 });
 

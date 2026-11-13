@@ -41,7 +41,7 @@ import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import { CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -468,6 +468,8 @@ export function mountApplication(
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
+	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
+	const appData = new WeakMap<CompanyController, CompanyData>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -1106,6 +1108,35 @@ export function mountApplication(
 					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
 			};
 		};
+		// The company's databases, asked and watched as the member through the member gateway; none where the build
+		// names no member gateway.
+		const dataHost = (): CompanyData | undefined => {
+			if (!cloud.config.memberCompanyGatewayUrl) return undefined;
+			let data = appData.get(controller);
+			if (!data) {
+				data = new CompanyData(
+					() => {
+						const role = controller.store.get().team?.role;
+						const client = role
+							? new WebCompanyFiles(
+									cloud,
+									controller.profile,
+									controller.userId,
+									role,
+									controller.signal,
+									companyCurrent,
+								).data()
+							: undefined;
+						if (!client) throw new Error(t("Company access changed."));
+						return client;
+					},
+					controller.signal,
+					companyCurrent,
+				);
+				appData.set(controller, data);
+			}
+			return data;
+		};
 		const panelHost = (beside: boolean): AppPanelHost => ({
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
@@ -1137,6 +1168,7 @@ export function mountApplication(
 			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
 			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
 			current: companyCurrent,
+			data: dataHost(),
 		});
 		sidePanel = (target) =>
 			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
