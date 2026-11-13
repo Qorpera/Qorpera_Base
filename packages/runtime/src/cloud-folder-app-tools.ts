@@ -7,8 +7,10 @@
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
  *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
- *   An app made from a kit (`manifest.kit`, §3a) gets the kit's own files from this call: for an explainer the engine
- *   and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts).
+ *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
+ *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
+ *   for a data kit (model, board, path, object) the kit's engine and a page that names the pictures its data refers
+ *   to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
  *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
@@ -61,6 +63,20 @@ import {
 	explainerPage,
 	parseExplainerClips,
 } from "./cloud-app-kit-explainer.ts";
+import {
+	DATA_KITS,
+	type DataKit,
+	isDataKit,
+	KIT_DATA_MAX_BYTES,
+	KIT_ENGINE,
+	KIT_ENGINE_JS,
+	KIT_GUIDE,
+	KIT_PAGE,
+	kitDataFile,
+	kitNotes,
+	kitPage,
+	parseKitData,
+} from "./cloud-app-kits.ts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
@@ -152,24 +168,34 @@ const SAVE_APP_EMBLEM =
 	"The app's own picture in the apps drawer, drawn in its colour; page when the app has none. Members may pick another for their own drawer, or one of the app's own icons (files says how to draw those).";
 
 /**
- * What save_app's schema says of `kit`: how to make an explainer, a short narrated video in place of a page
+ * What save_app's schema says of the explainer kit: how to make a short narrated video in place of a page
  * (RUNTIME-INTERFACE-APPS.md §3a; Jonas, 10 November 2026). It is the whole of what an agent knows of the engine
  * (packages/runtime/kits/explainer/engine.js), so a name here that the engine lacks draws nothing: the kit's test holds
- * the two together. On the field for the same reason as `reads`.
+ * the two together.
  */
-const SAVE_APP_KIT =
-	'explainer makes the app a short narrated video in place of a page: 90 to 120 seconds that explain one mechanism, decision or idea with pictures that move, as a maths explainer does. Use it where motion explains better than a page: how money or data flows, why a number is what it is, what a choice costs. Not for the state of an area (that is a page) and not as a mock-up of a screen. You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two. scenes.js adds chapters and scenes to the video V, which the page makes and starts: V.part("The idea"); V.scene((s) => { const a = s.box({x: 400, y: 450, w: 260, h: 100, label: "Shop", sub: "pays 149", color: C.blue}); const b = s.icon({name: "person", x: 1100, y: 450, color: C.yellow, label: "Ada"}); const ab = s.arrow(a, b, {color: C.yellow}); s.say("The shop pays Ada.", s.create(a), s.create(b), s.create(ab), s.flow(ab, 1.2, {count: 3})); }); A part is a chapter (4 to 6 in a video); a scene is one picture, and the stage clears between scenes. The stage is 1600 by 900: x and y are a thing\'s centre, y grows downwards. Things: s.box({x, y, w, h, label, sub, color, dash}); s.text({x, y, str, size, color, font: "sans" or "serif"}); s.number({x, y, from, size, fmt}), which s.value(n, to) counts; s.bar({x, y, w, h, dir: "up" or "right", scale}), which s.value(bar, to) grows; s.icon({name, x, y, label}) with name of person, bot, house, bus, card, coin, server, db, cloud, lock, doc, clock, shield, globe, mail, bolt; s.arrow(from, to, {color, bend, label}) between two things or points; s.line({d, head: false}) for any path. show: true on a thing makes it visible from the start: for the title frame only. s.say(caption, ...animations) is one caption and what moves under it, one after another: s.create(m) draws it, s.write(text), s.fadeIn(m), s.fadeOut(m), s.dim(m, 0.3), s.move(m, x, y), s.scale(m, k), s.indicate(m) glows, s.value(m, to), s.flow(arrow, seconds, {count}) sends dots along an arrow, s.camera(x, y, zoom). Each takes its seconds last; s.all(s.create, [a, b], 1) runs several together and {w: true} plays one with the one before it. Animate every thing: what you never animate just fades in. Colours come from C, one meaning each: yellow money, green what is kept or good, red loss, blue and teal things, purple partners, grey what is unknown. The captions are the narration: shown under the stage, and spoken word for word when the video has a voice. Write them for the ear: one idea and about 15 words a caption, short plain sentences, amounts as they are said (149 kroner, not NOK 149.00), no brackets and no symbols. 2 to 7 captions a scene, 25 to 35 in all. The stage shows and the caption tells: at most 12 words on the stage at once, and never a sentence in a box. A mechanism is motion: money flows along arrows, a total counts up or down, a part slides out of a whole, a bar grows past zero; never only boxes that appear. Keep 60 units free at every edge. Text sizes: 24 at least, 28 to 34 for labels, 44 to 60 for statements, 76 to 96 for the one number that matters. The first scene is the title frame: a small grey line, the title in two lines at size 70 to 80 and one small picture, all show: true, with the band around y 560 left free for the Play button. The last scene stays on screen at the end: make it a summary worth stopping on. Every number, name and claim comes from the company\'s files: never round a figure into a new one, and say assumed or example where the source does. Look before you show it, as for any app, and at more than the first frame: index.html?t=SECONDS opens the video paused at that second. Look at the end of each caption, at t=0 and at the last frame, at 1280 and at 390 px wide, and fix what overlaps, is cut off, stands empty or is too small to read. The answer\'s look names what a read of scenes.js found.';
+const SAVE_APP_KIT_EXPLAINER =
+	'explainer makes the app a short narrated video in place of a page: 90 to 120 seconds that explain one mechanism, decision or idea with pictures that move, as a maths explainer does. Use it where motion explains better than a page: how money or data flows, why a number is what it is, what a choice costs. Not for a thing a member should handle (that is another kit) and not as a mock-up of a screen. You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two. scenes.js adds chapters and scenes to the video V, which the page makes and starts: V.part("The idea"); V.scene((s) => { const a = s.box({x: 400, y: 450, w: 260, h: 100, label: "Shop", sub: "pays 149", color: C.blue}); const b = s.icon({name: "person", x: 1100, y: 450, color: C.yellow, label: "Ada"}); const ab = s.arrow(a, b, {color: C.yellow}); s.say("The shop pays Ada.", s.create(a), s.create(b), s.create(ab), s.flow(ab, 1.2, {count: 3})); }); A part is a chapter (4 to 6 in a video); a scene is one picture, and the stage clears between scenes. The stage is 1600 by 900: x and y are a thing\'s centre, y grows downwards. Things: s.box({x, y, w, h, label, sub, color, dash}); s.text({x, y, str, size, color, font: "sans" or "serif"}); s.number({x, y, from, size, fmt}), which s.value(n, to) counts; s.bar({x, y, w, h, dir: "up" or "right", scale}), which s.value(bar, to) grows; s.icon({name, x, y, label}) with name of person, bot, house, bus, card, coin, server, db, cloud, lock, doc, clock, shield, globe, mail, bolt; s.arrow(from, to, {color, bend, label}) between two things or points; s.line({d, head: false}) for any path. show: true on a thing makes it visible from the start: for the title frame only. s.say(caption, ...animations) is one caption and what moves under it, one after another: s.create(m) draws it, s.write(text), s.fadeIn(m), s.fadeOut(m), s.dim(m, 0.3), s.move(m, x, y), s.scale(m, k), s.indicate(m) glows, s.value(m, to), s.flow(arrow, seconds, {count}) sends dots along an arrow, s.camera(x, y, zoom). Each takes its seconds last; s.all(s.create, [a, b], 1) runs several together and {w: true} plays one with the one before it. Animate every thing: what you never animate just fades in. Colours come from C, one meaning each: yellow money, green what is kept or good, red loss, blue and teal things, purple partners, grey what is unknown. The captions are the narration: shown under the stage, and spoken word for word when the video has a voice. Write them for the ear: one idea and about 15 words a caption, short plain sentences, amounts as they are said (149 kroner, not NOK 149.00), no brackets and no symbols. 2 to 7 captions a scene, 25 to 35 in all. The stage shows and the caption tells: at most 12 words on the stage at once, and never a sentence in a box. A mechanism is motion: money flows along arrows, a total counts up or down, a part slides out of a whole, a bar grows past zero; never only boxes that appear. Keep 60 units free at every edge. Text sizes: 24 at least, 28 to 34 for labels, 44 to 60 for statements, 76 to 96 for the one number that matters. The first scene is the title frame: a small grey line, the title in two lines at size 70 to 80 and one small picture, all show: true, with the band around y 560 left free for the Play button. The last scene stays on screen at the end: make it a summary worth stopping on. Every number, name and claim comes from the company\'s files: never round a figure into a new one, and say assumed or example where the source does. Look before you show it, as for any app, and at more than the first frame: index.html?t=SECONDS opens the video paused at that second. Look at the end of each caption, at t=0 and at the last frame, at 1280 and at 390 px wide, and fix what overlaps, is cut off, stands empty or is too small to read. The answer\'s look names what a read of scenes.js found.';
 
 /**
- * save_app's description, last: what makes a page worth opening (Jonas, 10 November 2026: the agents' apps "weren't all
- * that great visually"; six of the seven reviewed were one report template of text, drop-downs and dead links). A
- * concept or prototype of the product follows the product's own design (the company context), so these rules name
- * every other app. How to look at a page before showing it is in the company context, which has the room. Since the
- * web opens an app's links and gives every app a base style (RUNTIME-INTERFACE-APPS.md §2 and §4), it says which links
- * open and points to `files` for the style.
+ * What save_app's schema says of `kit` (RUNTIME-INTERFACE-APPS.md §3a and §3b): which kit draws which thing, what the
+ * four data kits have in common (one data file, the pictures in the folder before the save, labels and not sentences,
+ * unknown drawn and never written about), then each data kit's own guide (packages/runtime/kits/<kit>/KIT.md, which
+ * reaches a run in the same bundle as its engine) and the explainer's. It is the whole of what an agent knows of the
+ * kits. On the field because a tool's own description holds 4096 bytes; a schema holds 64 KiB.
+ */
+const SAVE_APP_KIT = `The form Qorpera draws for you, or null for a page you write by hand (the product's own prototype, or a working tool no kit draws). Choose by what the thing is. model: how something works in numbers, such as a business model, a price, costs or capacity. board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references. path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route. object: a physical thing a member turns in the hand. explainer: a mechanism or a decision that a short narrated video explains. For model, board, path and object you write one file among files, the kit's data (model.json, board.json, path.json or object.json), and save_app writes engine.js and index.html: never write or edit those two. A picture or video the data names shows only when it is in the app's folder as you save: write it there first (on a machine, under /company/apps/<name>/), or save the data again after. Change the data with save_app, not with company_write, so the page is written again with it. The page speaks your data's language: give lang, and the kit's words in that language. Every kit's words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went; a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters). Such a note reaches you as the member's message, under a first line that names the app and the thing. Every text in the data is a label or a note of one line, and the page cuts what is longer. Every fact comes from the company's files; what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it. Look at the app on a machine before you show it, as for any app: its index.html opens there with the data you saved. The answer's look names the pictures the folder lacks and the texts the page cuts.\n\n${DATA_KITS.map((kit) => KIT_GUIDE[kit].trim()).join("\n\n")}\n\n# Explainer kit: why is it so?\n\n${SAVE_APP_KIT_EXPLAINER}`;
+
+/**
+ * save_app's description, last: how a page written by hand must be made (Jonas, 13 November 2026, on apps that
+ * followed the rules of 10 November to the letter and were still documents in boxes: "they are supposed to be
+ * objects, models, apps and videos that are visual-first"). Nearly every app is made from a kit, whose engine does
+ * the drawing (`kit`'s schema); this names the few that are not: the product's own prototype, which follows the
+ * product's design (the company context), and a working tool no kit draws. How to look at a page before showing it
+ * is in the company context, which has the room. It says which links open (RUNTIME-INTERFACE-APPS.md §4) and points
+ * to `files` for the base style (§2).
  */
 const SAVE_APP_DESIGN =
-	" How to make a page worth opening (a concept or prototype of the company's product follows the product's own design instead). The first screen answers how this stands, without scrolling, on a laptop and on a phone: what is decided, what is open, what waits on a member and the two or three numbers that matter, each as a short line, a large number or a mark, never a paragraph. Head it with the area's plain name: no date, no update, no list of what you did; give the app that name as its title too, two or three words without the company's name. Show instead of write: a large number for a key figure, a chart for money or a trend, a map for places and routes, a diagram for steps and flows, a real picture for a thing or a screen; draw charts, maps and diagrams as inline SVG. A page with nothing to look at is a document, not an app. Keep it to about 300 words and rarely more than two laptop screens: a few words or a mark in a table cell, and the long reasoning in its file, linked in one line. Say what is not yet known once, as a state, not as a caveat in every sentence. Show a fact in one app only, the one whose area owns it. Fold nothing a member needs into <details> or closed rows. Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens. Every app starts from Qorpera's base style, which your own CSS overrides: the system font, a readable column, plain headings and tables, and the company's colours as variables, so the apps look like one company; files says which, so use them, not colours of your own. Make it work at phone width (about 390 px): one column, tables that fit or stack into cards, nothing cut off, text at least 14 px. Draw what the company already holds from its live data instead of typing it in: reads says how. The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.";
+	" A page you write by hand follows what the kits do. The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line under it, then the thing. Labels and numbers, never sentences; no boxes of text, no date, no list of what you did. What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about. Give the page something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the company's product follows the product's own design instead. Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens. Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: files says which, so use them, not colours of your own. Draw what the company already holds from its live data instead of typing it in: reads says how. The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.";
 
 const sha256hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -389,14 +415,29 @@ function foldersOf(paths: readonly string[]): string[] {
 /** The files a kit writes itself, which an agent's call may not name. */
 const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly string[]>> = {
 	explainer: [EXPLAINER_ENGINE, EXPLAINER_PAGE],
+	model: [KIT_ENGINE, KIT_PAGE],
+	board: [KIT_ENGINE, KIT_PAGE],
+	path: [KIT_ENGINE, KIT_PAGE],
+	object: [KIT_ENGINE, KIT_PAGE],
 };
+
+/** The one file of a kit's app that its maker writes: an explainer's scenes, a data kit's data. */
+const kitOwnFile = (kit: NonNullable<AppManifest["kit"]>): string =>
+	kit === "explainer" ? EXPLAINER_SCENES : kitDataFile(kit);
+
+/** A data kit's data, read from its file's text; a file that does not read as the kit's data is refused, with why. */
+function kitData(kit: DataKit, text: string): Readonly<Record<string, unknown>> {
+	const parsed = parseKitData(kit, text);
+	if ("problem" in parsed) throw new CloudToolRefusal(`APP_DATA_INVALID: ${parsed.problem}`);
+	return parsed.data;
+}
 
 /** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
 function refuseKitFiles(kit: NonNullable<AppManifest["kit"]>, files: readonly AppFile[]): void {
 	const own = files.find((file) => KIT_FILES[kit].includes(file.path.toLowerCase()));
 	if (own)
 		throw new CloudToolRefusal(
-			`APP_KIT_FILE: ${own.path} is the ${kit} kit's own file, which save_app writes; leave it out and give ${EXPLAINER_SCENES}`,
+			`APP_KIT_FILE: ${own.path} is the ${kit} kit's own file, which save_app writes; leave it out and give ${kitOwnFile(kit)}`,
 		);
 }
 
@@ -406,9 +447,9 @@ const contentOf = (path: string, text: string) => ({
 });
 
 /** A page past this many words a member would read is a document. */
-const LOOK_WORDS = 500;
+const LOOK_WORDS = 250;
 /** A page of more words than this with nothing to look at gets a note. */
-const LOOK_WORDS_UNSHOWN = 150;
+const LOOK_WORDS_UNSHOWN = 80;
 /** This many folded sections hide what the page is for. */
 const LOOK_FOLDED = 3;
 
@@ -491,10 +532,12 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: this reads as a document. Aim at about 300: show the state as numbers, marks, a chart or a diagram, and keep the long reasoning in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
-		notes.push("Nothing to look at, only text: show the main thing as a picture, a chart, a map or a diagram.");
+		notes.push(
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).",
+		);
 	return notes;
 }
 
@@ -645,7 +688,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: one of the ${INTERFACE_EMBLEMS.length} pictures its schema lists, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change, kit: explainer for a short narrated video) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. It is never a document or a report: text to read stays a file in the folder. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: one of the ${INTERFACE_EMBLEMS.length} pictures its schema lists, colour: ${AGENT_COLOURS.join(", ")}, kit: the form Qorpera draws for you, of ${APP_KITS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine; manifest.kit's schema says what each kit draws and what its file holds. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after. Without a kit (for the product's own prototype or a working tool) the app is one page: only the entry opens, so put every view in it, as tabs or sections. Such a page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load one later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); no page has a network, so everything it needs is in the app. A new app needs a manifest and its entry (a kit writes the entry). It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. A concept opens full screen beside Qorpera's own panel, which names it and says who made it: its page is the visual, edge to edge, with no title, strapline, caption, frame or band, and only the few controls it needs, small and right at the visual. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -791,6 +834,27 @@ export function cloudAppTools(options: {
 						{ path: EXPLAINER_PAGE, text: explainerPage(manifest.name, []) },
 					];
 				}
+				// For a data kit the engine and the page, around its data: a new app's folder holds no picture yet, so the
+				// page names the pictures this call writes (an .svg), and the look says which the data names beyond them.
+				let look: string[] | null = null;
+				if (isDataKit(manifest.kit)) {
+					const kit = manifest.kit;
+					refuseKitFiles(kit, files);
+					const dataText = files.find((file) => file.path.toLowerCase() === kitDataFile(kit))?.text;
+					if (dataText === undefined)
+						throw new CloudToolRefusal(
+							`APP_DATA_MISSING: a new ${kit} app needs its ${kitDataFile(kit)} among files`,
+						);
+					const data = kitData(kit, dataText);
+					const written = new Set(request.files.map((file) => file.path.toLowerCase()));
+					const holds = (path: string) => written.has(path.toLowerCase());
+					look = kitNotes(kit, data, holds);
+					files = [
+						...files,
+						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
+						{ path: KIT_PAGE, text: kitPage(request.name, kit, manifest.name, data, holds, manifest.concept) },
+					];
+				}
 				if (!files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
 					throw new CloudToolRefusal(
 						`APP_ENTRY_MISSING: a new app needs its entry, ${manifest.entry}, among files`,
@@ -841,7 +905,7 @@ export function cloudAppTools(options: {
 							receiptId,
 							units,
 							true,
-							lookNotes(request.files, manifest.kit, manifest.entry),
+							look ?? lookNotes(request.files, manifest.kit, manifest.entry),
 							grouped,
 						),
 					context,
@@ -941,6 +1005,36 @@ export function cloudAppTools(options: {
 					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
 				}
 			}
+			// A data kit's own files, the same way: the engine of this runtime, and the page with the title as it is now
+			// and every picture the data names that the folder holds. The data is this call's, or the folder's when the
+			// call gives none, so a save after a machine wrote the pictures names them in the page.
+			let look: string[] | null = null;
+			if (isDataKit(kit)) {
+				refuseKitFiles(kit, files);
+				const dataPath = kitDataFile(kit);
+				let dataText = files.find((file) => file.path.toLowerCase() === dataPath)?.text ?? null;
+				if (dataText === null && byKey.get(dataPath)?.kind === "file")
+					dataText = await folder.readText(`${root}/${dataPath}`, KIT_DATA_MAX_BYTES, context.signal).then(
+						(found) => found?.text ?? null,
+						(error) => (error instanceof CloudCompanyPathNotText ? null : unavailable(error, "saved")),
+					);
+				if (dataText === null)
+					throw new CloudToolRefusal(
+						`APP_DATA_MISSING: the ${kit} app's ${dataPath} is not in its folder; write it among files`,
+					);
+				const data = kitData(kit, dataText);
+				const written = new Set(request.files.map((file) => file.path.toLowerCase()));
+				const holds = (path: string) =>
+					written.has(path.toLowerCase()) || byKey.get(path.toLowerCase())?.kind === "file";
+				look = kitNotes(kit, data, holds);
+				for (const file of [
+					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
+					{ path: KIT_PAGE, text: kitPage(request.name, kit, title, data, holds, concept) },
+				]) {
+					const found = byKey.get(file.path);
+					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
+				}
+			}
 			refuseTooManyIcons(files, new Map([...byKey].filter(([path, item]) => item.kind === "file" && inIcons(path))));
 			const sizes = appFileSizes(listed.entries, root);
 			for (const file of files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
@@ -1002,7 +1096,7 @@ export function cloudAppTools(options: {
 				digest,
 				[...units, ...groupUnits],
 				(receiptId, results) =>
-					savedText(request, receiptId, results, false, lookNotes(request.files, kit, entry), grouped),
+					savedText(request, receiptId, results, false, look ?? lookNotes(request.files, kit, entry), grouped),
 				context,
 			);
 			return showCommitted(context, answer, reads);

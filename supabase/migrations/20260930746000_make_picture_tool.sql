@@ -1,4 +1,4 @@
--- 20260930746000: an agent makes a picture (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b; Jonas, 13 November 2026:
+-- 20260930746000: an agent makes a picture (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3c; Jonas, 13 November 2026:
 -- "I would also turn on agents generating images of course"). make_picture has a side thread of the run's own Codex make
 -- one PNG and saves it in the company folder through the folder core, as company_write writes a file, so the only
 -- database change is the closed list of tool operations a run's observations may name, after organize_apps

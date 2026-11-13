@@ -1,5 +1,5 @@
 /*
- * make_picture (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b; Jonas, 13 November 2026: "I would also turn on agents
+ * make_picture (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3c; Jonas, 13 November 2026: "I would also turn on agents
  * generating images of course"): an agent makes one picture from a prompt, and it is saved as a PNG file in the company
  * folder, as company_write saves a file.
  *

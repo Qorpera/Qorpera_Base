@@ -214,6 +214,9 @@ describe("which calls are reviewed", () => {
 		["good_will_mark", { marks: [] }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
 		["organize_apps", { action: "move", item: "app:sales", group: null }, "internal"],
+		["data_describe", {}, "read"],
+		["data_query", { database: "shop", sql: "select 1" }, "read"],
+		["data_apply", { database: "shop" }, "internal"],
 		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
 		[
 			"make_picture",

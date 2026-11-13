@@ -72,6 +72,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
+	// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
+	| "qorpera_run_data_pass"
 	// Staging a folder-v2 file's bytes (core C1d).
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"

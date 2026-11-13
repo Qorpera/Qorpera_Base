@@ -7,7 +7,8 @@
 // whenever that handler was added), that a click a handler stops from travelling on is still heard, and sent only if
 // no handler that still runs takes it (and a passive one cannot), that clicks on anything but a link are as they
 // were, and that the frame never leaves the page it was handed, whatever was clicked
-// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). Also that a note to the app's owner (`qorpera.tell`, §5) leaves the
+// frame as one call with its parts as plain values.
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-app-frame-browser.mjs
 // APP_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail); ONLY=<name> runs one page.
 import assert from "node:assert/strict";
@@ -54,7 +55,13 @@ window.calls = [];
 window.left = 0;
 const { page } = await (await fetch("/variant/" + new URLSearchParams(location.search).get("v"))).json();
 const frame = new AppFrame(page, "App", "app", async (call) => {
-	window.calls.push(call.method === "open" ? "open " + call.params.href : call.method + " " + call.params.path);
+	window.calls.push(
+		call.method === "open"
+			? "open " + call.params.href
+			: call.method === "tell"
+				? "tell " + JSON.stringify(call.params)
+				: call.method + " " + call.params.path,
+	);
 	return { ok: true, value: "" };
 }, () => { window.left++; });
 frame.frame.style.cssText = "width: 800px; height: 600px; border: 0";
@@ -217,8 +224,24 @@ on("seen", (event) => qorpera.read("the next handler sees taken: " + event.defau
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
-			"read open is undefined, and the page has addRow,agents,answer,list,onChange,questions,read,setRow,table,todos",
+			"read open is undefined, and the page has addRow,agents,answer,list,onChange,questions,read,setRow,table,tell,todos",
 			"read still here",
+		],
+	},
+	// A note to the app's owner (§5 "tell"): the frame document sends what it is about, the thing and the draft as plain
+	// values, and nothing else the page puts on the object; the page cannot take the call away.
+	"a note to the app's owner": {
+		page: `<!doctype html><p>Orders</p><script>
+qorpera.tell({ about: "Lund, A", at: 1043, text: "Get a quote", to: "someone else" });
+qorpera.tell({ about: "Lund" });
+try { qorpera.tell = () => null; } catch {}
+qorpera.read("tell is still the frame's own: " + (qorpera.tell.toString().includes("call(") ? "yes" : "no"));
+</script>`,
+		clicks: [],
+		calls: [
+			'tell {"about":"Lund, A","at":"1043","text":"Get a quote"}',
+			'tell {"about":"Lund","at":null,"text":null}',
+			"read tell is still the frame's own: yes",
 		],
 	},
 	"the page's other clicks are as they were": {

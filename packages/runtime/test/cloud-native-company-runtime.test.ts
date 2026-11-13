@@ -101,6 +101,7 @@ async function fixture(
 	machines = false,
 	folderSearch = false,
 	timeoutMs = 10_000,
+	companyData = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -647,6 +648,16 @@ async function fixture(
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
+		// The data gateway's run door only offers the data tools here; this suite never asks it.
+		...(companyData
+			? {
+					companyData: {
+						call: async () => {
+							throw new Error("No company data call expected");
+						},
+					},
+				}
+			: {}),
 		// Folder bytes read the files seeded; this suite saves no file, and stages bytes only for a work log.
 		folderBytes: () => ({
 			put: async (bytes: Uint8Array, mediaType: string) => {
@@ -1141,7 +1152,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v15",
+			schema: "qorpera.hire-overlay/v16",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2528,7 +2539,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2538,9 +2549,12 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
-		"waitSeconds",
-	);
+	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
+		type: "integer",
+		minimum: 1,
+		maximum: 60,
+	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
@@ -2802,6 +2816,31 @@ it.each([
 		expect(f.control.sendMessage).not.toHaveBeenCalled();
 	},
 );
+
+// The answer first (the contract's 2026-11-13 amendment, proposed): a usage limit the provider meets after the run's
+// answer leaves the run delivered, and the limit is still recorded against the run's login, once, as for a failed run.
+it("delivers a run whose provider met its usage limit after the answer, and records the limit against its login", async () => {
+	const f = await fixture("company-limit-after-answer");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_record_provider_usage_signal") {
+			expect(args).toEqual({ p_binding: f.binding, p_signal_kind: "usage_limit" });
+			return {
+				schema: "qorpera.provider-usage-signal-receipt/v1",
+				runId: f.binding.runId,
+				signalKind: "usage_limit",
+			};
+		}
+		return original(method, args, signal);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("final")?.messageId });
+	expect(
+		f.pathCall.mock.calls
+			.filter(([method]) => method === "qorpera_record_provider_usage_signal")
+			.map(([, , , timeoutMs]) => timeoutMs),
+	).toEqual([10_000]);
+});
 
 it("neither masks the failure nor retries when the usage signal cannot be recorded, and stays silent for other failures", async () => {
 	const f = await fixture();
@@ -3180,7 +3219,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {
-	const f = await fixture();
+	const f = await fixture("company-runtime", false, undefined, false, false, 10_000, true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -3255,8 +3294,14 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
 	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
+	// On 13 November 2026 a host that names the data gateway's run door offers data_describe, data_apply and data_query
+	// after update_wall (company databases, slice 5, 20260930750000); this run's host names it, so they moved again.
+	// The same day send_message, ask_member and update_wall no longer say the final send is the last act (the answer
+	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on each tree where that
+	// change meets master's own: agent names by work, the kits that draw an interface app, and company databases
+	// (13 November 2026).
 	// The same day make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again,
-	// measured on the tree with v241.
+	// measured on the tree with the kits, the company databases and the answer-first change.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3271,6 +3316,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"post_app",
 		"make_picture",
 		"update_wall",
+		"data_describe",
+		"data_apply",
+		"data_query",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3304,10 +3352,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"7649a9001405540b750c73ff0fd423333503275213ad34208348c97f6c549a64",
+		"bc02e489616219d76dbc05b9ea1d8035dca33f088d8b3a4dd85d91a10529e787",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"6d880ebcaa9eb0efe32bfacfa1323bb3c7d6105465e7e510cfa9e4cb823001cc",
+		"7ef848f3244c2e9048dbc0c97f4b8f6173eacc1328b6be053fdfe3af0622dbcb",
 	);
 });
 

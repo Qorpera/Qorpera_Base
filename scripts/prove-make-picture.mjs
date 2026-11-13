@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
-// make_picture on a real node with a real Codex sign-in (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b): the runtime's
+// make_picture on a real node with a real Codex sign-in (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3c): the runtime's
 // own Codex session (runCloudCodexToolSession) with its picture lane, the pinned patched Codex app-server and the
 // sign-in's ChatGPT plan. The agent's only tool, picture_probe, makes two pictures through the run's lane (a plain one
 // and a detailed one), then the agent is asked to call image_gen.imagegen itself, which its thread must not have.

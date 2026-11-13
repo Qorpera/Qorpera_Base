@@ -3,10 +3,13 @@ import { UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudMemberMachineAct,
 	CloudMemberMachineActRefusal,
+	type CloudMemberMachinePointerMove,
+	CloudMemberMachinePointerRefusal,
 	type CloudMemberMachineScreen,
 	CloudMemberMachineScreenRefusal,
 	type CloudMemberMachineStart,
 	CloudMemberMachineStartRefusal,
+	isCloudMemberMachinePointerPosition,
 	parseCloudMemberMachineAction,
 } from "./cloud-machine-command-http.ts";
 import type { MachineScreenAction } from "./cloud-machine-screen.ts";
@@ -37,10 +40,21 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 // (application/json, at most 1 KiB; the body is an empty object now: a later stage may say what to open there, and any
 // key today is a bad request, 400). The answer is 200 {"schema": "qorpera.member-machine-start/v1", "outcome":
 // "started" | "running"} or why the desktop does not run (409 with a fixed code).
+// A member who may act moves the desktop's pointer with their own (20260930744000):
+//   POST /v1/member-machine-screens/<companyId>/<machineId>/pointer
+// (application/json, at most 256 bytes). `{"begin": {"generation": g}}` (shared, at the lease generation the window
+// knows) or `{"begin": {"epoch": e, "seat": s}}` (the member's own private hold) asks SQL for a pointer pass as the
+// member: 200 {"schema": "qorpera.member-machine-pointer/v1", "pass", "milliseconds"} (what is left of it), or why not
+// (409). `{"pass": p, "x": n, "y": n}` moves the pointer on that pass, in the screen's own pixels: 200 {"schema",
+// "moved": true | false} (false: dropped, the desktop busy with an action or moves too fast; never queued), or why not
+// (409; POINTER_PASS_ENDED: begin another). Nothing typed is ever in it, and no move is logged, stored or answered
+// with more than that.
 
 /** A company's and a machine's ids, lower-case as the database writes them, and `/watching`, `/act` or `/start`. */
 const UUID = UUID_PATTERN.source.slice(1, -1);
-const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act|/start)?$`);
+const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act|/start|/pointer)?$`);
+/** A pointer pass's begin or a move: a few numbers and an id. */
+const POINTER_BODY_BYTES = 256;
 /** A member's start: `{}` today. */
 const START_BODY_BYTES = 1024;
 /** A member's action: one action, a text of at most 500 characters in it. */
@@ -86,6 +100,20 @@ export type CloudMemberMachineActRequest = {
 			readonly generation?: number;
 	  }
 );
+/** A pointer pass's begin or one move (20260930744000), as the listener read it from the member's request. */
+export type CloudMemberMachinePointerRequest = {
+	readonly companyId: string;
+	readonly machineId: string;
+	/** The member's bearer token, passed on to the database (a begin) or compared with the pass's (a move), nowhere else. */
+	readonly token: string;
+} & (
+	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
+	| { readonly pass: string; readonly x: number; readonly y: number }
+);
+/** A pointer pass (its id and what is left of it), or a move's end. */
+export type CloudMemberMachinePointerAnswer =
+	| { readonly pass: string; readonly milliseconds: number }
+	| CloudMemberMachinePointerMove;
 /** One start of the desktop, as the listener read it from the member's request. */
 export interface CloudMemberMachineStartRequest {
 	readonly companyId: string;
@@ -112,6 +140,8 @@ export interface CloudMemberMachineScreenServiceOptions {
 	act?(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000); without it the route is 404. */
 	start?(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
+	/** A member's pointer pass or move (20260930744000); without it the route is 404. */
+	pointer?(request: CloudMemberMachinePointerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerAnswer>;
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 	/** A look that failed for another reason than the member's, by its fixed code: for the executor's log. */
@@ -168,6 +198,51 @@ async function readAction(
 	}
 }
 
+/** A pointer pass's begin, `{"begin": {"generation": g}}` or `{"begin": {"epoch": e, "seat": s}}`, or a move, `{"pass":
+ * p, "x": n, "y": n}`: a JSON body of at most POINTER_BODY_BYTES, the numbers safe whole numbers (a position within the
+ * largest screen) and the pass an id; anything else is undefined, a bad request. */
+async function readPointer(
+	request: IncomingMessage,
+	signal: AbortSignal,
+): Promise<
+	| { begin: { generation: number } | { epoch: number; seat: number } }
+	| { pass: string; x: number; y: number }
+	| undefined
+> {
+	if (request.headers["content-type"] !== "application/json") return undefined;
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	for await (const chunk of request) {
+		signal.throwIfAborted();
+		bytes += (chunk as Buffer).length;
+		if (bytes > POINTER_BODY_BYTES) return undefined;
+		chunks.push(chunk as Buffer);
+	}
+	try {
+		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
+		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+		const whole = (value: unknown): value is number =>
+			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+		const keys = Object.keys(body).sort().join();
+		if (keys === "pass,x,y") {
+			const { pass, x, y } = body as { pass: unknown; x: unknown; y: unknown };
+			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !isCloudMemberMachinePointerPosition(x, y))
+				return undefined;
+			return { pass: pass.toLowerCase(), x: x as number, y: y as number };
+		}
+		if (keys !== "begin") return undefined;
+		const begin = (body as { begin: unknown }).begin;
+		if (!begin || typeof begin !== "object" || Array.isArray(begin)) return undefined;
+		const form = Object.keys(begin).sort().join();
+		const { generation, epoch, seat } = begin as { generation?: unknown; epoch?: unknown; seat?: unknown };
+		if (form === "generation" && whole(generation)) return { begin: { generation } };
+		if (form === "epoch,seat" && whole(epoch) && whole(seat)) return { begin: { epoch, seat } };
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** The member's start: a JSON body of at most START_BODY_BYTES that is exactly `{}` (never guessed: anything else is a bad
  * request). */
 async function readStart(request: IncomingMessage, signal: AbortSignal): Promise<boolean> {
@@ -188,7 +263,11 @@ async function readStart(request: IncomingMessage, signal: AbortSignal): Promise
 	}
 }
 
-function replyJson(reply: ServerResponse, status: number, value: Record<string, string | number | null>): void {
+function replyJson(
+	reply: ServerResponse,
+	status: number,
+	value: Record<string, string | number | boolean | null>,
+): void {
 	const body = JSON.stringify(value);
 	reply.writeHead(status, {
 		"content-type": "application/json",
@@ -209,6 +288,7 @@ export class HttpCloudMemberMachineScreenService {
 			typeof options.look !== "function" ||
 			(options.act !== undefined && typeof options.act !== "function") ||
 			(options.start !== undefined && typeof options.start !== "function") ||
+			(options.pointer !== undefined && typeof options.pointer !== "function") ||
 			(options.host !== undefined && !["127.0.0.1", "::1"].includes(options.host)) ||
 			!Number.isSafeInteger(options.port ?? 0) ||
 			(options.port ?? 0) < 0 ||
@@ -273,15 +353,22 @@ export class HttpCloudMemberMachineScreenService {
 			if (!reply.writableFinished) controller.abort();
 		};
 		reply.once("close", disconnect);
+		let quiet = false;
 		try {
 			const route = ROUTE.exec(request.url ?? "");
 			const acting = route?.[3] === "/act";
 			const starting = route?.[3] === "/start";
-			if (!route || (acting && !this.#options.act) || (starting && !this.#options.start)) {
+			const pointing = route?.[3] === "/pointer";
+			if (
+				!route ||
+				(acting && !this.#options.act) ||
+				(starting && !this.#options.start) ||
+				(pointing && !this.#options.pointer)
+			) {
 				replyJson(reply, 404, { error: "member_route_unavailable" });
 				return;
 			}
-			if (request.method !== (acting || starting ? "POST" : "GET")) {
+			if (request.method !== (acting || starting || pointing ? "POST" : "GET")) {
 				replyJson(reply, 405, { error: "method_not_allowed" });
 				return;
 			}
@@ -310,6 +397,28 @@ export class HttpCloudMemberMachineScreenService {
 				);
 				controller.signal.throwIfAborted();
 				replyJson(reply, 200, { schema: "qorpera.member-machine-act/v1", exitCode: done.exitCode });
+				return;
+			}
+			if (pointing && this.#options.pointer) {
+				// Moves are many and alike: none is logged, a failure of one neither (the window keeps moving or falls back).
+				quiet = true;
+				const asked = await readPointer(request, controller.signal);
+				if (asked === undefined) {
+					replyJson(reply, 400, { error: "member_pointer_invalid" });
+					return;
+				}
+				const done = await this.#options.pointer(
+					{ companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string, ...asked },
+					controller.signal,
+				);
+				controller.signal.throwIfAborted();
+				replyJson(
+					reply,
+					200,
+					"pass" in done
+						? { schema: "qorpera.member-machine-pointer/v1", pass: done.pass, milliseconds: done.milliseconds }
+						: { schema: "qorpera.member-machine-pointer/v1", moved: done.moved },
+				);
 				return;
 			}
 			if (starting && this.#options.start) {
@@ -359,7 +468,8 @@ export class HttpCloudMemberMachineScreenService {
 			if (
 				error instanceof CloudMemberMachineScreenRefusal ||
 				error instanceof CloudMemberMachineActRefusal ||
-				error instanceof CloudMemberMachineStartRefusal
+				error instanceof CloudMemberMachineStartRefusal ||
+				error instanceof CloudMemberMachinePointerRefusal
 			) {
 				// A desktop that did not start is the member's answer and a failure of the machine's: logged by its code.
 				if (error instanceof CloudMemberMachineStartRefusal && error.code === "DESKTOP_DID_NOT_START")
@@ -371,9 +481,12 @@ export class HttpCloudMemberMachineScreenService {
 				replyJson(reply, 403, { error: "machine_screen_unavailable" });
 			else {
 				// A fixed code only: an error's message never carries the member's token here, but it is not logged either.
-				this.#options.failed?.(
-					error instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(error.message) ? error.message : "UNCLASSIFIED",
-				);
+				if (!quiet)
+					this.#options.failed?.(
+						error instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(error.message)
+							? error.message
+							: "UNCLASSIFIED",
+					);
 				replyJson(reply, 503, { error: "machine_screen_unavailable" });
 			}
 		} finally {

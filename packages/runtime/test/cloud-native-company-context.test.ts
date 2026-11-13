@@ -5,8 +5,9 @@ import {
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
-import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
@@ -24,8 +25,13 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_AFTER_ANSWER_TOOLS,
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	CloudNativeToolBoundary,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -57,6 +63,32 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
+// The answer first (the contract's 2026-11-13 amendment, proposed): the words say once, with the reason, that only the
+// run's bookkeeping follows its final send, and name exactly the tools the boundary still runs then. Nothing says the
+// final send is the turn's last act any more.
+it("tells every run once that only its bookkeeping follows its final send, naming exactly the tools that still run", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const rule =
+		/After it only ([a-z_, ]+) run: keep that bookkeeping for after the final send, so the member gets the answer without waiting for it\./.exec(
+			instructions,
+		);
+	expect(rule).not.toBeNull();
+	expect(rule![1].split(/, | and /).sort()).toEqual([...CLOUD_AFTER_ANSWER_TOOLS].sort());
+	expect(instructions.split("keep that bookkeeping for after the final send")).toHaveLength(2);
+	expect(instructions).toContain(
+		"It is your last message, so make every file change, check and coworker message first.",
+	);
+	for (const text of [
+		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		CLOUD_WALL_TOOL_DESCRIPTION,
+	])
+		expect(text).not.toMatch(
+			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
+		);
 });
 
 // Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
@@ -107,6 +139,24 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
 		"When that folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir and repeat the call; otherwise write the file in the folder where it belongs.",
 	);
+});
+
+// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
+// the three tools, and never a secret in a step.
+it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
+	for (const said of [
+		"When data_query is offered, the company can keep data in databases of its own.",
+		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
+		"A file is the right home for what people read: plans, notes, documents and settings.",
+		'database.toml says what it is: format = "qorpera.database/v1"',
+		"tables/NNN-<name>.sql are its steps",
+		"Never change an applied step; write a new one with a higher number.",
+		"queries/<name>.sql are its questions: one select each",
+		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"is held until a member says yes: tell them what it would destroy.",
+		"Never put a password, key or other secret in a step, a question or a row.",
+	])
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
 
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
@@ -1570,33 +1620,40 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
 // a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), for
 // code a member or another agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups,
-// 20260930741000; a staff run's words only). A change to any is a change to every run's bytes. With master's v15 merged
-// into the import's follow-ups (13 November 2026) the staff instructions were measured once more.
+// 20260930741000; a staff run's words only), for what an interface app is (an object, a model, an app or a video,
+// one app a thing, drawn by a kit of save_app, never a document or the state of someone's work; overlay v16; Jonas,
+// 13 November 2026), and for a member's note sent from an app's page (its first line names the app and the thing;
+// Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
+// (13 November 2026) the instructions and prompts were measured once more.
+// With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
+// 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
+// where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
+// amendment, proposed).
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "931fa606d0762ba1b8471f4b6784f9dbb23df334f5010f2175332313bd3b7a15",
-			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
+			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
+			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "7a4324870a2dca042a478c6abad6a1bbbcb56277686a8ba40b1188591bbdc02e",
-			prompt: "de59a35b6dee5f88548a53006c57d72cbb811ace25785453fee81703bd777797",
+			instructions: "dd088ab0f9eb254db43d49db65e1409290b110a61d3554c7ed82441101711132",
+			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "931fa606d0762ba1b8471f4b6784f9dbb23df334f5010f2175332313bd3b7a15",
-			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
+			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
+			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -1767,7 +1824,7 @@ it("makes concepts in four steps, looks at pictures, and writes to coworkers in 
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
 		"Concepts are made in four steps, none skipped",
-		"write the concept brief in plain words in strategy/concept-brief.md, show it in the concepts app and put it on your wall for the founders",
+		"First the brief: write the concept brief in plain words in strategy/concept-brief.md: the product in one sentence",
 		"screenshots of their real screens saved as image files in research/moodboard/",
 		"Research that is only text does not count as looking.",
 		"make several clearly different directions of the key moments, each in the form that shows it best (clickable screens for software)",
@@ -1788,43 +1845,76 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 	// there was no concepts app, and the founders had nothing engaging to do while the agents worked.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"Interface apps are where members see the company's work.",
-		"goes into one with save_app, when it is offered, on the day you make it",
-		"A file that sits only in the folder is not shown to anyone.",
-		"Keep one app per topic and grow it as the work moves on",
+		"interface apps let members see and handle the company itself",
+		"goes into an app with save_app, when it is offered, on the day you make it",
+		"a picture, a sketch or a prototype that sits only in the folder is shown to no one",
+		"One app a thing, whoever worked on it: when the thing has an app, add to that one.",
 		"clickable screens for an app or a website, a 3D view or a rendered turntable for an object or a space",
 		"A picture of a screen is not a screen.",
 		"Make following the work fun, not a chore",
 		"raise the choice as a question card whose options preview the app or its pictures, and show the same choice in the app",
-		'From the company\'s first day it keeps one concepts app, named after the product followed by "concepts", with concept = true and a cover',
-		"Show the moodboard in the concepts app, each picture with its note.",
+		"From the company's first day its concepts open in the Concepts viewer: every app with concept = true and a cover shows there.",
+		"Show the moodboard as an app, each picture with its note (the board kit's wall).",
 		"ask the founders to pick one with a question whose options preview them",
 	])
 		expect(instructions).toContain(rule);
 	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
 });
 
-it("has interface apps show the company's state, kept by each area's owner (10 November 2026)", () => {
+it("has an interface app show a thing to see and handle, never a document or a status page (13 November 2026)", () => {
 	// Jonas, 10 November: "agents lets you interact with your employees — interfaces let's you interact with your
-	// company directly". In Fjeldtur the seven agent-made apps were dated reports typed in by hand: none read the
-	// company's live data, one in three was out of date within hours, and nobody owned keeping them true.
+	// company directly". The rule that followed (each area's owner keeps one posted app with what is decided, what is
+	// open, what waits and the numbers) made seven employees of a new company each write their own document short.
+	// Jonas, 13 November, on those apps: "They are HORRIBLE. the goal is to let you interact with the company more
+	// directly through them, but they are just long text documents... there is currently no real difference between the
+	// interfaces and just reading the company's files directly", and: "Agents: carry the intelligence to work on the
+	// company and drive it fourth. Company folder/files: carry all the information about the company. Interfaces: shows
+	// you the company and it's state so it becomes tangible and something you can understand. [...] they are supposed
+	// to be objects, models, apps and videos that are visual-first to let you see the company."
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"in conversations they talk with you, its people, and in interface apps they look at the company itself",
-		"An app is not a report and not a message",
-		"keep one app that shows the state of that area, post it, and change it in the same run that changes the state",
-		"A page that no longer matches the company is worse than no page.",
-		"never open a page with a dated headline or a list of what you did",
-		"save_app tells you how to make a page worth opening",
+		// The split, and where the state of the work is read instead.
+		"Three things, never mixed: you, the agents, carry the thinking and do the work; the company folder holds everything the company knows, in its files; and interface apps let members see and handle the company itself.",
+		"the line under your name, your wall and your questions say what is decided, what is open and what waits on them. An interface app is never that, and never a document",
+		"a page a member has to read is a file, however short and however tidy its boxes, and files stay in the folder",
+		// The four forms, and a thing, not an area.
+		"It takes one of four forms: an object, the product or another real thing, to turn and look at; a model, how something works in numbers or in steps, to try by changing it; an app, the product itself or a working tool, to use; or a video, an explanation that moves and speaks.",
+		"Make an app for a thing, not for an area and not for yourself",
+		// What is not known is drawn, not written about: the company's pages said "Ukendt" in three boxes.
+		"a number nobody has set is a slider to drag, a step with no evidence is a hole on the path",
+		// The kits do the drawing.
+		"save_app's kits draw the forms for you, and draw them well: you hand in the facts and the pictures, and Qorpera draws the page.",
+		"Use a kit whenever one fits, which is nearly always; write a page by hand only for the product's own prototype or a working tool no kit draws.",
+		// Real things by their real pictures: the market's page named five headbands and showed none.
+		"A real thing is shown by its real picture",
+		"research that brings back no picture of a thing that can be seen is half done",
+		"An app that no longer matches the company is worse than no app, and no app is better than a page of text.",
 		"Before you link or post an app, look at it: when machine_run is offered, open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
+		"Then cover the words in your mind: when what is left does not show what the thing is and how it stands, the page is a document, and you remake it with a kit.",
+		// The concepts app showed the brief as six boxes of text: "The concepts interface carries no concept of anything".
+		"it never holds the brief as text, it opens on the product's key moments as screens or scenes a founder steps through",
+		"The brief is a file for the team: founders are never sent to read it. Show it to them the same day as a storyboard in the concepts app",
+		"build nothing further until the storyboard shows what they said",
 	])
 		expect(instructions).toContain(rule);
-	expect(cloudRuntimeHireBehavior("employee")).toContain(
-		"one interface app, posted, that shows how the area stands now",
+	for (const gone of [
+		"keep one app that shows the state of that area",
+		"what is decided, what is open, what waits on them, its numbers and its product, as they stand now",
+		"before any picture, write the concept brief",
+	])
+		expect(instructions).not.toContain(gone);
+	const employee = cloudRuntimeHireBehavior("employee");
+	expect(employee).toContain(
+		"An app is never a report of your area and never your document made short: it is the thing itself, to look at and handle.",
 	);
+	expect(employee).toContain("no app is better than a page of text");
+	expect(employee).not.toContain("shows how the area stands now");
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
-	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
+	expect(cofounder).toContain(
+		"When an app reads as a document or as a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it, and name the kit.",
+	);
 	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
+	expect(cofounder).toContain("shows it to them as a storyboard to step through, never as text to read");
 });
 
 it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {
@@ -1956,7 +2046,15 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app; since 8 November it opens as a page of its own.
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"An app is a small web page in apps/<name>/ that members open as a page of its own. A file that sits only in the folder is not shown to anyone. Keep one app per topic and grow it as the work moves on, instead of a new app for every step. Link it in your message as [Title](app:<name>) instead of pasting long text",
+		"An app is a small web page in apps/<name>/ that members open as a page of its own.",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"Link an app in your message as [Title](app:<name>) instead of pasting long text.",
+	);
+	// A note a member sent from an app's page (qorpera.tell; Jonas, 13 November 2026: "you can't act very much inside
+	// of the interfaces"): the web puts the app and the thing on the message's first line.
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"A member's message whose first line is \"> app:<name>#<id> · <about>\" was sent from that app's page about that thing: act on it as on any message from that member, and show what came of it in the app.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",

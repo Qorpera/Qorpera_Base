@@ -14,10 +14,29 @@ Company File preview already uses (`packages/web/src/ui/page-frame.ts`).
 
 ## 1. What an app is
 
-A small web page an agent makes to show members something: a result, a test, a prototype, a dashboard. It lives in
-the Company File as ordinary files. A member opens it as a page of its own, `#/c/<profileId>/a/<name>`, from a card
+A small web page an agent makes so that members can see and handle one thing of the company. It lives in the Company
+File as ordinary files. A member opens it as a page of its own, `#/c/<profileId>/a/<name>`, from a card
 in the agent's message or from the apps drawer once it is posted (Jonas, 8 November 2026: an app is a whole product
 prototype, so it gets the page, not a side panel).
+
+Jonas, 13 November 2026, on a new company whose seven apps were each an employee's document made short: "They are
+HORRIBLE. the goal is to let you interact with the company more directly through them, but they are just long text
+documents... there is currently no real difference between the interfaces and just reading the company's files
+directly." And the split he means: "Agents: carry the intelligence to work on the company and drive it fourth.
+Company folder/files: carry all the information about the company. Interfaces: shows you the company and it's state so
+it becomes tangible and something you can understand. [...] they are supposed to be objects, models, apps and videos
+that are visual-first to let you see the company." So an app is one of four forms, and never a page to read:
+
+| Form | What a member does with it | Made with |
+| --- | --- | --- |
+| an object | turns it and looks at its parts | the `object` kit (§3b) |
+| a model | changes it and sees what follows | the `model`, `board` and `path` kits (§3b) |
+| an app | uses it: the product itself, or a working tool | a page written by hand (§2) |
+| a video | watches an explanation that moves and speaks | the `explainer` kit (§3a) |
+
+An app is made for a thing (the product, its business model, its market, its customers, its look), one app a thing,
+not for an area and not for an agent. The state of an agent's work is not an app: members read it on the line under
+the agent's name, on its wall and in its questions.
 
 ## 2. Format
 
@@ -314,7 +333,83 @@ web does not already answer. What the kit adds is that the agent writes one file
     can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
   - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
 
-## 3b. Pictures: make_picture (13 November 2026)
+## 3b. The data kits (13 November 2026)
+
+The agents' apps of 13 November kept every rule of 10 November (a first screen that says how the area stands, about
+300 words, a diagram instead of a paragraph) and were still documents in boxes: rules about how a page should look do
+not make a researcher a designer. A data kit takes the drawing out of the agent's hands. The agent writes one data
+file, the facts and the names of its pictures; an engine Qorpera wrote draws one visual form from it, the same engine
+in every app of the kit.
+
+| Kit | The question it answers | What it draws from the data |
+| --- | --- | --- |
+| `model` | does it make money, and what moves it? | sliders for the numbers, one large figure, a waterfall from what a customer pays to what is left, and a curve against volume with its break-even; a number nobody knows yet is a hatched slider a member drags, or sets with "Try an example" |
+| `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
+| `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
+| `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+
+An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
+call the web does not already answer.
+
+| File | Whose | What it is |
+| --- | --- | --- |
+| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `save_app`'s schema carries the four guides on `kit` |
+| pictures and videos | the agent's, written from a machine | named in the data by their path in the app's folder |
+| `engine.js` | Qorpera's | the kit's engine (`packages/runtime/kits/<kit>/engine.js`). The runtime holds each engine's and guide's text (`cloud-app-kit-engines.generated.ts`, written by `npm run generate:app-kits`, held to the sources by a test) |
+| `index.html` | Qorpera's | the page (`kitPage` in `cloud-app-kits.ts`) |
+
+- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` one of the four, a new app needs its data file
+  among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
+  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
+  `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
+  (`APP_KIT_ENTRY`). On a later save the two are written again only where the folder holds none or other text (by
+  hash): new data, a new title, a picture that has arrived, or the engine of a newer runtime. An existing app takes
+  a kit the same way, keeping its owner and `posted`.
+- **The page names the pictures.** A page in the frame gets its pictures and videos only where it names them when it
+  opens (§2), so the page lists, hidden, every picture and video the data names that the app's folder holds at the
+  save (`kitMedia`: any text in the data that ends in a picture's or video's extension and is a plain path inside the
+  folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
+  quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
+  or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
+- **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
+  notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
+  `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where
+  there is no `qorpera` object (an agent looking at `/company/apps/<name>/index.html` on a machine before it shows
+  the app), the page answers the engine's read from that copy, lists no questions and refuses every change. In
+  Qorpera the frame defines `qorpera` before any script of the page runs, so the copy is never used there.
+- **Each app carries its engine**, as an explainer does (§3a), for the same reasons and at the same cost.
+- **One look.** Every engine builds its page from the base style's variables (§2) and follows light and dark; none
+  holds a colour of its own (a picture's and a direction's own palette are content). A kit's page that the web gives
+  no base style, because the app is a concept, carries Qorpera's plain look itself: the same variables, in the base
+  style's own layer and with no specificity, so the web's wins wherever it is there. Common to the four: the title
+  and at most one line, then the thing; labels, numbers and notes of one line, each field cut at its bound; `known`
+  drawn solid, `assumed` dashed and tagged, `unknown` hatched with a question mark; a source as one small link; the
+  page's few own words in English unless the data's `words` give them in its language.
+- **What a member does** goes through the bar (§5), from a button that says what it does: `board`'s `choose` answers
+  the agent's open question that points at the app (`answers`), and `model`'s `save` keeps a member's numbers in a
+  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app.
+- **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
+  interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
+  (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
+  and `model`'s note under an input's label (with `tell` every label opens one). A press asks
+  `tell({about, at, text})`: `about` is the thing's name (`path`: "step · lane", the lane left out on a path with no
+  lanes; `object`: the part, and the variant shown when there are several; `model`: "label · the value as shown"),
+  one line cut at a word to 60 characters; `at` its id (`path`: `lane:step`, or the step's id on a path with no lanes),
+  sent only where it fits the call's pattern; `text` the thing's `ask` (a draft, at most 40 characters). The data's
+  `words.tell` is the button's label, written by the agent naming itself ("Spørg Luna"), and `words.told` what it
+  says once the note went or waits in the thread; without `tell` the button is a speech-bubble mark with an English
+  name for screen readers. A refusal (most often the member's own "Not now") shows the bridge's sentence quietly
+  beside the button, read out and moving nothing, for six seconds, or until the next press or the detail closes; the
+  button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
+  outside Qorpera, show none.
+- **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
+  shows. How the page looks stays the agent's to check on a machine.
+
+Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
+its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
+app's screenshot by someone other than its maker. Pictures an agent generates are §3c.
+
+## 3c. Pictures: make_picture (13 November 2026)
 
 Jonas, 13 November 2026, after the interfaces preview: "I would also turn on agents generating images of course."
 His rule for such a capability (10 November, for the voice): one Qorpera tool, so the engine behind it can change.
@@ -450,7 +545,9 @@ migration `20260930746000`, which only names the tool among a run's observations
   emblem, the title, one line under it and a chevron: drawn plain it has a page's emblem and "App"; once the
   company's apps are read it shows the app as the drawer does (the member's own icon and colour for it, or its
   group's colour; an app that is not in the drawer as its manifest says) and the app's `about` in one line, whole
-  on a hover, or "App" where it has none. Wall posters and choice cards draw the same card.
+  on a hover, or "App" where it has none. Wall posters and choice cards draw the same card, and so does a member's
+  note sent from an app's page (§5 "A note to the app's owner"), above the member's words, with the app's own name
+  and what the note is about as its line.
 - **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
@@ -529,6 +626,7 @@ qorpera.onChange(() => …)                     // the company's folder changed:
 await qorpera.answer(id, value)               // ask the member to answer one of those questions
 await qorpera.setRow("orders", key, cells)    // ask the member to change cells of one row
 await qorpera.addRow("orders", cells)         // ask the member to add a row
+await qorpera.tell({about, at, text})         // ask the member to send the app's owner a note about a thing in it
 ```
 
 Wire, on the port: page → host `{type: "qorpera-app-call", id, method, params}`; host → page
@@ -537,7 +635,8 @@ Wire, on the port: page → host `{type: "qorpera-app-call", id, method, params}
 object has no call for it, so a page's script cannot.
 
 Rules:
-- **A page changes nothing by itself.** The last three calls only ask: see "Changes" below. Every other call reads.
+- **A page changes nothing by itself, and sends nothing.** The last four calls only ask: see "Changes" and "A note to
+  the app's owner" below. Every other call reads.
 - **Allowed sources** are the manifest's `reads`; a method outside them is refused. The app's own folder is always
   readable. With `files`, any company path outside the platform's folders: never `QorperaOS/`, `hooks/` (received
   mail), `bank/`, `digital-post/`, `members/` or `code/`. Paths are checked on the host: relative, no `..`, no `%`,
@@ -549,9 +648,9 @@ Rules:
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
-  ten, since it reads every agent's todos, and a request for a change as five), a call's params at most 4 KiB (a
-  row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A call over the
-  budget is refused ("Too many calls") and spends nothing. Change notices come up to once a second, so a page that
+  ten, since it reads every agent's todos, and a request for a change or a note as five), a call's params at most
+  4 KiB (a row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A
+  call over the budget is refused ("Too many calls") and spends nothing. Change notices come up to once a second, so a page that
   drew on every one would spend a minute's budget in seconds. `save_app` therefore tells agents the pace: draw when
   the page opens, after a change draw again once and no sooner than ten seconds after the last draw, each source
   called once per draw, and after a failed read keep what was shown and read again ten seconds later.
@@ -583,9 +682,10 @@ checks the request and puts it to the member on a **bar it draws outside the app
   agent, the card's title and the labels of the options chosen, read from the card; for a row, the table's name, the
   row's key and each cell as it is and as it will be (an added row: each cell it sets).
 - Every request is its own bar. There is no "always allow", and nothing is remembered.
-- "Not now" has the focus. The yes button ("Send answer", "Change row", "Add row") wakes one second after the bar is
-  on a visible screen, and takes only a press (pointer or key) that began on it after it woke: a click or a held key
-  on its way when the bar came in does nothing, and Enter in the page stays in the page.
+- "Not now" has the focus (for a note, the bar's field: §6 says why that is safe). The yes button ("Send answer",
+  "Change row", "Add row", "Send note") wakes one second after the bar is on a visible screen, and takes only a press
+  (pointer or key) that began on it after it woke: a click or a held key on its way when the bar came in does nothing,
+  and Enter in the page stays in the page. Escape on the bar is "Not now".
 - One bar at a time: while one is open another request is refused at once. After three "Not now" in a row the app is
   refused without a bar until the member reloads it (a press on the open app's icon in the rail or on its card in a message, the Concepts
   viewer's Reload, or the browser's own); a yes starts the count again.
@@ -600,8 +700,9 @@ checks the request and puts it to the member on a **bar it draws outside the app
 - However much a request holds, the bar stays within the screen: its lines scroll inside it (at most 40% of the
   window's height) and both buttons stay in reach. Checked in a browser at 390 px wide with twelve cells of 500
   characters.
-- The bar then says how it went: "Sent to <agent>", "Saved", or why not. The page's promise resolves `{saved: true}`
-  or rejects with the reason: not now, another request waits, asked three times, or the refusal's own words.
+- The bar then says how it went: "Sent to <agent>", "Saved", "Your note waits in <agent>'s thread", or why not. The
+  page's promise resolves `{saved: true}` (a note: `{sent: true}` or `{sent: false, waiting: true}`) or rejects with
+  the reason: not now, another request waits, asked three times, or the refusal's own words.
 
 **`answer(id, value)`** (`writes` has `answers`). `id` is a card `questions()` lists, so one that points at this app
 and waits for this member; `value` is one of the card's own option values, or a list of them for a card that takes
@@ -627,6 +728,109 @@ save as any other of the member's: the table's `[write]` rule, the rows against 
 An agent that must act on a member's change sets a `file_change` routine on the table's `rows.csv`
 (`manage_routine`), which `save_app` tells it; otherwise it sees the rows at its next read.
 
+### A note to the app's owner (`tell`, 13 November 2026)
+
+Jonas, 13 November 2026: "you can't act very much inside of the interfaces". A member could look at an app, answer an
+agent's question and change a row from it, but start nothing: to ask for something about what they saw, they went
+back to the chat and said there what they had seen. With `tell` the member points at a thing in the app and says
+something about it to the agent that owns the app ("get a quote from this one").
+
+**`tell({about, at, text})`.** Any app may ask: `writes` has no word for it. The page chooses neither who hears the
+note nor the words that go, nothing in the company changes, and the agent that writes the page writes its manifest
+too, so a word there would be no barrier (H3 (1), §6, limits what a page may choose to change; here it chooses
+nothing); `save_app`'s `writes` text is near its 4 KiB cap besides.
+- `about`: what the note is about, 1 to 60 characters once made one line. `@`, `«` and `»` are taken out, so it names
+  nobody and quotes nothing, and so are control marks and the marks that turn a text's direction; spaces and line
+  breaks become one space (`appNoteAbout`, `cloud/wall-reply.ts`).
+- `at`: optional, the thing's id in the app's data, `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`.
+- `text`: optional, a draft of the member's words, at most 280 characters.
+
+The frame document sends the three as plain values (`at` and `text` as text, or null) and nothing else of the object
+the page passed. A note shaped otherwise is refused before any bar, in English, as the bridge's other refusals.
+
+**Who hears it.** The agent that owns the app (the manifest's `owner`) while it is at work, in its shared thread. An
+app with no owner, or whose owner is no longer at work: the Co-Founder, in its thread, and the bar names the
+Co-Founder. With no Co-Founder either, or for a member who may not write in the company (a viewer, or access lost),
+the page is refused before any bar ("Nobody can take a note from this app: …", "The member may not send messages in
+this company").
+
+**The bar** is the bar of every request, with one field. Its title is "This app wants to send your note to
+<agent>", beside the agent's figure; its lines are About (the app's name and what the page says the note is about,
+each a value) and Your note: a text field of Qorpera's, outside the frame, which starts with the page's draft and
+which the member may change. "Send note" is off while the field is empty, and what goes is what the field holds when
+the member presses it. The page's `about` is a value on the bar and never part of its sentences. The focus goes to
+the field (§6: the exception, and why it is safe); "Not now" keeps its place, and Escape is "Not now". One request at
+a time and the three "Not now" hold as for every request.
+
+**The message** is the member's own, in that agent's thread, sent the way the composer sends one (`sendPrompt`: the
+member's write right, the open conversation, the member's own model account for the thread, chosen as the thread
+chooses it), so the agent's run starts as for any message:
+
+```
+> app:<name>#<at> · <about>
+
+<the member's words>
+```
+
+without `#<at>` when the page named no thing. The web sends a member's message only while its thread is on screen
+(the input writer's check of the route, `app/application.ts`); for a note on its way the member's press on the bar,
+which named the agent, stands for that (`CompanyController.sendNote`), and every other check of a send holds. The
+Mailbox's notes, and Generate icon in the apps drawer (`requestAppIcons`), met the same check before and so never
+went from where the member pressed: they failed with "Company access is unavailable." They go now too. The line is
+plain text, as a wall answer's quoted question is
+(`cloud/wall-reply.ts`), so nothing in the cloud changes. The thread draws it as the app's card, standing above the
+member's words as an agent's message has its cards, with what the note is about as the card's line; once the
+company's apps are read the card has the app's own name, emblem and colour, and a press on it opens the app.
+
+**When it waits.** A note goes from the bar only into a thread with nothing drafted in it (the member's draft in this
+browser, and the room's shared draft as it is now). When something is drafted there, or when the send does not go (no
+model account for the member, or the cloud refused it), the note waits in that thread's composer. Its first line is
+never in the composer: the draft answers it, as a draft answers a wall question (`answering`), and the composer shows
+it above the field as the app (its emblem in its colour, its name) and what the note is about, with a way to leave it
+out. Where the draft is saved and shared (the room's shared draft, `app/room-drafts.ts`), the line is the text's first
+line (`> app:…`, then an empty line), put there and taken out again by the company's room hooks (`app/company.ts`), so
+a reload, another tab or another member's client has it with the words, and leaving the app out takes it out of the
+shared text too; the composer's caret and changes are counted after it, as the merge's own edit cut at the line
+(`editAfter`), so a quote another tab changes stays whole, also under a send on its way. The note's words go after what is drafted
+there, so the earlier draft and the note are one message under one card, which the send opens with the line
+(`withReply`). Before anything is read or added, the thread's draft is taken from the room as it is now
+(`RoomDrafts.follow`), also where no view of it is open. The bar then says "Your note waits in <agent>'s thread" with
+Open, which goes there, and stays until the member opens or closes it.
+
+One message answers one line: a thread whose draft answers something already (another app's note, here or in the
+room's text; a wall question), or whose message is on its way or waits to be tried again, takes no note. The note
+then stays on the bar with its words, a line says "<agent>'s thread has a message started. Send or clear it there,
+then send this note." with Open, and Send tries again. It is kept for the app by the company, with the member's words
+as they change them (`HeldNote`), so following Open loses nothing: whenever the app's page is shown again, or its
+manifest changes under a page that stays, the note is on its bar with those words. While a send of it is on its way it
+is kept as that and shows on no bar, so a member who leaves and comes back meanwhile can't send it twice; held again,
+it is back on the bar of the app's page on screen, whichever page sent it; once it went or waits in the thread it is
+let go, if it is still the note that was sent. The member saying not now to it lets it go too. **An app has at most
+one note**, from the moment the member's words exist until they went, wait in the thread, or the member said not now.
+While it has one, the page's next `tell` is refused before any bar, "A note from this app is on its way: ask again in
+a moment" while it goes and "An earlier note from this app is still waiting above the page: send it or say not now
+first" otherwise, and the kept note is on the bar again where no bar shows it. A kept note whose send fails (its
+thread can't be opened) is still the app's note: its bar stays, says why, and keeps the member's words.
+
+The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`); they
+have no line of their own, so they wait after a wall answer under way rather than be sent under its question.
+
+A wall question being answered is still this browser's alone (`answering`, not in the shared text): a reload or
+another tab finds the answer's words without the question. Fencing it the same way needs a way to tell a quoted
+question from words the member quoted themself, so it is left as it was.
+
+**The page's answer.** `{sent: true}` when the note went, `{sent: false, waiting: true}` when it waits in the
+agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the
+member says not now, when another request waits, when the app still has a note (on its way, or kept for the
+member), when the app was told not now three times, when the page or its manifest went away first, and when the note
+cannot be sent (the thread cannot be opened, or its agent left meanwhile). The page learns nothing of the thread.
+
+**Budget.** A note costs five calls of the app's budget, as a change does. After a note was sent from an app (or left
+waiting in the thread by the member's press), the app's next `tell` is refused for ten seconds ("A note was sent from
+this app a moment ago: ask again in a few seconds"), kept per app per tab, across Reloads, as the budget is. The pause
+is counted from when the note went or was left waiting, not from when the bar heard of it: a member who leaves the app
+while the note goes (the bar is put away) finds the pause on coming back. A note kept on the bar starts no pause.
+
 Threat model: the app's author is an agent of the company, which already reads the company's own files and has the
 internet (through the logged agent exit). The frame keeps the app from the member's session (cookies, storage, tokens,
 this app's DOM), from acting as the member (a page only asks; the member's yes is given outside the frame), and from
@@ -635,10 +839,11 @@ Two things the frame adds that the agent doesn't have are guarded: what the memb
 chat and in the Concepts viewer, Qorpera says whose page it is and that it never asks for passwords there; an app's
 own page has said neither since it lost its header on 10 November 2026, §6 H2), and the member's authority
 (reads only of the allowed sources; a change only of what `writes` names, one at a time, shown in full and allowed by
-the member each time). What a prompt-injected agent can still do is ask: a member who allows a bar without reading it
-makes that change, as theirs, to an answer the agent itself asked for or to a row of a table the app names; it can
-never be a file, a member's or agent's place, a setting, or anything outside those two. A leak through a side channel
-leaves from the member's browser, unlogged.
+the member each time; a note only in the member's own words, to the app's owner or the Co-Founder). What a
+prompt-injected agent can still do is ask: a member who allows a bar without reading it makes that change, as theirs,
+to an answer the agent itself asked for or to a row of a table the app names, or sends the app's owner the page's
+draft and its 60-character `about` (§6); it can never be a file, a member's or agent's place, a setting, or anything
+outside those. A leak through a side channel leaves from the member's browser, unlogged.
 Links add one way out: a page can put what it read into a web address, as an agent can in a message. It leaves only
 when the member clicks it, in a tab of the member's own browser, unlogged like the side channels.
 
@@ -678,7 +883,7 @@ Step 5 builds the writes behind r1's gate. Each point of H3, and L3, as built (�
 | H3 (1) a manifest key `writes`; a write to anything else is refused without a bar | `writes = ["answers", "table:<name>"]`, parsed by `parseAppWrites`; the bridge refuses before it reads |
 | H3 (2) the bar shows the table, each row's key and the changed values | one row a request; the table, the key and every cell before and after, in full (a cell is at most 500 characters), so there is no "show all" to open; a value's line breaks are shown as a mark and its text direction is kept to itself, so a value draws no lines of its own on the bar |
 | H3 (3) every request its own bar, no "always allow" | so; nothing is remembered between requests |
-| H3 (4) Allow disabled about a second, not the default, no Enter from the frame, a fresh press, focus moved to the bar | the yes button wakes after 1 s on a visible screen and takes only a press that began on it after that; "Not now" takes the focus; a held key does not press "Not now" either |
+| H3 (4) Allow disabled about a second, not the default, no Enter from the frame, a fresh press, focus moved to the bar | the yes button wakes after 1 s on a visible screen and takes only a press that began on it after that; "Not now" takes the focus (a note's field takes it instead: see step 9 below); a held key does not press "Not now" either |
 | H3 (5) one pending bar; three "Not now" and no more bars until Reload | so, counted in a row (a yes starts it again) |
 | H3 (6) the bar above the frame, pushing it down | so, in every placement |
 | H2's last line: refuse long values unless shown in full | every value is shown in full |
@@ -705,6 +910,49 @@ security review of its own:
 | the base style overriding an app | one cascade layer under the page's own styles, no `!important` |
 | a dark base under an app that assumed a light page | dark only for a page that declares `color-scheme` light and dark |
 
+Step 9, a note to the app's owner (`tell`, 13 November 2026, §5), is the first request that sends words rather than
+changing a value, and the first that any app may make. What a page can and cannot make happen with it:
+
+| Concern | Done |
+| --- | --- |
+| a page speaking as the member | the words that go are the member's: typed in a field of Qorpera's outside the frame, which the page can neither read nor fill after the bar opens; the page gives only a draft of at most 280 characters, shown in full in that field. "Send note" is off while the field is empty, and what goes is what the field holds at the press |
+| a page choosing who hears it | never a parameter: the manifest's `owner` while it is at work, else the Co-Founder, whom the bar names. `about` names nobody (`@` taken out); the member's own words may, as anywhere they write |
+| a page writing the bar's sentences | `about` is a value on the bar (the app's name, then the page's words), never part of a sentence; one line of at most 60 characters, with no `@`, `«`, `»`, control or direction marks, its direction kept to itself |
+| a page sending without the member | there is no send without the bar's press: the same gate as a change (1 s wake, a press begun after it, one bar at a time, three "Not now" and quiet until Reload) |
+| a page sending over and over | five calls of the budget each, and after a note went, the same app's next note is refused for ten seconds |
+| a page learning about the thread | the answer is `{sent}` and `waiting` only: no message id, no text, nothing of the thread or the agent beyond the name the bar showed the member |
+| a page changing something | nothing in the company changes: the note is a message in a thread the member could write in anyway, under the same send (write right, open conversation, the member's own model account) |
+| a send from a page that is not the thread | the input writer's check that the thread is on screen lets a note (or Generate icon's ask) through only for its own conversation and only while it is on its way (`sendNote`, started by the member's press); the company still open, the same member, the write right, the open conversation and its room are checked as for any send |
+| a page's line standing apart from the words it heads | a waiting note's line is its shared draft's first line, so it is saved, shared and restored with the words (a reload, another tab, another member's client); every check that a draft answers something reads the room's text as well as this browser's, so a second note never joins a first under its own line |
+| a page losing the member's words | a note its thread can't take stays on the bar and is kept for the app, with the member's words as they change them, until it went or they said not now; the bar shows it again whenever the app's page is shown or a new bridge serves it; a send of it on its way shows on no bar (no second Send), and its end lets go only the entry it sent; an app has at most one note until it went, waits in the thread or the member let it go: a new ask meanwhile is refused and the kept note shown, and a kept note whose send fails keeps its bar, its reason and its words |
+| quoted words losing their fence under the hidden line | the composer and a send on its way hear the merge's own quote-whole edit, cut at the line; a re-made edit is used only where the line changed across a kept span |
+| a page faking quoted outside content | `«` and `»` are taken out of `about`, and a note carries no quote records, so nothing of it is ever drawn or sent as a quote (`cloud/quotes.ts`) |
+
+**The focus exception.** H3 (4) put the focus on "Not now", so that no key could fall on the yes button. A note's bar
+puts it in its field instead, at the end of the page's draft, because a note is something the member writes: with
+"Not now" focused, every note would start with a press into the field, and that press is one more a page could try to
+time. The field keeps H3 (4)'s point, that yes is never the default:
+- the field cannot send: no key in it reaches "Send note", Enter in it is a new line, and the bar has no form;
+- "Send note" wakes one second after the bar is on a visible screen and takes only a press (pointer, or Enter or
+  Space on the button itself) that began after it woke, as on every bar;
+- a key held down since before the bar came in types nothing in the field (its repeats are dropped until that key is
+  pressed afresh there), so a key the member was holding in the page does not fill or empty the field;
+- "Not now" keeps its place before "Send note", and Escape on the bar is "Not now" (a held Escape is not);
+- the page's Escape is still not passed on while the bar is open (L3).
+The page can still place a draft the member may send without reading. That is the draft's purpose, it is shown in
+full where it will be sent from, and it goes only to the app's own agent.
+
+**The remaining risk, accepted.** The 60-character `about` goes in the member's message, on its first line, as the
+member's words: the agent reads it as theirs, and so does the action review, which leaves out quoted words but not
+this line (`cloud-action-review.ts`). So a page can put up to 60 characters of its own into a message the member
+sends. That is the standing a wall headline already has: an agent writes it, and a member's answer carries it as a
+quoted first line (`cloud/wall-reply.ts`). It is accepted because the member sees it on the bar before the press, it is
+one line that names nobody and quotes nothing, and it reaches only the agent that owns the app, which wrote the page,
+or the Co-Founder. The upgrade path, if it should be fenced: a quote source `app` (its ref the app's name and the
+thing's id), so that the agent and the review read the line as outside content, as they read an email's words. That
+costs a migration (the source check of `20260928459100`) and web changes (`REFS` in `cloud/quotes.ts`, and the
+thread's "Quoted from an email" title).
+
 ## 7. Steps
 
 1. Format + parser (`cloud-client/interface-apps.ts`) and the page assembler (web `app/interface-apps.ts`).
@@ -726,6 +974,20 @@ security review of its own:
 8. An app's own icons (§2 "Icons", 12 November 2026): the format and the 24 emblems (`cloud-client/app-icons.ts`,
    `interfaces.ts`), `save_app`'s checks and how to draw them on `files`, and the web's Icon and colour and Generate
    icon in the drawer.
+9. A note to the app's owner (§5 "A note to the app's owner", 13 November 2026), the web's part: `qorpera.tell` in
+   the frame document, `prepareTell` and the request kind `tell` (`app/app-actions.ts`), the bridge's `tell` with its
+   cost and its ten seconds (`app/interface-apps.ts`), the bar's field (`app/views/app-ask-bar.ts`), who hears it and
+   the send, lifted with the Mailbox's from `CompanyMail.tell` into `app/tell-agent.ts` with the wall-answer check,
+   `CompanyController.sendNote` so that a note (and Generate icon's ask) goes from where the member sent it, a waiting
+   note's first line as what its draft answers, shown above the composer as the app, and that line drawn as the app's
+   card in the thread (`views/conversation.ts`). No migration and no node change. Next, in a change of its own that rides a runtime cut: the prompt line that tells an agent what the first
+   line means (sent from that app's page, about that thing), and the kits' buttons and guides that ask for a note.
+10. The data kits (§3b, 13 November 2026): four more names for the manifest's `kit`
+    (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/{model,board,path,object}/`),
+    the page, the pictures it names and the read of the data (`cloud-app-kits.ts`), `save_app` writing engine and page
+    with the guides on the schema field, and the agents' instructions: an app is an object, a model, an app or a
+    video, one app a thing, never a document or the state of someone's work (hire overlay v16). No migration, no node
+    change and no change to the web's own code.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

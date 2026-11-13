@@ -45,13 +45,19 @@ async function bundle(scratch) {
 				'export {HttpCloudCompanyFolderBytes} from "./packages/runtime/src/cloud-company-folder-bytes.ts";',
 				'export {cloudFolderFileTools} from "./packages/runtime/src/cloud-folder-file-tools.ts";',
 				'export {cloudInterfaceTools} from "./packages/runtime/src/cloud-folder-interface-tools.ts";',
+				'export {cloudMachineTools} from "./packages/runtime/src/cloud-machine-tools.ts";',
 				'export {CloudRunLogCompanyFolder} from "./packages/runtime/src/cloud-run-log-folder.ts";',
 				'export {openCloudRunLog} from "./packages/runtime/src/cloud-run-log-open.ts";',
 				'export {CloudRunResumeRpc} from "./packages/runtime/src/cloud-run-resume.ts";',
 				'export {CloudRunLogRpcProtection} from "./packages/runtime/src/cloud-run-log-protection.ts";',
 				'export {MemoryCompactChannel, MemoryCompactLane} from "./packages/runtime/src/memory-tree/compact.ts";',
 				'export {cloudNativeContextIdentity} from "./packages/runtime/src/cloud-native-context-composition.ts";',
-				'export {CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
+				'export {CLOUD_AFTER_ANSWER_TOOLS, CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
+				'export {CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput, parseCloudAgentSendReceipt} from "./packages/runtime/src/cloud-agent-mouth.ts";',
+				'export {cloudWallTools} from "./packages/runtime/src/cloud-folder-wall.ts";',
+				'export {cloudWorkerTools} from "./packages/runtime/src/cloud-worker-tools.ts";',
+				'export {CloudFolderTodos} from "./packages/runtime/src/cloud-folder-todos.ts";',
+				'export {CloudFolderWorkers} from "./packages/runtime/src/cloud-folder-workers.ts";',
 				'export {COMPANY_STATE_PARSER_VERSION, companyStatePath, parseCompanyStateFile} from "./packages/cloud-client/src/company-state-files.ts";',
 				'export {MEMORY_RUN_STEP_FIELD_BYTES, MEMORY_RUN_STEP_READS_BYTES, MEMORY_RUN_STEP_RESULT_BYTES, parseMemoryRunFile} from "./packages/cloud-client/src/memory-run-files.ts";',
 				'export {nativeCodexFixtureCommand} from "./packages/runtime/test/fixtures/native-codex-fixture-command.ts";',
@@ -75,6 +81,8 @@ class Database {
 	calls = [];
 	/** Each refused call, by its function, SQLSTATE and message: shown when the proof fails. */
 	refusals = [];
+	/** Called with each function call's name and arguments before it runs (a proof's change while the run goes on). */
+	before;
 
 	constructor(run) {
 		this.#run = run;
@@ -117,6 +125,7 @@ class Database {
 	}
 
 	rpc(method, args) {
+		this.before?.(method, args);
 		this.calls.push(method);
 		const keys = Object.keys(args);
 		const signature = this.#signature(method, keys);
@@ -277,9 +286,10 @@ function controlPlane(db) {
 
 /** The scripted provider. Agent request n (from 0) is answered with `calls[n]`, a function of the outputs the model
  * has had so far (each `{callId, output}`, in order), which returns the call's `{name, arguments}` (and its call `id`,
- * if it names one); past the last, a final message. Every compactor thread's request (§7.2) is answered with one short
- * line. */
-function provider(state, calls) {
+ * if it names one), or `{fail: status}` for the provider's error answer; past the last, a final message. An agent
+ * request is answered `roundMs` after it came (a model round's own time; 0 by default). Every compactor thread's
+ * request (§7.2) is answered with one short line. */
+function provider(state, calls, roundMs = 0) {
 	const event = (response, value) => response.write(`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`);
 	const stream = (response, model, item) => {
 		const base = { id: `resp_${randomBytes(8).toString("hex")}`, object: "response", model, created_at: 1 };
@@ -303,6 +313,8 @@ function provider(state, calls) {
 		content: [{ type: "output_text", text, annotations: [] }],
 	});
 	return createServer((request, response) => {
+		// An answer to a request Codex gave up is lost, never the proof's failure.
+		response.on("error", () => undefined);
 		void (async () => {
 			if (request.method !== "POST" || request.url !== "/v1/responses") {
 				response.writeHead(404);
@@ -319,14 +331,29 @@ function provider(state, calls) {
 				return;
 			}
 			const turn = state.agent.length;
-			state.agent.push({ input, body });
+			state.agent.push({ input, body, at: Date.now() });
 			state.trace(`provider: agent request ${turn + 1}`);
+			if (roundMs > 0) {
+				await new Promise((done) => setTimeout(done, roundMs));
+				// Codex gave the request up meanwhile (its turn was interrupted): nothing is answered.
+				if (response.destroyed || request.socket.destroyed) {
+					state.trace(`provider: agent request ${turn + 1} was given up`);
+					state.abandoned.push(turn);
+					return;
+				}
+			}
 			const outputs = body.input
 				.filter((item) => item.type === "function_call_output")
 				.map((item) => ({ callId: item.call_id, output: String(item.output) }));
 			const call = turn < calls.length ? calls[turn](outputs) : null;
 			if (!call) {
 				stream(response, body.model, message("DONE"));
+				return;
+			}
+			if (call.fail) {
+				state.trace(`provider: agent request ${turn + 1} answered ${call.fail}`);
+				response.writeHead(call.fail, { "content-type": "application/json" });
+				response.end(JSON.stringify({ error: { message: "The scripted provider refused this request.", type: "invalid_request_error" } }));
 				return;
 			}
 			const callId = call.id ?? `call_${String(turn).padStart(2, "0")}_${call.name}`;
@@ -350,7 +377,7 @@ function provider(state, calls) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools } = context;
+	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools, moreTools, tools } = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -426,6 +453,8 @@ async function attempt(code, context) {
 				tools: [
 					...code.cloudFolderFileTools({ folder, operations, identity }),
 					...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
+					...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
+					...(tools ? tools(code, { db, binding, folder, operations, identity }) : []),
 				],
 				assertContext: (signal, timeoutMs) => gateway.assertReadableContext(signal, timeoutMs),
 				checkRun: (signal, timeoutMs) => gateway.checkRun(signal, timeoutMs),
@@ -478,9 +507,26 @@ export function answerOf(output) {
 /** Runs one proof: the company of SQL test 924 with `setup` (SQL run in the fixture's transaction after its part, as
  * the platform; `pg_temp.base_*` helpers are there; or a function of the bundled code that gives it) and the objects of
  * its texts, Alice's run in Shared context through the real patched Codex making `calls` with the folder file tools
- * (and the interface tools, `interfaceTools`), then `check(run)` on what was stored. Without the binary it prints NOT
- * RUN. */
-export async function proveCompanyRun({ name, prompt, setup, objects, calls, check, interfaceTools = false }) {
+ * (and the interface tools, `interfaceTools`, the tools `moreTools(code, {db, binding, identity, operations, paths})`
+ * gives, and the tools `tools(code, {db, binding, folder, operations, identity})` gives), then `check(run)` on what was
+ * stored. `beforeRpc(method, args, db)`, if given, is called before each function call of the run's (a change the proof
+ * makes while the run goes on, with `platformChange`). The model's rounds take `roundMs` each. A run whose turn ends
+ * before its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every
+ * call and then the closing answer. Without the binary it prints NOT RUN. */
+export async function proveCompanyRun({
+	name,
+	prompt,
+	setup,
+	objects,
+	calls,
+	check,
+	interfaceTools = false,
+	moreTools,
+	beforeRpc,
+	tools,
+	roundMs = 0,
+	requests = (count) => count === calls.length + 1,
+}) {
 	const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 	if (!binary) {
 		process.stdout.write("NOT RUN: set QORPERA_CODEX_FENCE_BINARY to the patched Codex this tree pins\n");
@@ -492,8 +538,8 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 	const started = Date.now();
 	const traced = [];
 	const trace = (what) => traced.push(`${String(Date.now() - started).padStart(6)} ms ${what}`);
-	const state = { agent: [], calls: [], compactor: [], failure: null, trace, lane: { ms: 15, gets: 0, inFlight: 0, most: 0, busy: 0, objects: new Set() } };
-	const server = provider(state, calls);
+	const state = { agent: [], calls: [], compactor: [], abandoned: [], failure: null, trace, lane: { ms: 15, gets: 0, inFlight: 0, most: 0, busy: 0, objects: new Set() } };
+	const server = provider(state, calls, roundMs);
 	const db = new Database((sql) => database.cluster.psql(name, sql, ["-qAt"]));
 	try {
 		const code = await bundle(scratch);
@@ -524,6 +570,8 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			server.once("error", failed);
 			server.listen(0, "127.0.0.1", done);
 		});
+		const startedAt = Date.now();
+		if (beforeRpc) db.before = (method, args) => beforeRpc(method, args, db);
 		const run = await attempt(code, {
 			db,
 			binding,
@@ -535,12 +583,17 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			prompt,
 			lane: state.lane,
 			interfaceTools,
+			moreTools,
+			tools,
 		});
+		Object.assign(run, { startedAt, endedAt: Date.now() });
+		db.before = undefined;
 		if (state.failure) throw state.failure;
-		assert.equal(state.agent.length, calls.length + 1, "the model made every call, then answered");
+		assert(requests(state.agent.length), `the model's requests: ${state.agent.length} of ${calls.length} calls`);
 		// What the model got for each call, from the request right after it, as the provider received it. (A Shared
-		// context run's later requests carry its earlier steps as the work message's lines, not as raw outputs.)
-		const outputs = state.calls.map((call, turn) => {
+		// context run's later requests carry its earlier steps as the work message's lines, not as raw outputs.) A call
+		// whose turn ended before another request has no such request.
+		const outputs = state.calls.filter((_, turn) => state.agent[turn + 1]).map((call, turn) => {
 			const found = state.agent[turn + 1].body.input.find(
 				(item) => item.type === "function_call_output" && item.call_id === call.callId,
 			);
@@ -614,11 +667,30 @@ export function finish(proof) {
 	);
 }
 
-/** One commit of the platform's, through SQL test 924's `base_commit`: units `{op: "mkdir", path}` or
- * `{op: "write", path, text}` (each text staged with `base_stage`), in order. */
+/** One commit of the platform's, through SQL test 924's `base_commit`: units `{op: "mkdir", path}`,
+ * `{op: "write", path, text}` (each text staged with `base_stage`) or `{op: "move", from, to}` (a file, at the version it
+ * has), in order. */
 export function platformCommit(key, units) {
 	assert(/^[a-z0-9-]{8,64}$/.test(key) && units.length >= 1 && units.length <= 1000);
 	return `select pg_temp.base_commit('{"kind":"platform"}', '${key}', (select jsonb_agg(case when u ->> 'op' = 'mkdir' then u
+		when u ->> 'op' = 'move' then jsonb_build_object('op', 'move', 'from', u ->> 'from', 'to', u ->> 'to',
+			'expectedVersion', pg_temp.base_version(u ->> 'from'))
 		else jsonb_build_object('op', 'write', 'path', u ->> 'path', 'file', pg_temp.base_stage(u ->> 'text')) end order by n)
 		from jsonb_array_elements(${sqlText(JSON.stringify(units))}::jsonb) with ordinality t(u, n))) \\g /dev/null`;
+}
+
+/** A commit of the platform's while the run goes on, in a database session of its own (SQL test 924's helpers made
+ * there again): units as `platformCommit` takes them. Returns the folder's clock after it. */
+export function platformChange(db, key, units) {
+	const fixture = readFileSync(join(repositoryRoot, "supabase/tests/924_folder_runtime_base.test.sql"), "utf8");
+	const start = fixture.indexOf("create function pg_temp.base_claims");
+	const end = fixture.indexOf("-- END BASE HELPERS");
+	assert(start > 0 && end > start, "SQL test 924's helpers moved: update this script");
+	const out = db.query(`begin;
+		${fixture.slice(start, end)}
+		select pg_temp.base_claims('service_role') \\g /dev/null
+		${platformCommit(key, units)}
+		select last_seq::text from public.qorpera_folder_clocks where environment_id = '${ENVIRONMENT}';
+		commit;`);
+	return Number(out.split("\n").at(-1));
 }

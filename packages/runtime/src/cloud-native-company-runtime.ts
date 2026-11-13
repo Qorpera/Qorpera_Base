@@ -35,6 +35,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
@@ -79,6 +80,7 @@ import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
+	type NativeProviderUsageSignal,
 	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -198,6 +200,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
+	readonly #companyData: CloudCompanyDataDoor | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
@@ -235,6 +238,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
+		/** The data gateway's run door (company databases, slice 5): with it a run is offered data_describe, data_query
+		 * and, unless it is a worker, data_apply; without it none of them. */
+		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -255,6 +261,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#codingValues = options.codingValues;
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
+		this.#companyData = options.companyData;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -735,7 +742,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					// Contract 7.1: the final send is the member's answer. Nothing after it reaches them; only the run's
+					// bookkeeping still runs (the tool boundary, the 2026-11-13 amendment).
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
@@ -1007,6 +1015,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											}),
 										]
 									: []),
+								// The company's databases (slice 5), on a host that names the data gateway's run door: every
+								// run describes and asks them; a worker does not apply steps.
+								...(this.#companyData
+									? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
+									: []),
 								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
@@ -1245,6 +1258,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							);
 						});
 				});
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
+				// after it can lose it.
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
@@ -1270,7 +1287,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
-		if (!kind) return;
+		if (kind) await this.#recordUsageSignalKind(binding, kind);
+	}
+
+	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(

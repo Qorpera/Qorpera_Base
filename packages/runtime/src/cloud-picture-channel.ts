@@ -1,6 +1,6 @@
 /**
  * The seam between a run's Codex app-server and the tool that makes pictures, make_picture
- * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b): the session attaches its picture lane here once the agent's thread
+ * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3c): the session attaches its picture lane here once the agent's thread
  * is bound, and only for a Codex login's run. A picture is made on a side thread of the run's own Codex, the one thread
  * of the run with Codex's image feature on; the agent's own thread never has it. The engine behind the tool may change
  * (Jonas, 10 November 2026: one Qorpera tool per capability), so nothing here names Codex's own tool.

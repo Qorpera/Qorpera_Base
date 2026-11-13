@@ -250,13 +250,15 @@ it("tells an agent on kit only what the engine can draw", async () => {
 	const f = await folderWriterFixture();
 	runs.push(f.run);
 	const [saveApp] = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
-	expect(saveApp?.description).toContain("kit: explainer for a short narrated video");
+	expect(saveApp?.description).toContain(
+		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
+	);
 	const kit = (
 		saveApp?.inputSchema as {
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", null]);
+	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", null]);
 	const said = kit.description;
 	// Every call the guidance names is one the engine's scene has, and every icon and colour is one it draws.
 	const methods = new Set([...said.matchAll(/\bs\.([A-Za-z]+)\(/g)].map((match) => match[1] as string));
@@ -299,7 +301,7 @@ it("tells an agent on kit only what the engine can draw", async () => {
 	// What makes a video worth watching, and how it is looked at before it is shown.
 	for (const rule of [
 		"Use it where motion explains better than a page",
-		"Not for the state of an area (that is a page) and not as a mock-up of a screen.",
+		"Not for a thing a member should handle (that is another kit) and not as a mock-up of a screen.",
 		"You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two.",
 		"The captions are the narration: shown under the stage, and spoken word for word when the video has a voice.",
 		"amounts as they are said (149 kroner, not NOK 149.00)",

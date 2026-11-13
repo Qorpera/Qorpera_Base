@@ -99,6 +99,14 @@ const MAX_DEPTH = 8;
  * short. It stops at whichever comes first. */
 const LIST_SCAN_ENTRIES = 5000;
 const LIST_SCAN_MS = 2000;
+/** One listing answer is one moment of the folder: a look whose pages answered at different folder clocks is taken
+ * again, up to this many looks a call in all, all within LIST_CALL_MS (so a look that took its whole LIST_SCAN_MS is
+ * still taken again once). */
+const LIST_LOOKS = 3;
+const LIST_CALL_MS = 2 * LIST_SCAN_MS;
+/** The line a listing answer carries when the folder kept changing through every look. */
+const CHANGED_WHILE_LISTED =
+	"The folder changed while it was listed, so a path may show twice here or not at all; call again the same way for a clean listing.";
 /** A glob, as company_search's (MAX_QUERY there). */
 const MAX_GLOB = 256;
 /** A read of several files at once (keyholes S3, 12 November 2026) names at most this many: what a model would read
@@ -222,6 +230,17 @@ function globMatches(glob: Glob, key: string): boolean {
 	}
 	while (p < glob.parts.length && glob.parts[p] === "**") p++;
 	return p === glob.parts.length;
+}
+
+/** One look through a listing's pages: every entry it looked at, in key order, those it would show, the folder clock
+ * of its first page, whether all its pages answered at that clock (then it is the folder at that moment: each page is
+ * one statement, and no change set came between them), and whether it reached the folder's end. */
+interface ListLook {
+	readonly looked: readonly CloudCompanyFolderEntry[];
+	readonly matched: readonly CloudCompanyFolderEntry[];
+	readonly asOfSeq: number;
+	readonly steady: boolean;
+	readonly ended: boolean;
 }
 
 export function path(value: JsonValue | undefined, root: boolean): string {
@@ -1155,47 +1174,68 @@ export function cloudFolderFileTools(options: {
 						);
 				}
 				// The folder core's pages in key order: one level, or the whole subtree for a depth past 1, filtered here by
-				// depth and glob. One more entry than is shown proves there is more; a call that looked through its bound
+				// depth and glob. One more entry than is shown proves there is more; a look that went through its bound
 				// stops with the last entry it looked at.
 				const levels = input.path === "" ? 0 : input.path.split("/").length;
 				const glob = input.glob === null ? null : compileGlob(input.glob);
-				const matched: CloudCompanyFolderEntry[] = [];
-				let asOfSeq: number | undefined;
-				let after = input.after;
-				let looked = 0;
-				let last: CloudCompanyFolderEntry | undefined;
-				let ended = false;
-				const started = performance.now();
-				scan: for (;;) {
-					let page: Awaited<ReturnType<CloudCompanyFolderClient["list"]>>;
-					try {
-						page = await folder.list(
-							input.path,
-							{ ...(after === null ? {} : { after }), recursive: input.depth > 1 },
-							context.signal,
-						);
-					} catch (error) {
-						return unavailable(error, "listed");
+				const begun = performance.now();
+				const look = async (): Promise<ListLook> => {
+					const looked: CloudCompanyFolderEntry[] = [];
+					const matched: CloudCompanyFolderEntry[] = [];
+					let asOfSeq = -1;
+					let steady = true;
+					let after = input.after;
+					const started = performance.now();
+					scan: for (;;) {
+						let page: Awaited<ReturnType<CloudCompanyFolderClient["list"]>>;
+						try {
+							page = await folder.list(
+								input.path,
+								{ ...(after === null ? {} : { after }), recursive: input.depth > 1 },
+								context.signal,
+							);
+						} catch (error) {
+							return unavailable(error, "listed");
+						}
+						// The folder clock of the look's first page: a change after it stops a folder's move, even one a
+						// later page shows (listAll's rule). A later page at another clock may have met a change.
+						if (asOfSeq < 0) asOfSeq = page.asOfSeq;
+						else if (page.asOfSeq !== asOfSeq) steady = false;
+						for (const entry of page.entries) {
+							looked.push(entry);
+							const names = entry.path.split("/");
+							if (names.length - levels > input.depth) continue;
+							if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) continue;
+							matched.push(entry);
+							if (matched.length > input.limit) break scan;
+						}
+						if (page.next === null) return { looked, matched, asOfSeq, steady, ended: true };
+						after = page.next;
+						const now = performance.now();
+						if (
+							looked.length >= LIST_SCAN_ENTRIES ||
+							now - started >= LIST_SCAN_MS ||
+							now - begun >= LIST_CALL_MS
+						)
+							break;
 					}
-					// The folder clock of the call's first page: a change after it stops a folder's move, even one a later
-					// page shows (listAll's rule).
-					asOfSeq ??= page.asOfSeq;
-					for (const entry of page.entries) {
-						looked++;
-						last = entry;
-						const names = entry.path.split("/");
-						if (names.length - levels > input.depth) continue;
-						if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) continue;
-						matched.push(entry);
-						if (matched.length > input.limit) break scan;
-					}
-					if (page.next === null) {
-						ended = true;
-						break;
-					}
-					after = page.next;
-					if (looked >= LIST_SCAN_ENTRIES || performance.now() - started >= LIST_SCAN_MS) break;
+					return { looked, matched, asOfSeq, steady, ended: false };
+				};
+				// One answer is one moment of the folder. A look whose pages answered at different clocks may have met a
+				// change between two of them (a rename then shows a path twice, or not at all), so the call looks again,
+				// and answers with a look whose pages answered at one clock. The clock is the company's whole folder's, so
+				// a change elsewhere costs a look too: two looks that read the same are no proof (a file renamed back and
+				// forth in step with the pages is missed alike by both; review r1 of #1748). If no look was one moment,
+				// the answer says so (owed from v240, 13 November 2026).
+				let listed = await look();
+				for (let looks = 1; !listed.steady && looks < LIST_LOOKS; looks++) {
+					if (performance.now() - begun >= LIST_CALL_MS) break;
+					listed = await look();
 				}
+				const settled = listed.steady;
+				const { matched, asOfSeq, ended } = listed;
+				const looked = listed.looked.length;
+				const last = listed.looked.at(-1);
 				// A target shown in part never ends inside a secret: before it, or past it whole (windowEnd).
 				const shownTo = (whole: string, room: string) => {
 					const shown = whole.slice(0, windowEnd(whole, room.length, false).end);
@@ -1222,6 +1262,7 @@ export function cloudFolderFileTools(options: {
 						header,
 						...matched.slice(0, count).map((entry, index) => line(entry, index === 0 ? first : undefined)),
 						"",
+						...(settled ? [] : [CHANGED_WHILE_LISTED]),
 						ending(count),
 					].join("\n");
 				// As many entries as fit one result (the longest start that fits, found by halving); at least one. A first

@@ -738,7 +738,7 @@ class CodexBoundaryRpc {
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
 	#modelRequestCount = 0;
-	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
+	/** Call ids whose fenced result closes the turn (a call after the answer that is not bookkeeping). */
 	readonly #turnEndCallIds = new Set<string>();
 	/** Calls that end the turn only if their model response made no other call. */
 	readonly #turnEndAloneCallIds = new Set<string>();
@@ -800,6 +800,10 @@ class CodexBoundaryRpc {
 	/** Releases the side thread starts held while the agent's thread starts: its bind, or the boundary's end. */
 	#threadStarted?: () => void;
 	#turnEndRequested = false;
+	/** The run made its final send (or a card's): the member has the answer, and the turn goes on for bookkeeping. */
+	#answered = false;
+	/** The usage signal of a provider failure after the answer, which did not fail the run: its caller records it. */
+	#afterAnswerUsageSignal: NativeRuntimeUsageSignal | null = null;
 	#finished = false;
 	#closed = false;
 
@@ -870,6 +874,11 @@ class CodexBoundaryRpc {
 	 * stops the work (2026-10-01), never a rate limit. A Codex pinned with the usage-limit codes reports that
 	 * code itself as `usageLimitExceeded`; an older pin reported a 429 it gave up on, which this still reads. */
 	chatGptPlan = false;
+
+	/** The usage signal of a provider failure after the run's answer, which ended the run as delivered. */
+	get afterAnswerUsageSignal(): NativeRuntimeUsageSignal | null {
+		return this.#afterAnswerUsageSignal;
+	}
 
 	get usageSignal(): NativeRuntimeUsageSignal | null {
 		return this.chatGptPlan && this.#providerUsageSignal === "rate_limited"
@@ -2300,8 +2309,9 @@ class CodexBoundaryRpc {
 			if (fresh.length === 1 && this.#turnEndAloneCallIds.has(fresh[0])) this.#turnEndCallIds.add(fresh[0]);
 		}
 		this.#observeFence(request);
-		// Contract 7.1: the final send closes the turn, and a worker's saved report is
-		// its last act. Once that result has been fenced, stop the provider instead of
+		// A worker's saved report is its last act, and after the answer (a final send)
+		// a call that is not the run's bookkeeping ends the turn (the 2026-11-13
+		// amendment). Once that result has been fenced, stop the provider instead of
 		// paying for a closing model round whose text is never delivered. The
 		// interrupted completion is a success.
 		if (
@@ -2624,17 +2634,18 @@ class CodexBoundaryRpc {
 			const boundary = this.#boundary;
 			if (!boundary) throw new Error("Native tool binding failed");
 			void boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
-				({ completesTurn, ...result }) => {
+				({ completesTurn, answered, ...result }) => {
 					this.#activeCalls--;
 					if (this.#finished) {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
-					// The host-only marker (a final send, a worker's saved report) never reaches
-					// the provider; the fence that follows this result is where the turn ends
-					// (see assertModelRequest).
+					// The host-only markers (a worker's saved report, a call after the answer that is not bookkeeping, a
+					// final send) never reach the provider; the fence that follows a turn-ending result is where the turn
+					// ends (see assertModelRequest).
 					if (completesTurn === "alone") this.#turnEndAloneCallIds.add(callId);
 					else if (completesTurn) this.#turnEndCallIds.add(callId);
+					if (answered) this.#answered = true;
 					this.#write({ id: message.id, result });
 				},
 				() => {
@@ -2669,13 +2680,34 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native completion binding failed");
 			this.#finished = true;
+			const error =
+				turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
+					? (turn.error as Record<string, unknown>)
+					: undefined;
 			if (turn.status === "interrupted" && turn.error == null && this.#turnEndRequested) {
 				this.#resolveCompleted();
+			} else if (
+				this.#answered &&
+				turn.status !== "interrupted" &&
+				(turn.status !== "completed" || turn.error != null)
+			) {
+				// The member has the answer: the provider failed only the bookkeeping after it, which the agent's next run
+				// finds as it was left. The run stands as delivered, never as failed under its answer; the turn's own record
+				// says it failed, and a usage limit or rate limit it met is still the login's (contract 17), for the caller
+				// to record (the 2026-11-13 amendment).
+				if (error?.codexErrorInfo !== undefined)
+					this.#providerUsageSignal = nativeRuntimeUsageSignal(error.codexErrorInfo);
+				this.#afterAnswerUsageSignal = this.usageSignal;
+				try {
+					this.#turnObservation?.finish("failed", {
+						errorCategory:
+							nativeErrorCategory(error?.codexErrorInfo) ?? this.#providerErrorCategory ?? "provider_failed",
+					});
+				} catch {
+					// Optional diagnostics cannot change native execution or authority.
+				}
+				this.#resolveCompleted();
 			} else if (turn.status !== "completed" || turn.error != null) {
-				const error =
-					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
-						? (turn.error as Record<string, unknown>)
-						: undefined;
 				this.#providerUsageSignal =
 					turn.status === "interrupted"
 						? null
@@ -3220,6 +3252,17 @@ async function pruneCodexHome(codexHome: string): Promise<void> {
  * No Company File directory is passed to Codex. The caller supplies the cloud tools.
  * Requires the pinned native result-fence and direct-tools capabilities; older binaries fail before thread creation.
  */
+/** What a run's Codex session gives back. `usageSignal`: the provider failed the turn after the run's answer (which left
+ * the run delivered) with a usage limit, rate limit or outage, which the caller records against the run's login as it
+ * records a failed run's (the 2026-11-13 amendment). */
+export interface CloudCodexToolSessionResult {
+	providerSessionId: string;
+	toolCalls: number;
+	codexVersion: string;
+	fencedRequests: number;
+	usageSignal?: NativeRuntimeUsageSignal;
+}
+
 export async function runCloudCodexToolSession(options: {
 	command: readonly [string, ...string[]];
 	/** Independently provisioned artifact digest, never supplied by the model or inferred from its version string. */
@@ -3287,7 +3330,7 @@ export async function runCloudCodexToolSession(options: {
 	signal: AbortSignal;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	// A run has no wall-clock or silence cap (founder, 2026-09-22 and 2026-09-24);
 	// either timeout is a test or operator choice, never a default. A lapsed job
 	// lease still ends a run whose host is gone.
@@ -3500,19 +3543,24 @@ export async function runCloudCodexToolSession(options: {
 		} catch {
 			// The verified turn stands: what closing left unbuilt stays missing (§5.4).
 		}
+		const afterAnswer = rpc.afterAnswerUsageSignal;
 		return {
 			providerSessionId: threadId,
 			toolCalls: rpc.toolCalls,
 			codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
 			fencedRequests: rpc.fencedRequests,
+			...(afterAnswer ? { usageSignal: afterAnswer } : {}),
 		};
 	} catch (error) {
 		rpc.finishObservations(false, signal);
+		// A stopped run keeps only a usage limit the provider met after its answer (the 2026-11-13 amendment): that one
+		// was met before the stop.
 		if (signal.aborted)
 			throw tagNativeRuntimeFailure(
 				new Error("Native boundary execution stopped"),
 				stage,
 				cloudRuntimeErrorCategory(error, signal),
+				rpc.afterAnswerUsageSignal,
 			);
 		throw tagNativeRuntimeFailure(
 			error,
