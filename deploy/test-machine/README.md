@@ -108,9 +108,10 @@ workflows and run at least what those ran for the same change:
 - shared configuration (`package.json`, the lockfile, `tsconfig`, `vitest.base.ts`, `biome.json`,
   `packages/contracts`, `packages/company`) and any path no rule knows: every step.
 
-A moved file counts at both paths. Every step runs even when an earlier one fails. Steps run side by side within two
-cores, what one slot gives, longest first (`--cores N` for another number); their tree-wide parts (lint, typecheck, the
-checks, the web release build) run first and alone. Each step's output is printed whole when it ends. The full `test` suite is
+A moved file counts at both paths. Every step runs even when an earlier one fails. Steps run side by side, longest
+first, within six cores (`--cores N` for another number; two with `--front`): a run starts in one slot's two cores and
+takes more slots while they are free (below); their tree-wide parts (lint, typecheck, the checks, the web release build)
+run first and alone. Each step's output is printed whole when it ends. The full `test` suite is
 for release candidates.
 
 The wrapper copies the working tree git sees: tracked and untracked files that are not ignored,
@@ -148,6 +149,19 @@ makes it again at boot): current clients open a slot's file for reading, while c
 for writing and so skip it. A `--front --cores` run takes more slots as they free, up to three, but only while the
 machine has at least 2 GiB available (`MemAvailable`); below that it leaves the queue until there is more. With five
 busy runs node01 had dropped to 1264 MiB.
+
+Any other `changed` run takes free slots too, never ahead of another run (since 13 Nov 2026: such runs took a median of
+10 minutes in one slot while the machines were mostly idle). With `--cores` 6, the default, it may hold up to three
+slots: once its tree-wide parts are done and its steps run side by side, it takes a free one of slots 1-4, one at a
+time, only while no other run waits for a slot on that machine (in either lane's queue, a `--front` run included) or is
+being copied there, another of slots 1-4 stays free after it for the next run, and the machine has 2 GiB available. So
+it reaches three slots only on an idle machine, two beside one other run. It never takes the kept slot or an extra one,
+it holds no queue ticket, and one such run per machine at a time widens. While a run waits there, it gives its extra
+slots back, the last taken first: its steps start nothing past one slot fewer at once, and the slot goes back once the
+steps still running fit in the slots it keeps, or one step runs alone (`planScript` keeps the cores they need and how many
+run in `.run-on-node-using`), so the machine never runs more than a run in those slots would. `--cores 2` keeps a run to
+its one slot. The record says how many slots a run
+held at most (`slots`) and the cores they gave (`slotCores`).
 
 Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least
 7 GiB available, CPU pressure over the last minute (`/proc/pressure/cpu`, `some avg60`) under 20 %, and no extra slot
