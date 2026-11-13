@@ -81,7 +81,8 @@
 @keyframes rail-app-leave { to { opacity: 0; transform: scale(0.82); } }
 /* Folding a group: its apps go back into its tile (shell.ts placeTiles), behind it, so the tile stays on top. */
 .rail-app.is-leaving.is-folding { z-index: 0; animation: none; }
-.rail-apps-grid > .rail-app-group { position: relative; z-index: 1; }
+/* A group going into its outer group keeps the absolute place it leaves from (review F2 on #1729). */
+.rail-apps-grid > .rail-app-group:not(.is-leaving) { position: relative; z-index: 1; }
 /* A group forming (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"): held over another icon's
  * middle, a plate in that icon's colour springs up behind it and breathes, the icon steps back onto it as a group's
  * front card would, and the dragged icon shrinks to go in. Over a group, its cards part a little to take it. Moving

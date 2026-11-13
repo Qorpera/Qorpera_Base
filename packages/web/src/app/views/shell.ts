@@ -2126,6 +2126,10 @@ function groupIcon(name: string, count: number, colour: string | undefined): HTM
 	return tile;
 }
 
+/** Each tile going back into a folding group, and its animation: a tile that comes back meanwhile (the group opened
+ * again) loses it, so it stands whole again (review F1 on #1729). */
+const foldingTiles = new WeakMap<HTMLElement, Animation>();
+
 /** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
  * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
 function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
@@ -2141,8 +2145,10 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	// A tile that went and comes back is an ordinary tile again.
 	for (const element of drawn)
 		if (element.classList.contains("is-leaving")) {
-			element.classList.remove("is-leaving");
+			element.classList.remove("is-leaving", "is-folding");
 			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+			foldingTiles.get(element)?.cancel();
+			foldingTiles.delete(element);
 		}
 	reconcile(grid, drawn);
 	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
@@ -2150,8 +2156,8 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	const folding = parts.appFolding;
 	parts.appFolding = undefined;
 	if (!before || !box) return;
-	const into = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
-	const target = into?.querySelector(".rail-app-stand")?.getBoundingClientRect();
+	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
+	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
 	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
@@ -2173,8 +2179,16 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				easing: easing("--ease-out"),
 			});
 	}
+	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 	const leaving = [...before].filter(([element]) => !kept.has(element));
-	leaving.forEach(([element, was], index) => {
+	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
+	// wraps).
+	const into = target ? centre(target) : undefined;
+	const far = (rect: DOMRect) => (into ? Math.hypot(centre(rect).x - into.x, centre(rect).y - into.y) : 0);
+	const turn = new Map(
+		[...leaving].sort(([, a], [, b]) => far(a) - far(b)).map(([element], index) => [element, index] as const),
+	);
+	for (const [element, was] of leaving) {
 		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
 		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
@@ -2183,14 +2197,14 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.width = `${was.width}px`;
 		grid.append(element);
 		let ms = 240;
-		if (target) {
-			// Into the group's tile: each app shrinks and goes back behind it, the nearest first, a moment apart.
-			const stand = element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was;
-			const dx = target.left + target.width / 2 - (stand.left + stand.width / 2);
-			const dy = target.top + target.height / 2 - (stand.top + stand.height / 2);
-			const delay = Math.min(index, 6) * 18;
+		if (into) {
+			// Into the group's tile: each app shrinks and goes back behind it, a moment after the one nearer it.
+			const from = centre(element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was);
+			const dx = into.x - from.x;
+			const dy = into.y - from.y;
+			const delay = Math.min(turn.get(element) ?? 0, 6) * 18;
 			element.classList.add("is-folding");
-			element.animate(
+			const fold = element.animate(
 				[
 					{ translate: "0 0", scale: "1", opacity: 1 },
 					{ opacity: 1, offset: 0.4 },
@@ -2198,12 +2212,15 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				],
 				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
 			);
+			foldingTiles.set(element, fold);
 			ms = 340 + delay + 20;
 		}
 		setTimeout(() => {
-			if (element.classList.contains("is-leaving")) element.remove();
+			if (!element.classList.contains("is-leaving")) return;
+			element.remove();
+			foldingTiles.delete(element);
 		}, ms);
-	});
+	}
 }
 
 /** The member's document as the next change builds on it: without the places the drawer's arrangement refused. */

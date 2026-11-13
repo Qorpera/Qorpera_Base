@@ -1600,17 +1600,24 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const { element } = drawer();
 		group(element).click();
 		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
-		// jsdom moves nothing: each tile gets a box of its own, and the animations are recorded.
-		const animations: { element: Element; frames: Keyframe[]; options: KeyframeAnimationOptions }[] = [];
-		const animate = vi.fn(function (this: Element, frames: Keyframe[], options: KeyframeAnimationOptions) {
-			animations.push({ element: this, frames, options });
-			return { finish() {}, cancel() {}, finished: Promise.resolve() } as unknown as Animation;
-		});
-		// Where each tile stood while the group was open, by its name.
-		const at = ["Market", "Brand", "Plan", "Members", "Trips"];
+		// jsdom lays nothing out: each tile has a box by its name, the group at the row's end and its apps wrapped onto
+		// the next row, Brand the farther of them (review F3 on #1729). Animations are recorded.
+		const at: Record<string, [number, number]> = { Market: [210, 0], Brand: [0, 70], Plan: [140, 70] };
 		const boxes = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
 			const name = this.closest<HTMLElement>(".rail-app")?.querySelector(".rail-app-name")?.textContent ?? "";
-			return new DOMRect(Math.max(at.indexOf(name), 0) * 70, 0, 60, 60);
+			const [x, y] = at[name] ?? [280, 0];
+			return new DOMRect(x, y, 60, 60);
+		});
+		const animations: {
+			element: Element;
+			frames: Keyframe[];
+			options: KeyframeAnimationOptions;
+			cancel: ReturnType<typeof vi.fn>;
+		}[] = [];
+		const animate = vi.fn(function (this: Element, frames: Keyframe[], options: KeyframeAnimationOptions) {
+			const cancel = vi.fn();
+			animations.push({ element: this, frames, options, cancel });
+			return { finish() {}, cancel, finished: Promise.resolve() } as unknown as Animation;
 		});
 		const own = Element.prototype.animate;
 		Element.prototype.animate = animate as unknown as Element["animate"];
@@ -1619,13 +1626,26 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			group(element).click();
 			expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
 			const folding = [...element.querySelectorAll<HTMLElement>(".rail-app.is-leaving.is-folding")];
-			expect(folding.map((tile) => tile.querySelector(".rail-app-name")?.textContent)).toEqual(["Brand", "Plan"]);
+			const name = (tile: Element) => tile.querySelector(".rail-app-name")?.textContent;
+			expect(folding.map(name)).toEqual(["Brand", "Plan"]);
 			const into = animations.filter((entry) => folding.includes(entry.element as HTMLElement));
-			expect(into.map((entry) => entry.frames.at(-1))).toEqual([
-				{ translate: "-70px 0px", scale: "0.2", opacity: 0 },
-				{ translate: "-140px 0px", scale: "0.2", opacity: 0 },
+			expect(into.map((entry) => [name(entry.element), entry.frames.at(-1), entry.options.delay])).toEqual([
+				["Brand", { translate: "210px -70px", scale: "0.2", opacity: 0 }, 18],
+				["Plan", { translate: "70px -70px", scale: "0.2", opacity: 0 }, 0],
 			]);
-			expect(into.map((entry) => entry.options.delay)).toEqual([0, 18]);
+			// Opened again while they fold: the same tiles come back whole, their folds cancelled (review F1 on #1729).
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			for (const entry of into) {
+				expect(entry.cancel).toHaveBeenCalledOnce();
+				expect((entry.element as HTMLElement).classList.contains("is-folding")).toBe(false);
+				expect((entry.element as HTMLElement).classList.contains("is-leaving")).toBe(false);
+			}
+			vi.advanceTimersByTime(400);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			// Folded and let finish: they go once their folds end.
+			group(element).click();
+			expect(element.querySelectorAll(".rail-app.is-folding")).toHaveLength(2);
 			vi.advanceTimersByTime(400);
 			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
 		} finally {
