@@ -4,6 +4,7 @@ import type { MemberAgentMachine } from "@qorpera/cloud-client/cloud-member-comp
 import { isUuid } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	ASK_LASTS_MS,
 	ComputerPanel,
 	ComputerPanels,
 	INPUT_MAX_AGE_MS,
@@ -13,6 +14,7 @@ import {
 	LOOK_EVERY_MS,
 	MACHINES_EVERY_MS,
 	type MachineHints,
+	OPEN_STARTS,
 	PAUSE_AFTER_MS,
 	SCREEN_OFF_EVERY_MS,
 	START_AGAIN_MS,
@@ -111,6 +113,9 @@ function setup(
 		/** What a look answers once the queue is empty. */
 		fallback: "unchanged" as Answer,
 		listFails: 0,
+		/** Wakes that fail (503) before one goes through, and a gate each waits on. */
+		wakeFails: 0,
+		wakeGate: undefined as Promise<void> | undefined,
 		/** Hand-backs that fail (503) before one goes through, and a gate each waits on (review r1 F4). */
 		handBackFails: 0,
 		/** What a member's start of a computer for the agent answers, in turn (then a new machine 9), and a gate it waits on
@@ -367,8 +372,14 @@ function setup(
 				machines: state.machines.map(listedRow),
 			});
 		}
-		if (method === "qorpera_member_manage_company_machine")
+		if (method === "qorpera_member_manage_company_machine") {
+			if (state.wakeGate) await state.wakeGate;
+			if (state.wakeFails > 0) {
+				state.wakeFails--;
+				return new Response("{}", { status: 503 });
+			}
 			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
+		}
 		if (method === "qorpera_member_start_agent_computer") {
 			if (state.computerGate) await state.computerGate;
 			const answer = state.computerAnswers.shift() ?? { started: machine(9, { state: "waiting" }) };
@@ -516,6 +527,19 @@ type Setup = ReturnType<typeof setup>;
 function panel(s: Setup, attach = true) {
 	const value = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
 	if (attach) value.attach(document.body, () => value.dispose());
+	cleanup.push(() => value.dispose());
+	return value;
+}
+/** A window the member's own click opened (the agent's card, the thread's agent details, a take-over card). */
+function asked(s: Setup) {
+	const value = new ComputerPanel(
+		staff,
+		s.computer,
+		s.stop.signal,
+		{ hints: s.hints, decode: s.decode },
+		{ asked: true },
+	);
+	value.attach(document.body, () => value.dispose());
 	cleanup.push(() => value.dispose());
 	return value;
 }
@@ -1423,6 +1447,218 @@ describe("an agent's computer window", () => {
 	});
 });
 
+describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPEN-BRIEF, 13 Nov 2026)", () => {
+	const wakes = (s: Setup) => calls(s, "qorpera_member_manage_company_machine");
+
+	it("starts what the member asked for by state, in one place, and never Start one", () => {
+		expect(OPEN_STARTS).toEqual({ asleep: true, starting: true, screenOff: true });
+	});
+
+	it("wakes a sleeping computer with the click itself: no Wake it first, straight to starting, and the screen comes on by itself", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const p = asked(s);
+		await flush();
+		expect(wakes(s).map((call) => call.body)).toEqual([
+			{ p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_action: "start" },
+		]);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(action(p)).toBeNull();
+		// The list says it waits for room, then that it boots: said, and nothing woken twice.
+		s.state.machines = [machine(1, { state: "waiting", waitingFor: "room" })];
+		await advance(MACHINES_EVERY_MS);
+		expect(detail(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
+		s.state.machines = [machine(1, { state: "starting" })];
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("The computer is starting…");
+		// It runs with its screen off: turned on without a press, and the picture comes.
+		s.state.machines = [machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
+		expect(wakes(s)).toHaveLength(1);
+	});
+
+	it("keeps the asleep state with Wake it where the member did not just ask: a window the page opened, and a viewer", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const p = panel(s);
+		await flush();
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(action(p)?.textContent).toBe("Wake it");
+		expect(wakes(s)).toEqual([]);
+		const viewer = setup({ machines: [machine(1, { state: "stopped" })], canWake: false, role: "viewer" });
+		const q = asked(viewer);
+		await flush();
+		expect(status(q)).toBe("The computer is asleep.");
+		expect(detail(q)).toBe("Someone with edit access can wake it.");
+		expect(action(q)).toBeNull();
+		expect(wakes(viewer)).toEqual([]);
+	});
+
+	it("lets a computer fall asleep under an open window: the window shows it asleep with Wake it and wakes nothing", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = asked(s);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		s.state.machines = [machine(1, { state: "stopped" })];
+		s.state.answers.push({ code: "MACHINE_NOT_RUNNING" });
+		await advance(LOOK_EVERY_MS * 4);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(action(p)?.textContent).toBe("Wake it");
+		expect(wakes(s)).toEqual([]);
+	});
+
+	it("joins a wake already on its way (another tab, another member) and never wakes twice for clicks on top of it", async () => {
+		// Another member woke it: the list says it starts. The click joins: no wake, and the screen comes on by itself.
+		const s = setup({ machines: [machine(1, { state: "starting" })] });
+		const p = asked(s);
+		await flush();
+		expect(wakes(s)).toEqual([]);
+		expect(status(p)).toBe("The computer is starting…");
+		s.state.machines = [machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
+		// This page's own wake on its way: clicks on the card while it is answered wake nothing more.
+		const t = setup({ machines: [machine(1, { state: "stopped" })] });
+		let open = () => {};
+		t.state.wakeGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const panels = new ComputerPanels(t.computer, t.stop.signal, { hints: t.hints, decode: t.decode });
+		cleanup.push(() => panels.dispose());
+		const q = panels.open(staff, { asked: true })!;
+		q.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		panels.open(staff, { asked: true });
+		await advance(LOOK_EVERY_MS);
+		panels.open(staff, { asked: true });
+		await advance(LOOK_EVERY_MS);
+		expect(wakes(t)).toHaveLength(1);
+		open();
+		await flush();
+		expect(wakes(t)).toHaveLength(1);
+	});
+
+	it("turns the screen on for a click on a computer that runs with its screen off, and only for a member who may", async () => {
+		const s = setup();
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		const p = asked(s);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
+		// Opened by the page: the screen stays off and says so, with its button.
+		const t = setup();
+		t.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		const q = panel(t);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(status(q)).toBe("The computer is on, but its screen is off.");
+		expect(t.starts).toEqual([]);
+	});
+
+	it("never starts a computer for an agent that has none: Start one stays a button", async () => {
+		const s = setup({ machines: [] });
+		const p = asked(s);
+		await flush();
+		expect(status(p)).toBe(`${staff.displayName} has no computer yet.`);
+		expect(action(p)?.textContent).toBe("Start one");
+		expect(calls(s, "qorpera_member_start_agent_computer")).toEqual([]);
+		expect(wakes(s)).toEqual([]);
+	});
+
+	it("says a wake that failed at once, with Try again, instead of starting for minutes; Try again wakes it", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.wakeFails = 1;
+		const p = asked(s);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(wakes(s)).toHaveLength(1);
+		expect(status(p)).toBe("The computer could not be started. Try again.");
+		expect(action(p)?.textContent).toBe("Try again");
+		// The same press as Wake it: one more wake, and the window is on its way up.
+		s.state.machines = [machine(1, { state: "starting" })];
+		action(p)!.click();
+		await flush();
+		expect(wakes(s)).toHaveLength(2);
+		expect(status(p)).toBe("The computer is starting…");
+	});
+
+	it("starts nothing from a click that lapsed while its read was on its way (review r1 F1 of #1734)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		let open = () => {};
+		s.state.listHold = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const p = asked(s);
+		await flush();
+		// Every read begun after the click (a retry too) answers only after the click lapsed.
+		await advance(ASK_LASTS_MS + 1000);
+		s.state.listHold = undefined;
+		open();
+		await flush();
+		expect(wakes(s)).toEqual([]);
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(action(p)?.textContent).toBe("Wake it");
+	});
+
+	it("resumes a window paused for want of a touch when the member clicks Computer again, and wakes it (review r1 F2 of #1734)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => panels.dispose());
+		const p = panels.open(staff)!;
+		p.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		expect(wakes(s)).toEqual([]);
+		panels.open(staff, { asked: true });
+		await flush();
+		expect(wakes(s)).toHaveLength(1);
+		expect(status(p)).toBe("The computer is starting…");
+	});
+
+	it("counts a click on Computer while the window stands open and asleep as asking, and a click that lapsed as nothing", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => panels.dispose());
+		const p = panels.open(staff)!;
+		p.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		expect(action(p)?.textContent).toBe("Wake it");
+		expect(wakes(s)).toEqual([]);
+		expect(panels.open(staff, { asked: true })).toBe(p);
+		await flush();
+		expect(wakes(s)).toHaveLength(1);
+		expect(status(p)).toBe("The computer is starting…");
+		// A click whose list read never answered lapses: a read long after it wakes nothing.
+		const t = setup({ machines: [machine(1, { state: "stopped" })] });
+		t.state.listFails = 1000;
+		const q = asked(t);
+		await flush();
+		await advance(ASK_LASTS_MS + MACHINES_EVERY_MS);
+		t.state.listFails = 0;
+		await advance(MACHINES_EVERY_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(wakes(t)).toEqual([]);
+		expect(status(q)).toBe("The computer is asleep.");
+	});
+});
+
 describe("a member's start of a computer for an agent that has none (20260930730000)", () => {
 	const starts = (s: Setup) => calls(s, "qorpera_member_start_agent_computer");
 
@@ -1703,6 +1939,25 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	const entered = (p: ComputerPanel) =>
 		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
 	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent;
+
+	it("stands its controls in the large view's own row above the picture, never on the desktop's picture, and on the picture again in the preview (v239 real test, 13 Nov 2026)", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		const control = p.el.querySelector<HTMLElement>(".machine-screen-control")!;
+		expect(control.closest(".screen-viewer-stage")).not.toBeNull();
+		press(canvas(p), 10, 10);
+		await flush();
+		expect(entered(p)).toBe(true);
+		expect(control.closest(".machine-screen-bar-slot")).not.toBeNull();
+		expect(control.closest(".screen-viewer-stage")).toBeNull();
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		expect(entered(p)).toBe(false);
+		expect(control.closest(".screen-viewer-stage")).not.toBeNull();
+	});
 
 	it("takes input only in the large view: a click on the preview's picture enters the frame in the thread, never full screen, and Type privately there holds it (v234, 20260930734000)", async () => {
 		const full = vi.fn(async () => {});

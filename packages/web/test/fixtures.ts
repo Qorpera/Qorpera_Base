@@ -132,7 +132,7 @@ export async function settle(): Promise<void> {
 export function stubFigureMotion(dispose: () => void = () => {}) {
 	vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
 	vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
+	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose, play: () => {} });
 }
 
 /** Scrolls `element` as a browser has it: one that has left the page says it is at its top, where jsdom keeps what

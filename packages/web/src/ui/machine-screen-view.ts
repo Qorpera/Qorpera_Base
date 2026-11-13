@@ -158,6 +158,10 @@ export class MachineScreenView {
 	readonly #switcherSlot = h("span", { class: "machine-screen-switcher-slot" });
 	/** The take-over controls under the picture (the panel's: Take over, or what holding means and Hand back). */
 	readonly #controlSlot = h("div", { class: "machine-screen-control-slot" });
+	/** Where the take-over controls stand in the large view: a slim row of the frame under its titlebar, never on the
+	 * desktop's picture (its dock and clock; v239 real test, 13 Nov 2026). */
+	readonly #barSlot = h("div", { class: "machine-screen-bar-slot" });
+	#controls: HTMLElement | null = null;
 	readonly #stop = new AbortController();
 	#input: MachineScreenInput | null = null;
 	#inputStop: AbortController | null = null;
@@ -205,7 +209,7 @@ export class MachineScreenView {
 		const controls = h("div", { class: "screen-viewer-controls" }, this.#back);
 		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#switcherSlot, controls);
 		const stage = h("div", { class: "screen-viewer-stage" }, this.#canvas, this.#mark, this.#controlSlot);
-		const frame = h("div", { class: "screen-viewer-frame" }, titlebar, stage, this.#enter);
+		const frame = h("div", { class: "screen-viewer-frame" }, titlebar, this.#barSlot, stage, this.#enter);
 		this.el = h(
 			"div",
 			{
@@ -253,9 +257,17 @@ export class MachineScreenView {
 		this.#switcherSlot.replaceChildren(...(switcher ? [switcher] : []));
 	}
 
-	/** The take-over controls under the picture, in the preview and entered alike (full screen too). */
+	/** The take-over controls: on the picture's foot in the preview, in the frame's row above the picture entered (full
+	 * screen too). */
 	setControls(controls: HTMLElement | null): void {
-		this.#controlSlot.replaceChildren(...(controls ? [controls] : []));
+		this.#controls = controls;
+		this.#placeControls();
+	}
+
+	#placeControls(): void {
+		const controls = this.#controls;
+		(this.#entered ? this.#controlSlot : this.#barSlot).replaceChildren();
+		if (controls) (this.#entered ? this.#barSlot : this.#controlSlot).replaceChildren(controls);
 	}
 
 	/** Whether the picture takes the member's input now. */
@@ -494,7 +506,7 @@ export class MachineScreenView {
 			event.preventDefault();
 			event.stopPropagation();
 			this.#flush();
-			this.#controlSlot.querySelector("button")?.focus();
+			this.#controls?.querySelector("button")?.focus();
 			return;
 		}
 		if (MODIFIER_KEYS.has(event.key)) return;
@@ -670,6 +682,10 @@ export class MachineScreenView {
 		if (this.#entered === value) return;
 		this.#entered = value;
 		this.el.classList.toggle("screen-viewer-entered", value);
+		// Moving the controls must not drop the keyboard from a control that had it.
+		const focused = this.#controls?.contains(document.activeElement) ? document.activeElement : null;
+		this.#placeControls();
+		if (focused instanceof HTMLElement) focused.focus();
 		this.#back.hidden = !value;
 		this.#enter.hidden = value;
 		if (!value) this.#note.textContent = "";
