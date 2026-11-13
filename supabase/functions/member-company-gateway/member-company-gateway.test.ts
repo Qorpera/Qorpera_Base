@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { forwardMemberCompanyGateway, type MemberCompanyGatewayOptions } from "./member-company-gateway.ts";
+import { after, before, describe, it } from "node:test";
+import {
+	forwardMemberCompanyGateway,
+	type MemberCompanyGatewayOptions,
+	memberTokenShaped,
+} from "./member-company-gateway.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
 const commit = `/v1/member-folder-commits/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
+/** The issuer as a stack states it: the pinned self-hosted configuration issues with `API_EXTERNAL_URL` unchanged, so
+ * a real one often has no path at all (review r2 F2 of #1746). Both shapes are tested below. */
+const issuer = "https://project.supabase.co";
+const NOW = Date.parse("2026-11-13T10:00:00Z");
+/** A token as the project's auth service issues it (its signature is the database's to check, not the bridge's). */
+function jwt(claims: Record<string, unknown> = {}, header: Record<string, unknown> = { alg: "ES256", typ: "JWT" }) {
+	const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+	return `${part(header)}.${part({
+		iss: issuer,
+		aud: "authenticated",
+		role: "authenticated",
+		sub: "22222222-2222-4222-8222-222222222222",
+		exp: NOW / 1000 + 3600,
+		...claims,
+	})}.${Buffer.from("s".repeat(64)).toString("base64url")}`;
+}
+const memberJwt = jwt();
 /** A request as the bridge receives it: a body of known size carries its length, as a browser sends it. */
 function request(path = object, init: RequestInit = {}) {
 	const length =
@@ -29,6 +50,8 @@ function request(path = object, init: RequestInit = {}) {
 function forward(req: Request, options: MemberCompanyGatewayOptions) {
 	return forwardMemberCompanyGateway(req, {
 		memberSignedIn: async (authorization) => authorization === "Bearer member.jwt.token",
+		memberTokenIssuer: issuer,
+		now: () => NOW,
 		...options,
 	});
 }
@@ -693,11 +716,18 @@ describe("public member Company File gateway", () => {
 		let asked = 0;
 		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
 		const move = JSON.stringify({ pass: id, x: 812, y: 443 });
+		const member = { authorization: `Bearer ${memberJwt}` };
 		const done = await forwardMemberCompanyGateway(
-			request(path, { method: "POST", body: move, headers: { "content-type": "application/json", cookie: "a=b" } }),
+			request(path, {
+				method: "POST",
+				body: move,
+				headers: { ...member, "content-type": "application/json", cookie: "a=b" },
+			}),
 			{
 				upstreamUrl,
 				fetchImplementation,
+				memberTokenIssuer: issuer,
+				now: () => NOW,
 				memberSignedIn: async () => {
 					asked++;
 					return true;
@@ -707,12 +737,33 @@ describe("public member Company File gateway", () => {
 		assert.equal(done.status, 200);
 		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-pointer/v1", moved: true });
 		assert.deepEqual(seen, [
-			`POST ${path} authorization=Bearer member.jwt.token content-length=${move.length} content-type=application/json ${move}`,
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${move.length} content-type=application/json origin=https://app.qorpera.com ${move}`,
 		]);
 		// The auth service is never asked for a move: the executor checks the token against the pass.
 		assert.equal(asked, 0);
+		// A live picture's ticket is bought on the same route, and the browser's Origin goes with it: the ticket opens
+		// the stream for that Origin alone (20260930745000). It is an allowed one, or nothing is forwarded at all.
+		const stream = JSON.stringify({ stream: { pass: id, hold: { generation: 3 } } });
+		const ticket = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, "content-type": "application/json" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(ticket.status, 200);
+		assert.equal(
+			seen.at(-1),
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${stream.length} content-type=application/json origin=https://app.qorpera.com ${stream}`,
+		);
+		const elsewhere = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, origin: "https://evil.example" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(elsewhere.status, 403);
+		assert.equal(seen.length, 2);
 		// 256 bytes pass; the preflight is kept 10 minutes and names the route's own method and headers.
-		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256) }), { upstreamUrl, fetchImplementation });
+		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256), headers: member }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
 		assert.equal(largest.status, 200);
 		const preflight = await forward(
 			request(path, {
@@ -739,6 +790,80 @@ describe("public member Company File gateway", () => {
 			{ upstreamUrl, fetchImplementation },
 		);
 		assert.equal(act.headers.get("access-control-max-age"), null);
+	});
+	it("forwards a pointer request only with a member's own unexpired token of this project, read here with no call out (20260930745000)", async () => {
+		let forwarded = 0;
+		let asked = 0;
+		const fetchImplementation: typeof fetch = async () => {
+			forwarded++;
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
+		const body = JSON.stringify({ pass: id, x: 1, y: 2 });
+		const send = (authorization: string, options: Partial<MemberCompanyGatewayOptions> = {}) =>
+			forward(request(path, { method: "POST", body, headers: { authorization, "content-type": "application/json" } }), {
+				upstreamUrl,
+				fetchImplementation,
+				memberSignedIn: async () => {
+					asked++;
+					return true;
+				},
+				...options,
+			});
+		const segments = memberJwt.split(".");
+		for (const [name, token] of [
+			["no token at all, only a string", "member.jwt.token"],
+			["two parts", segments.slice(0, 2).join(".")],
+			["a short signature", `${segments[0]}.${segments[1]}.c2ln`],
+			["a header that is no JSON", `bm9wZQ.${segments[1]}.${segments[2]}`],
+			["no algorithm", jwt({}, { typ: "JWT" })],
+			["the none algorithm", jwt({}, { alg: "none" })],
+			["another type", jwt({}, { alg: "HS256", typ: "JWE" })],
+			["claims that are no JSON", `${segments[0]}.bm9wZQ.${segments[2]}`],
+			["the project's publishable (anon) key", jwt({ role: "anon", sub: undefined })],
+			["a service key", jwt({ role: "service_role", aud: undefined })],
+			["another audience", jwt({ aud: "other" })],
+			["another project", jwt({ iss: "https://other.supabase.co/auth/v1" })],
+			["no member", jwt({ sub: "someone" })],
+			["no expiry", jwt({ exp: undefined })],
+			["run out", jwt({ exp: NOW / 1000 })],
+			["an expiry that is no whole number", jwt({ exp: "2099" })],
+		] as const) {
+			const refused = await send(`Bearer ${token}`);
+			assert.equal(refused.status, 401, name);
+			assert.deepEqual(await refused.json(), { error: "Member sign-in is required" }, name);
+		}
+		// Nothing of it went on, and no auth service was asked.
+		assert.equal(forwarded, 0);
+		assert.equal(asked, 0);
+		// The issuer is the auth service's own, which only the deployment can tell: unnamed, the route still serves and
+		// every other check still holds (review r1 F2 of #1746; naming the transport address would refuse every real
+		// member token). A token of another issuer passes the bridge then and the database refuses it, as before.
+		const unnamed = await send(`Bearer ${memberJwt}`, { memberTokenIssuer: undefined });
+		assert.equal(unnamed.status, 200);
+		assert.equal(
+			(await send(`Bearer ${jwt({ iss: "https://other.supabase.co/auth/v1" })}`, { memberTokenIssuer: undefined }))
+				.status,
+			200,
+		);
+		assert.equal((await send(`Bearer ${jwt({ exp: NOW / 1000 })}`, { memberTokenIssuer: undefined })).status, 401);
+		assert.equal((await send("Bearer member.jwt.token", { memberTokenIssuer: undefined })).status, 401);
+		assert.equal(forwarded, 2);
+		forwarded = 0;
+		// The member's own token goes on, with an audience list too; the bridge's clock decides its expiry.
+		assert.equal((await send(`Bearer ${memberJwt}`)).status, 200);
+		assert.equal((await send(`Bearer ${jwt({ aud: ["authenticated", "other"] }, { alg: "HS256" })}`)).status, 200);
+		assert.equal((await send(`Bearer ${memberJwt}`, { now: () => NOW + 3600_000 })).status, 401);
+		assert.equal(forwarded, 2);
+		assert.equal(asked, 0);
+		// The issuer a deployment names is the token's own, never the address the functions reach the stack at.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "http://api-gw:8000/auth/v1", NOW / 1000), false);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, undefined, NOW / 1000), true);
+		// The other routes keep their own checks.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, issuer, NOW / 1000), true);
+		// A trailing slash either way is the same issuer; another host is not.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, `${issuer}/`, NOW / 1000), true);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "https://other.supabase.co", NOW / 1000), false);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);
@@ -1137,5 +1262,96 @@ describe("public member Company File gateway", () => {
 			).status,
 			200,
 		);
+	});
+});
+
+describe("the bridge's own entrypoint (index.ts)", () => {
+	type Handler = (request: Request) => Promise<Response>;
+	let handler: Handler | undefined;
+	let environment: Record<string, string> = {};
+	const served: Handler = (request) => (handler as Handler)(request);
+
+	// index.ts as it is, under Node: Deno is a stand-in that gives it this deployment's settings and keeps its handler.
+	before(async () => {
+		Reflect.set(globalThis, "Deno", {
+			env: { get: (name: string) => environment[name] },
+			serve: (taken: Handler) => {
+				handler = taken;
+			},
+		});
+		await import("./index.ts");
+	});
+	after(() => {
+		Reflect.deleteProperty(globalThis, "Deno");
+	});
+
+	/** The stack as it is deployed: the functions reach it on the compose network, members' tokens say the public host
+	 * (review r1 F2 of #1746: the two differ, and only the second is an issuer). */
+	const deployment = (change: Record<string, string | undefined> = {}) => {
+		environment = Object.fromEntries(
+			Object.entries({
+				SUPABASE_URL: "http://api-gw:8000",
+				SUPABASE_ANON_KEY: "synthetic-anon-key",
+				QORPERA_MEMBER_GATEWAY_UPSTREAM_URL: upstreamUrl,
+				QORPERA_MEMBER_TOKEN_ISSUER: "https://api.example",
+				...change,
+			}).filter(([, value]) => value !== undefined),
+		) as Record<string, string>;
+	};
+	/** A token as it is while the entrypoint reads the real clock (the suite's fixed NOW is already past). */
+	const live = (change: Record<string, unknown> = {}) =>
+		jwt({ exp: Math.floor(Date.now() / 1000) + 3600, ...change });
+	const pointer = (token: string) =>
+		served(
+			new Request(`${base}/v1/member-machine-screens/${id}/${id}/pointer`, {
+				method: "POST",
+				headers: {
+					origin: "https://app.qorpera.com",
+					authorization: `Bearer ${token}`,
+					"content-type": "application/json",
+					"content-length": "2",
+				},
+				body: "{}",
+			}),
+		);
+
+	it("takes the issuer from its own setting, so a deployment whose internal and public URLs differ serves real members", async () => {
+		deployment();
+		// A token of the public issuer passes the bridge's own check and is forwarded (the upstream is unreachable here,
+		// so the answer is the gateway's own 503 for a destination it could not reach, never 401).
+		const member = await pointer(live({ iss: "https://api.example" }));
+		assert.notEqual(member.status, 401);
+		assert.deepEqual(await member.json(), { error: "The computer is unavailable just now." });
+		// The internal transport address is no issuer: a token claiming it is refused when an issuer is named.
+		assert.equal((await pointer(live({ iss: "http://api-gw:8000/auth/v1" }))).status, 401);
+		assert.equal((await pointer(live({ iss: "https://other.supabase.co/auth/v1" }))).status, 401);
+		// Nobody's token is refused whatever the issuer setting says.
+		assert.equal((await pointer("member.jwt.token")).status, 401);
+		assert.equal((await pointer(live({ role: "anon" }))).status, 401);
+	});
+
+	it("serves the route when no issuer is named, and refuses a setting that is not an exact https issuer", async () => {
+		deployment({ QORPERA_MEMBER_TOKEN_ISSUER: undefined });
+		const member = await pointer(live({ iss: "https://api.example" }));
+		assert.notEqual(member.status, 401);
+		// Still nobody's token, and still not an expired one.
+		assert.equal((await pointer("member.jwt.token")).status, 401);
+		assert.equal((await pointer(jwt({ exp: NOW / 1000 - 1 }))).status, 401);
+		// An issuer with a path and one without are both taken as the stack states them; only a string that is no exact
+		// https URL is refused (review r2 F2: nothing demands `/auth/v1`).
+		for (const good of ["https://api.example", "https://api.example/", "https://api.example/auth/v1"]) {
+			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: good });
+			const taken = await pointer(live({ iss: good.replace(/\/$/, "") }));
+			assert.notEqual(taken.status, 401, good);
+		}
+		for (const value of [
+			"http://api.example/auth/v1",
+			"https://api.example/auth/v1?x=1",
+			"https://api.example/auth/v1#x",
+			"https://user:pass@api.example/auth/v1",
+		]) {
+			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: value });
+			await assert.rejects(async () => await pointer(live()), /exact https issuer/, value);
+		}
 	});
 });
