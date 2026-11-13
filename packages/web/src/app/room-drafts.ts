@@ -11,7 +11,7 @@ import {
 } from "../cloud/room-drafts.ts";
 import { mergeQuoted } from "./quotes.ts";
 import { Store } from "./state.ts";
-import { applyEdit, diffText, type TextEdit, transform } from "./text-merge.ts";
+import { applyEdit, diffText, editAfter, type TextEdit, transform } from "./text-merge.ts";
 
 /* Shared drafts in the browser. Every room this member opens shows the other
  * members' unsent messages; the member's own draft is written to the cloud as
@@ -717,11 +717,16 @@ export class RoomDrafts {
 				},
 				busy: () => this.#editors.get(sessionId)?.busy() ?? false,
 				show: (text, edit, quotes) => {
-					// The composer shows the draft after its lead: it, and a send on its way, hear what changed there.
+					// The composer shows the draft after its lead: it, and a send on its way, hear what changed there, as
+					// the merge's own edit, which keeps each quote whole (app/quotes.ts `mergeQuoted`). An edit that can't
+					// be cut at the lead (the lead changed across a kept span) is made again from the two texts after it.
 					const before = this.#hooks.draft(sessionId);
 					const from = this.#hooks.lead(before);
 					const to = this.#hooks.lead(text);
-					const shown = from === 0 && to === 0 ? edit : diffText(before.slice(from), text.slice(to));
+					const shown =
+						from === 0 && to === 0
+							? edit
+							: (editAfter(edit, from, to) ?? diffText(before.slice(from), text.slice(to)));
 					this.#sending.get(sessionId)?.push(shown);
 					for (const listener of this.#shown.get(sessionId) ?? []) listener(text.slice(to), shown);
 					this.#hooks.setDraft(sessionId, text, quotes);

@@ -557,6 +557,7 @@ describe("the bridge's requests for a change", () => {
 				if (note) kept.set(app, note);
 				else kept.delete(app);
 			},
+			listen: () => () => {},
 			kept,
 		} satisfies AppTellSource & { kept: Map<string, HeldNote> };
 		return source;

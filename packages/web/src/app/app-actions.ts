@@ -460,6 +460,8 @@ export interface HeldNote {
 	readonly header: string;
 	/** The member's words as they last left them on the bar. */
 	readonly words: string;
+	/** On its way to the thread: no bar shows it until it went (and is let go) or is held again. */
+	readonly sending?: true;
 }
 
 /** What a note needs of the open company (app/tell-agent.ts): who hears it, and the send. */
@@ -472,9 +474,12 @@ export interface AppTellSource {
 	/** Sends the member's words to the agent as their own message, under the line the note answers (`header`, the app
 	 * and what it is about), or leaves them waiting in the agent's thread. */
 	readonly send: (agentId: string, note: { readonly header: string; readonly text: string }) => Promise<AppNoteSent>;
-	/** The note held for an app (by its folder's name), and keeping one, or letting it go (`undefined`). */
+	/** The note held for an app (by its folder's name), and keeping one, or letting it go (`undefined`). A note held
+	 * again after it was on its way is told to the app's page on screen (`listen`), whichever page sent it. */
 	readonly held: (app: string) => HeldNote | undefined;
 	readonly hold: (app: string, note: HeldNote | undefined) => void;
+	/** The app's page on screen hears that its held note is back; one page an app, the latest; the answer stops it. */
+	readonly listen: (app: string, back: () => void) => () => void;
 }
 
 /** A draft of the member's words a page may give, at most, in characters. */
@@ -522,10 +527,12 @@ export function prepareTell(
  * field, sent as any note is. Undefined when none is held. */
 export function restoreTell(source: AppTellSource, app: { readonly name: string }): PreparedAsk | undefined {
 	const held = source.held(app.name);
-	if (!held) return undefined;
+	// One on its way shows on no bar: it went, or it comes back here held again (`listen`).
+	if (!held || held.sending) return undefined;
+	const note = { agentId: held.agentId, app: held.app, about: held.about, header: held.header };
 	return {
 		ask: { kind: "tell", agentId: held.agentId, app: held.app, about: held.about, draft: held.words, held: true },
-		...noteSending(source, app.name, held),
+		...noteSending(source, app.name, note),
 	};
 }
 
@@ -541,16 +548,29 @@ function noteSending(
 			const own = words.trim();
 			// The bar's Send is off while its field is empty.
 			if (!own) throw new AppActionRefused(t("Write your note first."));
+			// Kept for the app as on its way, so no other bar shows it meanwhile (the member left the app and came back):
+			// this note's own entry, or none. A note of another thing kept for the app stays as it is.
+			const kept = source.held(app);
+			const going: HeldNote = { ...note, words, sending: true };
+			const tracked = kept === undefined || kept.header === note.header;
+			if (tracked) source.hold(app, going);
+			// What becomes of it is this send's to say only while the entry is still the one it made.
+			const settle = (next: HeldNote | undefined) => {
+				if (tracked && source.held(app) === going) source.hold(app, next);
+			};
 			let went: AppNoteSent;
 			try {
 				went = await source.send(note.agentId, { header: note.header, text: own });
 			} catch (error) {
+				// It did not go: a note that was kept stays kept, with these words; a new one is not kept.
+				settle(kept === undefined ? undefined : { ...note, words });
 				throw new AppActionRefused(
 					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),
 				);
 			}
-			if (went.held) source.hold(app, { ...note, words });
-			else if (source.held(app)?.header === note.header) source.hold(app, undefined);
+			// Held again: kept with its words, and back on the bar of the app's page on screen. Went, or waits in the
+			// thread: let go.
+			settle(went.held ? { ...note, words } : undefined);
 			return went;
 		},
 		keep: (words) => source.hold(app, words === undefined ? undefined : { ...note, words }),

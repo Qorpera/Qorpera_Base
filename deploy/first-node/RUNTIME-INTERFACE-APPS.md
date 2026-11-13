@@ -583,7 +583,8 @@ it above the field as the app (its emblem in its colour, its name) and what the 
 out. Where the draft is saved and shared (the room's shared draft, `app/room-drafts.ts`), the line is the text's first
 line (`> app:…`, then an empty line), put there and taken out again by the company's room hooks (`app/company.ts`), so
 a reload, another tab or another member's client has it with the words, and leaving the app out takes it out of the
-shared text too; the composer's caret and changes are counted after it. The note's words go after what is drafted
+shared text too; the composer's caret and changes are counted after it, as the merge's own edit cut at the line
+(`editAfter`), so a quote another tab changes stays whole, also under a send on its way. The note's words go after what is drafted
 there, so the earlier draft and the note are one message under one card, which the send opens with the line
 (`withReply`). Before anything is read or added, the thread's draft is taken from the room as it is now
 (`RoomDrafts.follow`), also where no view of it is open. The bar then says "Your note waits in <agent>'s thread" with
@@ -593,9 +594,11 @@ One message answers one line: a thread whose draft answers something already (an
 room's text; a wall question), or whose message is on its way or waits to be tried again, takes no note. The note
 then stays on the bar with its words, a line says "<agent>'s thread has a message started. Send or clear it there,
 then send this note." with Open, and Send tries again. It is kept for the app by the company, with the member's words
-as they change them (`HeldNote`), so following Open loses nothing: whenever the app's page is shown again, the note is
-on its bar with those words, and it is let go once it went or waits in the thread, or when the member says not now
-to it. The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`);
+as they change them (`HeldNote`), so following Open loses nothing: whenever the app's page is shown again, or its
+manifest changes under a page that stays, the note is on its bar with those words. While a send of it is on its way it
+is kept as that and shows on no bar, so a member who leaves and comes back meanwhile can't send it twice; held again,
+it is back on the bar of the app's page on screen, whichever page sent it; once it went or waits in the thread it is
+let go, if it is still the note that was sent. The member saying not now to it lets it go too. The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`);
 they have no line of their own, so they wait after a wall answer under way rather than be sent under its question.
 
 A wall question being answered is still this browser's alone (`answering`, not in the shared text): a reload or
@@ -706,7 +709,8 @@ changing a value, and the first that any app may make. What a page can and canno
 | a page changing something | nothing in the company changes: the note is a message in a thread the member could write in anyway, under the same send (write right, open conversation, the member's own model account) |
 | a send from a page that is not the thread | the input writer's check that the thread is on screen lets a note (or Generate icon's ask) through only for its own conversation and only while it is on its way (`sendNote`, started by the member's press); the company still open, the same member, the write right, the open conversation and its room are checked as for any send |
 | a page's line standing apart from the words it heads | a waiting note's line is its shared draft's first line, so it is saved, shared and restored with the words (a reload, another tab, another member's client); every check that a draft answers something reads the room's text as well as this browser's, so a second note never joins a first under its own line |
-| a page losing the member's words | a note its thread can't take stays on the bar and is kept for the app, with the member's words as they change them, until it went or they said not now; the bar shows it again whenever the app's page is shown |
+| a page losing the member's words | a note its thread can't take stays on the bar and is kept for the app, with the member's words as they change them, until it went or they said not now; the bar shows it again whenever the app's page is shown or a new bridge serves it; a send of it on its way shows on no bar (no second Send), and its end lets go only the entry it sent |
+| quoted words losing their fence under the hidden line | the composer and a send on its way hear the merge's own quote-whole edit, cut at the line; a re-made edit is used only where the line changed across a kept span |
 | a page faking quoted outside content | `«` and `»` are taken out of `about`, and a note carries no quote records, so nothing of it is ever drawn or sent as a quote (`cloud/quotes.ts`) |
 
 **The focus exception.** H3 (4) put the focus on "Not now", so that no key could fall on the yes button. A note's bar

@@ -253,6 +253,7 @@ describe("a note an app's page asks the member to send its owner", () => {
 	function withNotes(host: AppPanelHost) {
 		const sent: [agentId: string, note: { header: string; text: string }][] = [];
 		const held = new Map<string, HeldNote>();
+		const back = new Map<string, () => void>();
 		let went: () => Promise<AppNoteSent> = async () => ({ sent: true, href: `#/c/x/staff/${OWNER}` });
 		const told = {
 			...host,
@@ -264,9 +265,18 @@ describe("a note an app's page asks the member to send its owner", () => {
 					return went();
 				},
 				held: (app: string) => held.get(app),
+				// As the company keeps them (app/application.ts): one on its way and held again is back on the page.
 				hold: (app: string, note: HeldNote | undefined) => {
+					const was = held.get(app);
 					if (note) held.set(app, note);
 					else held.delete(app);
+					if (was?.sending && note && !note.sending) back.get(app)?.();
+				},
+				listen: (app: string, listener: () => void) => {
+					back.set(app, listener);
+					return () => {
+						if (back.get(app) === listener) back.delete(app);
+					};
 				},
 			},
 		} satisfies AppPanelHost;
@@ -371,6 +381,69 @@ describe("a note an app's page asks the member to send its owner", () => {
 		await vi.waitFor(() => expect(back.bar().textContent).toContain("Sent to Ada"));
 		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Get two quotes.", "Get two quotes, by Friday."]);
 		expect(notes.held.size).toBe(0);
+	});
+
+	it("shows a kept note on no bar while it is on its way, sends it once a press, and brings it back if held again (#1739 r2, F2)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		const kept = { agentId: OWNER, app: "Shop", about: "Lund, A", header: "app:shop · Lund, A", words: "Kept words" };
+		notes.held.set("shop", kept);
+		let deliver = (_went: AppNoteSent) => {};
+		const deferredSend = () =>
+			new Promise<AppNoteSent>((resolve) => {
+				deliver = resolve;
+			});
+		notes.next(deferredSend);
+		const app = await opened(notes.told);
+		await app.shown();
+		write(app.bar(), "Kept words, again");
+		await pressSend(app.bar());
+		await vi.waitFor(() => expect(notes.sent).toHaveLength(1));
+		expect(notes.held.get("shop")).toEqual({ ...kept, words: "Kept words, again", sending: true });
+		// The member leaves and comes back before it is through: no bar shows it meanwhile, so nothing sends it twice.
+		app.panel.dispose();
+		const back = await opened(notes.told);
+		await settle();
+		expect(back.bar().hidden).toBe(true);
+		// Held again: back on the bar of the page on screen now, with the words.
+		deliver({ sent: false, href: `#/c/x/staff/${OWNER}`, held: true });
+		await back.shown();
+		expect(back.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words, again");
+		expect(notes.held.get("shop")).toEqual({ ...kept, words: "Kept words, again" });
+		// Sent this time, while the member is away again: let go, and no bar on the way back.
+		notes.next(deferredSend);
+		await pressSend(back.bar());
+		await vi.waitFor(() => expect(notes.sent).toHaveLength(2));
+		back.panel.dispose();
+		const again = await opened(notes.told);
+		await settle();
+		expect(again.bar().hidden).toBe(true);
+		deliver({ sent: true, href: `#/c/x/staff/${OWNER}` });
+		await settle();
+		expect(notes.held.size).toBe(0);
+		expect(again.bar().hidden).toBe(true);
+		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Kept words, again", "Kept words, again"]);
+	});
+
+	it("puts a kept note back on the bar when the app's manifest changes under a page that stays (#1739 r2, F3)", async () => {
+		const { fake, host, changed } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		notes.held.set("shop", {
+			agentId: OWNER,
+			app: "Shop",
+			about: "Lund, A",
+			header: "app:shop · Lund, A",
+			words: "Kept words",
+		});
+		const app = await opened(notes.told);
+		await app.shown();
+		// The manifest changes and the page does not: the earlier bridge's bar goes with it, and the new one shows the
+		// note again.
+		fake.put("apps/shop/app.toml", `${MAY_NOT}owner = "${OWNER}"\nabout = "Orders to ship"\n`);
+		await changed(app.panel);
+		expect(app.panel.el.querySelector("iframe.side-panel-frame")).toBe(app.frame);
+		await app.shown();
+		expect(app.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words");
 	});
 
 	it("lets a kept note go when the member says not now to it on the way back", async () => {

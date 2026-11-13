@@ -145,6 +145,8 @@ export class AppPanel {
 	 * manifest changed, so the page never reads or asks for more (or less) than the manifest says now (review r1 of
 	 * #1633, F1 and F2). Undefined for a page of the Company File, which reads nothing. */
 	#serving: Serving | undefined;
+	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
+	#unlisten: (() => void) | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -238,6 +240,8 @@ export class AppPanel {
 		this.#offered = undefined;
 		this.#ask?.dispose();
 		this.#ask = undefined;
+		this.#unlisten?.();
+		this.#unlisten = undefined;
 		this.#serving = undefined;
 		this.el.remove();
 	}
@@ -373,6 +377,8 @@ export class AppPanel {
 	 * shown. One the member already allowed is on its way and is not touched. */
 	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
 		this.#ask?.cancel();
+		this.#unlisten?.();
+		this.#unlisten = undefined;
 		if (!app) {
 			this.#serving = undefined;
 			return;
@@ -395,6 +401,13 @@ export class AppPanel {
 			),
 		};
 		this.#serving = serving;
+		// A note held for the app is on the bar again, with the member's words: when this bridge takes over under a page
+		// that stands (its request was put away with the earlier one; a new page's frame restores it once shown), and
+		// when one that was on its way, sent from any page of the app, is held again.
+		this.#unlisten = this.#host.tell?.listen(app.name, () => {
+			if (this.#serving === serving && this.#frame) void serving.bridge.restore();
+		});
+		if (this.#frame) void serving.bridge.restore();
 	}
 
 	#answer(call: AppCall): Promise<AppAnswer> {

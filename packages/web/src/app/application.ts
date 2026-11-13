@@ -478,7 +478,10 @@ export function mountApplication(
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
 	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
-	const heldNotes = new WeakMap<CompanyController, Map<string, HeldNote>>();
+	const heldNotes = new WeakMap<
+		CompanyController,
+		{ readonly notes: Map<string, HeldNote>; readonly back: Map<string, () => void> }
+	>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -1126,21 +1129,35 @@ export function mountApplication(
 		// their own model account for the thread, chosen as the thread chooses it (app/tell-agent.ts).
 		const appNotes = (): AppTellSource => {
 			let accounts: TellAccounts | undefined;
+			const kept = () => {
+				let found = heldNotes.get(controller);
+				if (!found) {
+					found = { notes: new Map(), back: new Map() };
+					heldNotes.set(controller, found);
+				}
+				return found;
+			};
 			return {
 				receiver: (owner) => {
 					const found = noteReceiver(controller, owner);
 					return "agent" in found ? { agentId: found.agent.id } : found;
 				},
 				agent: (agentId) => controller.staffById(agentId),
-				held: (app) => heldNotes.get(controller)?.get(app),
+				held: (app) => kept().notes.get(app),
+				// A note that was on its way and is held again is back for the app's page on screen, whichever sent it.
 				hold: (app, note) => {
-					let notes = heldNotes.get(controller);
-					if (!notes) {
-						notes = new Map();
-						heldNotes.set(controller, notes);
-					}
+					const { notes, back } = kept();
+					const was = notes.get(app);
 					if (note) notes.set(app, note);
 					else notes.delete(app);
+					if (was?.sending && note && !note.sending) back.get(app)?.();
+				},
+				listen: (app, listener) => {
+					const { back } = kept();
+					back.set(app, listener);
+					return () => {
+						if (back.get(app) === listener) back.delete(app);
+					};
 				},
 				send: (agentId, note) => {
 					accounts ??= createWebNativeSubscription(
