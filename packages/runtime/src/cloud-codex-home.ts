@@ -70,6 +70,9 @@ export const CLOUD_HOME_BUSY =
 /** What the model is told when its home went away while it was working on it. */
 export const CLOUD_HOME_LOST =
 	"HOME_LOST: the connection to this agent's machine broke while that was running there, so there is no answer to it. Part of it may have happened on the machine. Look at the machine's own state before doing it again, or use the company's own tools.";
+/** What the model is told for a request this host cannot read, which it therefore never lets reach the machine. */
+export const CLOUD_HOME_REQUEST_INVALID =
+	"HOME_REQUEST_INVALID: this agent's machine was asked something this host could not read, so nothing ran there. Try the call again as the tool describes it.";
 /** What the model is told when the run's work log could not keep the record an action must leave behind. */
 export const CLOUD_HOME_NO_RECORD =
 	"WORK_LOG_UNAVAILABLE: this agent's work log could not keep a record of that action, so it did not happen on the machine. Try again.";
@@ -512,6 +515,9 @@ interface Connection {
 	 * those is that process's loss, never a question for a machine that does not know it. */
 	readonly live: Set<string>;
 	readonly gone: Set<string>;
+	/** Lines typed into a running shell that name no call, by request id: their steps, finished with the machine's
+	 * own answer to each. */
+	readonly typed: Map<string, string>;
 }
 
 /** The model's call a request names (`metadata.toolCallId`), when it names one. */
@@ -589,7 +595,16 @@ export class CloudCodexHome {
 	#path?: string;
 	/** Counted from the run, for the report: lines each way, actions reviewed, actions the review stopped, requests
 	 * that lost their machine mid-command. */
-	readonly counts = { toMachine: 0, fromMachine: 0, reviewed: 0, declined: 0, unrecorded: 0, connections: 0, lost: 0 };
+	readonly counts = {
+		toMachine: 0,
+		fromMachine: 0,
+		reviewed: 0,
+		declined: 0,
+		unrecorded: 0,
+		connections: 0,
+		lost: 0,
+		dropped: 0,
+	};
 	/** The words this host has for a call of the model's that it refused or that lost its machine, shown first in that
 	 * call's output (Codex's own output for a failed patch drops them). */
 	readonly #notes = new Map<string, string>();
@@ -601,14 +616,6 @@ export class CloudCodexHome {
 	/** What this host knows of a call of the model's that may never act on the machine (Codex announced it, or the
 	 * review refused it): the step it is kept as, should it end without one. */
 	readonly #known = new Map<string, CloudCodexHomeAction["step"]>();
-	/** Lines typed into a running shell, in order, whose requests name no call of the model's (the pinned Codex's
-	 * `process/write` names none): each belongs to the next of Codex's own calls released that this host has no other
-	 * word of, which is the `write_stdin` that typed it. */
-	readonly #unbound: {
-		readonly hostId: string;
-		readonly refusal?: string;
-		readonly step: CloudCodexHomeAction["step"];
-	}[] = [];
 	/** The model's processes, by the id Codex gave each: what a write into one is typed into. */
 	readonly #processes = new Map<string, { readonly command: string; readonly cwd: string; readonly callId: string }>();
 	/** The model's patches in progress, by call, as Codex announced them; a file change belongs to the one that names
@@ -662,10 +669,7 @@ export class CloudCodexHome {
 		const note = this.#notes.get(callId);
 		this.#notes.delete(callId);
 		if (note) return note;
-		if (this.#reached.has(callId)) return undefined;
-		if (!this.#known.has(callId) && !this.#steps?.has(callId) && this.#unbound[0]?.refusal)
-			return this.#unbound[0].refusal;
-		return this.#down;
+		return this.#reached.has(callId) ? undefined : this.#down;
 	}
 
 	/** The result fence released this call's output (`native`: one of Codex's own, not a tool of ours): its step keeps
@@ -673,15 +677,7 @@ export class CloudCodexHome {
 	released(callId: string, envelope: string, native = true): void {
 		const known = this.#known.get(callId);
 		this.#known.delete(callId);
-		if (!native || known || this.#steps?.has(callId)) {
-			this.#steps?.finish(callId, envelope, known);
-			return;
-		}
-		// A call this host has no word of: the `write_stdin` that typed the oldest line still waiting for its output.
-		const typed = this.#unbound.shift();
-		if (!typed) return;
-		if (typed.refusal !== undefined) this.#steps?.finish(callId, envelope, typed.step);
-		else this.#steps?.finish(typed.hostId, envelope);
+		if (native) this.#steps?.finish(callId, envelope, known);
 	}
 
 	/** This host's words for one call of the model's, when it knows the call. */
@@ -820,7 +816,7 @@ export class CloudCodexHome {
 	 * answered in words, and the model's turn goes on with the company's own tools.
 	 */
 	async #relay(client: Socket): Promise<void> {
-		const connection: Connection = { client, waiting: new Map(), live: new Set(), gone: new Set() };
+		const connection: Connection = { client, waiting: new Map(), live: new Set(), gone: new Set(), typed: new Map() };
 		let retryAt = 0;
 		const stop = (): void => {
 			connection.closing = true;
@@ -925,6 +921,7 @@ export class CloudCodexHome {
 					continue;
 				}
 				answered(line, connection.waiting);
+				if (connection.typed.size > 0) this.#typedAnswered(line, connection);
 				// A process the machine closed is no longer one a loss could cut short.
 				const closed = PROCESS_CLOSED.exec(line.slice(0, 200))?.[1];
 				if (closed !== undefined) connection.live.delete(closed);
@@ -944,6 +941,9 @@ export class CloudCodexHome {
 				for (const started of connection.live) connection.gone.add(started);
 				connection.live.clear();
 				remember(connection.gone, MAX_REMEMBERED);
+				for (const hostId of connection.typed.values())
+					this.#steps?.finish(hostId, JSON.stringify({ error: { code: -32010, message: CLOUD_HOME_LOST } }));
+				connection.typed.clear();
 				for (const [id, callId] of connection.waiting) {
 					this.counts.lost++;
 					this.#note(callId, CLOUD_HOME_LOST);
@@ -955,6 +955,24 @@ export class CloudCodexHome {
 			}
 			connection.waiting.clear();
 		}
+	}
+
+	/** The machine answered a typed line that names no call: that answer is what its step keeps. */
+	#typedAnswered(line: string, connection: Connection): void {
+		let id = ANSWER_ID.exec(line.slice(0, 200))?.[1];
+		if (id === undefined && line.length <= ANSWER_READ_CHARS) {
+			const message = parseLine(line);
+			if (
+				message &&
+				typeof message.method !== "string" &&
+				(typeof message.id === "string" || typeof message.id === "number")
+			)
+				id = JSON.stringify(message.id);
+		}
+		const hostId = id === undefined ? undefined : connection.typed.get(id);
+		if (id === undefined || hostId === undefined) return;
+		connection.typed.delete(id);
+		this.#steps?.finish(hostId, line.length <= ANSWER_READ_CHARS ? line : JSON.stringify({ answered: true }));
 	}
 
 	/**
@@ -972,6 +990,15 @@ export class CloudCodexHome {
 		if (!stream) return refusalLine(line, CLOUD_HOME_UNAVAILABLE);
 		const method = typeof message?.method === "string" ? message.method : undefined;
 		const id = message?.id;
+		const request = typeof id === "string" || typeof id === "number";
+		// Toward the machine goes only what this host has read: a request (gated below) or the handshake's one
+		// notification. Anything else is dropped, and a request this host cannot read is answered in words.
+		if (!method || (!request && method !== "initialized")) {
+			this.counts.dropped++;
+			return request
+				? JSON.stringify({ id, error: { code: -32600, message: CLOUD_HOME_REQUEST_INVALID } })
+				: undefined;
+		}
 		const params =
 			message?.params && typeof message.params === "object" && !Array.isArray(message.params)
 				? (message.params as Record<string, unknown>)
@@ -981,7 +1008,8 @@ export class CloudCodexHome {
 				? JSON.stringify(params.processId)
 				: undefined;
 		let callId: string | undefined;
-		if (method && (typeof id === "string" || typeof id === "number")) {
+		let typed = false;
+		if (request) {
 			// A process that went with an earlier channel: the machine that answers now never knew it.
 			if (processId && method !== "process/start" && connection.gone.has(processId)) {
 				const named = parseCallId(params) ?? this.#processes.get(processId)?.callId;
@@ -990,15 +1018,17 @@ export class CloudCodexHome {
 			}
 			const gated = await this.#gate(method, params);
 			callId = gated.callId;
+			typed = gated.typed === true;
 			if (gated.refusal !== undefined) {
 				this.#note(callId, gated.refusal);
 				return JSON.stringify({ id, error: { code: -32600, message: gated.refusal } });
 			}
 		}
 		// Out there until the machine answers it: if the machine goes first, this is what gets the words instead.
-		if (typeof id === "string" || typeof id === "number") {
+		if (request) {
 			connection.waiting.set(JSON.stringify(id), callId);
 			remember(connection.waiting, MAX_REMEMBERED);
+			if (typed && callId) connection.typed.set(JSON.stringify(id), callId);
 		}
 		if (method === "process/start" && processId) connection.live.add(processId);
 		if (callId) {
@@ -1012,7 +1042,10 @@ export class CloudCodexHome {
 
 	/** Whether one request may reach the machine: the words to refuse it with (undefined to let it through), and the
 	 * call of the model's it belongs to, when it belongs to one. */
-	async #gate(method: string, params: Record<string, unknown>): Promise<{ refusal?: string; callId?: string }> {
+	async #gate(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<{ refusal?: string; callId?: string; typed?: boolean }> {
 		const named = parseCallId(params);
 		const callId = named ?? `home:${this.#sessionId}:${++this.#unnamed}`;
 		const processId =
@@ -1021,7 +1054,8 @@ export class CloudCodexHome {
 				: undefined;
 		if (method === "process/start") {
 			const action = cloudHomeCommandAction(this.#machine, params, callId);
-			if (!action) return {};
+			// A command this host cannot read is not one it can review: it never reaches the machine.
+			if (!action) return { refusal: CLOUD_HOME_REQUEST_INVALID };
 			if (processId) {
 				const argv = (params.argv as unknown[]).filter((part): part is string => typeof part === "string");
 				this.#processes.set(processId, {
@@ -1037,14 +1071,18 @@ export class CloudCodexHome {
 		// or else to the command that started it: a machine lost while it waits is that command's loss.
 		const running = processId ? this.#processes.get(processId) : undefined;
 		if (method === "process/write") {
+			if (params.chunk !== undefined && typeof params.chunk !== "string")
+				return { refusal: CLOUD_HOME_REQUEST_INVALID };
 			const action = cloudHomeStdinAction(this.#machine, params, running, callId);
 			if (!action) return { callId: named ?? running?.callId };
 			const refusal = await this.#admit(action);
-			if (!named) {
-				this.#unbound.push({ hostId: callId, ...(refusal === undefined ? {} : { refusal }), step: action.step });
-				if (this.#unbound.length > 64) this.#unbound.shift();
-			}
-			return { refusal, callId };
+			if (named) return { refusal, callId };
+			// The pinned Codex's write names no call of the model's (the proof showed it), so which `write_stdin` typed this
+			// line is not guessed: its step is kept under this host's own id and finished with what the machine answered
+			// (or, refused, with the refusal at once).
+			if (refusal !== undefined)
+				this.#steps?.finish(callId, JSON.stringify({ status: "refused", text: refusal }), action.step);
+			return { refusal, callId, typed: refusal === undefined };
 		}
 		if (method.startsWith("process/")) return { callId: named ?? running?.callId };
 		if (!method.startsWith("fs/") || FS_READS.has(method)) return { callId: named };

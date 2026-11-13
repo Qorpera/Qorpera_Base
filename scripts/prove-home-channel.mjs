@@ -1246,14 +1246,16 @@ async function main() {
 				pass(`the review covers what is typed and what is patched: ${writes.length} lines typed into a running shell were reviewed with the shell they went into (the declined one never reached the machine, and the model was told REVIEW_DENIED); a patch of 2 files was reviewed once, whole ("${allowedReviews[0].summary}"), and the declined patch wrote nothing${told ? ", its refusal reaching the model in the review's words" : ` (the model was shown ${JSON.stringify(refusedPatch.slice(0, 160))})`}`);
 				if (!told) note(`a declined patch: Codex gave the model ${JSON.stringify(refusedPatch.slice(0, 600))}`);
 				record.reviewDetail = { writes, allowedReviews, refusedPatch: refusedPatch.slice(0, 2000) };
-				// The run's record of all of it: every call of the model's that acted or was refused is a step, the typed
-				// lines included (the pinned Codex's stdin requests name no call; each is bound to its write_stdin).
+				// The run's record of all of it: every call of the model's that acted or was refused is a step. A typed
+				// line is a step too; the pinned Codex's stdin request names no call, so it is kept under the host's own id
+				// with the machine's answer (or its refusal), never guessed onto a call.
 				const tools = stored.steps.map((step) => step.tool);
-				assert.equal(tools.filter((tool) => tool === "write_stdin").length, 2, `both typed lines are steps: ${JSON.stringify(stored.steps)}`);
-				assert(stored.steps.some((step) => step.call === state.calls[5].callId && step.tool === "write_stdin"), "the refused line is the step of its own call");
+				const typedSteps = stored.steps.filter((step) => step.tool === "write_stdin");
+				assert.equal(typedSteps.length, 2, `both typed lines are steps: ${JSON.stringify(stored.steps)}`);
+				assert(typedSteps.every((step) => step.call.startsWith("home:")), "under the host's own ids");
 				assert(stored.steps.some((step) => step.call === state.calls[1].callId), "the refused command is a step of its own call");
 				assert(stored.steps.some((step) => step.call === state.calls[7].callId), "the refused patch is a step of its own call");
-				pass(`the run's record holds what was refused too: ${stored.steps.length} steps (${tools.join(", ")}), the refused command, typed line and patch each under its own call`);
+				pass(`the run's record holds what was refused too: ${stored.steps.length} steps (${tools.join(", ")}): the refused command and patch each under its own call, both typed lines (one refused) under the host's own ids`);
 			},
 		});
 		// 5. When the home is not there (the lead's question of 13 Nov 2026): what the agent sees and does. First a machine
