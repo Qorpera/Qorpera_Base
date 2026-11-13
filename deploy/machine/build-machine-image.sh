@@ -50,13 +50,13 @@ NODE_VERSION=${2:?Node.js version, for example 24.9.0}
 NODE_SHA256=${3:?sha-256 of node-vNODE_VERSION-linux-x64.tar.xz from nodejs.org SHASUMS256.txt}
 PROJECT=${4:?the build space project, for example qorpera-build}
 NETWORK=${5:?the build space network, for example qorpera0}
+POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
+MACHINES=${7:-machines}
 # The pinned Codex for the agent's home (lanes/agent-box-20261113, slice 1): the same artifact the execution host
 # runs, so the model's own tools on a machine are the build its slot was proven with. Its sha-256 must equal the pin
 # in deploy/first-node/native-codex/linux-x64-artifact.json. Optional while the home's switch is off everywhere: an
 # image built without it simply has no home, and a run whose company has the switch on is refused its channel.
-CODEX=${6:-}
-POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
-MACHINES=${7:-machines}
+CODEX=${8:-}
 # The toolbox's own pins beside apt's: uv and mise from their release pages, tsc and tsx from npm.
 UV_VERSION=0.13.1
 UV_SHA256=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220
