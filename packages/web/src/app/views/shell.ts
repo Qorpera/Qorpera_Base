@@ -391,6 +391,8 @@ interface RailParts {
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
+	/** The group folding as the drawer is drawn next (its drawer key): its apps go back into its tile. */
+	appFolding: string | undefined;
 	/** Dragging the drawer's icons to reorder them. */
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
@@ -670,6 +672,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
+			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
@@ -2142,7 +2145,13 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
 		}
 	reconcile(grid, drawn);
+	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
+	// collapsing").
+	const folding = parts.appFolding;
+	parts.appFolding = undefined;
 	if (!before || !box) return;
+	const into = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
+	const target = into?.querySelector(".rail-app-stand")?.getBoundingClientRect();
 	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
@@ -2164,8 +2173,8 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				easing: easing("--ease-out"),
 			});
 	}
-	for (const [element, was] of before) {
-		if (kept.has(element)) continue;
+	const leaving = [...before].filter(([element]) => !kept.has(element));
+	leaving.forEach(([element, was], index) => {
 		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
 		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
@@ -2173,10 +2182,28 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.top = `${was.top - box.top}px`;
 		element.style.width = `${was.width}px`;
 		grid.append(element);
+		let ms = 240;
+		if (target) {
+			// Into the group's tile: each app shrinks and goes back behind it, the nearest first, a moment apart.
+			const stand = element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was;
+			const dx = target.left + target.width / 2 - (stand.left + stand.width / 2);
+			const dy = target.top + target.height / 2 - (stand.top + stand.height / 2);
+			const delay = Math.min(index, 6) * 18;
+			element.classList.add("is-folding");
+			element.animate(
+				[
+					{ translate: "0 0", scale: "1", opacity: 1 },
+					{ opacity: 1, offset: 0.4 },
+					{ translate: `${dx}px ${dy}px`, scale: "0.2", opacity: 0 },
+				],
+				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
+			);
+			ms = 340 + delay + 20;
+		}
 		setTimeout(() => {
 			if (element.classList.contains("is-leaving")) element.remove();
-		}, 240);
-	}
+		}, ms);
+	});
 }
 
 /** The member's document as the next change builds on it: without the places the drawer's arrangement refused. */
@@ -2201,6 +2228,7 @@ function toggleAppGroup(company: CompanyController, parts: RailParts, id: string
 			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
 			: undefined;
 		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+		parts.appFolding = groupKey(id);
 	} else parts.appGroupsOpen.add(id);
 	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
 	parts.redraw();

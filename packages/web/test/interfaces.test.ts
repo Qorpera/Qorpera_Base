@@ -1595,6 +1595,48 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		localStorage.clear();
 	});
 
+	it("folds a group's apps back into its tile: each shrinks toward it and goes, nearest first (13 Nov 2026)", () => {
+		localStorage.clear();
+		const { element } = drawer();
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		// jsdom moves nothing: each tile gets a box of its own, and the animations are recorded.
+		const animations: { element: Element; frames: Keyframe[]; options: KeyframeAnimationOptions }[] = [];
+		const animate = vi.fn(function (this: Element, frames: Keyframe[], options: KeyframeAnimationOptions) {
+			animations.push({ element: this, frames, options });
+			return { finish() {}, cancel() {}, finished: Promise.resolve() } as unknown as Animation;
+		});
+		// Where each tile stood while the group was open, by its name.
+		const at = ["Market", "Brand", "Plan", "Members", "Trips"];
+		const boxes = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+			const name = this.closest<HTMLElement>(".rail-app")?.querySelector(".rail-app-name")?.textContent ?? "";
+			return new DOMRect(Math.max(at.indexOf(name), 0) * 70, 0, 60, 60);
+		});
+		const own = Element.prototype.animate;
+		Element.prototype.animate = animate as unknown as Element["animate"];
+		vi.useFakeTimers();
+		try {
+			group(element).click();
+			expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+			const folding = [...element.querySelectorAll<HTMLElement>(".rail-app.is-leaving.is-folding")];
+			expect(folding.map((tile) => tile.querySelector(".rail-app-name")?.textContent)).toEqual(["Brand", "Plan"]);
+			const into = animations.filter((entry) => folding.includes(entry.element as HTMLElement));
+			expect(into.map((entry) => entry.frames.at(-1))).toEqual([
+				{ translate: "-70px 0px", scale: "0.2", opacity: 0 },
+				{ translate: "-140px 0px", scale: "0.2", opacity: 0 },
+			]);
+			expect(into.map((entry) => entry.options.delay)).toEqual([0, 18]);
+			vi.advanceTimersByTime(400);
+			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+			boxes.mockRestore();
+			if (own) Element.prototype.animate = own;
+			else delete (Element.prototype as { animate?: unknown }).animate;
+			localStorage.clear();
+		}
+	});
+
 	it("stands What's new loose after the company's apps, orange, with its count (own code storage step 4)", async () => {
 		localStorage.clear();
 		const { element, controller } = drawer();
