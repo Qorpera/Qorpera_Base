@@ -36,7 +36,8 @@ const MAX_CONNECTIONS = 256;
 
 /** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
 export interface CloudMemberMachineStreamSink {
-	send(message: Buffer): Promise<void>;
+	/** One message, whole or as the pieces it was read in (written in order, never joined). */
+	send(message: Buffer | readonly Buffer[]): Promise<void>;
 }
 /** A stream admitted on its ticket: running it streams to `sink` until `signal` aborts or it ends, and answers why. */
 export type CloudMemberMachineStreamRun = (sink: CloudMemberMachineStreamSink, signal: AbortSignal) => Promise<string>;
@@ -279,10 +280,13 @@ export class CloudMemberMachineStreamListener {
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
 				if (ended || socket.destroyed) throw new Error("MEMBER_MACHINE_STREAM_CLOSED");
-				// The head and the picture as two writes in one: the picture's bytes are never copied here.
+				// The head and the picture's pieces as writes in one: the picture's bytes are never copied here.
+				const pieces = Buffer.isBuffer(message) ? [message] : message;
+				let length = 0;
+				for (const piece of pieces) length += piece.byteLength;
 				socket.cork();
-				socket.write(frameHead(0x2, message.byteLength));
-				socket.write(message);
+				socket.write(frameHead(0x2, length));
+				for (const piece of pieces) socket.write(piece);
 				socket.uncork();
 				if (socket.writableLength > HIGH_WATER_BYTES)
 					await new Promise<void>((resolve) => {

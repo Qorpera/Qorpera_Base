@@ -660,11 +660,9 @@ export class RfbReader {
 	}
 }
 
-// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated in THIS
-// thread, which is a desktop's own stream worker (company-machine-stream-worker.ts): never on the process's shared libuv
-// threads, which the executor's main side needs for its files, its DNS and its crypto — four of them, which the PNGs of
-// eight desktops of noise would keep busy (review r11 of #1746). A band of noise is about 11 ms to deflate, and holds
-// only its own worker for it.
+// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated in this
+// process, which is a desktop's own instance (company-machine-stream-process.ts), on its loop: a band of noise is about
+// 11 ms to deflate, and holds only that instance.
 
 function chunk(type: string, data: Buffer): Buffer {
 	const head = Buffer.alloc(8);
@@ -729,9 +727,10 @@ export const STREAM_RECTS = 2;
 /** `3, hotX, hotY, width, height` (u16), `bytes` (u32) of an RGBA PNG: the pointer's shape. */
 export const STREAM_CURSOR = 3;
 
-/** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
+/** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. A message may
+ * come as the pieces it was read in (the executor hands on an instance's message without joining it), written in order. */
 export interface DesktopStreamSink {
-	send(message: Buffer): Promise<void>;
+	send(message: Buffer | readonly Buffer[]): Promise<void>;
 }
 /** One release cycle (the three checks every picture passes, for this member): `ok` lets go what changed before it
  * began; `pending` holds it for the next (the folder's boundary did not answer in time); `{ end }` ends the stream

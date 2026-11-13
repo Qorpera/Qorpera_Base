@@ -43,7 +43,7 @@ import {
 	DesktopStream,
 	RFB_VERSION,
 } from "../src/company-machine-stream.ts";
-import type { DesktopRelaySpec } from "../src/company-machine-stream-worker.ts";
+import type { DesktopRelaySpec } from "../src/company-machine-stream-process.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type {
 	LxdExecPipeRequest,
@@ -129,8 +129,11 @@ async function fixture(
 		now?: () => number;
 		/** What the guest's helper says at its claim it takes for a page (keyholes S1); a helper from before says nothing. */
 		guestPageBytes?: number;
-		/** How desktops are watched (default: in this thread, through the fake client). */
+		/** How desktops are watched (default: in this process, through the fake client). */
 		desktopStreams?: CompanyMachineHostOptions["desktopStreams"];
+		/** How far apart instances start (default here: no wait). */
+		desktopStartGapMs?: number | undefined;
+		nodeStartGapMs?: number | undefined;
 	} = {},
 ) {
 	const { folder: withFolder, guestPageBytes, ...pins } = options;
@@ -484,8 +487,10 @@ async function fixture(
 			agentPlug,
 			// A pass waits for every step here, unless a test says otherwise.
 			passHoldMs: Number.POSITIVE_INFINITY,
-			// Watched desktops in this thread, through this fake client (the executor's are workers of their own:
-			// company-machine-stream-worker.test.ts).
+			// Watched desktops in this process, through this fake client (the executor's are processes of their own:
+			// company-machine-stream-process.test.ts), started without waiting unless a test says otherwise.
+			desktopStartGapMs: 0,
+			nodeStartGapMs: 0,
 			desktopStreams: (spec, ended) =>
 				new DesktopStream({
 					run: desktopRelay(client as unknown as Required<LxdInstanceExecPipeClient>, spec),
@@ -5416,7 +5421,43 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			);
 	});
 
-	it("watches a desktop only through the executor's way of watching off its main loop, and at most MAX_WATCHED_DESKTOPS at once (review r11 of #1746)", async () => {
+	it("starts a desktop's instance at most once every 2 s and the node's at most every 500 ms, and a member's start waits its turn, never refused for it", async () => {
+		const { f } = await relayed();
+		const made: { at: number; spec: DesktopRelaySpec; ended: () => void; desktop: { ended: string | null } }[] = [];
+		f.restart({
+			desktopStartGapMs: undefined,
+			nodeStartGapMs: undefined,
+			desktopStreams: (spec, ended) => {
+				const desktop = { ended: null as string | null, watch: async () => "closed" };
+				made.push({ at: Date.now(), spec, ended, desktop });
+				return desktop;
+			},
+		});
+		const began = Date.now();
+		// Three desktops at once: one at a time, 500 ms apart.
+		const asked = [100, 101, 102].map((n) => f.host.memberStream(stream({ placementId: id(n) }), sinkOf(), f.signal));
+		expect(await Promise.all(asked)).toEqual(["closed", "closed", "closed"]);
+		expect(made.map((one) => one.spec.name)).toEqual([100, 101, 102].map((n) => lxdCompanyMachineName(id(n))));
+		expect((made[1]!.at - made[0]!.at) / 100).toBeGreaterThanOrEqual(4.5);
+		expect((made[2]!.at - made[1]!.at) / 100).toBeGreaterThanOrEqual(4.5);
+		// The first desktop again, its instance ended: no sooner than 2 s after its last start.
+		made[0]!.desktop.ended = "idle";
+		made[0]!.ended();
+		expect(await f.host.memberStream(stream({ placementId: id(100) }), sinkOf(), f.signal)).toBe("closed");
+		expect(made).toHaveLength(4);
+		expect(made[3]!.at - made[0]!.at).toBeGreaterThanOrEqual(1990);
+		expect(Date.now() - began).toBeLessThan(5000);
+		// A member who leaves while waiting is not started at all.
+		made[1]!.desktop.ended = "idle";
+		made[1]!.ended();
+		const leaving = new AbortController();
+		const left = f.host.memberStream(stream({ placementId: id(101) }), sinkOf(), leaving.signal);
+		leaving.abort();
+		expect(await left).toBe("closed");
+		expect(made).toHaveLength(4);
+	}, 20_000);
+
+	it("watches a desktop only through the executor's way of watching outside its own process, and at most MAX_WATCHED_DESKTOPS at once", async () => {
 		const { f } = await relayed();
 		// Without one, a member's live picture is refused: never read on this loop because an option was left out.
 		f.restart({ desktopStreams: undefined });

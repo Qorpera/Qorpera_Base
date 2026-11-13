@@ -1,0 +1,14 @@
+[Unit]
+Description=Qorpera: every desktop's live picture, each in an instance of its own
+
+[Slice]
+# Named with underscores on purpose: a dash in a slice's name puts it inside another slice (qorpera-desktop.slice inside
+# qorpera.slice), whose limits it would then share. This one sits at the top, under the root slice.
+# All instances together (20260930745000; the lead's decision after review r11 of #1746), apart from the executor's
+# own 2 GiB and two cores: the kernel holds these, not the stream's code.
+MemoryAccounting=yes
+TasksAccounting=yes
+MemoryMax=3G
+MemorySwapMax=0
+CPUQuota=400%
+TasksMax=256

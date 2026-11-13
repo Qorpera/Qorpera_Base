@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
+import { createConnection, Socket } from "node:net";
 import { fileURLToPath } from "node:url";
-import { isMainThread } from "node:worker_threads";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
@@ -45,7 +45,9 @@ import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-c
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { desktopRelay, LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
-import { isDesktopStreamWorker, runDesktopStreamWorker, WorkerDesktop } from "../../packages/runner-orchestrator/src/company-machine-stream-worker.ts";
+import {
+	DESKTOP_STREAM_ROLE, type DesktopRelaySpec, desktopStreamProgramVersion, InstanceDesktop, runDesktopStreamInstance,
+} from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
@@ -60,6 +62,19 @@ import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 import { BrokerRepositoryFetch, publicGitHubTransport } from "./repository-fetch.ts";
+
+// This one program file is both the executor and every desktop's stream instance, which systemd starts with
+// DESKTOP_STREAM_ROLE as its first argument (qorpera-desktop-stream@.service). The role is decided here, before any of
+// the executor's own code runs: an instance reads no configuration and no credential (none is readable to it), and
+// does nothing else.
+const DESKTOP_STREAM_INSTANCE = process.argv[2] === DESKTOP_STREAM_ROLE;
+if (DESKTOP_STREAM_INSTANCE)
+	runDesktopStreamInstance({
+		// The connection systemd accepted, as this process's standard input (StandardInput=socket).
+		connection: new Socket({ fd: 0, readable: true, writable: true }),
+		version: desktopStreamProgramVersion(fileURLToPath(import.meta.url)),
+		openRelay: (spec) => desktopRelay(new LxdUnixClient(), spec),
+	});
 
 interface Config {
 	schema: "qorpera.coding-executor-service/v7";
@@ -108,11 +123,15 @@ interface Config {
 	 * member listener, so it needs `memberScreens`. Absent: no stream is taken here (the peer listener still serves the
 	 * ones another executor asks of it). */
 	memberStreams: { port: number } | null;
+	/** Desktops watched for members' live pictures, each in a process of its own: the unix socket of
+	 * `qorpera-desktop-stream.socket` (deploy/coding-worker/), which systemd answers with one instance of
+	 * `qorpera-desktop-stream@.service` per connection. Absent: members' live pictures of this node's desktops are refused. */
+	desktopStreams: { socket: string } | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines", "memberScreens", "memberStreams"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -168,6 +187,14 @@ function memberStreamsConfig(value: unknown, screens: Config["memberScreens"], t
 		Number(input.port) > 65535 || taken.includes(Number(input.port)) || Number(input.port) === screens.port)
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { port: Number(input.port) };
+}
+function desktopStreamsConfig(value: unknown): Config["desktopStreams"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (Object.keys(input).join() !== "socket" || typeof input.socket !== "string" ||
+		!/^\/run\/[A-Za-z0-9._-]{1,64}(\/[A-Za-z0-9._-]{1,64})?\.sock$/.test(input.socket))
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { socket: input.socket };
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -264,6 +291,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		memberStreams: memberStreamsConfig(config.memberStreams,
 			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
 			[Number(config.commandPort), Number(config.peerCommandPort)]),
+		desktopStreams: desktopStreamsConfig(config.desktopStreams),
 	};
 }
 
@@ -351,6 +379,8 @@ export function codeHostRequestsOf(parts: {
  * member client participates in this loop. */
 export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.()) throw new Error("UNPRIVILEGED_LINUX_REQUIRED");
+	// This program as it was loaded: the desktops' instances must be the same (their units run this same file).
+	const programVersion = desktopStreamProgramVersion(fileURLToPath(import.meta.url));
 	if (!environment.CREDENTIALS_DIRECTORY) throw new Error("CODING_CREDENTIALS_REQUIRED");
 	const directory = environment.CREDENTIALS_DIRECTORY;
 	const credential = (name: string) => readCodingServiceCredential(directory, name);
@@ -470,9 +500,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
-		// Every watched desktop in a worker thread of its own, started from this same file: it opens the relay itself, and
-		// no byte of the guest's is read on this loop (review r11 of #1746).
-		desktopStreams: (spec, ended) => new WorkerDesktop(new URL(import.meta.url), spec, ended),
+		// Every watched desktop in a process of its own that systemd starts for each connection to the socket, in its own
+		// cgroup: it opens the relay itself, and no byte of the guest's is read in this process. Without the socket in
+		// the configuration, members' live pictures are refused here.
+		...(config.desktopStreams ? {
+			desktopStreams: (spec: DesktopRelaySpec, ended: () => void) => new InstanceDesktop(
+				createConnection({ path: (config.desktopStreams as { socket: string }).socket }), spec, ended, { version: programVersion }),
+		} : {}),
 	}) : undefined;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).
 	const memberControl = config.memberScreens
@@ -757,10 +791,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}
 }
 
-// This one file is both the executor (its main thread) and the desktop stream workers it starts (each watched desktop's
-// relay, reader and pictures: review r11 of #1746): a worker of that role runs nothing else.
-if (!isMainThread && isDesktopStreamWorker()) {
-	runDesktopStreamWorker((spec) => desktopRelay(new LxdUnixClient(), spec));
-} else if (isMainThread && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (!DESKTOP_STREAM_INSTANCE && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
 }

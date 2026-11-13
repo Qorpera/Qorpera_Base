@@ -589,12 +589,17 @@ export class HttpCloudCodingCommandService {
 					reply.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
 				};
 				const sink = {
-					send: async (message: Buffer) => {
+					send: async (message: Buffer | readonly Buffer[]) => {
 						if (controller.signal.aborted) throw new Error(ERROR);
 						begin();
-						// The head and the picture as two writes: the picture's bytes are never copied here.
-						reply.write(cloudMemberMachineStreamFrameHead(1, message.byteLength));
-						if (!reply.write(message))
+						// The head and the picture's pieces as their own writes: the picture's bytes are never copied here.
+						const pieces = Buffer.isBuffer(message) ? [message] : message;
+						let length = 0;
+						for (const piece of pieces) length += piece.byteLength;
+						reply.write(cloudMemberMachineStreamFrameHead(1, length));
+						let room = true;
+						for (const piece of pieces) room = reply.write(piece);
+						if (!room)
 							// Waiting for the asking executor to drain ends with this request too: nothing of it waits past
 							// the stream's end (review r2 F3 of #1746).
 							await new Promise<void>((resolve) => {

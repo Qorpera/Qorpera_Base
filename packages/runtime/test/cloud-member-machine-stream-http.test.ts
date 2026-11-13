@@ -159,16 +159,19 @@ describe("the live-picture listener (20260930745000)", () => {
 		const { port } = await listener(() => async (sink) => {
 			await sink.send(Buffer.from([1, 0, 64, 0, 40]));
 			await sink.send(big);
+			// A message handed on as the pieces it was read in (a desktop's instance's, never joined): one message.
+			await sink.send([big.subarray(0, 3), big.subarray(3, 65_536), big.subarray(65_536)]);
 			return new Promise<string>((resolve) => {
 				resolveRun = resolve;
 			});
 		});
 		const one = await open(port);
 		one.socket.write(masked(0x9, Buffer.from("hi")));
-		await vi.waitFor(() => expect(one.frames.map((f) => f.opcode)).toEqual([0x2, 0x2, 0xa]));
+		await vi.waitFor(() => expect(one.frames.map((f) => f.opcode)).toEqual([0x2, 0x2, 0x2, 0xa]));
 		expect(one.frames[0]!.payload).toEqual(Buffer.from([1, 0, 64, 0, 40]));
 		expect(one.frames[1]!.payload.equals(big)).toBe(true);
-		expect(one.frames[2]!.payload.toString()).toBe("hi");
+		expect(one.frames[2]!.payload.equals(big)).toBe(true);
+		expect(one.frames[3]!.payload.toString()).toBe("hi");
 		resolveRun("DESKTOP_HELD_SINCE");
 		await vi.waitFor(() => expect(one.frames.at(-1)?.opcode).toBe(0x8));
 		const close = one.frames.at(-1)!.payload;
