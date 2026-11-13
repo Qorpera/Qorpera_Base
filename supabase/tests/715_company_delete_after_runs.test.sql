@@ -196,6 +196,13 @@ values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', 1, '92400000-
 	'92400000-0000-4000-8000-000000000001');
 update public.qorpera_code_repositories set site_id = '71500000-0000-4000-8000-000000000170', last_release = 1
 where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'company' and name = 'shop';
+-- Look first's ticket for that version and a member's next session of it (20260930756000): both go with the company too.
+insert into public.qorpera_company_site_tickets(ticket_sha256, site_id, version_id, user_id, expires_at)
+values (repeat('f', 64), '71500000-0000-4000-8000-000000000170', '71500000-0000-4000-8000-000000000171',
+	'92400000-0000-4000-8000-000000000001', clock_timestamp() + interval '2 minutes');
+insert into public.qorpera_company_site_sessions(token_sha256, site_id, password_version, expires_at, scope, version_id)
+values (repeat('9', 64), '71500000-0000-4000-8000-000000000170', 1, clock_timestamp() + interval '12 hours', 'next',
+	'71500000-0000-4000-8000-000000000171');
 
 -- Another folder-v2 company (made as the base makes its own), untouched by all of this: its rows are counted now and
 -- after the delete.
@@ -457,12 +464,13 @@ begin
 		or (select value from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_profiles'::regclass) <> '1'
 		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1
 		-- The repository kept in Qorpera, its change and its request (20260930720000); its site, the site's version, file
-		-- and part, and its release (20260930729000).
+		-- and part, and its release (20260930729000); its Look first ticket and next session (20260930756000).
 		or (select count(*) from jsonb_each_text(v_found) where value = '1' and key::regclass in (
 			'public.qorpera_code_repositories'::regclass, 'public.qorpera_code_changes'::regclass,
 			'public.qorpera_code_requests'::regclass, 'public.qorpera_company_sites'::regclass,
 			'public.qorpera_company_site_versions'::regclass, 'public.qorpera_company_site_files'::regclass,
-			'public.qorpera_company_site_file_parts'::regclass, 'public.qorpera_code_releases'::regclass)) <> 8 then
+			'public.qorpera_company_site_file_parts'::regclass, 'public.qorpera_code_releases'::regclass,
+			'public.qorpera_company_site_tickets'::regclass, 'public.qorpera_company_site_sessions'::regclass)) <> 10 then
 		raise exception 'The purge removed other rows than it found (removed/found): %', v_wrong;
 	end if;
 end

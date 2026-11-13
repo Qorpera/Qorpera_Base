@@ -1690,11 +1690,50 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
 
+#### An address of its own (20260930756000_site_hosts)
+
+Every files site gets a host of its own, `https://<slug>.qorpera.com/`, served at the top (links from `/` are the
+site's own), and a repository's site a next host, `https://<slug>--next.qorpera.com/`, where owners and admins look
+at a version before it is live (Look first, "What's new" below). Built switched off: the operator sets
+`qorpera_site_settings.hosts_domain` (`qorpera.com`) first and `hosts_enabled` last, only once the web that parses the
+host form, the app relay's cross-origin refusal and the front's `site-hosts` route are live (STEP5-BUILD's order);
+`hosts_enabled = false` is the way back.
+
+- The link form. While hosts are on, `url` in `qorpera.company-site/v1` (and every other site link: the agent's
+  publish answers, What's new) is a files site's own host, `https://<slug>.qorpera.com/`, with the path `/`; while
+  they are off it is `https://sites.qorpera.com/<slug>/` as before. An app link's is `https://<slug>-preview.qorpera.com/`
+  either way. The row's keys do not change, only the form of `url`: a deliberate exception to "breaking changes ship a
+  `_v2`" (section 8), made safe by its order: a client must accept both forms (any https host with the path `/`, or
+  the path `/<slug>/`) before the operator turns hosts on.
+- A site's name (D20, `qorpera_site_slug_valid`, also the coding executor's): `a-z`, `0-9` and `-`, 3 to 48, a letter
+  or digit at both ends, never two hyphens in a row, not ending `-preview`, never holding `qorpera`, and none of the
+  reserved names (one text, `qorpera_site_reserved_names()`: every name the platform has or plans under qorpera.com).
+  A new platform name under qorpera.com is reserved by a migration first, after production is read for a site of that
+  name, and only then gets its DNS record, tunnel hostname or envoy host.
+- A host is a site host when, lower-cased, it ends `.qorpera.com` and the one label before it is a slug that passes
+  the rule (an own host), or such a slug followed by `--next` (its next host). As one regex:
+  `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the slug in group 1, its length (3 to 48) and the rule
+  checked apart.
+- `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId,
+  takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites" otherwise). `hosts` says
+  whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's operators took down (Sites
+  says why: "Qorpera took this site down: <reason>"), else null. Every site of the company, by slug. Read leniently:
+  later steps add keys (public sites, own addresses).
+- A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
+  new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted: members may still
+  take it offline in Sites. Only the operator takes a site down or restores it.
+- **The cookie invariant (D22).** Sites are sibling hosts of the app and the API under qorpera.com, so no Qorpera
+  program takes a cookie, HTTP auth, a client certificate or anything else a browser sends by itself as proof of who is
+  calling, on any qorpera.com host, except the sites' and the app links' own `__Host-` gate cookies
+  (`__Host-qorpera_site`, `__Host-qorpera_app`). Auth's redirect list stays exact, never a wildcard. A future platform
+  cookie is `__Host-` (no `Domain`), and a request that changes something also needs an Origin or Fetch Metadata check.
+  Reviews hold every change to this rule.
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
-website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, behind
-its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
+`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
@@ -1732,7 +1771,19 @@ the What's new page. Nothing goes live by itself.
   the next version. The site serves the new version from the visitor's next request.
 - `qorpera_code_release_back(profile, owner, name, shown)`: owners and admins. `shown` is exactly `{live:
   <live.version>, to: <back.version>}`. Answers as above; the changes of the version it took off are ready again.
-- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed).
+- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed). Since 20260930756000 both may
+  also answer `{schema, state: "refused", code: "SITE_TAKEN_DOWN"}`: Qorpera took the site down, and nothing changed.
+- Since 20260930756000 (site hosts): while hosts are on, `qorpera_list_code_releases` has a top-level `preview`, true
+  for owners and admins (absent while hosts are off: read it as false), and `site.url` and the writes' `url` name the
+  site's own host.
+- `qorpera_open_site_preview(profile, owner, name, change)` (Look first): owners and admins (42501 "Releases
+  unavailable" otherwise); `change` is the page's `ready.change` (22023 "Look first request is invalid" when it is no
+  positive number); P0002 "No such repository". Answers `{schema: "qorpera.site-preview/v1", state}`: `off` while hosts
+  are off (hide the button); `moved` when that change is no longer a ready point with a version (say "Something
+  changed while you looked" and read the page again); `gone` when Qorpera took the site down; or `open` with `url`,
+  `https://<slug>--next.qorpera.com/.qorpera/enter?t=<43 characters>`: a one-time ticket of 2 minutes. Open a blank tab
+  within the click, set its `opener` to null, then send it to `url` (close it on any other answer). The next host shows
+  exactly the version Put it live would put live, for 12 hours, under a "Not live yet" bar, to the member who opened it.
 - The tables are closed to every API role; the executor's calls are not a member's.
 
 ### Downloading the company's code (20260930720000_code_change_record)
@@ -1994,6 +2045,15 @@ machine.
   password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
   static files under the visitor's session (`/<slug>/~<token>/<path>`), each
   file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.
+  Since 20260930756000, while hosts are on (`qorpera_site_settings.hosts_enabled`), it also answers a site's own host
+  `https://<slug>.qorpera.com/` and its next host `https://<slug>--next.qorpera.com/` (the front's `site-hosts`
+  route), and the old host's links move to the own host (308, or 303 for its unlock). On those hosts nothing is
+  sandboxed and every path is the site's: the visitor's session is the host-only cookie `__Host-qorpera_site` (no
+  `Domain`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`), the password posts to `/.qorpera/unlock` (Origin
+  `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
+  `404.html` with 404, a site taken down answers 410, and private and next answers carry
+  `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
+  `no-transform`. Service worker scripts are refused (404) on every site host.
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
