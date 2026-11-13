@@ -13,9 +13,10 @@
 --   (`waiting` or `starting`) and why it waited (`waiting_for`), how long it waited, how it ended (`outcome`: running,
 --   limit: the time passed, hours: it waits for computer hours and was not waited on, not_asked: waitSeconds 0, stopped,
 --   gone, work_stopped) and the state it was left in. Rows older than 30 days go, at most 50 a time, as each is added.
--- * qorpera_native_machine_manage takes action `waited` (machine, wait): the run's runtime reports its wait. It writes
---   only that row; it takes no lock and checks no work authority (a run told its work stopped reports that too). A
---   machine is found by name in the run's company, the newest of the name, a removed one too (a wait that ended `gone`).
+-- * qorpera_native_machine_manage takes action `waited` (machine, machineId, wait): the run's runtime reports its wait.
+--   It writes only that row; it takes no lock and checks no work authority (a run told its work stopped reports that
+--   too). The machine is the one the start answered, by its id, of the run's company and of that name, a removed one
+--   too (a wait that ended `gone`); never a later machine of the same name (review r1 F1 of #1771).
 -- An old runtime never calls it; a new runtime over the old kernel is refused (22023) and goes on without the row.
 -- Every new or patched body names this migration (20260930755000), for the deploy guards.
 set local lock_timeout = '3s';
@@ -105,17 +106,18 @@ do $$ begin execute pg_temp.machine_start_waits_patched(
 	$new$		or v_action is null or v_action not in ('list','stop','delete','status','waited') -- 20260930755000$new$,
 	$old$		or (v_action <> 'list' and (p_request - case when v_action = 'status' then array['action','machine','commandId']$old$,
 	$new$		or (v_action <> 'list' and (p_request - case when v_action = 'status' then array['action','machine','commandId']
-					when v_action = 'waited' then array['action','machine','wait']$new$,
+					when v_action = 'waited' then array['action','machine','machineId','wait']$new$,
 	$old$	perform public.qorpera_assert_wake_work_allowed((p_binding ->> 'runId')::uuid);
 	perform pg_advisory_xact_lock($old$,
 	$new$	-- 20260930755000: the run's runtime says how its machine_start waited for the machine (the time it waited, how it
 	-- ended). Only that row is written: no lock, and no work check, since a run told its work stopped says so too.
 	if v_action = 'waited' then
-		if not public.qorpera_valid_machine_start_wait(p_request -> 'wait') then
+		if coalesce(p_request ->> 'machineId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+			or not public.qorpera_valid_machine_start_wait(p_request -> 'wait') then
 			raise exception 'Invalid machine request' using errcode = '22023'; end if;
 		select * into v_machine from public.qorpera_company_machines machine
-		where machine.profile_id = (v_identity ->> 'companyId')::uuid and machine.name = p_request ->> 'machine'
-		order by machine.created_at desc, machine.id limit 1;
+		where machine.id = (p_request ->> 'machineId')::uuid and machine.profile_id = (v_identity ->> 'companyId')::uuid
+			and machine.name = p_request ->> 'machine';
 		if not found then return jsonb_build_object('schema','qorpera.machine-wait/v1','recorded',false); end if;
 		insert into public.qorpera_company_machine_start_waits(machine_id, profile_id, environment_id, run_id, staff_agent_id, worker,
 			asked, limit_seconds, state_before, waiting_for, waited_ms, outcome, state_after)

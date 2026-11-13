@@ -198,7 +198,7 @@ function fixture(
 				([method, args]) =>
 					method === "qorpera_native_machine_manage" && (args.p_request as { action: string }).action === "waited",
 			)
-			.map(([, args]) => args.p_request as { machine: string; wait: Record<string, unknown> });
+			.map(([, args]) => args.p_request as { machine: string; machineId: string; wait: Record<string, unknown> });
 	return {
 		identity,
 		binding,
@@ -1224,6 +1224,7 @@ describe("machine tools", () => {
 					{
 						action: "waited",
 						machine: "build-a",
+						machineId: f.listed[0].machineId,
 						wait: {
 							asked: false,
 							limitSeconds: 60,

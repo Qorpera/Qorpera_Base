@@ -4,8 +4,9 @@
 -- 1. qorpera_native_machine_manage, action `waited`: one row for the run's report, column by column (the run, its agent,
 --    a conversation's run, whether the model asked, the limit, the state the start answered and why it waited, how long,
 --    how it ended, the state after); the answer says recorded.
--- 2. Which machine: the run's company's, by name; a removed one too (a wait that ended `gone`), the newest of a name
---    first; another company's never; none of that name: recorded false and no row.
+-- 2. Which machine: the one the start answered, by its id, of the run's company and of that name; a removed one too (a
+--    wait that ended `gone`), also after a new machine took its name (review r1 F1 of #1771); another company's, a wrong
+--    name or an unknown id never: recorded false and no row.
 -- 3. Every malformed report is refused (22023) and writes nothing: a missing or extra key, a value of the wrong kind or
 --    out of bounds, an outcome or a state not known; the request takes no other key.
 -- 4. Rows older than 30 days go as a report is added; younger ones stay.
@@ -22,9 +23,12 @@ create function pg_temp.w_wait(p_change jsonb default '{}') returns jsonb langua
 	select jsonb_build_object('asked', false, 'limitSeconds', 60, 'stateBefore', 'waiting', 'waitingFor', 'NODE_CAPACITY_EXHAUSTED',
 		'waitedMs', 21744, 'outcome', 'running', 'stateAfter', 'running') || p_change
 $$;
-create function pg_temp.w_report(p_machine text, p_wait jsonb) returns jsonb language sql as $$
+-- The report of a wait for the machine named p_machine (its id: the company's live machine of that name unless p_id).
+create function pg_temp.w_report(p_machine text, p_wait jsonb, p_id uuid default null) returns jsonb language sql as $$
 	select public.qorpera_native_machine_manage(pg_temp.w_binding(),
-		jsonb_build_object('action', 'waited', 'machine', p_machine, 'wait', p_wait))
+		jsonb_build_object('action', 'waited', 'machine', p_machine, 'wait', p_wait, 'machineId', coalesce(p_id,
+			(select id from public.qorpera_company_machines where name = p_machine and removed_at is null
+				and profile_id = '92400000-0000-4000-8000-000000000010'), extensions.gen_random_uuid())))
 $$;
 create function pg_temp.w_rows() returns bigint language sql as $$ select count(*) from public.qorpera_company_machine_start_waits $$;
 -- A machine as the rows say: Alice's, of 924's company unless another is named.
@@ -76,19 +80,26 @@ begin
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values ('12510000-0000-4000-8000-000000000020', '12510000-0000-4000-8000-000000000010', 'Environment', 1,
 		'92400000-0000-4000-8000-000000000005');
-	perform pg_temp.w_machine('elsewhere', '12510000-0000-4000-8000-000000000010', '12510000-0000-4000-8000-000000000020');
-	v := pg_temp.w_report('elsewhere', pg_temp.w_wait());
+	v := pg_temp.w_report('elsewhere', pg_temp.w_wait(), pg_temp.w_machine('elsewhere', '12510000-0000-4000-8000-000000000010',
+		'12510000-0000-4000-8000-000000000020'));
 	perform pg_temp.base_assert(v ->> 'recorded' = 'false' and pg_temp.w_rows() = v_rows, '2: another company''s: ' || v::text);
-	-- A removed machine (the wait ended gone), and a newer one of the same name: the one there now first.
+	-- The id of a machine of this company, under another name: not recorded.
+	v := pg_temp.w_report('not-its-name', pg_temp.w_wait(), (select id from public.qorpera_company_machines
+		where name = 'research-word-count'));
+	perform pg_temp.base_assert(v ->> 'recorded' = 'false' and pg_temp.w_rows() = v_rows, '2: a wrong name: ' || v::text);
+	-- A machine removed while its start waited (the wait ended gone), and a new machine that took its name before the
+	-- report came: the report is the removed one's.
 	v_gone := pg_temp.w_machine('shard-1');
 	update public.qorpera_company_machines set desired_state = 'deleted', removed_at = clock_timestamp() where id = v_gone;
-	v := pg_temp.w_report('shard-1', pg_temp.w_wait('{"outcome":"gone","stateAfter":"deleted"}'));
-	perform pg_temp.base_assert(v ->> 'recorded' = 'true' and (select machine_id from public.qorpera_company_machine_start_waits
-		order by created_at desc, id limit 1) = v_gone, '2: a removed machine: ' || v::text);
 	v_new := pg_temp.w_machine('shard-1');
+	v := pg_temp.w_report('shard-1', pg_temp.w_wait('{"outcome":"gone","stateAfter":"deleted"}'), v_gone);
+	perform pg_temp.base_assert(v ->> 'recorded' = 'true' and (select machine_id from public.qorpera_company_machine_start_waits
+		order by created_at desc, id limit 1) = v_gone
+		and not exists (select 1 from public.qorpera_company_machine_start_waits where machine_id = v_new),
+		'2: the removed machine, not the new one of its name: ' || v::text);
 	perform pg_temp.w_report('shard-1', pg_temp.w_wait());
 	perform pg_temp.base_assert((select count(*) from public.qorpera_company_machine_start_waits where machine_id = v_new) = 1,
-		'2: the machine there now first');
+		'2: the new one by its own id');
 end $$;
 
 -- 3. Malformed reports write nothing ----------------------------------------------------------------------------------------
@@ -105,11 +116,20 @@ begin
 		perform pg_temp.base_error(format('select pg_temp.w_report(%L, %L::jsonb)', 'research-word-count', v_bad), '22023');
 	end loop;
 	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
-		jsonb_build_object('action', 'waited', 'machine', 'research-word-count', 'wait', pg_temp.w_wait(), 'more', 1)), '22023');
+		jsonb_build_object('action', 'waited', 'machine', 'research-word-count', 'machineId', extensions.gen_random_uuid(),
+			'wait', pg_temp.w_wait(), 'more', 1)), '22023');
+	-- No id, or not an id.
 	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
-		jsonb_build_object('action', 'waited', 'machine', 'research-word-count')), '22023');
+		jsonb_build_object('action', 'waited', 'machine', 'research-word-count', 'wait', pg_temp.w_wait())), '22023');
 	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
-		jsonb_build_object('action', 'waited', 'machine', 'Bad Name', 'wait', pg_temp.w_wait())), '22023');
+		jsonb_build_object('action', 'waited', 'machine', 'research-word-count', 'machineId', 'not-an-id', 'wait', pg_temp.w_wait())),
+		'22023');
+	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
+		jsonb_build_object('action', 'waited', 'machine', 'research-word-count', 'machineId', extensions.gen_random_uuid())),
+		'22023');
+	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
+		jsonb_build_object('action', 'waited', 'machine', 'Bad Name', 'machineId', extensions.gen_random_uuid(),
+			'wait', pg_temp.w_wait())), '22023');
 	perform pg_temp.base_assert(pg_temp.w_rows() = v_rows, '3: nothing written');
 end $$;
 

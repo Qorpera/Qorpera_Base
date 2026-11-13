@@ -808,6 +808,8 @@ export function cloudMachineTools(options: {
 						{
 							action: "waited",
 							machine: machine.name,
+							// The machine the start answered, never a later one of its name (review r1 F1 of #1771).
+							machineId: machine.machineId,
 							wait: {
 								asked,
 								limitSeconds: limit,
