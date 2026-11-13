@@ -122,7 +122,7 @@ function advance(milliseconds: number): void {
 function mount(
 	activity: "Idle" | "Working" | "Thinking" | "Waiting" = "Idle",
 	identity = "agent",
-	options: { mark?: HTMLElement; alive?: boolean } = {},
+	options: { ask?: "question" | "bang"; alive?: boolean } = {},
 ): HTMLElement {
 	const host = document.createElement("span");
 	document.body.append(host);
@@ -157,9 +157,9 @@ describe("before the recorded motion arrives", () => {
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
 		advance(1000);
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
-		// The working figure now taps along: it is off the ground at some frame of its first line.
+		// The working figure goes on with its act: within some seconds it is off the ground again.
 		const poses = new Set<string>();
-		for (let frame = 0; frame < 40; frame++) {
+		for (let frame = 0; frame < 420; frame++) {
 			advance(1000 / 60);
 			poses.add(still.querySelector("canvas")!.style.transform);
 		}
@@ -189,28 +189,34 @@ describe("2D studio playback in the shell", () => {
 		expect(frames.size).toBe(0);
 		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
 	});
-	it("makes a figure that needs the member jump, bring its mark up and keep asking", async () => {
-		const mark = document.createElement("span");
-		const host = mount("Waiting", "asks", { mark });
+	it("makes a figure that needs the member jump, spin and become its question, and keep asking", async () => {
+		const host = mount("Waiting", "asks", { ask: "question" });
 		await settle();
 		show([host]);
 		const canvas = host.querySelector("canvas")!;
-		// The mark is down as the act starts and springs up with the jump.
-		expect(mark.style.transform).toContain("scale(0)");
-		advance(350);
-		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d/);
-		expect(mark.style.transform).not.toContain("scale(0)");
-		// Its eyes are drawn: wide pills.
-		expect(context.roundRect).toHaveBeenCalled();
-		// On the ground again between asks, and still asking: the frames go on.
-		advance(2000);
+		vi.mocked(context.arc!).mockClear();
+		// In the air it turns edge on: thin, and off the ground.
+		advance(16);
+		advance(284);
+		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d[\d.]*%\) rotate\(0deg\) scale\(0\.[1-6]/);
+		// Down again, as the symbol: the question mark's hook and its dot are arcs, drawn in the figure's colour.
+		advance(700);
+		advance(16);
 		expect(canvas.style.transform).toBe("");
+		expect(context.arc).toHaveBeenCalled();
+		expect(context.fillStyle).toBe("#fcb51b");
+		// It keeps asking: the frames go on, and the symbol hops or rocks within a few seconds.
+		const poses = new Set<string>();
+		for (let frame = 0; frame < 240; frame++) {
+			advance(1000 / 60);
+			poses.add(canvas.style.transform);
+		}
+		expect(poses.size).toBeGreaterThan(5);
 		expect(frames.size).toBe(1);
-		// A member who wants no motion sees it at rest with the mark up.
+		// A member who wants no motion sees the symbol at rest.
 		reduced.matches = true;
 		reduced.dispatchEvent(new Event("change"));
 		expect(canvas.style.transform).toBe("");
-		expect(mark.style.transform).toContain("rotate(0deg) scale(1)");
 		advance(1000);
 		expect(frames.size).toBe(0);
 	});
@@ -258,24 +264,27 @@ describe("2D studio playback in the shell", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("keeps a working figure at its work, drawn, the same in every view of the agent", async () => {
+	it("turns a working figure into a spinning star, the same in every view of the agent", async () => {
 		const rail = mount("Working", "at-work"),
 			thread = mount("Working", "at-work");
 		await settle();
 		show([rail, thread]);
 		const canvas = rail.querySelector("canvas")!;
-		const taps = new Set<string>();
-		for (let frame = 0; frame < 120; frame++) {
+		vi.mocked(context.quadraticCurveTo!).mockClear();
+		vi.mocked(context.rotate!).mockClear();
+		let jumped = false;
+		for (let frame = 0; frame < 180; frame++) {
 			advance(1000 / 60);
-			taps.add(canvas.style.transform);
+			jumped ||= /^translate\(0%, -1\d/.test(canvas.style.transform);
 			// Two views of one agent show the same pose.
 			expect(canvas.style.transform).toBe(thread.querySelector("canvas")!.style.transform);
 		}
-		// It taps along its line: on the ground and off it.
-		expect(taps.has("")).toBe(true);
-		expect([...taps].some((pose) => /^translate\(0%, -\d/.test(pose))).toBe(true);
-		// Its eyes are drawn pills, and it goes on working past any length of time.
-		expect(context.roundRect).toHaveBeenCalled();
+		// It jumped into the change, and the star (four curved sides) is drawn and turned.
+		expect(jumped).toBe(true);
+		expect(context.quadraticCurveTo).toHaveBeenCalled();
+		const turns = new Set(vi.mocked(context.rotate!).mock.calls.map((call) => Number(call[0]).toFixed(2)));
+		expect(turns.size).toBeGreaterThan(3);
+		// It goes on working past any length of time.
 		advance(60_000);
 		expect(frames.size).toBe(1);
 	});

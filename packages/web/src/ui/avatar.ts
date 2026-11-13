@@ -8,6 +8,7 @@ import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import {
 	type Activity,
+	type Ask,
 	type FigureArtwork,
 	type FigureMotion,
 	type Moment,
@@ -210,8 +211,9 @@ export interface FigureOptions {
 	activity?: Activity;
 	identity?: string;
 	className?: string;
-	/** The mark beside a figure whose work waits on the member (`askMark`), which the figure shakes and takes along. */
-	mark?: HTMLElement;
+	/** What waits on the member, if anything does: a question ("question") or anything else ("bang"). A figure
+	 * that needs them becomes that symbol in its own colour; one that works comes back as it now and then. */
+	ask?: Ask;
 	/** Left alone, the figure still blinks, looks around and moves now and then. */
 	alive?: boolean;
 }
@@ -221,49 +223,6 @@ export interface FigureOptions {
 export function playFigure(host: Element | null | undefined, kind: Moment): void {
 	if (!host) return;
 	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
-}
-
-const SVG = "http://www.w3.org/2000/svg";
-/** The marks on offer: an exclamation mark in the figures' own shapes (a pill over a dot), or a speech bubble
- * with a question mark. */
-export type AskMark = "bang" | "bubble";
-const shape = (name: string, attributes: Record<string, string | number>): SVGElement => {
-	const element = document.createElementNS(SVG, name);
-	for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
-	return element;
-};
-const MARK_PARTS: Record<AskMark, () => SVGElement[]> = {
-	bang: () => [
-		shape("rect", { x: 8.6, y: 1.5, width: 6.8, height: 13.4, rx: 3.4 }),
-		shape("circle", { cx: 12, cy: 20, r: 3.3 }),
-	],
-	bubble: () => [
-		shape("rect", { x: 1.5, y: 2.5, width: 21, height: 15, rx: 6.5 }),
-		shape("path", { d: "M5.5 14.5 L3.2 22 L11.5 16.5 Z" }),
-	],
-};
-
-/** The mark of a figure whose work waits on the member (styles/app.css `.rail-ask`): the same shape twice, a
- * ring in the colour under it and the mark over that, so it reads as cut out of the row. Hand it to the figure
- * (`FigureOptions.mark`) and the figure shakes it. */
-export function askMark(kind: AskMark = "bang"): HTMLElement {
-	const mark = document.createElement("span");
-	mark.className = "rail-ask";
-	mark.dataset.mark = kind;
-	mark.setAttribute("aria-hidden", "true");
-	const art = shape("svg", { viewBox: "0 0 24 24" });
-	for (const layer of ["ask-ring", "ask-fill"]) {
-		const group = shape("g", { class: layer });
-		group.append(...MARK_PARTS[kind]());
-		art.append(group);
-	}
-	if (kind === "bubble") {
-		const letter = shape("text", { x: 12, y: 14.4, "text-anchor": "middle", class: "ask-letter" });
-		letter.textContent = "?";
-		art.append(letter);
-	}
-	mark.append(art);
-	return mark;
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored

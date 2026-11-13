@@ -21,12 +21,14 @@ input, with no runtime subscription, command, or activity-state binding.
 ## Acting, and drawn eyes (November 13, 2026)
 
 `src/ui/figure-acts.ts` is what the figures do: hops with squash and stretch,
-leans, drawn eyes (wide while a figure needs the member, narrowed on its work,
-an arch while it cheers), the mark beside a figure that asks, and small effects
-(dust, bits, stars, rays). It is arithmetic over time, tested on its own;
+leans, drawn eyes (wide while a figure looks for the member, an arch while it
+cheers), the symbols a figure becomes in its own colour (a "?" or a "!" when
+its work waits on the member, a four-pointed star while it works: it jumps,
+turns once round in the air and is swapped where it is edge on), and small
+effects (dust, stars). It is arithmetic over time, tested on its own;
 `figure-motion.ts` writes the body's pose as a transform on the canvas, about
-the feet, so a jump costs no repaint, and repaints the eyes only when they
-change.
+the feet, so a jump costs no repaint, and repaints the eyes or the symbol only
+when they change.
 
 Every eye is now drawn. The product no longer reads the studio's recorded eye
 clips or the Working stripes (Jonas, 13 Nov 2026: the recording looked grainy

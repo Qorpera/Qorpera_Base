@@ -48,7 +48,7 @@ const run = (extra: Partial<HostedStaffExecutionActivity> = {}): HostedStaffExec
 });
 
 function setup(agents: HostedStaffAgent[] = [staff]) {
-	stubFigureMotion();
+	const motion = stubFigureMotion();
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	const auth = new AuthController(f.cloud);
@@ -72,7 +72,9 @@ function setup(agents: HostedStaffAgent[] = [staff]) {
 	});
 	const work = vi.mocked(f.api.listWaitingWork).mockReset();
 	const row = () => rail.querySelector<HTMLElement>(`.rail-row[data-agent-id="${staff.id}"]`)!;
-	return { company, rail, draw, api: f.api, work, row };
+	/** What the agent's figure was last built to ask with: "question", "bang", or nothing. */
+	const ask = (agent: string) => motion.mock.calls.filter((call) => call[4]?.identity === agent).at(-1)?.[4]?.ask;
+	return { company, rail, draw, api: f.api, work, row, ask };
 }
 
 describe("an agent stopped at the member", () => {
@@ -87,15 +89,15 @@ describe("an agent stopped at the member", () => {
 		const line = f.row().querySelector(".rail-row-copy small")!;
 		expect(line.textContent).toBe(`Stopped: ${question}`);
 		expect(line.classList.contains("is-waiting")).toBe(true);
-		const hand = f.row().querySelector(".rail-row-stand > .rail-ask")!;
-		expect(hand.getAttribute("aria-hidden")).toBe("true");
-		expect(hand.querySelector("svg")).not.toBeNull();
+		// A question waits: the figure becomes a question mark (ui/figure-acts.ts). No badge stands beside it.
+		expect(f.ask(staff.id)).toBe("question");
+		expect(f.row().querySelector(".rail-row-stand")!.children).toHaveLength(1);
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Waiting for you: ${question}`);
 		// The figure waits, as for any decision.
 		expect(f.row().querySelector(".alert-mark")).toBeNull();
 	});
 
-	it("keeps the hand while the agent works on something else, and drops both once nothing waits", async () => {
+	it("keeps asking while the agent works on something else, and stops once nothing waits", async () => {
 		const f = setup();
 		f.work.mockResolvedValue([waits(staff.id)]);
 		await f.company.refreshApprovals();
@@ -104,7 +106,7 @@ describe("an agent stopped at the member", () => {
 		expect(f.company.agentState(staff.id)).toBe("working");
 		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Working");
 		expect(f.row().querySelector(".rail-row-copy small")?.classList.contains("is-waiting")).toBe(false);
-		expect(f.row().querySelector(".rail-ask")).not.toBeNull();
+		expect(f.ask(staff.id)).toBe("question");
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Working · Waiting for you: ${question}`);
 		// Answered: the next read lists nothing for the agent.
 		f.work.mockResolvedValue([]);
@@ -112,7 +114,7 @@ describe("an agent stopped at the member", () => {
 		f.company.store.set({ activity: [] });
 		f.draw();
 		expect(f.company.agentState(staff.id)).toBe("idle");
-		expect(f.row().querySelector(".rail-ask")).toBeNull();
+		expect(f.ask(staff.id)).toBeUndefined();
 		expect(f.row().getAttribute("aria-label")).not.toContain("Waiting for you");
 	});
 
@@ -143,7 +145,7 @@ describe("an agent stopped at the member", () => {
 		}
 	});
 
-	it("gives the pinned Co-Founder's card the hand too, without a line", async () => {
+	it("makes the pinned Co-Founder ask too, with an exclamation mark for what is no question, without a line", async () => {
 		const f = setup([cofounder, staff]);
 		f.work.mockResolvedValue([
 			waits(cofounder.id, { kind: "approval", what: "Send an email", questions: 0, approvals: 1 }),
@@ -151,10 +153,10 @@ describe("an agent stopped at the member", () => {
 		await f.company.refreshApprovals();
 		f.draw();
 		const card = f.rail.querySelector<HTMLElement>(".cofounder-home")!;
-		expect(card.querySelector(".cofounder-stand > .rail-ask")).not.toBeNull();
+		expect(f.ask(cofounder.id)).toBe("bang");
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Waiting for you: Send an email");
 		expect(f.company.store.get().approvals).toEqual({ [cofounder.id]: 1 });
-		expect(f.row().querySelector(".rail-ask")).toBeNull();
+		expect(f.ask(staff.id)).toBeUndefined();
 	});
 
 	it("says what for on the home page's waiting row", async () => {
@@ -222,10 +224,10 @@ describe("a cloud before 20260930723000", () => {
 		expect(approvals).toHaveBeenCalledTimes(2);
 		expect(f.company.store.get().waitingWorkUnavailable).toBe(true);
 		expect(f.company.agentState(staff.id)).toBe("decision");
-		// No words to say what for: "Needs you", as before, with the hand.
+		// No words to say what for: "Needs you", as before, and an exclamation mark.
 		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Needs you");
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Needs you`);
-		expect(f.row().querySelector(".rail-ask")).not.toBeNull();
+		expect(f.ask(staff.id)).toBe("bang");
 		expect(f.company.agentsWaitingOnMe()).toBe(1);
 	});
 
@@ -237,7 +239,7 @@ describe("a cloud before 20260930723000", () => {
 		await f.company.refreshApprovals();
 		expect(f.company.store.get().waitingWorkUnavailable).toBeUndefined();
 		expect(approvals).not.toHaveBeenCalled();
-		expect(f.company.waitingFor(staff.id)).toEqual({ count: 1, what: question });
+		expect(f.company.waitingFor(staff.id)).toEqual({ count: 1, what: question, kind: "question" });
 		f.work.mockResolvedValue([]);
 		await f.company.refreshApprovals();
 		expect(f.company.waitingFor(staff.id)).toBeUndefined();

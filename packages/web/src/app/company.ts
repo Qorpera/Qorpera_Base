@@ -67,7 +67,7 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
-import type { WaitingWork } from "../cloud/waiting-work.ts";
+import type { WaitingKind, WaitingWork } from "../cloud/waiting-work.ts";
 import { withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
@@ -1906,13 +1906,18 @@ export class CompanyController {
 			: "failed";
 	}
 
-	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says)
-	 * and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
-	waitingFor(staffAgentId: string | undefined): { count: number; what?: string } | undefined {
+	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says),
+	 * its kind (a question, or something else), and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
+	waitingFor(staffAgentId: string | undefined): { count: number; what?: string; kind?: WaitingKind } | undefined {
 		if (!staffAgentId) return undefined;
 		const state = this.store.get();
 		const work = state.waitingOnMe?.[staffAgentId];
-		if (work) return { count: work.count, ...(work.what ? { what: work.what } : {}) };
+		if (work)
+			return {
+				count: work.count,
+				...(work.what ? { what: work.what } : {}),
+				...(work.kind ? { kind: work.kind } : {}),
+			};
 		const approvals = state.approvals?.[staffAgentId];
 		return approvals ? { count: approvals } : undefined;
 	}

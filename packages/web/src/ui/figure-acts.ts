@@ -1,8 +1,9 @@
 /* How a figure acts: what its body does (hops, leans, squash and stretch), where its drawn eyes look
- * and how they look (wide, narrowed, shut in a smile), what the mark beside an asking figure does, and
- * which small effects go off in the air around it. Pure arithmetic over time, so two views of one
- * agent act alike and a test can read a pose at any second; figure-motion.ts puts the result on the
- * page. Nothing here is recorded: every eye is drawn, so it is sharp at any size.
+ * and how they look (wide, shut in a smile), which symbol it becomes (a "?" or a "!" when it needs the
+ * member, a star while it works), and which small effects go off in the air around it. Pure arithmetic
+ * over time, so two views of one agent act alike and a test can read a pose at any second;
+ * figure-motion.ts puts the result on the page. Nothing here is recorded: every eye and every symbol
+ * is drawn, so it is sharp at any size.
  *
  * The body is in the artwork's 100-unit frame (the figure's canvas): `y` is negative upwards, and
  * the scales turn about the feet. A move is decisive or absent: a figure in the rail is some fifty
@@ -28,26 +29,31 @@ export interface EyePose {
 	smile: number;
 }
 export type Eyes = [EyePose, EyePose];
-/** The mark beside a figure that needs the member. */
-export interface MarkPose {
-	/** 0 hidden to 1 up, past 1 while it springs up. */
-	show: number;
-	/** Degrees about its foot. */
-	wave: number;
+/** What a figure asks with: a question the member has to answer, or anything else that waits on them. */
+export type Ask = "question" | "bang";
+/** What a figure can become, in its own colour: the two asks, and the star of work. As the writing dots,
+ * a symbol stands in the figure's place. */
+export interface SymbolPose {
+	kind: Ask | "star";
+	/** Degrees about its middle (the star spins). */
+	turn: number;
+	/** About its middle (the star swells). */
+	scale: number;
 }
-/** dust: where a jump lands. sparkles, shower, twinkle: the stars of a cheer (a burst, a wider and slower
- * one, a single star). bits: what flies off a working figure. idea: one star over its head. rays: off the
- * mark of a figure that asks. */
-export type Effect = "dust" | "sparkles" | "shower" | "twinkle" | "bits" | "idea" | "rays";
+/** dust: where a jump lands. pop: the small stars as a figure becomes a symbol. bits: what a working star
+ * throws off. sparkles, shower, twinkle: the stars of a cheer (a burst, a wider and slower one, a single
+ * star). */
+export type Effect = "dust" | "pop" | "bits" | "sparkles" | "shower" | "twinkle";
 export interface Cue {
 	at: number;
 	effect: Effect;
 }
 export interface Act {
 	body: BodyPose;
-	/** Drawn eyes; none leaves them to the studio's symbolic pose (the dots, the "!"). */
+	/** Drawn eyes; none leaves them to the studio's symbolic pose (the dots), or to the symbol. */
 	eyes?: Eyes;
-	mark?: MarkPose;
+	/** The figure has become this: it is drawn in the figure's place. */
+	symbol?: SymbolPose;
 }
 
 const clamp = (value: number, low = 0, high = 1) => Math.min(high, Math.max(low, value));
@@ -142,249 +148,252 @@ const landings = (list: readonly Hop[], from = 0): Cue[] =>
 	list.map((each) => ({ at: from + each.start + each.length * HOP_LAND, effect: "dust" as const }));
 const within = (cues: Cue[], from: number, to: number) => cues.filter((cue) => cue.at > from && cue.at <= to);
 
-/* ---- needs you: the figure asks for the member ---------------------------------------------------
- * It jumps as its mark pops up, and then keeps asking: every few seconds a pair of hops, a wiggle or
- * a lean towards the glass with a look to both sides, its eyes wide the whole time. */
+/** A small whole number from a seed and two counters: which of an agent's variations comes when. */
+function pick(seed: number, a: number, b: number, of: number): number {
+	let h = (seed ^ Math.imul(a + 1, 0x9e3779b1) ^ Math.imul(b + 1, 0x85ebca6b)) >>> 0;
+	h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+	h ^= h >>> 12;
+	return (h >>> 0) % of;
+}
 
-const ENTRANCE: Hop[] = [
-	{ start: 0.04, length: 0.66, height: 21 },
-	{ start: 0.66, length: 0.5, height: 11 },
+/* ---- becoming a symbol ----------------------------------------------------------------------------
+ * A figure becomes a symbol the way a coin shows its other side: it jumps, turns once round in the
+ * air, and where it is edge on for the second time the one is swapped for the other. It comes back the
+ * same way, a little quicker. */
+
+/** How long a figure takes to become a symbol, and to come back. */
+export const BECOME = 0.92;
+export const RETURN = 0.72;
+/** The part of the change at which the swap happens: edge on, the second time. */
+const SWAP = HOP_LAUNCH + 0.75 * (HOP_LAND - HOP_LAUNCH);
+
+/** The jump and turn of a change, `u` from 0 to 1: the body's pose, whether the swap has happened, and how
+ * far the front faces us (1 facing, 0 edge on, below 0 its back). */
+function change(u: number, height: number): { body: BodyPose; swapped: boolean; facing: number } {
+	const round = clamp((u - HOP_LAUNCH) / (HOP_LAND - HOP_LAUNCH));
+	const facing = u > HOP_LAUNCH && u < HOP_LAND ? Math.cos(TAU * round) : 1;
+	return {
+		body: both(hop(u, height, 0.15), { x: 0, y: 0, turn: 0, scaleX: 0.12 + 0.88 * Math.abs(facing), scaleY: 1 }),
+		swapped: u >= SWAP,
+		facing,
+	};
+}
+const symbolOf = (kind: SymbolPose["kind"], turn = 0, scale = 1): SymbolPose => ({ kind, turn, scale });
+/** Eyes that show only while the front faces us. */
+const facingEyes = (eyes: Partial<EyePose>, facing: number): Eyes =>
+	pair({ ...eyes, alpha: clamp((facing - 0.15) / 0.3) });
+
+/** A figure becoming `kind`, `s` seconds in: itself until the swap, the symbol after. */
+function become(kind: SymbolPose["kind"], s: number, eyes: Partial<EyePose>): Act {
+	const { body, swapped, facing } = change(s / BECOME, 23);
+	return swapped ? { body, symbol: symbolOf(kind) } : { body, eyes: facingEyes(eyes, facing) };
+}
+/** A symbol coming back as the figure, `s` seconds in. */
+function comeBack(kind: SymbolPose["kind"], s: number, eyes: Partial<EyePose>): Act {
+	const { body, swapped, facing } = change(s / RETURN, 17);
+	return swapped ? { body, eyes: facingEyes(eyes, facing) } : { body, symbol: symbolOf(kind) };
+}
+/** The effects of a change that starts at `at`: small stars at the swap, dust where it lands. */
+const changeCues = (at: number, length: number, pop: boolean): Cue[] => [
+	...(pop ? [{ at: at + SWAP * length, effect: "pop" as const }] : []),
+	{ at: at + HOP_LAND * length, effect: "dust" },
 ];
-/** The first ask after the entrance, and how often after that. */
-const ASK_FIRST = 3.4;
-const ASK_EVERY = 5.6;
-const ASK_KINDS = ["hops", "wiggle", "hops", "peek"] as const;
+
+/* ---- needs you: the figure becomes its question ----------------------------------------------------
+ * It jumps, spins and comes down as a "?" (a question waits for the member) or a "!" (anything else
+ * that waits on them), in its own colour. The symbol keeps asking: every couple of seconds it hops or
+ * shakes. Now and then it turns back into the figure, which looks to both sides for the member with
+ * wide eyes, and becomes the symbol again. */
+
+const WIDE = { width: 1.05, height: 1.08 };
+const ASK_HOLD = 6.4;
+const ASK_PEEK = 1.7;
+const ASK_PERIOD = BECOME + ASK_HOLD + RETURN + ASK_PEEK;
+/** The symbol's own asks: the first one, and how often after it. */
+const ASK_BEAT_FIRST = 1;
+const ASK_BEAT_EVERY = 2.1;
 const ASK_HOPS: Hop[] = [
-	{ start: 0, length: 0.56, height: 13 },
-	{ start: 0.5, length: 0.46, height: 8 },
+	{ start: 0, length: 0.5, height: 11 },
+	{ start: 0.44, length: 0.42, height: 6 },
 ];
 
-function ask(t: number, seed: number): { kind: (typeof ASK_KINDS)[number]; since: number } | undefined {
-	if (t < ASK_FIRST) return undefined;
-	const n = Math.floor((t - ASK_FIRST) / ASK_EVERY);
-	return { kind: ASK_KINDS[(n + seed) % ASK_KINDS.length]!, since: t - ASK_FIRST - n * ASK_EVERY };
-}
-
-/** The figure while its work waits on the member, `t` seconds in. `seed` sets which ask comes when. */
-export function calling(t: number, seed = 0): Act {
-	const asking = ask(t, seed);
-	let { body, air } = hops(t, ENTRANCE);
-	// Wide, and a blink once it has landed.
-	let open = 1.08 * blink(t, 1.32) * blink(t, 2.5),
-		look = 0,
-		up = 0;
-	let waving = pulse(t, 0.3, 0.45, 1.45, 1.75) * Math.sin(TAU * 3.1 * (t - 0.3)) * 21;
-	if (asking) {
-		const s = asking.since;
-		waving += pulse(s, 0.02, 0.16, 1.05, 1.3) * Math.sin(TAU * 3.1 * s) * 18;
-		open *= blink(s, 1.5) * blink(s, 1.78);
-		if (asking.kind === "hops") {
-			const jumps = hops(s, ASK_HOPS);
-			body = both(body, jumps.body);
-			air = Math.max(air, jumps.air);
-		} else if (asking.kind === "wiggle") {
-			const amount = pulse(s, 0, 0.14, 0.86, 1.1);
-			body = both(body, {
-				x: 2.2 * amount * Math.sin(TAU * (s / 0.38)),
-				y: 0,
-				turn: 7 * amount * Math.sin(TAU * (s / 0.38)),
-				...squash(-0.04 * amount),
-			});
-			// A look up at its own mark while it shakes.
-			look = 0.22 * amount;
-			up = -0.2 * amount;
-		} else {
-			// A lean towards the glass, and a look to both sides: is anyone there?
-			const near = pulse(s, 0, 0.26, 1.2, 1.5);
-			body = both(body, { x: 0, y: 1.5 * near, turn: 0, scaleX: 1 + 0.08 * near, scaleY: 1 + 0.08 * near });
-			look = -0.4 * pulse(s, 0.26, 0.4, 0.62, 0.76) + 0.4 * pulse(s, 0.72, 0.86, 1.08, 1.24);
-			open *= 1 + 0.06 * near;
-		}
-	}
+/** A symbol that asks, `s` seconds into its hold: still, with a pair of hops or a shake every couple of seconds. */
+function askingSymbol(kind: Ask, s: number, vary: number): BodyPose {
+	if (s < ASK_BEAT_FIRST) return REST;
+	const beat = Math.floor((s - ASK_BEAT_FIRST) / ASK_BEAT_EVERY);
+	const local = s - ASK_BEAT_FIRST - beat * ASK_BEAT_EVERY;
+	if ((beat + vary) % 2 === 0) return hops(local, ASK_HOPS).body;
+	// A "!" shakes from side to side; a "?" rocks on its dot.
+	if (kind === "bang")
+		return {
+			x: 3.4 * pulse(local, 0, 0.05, 0.42, 0.56) * Math.sin(TAU * (local / 0.14)),
+			y: 0,
+			turn: 0,
+			scaleX: 1,
+			scaleY: 1,
+		};
 	return {
-		body,
-		// In the air the eyes go up with it and open wider.
-		eyes: pair({ x: look, y: up - 0.16 * air, width: 1.05, height: open * (1 + 0.07 * air) }),
-		mark: {
-			// Springs up a beat after the jump starts, then sways while it waits.
-			show: t < 0.1 ? 0 : 1 - Math.exp(-9 * (t - 0.1)) * Math.cos(15 * (t - 0.1)),
-			wave: waving + 4 * Math.sin(TAU * 0.4 * t) * ease(1.6, 2.4, t),
-		},
+		x: 0,
+		y: 0,
+		turn: 13 * pulse(local, 0, 0.1, 0.78, 0.98) * Math.sin(TAU * (local / 0.4)),
+		scaleX: 1,
+		scaleY: 1,
 	};
 }
-
-/** The asking figure at rest, for a member who wants no motion: wide eyes, the mark up. */
-export function callingStill(): Act {
-	return { body: REST, eyes: pair({ width: 1.05, height: 1.08 }), mark: { show: 1, wave: 0 } };
+/** The figure between two spells as its symbol: wide eyes, a look to both sides, a blink. */
+function lookingForYou(s: number): Eyes {
+	const look = -0.42 * pulse(s, 0.2, 0.34, 0.62, 0.76) + 0.42 * pulse(s, 0.76, 0.9, 1.18, 1.32);
+	return pair({ ...WIDE, x: look, height: WIDE.height * blink(s, 1.42) });
 }
 
-/** The mark beside a figure that is busy with something else, `t` seconds after it came up: up with a
- * spring, a slow sway, and a shake every few seconds. */
-export function waitingMark(t: number): MarkPose {
-	const since = t % 6.5;
-	return {
-		show: t < 0.05 ? 0 : 1 - Math.exp(-9 * (t - 0.05)) * Math.cos(15 * (t - 0.05)),
-		wave: 4 * Math.sin(TAU * 0.4 * t) + 17 * pulse(since, 0.3, 0.45, 1.3, 1.6) * Math.sin(TAU * 3.1 * (since - 0.3)),
-	};
+/** A figure whose work waits on the member, `t` seconds in. `seed` sets which of the symbol's asks comes when. */
+export function asking(t: number, kind: Ask, seed = 0): Act {
+	const cycle = Math.floor(Math.max(0, t) / ASK_PERIOD);
+	const at = Math.max(0, t) - cycle * ASK_PERIOD;
+	if (at < BECOME) return become(kind, at, WIDE);
+	if (at < BECOME + ASK_HOLD)
+		return { body: askingSymbol(kind, at - BECOME, pick(seed, cycle, 0, 2)), symbol: symbolOf(kind) };
+	if (at < BECOME + ASK_HOLD + RETURN) return comeBack(kind, at - BECOME - ASK_HOLD, WIDE);
+	return { body: REST, eyes: lookingForYou(at - BECOME - ASK_HOLD - RETURN) };
 }
-
-/** What goes off around the asking figure in (`from`, `to`]: dust where it lands, rays off the mark as it
- * starts to shake. */
-export function callingCues(from: number, to: number, seed = 0): Cue[] {
-	const cues: Cue[] = [...landings(ENTRANCE), { at: 0.36, effect: "rays" }];
-	const first = Math.max(0, Math.floor((from - ASK_FIRST) / ASK_EVERY));
-	const last = Math.floor((to - ASK_FIRST) / ASK_EVERY);
-	for (let n = first; n <= last; n++) {
-		const at = ASK_FIRST + n * ASK_EVERY;
-		cues.push({ at: at + 0.06, effect: "rays" });
-		if (ASK_KINDS[(n + seed) % ASK_KINDS.length] === "hops") cues.push(...landings(ASK_HOPS, at));
+/** The asking figure at rest, for a member who wants no motion: the symbol alone. */
+export function askingStill(kind: Ask): Act {
+	return { body: REST, symbol: symbolOf(kind) };
+}
+/** What goes off around the asking figure in (`from`, `to`]: stars as it becomes the symbol, dust where it
+ * lands and where the symbol hops. */
+export function askingCues(from: number, to: number, seed = 0): Cue[] {
+	const cues: Cue[] = [];
+	for (let cycle = Math.floor(Math.max(0, from) / ASK_PERIOD); cycle * ASK_PERIOD < to; cycle++) {
+		const start = cycle * ASK_PERIOD;
+		cues.push(...changeCues(start, BECOME, true), ...changeCues(start + BECOME + ASK_HOLD, RETURN, false));
+		for (let beat = 0; ASK_BEAT_FIRST + beat * ASK_BEAT_EVERY + 1 < ASK_HOLD; beat++)
+			if ((beat + pick(seed, cycle, 0, 2)) % 2 === 0)
+				cues.push(...landings(ASK_HOPS, start + BECOME + ASK_BEAT_FIRST + beat * ASK_BEAT_EVERY));
 	}
 	return within(cues, from, to);
 }
 
-/* ---- working: our own, drawn ---------------------------------------------------------------------
- * A working figure keeps its eyes on its work, a little down and narrowed, and works in bars: it taps
- * along a line (the eyes step across it, the body taps at each step, a bit flies off), it gets into
- * the zone (eyes set, a fast run of taps), it stops to think (a look up and away, then the idea: eyes
- * wide, a hop, a star over its head), or it checks in with a look at the member. Each agent draws its
- * own order from its seed; every bar starts and ends on the same pose, so any order joins. */
+/* ---- working: the figure becomes a star -------------------------------------------------------------
+ * A working figure jumps, spins and comes down as a four-pointed star in its own colour: the sign of
+ * work being made. The star works in spells, each drawn from the agent's seed: it ticks round a quarter
+ * turn at a time, whirls, swells, or hops and spins, throwing off small stars. Between spells it turns
+ * back into the figure for a moment (a look at the member and a nod, a look around, or a smile) and is
+ * off again. A figure whose work also waits on the member comes back as its "?" or "!" in between. */
 
-type BarKind = "type" | "zone" | "think" | "check";
-const BAR_LENGTH: Record<BarKind, number> = { type: 1.9, zone: 2.2, think: 2.7, check: 1.5 };
-/** The eyes on the work. */
-const AT_WORK = { y: 0.12, height: 0.86 };
-const TAPS = [0.2, 0.5, 0.8, 1.1];
-const TAP: Omit<Hop, "start"> = { length: 0.28, height: 4.6 };
-const ZONE_TAPS = [0.34, 0.5, 0.66, 0.82, 0.98, 1.14, 1.3, 1.46];
-const ZONE_TAP: Omit<Hop, "start"> = { length: 0.16, height: 2.8 };
-const IDEA_AT = 1.45;
+const SPELL = 1.4;
+const SPELLS = 3;
+const STAR_HOLD = SPELL * SPELLS;
+const WORK_PEEK = 1.5;
+const WORK_PERIOD = BECOME + STAR_HOLD + RETURN + WORK_PEEK;
+/** With something waiting on the member: the ask's symbol for a while, between two shorter looks. */
+const WORK_ASK_HOLD = 2.6;
+const WORK_ASK = BECOME + WORK_ASK_HOLD + RETURN + 0.9;
+const SPELL_KINDS = ["tick", "whirl", "swell", "hop"] as const;
+const TICKS = [0.08, 0.5, 0.92];
+const STAR_HOP: Hop = { start: 0.12, length: 0.95, height: 15 };
 
-interface Bar {
-	kind: BarKind;
-	start: number;
+/** Past 1 and back: a turn that snaps into place. */
+function snap(x: number): number {
+	const u = clamp(x) - 1;
+	return 1 + 2.70158 * u ** 3 + 1.70158 * u ** 2;
 }
-const programs = new Map<number, { bars: Bar[]; length: number }>();
-/** An agent's bars: a long loop drawn once from its seed. It opens tapping, and never thinks, checks in or
- * gets into the zone twice running. */
-function program(seed: number): { bars: Bar[]; length: number } {
-	let made = programs.get(seed);
-	if (!made) {
-		const random = mulberry32(seed);
-		const bars: Bar[] = [];
-		let length = 0,
-			last: BarKind = "check";
-		for (let index = 0; index < 28; index++) {
-			const roll = random();
-			let kind: BarKind = roll < 0.5 ? "type" : roll < 0.7 ? "zone" : roll < 0.9 ? "think" : "check";
-			if (index === 0 || (kind === last && kind !== "type")) kind = "type";
-			bars.push({ kind, start: length });
-			length += BAR_LENGTH[kind];
-			last = kind;
+/** One spell of the star, `s` seconds in: its body's pose and the star's own turn and size. Every spell turns
+ * the star by quarter turns in all, so it ends as it began. */
+function spell(kind: (typeof SPELL_KINDS)[number], s: number): { body: BodyPose; turn: number; scale: number } {
+	if (kind === "tick") {
+		let turn = 0,
+			scale = 1;
+		for (const at of TICKS) {
+			turn += 90 * snap((s - at) / 0.3);
+			scale += 0.08 * pulse(s, at, at + 0.07, at + 0.1, at + 0.3);
 		}
-		made = { bars, length };
-		programs.set(seed, made);
+		return { body: REST, turn, scale };
 	}
-	return made;
+	if (kind === "whirl")
+		return { body: REST, turn: 720 * ease(0.06, 1.3, s), scale: 1 + 0.13 * pulse(s, 0.06, 0.5, 0.8, 1.3) };
+	if (kind === "swell")
+		return {
+			body: REST,
+			turn: 22 * pulse(s, 0, 0.2, 0.95, 1.25) * Math.sin(TAU * (s / 1.25)),
+			scale: 1 + 0.2 * pulse(s, 0.05, 0.28, 0.32, 0.6) + 0.14 * pulse(s, 0.62, 0.84, 0.88, 1.16),
+		};
+	const u = (s - STAR_HOP.start) / STAR_HOP.length;
+	return { body: hop(u, STAR_HOP.height), turn: 180 * ease(HOP_LAUNCH, HOP_LAND, u), scale: 1 };
 }
-function barAt(t: number, seed: number): { kind: BarKind; since: number; start: number } {
-	const { bars, length } = program(seed);
-	const loop = Math.floor(Math.max(0, t) / length);
-	const at = Math.max(0, t) - loop * length;
-	let bar = bars[0]!;
-	for (const each of bars) if (each.start <= at) bar = each;
-	return { kind: bar.kind, since: at - bar.start, start: loop * length + bar.start };
+/** The figure between two spells as the star. */
+function workPeek(s: number, which: number): Act {
+	if (which === 0) {
+		// A look at the member, a blink and a nod.
+		return {
+			body: { x: 0, y: 0, turn: 0, ...squash(0.07 * pulse(s, 0.62, 0.7, 0.74, 0.92)) },
+			eyes: pair({ height: blink(s, 0.36) * blink(s, 1.2) }),
+		};
+	}
+	if (which === 1) {
+		const look = -0.42 * pulse(s, 0.1, 0.24, 0.5, 0.64) + 0.42 * pulse(s, 0.64, 0.78, 1.04, 1.2);
+		return {
+			body: { x: 1.4 * look, y: 0, turn: 3 * look, scaleX: 1, scaleY: 1 },
+			eyes: pair({ x: look, height: blink(s, 1.26) }),
+		};
+	}
+	return { body: REST, eyes: pair({ smile: pulse(s, 0.08, 0.24, 1.05, 1.3) }) };
 }
 
-function bar(kind: BarKind, s: number): { body: BodyPose; eyes: Eyes } {
-	if (kind === "type") {
-		// The eyes step along the line, a tap at each step, then sweep back with a blink.
-		let x = -0.42 * ease(0, 0.14, s);
-		TAPS.forEach((tap, index) => {
-			if (index) x += 0.28 * ease(tap - 0.08, tap, s);
-		});
-		x *= 1 - ease(1.38, 1.6, s);
-		const { body } = hops(
-			s,
-			TAPS.map((start) => ({ start, ...TAP })),
-			0.08,
-		);
-		return { body, eyes: pair({ x, y: AT_WORK.y, height: AT_WORK.height * blink(s, 1.42) }) };
+function workAt(t: number, ask: Ask | undefined): { cycle: number; at: number; period: number } {
+	const period = WORK_PERIOD + (ask ? WORK_ASK : 0);
+	const cycle = Math.floor(Math.max(0, t) / period);
+	return { cycle, at: Math.max(0, t) - cycle * period, period };
+}
+
+/** A working figure `t` seconds in. `ask` is what also waits on the member, if anything does. */
+export function working(t: number, seed = 0, ask?: Ask): Act {
+	const { cycle, at } = workAt(t, ask);
+	if (at < BECOME) return become("star", at, {});
+	if (at < BECOME + STAR_HOLD) {
+		const s = at - BECOME;
+		const index = Math.min(SPELLS - 1, Math.floor(s / SPELL));
+		const now = spell(SPELL_KINDS[pick(seed, cycle, index, SPELL_KINDS.length)]!, s - index * SPELL);
+		return { body: now.body, symbol: symbolOf("star", now.turn, now.scale) };
 	}
-	if (kind === "zone") {
-		// Eyes set (narrow, tipped in at the top), leaning in, a fast run of taps; then it lets go.
-		const set = pulse(s, 0, 0.22, 1.62, 1.86);
-		const { body } = hops(
-			s,
-			ZONE_TAPS.map((start) => ({ start, ...ZONE_TAP })),
-			0.06,
-		);
-		const eye = { y: AT_WORK.y + 0.04 * set, height: (AT_WORK.height - 0.34 * set) * blink(s, 1.9) };
-		const out = pulse(s, 1.86, 1.98, 2.02, 2.2);
-		return {
-			body: both(body, {
-				x: 0,
-				y: 0,
-				turn: 0,
-				scaleX: (1 + 0.04 * set) * (1 - 0.03 * out),
-				scaleY: (1 + 0.04 * set) * (1 + 0.05 * out),
-			}),
-			eyes: [
-				{ ...EYE, ...eye, rotation: 13 * set },
-				{ ...EYE, ...eye, rotation: -13 * set },
-			],
-		};
-	}
-	if (kind === "think") {
-		// A look up and away, one eye narrowed, the body tipped; then the idea: eyes wide, a hop.
-		const away = pulse(s, 0, 0.3, 1.2, IDEA_AT);
-		const idea = pulse(s, IDEA_AT, IDEA_AT + 0.1, 2.15, 2.45);
-		const jump = hop((s - IDEA_AT) / 0.62, 13);
-		const eye = {
-			x: -0.34 * away,
-			y: AT_WORK.y * (1 - away) * (1 - idea) - 0.5 * away - 0.1 * idea,
-			height: (AT_WORK.height + (1.2 - AT_WORK.height) * idea) * blink(s, 2.5),
-			width: 1 + 0.06 * idea,
-		};
-		return {
-			body: both(jump, { x: -1.6 * away, y: 0, turn: -5 * away, scaleX: 1, scaleY: 1 }),
-			eyes: [
-				{ ...EYE, ...eye, height: eye.height * (1 - 0.28 * away) },
-				{ ...EYE, ...eye },
-			],
-		};
-	}
-	// A look at the member, a blink and a nod.
-	const up = pulse(s, 0, 0.2, 1.1, 1.36);
+	if (at < BECOME + STAR_HOLD + RETURN) return comeBack("star", at - BECOME - STAR_HOLD, {});
+	if (at < WORK_PERIOD) return workPeek(at - BECOME - STAR_HOLD - RETURN, pick(seed, cycle, 9, 3));
+	if (!ask) return { body: REST, eyes: openEyes() };
+	// Something waits on the member too: the figure comes back as its ask before it works on.
+	const s = at - WORK_PERIOD;
+	if (s < BECOME) return become(ask, s, WIDE);
+	if (s < BECOME + WORK_ASK_HOLD) return { body: askingSymbol(ask, s - BECOME, 0), symbol: symbolOf(ask) };
+	if (s < BECOME + WORK_ASK_HOLD + RETURN) return comeBack(ask, s - BECOME - WORK_ASK_HOLD, WIDE);
 	return {
-		body: { x: 0, y: 0, turn: 0, ...squash(0.07 * pulse(s, 0.72, 0.8, 0.84, 1)) },
-		eyes: pair({ y: AT_WORK.y * (1 - up), height: (AT_WORK.height + (1 - AT_WORK.height) * up) * blink(s, 0.46) }),
+		body: REST,
+		eyes: pair({ ...WIDE, height: WIDE.height * blink(s, BECOME + WORK_ASK_HOLD + RETURN + 0.3) }),
 	};
 }
-
-/** A working figure `t` seconds in. */
-export function working(t: number, seed = 0): Act {
-	const now = barAt(t, seed);
-	return bar(now.kind, now.since);
-}
-/** A working figure at rest, for a member who wants no motion: its eyes on its work. */
+/** A working figure at rest, for a member who wants no motion: the star alone. */
 export function workingStill(): Act {
-	return { body: REST, eyes: pair(AT_WORK) };
+	return { body: REST, symbol: symbolOf("star") };
 }
-/** What goes off around a working figure in (`from`, `to`]: a bit at each tap, every other one in the zone,
- * and a star as the idea comes. */
-export function workingCues(from: number, to: number, seed = 0): Cue[] {
+/** What goes off around a working figure in (`from`, `to`]: stars and dust as it changes, and what the star
+ * throws off in its spells. */
+export function workingCues(from: number, to: number, seed = 0, ask?: Ask): Cue[] {
 	const cues: Cue[] = [];
-	// Every bar that (`from`, `to`] touches, from the one `from` is in.
-	let at = Math.max(0, from);
-	for (let bars = 0; bars < 1000; bars++) {
-		const now = barAt(at, seed);
-		const taps =
-			now.kind === "type" ? TAPS : now.kind === "zone" ? ZONE_TAPS.filter((_, index) => index % 2 === 0) : [];
-		for (const tap of taps) cues.push({ at: now.start + tap + 0.06, effect: "bits" });
-		if (now.kind === "think") cues.push({ at: now.start + IDEA_AT + 0.16, effect: "idea" });
-		const next = now.start + BAR_LENGTH[now.kind];
-		if (next >= to) break;
-		at = next + 1e-6;
+	const { period } = workAt(0, ask);
+	for (let cycle = Math.floor(Math.max(0, from) / period); cycle * period < to; cycle++) {
+		const start = cycle * period;
+		cues.push(...changeCues(start, BECOME, true), ...changeCues(start + BECOME + STAR_HOLD, RETURN, false));
+		for (let index = 0; index < SPELLS; index++) {
+			const at = start + BECOME + index * SPELL;
+			const kind = SPELL_KINDS[pick(seed, cycle, index, SPELL_KINDS.length)]!;
+			if (kind === "tick") for (const tick of TICKS) cues.push({ at: at + tick + 0.12, effect: "bits" });
+			else if (kind === "whirl") cues.push({ at: at + 0.45, effect: "bits" }, { at: at + 0.8, effect: "bits" });
+			else if (kind === "swell") cues.push({ at: at + 0.3, effect: "bits" });
+			else cues.push(...landings([STAR_HOP], at));
+		}
+		if (ask) {
+			const asks = start + WORK_PERIOD;
+			cues.push(...changeCues(asks, BECOME, true), ...changeCues(asks + BECOME + WORK_ASK_HOLD, RETURN, false));
+			cues.push(...landings(ASK_HOPS, asks + BECOME + ASK_BEAT_FIRST));
+		}
 	}
 	return within(cues, from, to);
 }

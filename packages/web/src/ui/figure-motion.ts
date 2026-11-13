@@ -2,10 +2,11 @@ import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
 import {
 	type Act,
+	type Ask,
+	asking,
+	askingCues,
+	askingStill,
 	both,
-	calling,
-	callingCues,
-	callingStill,
 	type Effect,
 	type EyePose,
 	hoppingDots,
@@ -20,7 +21,7 @@ import {
 	nextIdle,
 	openEyes,
 	REST,
-	waitingMark,
+	type SymbolPose,
 	working,
 	workingCues,
 	workingStill,
@@ -28,7 +29,7 @@ import {
 import { alignRegion, boxCanvas, bucketOf, level, type Region } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 
-export type { Activity, Moment };
+export type { Activity, Ask, Moment };
 
 export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
@@ -43,9 +44,9 @@ export interface MotionOptions {
 	still?: boolean;
 	/** A local identity keeps the opening blink from restarting on view refresh. */
 	identity?: string;
-	/** The mark beside a figure whose work waits on the member (the rail's, styles/app.css `.rail-ask`): the
-	 * figure brings it up, shakes it, and takes it along when it jumps. */
-	mark?: HTMLElement;
+	/** What waits on the member, if anything does: a question to answer ("question") or anything else ("bang").
+	 * A figure that needs them (`Waiting`) becomes that symbol; one that works comes back as it between spells. */
+	ask?: Ask;
 	/** Left alone, the figure still blinks, looks around and moves now and then (the rail's figures). */
 	alive?: boolean;
 }
@@ -93,9 +94,6 @@ interface Clock {
 	next?: { at: number; kind: Moment };
 }
 const clocks = new Map<string, Clock>();
-/** When each agent's mark came up (performance.now()), kept while a view shows it: a rebuilt row's mark is
- * already up. */
-const raised = new Map<string, { at: number; users: number }>();
 const live = new Set<LiveMotion>();
 let frame = 0;
 let last = 0;
@@ -124,18 +122,14 @@ interface LiveMotion {
 	side: number;
 	/** This figure's eye boxes by level (figure-levels boxCanvas). */
 	boxes: Map<number, HTMLCanvasElement>;
-	mark?: HTMLElement;
-	markKey: string;
+	ask?: Ask;
 	alive: boolean;
 	/** A one-play act, `t` seconds in; `cued` is how far its effects have gone off. */
 	moment?: { kind: Moment; t: number; cued: number };
 	/** How far the activity's own effects have gone off, in its clock's seconds. */
 	cued: number;
-	/** Where the mark trails the body, in frame units. */
-	trail: { x: number; y: number };
-	/** The transforms on the page, so an unchanged pose writes nothing. */
+	/** The transform on the canvas, so an unchanged pose writes nothing. */
 	posed: string;
-	markPosed: string;
 	/** Where the effects go (made with the first one). */
 	effects?: HTMLElement;
 }
@@ -332,29 +326,26 @@ const signature = (poses: EyePose[]) =>
 		)
 		.join("|");
 
-/* ---- acting: the body, the eyes, the mark and the air around the figure (figure-acts.ts) ---- */
+/* ---- acting: the body, the eyes, the symbol and the air around the figure (figure-acts.ts) ---- */
 
 const round = (value: number, places = 2) => Number(value.toFixed(places));
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
-function acting(entry: LiveMotion, elapsed: number, reduced: boolean, now: number): Act {
+function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
 	if (reduced) {
-		const still = activity === "Waiting" ? callingStill() : activity === "Working" ? workingStill() : { body: REST };
-		return {
-			...still,
-			eyes: still.eyes ?? (activity === "Idle" ? openEyes() : undefined),
-			mark: { show: 1, wave: 0 },
-		};
+		if (activity === "Waiting") return askingStill(entry.ask ?? "bang");
+		if (activity === "Working") return workingStill();
+		return { body: REST, eyes: activity === "Idle" ? openEyes() : undefined };
 	}
 	const effects: Effect[] = [];
 	let act: Act = { body: REST };
 	if (activity === "Waiting") {
-		act = calling(elapsed, clock.seed);
-		for (const cue of callingCues(entry.cued, elapsed, clock.seed)) effects.push(cue.effect);
+		act = asking(elapsed, entry.ask ?? "bang", clock.seed);
+		for (const cue of askingCues(entry.cued, elapsed, clock.seed)) effects.push(cue.effect);
 	} else if (activity === "Working") {
-		act = working(elapsed, clock.seed);
-		for (const cue of workingCues(entry.cued, elapsed, clock.seed)) effects.push(cue.effect);
+		act = working(elapsed, clock.seed, entry.ask);
+		for (const cue of workingCues(entry.cued, elapsed, clock.seed, entry.ask)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {
 		// The studio's flourish, with the short cheer's jump under it.
@@ -373,17 +364,16 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean, now: numbe
 	if (playing) {
 		const played = moment(playing.kind, playing.t);
 		act.body = both(act.body, played.body);
-		// A cheer's smile is for a figure that has its eyes: the dots and the "!" have none.
+		// A cheer's smile is for a figure that has its eyes: the dots and the symbols have none.
 		if (played.eyes && act.eyes) act.eyes = played.eyes;
 		for (const cue of momentCues(playing.kind, playing.cued, playing.t)) effects.push(cue.effect);
 		playing.cued = playing.t;
 	}
-	if (entry.mark && !act.mark) act.mark = waitingMark((now - (raised.get(entry.markKey)?.at ?? now)) / 1000);
 	for (const effect of effects) burst(entry, effect);
 	return act;
 }
 
-/** Puts the body's pose on the canvas and the mark's on the mark, writing only what changed. */
+/** Puts the body's pose on the canvas, writing only what changed. */
 function place(entry: LiveMotion, act: Act): void {
 	const { body } = act;
 	const still = body.x === 0 && body.y === 0 && body.turn === 0 && body.scaleX === 1 && body.scaleY === 1;
@@ -394,25 +384,63 @@ function place(entry: LiveMotion, act: Act): void {
 		entry.canvas.style.transform = posed;
 		entry.posed = posed;
 	}
-	const { mark } = entry;
-	if (!mark) return;
-	const pose = act.mark ?? { show: 1, wave: 0 };
-	// The mark goes where the body goes, a beat behind it.
-	entry.trail.x += (body.x - entry.trail.x) * 0.4;
-	entry.trail.y += (body.y - entry.trail.y) * 0.4;
-	if (Math.abs(body.x - entry.trail.x) < 0.05) entry.trail.x = body.x;
-	if (Math.abs(body.y - entry.trail.y) < 0.05) entry.trail.y = body.y;
-	const unit = entry.side / 100;
-	const markPosed = `translate(${round(entry.trail.x * unit, 1)}px, ${round(entry.trail.y * unit, 1)}px) rotate(${round(pose.wave, 1)}deg) scale(${round(Math.max(0, pose.show), 3)})`;
-	if (markPosed !== entry.markPosed) {
-		mark.style.transform = markPosed;
-		entry.markPosed = markPosed;
+}
+
+/** The symbol a figure has become, in the figure's colour, on the 100-unit frame: a "?" or a "!" standing on
+ * the figure's ground, or the four-pointed star of work, turned and sized about its middle. */
+function drawSymbol(ctx: CanvasRenderingContext2D, symbol: SymbolPose, color: string): void {
+	const star = symbol.kind === "star";
+	const middle = star ? 49 : 50;
+	ctx.save();
+	ctx.fillStyle = ctx.strokeStyle = color;
+	ctx.lineCap = ctx.lineJoin = "round";
+	ctx.translate(50, middle);
+	ctx.rotate((symbol.turn * Math.PI) / 180);
+	ctx.scale(symbol.scale, symbol.scale);
+	ctx.translate(-50, -middle);
+	if (star) {
+		// Four points with sides drawn in towards the middle, the tips rounded by a stroke of the same colour.
+		const reach = 36,
+			waist = 12.5;
+		ctx.beginPath();
+		ctx.moveTo(50, middle - reach);
+		for (let point = 0; point < 4; point++) {
+			const between = ((point * 90 - 45) * Math.PI) / 180,
+				next = (((point + 1) * 90 - 90) * Math.PI) / 180;
+			ctx.quadraticCurveTo(
+				50 + Math.cos(between) * waist,
+				middle + Math.sin(between) * waist,
+				50 + Math.cos(next) * reach,
+				middle + Math.sin(next) * reach,
+			);
+		}
+		ctx.closePath();
+		ctx.fill();
+		ctx.lineWidth = 7;
+		ctx.stroke();
+	} else if (symbol.kind === "bang") {
+		ctx.beginPath();
+		ctx.roundRect(41.25, 12, 17.5, 48.5, 8.75);
+		ctx.fill();
+		ctx.beginPath();
+		ctx.arc(50, 78, 9.8, 0, Math.PI * 2);
+		ctx.fill();
+	} else {
+		ctx.lineWidth = 15.5;
+		ctx.beginPath();
+		ctx.arc(50, 35.5, 16.5, Math.PI * 1.08, Math.PI * 2.24);
+		ctx.quadraticCurveTo(52.5, 52.5, 50.5, 62);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.arc(50.5, 79.5, 9.3, 0, Math.PI * 2);
+		ctx.fill();
 	}
+	ctx.restore();
 }
 
 /* The effects: a few small shapes that fly and fade (styles/app.css `.figure-bit`), each gone when its
- * animation ends. The stars take the studio's Done accents; what flies off a working figure is in its own
- * colour. */
+ * animation ends. A cheer's stars take the studio's Done accents; the stars of a change and of work are in the
+ * figure's own colour. */
 const ACCENTS = ["#97cf66", "#a584d2", "#63bea9", "#658fd0", "#d98fa4", "#cfb94d"];
 const EASE_OUT = "cubic-bezier(0.2, 0.7, 0.2, 1)";
 const CENTRED = "translate(-50%, -50%)";
@@ -449,7 +477,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 	};
 	/** A star that flies out from the figure's middle by (`x`, `y`), turning, and is gone at the end; a slow one
 	 * hangs a moment and sinks a little. */
-	const star = (index: number, x: number, y: number, size: number, duration: number, delay: number, sink = 0) =>
+	const star = (x: number, y: number, size: number, duration: number, delay: number, sink: number, color: string) =>
 		fly(
 			"figure-sparkle",
 			[side * 0.5, side * 0.46],
@@ -464,7 +492,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 				{ transform: `${CENTRED} translate(${x}px, ${y + sink}px) scale(0) rotate(150deg)` },
 			],
 			{ duration, delay },
-			ACCENTS[index % ACCENTS.length],
+			color,
 		);
 	if (effect === "dust") {
 		// Two puffs pushed out along the ground, clear of the body.
@@ -480,18 +508,46 @@ function burst(entry: LiveMotion, effect: Effect): void {
 				],
 				{ duration: 460 },
 			);
+	} else if (effect === "pop") {
+		// The figure has become a symbol: five small stars in its own colour, out to all sides.
+		for (let index = 0; index < 5; index++) {
+			const angle = ((index * 72 - 20) * Math.PI) / 180;
+			const reach = side * (0.56 + 0.1 * (index % 2));
+			star(
+				Math.sin(angle) * reach,
+				-Math.cos(angle) * reach,
+				Math.max(5, side * 0.15),
+				620,
+				index * 14,
+				0,
+				entry.shown,
+			);
+		}
+	} else if (effect === "bits") {
+		// The working star throws off a small star of its own colour, to one side and up.
+		const way = Math.random() < 0.5 ? -1 : 1;
+		star(
+			way * side * (0.5 + 0.18 * Math.random()),
+			-side * (0.18 + 0.42 * Math.random()),
+			Math.max(4, side * (0.12 + 0.05 * Math.random())),
+			700,
+			0,
+			0,
+			entry.shown,
+		);
 	} else if (effect === "sparkles") {
 		// A burst over the head and shoulders.
 		for (let index = 0; index < 7; index++) {
 			const angle = ((-120 + index * 40 + (index % 2 ? 9 : -7)) * Math.PI) / 180;
 			const reach = side * (0.6 + 0.14 * (index % 2));
 			star(
-				index,
 				Math.sin(angle) * reach,
 				-Math.cos(angle) * reach,
 				Math.max(6, side * (0.17 + 0.035 * (index % 3))),
 				760 + index * 24,
 				index * 16,
+				0,
+				ACCENTS[index % ACCENTS.length]!,
 			);
 		}
 	} else if (effect === "shower") {
@@ -500,25 +556,22 @@ function burst(entry: LiveMotion, effect: Effect): void {
 			const angle = ((index * 36 + 14) * Math.PI) / 180;
 			const reach = side * (0.72 + 0.16 * (index % 3 === 0 ? 1 : 0));
 			star(
-				index + 2,
 				Math.sin(angle) * reach,
 				-Math.cos(angle) * reach * 0.86,
 				Math.max(7, side * (0.2 + 0.05 * (index % 2))),
 				1250 + index * 30,
 				index * 26,
 				side * 0.1,
+				ACCENTS[(index + 2) % ACCENTS.length]!,
 			);
 		}
-	} else if (effect === "twinkle" || effect === "idea") {
-		// One star that pops, turns on the spot and goes: beside the figure after a cheer, over its head for an idea.
-		const idea = effect === "idea";
+	} else {
+		// A twinkle: one star that pops beside the figure, turns on the spot and goes.
 		const way = Math.random() < 0.5 ? -1 : 1;
-		const size = Math.max(7, side * (idea ? 0.26 : 0.2));
+		const size = Math.max(7, side * 0.2);
 		fly(
 			"figure-sparkle",
-			idea
-				? [side * 0.5, side * 0.02]
-				: [side * (0.5 + way * (0.44 + 0.16 * Math.random())), side * (0.1 + 0.4 * Math.random())],
+			[side * (0.5 + way * (0.44 + 0.16 * Math.random())), side * (0.1 + 0.4 * Math.random())],
 			[size, size],
 			[
 				{ transform: `${CENTRED} translateY(${size * 0.5}px) scale(0) rotate(-40deg)` },
@@ -526,62 +579,9 @@ function burst(entry: LiveMotion, effect: Effect): void {
 				{ transform: `${CENTRED} scale(1) rotate(25deg)`, offset: 0.5 },
 				{ transform: `${CENTRED} translateY(${-size * 0.3}px) scale(0) rotate(90deg)` },
 			],
-			{ duration: idea ? 900 : 760 },
-			idea ? "#fcb51b" : ACCENTS[Math.floor(Math.random() * ACCENTS.length)],
+			{ duration: 760 },
+			ACCENTS[Math.floor(Math.random() * ACCENTS.length)],
 		);
-	} else if (effect === "bits") {
-		// A bit of work flies off over a shoulder, in the figure's own colour.
-		const way = Math.random() < 0.5 ? -1 : 1;
-		const size = Math.max(3, side * (0.075 + 0.03 * Math.random()));
-		const x = way * side * (0.3 + 0.22 * Math.random()),
-			y = -side * (0.3 + 0.2 * Math.random());
-		fly(
-			Math.random() < 0.3 ? "figure-sparkle" : "figure-chip",
-			[side * (0.5 + way * 0.26), side * 0.34],
-			[size, size],
-			[
-				{ transform: `${CENTRED} scale(0.2) rotate(0deg)`, opacity: 1 },
-				{
-					transform: `${CENTRED} translate(${x * 0.7}px, ${y * 0.8}px) scale(1) rotate(${way * 60}deg)`,
-					opacity: 1,
-					offset: 0.5,
-				},
-				{ transform: `${CENTRED} translate(${x}px, ${y}px) scale(0.5) rotate(${way * 110}deg)`, opacity: 0 },
-			],
-			{ duration: 640 },
-			entry.shown,
-		);
-	} else if (entry.mark) {
-		// Three short rays off the mark as it starts to shake, from where the mark is now.
-		const from = entry.host.getBoundingClientRect(),
-			mark = entry.mark.getBoundingClientRect();
-		const reach = mark.width * 0.75;
-		for (const degrees of [-62, -24, 14]) {
-			const angle = (degrees * Math.PI) / 180;
-			const x = Math.sin(angle) * reach,
-				y = -Math.cos(angle) * reach;
-			fly(
-				"figure-ray",
-				[mark.left + mark.width / 2 - from.left, mark.top + mark.height * 0.4 - from.top],
-				[Math.max(2, mark.width * 0.13), Math.max(4, mark.width * 0.3)],
-				[
-					{
-						transform: `${CENTRED} translate(${x * 0.6}px, ${y * 0.6}px) rotate(${degrees}deg) scaleY(0.2)`,
-						opacity: 1,
-					},
-					{
-						transform: `${CENTRED} translate(${x}px, ${y}px) rotate(${degrees}deg) scaleY(1)`,
-						opacity: 1,
-						offset: 0.45,
-					},
-					{
-						transform: `${CENTRED} translate(${x * 1.35}px, ${y * 1.35}px) rotate(${degrees}deg) scaleY(0.2)`,
-						opacity: 0,
-					},
-				],
-				{ duration: 520 },
-			);
-		}
 	}
 }
 
@@ -590,7 +590,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 const SYMBOLIC: readonly Activity[] = ["Blocked", "Thinking", "Done"];
 
 // The studio's 100-unit compositor. Bodies keep their original shading and silhouette; every eye is drawn.
-function paint(entry: LiveMotion, now = performance.now()): void {
+function paint(entry: LiveMotion): void {
 	const { canvas, artwork, activity } = entry;
 	const { localTime, pose, timelines } = motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
@@ -598,12 +598,14 @@ function paint(entry: LiveMotion, now = performance.now()): void {
 	// A member who wants no motion sees each state's still: its end, or (working, which has none) one second in.
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
 	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
-	const act = acting(entry, elapsed, reduced, now);
+	const act = acting(entry, elapsed, reduced);
 	place(entry, act);
 	const p = pose(activity, elapsed, { reduced });
+	const { symbol } = act;
 	const drawn: EyePose[] = act.eyes ?? p.face.map((face) => ({ ...face, smile: 0 }));
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
-	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${signature(drawn)}`;
+	const look = symbol ? `${symbol.kind}:${symbol.turn.toFixed(1)}:${symbol.scale.toFixed(3)}` : signature(drawn);
+	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${look}`;
 	canvas.dataset.frame = String(sample);
 	if (entry.painted === key) return;
 	entry.painted = key;
@@ -619,7 +621,9 @@ function paint(entry: LiveMotion, now = performance.now()): void {
 	ctx.scale(side / 100, side / 100);
 	const asset = surfaces.get(entry.id + entry.shown)!;
 	strokes(ctx, p.strokes, false, entry.side);
-	if (p.body > 0.001) {
+	// A figure that has become a symbol is drawn as the symbol, in its own colour.
+	if (symbol) drawSymbol(ctx, symbol, entry.shown);
+	else if (p.body > 0.001) {
 		const bucket = bucketOf(side),
 			surface = entry.id + entry.shown;
 		const eyes = artwork.faces[entry.id]!;
@@ -772,8 +776,7 @@ function recolor(entry: LiveMotion): void {
 
 function moving(entry: LiveMotion, now = performance.now()): boolean {
 	if (!motion || entry.still || media?.matches) return false;
-	// A one-play act, and a mark: it sways and shakes for as long as it is up.
-	if (entry.moment || entry.mark) return true;
+	if (entry.moment) return true;
 	const { activity, clock } = entry;
 	if (activity === "Working" || activity === "Thinking" || activity === "Waiting") return true;
 	const { timelines } = motion;
@@ -843,7 +846,7 @@ function tick(now: number): void {
 			playing.t += elapsed;
 			if (playing.t >= MOMENT_LENGTH[playing.kind]) entry.moment = undefined;
 		}
-		paint(entry, now);
+		paint(entry);
 	}
 	if ([...live].some((entry) => entry.ready && entry.visible && moving(entry, now)))
 		frame = requestAnimationFrame(tick);
@@ -879,11 +882,6 @@ export function mountFigureMotion(
 	const clock = clocks.get(clockKey) ?? { elapsed: 0, users: 0, seed: hash(identity) };
 	clock.users++;
 	clocks.set(clockKey, clock);
-	if (options.mark) {
-		const up = raised.get(identity) ?? { at: performance.now(), users: 0 };
-		up.users++;
-		raised.set(identity, up);
-	}
 	const entry: LiveMotion = {
 		host,
 		canvas,
@@ -900,13 +898,10 @@ export function mountFigureMotion(
 		painted: "",
 		side: 36,
 		boxes: new Map(),
-		mark: options.mark,
-		markKey: identity,
+		ask: options.ask,
 		alive: Boolean(options.alive),
 		cued: clock.elapsed,
-		trail: { x: 0, y: 0 },
 		posed: "",
-		markPosed: "",
 	};
 	live.add(entry);
 	if (!lifetime) {
@@ -1007,10 +1002,6 @@ export function mountFigureMotion(
 			visibility?.unobserve(host);
 			sizes?.unobserve(host);
 			if (--clock.users === 0) clocks.delete(clockKey);
-			if (entry.mark) {
-				const up = raised.get(identity);
-				if (up && --up.users === 0) raised.delete(identity);
-			}
 			if (!live.size) {
 				if (frame) cancelAnimationFrame(frame);
 				frame = 0;
