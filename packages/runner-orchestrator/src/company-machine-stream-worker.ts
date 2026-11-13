@@ -145,18 +145,19 @@ export class WorkerDesktop implements WatchedDesktop {
 		this.#worker = new Worker(entry, {
 			workerData: { role: DESKTOP_STREAM_WORKER_ROLE, spec },
 			resourceLimits: { ...DESKTOP_STREAM_WORKER_LIMITS, ...options.resourceLimits },
-			stdout: true,
-			stderr: true,
 		});
-		// Nothing of the worker's own output is read here.
-		this.#worker.stdout.resume();
-		this.#worker.stderr.resume();
 		this.#worker.on("message", (message: unknown) => this.#receive(message));
 		this.#worker.on("messageerror", () => this.#fail("a message the main side could not read"));
 		this.#worker.on("error", (error: Error & { code?: string }) =>
 			this.#fail(`worker error ${error.code ?? error.name ?? "unknown"}`),
 		);
 		this.#worker.on("exit", (code) => this.#fail(`worker exited ${code}`));
+		// A worker never keeps the executor's process alive: its members' streams end with the listener when the executor
+		// stops, and a worker left over would only hold the stop until systemd's kill. After its listeners: a `message`
+		// listener refs the port again. (Its output goes to the executor's own, as Node passes it on: it writes none of
+		// its own and never a guest's byte; its streams taken and resumed here would hold the process open whatever this
+		// says.)
+		this.#worker.unref();
 		this.#pinger = setInterval(() => {
 			if (this.#now() - this.#lastPong > this.#pongWithinMs) this.#fail("no answer to its pings");
 			else this.#post({ t: "ping" });

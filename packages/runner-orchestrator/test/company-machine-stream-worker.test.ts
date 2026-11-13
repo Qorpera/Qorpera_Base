@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -290,6 +291,26 @@ describe("a desktop watched in a worker thread of its own (review r11 of #1746)"
 		expect(result.heapGrowth).toBeLessThan(16 * 1024 * 1024);
 		stop.abort();
 		expect(await ending).toBe("closed");
+	}, 30_000);
+
+	it("never keeps the executor's process alive by itself: a process with only a watched desktop left ends", () => {
+		const module = new URL("../src/company-machine-stream-worker.ts", import.meta.url).href;
+		const dir = mkdtempSync(join(tmpdir(), "desktop-stream-worker-"));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const script = join(dir, "only-a-desktop.mjs");
+		writeFileSync(
+			script,
+			[
+				`import { WorkerDesktop } from ${JSON.stringify(module)};`,
+				`const desktop = new WorkerDesktop(new URL(${JSON.stringify(fixture("tcp").href)}), ${JSON.stringify(spec("1"))}, () => {});`,
+				// Its worker runs (nothing ended it) when the process has nothing else left to do.
+				'setTimeout(() => console.log("running", desktop.ended === null), 500);',
+			].join("\n"),
+		);
+		const done = spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 15_000 });
+		expect(done.stdout.trim()).toBe("running true");
+		expect(done.signal).toBeNull();
+		expect(done.status).toBe(0);
 	}, 30_000);
 
 	it("caps the worker's heap by its own limits", () => {
