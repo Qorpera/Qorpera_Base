@@ -40,7 +40,7 @@ import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
-import { EXEC_SERVER_OUTPUT_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { LinePipe } from "./machine-exec-server.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -3524,45 +3524,52 @@ export class LxdCompanyMachineHost {
 		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
 	}
 
-	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
-	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
-	 * and a restart of its guest waits for it (#delivered). */
 	/**
 	 * The agent's home (lanes/agent-box-20261113, slice 1): `codex exec-server --listen stdio` inside the machine, as
-	 * the machine's own unprivileged agent account, with its lines carried both ways for as long as the run's channel
-	 * lasts. The caller (the ingress) has proven the run's holder and SQL has authorized this session.
+	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
+	 * with its lines carried both ways for as long as the run's channel lasts. The ingress has proven the run's holder
+	 * and SQL has authorized this session on this boot; the guest's own shell checks that boot again at the exec
+	 * (ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start never does.
 	 *
-	 * This is the only command of a machine that is not a `machine_run`: it starts no unit, writes no inbox file and
-	 * leaves no command row. What the model does through it is reviewed by the run's own host before a line gets here
-	 * (slice 4) and recorded as the run's steps (slice 2); the changes it makes land in the company folder through the
-	 * machine's `/company` mount, as every change on a machine does.
+	 * It starts no unit, writes no inbox file and leaves no command row. What the model does through it is reviewed by
+	 * the run's own host before a line gets here (slice 4) and kept as the run's steps (slice 2); the changes it makes
+	 * land in the company folder through the machine's `/company` mount, as every change on a machine does.
 	 */
 	async execServer(
-		input: { readonly placementId: string; readonly sessionId: string },
+		input: { readonly placementId: string; readonly sessionId: string; readonly bootId: string },
 		signal: AbortSignal,
 	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
-		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId))
+		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId) || !UUID.test(input.bootId))
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
-		const name = lxdCompanyMachineName(input.placementId);
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const toMachine = new LinePipe();
 		const fromMachine = new LinePipe();
 		const run = new AbortController();
 		const stop = (): void => run.abort();
 		signal.addEventListener("abort", stop, { once: true });
-		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
-		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const pipe = exec(
 			this.#policy.project,
-			name,
+			lxdCompanyMachineName(input.placementId),
 			{
-				command: [CLOUD_MACHINE_HOME.codex, "exec-server", "--listen", "stdio"],
+				command: [
+					"/bin/sh",
+					"-c",
+					ON_BOOT,
+					input.bootId,
+					CLOUD_MACHINE_HOME.codex,
+					"exec-server",
+					"--listen",
+					"stdio",
+				],
 				user: CLOUD_MACHINE_HOME.uid,
 				group: CLOUD_MACHINE_HOME.gid,
 				environment: {
 					HOME: CLOUD_MACHINE_HOME.home,
 					USER: CLOUD_MACHINE_HOME.account,
+					LOGNAME: CLOUD_MACHINE_HOME.account,
 					CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
-					PATH: "/usr/local/bin:/usr/bin:/bin",
+					PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 					LANG: "C.UTF-8",
 					TZ: "UTC",
 					NO_COLOR: "1",
@@ -3570,13 +3577,16 @@ export class LxdCompanyMachineHost {
 				cwd: CLOUD_MACHINE_HOME.cwd,
 				stdin: toMachine.read(),
 				onStdout: (chunk) => fromMachine.push(chunk),
-				maxStdoutBytes: EXEC_SERVER_OUTPUT_BYTES,
+				// Streamed, so nothing is kept and nothing is bounded here: fromMachine ends the channel when more than
+				// its own bound waits unread.
+				maxStdoutBytes: 0,
 				stderrTailBytes: 4096,
 			},
 			run.signal,
 		)
 			.catch(() => undefined)
 			.finally(() => {
+				signal.removeEventListener("abort", stop);
 				fromMachine.end();
 				toMachine.end();
 			});
@@ -3584,13 +3594,15 @@ export class LxdCompanyMachineHost {
 			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
 			lines: fromMachine.lines(),
 			close: async () => {
-				signal.removeEventListener("abort", stop);
 				toMachine.end();
 				run.abort();
 				await pipe;
 			},
 		};
 	}
+	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
+	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
+	 * and a restart of its guest waits for it (#delivered). */
 	async command(
 		authority: CompanyMachineCommandAuthority,
 		request: CompanyMachineCommand,

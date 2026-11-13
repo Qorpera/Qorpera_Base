@@ -17,6 +17,9 @@ import {
 	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
+	CLOUD_HOME_CHANNEL_REASON,
+	CloudHomeChannelRefused,
+	type CloudHomeChannelRequest,
 	type CloudHomeChannelSide,
 	type CloudHomeSessionAnswer,
 	type CloudHomeSessionAuthorized,
@@ -326,14 +329,19 @@ export interface CloudCodingCommandServiceOptions {
 	 * The agent's home on the same ingress (slice 1): the one route that keeps a channel open, so a run's Codex can
 	 * run its own shell and file tools on its machine. `authorize` is SQL's
 	 * (`qorpera_authorize_home_session`), asked after the holder is proven and before a byte reaches the machine;
-	 * `open` is the executor's own host, which starts `codex exec-server --listen stdio` there as the agent's user.
+	 * `open` starts `codex exec-server --listen stdio` on the machine as its agent account, on this node's own machine
+	 * or, for a machine another node holds, through that node's peer listener (as a machine command is forwarded).
 	 */
 	home?: {
 		authorize(
 			request: { binding: CloudNativeToolBinding; machineId: string; sessionId: string },
 			signal: AbortSignal,
 		): Promise<CloudHomeSessionAnswer>;
-		open(authority: CloudHomeSessionAuthorized, signal: AbortSignal): Promise<CloudHomeChannelSide>;
+		open(
+			authority: CloudHomeSessionAuthorized,
+			request: CloudHomeChannelRequest,
+			signal: AbortSignal,
+		): Promise<CloudHomeChannelSide>;
 	};
 	host?: "127.0.0.1" | "::1";
 	port?: number;
@@ -400,13 +408,19 @@ export class HttpCloudCodingCommandService {
 	 * then the machine. Anything that does not hold ends the socket with one line saying why, in the words the host
 	 * gives the model, and never an address, a token or a session of another run.
 	 */
-	async #home(request: IncomingMessage, socket: Socket): Promise<void> {
+	async #home(request: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
 		const home = this.#options.home;
+		const prove = this.#options.proveBinding;
 		const controller = new AbortController();
 		this.#controllers.add(controller);
 		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
-		const holder = request.headers["x-qorpera-identity"];
+		const header = request.headers["x-qorpera-identity"];
+		// The run's ingress proves the run's holder; a peer listener takes none, as for a machine command: only
+		// executors hold its token, and the forwarding one proved the holder at its own ingress.
+		const holder = typeof header === "string" && isNativeJobHolder(header) ? header : undefined;
 		socket.on("error", () => undefined);
+		// Bytes that came in behind the request's own head belong to the channel.
+		if (head.byteLength > 0) socket.unshift(head);
 		const refuse = (reason: string): void => {
 			// Before the upgrade is completed there is no channel to answer on, so the socket simply ends.
 			socket.end(
@@ -422,8 +436,7 @@ export class HttpCloudCodingCommandService {
 				String(request.headers.upgrade ?? "").toLowerCase() !== CLOUD_HOME_CHANNEL_PROTOCOL ||
 				bearer.length !== this.#token.length ||
 				!timingSafeEqual(bearer, this.#token) ||
-				typeof holder !== "string" ||
-				!isNativeJobHolder(holder)
+				(prove && holder === undefined)
 			) {
 				refuse("unavailable");
 				return;
@@ -444,7 +457,7 @@ export class HttpCloudCodingCommandService {
 				return;
 			}
 			const binding = parseCloudNativeToolBinding(handshake.binding);
-			if (this.#options.proveBinding) await this.#options.proveBinding(binding, holder, controller.signal);
+			if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
 			const authority = await home.authorize(
 				{ binding, machineId: handshake.machineId, sessionId: handshake.sessionId },
 				controller.signal,
@@ -453,7 +466,7 @@ export class HttpCloudCodingCommandService {
 				socket.end(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
 				return;
 			}
-			side = await home.open(authority, controller.signal);
+			side = await home.open(authority, { binding, holder }, controller.signal);
 			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
 			const machine = side;
 			// Either side ending ends the other (review round 1, F3): the exec-server on the machine waits on its
@@ -476,8 +489,14 @@ export class HttpCloudCodingCommandService {
 				side = undefined;
 			}
 			await fromMachine.catch(() => undefined);
-		} catch {
-			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
+		} catch (error) {
+			// A peer's refusal keeps its reason, so the run's host can tell the model which it is; anything else is
+			// only "unavailable", never the error's own words.
+			const reason =
+				error instanceof CloudHomeChannelRefused && CLOUD_HOME_CHANNEL_REASON.test(error.reason)
+					? error.reason
+					: "unavailable";
+			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason })}\n`);
 		} finally {
 			this.#controllers.delete(controller);
 			controller.abort();
@@ -494,7 +513,8 @@ export class HttpCloudCodingCommandService {
 		});
 		// The home's channel (slice 1). An upgraded socket leaves the per-request bounds below behind, which a channel
 		// that lives as long as a model's turn cannot keep; every other route stays exactly as it is.
-		if (this.#options.home) server.on("upgrade", (request, socket) => void this.#home(request, socket as Socket));
+		if (this.#options.home)
+			server.on("upgrade", (request, socket, head) => void this.#home(request, socket as Socket, head));
 		this.#server = server;
 		server.requestTimeout = 15000;
 		server.headersTimeout = 10000;

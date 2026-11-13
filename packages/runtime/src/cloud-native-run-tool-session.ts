@@ -255,11 +255,17 @@ export async function runCloudNativeRunToolSession(options: {
 					review
 						? await review.check(
 								{
-									// Work on a company machine, under its own name, so an approval of one native action is
-									// never an approval of another and a parked card names what the model actually asked for
-									// (`home_command`, `home_change`; cloud-action-review.ts). The identity is the whole
-									// action, which is also what the step below keeps.
-									tool: { name: action.tool, source: "runtime" },
+									// Work on a company machine, under its own names (`home_command`, `home_change`), by the
+									// same rule and cards as `machine_run` (cloud-action-review.ts). The identity is what the
+									// model chose for this action; a lone file write also shows the reviewer its text, as a
+									// folder tool's write does.
+									tool: {
+										name: action.tool,
+										source: "runtime",
+										...(action.contents === undefined
+											? {}
+											: { reviewContents: () => action.contents as JsonValue }),
+									},
 									parsed: JSON.parse(action.argumentsText) as JsonValue,
 									argumentsText: action.argumentsText,
 									argumentSha256: action.argumentSha256,

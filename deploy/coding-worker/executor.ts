@@ -525,11 +525,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
 		machines: machineCommandRoutes(machineRouter, control, false),
-		// The agent's home (slice 1): one channel per run, on this node's own machines. A peer's runs reach their
-		// home through their own node's ingress, as a machine command of another node's does.
+		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
+		// holds it, as a machine command is.
 		home: {
 			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
-			open: (authority, signal) => machineRouter.execServer(authority, signal),
+			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal),
 		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
@@ -539,6 +539,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
 		machines: machineCommandRoutes(machineRouter, control, true),
+		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
+		home: {
+			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
+			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal, true),
+		},
 	});
 	// The member listener: loopback only; a failed look is logged by its fixed code, never with the member's token.
 	const memberScreens = config.memberScreens ? new HttpCloudMemberMachineScreenService({

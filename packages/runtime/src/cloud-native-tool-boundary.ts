@@ -268,6 +268,9 @@ export interface CloudNativeActionReview {
 			argumentsText: string;
 			argumentSha256: string;
 			callId: string;
+			/** How the agent makes this action happen once its card is approved, when calling the same tool again is
+			 * not what it would do (the agent's home: CloudActionCall.repeat). */
+			repeat?: string;
 		},
 		signal: AbortSignal,
 	): Promise<CloudActionGateResult>;

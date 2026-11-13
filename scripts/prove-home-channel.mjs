@@ -770,9 +770,12 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 						machine: { id: machine.id, name: machine.name },
 						review: {
 							check: async (action, signal) => {
+								const parsed = JSON.parse(action.argumentsText);
 								state.reviews.push({
 									tool: action.tool,
+									callId: action.callId,
 									summary: action.summary.slice(0, 200),
+									...(parsed.into === undefined ? {} : { into: parsed.into }),
 									// The identity an approval covers: the whole action, not the words on the card (F1).
 									argumentSha256: action.argumentSha256,
 									argumentsBytes: Buffer.byteLength(action.argumentsText),
@@ -831,6 +834,9 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 		// much went each way.
 		record.homeCause = state.homes?.map((home) => ({ cause: home.cause ?? null, failure: home.failure ?? null, counts: home.counts })) ?? [];
 		process.stdout.write(`home: ${JSON.stringify(record.homeCause)}; reviews ${state.reviews.length}; exec lines ${state.exec.length}\n`);
+		record.exec = state.exec.map((line) => ({ direction: line.direction, method: line.method, bytes: line.bytes, line: (line.line ?? "").slice(0, 300) }));
+		for (const line of state.exec.slice(-12))
+			process.stdout.write(`exec ${line.direction} ${line.method ?? "-"} ${(line.line ?? "").slice(0, 200)}\n`);
 		for (const refusal of db.refusals) process.stdout.write(`refused ${refusal.slice(0, 400)}\n`);
 		process.stdout.write(`codex stderr (last 3000):\n${logs.codexStderr.slice(-3000)}\n`);
 		process.stdout.write(`machine stderr (last 3000):\n${logs.machineStderr.slice(-3000)}\n`);
@@ -1022,6 +1028,12 @@ async function attemptRun(code, { db, binding, scratch, identityRoot, nativeBina
 // ---- The scenarios -------------------------------------------------------------------------------------------------
 
 const exec = (args) => () => ({ name: "exec_command", arguments: args });
+/** A write into the shell the last command left running: its session id, as Codex's own output names it. */
+const stdin = (outputs, chars) => {
+	const id = outputs.map((output) => /session ID (\d+)|"session_id"\s*:\s*(\d+)/i.exec(output.output)).filter(Boolean).at(-1);
+	if (!id) throw new Error(`no running shell to type into: ${outputs.map((output) => output.output.slice(0, 300)).join(" | ")}`);
+	return { name: "write_stdin", arguments: { session_id: Number(id[1] ?? id[2]), chars, yield_time_ms: 500 } };
+};
 /** The slot's scratch root, from the bwrap arguments the slot logged (its workspace is the namespace's --chdir). */
 const slotRootOf = (state) => {
 	const bwrap = readFileSync(join(state.logDir, "slot.jsonl"), "utf8")
@@ -1171,9 +1183,10 @@ async function main() {
 		await run("review", {
 			home: {
 				// What the run's own review gate would answer for this action. A command Codex itself refuses by its own
-				// policy (`rm -rf`) never reaches this host at all, so the proof declines one Codex allows.
-				decide: (call) =>
-					/declined\.txt/.test(call.summary)
+				// policy (`rm -rf`) never reaches this host at all, so the proof declines what Codex allows: a command, a
+				// line typed into a running shell, and a patch.
+				decide: (action) =>
+					/declined\.txt|forbidden-typed|declined\.md/.test(action.argumentsText)
 						? { run: false, text: "REVIEW_DENIED: this action was not allowed. The action did not happen. Do not retry it." }
 						: undefined,
 			},
@@ -1181,6 +1194,14 @@ async function main() {
 				exec({ cmd: "touch /company/reviewed.txt && echo touched" }),
 				exec({ cmd: "touch /company/declined.txt && echo oops" }),
 				exec({ cmd: "ls /company" }),
+				// A shell that keeps running, and what the model types into it (review round 1, F2).
+				(_outputs, state) => ({ name: "exec_command", arguments: { cmd: "cat > /company/typed.txt", yield_time_ms: 1000, ...tty(state) } }),
+				(outputs) => stdin(outputs, "typed by the model\n"),
+				(outputs) => stdin(outputs, "forbidden-typed\n"),
+				(outputs) => stdin(outputs, "\u0004"),
+				// A patch the review declines, and one it allows: each reviewed once, whole.
+				() => ({ custom: "apply_patch", input: "*** Begin Patch\n*** Add File: notes/declined.md\n+never written\n*** End Patch\n" }),
+				() => ({ custom: "apply_patch", input: "*** Begin Patch\n*** Add File: notes/allowed.md\n+written once reviewed\n*** Add File: notes/also.md\n+the same patch\n*** End Patch\n" }),
 			],
 			check: async ({ state, record, machine }) => {
 				assert(existsSync(join(machine.company, "reviewed.txt")), "the allowed command ran");
@@ -1192,9 +1213,32 @@ async function main() {
 				const listed = shown(state, state.calls[2].callId)?.text ?? "";
 				assert(listed.includes("reviewed.txt") && !listed.includes("declined.txt"), listed);
 				for (const review of state.reviews)
-					assert(review.argumentSha256?.length === 64 && review.argumentsBytes > review.summary.length,
+					assert(review.argumentSha256?.length === 64 && review.argumentsBytes >= review.summary.length,
 						`each review's identity is the whole action, not the card's words: ${JSON.stringify(review)}`);
-				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.tool}: ${review.summary.slice(0, 48)}`).join("; ")}); the declined one never reached it (${starts.length} of ${state.reviews.length} were started there), the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
+				const commands = state.reviews.filter((review) => review.tool === "home_command" && review.summary.startsWith("touch "));
+				pass(`the review at the host: ${commands.length} commands were reviewed before the machine saw them (${commands.map((review) => review.summary.slice(0, 48)).join("; ")}); the declined one never reached it, the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
+				// What the model typed into the running shell: each line reviewed with the shell it went into.
+				const typed = readFileSync(join(machine.company, "typed.txt"), "utf8");
+				assert(typed.includes("typed by the model") && !typed.includes("forbidden-typed"), `typed.txt: ${JSON.stringify(typed)}`);
+				const writes = state.reviews.filter((review) => review.into !== undefined);
+				assert(writes.some((review) => review.summary === "typed by the model\n" && review.into?.command === "cat > /company/typed.txt"),
+					`the line typed was reviewed with its shell: ${JSON.stringify(writes)}`);
+				const refusedTyping = shown(state, state.calls[5].callId)?.text ?? "";
+				assert(refusedTyping.includes("REVIEW_DENIED"), `the model was told its typing was declined: ${refusedTyping.slice(0, 300)}`);
+				assert(!state.exec.some((line) => line.method === "process/write" && line.decoded.includes("forbidden-typed")),
+					"no byte of the declined typing reached the machine");
+				// The patches: the declined one wrote nothing; the allowed one wrote both files after ONE review.
+				assert(!existsSync(join(machine.company, "notes/declined.md")), "the declined patch wrote nothing");
+				const refusedPatch = shown(state, state.calls[7].callId)?.text ?? shown(state, state.calls[7].callId)?.output ?? "";
+				const told = refusedPatch.includes("REVIEW_DENIED");
+				assert(readFileSync(join(machine.company, "notes/allowed.md"), "utf8").includes("written once reviewed"));
+				assert(existsSync(join(machine.company, "notes/also.md")), "the allowed patch wrote both its files");
+				const allowedReviews = state.reviews.filter((review) => review.callId === state.calls[8].callId);
+				assert.equal(allowedReviews.length, 1, `one review for the whole patch: ${JSON.stringify(allowedReviews)}`);
+				assert(allowedReviews[0].summary === "Change 2 files: notes/allowed.md, notes/also.md", allowedReviews[0].summary);
+				pass(`the review covers what is typed and what is patched: ${writes.length} lines typed into a running shell were reviewed with the shell they went into (the declined one never reached the machine, and the model was told REVIEW_DENIED); a patch of 2 files was reviewed once, whole ("${allowedReviews[0].summary}"), and the declined patch wrote nothing${told ? ", its refusal reaching the model in the review's words" : ` (the model was shown ${JSON.stringify(refusedPatch.slice(0, 160))})`}`);
+				if (!told) note(`a declined patch: Codex gave the model ${JSON.stringify(refusedPatch.slice(0, 600))}`);
+				record.reviewDetail = { writes, allowedReviews, refusedPatch: refusedPatch.slice(0, 2000) };
 			},
 		});
 		// 5. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the

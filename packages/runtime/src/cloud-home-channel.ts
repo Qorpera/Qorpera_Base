@@ -48,13 +48,40 @@ export interface CloudHomeSessionAuthorized {
 	readonly machineId: string;
 	readonly machine: string;
 	readonly placementId: string;
+	/** The machine's boot SQL authorized: the guest's own shell checks it again when it starts the exec-server. */
+	readonly bootId: string;
 	readonly executorOwner: string;
 	readonly providerId: string;
+}
+
+/** Who asked for a channel, as the ingress passes it to `open`, so an executor that does not hold the machine can
+ * forward the channel to the one that does (as a machine command is forwarded). */
+export interface CloudHomeChannelRequest {
+	readonly binding: CloudNativeToolBinding;
+	/** The run's holder as its own ingress read it; a peer listener takes none (only executors hold its token). */
+	readonly holder: string | undefined;
 }
 
 export type CloudHomeSessionAnswer =
 	| CloudHomeSessionAuthorized
 	| { readonly state: "refused"; readonly reason: string };
+
+/** A refusal's reason as it travels: one of SQL's or the ingress's own codes, never words, an address or an id. */
+export const CLOUD_HOME_CHANNEL_REASON = /^[A-Z][A-Z_]{0,63}$/;
+
+/**
+ * The ingress said no, with its reason (the machine is not running, this boot is over, the home is busy with another
+ * run's work). The run's host turns the reason into words the model can act on; a forwarding executor passes it on
+ * to the run unchanged.
+ */
+export class CloudHomeChannelRefused extends Error {
+	readonly reason: string;
+
+	constructor(reason: string) {
+		super(`cloud_home_channel_unavailable: ${reason}`);
+		this.reason = reason;
+	}
+}
 
 /** One side of the channel: the machine's, as the executor's host opens it, and the run's, as its host sees it. */
 export interface CloudHomeChannelSide {
