@@ -1633,12 +1633,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // amendment, proposed).
 // With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
 // processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
+// With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
+// three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
+			instructions: "55e323ab9a6b1f46bc8e2ea8dbad4e8dadbf654f9c8bf1d095c09d705e20d134",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1646,7 +1648,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "e102952e71bddea9df3a45a85a4c0128ea34efe0176083b2af174f7d2c7de7cf",
+			instructions: "20a7e04501a91c4a9a2e456de8c47e11ee0728dda5152c158a7b08e3a10421d1",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1654,7 +1656,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
+			instructions: "55e323ab9a6b1f46bc8e2ea8dbad4e8dadbf654f9c8bf1d095c09d705e20d134",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1798,7 +1800,7 @@ it("has a render lit and looked at like a photograph, on a machine sized for it 
 	// A worker renders too: how a render is lit and looked at is in what every run reads.
 	for (const instructions of [staff, worker])
 		for (const rule of [
-			"A render meant to look real is lit and looked at like a photograph: light it with a real environment (an HDRI) and give its surfaces textured materials, such as Poly Haven's free ones (CC0), never plain colours in a dark, empty world.",
+			"A render meant to look real is lit and looked at like a photograph: light it with a real environment (an HDRI) and give its surfaces textured materials, never plain colours in a dark, empty world: a machine has Blender and a starter set of both (/opt/qorpera-assets/README.md), and Poly Haven has more, free to use (CC0).",
 			"Before anyone sees it, render one small frame into the company folder, open it with company_read and name what gives it away as computer-made, such as flat light, an empty background, surfaces that are too clean, edges that are too sharp or things that float",
 			"fix the weakest thing and render again, and render the final frames only when the small one holds up, on a machine sized for it (machine_start with cpus 8 or more), because a render uses every processor it is given.",
 		])

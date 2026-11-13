@@ -184,7 +184,7 @@ const MACHINE_SIZE_FOR_THE_JOB =
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
-	"Playwright with its Chromium (require('playwright')), a chromium command and ffmpeg are installed too: checking a page, taking pictures of it or filming it needs no screen. " +
+	"Playwright with its Chromium (require('playwright')), a chromium command, ffmpeg and Blender (with real light, materials and furniture for renders: read /opt/qorpera-assets/README.md) are installed too: checking a page, taking pictures of it or filming it needs no screen. " +
 	"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
 	MACHINE_SIZE_FOR_THE_JOB +
 	"A machine has no screen unless you ask: desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB, for work that needs a real screen, such as testing a product the way a person uses it or driving an app's interface (a smaller machine refuses its desktop). " +
