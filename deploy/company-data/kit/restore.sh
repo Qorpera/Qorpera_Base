@@ -10,8 +10,9 @@
 #   COMPOSE_PROJECT_NAME=company-data-restore DATA_LOCAL=/opt/company-data/restore ./restore.sh latest '...'
 # Prints names, counts and times only.
 set -euo pipefail
-# The store alone, whatever this machine's .env says: never replication.yml's published port, never the gateway.
-export COMPOSE_FILE=docker-compose.yml
+# The store alone, whatever this machine's .env says: never replication.yml's published port, never the gateway, never
+# its run door (an empty DATA_RUN_LISTEN wins over the .env, so lib.sh adds no run-door.yml).
+export COMPOSE_FILE=docker-compose.yml DATA_RUN_LISTEN=
 . "$(dirname "$0")/lib.sh"
 export DATA_BACKUP_MODE=ro
 want=${1:-}
