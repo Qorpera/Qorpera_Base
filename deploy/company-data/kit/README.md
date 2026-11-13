@@ -151,9 +151,11 @@ backend 19.7 s after its call.
 
 ## Not done here
 
-- **The machines.** A machine pair (§2) or the platform database's machine: the choice is open. A pair needs
-  `dbvm190.py`'s copy with new names, enrolment as infrastructure and a headroom change on both nodes before it
-  starts. Either way the machine needs Docker with the two pinned images pulled, and the kit's files.
+- **The machines.** Decided (Jonas, 13 November 2026; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §13): the
+  store runs on a machine pair of its own, the primary on node 1 and the standby on node 2, never inside the
+  platform database's machine. Making the pair is not done: it needs `dbvm190.py`'s copy with new names, enrolment
+  as infrastructure and a headroom change on both nodes before it starts. Each machine needs Docker with the two
+  pinned images pulled, and the kit's files.
 - **The node's road to the gateway.** The gateway listens on `DATA_GATEWAY_LISTEN`. Node 1's mux route for
   `/v1/company-data/` and, on a machine of its own, a NAT rule from the node to it are not written.
 - **The road between the machines.** `replication.yml` publishes the database on the primary's private address; the
