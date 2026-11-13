@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, type Socket } from "node:net";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -279,7 +281,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 	});
 
 	/** A desktop whose VNC server the test drives: what the client sent, and `send` for what the server says. */
-	function fakeDesktop() {
+	function fakeDesktop(width = 64, height = 40) {
 		const sent: Buffer[] = [];
 		let stdout: (chunk: Buffer) => void = () => {};
 		let finish: (exitCode: number) => void = () => {};
@@ -301,7 +303,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 			void (async () => {
 				for await (const chunk of stdin) sent.push(Buffer.from(chunk));
 			})();
-			for (const part of serverHello()) out(part);
+			for (const part of serverHello(width, height)) out(part);
 			return ended;
 		});
 		return {
@@ -788,6 +790,36 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect(turns).toBeGreaterThan(100);
 	});
 
+	it("keeps the reader's pieces bounded by its bytes however small they come: a server that sends one byte at a time (review r11 of #1746)", () => {
+		const events: { kind: string; rects?: { pixels: Buffer }[] }[] = [];
+		const reader = new RfbReader((event) => events.push(event as never));
+		reader.feed(Buffer.concat(serverHello(512, 320)));
+		const pixels = fill(512, 320, [9, 8, 7]);
+		const bytes = update(rawRect(0, 0, 512, 320, [9, 8, 7]));
+		// 655,376 bytes, each its own piece, all pushed before a byte is read.
+		let most = 0;
+		for (let at = 0; at < bytes.length; at++) {
+			reader.push(bytes.subarray(at, at + 1));
+			if (at % 4096 === 0) most = Math.max(most, reader.queued.pieces);
+		}
+		// At most two pieces for every 4 KiB held (gathered into 4 KiB blocks), never one for every byte.
+		expect(reader.queued.bytes).toBe(bytes.length);
+		expect(reader.queued.pieces).toBeLessThanOrEqual(2 * Math.ceil(bytes.length / 4096) + 2);
+		expect(most).toBeLessThanOrEqual(2 * Math.ceil(bytes.length / 4096) + 2);
+		// And read in bounded turns, each well inside its time.
+		let turns = 0;
+		do {
+			const began = performance.now();
+			reader.drain(RFB_TAKE_PER_TURN);
+			expect(performance.now() - began).toBeLessThan(50);
+			expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
+			turns++;
+		} while (reader.busy && turns < 1000);
+		expect(events.at(-1)?.kind).toBe("update");
+		expect(events.at(-1)?.rects?.[0]?.pixels.equals(pixels)).toBe(true);
+		expect(reader.queued).toEqual({ bytes: 0, pieces: 0 });
+	});
+
 	it("drops the server's cut text and colour maps as they come, never holding or copying them, a turn's budget at a time (review r10 of #1746)", () => {
 		const reader = new RfbReader(() => {});
 		reader.feed(Buffer.concat(serverHello(64, 40)));
@@ -965,16 +997,71 @@ describe("a desktop's live picture (20260930745000)", () => {
 						// For EVERY turn: what it handed on, what it was charged (every byte it copied is charged), its time.
 						expect(eventsThisTurn).toBeLessThanOrEqual(MAX_EVENTS_A_TURN);
 						expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
-						expect(took).toBeLessThan(50);
+						// Its own time: a turn's work is about a millisecond; the limit leaves room for the shared test
+						// machine's pauses (its strict bounds are the two above).
+						expect(took).toBeLessThan(100);
 					} while (reader.busy);
 				}
 			}
 			// And nothing was lost or reordered on the way: every update, in order.
 			expect(got).toEqual(sent);
 			expect(turns).toBeGreaterThan(400);
-			expect(slowest).toBeLessThan(50);
+			expect(slowest).toBeLessThan(100);
 		}
 	}, 120_000);
+
+	it("asks the server ONE thing for every update it sent, however long a member lags: never a request of its own per eviction (review r11 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		// A ring of two screens and a member whose cycle never answers: every update evicts and moves the member on.
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringBytes: 64 * 40 * 4 * 2 });
+		const { release } = gate();
+		const stop = new AbortController();
+		const watching = stream.watch(release, sinkOf(), stop.signal);
+		await settle();
+		const before = desktop.requests().length;
+		for (let n = 0; n < 50; n++) {
+			desktop.send(update(rawRect(0, 0, 64, 40, [n, n, n])));
+			await settle();
+		}
+		const asked = desktop.requests().slice(before);
+		// One request for each of the 50 updates (some for the whole screen, the member having been moved on), never two:
+		// before, every eviction asked beside the next request, and full-screen noise on the real machine piled the
+		// server's answers past the reader's bound within seconds.
+		expect(asked.length).toBeLessThanOrEqual(50);
+		expect(asked.length).toBeGreaterThanOrEqual(45);
+		expect(asked.filter((request) => request === "update whole").length).toBeGreaterThan(0);
+		stop.abort();
+		await watching;
+	});
+
+	it("lets an update's pixels go the moment the ring lets it go, and a piece of the server's bytes the moment it is read: what it holds is its bounds, whatever was garbage before (review r11 of #1746)", async () => {
+		// The worker's buffers grew by 2.4 GB in ten seconds of full-screen noise on the real machine: the ring and the
+		// reader's queue left what they let go in their arrays until those were compacted (1,024 updates, 64 pieces).
+		setFlagsFromString("--expose-gc");
+		const collect = runInNewContext("gc") as () => void;
+		const buffers = () => {
+			collect();
+			return process.memoryUsage().arrayBuffers;
+		};
+		// A 512 x 512 screen (1 MiB an update), a ring of two of them, and a member whose cycle never answers: every update
+		// evicts the one before it, as under noise.
+		const desktop = fakeDesktop(512, 512);
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringBytes: 2 * 1024 * 1024 });
+		const { release } = gate();
+		const stop = new AbortController();
+		const watching = stream.watch(release, sinkOf(), stop.signal);
+		await settle();
+		const before = buffers();
+		for (let n = 0; n < 300; n++) {
+			desktop.send(update(rawRect(0, 0, 512, 512, [n & 0xff, 0, 0])));
+			await settle();
+		}
+		expect(stream.held.ring).toBeLessThanOrEqual(3);
+		// 300 MiB went through; the ring holds two, the queue none, and nothing else is left of them.
+		expect(buffers() - before).toBeLessThan(16 * 1024 * 1024);
+		stop.abort();
+		await watching;
+	});
 
 	it("keeps a large area as bands of whole rows sharing its pixels, so no PNG or message is much over a megabyte to make (v245 release review)", async () => {
 		const desktop = fakeDesktop();

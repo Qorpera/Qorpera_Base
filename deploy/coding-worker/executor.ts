@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
@@ -43,7 +44,8 @@ import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machi
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
-import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import { desktopRelay, LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import { isDesktopStreamWorker, runDesktopStreamWorker, WorkerDesktop } from "../../packages/runner-orchestrator/src/company-machine-stream-worker.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
@@ -468,6 +470,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
+		// Every watched desktop in a worker thread of its own, started from this same file: it opens the relay itself, and
+		// no byte of the guest's is read on this loop (review r11 of #1746).
+		desktopStreams: (spec, ended) => new WorkerDesktop(new URL(import.meta.url), spec, ended),
 	}) : undefined;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).
 	const memberControl = config.memberScreens
@@ -752,6 +757,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// This one file is both the executor (its main thread) and the desktop stream workers it starts (each watched desktop's
+// relay, reader and pictures: review r11 of #1746): a worker of that role runs nothing else.
+if (!isMainThread && isDesktopStreamWorker()) {
+	runDesktopStreamWorker((spec) => desktopRelay(new LxdUnixClient(), spec));
+} else if (isMainThread && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
 }

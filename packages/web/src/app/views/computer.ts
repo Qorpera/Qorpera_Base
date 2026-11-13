@@ -79,7 +79,8 @@ const POINTER_PASSING: ReadonlySet<string> = new Set([
  * STREAM_RENEW_MS is left of it (before the pointer's own POINTER_RENEW_MS: one renewal serves both), and whether it may
  * go on is checked every STREAM_CHECK_MS; at most one stream opens a second. A stream that failed is tried again after
  * STREAM_RETRY_MS times the failures in a row; STREAM_FAILURES of them turn it off for the page for STREAM_OFF_MS (the
- * looks go on); a refusal or the desktop's end waits STREAM_PAUSE_MS, and the looks say why meanwhile. */
+ * looks go on); a refusal or the desktop's end waits STREAM_PAUSE_MS, and the looks say why meanwhile. A node that
+ * watches as many desktops as it may (STREAM_BUSY) is asked again after STREAM_BUSY_MS, the looks going on as they were. */
 const STREAM_RENEW_MS = 4000;
 const STREAM_CHECK_MS = 1000;
 const STREAM_OPEN_EVERY_MS = 1000;
@@ -87,6 +88,7 @@ const STREAM_RETRY_MS = 2000;
 const STREAM_FAILURES = 3;
 const STREAM_OFF_MS = 10 * 60_000;
 const STREAM_PAUSE_MS = 3000;
+const STREAM_BUSY_MS = 30_000;
 /** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
  * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
  * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
@@ -2091,6 +2093,19 @@ export class ComputerPanel {
 					// The ticket's pass is not held where it was asked (it ran out, or the executor restarted): another pass, as
 					// after a failure.
 					if (sender.pointer.pass?.id === pass.id) sender.pointer.pass = null;
+				} else if (end.kind === "refused" && end.code === "STREAM_BUSY") {
+					// The node watches as many desktops as it may (review r11 of #1746): nothing of this screen or its sharing
+					// changed, so the looks go on as they were, and the live picture is asked for again a while later.
+					this.#streamAfter = Date.now() + STREAM_BUSY_MS;
+					// Asked again when the wait is over: a still screen's looks slow down, so no draw of the window may come
+					// sooner to ask.
+					const cancel = () => clearTimeout(again);
+					const again = setTimeout(() => {
+						this.#stop.signal.removeEventListener("abort", cancel);
+						this.#syncControls();
+					}, STREAM_BUSY_MS);
+					this.#stop.signal.addEventListener("abort", cancel, { once: true });
+					return;
 				} else if (end.kind === "refused" || end.kind === "desktop") {
 					this.#streamRefused(sender, end.code);
 					return;

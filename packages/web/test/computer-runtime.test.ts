@@ -4774,6 +4774,27 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		expect(s.sockets).toHaveLength(1);
 	});
 
+	it("keeps the looks and the sharing as they were when the node watches as many desktops as it may, and asks again 30 s later (review r11 of #1746)", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		s.sockets[0]!.closeWith(4003, "STREAM_BUSY");
+		await flush();
+		// The picture still takes the member's clicks: nothing of the screen or its sharing changed.
+		press(canvas(p), 200, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 400, y: 200 }]);
+		// The looks go on, and no stream is asked for within the wait (a refusal of a cycle waits 3 s); it is asked for
+		// again when the wait is over, however still the screen is.
+		const looked = s.looks.length;
+		for (let n = 0; n < 29; n++) await advance(1000);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		expect(s.sockets).toHaveLength(1);
+		await advance(1500);
+		expect(s.sockets).toHaveLength(2);
+	});
+
 	it("keeps the looks quietly when the way has no stream route (an executor before it), or a ticket is refused", async () => {
 		const s = setup({ stream: true });
 		s.state.ticketAnswers.push("old");

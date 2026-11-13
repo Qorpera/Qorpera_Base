@@ -29,20 +29,26 @@ import {
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	type CompanyMachineHostOptions,
 	type CompanyMachineMemberStream,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
+	desktopRelay,
 	LxdCompanyMachineHost,
+	MAX_WATCHED_DESKTOPS,
 } from "../src/company-machine-host.ts";
 import {
 	COMPANY_MACHINE_DESKTOP_VIEW,
 	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+	DesktopStream,
 	RFB_VERSION,
 } from "../src/company-machine-stream.ts";
+import type { DesktopRelaySpec } from "../src/company-machine-stream-worker.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type {
 	LxdExecPipeRequest,
 	LxdExecStreamRequest,
+	LxdInstanceExecPipeClient,
 	LxdInstanceRecord,
 	LxdTrackedInstanceAction,
 } from "../src/lxd-client.ts";
@@ -123,6 +129,8 @@ async function fixture(
 		now?: () => number;
 		/** What the guest's helper says at its claim it takes for a page (keyholes S1); a helper from before says nothing. */
 		guestPageBytes?: number;
+		/** How desktops are watched (default: in this thread, through the fake client). */
+		desktopStreams?: CompanyMachineHostOptions["desktopStreams"];
 	} = {},
 ) {
 	const { folder: withFolder, guestPageBytes, ...pins } = options;
@@ -476,6 +484,13 @@ async function fixture(
 			agentPlug,
 			// A pass waits for every step here, unless a test says otherwise.
 			passHoldMs: Number.POSITIVE_INFINITY,
+			// Watched desktops in this thread, through this fake client (the executor's are workers of their own:
+			// company-machine-stream-worker.test.ts).
+			desktopStreams: (spec, ended) =>
+				new DesktopStream({
+					run: desktopRelay(client as unknown as Required<LxdInstanceExecPipeClient>, spec),
+					ended,
+				}),
 			...pins,
 			...upgraded,
 			...(withFolder ? { folder } : {}),
@@ -5297,6 +5312,46 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			await expect(f.host.memberStream(stream(wrong), sinkOf(), f.signal), JSON.stringify(wrong)).rejects.toThrow(
 				"COMPANY_MACHINE_MEMBER_STREAM_INVALID",
 			);
+	});
+
+	it("watches a desktop only through the executor's way of watching off its main loop, and at most MAX_WATCHED_DESKTOPS at once (review r11 of #1746)", async () => {
+		const { f } = await relayed();
+		// Without one, a member's live picture is refused: never read on this loop because an option was left out.
+		f.restart({ desktopStreams: undefined });
+		expect(await f.host.memberStream(stream(), sinkOf(), f.signal)).toBe("STREAM_UNAVAILABLE");
+		// With one: each desktop is watched once for all its members, up to the node's cap.
+		const made: { spec: DesktopRelaySpec; ended: () => void; desktop: { ended: string | null } }[] = [];
+		f.restart({
+			desktopStreams: (spec, ended) => {
+				const desktop = { ended: null as string | null, watch: () => new Promise<string>(() => {}) };
+				made.push({ spec, ended, desktop });
+				return desktop;
+			},
+		});
+		for (let n = 0; n < MAX_WATCHED_DESKTOPS; n++)
+			void f.host.memberStream(stream({ placementId: id(100 + n) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS);
+		// What a watcher is told: the machine, and the relay of SQL's boot (as root, inside it; nothing else).
+		expect(made[0]!.spec.name).toBe(lxdCompanyMachineName(id(100)));
+		expect(made[0]!.spec.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_DESKTOP_VIEW,
+			id(7),
+			COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+		]);
+		// A further desktop is refused (the window keeps its pictures); one already watched takes another member.
+		expect(await f.host.memberStream(stream({ placementId: id(200) }), sinkOf(), f.signal)).toBe("STREAM_BUSY");
+		void f.host.memberStream(stream({ placementId: id(100), userId: id(22) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS);
+		// One ends: its place is free again.
+		made[0]!.desktop.ended = "idle";
+		made[0]!.ended();
+		void f.host.memberStream(stream({ placementId: id(200) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS + 1);
 	});
 });
 

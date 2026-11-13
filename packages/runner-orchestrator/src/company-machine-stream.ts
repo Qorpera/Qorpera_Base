@@ -1,4 +1,4 @@
-import { crc32, deflate } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 
 /**
  * A desktop's live picture (20260930745000; POINTER-PROGRESS.md 05:15Z, step 2): the machine's own VNC server (Xvnc,
@@ -185,23 +185,65 @@ export type RfbEvent =
 			readonly size: { readonly width: number; readonly height: number } | null;
 	  };
 
+/** What an emptied slot of a ByteQueue holds. */
+const NO_BYTES = Buffer.alloc(0);
+/** A piece smaller than this is copied into a block of this size shared with the small pieces around it. */
+const COALESCE_BYTES = 4096;
 /** Bytes that came in pieces, read off in order without copying more than is asked. Every operation is linear in what
- * it reads or takes, however small the pieces (the v245 release review: CPU time on node 1's shared event loop is paid
- * per byte the guest sends, so nothing here may be quadratic in the pieces either). */
+ * it reads or takes, however small the pieces (the v245 release review). And the pieces are themselves bounded by the
+ * bytes (review r11 of #1746): a piece under 4 KiB is copied into a 4 KiB block with the small pieces next to it, so a
+ * server that sends one byte at a time makes one piece for every 4 KiB, not one for every byte — at most two pieces
+ * for every 4 KiB held, and at most twice the bytes held in memory. */
 class ByteQueue {
 	readonly #chunks: Buffer[] = [];
-	/** The first piece still held: taken pieces are left behind and dropped in bulk, never shifted one by one. */
+	/** The first piece still held: taken pieces are let go at once (their slot emptied) and their slots dropped in bulk,
+	 * never shifted one by one. */
 	#head = 0;
 	#length = 0;
 	/** Where the last look ahead began: a walk of increasing offsets (an update's headers) goes on from there. */
 	#mark = { offset: 0, index: 0, base: 0 };
+	/** The block small pieces are being gathered into, and how much of it is filled. */
+	#block: Buffer | null = null;
+	#filled = 0;
 	get length(): number {
 		return this.#length;
 	}
+	/** How many pieces are held (read by the tests and nothing else). */
+	get pieces(): number {
+		return this.#chunks.length - this.#head;
+	}
 	push(chunk: Buffer): void {
 		if (chunk.byteLength === 0) return;
-		this.#chunks.push(chunk);
 		this.#length += chunk.byteLength;
+		if (chunk.byteLength >= COALESCE_BYTES) {
+			this.#chunks.push(chunk);
+			this.#block = null;
+			return;
+		}
+		// A small piece goes on the end of the last one when that is the block being gathered and has room for it.
+		const block = this.#block;
+		const last = this.#chunks.length - 1 >= this.#head ? this.#chunks[this.#chunks.length - 1] : undefined;
+		if (
+			block &&
+			last &&
+			last.buffer === block.buffer &&
+			last.byteOffset + last.byteLength === block.byteOffset + this.#filled &&
+			this.#filled + chunk.byteLength <= block.byteLength
+		) {
+			chunk.copy(block, this.#filled);
+			this.#filled += chunk.byteLength;
+			this.#chunks[this.#chunks.length - 1] = Buffer.from(
+				last.buffer,
+				last.byteOffset,
+				last.byteLength + chunk.byteLength,
+			);
+			return;
+		}
+		const fresh = Buffer.allocUnsafeSlow(COALESCE_BYTES);
+		chunk.copy(fresh, 0);
+		this.#block = fresh;
+		this.#filled = chunk.byteLength;
+		this.#chunks.push(fresh.subarray(0, chunk.byteLength));
 	}
 	/** The first `size` bytes, without taking them. */
 	peek(size: number): Buffer {
@@ -268,6 +310,8 @@ class ByteQueue {
 		while (left > 0) {
 			const first = this.#chunks[this.#head] as Buffer;
 			if (first.byteLength <= left) {
+				// The piece is let go now, not when its slot is dropped (review r11 of #1746).
+				this.#chunks[this.#head] = NO_BYTES;
 				this.#head++;
 				left -= first.byteLength;
 			} else {
@@ -401,6 +445,10 @@ export class RfbReader {
 	/** Whether the last drain() stopped at its budget with work it can go on with: drain again on the next turn. */
 	get busy(): boolean {
 		return this.#paused;
+	}
+	/** What is queued and not read yet, in bytes and in pieces (read by the tests and nothing else). */
+	get queued(): { readonly bytes: number; readonly pieces: number } {
+		return { bytes: this.#queue.length, pieces: this.#queue.pieces };
 	}
 	/** What the last drain() was charged (read by the tests and nothing else). */
 	get charged(): number {
@@ -612,8 +660,11 @@ export class RfbReader {
 	}
 }
 
-// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated off the
-// event loop (zlib's own threads), its checksums zlib's own.
+// PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated in THIS
+// thread, which is a desktop's own stream worker (company-machine-stream-worker.ts): never on the process's shared libuv
+// threads, which the executor's main side needs for its files, its DNS and its crypto — four of them, which the PNGs of
+// eight desktops of noise would keep busy (review r11 of #1746). A band of noise is about 11 ms to deflate, and holds
+// only its own worker for it.
 
 function chunk(type: string, data: Buffer): Buffer {
 	const head = Buffer.alloc(8);
@@ -624,18 +675,14 @@ function chunk(type: string, data: Buffer): Buffer {
 	return Buffer.concat([head, data, crc]);
 }
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-function deflated(data: Buffer): Promise<Buffer> {
-	return new Promise((resolve, reject) =>
-		deflate(data, { level: 6 }, (error, result) => (error ? reject(error) : resolve(result))),
-	);
-}
 /** At most this many pixels are filtered in one turn of the event loop (about a millisecond on node 2): a whole screen of
  * the largest desktop held it for 64 ms in one stretch before (the v245 release review). An area is at most four such
  * slices now (MAX_AREA_PIXELS), the pointer at most one. */
 export const PNG_PIXELS_PER_TURN = 65_536;
 /** A PNG of `width` x `height` pixels given as blue, green, red, unused; `alpha` (a function of the pixel's index) makes
  * it RGBA. Each row is filtered by the byte one pixel to its left (PNG's Sub), which suits a screen's flat areas. The
- * rows are filtered a slice at a time, each followed by a turn of everything else; the deflating is zlib's threads'. */
+ * rows are filtered a slice at a time, each followed by a turn of everything else, and deflated in one call (an area is
+ * at most MAX_AREA_PIXELS). */
 export async function encodePng(
 	width: number,
 	height: number,
@@ -669,7 +716,7 @@ export async function encodePng(
 	return Buffer.concat([
 		PNG_SIGNATURE,
 		chunk("IHDR", ihdr),
-		chunk("IDAT", await deflated(raw)),
+		chunk("IDAT", deflateSync(raw, { level: 6 })),
 		chunk("IEND", Buffer.alloc(0)),
 	]);
 }
@@ -738,7 +785,8 @@ interface StreamUpdate {
  * state rather than searched for. Seqs in it are consecutive, so a member's window is found by arithmetic.
  */
 class UpdateRing {
-	#entries: StreamUpdate[] = [];
+	/** Entries before the head are let go (undefined) as they are taken, so nothing evicted is held until the splice. */
+	#entries: (StreamUpdate | undefined)[] = [];
 	#head = 0;
 	bytes = 0;
 	rects = 0;
@@ -761,6 +809,9 @@ class UpdateRing {
 	shift(): StreamUpdate | undefined {
 		const old = this.#entries[this.#head];
 		if (!old) return undefined;
+		// Let go at once: an entry left in the array until the splice kept its pixels alive with it — up to 1024 whole
+		// screens, gigabytes under full-screen noise on the real machine (review r11 of #1746).
+		this.#entries[this.#head] = undefined;
 		this.#head++;
 		this.bytes -= old.bytes;
 		this.rects -= old.rects.length;
@@ -781,7 +832,7 @@ class UpdateRing {
 		if (!oldest) return [];
 		const from = this.#head + Math.max(0, after + 1 - oldest.seq);
 		const to = this.#head + Math.max(0, upTo + 1 - oldest.seq);
-		return this.#entries.slice(from, Math.min(to, this.#entries.length));
+		return this.#entries.slice(from, Math.min(to, this.#entries.length)) as StreamUpdate[];
 	}
 	clear(): void {
 		this.#entries = [];
@@ -991,6 +1042,12 @@ export class DesktopStream {
 	#width = 0;
 	#height = 0;
 	#started = false;
+	/** Whether the next request asks for the whole screen (a size change, or members moved on past an eviction). The
+	 * server is asked ONE thing for every update it sent: never a request of its own beside the next one, so however long
+	 * members lag behind a screen that changes all the time, no more than one answer is ever on its way (before, every
+	 * eviction made a request of its own and every request an update: full-screen noise on the real machine piled up
+	 * updates past the reader's bound within seconds, review r11 of #1746). */
+	#wantWhole = false;
 	#ended: string | null = null;
 	#relay: Promise<void> = Promise.resolve();
 	constructor(options: DesktopStreamOptions) {
@@ -1087,13 +1144,15 @@ export class DesktopStream {
 			if (event.size) {
 				this.#width = event.size.width;
 				this.#height = event.size.height;
-				this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+				this.#wantWhole = true;
 			}
 			// An update with no areas, no pointer shape and no size changes nothing a member sees: it is not kept (review
 			// r10 of #1746), and only asks for the next one.
 			if (event.rects.length > 0 || event.cursor || event.size) this.#push(event);
-			// Keep the changes coming: the next request at once (it replaces any still waiting: O(1)).
-			this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
+			// Keep the changes coming: ONE request for this update, at once — the whole screen when members need it anew,
+			// what changed otherwise (it replaces any of its kind still waiting: O(1)).
+			this.#outbox.push(rfbUpdateRequest(!this.#wantWhole, this.#width, this.#height));
+			this.#wantWhole = false;
 		});
 		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
 		// RFB_TAKE_PER_TURN bytes of charged work — every message, header and piece counted (review r10 of #1746) — each
@@ -1175,7 +1234,8 @@ export class DesktopStream {
 					watcher.sizeSent = { width: 0, height: 0 };
 					refresh = true;
 				}
-			if (refresh && this.#width > 0) this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
+			// The whole screen is asked with the next request, never beside it.
+			if (refresh) this.#wantWhole = true;
 		}
 		for (const watcher of this.#watchers) watcher.wake();
 	}

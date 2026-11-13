@@ -38,10 +38,11 @@ import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./c
 import {
 	COMPANY_MACHINE_DESKTOP_VIEW,
 	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
-	DesktopStream,
+	type DesktopStreamOptions,
 	type DesktopStreamRelease,
 	type DesktopStreamSink,
 } from "./company-machine-stream.ts";
+import type { DesktopRelaySpec, WatchedDesktop } from "./company-machine-stream-worker.ts";
 import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
@@ -327,6 +328,39 @@ const POINTER_FENCE_AFTER_MOVER_MS = 5000;
 const POINTER_FENCE_ROUNDS = 4;
 /** The largest of LXD's messages a desktop's live picture takes from its relay (20260930745000). */
 const MEMBER_STREAM_MESSAGE_BYTES = 4 * 1024 * 1024;
+/** At most this many desktops watched at once on this node, each in its worker (review r11 of #1746). A worker is one
+ * thread, so at most one core, and is terminated past 128 MiB of old heap, 16 MiB of young heap, 32 MiB of code and
+ * 512 MiB of buffers (DESKTOP_STREAM_WORKER_LIMITS, DESKTOP_STREAM_WORKER_BUFFER_BYTES): about 690 MiB at the worst,
+ * 5.4 GiB for eight, on a node of 128 GB; what it holds alive is about 300 MB at 3840 x 2160 by the stream's own
+ * bounds, and full-screen noise peaked at 72 MB (1600 x 1000, the real machine) and 231 MB (3840 x 2160). A member
+ * asking for a further desktop is refused STREAM_BUSY: the window keeps its pictures and its sharing as they were, and
+ * asks again 30 s later. */
+export const MAX_WATCHED_DESKTOPS = 8;
+
+/** A watched desktop's relay, through `client`'s exec: in the stream's worker, its own client on the node's socket. */
+export function desktopRelay(
+	client: Required<LxdInstanceExecPipeClient>,
+	spec: DesktopRelaySpec,
+): DesktopStreamOptions["run"] {
+	return (stdout, stdin, signal) =>
+		client
+			.execInstancePipe(
+				spec.project,
+				spec.name,
+				{
+					command: [...spec.command],
+					environment: {},
+					cwd: "/",
+					stdin,
+					// Each of LXD's messages, never the whole: the picture flows for as long as it is watched.
+					maxStdoutBytes: spec.maxStdoutBytes,
+					stdout,
+					stderrTailBytes: 0,
+				},
+				signal,
+			)
+			.then((result) => result.exitCode);
+}
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
 /** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
@@ -718,6 +752,11 @@ export interface CompanyMachineHostOptions {
 	memberStartTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
+	/** Watches a desktop for members' live pictures (20260930745000): the executor's makes a worker thread of its own for
+	 * every desktop, which opens the relay itself, so no byte of the guest's is read on the executor's main loop (review
+	 * r11 of #1746; company-machine-stream-worker.ts). Without it, members' live pictures are refused: the invariant
+	 * cannot be skipped by an option left out. The host's own tests give one in this thread, with their fake client. */
+	desktopStreams?: (spec: DesktopRelaySpec, ended: () => void) => WatchedDesktop;
 	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -1251,7 +1290,7 @@ export class LxdCompanyMachineHost {
 	readonly #movers = new Map<string, PointerMover>();
 	/** Per placement, its desktop's live picture while any member watches it (20260930745000): one relay, ended with the
 	 * last member's stream, the boot's, or the X server's. */
-	readonly #streams = new Map<string, { readonly bootId: string; readonly stream: DesktopStream }>();
+	readonly #streams = new Map<string, { readonly bootId: string; readonly stream: WatchedDesktop }>();
 	readonly #moverFailed = new Map<
 		string,
 		{
@@ -3225,37 +3264,29 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
 		this.#seeGeneration(stream.placementId, stream.generation);
+		const desktops = this.#options.desktopStreams;
+		// No worker to watch it in: refused, never read on this loop (review r11 of #1746).
+		if (!desktops) return "STREAM_UNAVAILABLE";
 		let kept = this.#streams.get(stream.placementId);
 		if (!kept || kept.bootId !== stream.bootId || kept.stream.ended) {
+			// A desktop not watched yet, past the node's cap of watched desktops: refused, the window keeps its pictures.
+			let live = 0;
+			for (const [placementId, entry] of this.#streams)
+				if (placementId !== stream.placementId && !entry.stream.ended) live++;
+			if (live >= MAX_WATCHED_DESKTOPS) return "STREAM_BUSY";
 			const placementId = stream.placementId;
 			const bootId = stream.bootId;
-			const desktop: DesktopStream = new DesktopStream({
-				run: (stdout, stdin, relaySignal) =>
-					pipe(
-						this.#policy.project,
-						lxdCompanyMachineName(placementId),
-						{
-							command: [
-								"/bin/sh",
-								"-c",
-								COMPANY_MACHINE_DESKTOP_VIEW,
-								bootId,
-								COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
-							],
-							environment: {},
-							cwd: "/",
-							stdin,
-							// Each of LXD's messages, never the whole: the picture flows for as long as it is watched.
-							maxStdoutBytes: MEMBER_STREAM_MESSAGE_BYTES,
-							stdout,
-							stderrTailBytes: 0,
-						},
-						relaySignal,
-					).then((result) => result.exitCode),
-				ended: () => {
+			const desktop: WatchedDesktop = desktops(
+				{
+					project: this.#policy.project,
+					name: lxdCompanyMachineName(placementId),
+					command: ["/bin/sh", "-c", COMPANY_MACHINE_DESKTOP_VIEW, bootId, COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM],
+					maxStdoutBytes: MEMBER_STREAM_MESSAGE_BYTES,
+				},
+				() => {
 					if (this.#streams.get(placementId)?.stream === desktop) this.#streams.delete(placementId);
 				},
-			});
+			);
 			kept = { bootId, stream: desktop };
 			this.#streams.set(placementId, kept);
 		}
