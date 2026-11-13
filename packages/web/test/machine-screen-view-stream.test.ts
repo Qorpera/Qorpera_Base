@@ -43,7 +43,19 @@ function view() {
 	};
 	const canvas = mount.querySelector<HTMLCanvasElement>(".machine-screen-canvas")!;
 	canvases.set(screen, canvas);
-	return { screen, area, drawn, canvas };
+	/** A picture of the window's own looks, with its own gate (for the ordering tests). */
+	const look = (name: string, width = 100, height = 100, gate?: Promise<void>) => {
+		const png = new Blob([name], { type: "image/png" });
+		pictures.set(png, { name, width, height, close: vi.fn() });
+		if (gate) gates.set(png, gate);
+		return png;
+	};
+	/** How many of what was decoded is closed, and how many decodes were begun. */
+	const closed = (name: string) =>
+		[...pictures.values()]
+			.filter((picture) => picture.name === name)
+			.flatMap((picture) => (picture.close as unknown as { mock: { calls: unknown[] } }).mock.calls).length;
+	return { screen, area, look, drawn, canvas, decode, closed };
 }
 
 describe("the live picture in the screen view (20260930745000)", () => {
@@ -126,6 +138,7 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		const pending = screen.stream({ kind: "rects", rects: [area("before", 0, 0, 10, 10, slow)] });
 		// The pass ran out: that socket ended and the window opened another on the new pass, which draws at once.
 		screen.streamEnded();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
 		expect(await screen.stream({ kind: "rects", rects: [area("after", 20, 20, 10, 10)] })).toBe("drawn");
 		release();
 		// The old area finishing now is dropped, never "failed", so the window does not end the new socket.
@@ -163,7 +176,8 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		release();
 		await Promise.all(flood);
 		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
-		// And the stream that replaced it draws at once.
+		// And the stream that replaced it draws at once, after its own size (the safe mode takes no pixels before one).
+		await screen.stream({ kind: "size", width: 1600, height: 1000 });
 		expect(await screen.stream({ kind: "rects", rects: [area("after", 0, 0, 10, 10)] })).toBe("drawn");
 		expect(drawn).toEqual([["after", 0, 0]]);
 	});
@@ -209,6 +223,82 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		// Only pixels make it showing.
 		expect(await screen.stream({ kind: "rects", rects: [area("pixels", 0, 0, 10, 10)] })).toBe("drawn");
 		expect(screen.streaming).toBe(true);
+	});
+
+	it("starts no decode for work a dropped stream can no longer land, and closes what it had already decoded (review r5 F1 of #1746)", async () => {
+		const { screen, area, decode, closed } = view();
+		await screen.stream({ kind: "size", width: 1600, height: 1000 });
+		const stuck = new Promise<void>(() => {});
+		const waiting: Promise<unknown>[] = [];
+		// Six areas stall, so two decoding turns are left of this stream's eight.
+		for (let n = 0; n < 6; n++)
+			waiting.push(screen.stream({ kind: "rects", rects: [area(`stuck-${n}`, 0, n * 20, 100, 20, stuck)] }));
+		// One message of two areas: one decodes at once, its sibling never does.
+		let release = () => {};
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		waiting.push(
+			screen.stream({
+				kind: "rects",
+				rects: [area("done", 0, 0, 10, 10, ready), area("never", 20, 0, 10, 10, stuck)],
+			}),
+		);
+		// And one more message, which can get no turn while those eight are held.
+		waiting.push(screen.stream({ kind: "rects", rects: [area("queued", 0, 0, 10, 10)] }));
+		await vi.waitFor(() => expect(decode.mock.calls.length).toBe(8));
+		release();
+		await vi.waitFor(() => expect(closed("done")).toBe(0));
+		// The stream is dropped while all that is in flight.
+		screen.streamEnded();
+		await vi.waitFor(() => expect(closed("done")).toBe(1));
+		// Nothing more was decoded: the waiter was let go and then skipped its decode, never started it.
+		expect(decode.mock.calls.length).toBe(8);
+		// The stalled ones stay stalled to the end.
+		expect(await Promise.race([Promise.all(waiting), Promise.resolve("still stuck")])).toBe("still stuck");
+	});
+
+	it("never lets the window's own picture land over streamed pixels that were drawn after it was asked for (review r5 F2 of #1746)", async () => {
+		const { screen, area, look, drawn, closed } = view();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		// A streamed area is on its way; the window asks for one of its own pictures while it decodes.
+		let releaseArea = () => {};
+		const areaReady = new Promise<void>((resolve) => {
+			releaseArea = resolve;
+		});
+		let releaseLook = () => {};
+		const lookReady = new Promise<void>((resolve) => {
+			releaseLook = resolve;
+		});
+		const streamed = screen.stream({ kind: "rects", rects: [area("streamed", 0, 0, 10, 10, areaReady)] });
+		const shown = screen.show(look("fallback", 100, 100, lookReady));
+		// The streamed area draws first; the window's picture finishes afterwards.
+		releaseArea();
+		expect(await streamed).toBe("drawn");
+		expect(drawn).toEqual([["streamed", 0, 0]]);
+		releaseLook();
+		// It is dropped at its commit, since newer pixels are on the canvas, and its bitmap is closed.
+		expect(await shown).toBe(false);
+		expect(drawn).toEqual([["streamed", 0, 0]]);
+		await vi.waitFor(() => expect(closed("fallback")).toBe(1));
+		// The other way round, a picture asked for after the stream's pixels does land.
+		const after = await screen.show(look("later", 100, 100));
+		expect(after).toBe(true);
+		expect(drawn.at(-1)).toEqual(["later", 0, 0]);
+	});
+
+	it("fails to the safe mode: an area outside the size the stream told is never painted (review r5 of #1746)", async () => {
+		const { screen, area, drawn } = view();
+		// Pixels before any size: refused.
+		expect(await screen.stream({ kind: "rects", rects: [area("early", 0, 0, 10, 10)] })).toBe("failed");
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		expect(await screen.stream({ kind: "rects", rects: [area("fits", 0, 0, 10, 10)] })).toBe("drawn");
+		// An area outside that size, and a picture of another size than its area: both end the stream.
+		expect(await screen.stream({ kind: "rects", rects: [area("outside", 95, 0, 10, 10)] })).toBe("failed");
+		const wrong = area("wrong", 0, 0, 10, 10);
+		(wrong as { width: number }).width = 20;
+		expect(await screen.stream({ kind: "rects", rects: [wrong] })).toBe("failed");
+		expect(drawn).toEqual([["fits", 0, 0]]);
 	});
 
 	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {

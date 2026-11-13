@@ -432,6 +432,10 @@ export class RfbReader {
 				width = w;
 				height = h;
 				if (w < 1 || h < 1) throw new Error("RFB_INVALID");
+				// The areas of this update that came before the resize are of the screen that is gone: they are dropped
+				// here, so one update — and so one ring entry — never holds pixels of two sizes (review r5 F3 of #1746).
+				// The server sends the whole screen of the new size right after, which this module asks for.
+				rects.length = 0;
 			}
 		}
 		this.#onEvent({ kind: "update", rects, cursor, size });

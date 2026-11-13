@@ -124,22 +124,57 @@ const MAX_PENDING_PIXELS = 16 * 1000 * 1000;
 const MAX_DECODING = 8;
 
 /**
- * One live picture's own decoding and drawing (review r4 F1 of #1746). Everything in it belongs to that stream: the
- * chain its messages draw in, the turns its areas take, who waits for one, and what it holds. A stream that ends or is
- * replaced is `dropped`: its queue goes, everyone waiting is let go at once (so nothing of the next stream waits behind
- * a decode of this one that may never finish), and each bitmap of it is closed as it lands. `showing` turns true only
- * when pixels of it were drawn: until then the window keeps its own pictures, so the member never sees a blank view.
+ * One live picture's own decoding (review r4 F1 of #1746). Everything in it belongs to that stream: the turns its areas
+ * take, who waits for one, and what it holds. A stream that ends or is replaced is `dropped`: everyone waiting is let
+ * go at once and then SKIPS decoding (review r5 F1), and every bitmap of it is closed as it lands. `showing` turns true
+ * only when pixels of it have reached the canvas, so until then the window keeps its own pictures.
  */
 interface StreamPaint {
 	readonly generation: number;
 	dropped: boolean;
 	showing: boolean;
-	chain: Promise<unknown>;
+	/** Every job of this stream, so that dropping it closes what they had already decoded (review r5 F1 of #1746). */
+	readonly jobs: Set<PaintJob>;
+	/** The newest voiding work from outside this stream: its own size never voids its own later areas. */
+	covered: number;
+	/** This stream's own order: each message waits for the one before it, and for nothing of any other stream. */
+	chain: Promise<void>;
 	decoding: number;
 	readonly waiting: (() => void)[];
 	readonly held: Set<{ readonly bytes: number; readonly pixels: number }>;
 	bytes: number;
 	pixels: number;
+}
+
+/**
+ * One piece of work on its way to the canvas, whoever submits it (review r5 of #1746: THE one painter). Its `token` is
+ * taken when it is submitted and decides what may land at its commit:
+ *  - `whole` work (the window's own picture, the live picture's size, an erase) covers the whole canvas, so it is
+ *    dropped when ANYTHING landed after it was submitted: what it holds is then older than what the canvas shows.
+ *  - `voids` work (a size change, an erase) makes every older pixel meaningless, so work submitted before it, FROM
+ *    ANOTHER SOURCE, is dropped at its commit. A look of the window's own does not void: the live picture's areas are
+ *    newer content of the same screen, and drawing them over a look is right — treating a look as voiding would stop a
+ *    stream ever showing, since the window looks until it does. A stream's own size does not void that stream's later
+ *    areas either: they come after it in the stream's order and are of exactly that size (both found by the window's
+ *    own tests, 13 Nov).
+ *  - an area of the live picture changes one region only, so it is dropped only when voiding work landed since it was
+ *    submitted, never because of another area (areas of one stream are drawn in the order they came).
+ * `pictures` holds what it has decoded so far, so a job that may no longer land closes them where they land instead of
+ * holding them behind a sibling that never finishes (review r5 F1).
+ */
+interface PaintJob {
+	readonly token: number;
+	/** What the canvas held when this work was submitted: at the commit, anything that landed since makes it stale. A
+	 * whole-screen job is stale if ANYTHING landed since (its picture is of the screen as it was before that), an area
+	 * only if a whole-screen write landed since (another area changes a different region, and areas of one stream are
+	 * committed in the order they came). */
+	readonly saw: { readonly landed: number; readonly covered: number };
+	/** The live picture this work belongs to, or null for the window's own (its looks, an erase). */
+	readonly owner: StreamPaint | null;
+	readonly whole: boolean;
+	readonly voids: boolean;
+	readonly pictures: Set<MachineScreenPicture>;
+	void: boolean;
 }
 
 /** A decoded picture: what a canvas draws. */
@@ -233,8 +268,17 @@ export class MachineScreenView {
 	#heldPoint: { readonly x: number; readonly y: number } | null | undefined = undefined;
 	#entered = false;
 	#shown = false;
-	/** Each picture's turn: one decoded after a newer one began is dropped. */
-	#turn = 0;
+	/** THE painter (review r5 of #1746): one ordered queue through which every source submits — a streamed area, the
+	 * window's own picture, the pointer's shape — with a token taken at submit. What may land is decided at the commit,
+	 * never at the submit: whole-screen work is dropped once anything newer has landed, and an area once a whole-screen
+	 * write has landed since it was submitted. One place writes pixels, and one place closes what may not land. */
+	#paintToken = 0;
+	/** The newest work of any kind that has reached the canvas, and the newest whole-screen write among them. */
+	#landed = 0;
+	#covered = 0;
+	#painting: Promise<unknown> = Promise.resolve();
+	/** The size the live picture last told, while one is showing: an area outside it is an inconsistency, never drawn. */
+	#streamSize: { readonly width: number; readonly height: number } | null = null;
 	/** How many times the picture was cleared or a live picture ended: the generation. Everything a stream decodes and
 	 * draws belongs to its own generation (`#paint`), so a replacement shares nothing with it (review r4 F1 of #1746). */
 	#cleared = 0;
@@ -643,26 +687,89 @@ export class MachineScreenView {
 	/** Shows a picture once it is decoded; a newer picture that began meanwhile wins. Resolves false when this one was
 	 * dropped or could not be decoded. */
 	async show(png: Blob): Promise<boolean> {
-		const turn = ++this.#turn;
+		// The window's own picture is one more job of the painter: its token is taken now, and at its commit it is
+		// dropped if anything landed since, streamed pixels above all (review r5 F2 of #1746). It does not void the live
+		// picture's pending areas: they are newer content of the same screen.
+		const job = this.#job(true, false);
 		let picture: MachineScreenPicture;
 		try {
 			picture = await (this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob)))(png);
 		} catch {
 			return false;
 		}
-		if (turn !== this.#turn || this.#stop.signal.aborted) {
+		if (job.void || this.#stop.signal.aborted) {
 			picture.close?.();
 			return false;
 		}
-		if (this.#canvas.width !== picture.width) this.#canvas.width = picture.width;
-		if (this.#canvas.height !== picture.height) this.#canvas.height = picture.height;
-		this.#canvas.getContext("2d")?.drawImage(picture, 0, 0);
-		picture.close?.();
-		this.#shown = true;
-		this.el.hidden = false;
-		this.#enter.disabled = false;
-		this.live();
-		return true;
+		job.pictures.add(picture);
+		return (
+			(await this.#commit(job, () => {
+				if (this.#canvas.width !== picture.width) this.#canvas.width = picture.width;
+				if (this.#canvas.height !== picture.height) this.#canvas.height = picture.height;
+				this.#canvas.getContext("2d")?.drawImage(picture, 0, 0);
+				// A picture of the window's own is the whole screen: the live picture's size no longer stands.
+				this.#streamSize = null;
+				this.#shown = true;
+				this.el.hidden = false;
+				this.#enter.disabled = false;
+				this.live();
+				return "drawn" as const;
+			})) === "drawn"
+		);
+	}
+
+	/**
+	 * THE one place that writes pixels (review r5 of #1746). Work waits its turn in one ordered queue; at its commit,
+	 * anything whose token is older than what the canvas already holds is dropped, and whatever it decoded is closed
+	 * here. `paint` returns what it drew, or nothing when it decided not to draw.
+	 */
+	async #commit(job: PaintJob, paint: () => "drawn" | "failed"): Promise<"drawn" | "dropped" | "failed"> {
+		const mine = this.#painting.then(() => {
+			const stale = job.whole
+				? this.#landed > job.saw.landed
+				: (job.owner?.covered ?? this.#covered) > job.saw.covered;
+			if (job.void || stale || this.#stop.signal.aborted) return "dropped" as const;
+			const answer = paint();
+			if (answer === "drawn") {
+				this.#landed = Math.max(this.#landed, job.token);
+				if (job.voids) {
+					this.#covered = Math.max(this.#covered, job.token);
+					// For the live picture, only voiding work of another source counts: its own size precedes its areas.
+					const paint = this.#paint;
+					if (paint && paint !== job.owner) paint.covered = Math.max(paint.covered, job.token);
+				}
+			}
+			return answer;
+		});
+		// Every pixel of this view is written inside that one callback, under that one check.
+		this.#painting = mine.catch(() => "failed" as const);
+		try {
+			return await mine;
+		} catch {
+			return "failed";
+		} finally {
+			this.#dispose(job);
+		}
+	}
+
+	/** One piece of work for the painter, with what the canvas held when it was submitted. */
+	#job(whole: boolean, voids = whole, owner: StreamPaint | null = null): PaintJob {
+		return {
+			token: ++this.#paintToken,
+			saw: { landed: this.#landed, covered: owner ? owner.covered : this.#covered },
+			owner,
+			whole,
+			voids,
+			pictures: new Set(),
+			void: false,
+		};
+	}
+
+	/** Closes whatever a job decoded, wherever it is in its life, and marks it as no longer able to land. */
+	#dispose(job: PaintJob): void {
+		job.void = true;
+		for (const picture of job.pictures) picture.close?.();
+		job.pictures.clear();
 	}
 
 	/** One message of the desktop's live picture (20260930745000), drawn after those before it: the screen's size (what
@@ -671,7 +778,7 @@ export class MachineScreenView {
 	 * it decoded: discarded work, no fault of the stream) or `"failed"` (an area that does not decode, or does not fit
 	 * the screen: that stream is of no use). The caller must tell the last two apart, or a draw discarded at a renewal
 	 * would end the stream that replaced it (review r2 F4 of #1746). */
-	stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed" | "overflow"> {
+	async stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed" | "overflow"> {
 		const paint = this.#paintFor();
 		const bytes =
 			message.kind === "rects"
@@ -692,7 +799,7 @@ export class MachineScreenView {
 			paint.bytes + bytes > MAX_PENDING_BYTES ||
 			paint.pixels + pixels > MAX_PENDING_PIXELS
 		)
-			return Promise.resolve("overflow");
+			return "overflow";
 		const holds = { bytes, pixels };
 		paint.held.add(holds);
 		paint.bytes += bytes;
@@ -702,18 +809,24 @@ export class MachineScreenView {
 			paint.bytes -= bytes;
 			paint.pixels -= pixels;
 		};
-		this.#turn++;
+		// A size message sets the whole canvas; an area changes one region of it.
+		const job = this.#job(message.kind !== "rects", message.kind !== "rects", paint);
+		paint.jobs.add(job);
 		const decode = this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob));
-		// At most MAX_DECODING areas of THIS stream decode at once, and a picture of a stream that was dropped is closed
-		// as it lands, whatever the chain is doing (review r4 F1).
+		// At most MAX_DECODING areas of THIS stream decode at once. Work of a stream that was dropped, or of a job that
+		// may no longer land, is skipped BEFORE anything is decoded, and a picture that lands for such a job is closed
+		// where it lands instead of waiting behind a sibling that may never finish (review r5 F1 of #1746).
+		const stale = () => paint.dropped || job.void || paint.covered > job.saw.covered || this.#stop.signal.aborted;
 		const one = async (rect: MachineStreamRect) => {
 			await this.#turnToDecode(paint);
 			try {
+				if (stale()) return null;
 				const picture = await decode(rect.png);
-				if (paint.dropped || this.#stop.signal.aborted) {
+				if (stale()) {
 					picture.close?.();
 					return null;
 				}
+				job.pictures.add(picture);
 				return { rect, picture };
 			} catch {
 				return null;
@@ -723,51 +836,63 @@ export class MachineScreenView {
 		};
 		const pictures = message.kind === "rects" ? Promise.all(message.rects.map(one)) : Promise.resolve([]);
 		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
-		const drawn = paint.chain.then(async () => {
-			const decoded = await pictures;
-			const close = () => {
-				for (const each of decoded) each?.picture.close?.();
-			};
-			if (paint.dropped || this.#stop.signal.aborted) {
-				close();
-				return "dropped";
-			}
-			if (message.kind === "size") {
-				if (this.#canvas.width !== message.width) this.#canvas.width = message.width;
-				if (this.#canvas.height !== message.height) this.#canvas.height = message.height;
-				// A size alone shows nothing: the window keeps its own pictures until pixels of this stream are drawn.
-				return "drawn";
-			}
-			if (message.kind === "cursor") {
-				const url = await cursor.catch(() => "");
-				if (paint.dropped) return "dropped";
-				this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
-				this.#showCursor();
-				return "drawn";
-			}
-			const fits = (rect: MachineStreamRect, picture: MachineScreenPicture) =>
-				picture.width === rect.width &&
-				picture.height === rect.height &&
-				rect.x + rect.width <= this.#canvas.width &&
-				rect.y + rect.height <= this.#canvas.height;
-			if (decoded.some((each) => each === null || !fits(each.rect, each.picture))) {
-				close();
-				return "failed";
-			}
-			const context = this.#canvas.getContext("2d");
-			for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
-			close();
-			// Pixels of this stream are on the canvas: only now is it showing (review r4 F1 of #1746).
-			paint.showing = true;
-			this.#shown = true;
-			this.el.hidden = false;
-			this.#enter.disabled = false;
-			this.live();
-			return "drawn";
+		// This stream's messages reach the canvas in the order they came (its areas change regions, so order matters):
+		// each waits for the one before it, inside this stream alone, never for anything of another stream (r4 F1).
+		const behind = paint.chain;
+		let ready: () => void = () => {};
+		paint.chain = new Promise<void>((resolve) => {
+			ready = resolve;
 		});
-		const settled = drawn.catch(() => "failed" as const).finally(letGo);
-		paint.chain = settled;
-		return settled;
+		const decoded = await pictures;
+		await behind;
+		if (paint.dropped || this.#stop.signal.aborted) {
+			this.#dispose(job);
+			letGo();
+			ready();
+			return "dropped";
+		}
+		const url = message.kind === "cursor" ? await cursor.catch(() => "") : "";
+		try {
+			return await this.#commit(job, () => {
+				if (message.kind === "size") {
+					if (this.#canvas.width !== message.width) this.#canvas.width = message.width;
+					if (this.#canvas.height !== message.height) this.#canvas.height = message.height;
+					this.#streamSize = { width: message.width, height: message.height };
+					// A size alone shows nothing: the window keeps its own pictures until pixels of this stream land.
+					return "drawn";
+				}
+				if (message.kind === "cursor") {
+					this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
+					this.#showCursor();
+					return "drawn";
+				}
+				// The safe mode (review r5 of #1746): anything that does not agree — an area outside the size this stream
+				// last told, a picture of another size than its area, one that did not decode, or pixels before any size —
+				// ends the stream and the window's own pictures come back. Nothing is painted through and nothing guessed.
+				const size = this.#streamSize;
+				const fits = (rect: MachineStreamRect, picture: MachineScreenPicture) =>
+					size !== null &&
+					picture.width === rect.width &&
+					picture.height === rect.height &&
+					rect.x + rect.width <= size.width &&
+					rect.y + rect.height <= size.height &&
+					size.width === this.#canvas.width &&
+					size.height === this.#canvas.height;
+				if (decoded.some((each) => each === null || !fits(each.rect, each.picture))) return "failed";
+				const context = this.#canvas.getContext("2d");
+				for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
+				// Pixels of this stream are on the canvas: only now is it showing (review r4 F1 of #1746).
+				paint.showing = true;
+				this.#shown = true;
+				this.el.hidden = false;
+				this.#enter.disabled = false;
+				this.live();
+				return "drawn";
+			});
+		} finally {
+			letGo();
+			ready();
+		}
 	}
 
 	/** This stream's own work, started when a stream's first message comes and left behind when its generation goes. */
@@ -778,6 +903,8 @@ export class MachineScreenView {
 			generation: this.#cleared,
 			dropped: false,
 			showing: false,
+			jobs: new Set(),
+			covered: this.#covered,
 			chain: Promise.resolve(),
 			decoding: 0,
 			waiting: [],
@@ -796,6 +923,12 @@ export class MachineScreenView {
 		this.#paint = null;
 		if (!paint || paint.dropped) return;
 		paint.dropped = true;
+		this.#streamSize = null;
+		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped.
+		paint.chain = Promise.resolve();
+		// What its jobs had already decoded is closed now, not left behind a sibling that may never finish.
+		for (const job of paint.jobs) this.#dispose(job);
+		paint.jobs.clear();
 		for (const waiting of paint.waiting.splice(0)) waiting();
 		paint.held.clear();
 		paint.bytes = 0;
@@ -807,7 +940,8 @@ export class MachineScreenView {
 		return this.#paint?.showing === true;
 	}
 
-	/** Waits for one of this stream's MAX_DECODING turns; a dropped stream's waiters are let go at once. */
+	/** Waits for one of this stream's MAX_DECODING turns; a dropped stream's waiters are let go at once, and each of them
+	 * then skips its decode (review r5 F1 of #1746: letting them go must not start the whole backlog decoding). */
 	#turnToDecode(paint: StreamPaint): Promise<void> {
 		if (paint.dropped || paint.decoding < MAX_DECODING) {
 			paint.decoding++;
@@ -877,7 +1011,8 @@ export class MachineScreenView {
 	/** No picture any more: the view goes away, and the panel's state text shows. */
 	clear(): void {
 		this.capture(null);
-		this.#turn++;
+		// Nothing decided before now may land: an erase is a whole-screen write past everything in flight.
+		this.#covered = this.#landed = ++this.#paintToken;
 		this.#cleared++;
 		this.#dropPaint();
 		this.#cursor = "";
@@ -888,7 +1023,12 @@ export class MachineScreenView {
 		this.#enter.disabled = true;
 		this.#mark.hidden = true;
 		this.#hint.textContent = "";
-		this.#canvas.getContext("2d")?.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
+		// Erasing is a write like any other, and goes through the painter: the token above already put it after
+		// everything in flight, so nothing decoded earlier can paint over the empty canvas.
+		void this.#commit(this.#job(true), () => {
+			this.#canvas.getContext("2d")?.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
+			return "drawn";
+		});
 	}
 
 	/** Enters the frame in the thread, as Enter does but without asking for full screen: only the member's own press on
@@ -914,7 +1054,7 @@ export class MachineScreenView {
 		this.capture(null);
 		this.back();
 		this.#stop.abort();
-		this.#turn++;
+		this.#covered = this.#landed = ++this.#paintToken;
 		this.#cleared++;
 		this.#dropPaint();
 		this.el.remove();
