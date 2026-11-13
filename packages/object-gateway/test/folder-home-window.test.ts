@@ -29,9 +29,11 @@ import {
 } from "./folder-service-fixtures.ts";
 
 /** Home windows on the folder (20260930754000, the agent's home slice 3: lanes/agent-box-20261113/HOME-PLAN.md). A home
- * machine mounts a window that belongs to one run; several runs may each hold one on the same home. The relay opens and
- * closes a call on a window over the control socket, and what that window saves while the call is open is credited to
- * the call, and so carries the call's own receipt. A call on another run's window credits nothing of this one's. */
+ * machine mounts a window that belongs to one run. The relay opens and closes a call on a window over the control
+ * socket, and what that window saves while the call is open is credited to the call, and so carries the call's own
+ * receipt. The core holds one open window per machine, but this service may hold two views of one home at once (the
+ * window a new open superseded keeps what it had pending until its last boundary), so a call on one must credit
+ * nothing of the other's: its windows are kept under the view's own id, never the machine's. */
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -56,7 +58,8 @@ const callOf = (callId: string, runId = RUN_A): CommandWindow => ({
 	requestedByUserId: MEMBER,
 });
 
-/** A company folder with one file and two home windows on one home machine, one per run. */
+/** A company folder with one file and two home windows on one home machine: the one a new open superseded, and the new
+ * one, as the service holds them between the open and that window's last boundary. */
 async function home() {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-home-window-"));
 	const core = new FakeCore();
@@ -140,7 +143,7 @@ describe("home windows", () => {
 		expect(view.writable).toBe(true);
 	});
 
-	it("credits what a window saves while a call is open to that call, and nothing of another run's window", async () => {
+	it("credits what a window saves while a call is open to that call, and nothing of the other window's", async () => {
 		const { core, service, open } = await home();
 		const a = await open(WINDOW_A, PASS_A);
 		const b = await open(WINDOW_B, PASS_B);
@@ -148,7 +151,7 @@ describe("home windows", () => {
 		// Opened again it changes nothing; the same call with other ids is refused.
 		service.openCall(WINDOW_A, callOf(CALL_ONE));
 		expect(() => service.openCall(WINDOW_A, { ...callOf(CALL_ONE), runId: RUN_B })).toThrow(/open with other ids/);
-		// The other run's window has its own call: it credits nothing of this window's changes.
+		// The other window has its own call: it credits nothing of this window's changes.
 		service.openCall(WINDOW_B, callOf(CALL_B, RUN_B));
 		await write(a, "docs/one.txt", "1");
 		await write(b, "docs/b.txt", "b");
