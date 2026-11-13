@@ -116,7 +116,7 @@ create function b1_proof.disk_budget(p_bytes bigint) returns void language sql a
 		'providerPolicySha256',repeat('f',64),'project','machines','imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),
 		'storagePool','machines','network','qagent0'), coalesce(p_bytes, (select sum(m.disk_bytes)
 			from public.qorpera_company_machine_placements p join public.qorpera_company_machines m on m.id = p.machine_id
-			where p.owner = 'mx-b1' and p.removed_at is null and p.retired_at is null)))
+			where p.owner = 'mx-b1' and p.removed_at is null and p.retired_at is null)::bigint))
 $$;
 do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-b1','providerPolicySha256',repeat('f',64),'project','machines',
@@ -451,15 +451,18 @@ await finish(
 				[
 					["web-tests", true, 60, "starting", null, "running", "running", false],
 					["second-task", true, 60, "starting", null, "running", "running", false],
+					// The replay answers the start's stored answer (starting), then one look finds it running.
+					["web-tests", true, 60, "starting", null, "running", "running", false],
 					["third-task", true, 0, "starting", null, "not_asked", "starting", false],
 					["word-count", false, 60, "waiting", "NODE_CAPACITY_EXHAUSTED", "running", "running", false],
 				],
 				JSON.stringify(kept),
 			);
-			assert(kept[3].ms >= BOOT_MS && kept[3].ms <= proof.starts[5].ms, JSON.stringify(kept[3]));
-			assert.equal(kept[2].ms, 0);
+			assert(kept[4].ms >= BOOT_MS && kept[4].ms <= proof.starts[5].ms, JSON.stringify(kept[4]));
+			assert(kept[2].ms < 2000, JSON.stringify(kept[2]));
+			assert.equal(kept[3].ms, 0);
 			pass(
-				`each wait is kept (${kept.length} rows): the three waits with how long and how they ended (running), the start that asked not to wait (not_asked); none for the replay (its machine already ran) nor over the old kernel (no report then)`,
+				`each wait is kept (${kept.length} rows): the three waits through a boot and the replay's one look, with how long and how they ended (running), the start that asked not to wait (not_asked); none over the old kernel (no report then)`,
 			);
 
 			// 7. After the run: the machine events drain continues her only with the words she did not see in a wait.
