@@ -7,43 +7,23 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024499_runtime_bundle_activation_v244.sql";
-const activationVersion = 244;
-const previousActivationVersion = 243;
-const previousActivationSha256 = "e4d979769401f77e39acd225c84fe63fc598db941199da2691179e86b34e538f";
-// This release's own migrations, which its activation requires before it registers the bundle (v244): one entry per
+const activation = "supabase/migrations/20260929024599_runtime_bundle_activation_v245.sql";
+const activationVersion = 245;
+const previousActivationVersion = 244;
+const previousActivationSha256 = "4a51aee23402fe95b41b5c5dc9c7fe71b1fb1057b27239f1b0ebddbf98e2bbe4";
+// This release's own migrations, which its activation requires before it registers the bundle (v245): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v245 replaces these entries with the migrations v245 brings (or an empty list).
-// v245's activation already requires v244 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v244 brings five (B1 #1749, B2 #1751, the last-resort node #1752, the data pass #1756), in number
-// order, each before the bundle. An entry sorting before the activation file is checked on every database; one sorting
-// after it only on a database past 20260930534000, since a fresh chain in file order reaches it only after the activation
-// (as with the guards in the activation's text below).
+// version lines, when it sets them: v246 replaces these entries with the migrations v246 brings (or an empty list).
+// v246's activation already requires v245 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v245's release runs its migration (20260930745000, the live picture, #1746) BEFORE the
+// executors and this switch. An entry sorting before the activation file is checked on every database; one sorting
+// after it only on a database past 20260930534000, since a fresh chain in file order reaches it only after the
+// activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930747000_machine_ready_and_reused",
-		"a run waits in place for its machine and machine_start gives an agent its own free machine (B1): this bundle's machine tools wait on machine_start and machine_manage as it patches them",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_native_machine_start(jsonb,text,text,uuid,text)') and strpos(prosrc, '20260930747000') > 0)",
-	],
-	[
-		"20260930748000_answer_first_bookkeeping",
-		"the answer first (B2): this bundle runs the wall, to-do, apps and sidebar after a final send, which the kernel admits only with it",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_folder_begin_run_receipt(jsonb,uuid,text,text,text,boolean)') and strpos(prosrc, '20260930748000') > 0)",
-	],
-	[
-		"20260930749000_runtime_node_last_resort",
-		"a node can be a last resort (SQL only, no bundle need); it rides in this release's migrate, before this switch",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_runtime_node_placement_candidates(text)') and strpos(prosrc, '20260930749000') > 0)",
-	],
-	[
-		"20260930750000_company_data_pass",
-		"the run's data pass (company databases, slice 5): this bundle lists qorpera_run_data_pass among the native host's calls",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_run_data_pass(uuid,jsonb,text)') and true)",
-	],
-	[
-		"20260930751000_delivered_answer_no_failure_card",
-		"no failure card under an answer already delivered (B2): no later than the bundle that widens that window",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_list_staff_execution_activity(uuid)') and strpos(prosrc, '20260930751000') > 0)",
+		"20260930745000_machine_desktop_stream",
+		"the live picture: the executor this release moves lets a picture go only against qorpera_member_machine_stream_release; it rides in this release's migrate, before this switch",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)') and strpos(prosrc, '20260930745000') > 0)",
 	],
 ]);
 const activationRequiresSql = activationRequires
