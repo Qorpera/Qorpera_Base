@@ -403,7 +403,7 @@ function fitted(text: string, least: number, render: (shown: string) => string):
  * the window and runs past that end ends the window where it starts, so the next window holds it whole. One that
  * starts the window is taken whole, past the room if need be: the answer shows its short cut form. If it may go on past
  * everything read (`more`: the file goes on, and it reaches the end of the read, or ends so near it that its next
- * unit, a %-escape or a \u escape, may be cut there: review r6 of #1700), it is taken as far as read, and `runsOn`
+ * unit, a %-escape or a \u escape, may be cut there: reviews r6 and r7 of #1700), it is taken as far as read, and `runsOn`
  * says the window ends inside it: no window can hold it, and what follows is the rest of it, which nothing can cut on
  * its own. (Such a secret is longer than the read's SECRET_MARGIN: no real key is.) `secrets` are
  * cloudSecretSpans(text), found once for a window's many fittings.
@@ -418,7 +418,11 @@ function windowEnd(
 		if (span.start >= end) break;
 		if (span.end <= end) continue;
 		if (span.start > 0) return { end: span.start, runsOn: false };
-		if (more && span.end > text.length - SECRET_UNIT) return { end: text.length, runsOn: true };
+		// What is left after it, cut off by the read's end, may be the start of its next unit (%2 of %2B, \u00 of \u002B):
+		// printable ASCII only, so the end stays a whole character. Anything else (a character, or bytes of one the
+		// read cut) ends it there (review r7 of #1700).
+		if (more && span.end > text.length - SECRET_UNIT && /^[\x21-\x7e]*$/.test(text.slice(span.end)))
+			return { end: text.length, runsOn: true };
 		return { end: span.end, runsOn: false };
 	}
 	return { end, runsOn: false };

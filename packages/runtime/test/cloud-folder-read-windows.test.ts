@@ -182,6 +182,16 @@ describe("a window of a file", () => {
 			expect(escaped).toMatchObject({ offset: 0, bytesRead: 4 + 1024, nextOffset: 4 + 1024 });
 			expect(escaped.secretRun).toContain("starts at offset 0");
 		}
+		// A run whose read ends inside a character after it (review r7 of #1700): the run ends where the character starts,
+		// whole, and the next read starts at that character.
+		const h = await fixture({
+			files: { "notes/emoji.md": `${["ghp", "A".repeat(1022)].join("_")}\u{1F600}tail\n` },
+		});
+		const whole = parse(await h.call("company_read", { path: "notes/emoji.md", offset: 0, limit: 4 }));
+		expect(whole).toMatchObject({ offset: 0, text: "ghp_[REDACTED]", bytesRead: 1026, nextOffset: 1026 });
+		expect(whole.secretRun).toBeUndefined();
+		const next = parse(await h.call("company_read", { path: "notes/emoji.md", offset: whole.nextOffset }));
+		expect(next.text).toBe("\u{1F600}tail\n");
 		// A read asked to start deep inside such a run, further in than a read takes before its start, cannot see where the
 		// run began: it shows what follows as it is and says nothing. Only the window that ends in the run can say so.
 		expect(parse(await f.call("company_read", { path: "notes/blob.md", offset: 40_000 })).secretRun).toBeUndefined();
