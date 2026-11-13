@@ -239,3 +239,4 @@
 :root[data-theme="dark"] :is(.bank-detail-out .bank-amount-side, .bank-net-down) { color: #f4776b; }
 :root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
 :root[data-theme="dark"] .bank-year-out { background: #7a3530; }
+:root[data-theme="dark"] .figure-dust { background: rgb(255 255 255 / 24%); }

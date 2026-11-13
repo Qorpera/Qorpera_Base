@@ -783,6 +783,8 @@ export function mountApplication(
 			// reads an open window's machines at once.
 			computerPanels = new ComputerPanels(computer, controller.signal, {
 				hints: (listener) => controller.onInvalidate(listener),
+				// The machine's clock and backdrop follow the company's time zone (20260930739000).
+				timeZone: () => controller.store.get().team?.timeZone,
 			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
@@ -1165,7 +1167,8 @@ export function mountApplication(
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
-			if (conversation?.show(agentId, page)) return;
+			// The member's own click: a sleeping computer wakes (computer.ts OPEN_STARTS).
+			if (conversation?.show(agentId, page, true)) return;
 			// It waits a little while for the chat; a request the member moved away from does not come back later.
 			agentPage = { agentId, page, until: Date.now() + AGENT_PAGE_WAIT_MS };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
@@ -1913,7 +1916,10 @@ export function mountApplication(
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
-				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
+				if (
+					agentPage &&
+					(Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page, true))
+				)
 					agentPage = undefined;
 				return;
 			}
@@ -2094,6 +2100,13 @@ export function mountApplication(
 							environmentId: controller.profile.environmentId,
 						};
 						const keys = createDigitalPostKeys(cloud, environment);
+						const accounts = createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							companyCurrent,
+						);
 						return {
 							hooks: createWebEventHooks(cloud, environment),
 							digitalPost: {
@@ -2101,6 +2114,12 @@ export function mountApplication(
 								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
 								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
 							},
+							// Who answers an address: the agent's routine that starts on its mail, written as the member's own
+							// save, on one of the member's own model accounts.
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+								memberFolder(companyCurrent, t("Company access changed.")),
+							),
+							accounts: (signal) => accounts.listConnections(signal),
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),

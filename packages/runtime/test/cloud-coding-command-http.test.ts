@@ -10,6 +10,7 @@ import {
 	HttpCloudCodingCommandService,
 	parseCloudCodingCommandUrl,
 } from "../src/cloud-coding-command-http.ts";
+import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "../src/cloud-command-pages.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -128,6 +129,120 @@ describe("isolated coding command HTTP gateway", () => {
 			{ ...f.request, action: "read", input: { commandId: f.input.commandId, offset: 0, limit: 4096 } },
 			{ ...f.request, action: "cancel", input: { commandId: f.input.commandId } },
 		]);
+	});
+	it("says on every answer what a page may ask for, and a read asks for no more than the executor said (keyholes S1)", async () => {
+		const f = await fixture();
+		expect((await raw(f, f.request)).headers.get(CLOUD_COMMAND_PAGE_HEADER)).toBe("65536");
+		const refused = await raw(f, f.request, "start", randomBytes(32).toString("base64url"));
+		expect(refused.status).toBe(403);
+		expect(refused.headers.get(CLOUD_COMMAND_PAGE_HEADER)).toBe("65536");
+		const pages = new CloudCommandPages();
+		const client = createHttpCloudCodingCommandGateway({
+			url: f.url,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages,
+		});
+		const signal = new AbortController().signal;
+		const commandId = f.input.commandId;
+		f.execute.mockClear();
+		// Before the executor said anything, a read asks for the legacy 16,384 at most; once it said, for what it said.
+		await client.read(f.scope, { commandId, limit: 40000 }, signal);
+		await client.read(f.scope, { commandId, tail: true, limit: 40000 }, signal);
+		await client.read(f.scope, { commandId, limit: 100 }, signal);
+		expect(f.execute.mock.calls.map(([request]) => request.input)).toEqual([
+			{ commandId, offset: 0, limit: 16384 },
+			{ commandId, tail: true, limit: 40000 },
+			{ commandId, offset: 0, limit: 100 },
+		]);
+		expect(pages.of(f.url)).toBe(65536);
+	});
+	it("asks an executor that does not say what it takes for the legacy page at most, however often it answers", async () => {
+		const f = await fixture();
+		const bodies: { input: unknown }[] = [];
+		// An executor from before keyholes S1: it answers without the header.
+		const old = createServer(async (request, reply) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(chunk as Buffer);
+			bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			reply.writeHead(200, { "content-type": "application/json" });
+			reply.end(JSON.stringify(f.receipt));
+		});
+		await new Promise<void>((resolve) => old.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise((resolve) => old.close(() => resolve())));
+		const address = old.address();
+		if (!address || typeof address === "string") throw new Error("no address");
+		const client = createHttpCloudCodingCommandGateway({
+			url: `http://127.0.0.1:${address.port}`,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages: new CloudCommandPages(),
+		});
+		for (let i = 0; i < 2; i++)
+			await client.read(f.scope, { commandId: f.input.commandId, limit: 32768 }, new AbortController().signal);
+		expect(bodies.map((body) => body.input)).toEqual([
+			{ commandId: f.input.commandId, offset: 0, limit: 16384 },
+			{ commandId: f.input.commandId, offset: 0, limit: 16384 },
+		]);
+	});
+	it("asks a read once more, for what the executor takes, when it stopped saying so under this process", async () => {
+		const f = await fixture();
+		const bodies: { input: { limit?: number } }[] = [];
+		// This tree's executor first; then one from before keyholes S1 behind the same origin (rolled back): it refuses a
+		// page past 16,384 (403) and answers without the header. A 403 of this tree's executor says what it takes.
+		let rolledBack = false;
+		const refusedId = randomUUID();
+		const proxiedId = randomUUID();
+		const executor = createServer(async (request, reply) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(chunk as Buffer);
+			const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+			bodies.push(body);
+			const said = rolledBack ? {} : { [CLOUD_COMMAND_PAGE_HEADER]: "65536" };
+			// A proxy in front of the executor that answers for it (502), without the header.
+			if (body.input.commandId === proxiedId) {
+				reply.writeHead(502, { "content-type": "text/html" });
+				reply.end("<html>Bad Gateway</html>");
+				return;
+			}
+			const refused = (rolledBack && body.input.limit > 16384) || body.input.commandId === refusedId;
+			reply.writeHead(refused ? 403 : 200, { "content-type": "application/json", ...said });
+			reply.end(JSON.stringify(refused ? { error: "coding_command_unavailable" } : f.receipt));
+		});
+		await new Promise<void>((resolve) => executor.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise((resolve) => executor.close(() => resolve())));
+		const address = executor.address();
+		if (!address || typeof address === "string") throw new Error("no address");
+		const client = createHttpCloudCodingCommandGateway({
+			url: `http://127.0.0.1:${address.port}`,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages: new CloudCommandPages(),
+		});
+		const signal = new AbortController().signal;
+		const commandId = f.input.commandId;
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		// A refusal from an executor that says what it takes stands: no second ask.
+		await expect(client.read(f.scope, { commandId: refusedId, limit: 32768 }, signal)).rejects.toThrow();
+		rolledBack = true;
+		await expect(client.read(f.scope, { commandId, limit: 32768 }, signal)).resolves.toEqual(f.receipt);
+		expect(bodies.map((body) => body.input.limit)).toEqual([16384, 32768, 32768, 32768, 16384]);
+		// A proxy's failure without the header is never asked again, though the executor now counts as unsaid.
+		rolledBack = false;
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		await expect(client.read(f.scope, { commandId: proxiedId, limit: 32768 }, signal)).rejects.toThrow();
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		expect(bodies.map((body) => body.input.limit).slice(5)).toEqual([16384, 32768, 16384]);
 	});
 	it("transports bounded tail requests and rejects ambiguous page cursors before authority", async () => {
 		const f = await fixture();

@@ -15,6 +15,7 @@ import { planLogin, type WebMemberConnection } from "../../cloud/native-subscrip
 import {
 	canPayForRoutine,
 	claudeLogin,
+	latestVersions,
 	type WebRoutine,
 	WebRoutineChangedError,
 	WebRoutineEndedError,
@@ -101,17 +102,6 @@ function shapeOf(trigger: CloudRoutineTrigger): Shape | undefined {
 function editorShape(routine: CloudRoutine): Shape | undefined {
 	const [trigger, ...more] = routine.triggers;
 	return trigger && !more.length ? shapeOf(trigger) : undefined;
-}
-
-/** The cloud lists one row per connection version; the picker offers each account
- * once, at its newest version (a consent raises the version, not the account). */
-function latestVersions(accounts: readonly WebMemberConnection[]): WebMemberConnection[] {
-	const newest = new Map<string, WebMemberConnection>();
-	for (const account of accounts) {
-		const current = newest.get(account.connectionId);
-		if (!current || current.connectionVersion < account.connectionVersion) newest.set(account.connectionId, account);
-	}
-	return [...newest.values()];
 }
 
 function accountLabel(account: WebMemberConnection): string {

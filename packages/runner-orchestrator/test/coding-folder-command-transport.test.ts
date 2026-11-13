@@ -1560,6 +1560,35 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(await rejected(at.read(input.commandId, { tail: true, offset: 0 }))).toBe("Invalid coding log read");
 	});
 
+	it("pages up to 64 KiB of output, of it no more than 60,000 bytes as JSON writes it (keyholes S1)", async () => {
+		const at = await fixture();
+		const input = at.input();
+		const text = "0123456789".repeat(7000);
+		at.guest.print(input.commandId, text);
+		await at.start(input);
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		const done = { state: "succeeded", exitCode: 0 } as const;
+		// Plain output: each byte one byte of JSON, so a page of 65,536 bytes stops at 60,000.
+		expect(await at.read(input.commandId, { limit: 65536 })).toStrictEqual(
+			at.receipt(input, { ...done, output: text.slice(0, 60000), truncated: true, log: { totalBytes: 70000 } }),
+		);
+		expect(await at.read(input.commandId, { offset: 60000, limit: 65536 })).toStrictEqual(
+			at.receipt(input, { ...done, output: text.slice(60000), log: { offset: 60000 } }),
+		);
+		// Control characters take six bytes each as JSON: 10,000 of them, from either end.
+		const other = at.input();
+		const control = "\u0001".repeat(30000);
+		at.guest.print(other.commandId, control);
+		await at.start(other);
+		at.guest.end(other.commandId, "exited", { code: 0, signal: null });
+		expect(await at.read(other.commandId, { limit: 65536 })).toStrictEqual(
+			at.receipt(other, { ...done, output: control.slice(0, 10000), truncated: true, log: { totalBytes: 30000 } }),
+		);
+		expect(await at.read(other.commandId, { tail: true, limit: 65536 })).toStrictEqual(
+			at.receipt(other, { ...done, output: control.slice(0, 10000), log: { offset: 20000 } }),
+		);
+	});
+
 	it("never splits a character: a page waits for the rest of one, and an offset inside one is refused", async () => {
 		const at = await fixture();
 		const input = at.input();

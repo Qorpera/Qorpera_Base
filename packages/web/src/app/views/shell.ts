@@ -41,7 +41,7 @@ import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
-import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -391,6 +391,8 @@ interface RailParts {
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
+	/** The group folding as the drawer is drawn next (its drawer key): its apps go back into its tile. */
+	appFolding: string | undefined;
 	/** Dragging the drawer's icons to reorder them. */
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
@@ -438,8 +440,6 @@ interface RailParts {
 	settled: boolean;
 	/** Mentions had been read at the last draw, so a mention now is news. */
 	mentionsRead: boolean;
-	/** What waits on the member had been read at the last draw, so a raised hand now is news. */
-	waitingRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -575,7 +575,7 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
  * a child is out of place, so a child that keeps its place never leaves the page. */
 /** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
  * agent that starts work gets its dot and its line, a failed run folds the figure into a red
- * "!" (and unfolds it when the failure is dealt with), a mention's badge and a raised hand pop, and an agent the
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, finished work makes the figure cheer, and an agent the
  * company never listed before is placed like a card (a new chat drops in). */
 function changedRow(
 	before: string | undefined,
@@ -583,7 +583,6 @@ function changedRow(
 	element: HTMLElement,
 	unseen: boolean,
 	mentionsRead: boolean,
-	waitingRead: boolean,
 ): void {
 	if (before === undefined) {
 		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
@@ -603,7 +602,9 @@ function changedRow(
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
-	if (waitingRead && !was.waiting && now.waiting) playOnce(element, "hand-arrived");
+	// Its work is done: the figure cheers.
+	if ((was.state === "working" || was.state === "writing") && now.state === "idle")
+		playFigure(element.querySelector(".figure"), "cheer");
 }
 
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -670,6 +671,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
+			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
@@ -703,7 +705,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
-			waitingRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
@@ -944,7 +945,7 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
  * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
  * which the compact rail needs: it hides the text beside the figure and the disc says
  * nothing aloud. What the agent waits on the member for is said too, while it works as
- * well, since the raised hand says nothing aloud either. */
+ * well, since the symbol the figure becomes says nothing aloud either. */
 function railLabel(
 	agent: Pick<AgentModel, "displayName" | "state" | "waiting"> & { mentioned?: boolean },
 	look: AgentLook,
@@ -966,10 +967,24 @@ function railLabel(
 	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
 }
 
-/** A raised hand on the figure's top-right while the agent's work waits on this member (a card it raised for them,
- * or an approval card they answer), also while it works on something else. Its words are in the link's name. */
-function handMark(waiting: AgentModel["waiting"]): HTMLElement | null {
-	return waiting ? h("span", { class: "rail-hand", "aria-hidden": "true" }, icon("hand")) : null;
+/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone), and asking when its
+ * work waits on this member. Stopped at them, the figure becomes a "?" for a question to answer and a "!" for
+ * anything else (an approval, a secret, a takeover, a draft, a decision with no words); working on something
+ * else meanwhile, it comes back as that symbol between its spells of work. Its words are in the link's name. */
+function railFigure(model: AgentModel, size: number, look: AgentLook): HTMLElement {
+	const ask = model.waiting ? (model.waiting.kind === "question" ? "question" : "bang") : undefined;
+	return agentFigure(model, model.displayName, {
+		size,
+		activity: look.figure,
+		alive: true,
+		ask: ask ?? (model.state === "decision" ? "bang" : undefined),
+	});
+}
+function perksUp(link: HTMLElement): HTMLElement {
+	link.addEventListener("pointerenter", (event) => {
+		if (event.pointerType === "mouse") playFigure(link.querySelector(".figure"), "perk");
+	});
+	return link;
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -986,9 +1001,9 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "temp
 	mentioned: boolean;
 	/** The row's line while the agent does not work and needs no one (app/agent-line.ts), in the member's words. */
 	idle?: IdleLine;
-	/** Its work waits on this member (CompanyController.waitingFor): the newest item in a few words, when the cloud
-	 * says. */
-	waiting?: { what?: string };
+	/** Its work waits on this member (CompanyController.waitingFor): the newest item in a few words and its kind,
+	 * when the cloud says. */
+	waiting?: { what?: string; kind?: string };
 }
 interface SessionModel {
 	title: string;
@@ -1002,18 +1017,25 @@ interface SessionModel {
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return h(
-		"a",
-		{ class: "cofounder-home", href, draggable: "false", "data-cofounder-id": model.id, ...railLabel(model, look) },
+	return perksUp(
 		h(
-			"span",
-			{ class: "cofounder-stand" },
-			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
-			statusDisc(look, "cofounder-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
+			"a",
+			{
+				class: "cofounder-home",
+				href,
+				draggable: "false",
+				"data-cofounder-id": model.id,
+				...railLabel(model, look),
+			},
+			h(
+				"span",
+				{ class: "cofounder-stand" },
+				railFigure(model, 82, look),
+				statusDisc(look, "cofounder-status"),
+				mentionBadge(model.mentioned),
+			),
+			h("strong", null, model.displayName),
 		),
-		h("strong", null, model.displayName),
 	);
 }
 
@@ -1043,25 +1065,26 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 /** A pinned agent: a square card with the figure over the name, as in Grok Bot. */
 function pinCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	return h(
-		"a",
-		{
-			class: "rail-pin",
-			href,
-			draggable: "false",
-			"data-agent-id": model.id,
-			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look),
-		},
+	return perksUp(
 		h(
-			"span",
-			{ class: "rail-pin-stand" },
-			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
-			statusDisc(look, "rail-row-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
+			"a",
+			{
+				class: "rail-pin",
+				href,
+				draggable: "false",
+				"data-agent-id": model.id,
+				style: `--agent-color: ${agentColor(model)}`,
+				...railLabel(model, look),
+			},
+			h(
+				"span",
+				{ class: "rail-pin-stand" },
+				railFigure(model, 52, look),
+				statusDisc(look, "rail-row-status"),
+				mentionBadge(model.mentioned),
+			),
+			h("strong", { class: "rail-pin-name" }, model.displayName),
 		),
-		h("strong", { class: "rail-pin-name" }, model.displayName),
 	);
 }
 
@@ -1074,29 +1097,30 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
 	const line = live ?? model.idle?.text;
 	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
-	return h(
-		"a",
-		{
-			class: "rail-row rail-row-agent",
-			href,
-			draggable: "false",
-			"data-agent-id": model.id,
-			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look, model.idle),
-		},
+	return perksUp(
 		h(
-			"span",
-			{ class: "rail-row-stand" },
-			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
-			statusDisc(look, "rail-row-status"),
-			handMark(model.waiting),
-			mentionBadge(model.mentioned),
-		),
-		h(
-			"span",
-			{ class: "rail-row-copy" },
-			h("strong", null, model.displayName),
-			line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
+			"a",
+			{
+				class: "rail-row rail-row-agent",
+				href,
+				draggable: "false",
+				"data-agent-id": model.id,
+				style: `--agent-color: ${agentColor(model)}`,
+				...railLabel(model, look, model.idle),
+			},
+			h(
+				"span",
+				{ class: "rail-row-stand" },
+				railFigure(model, 50, look),
+				statusDisc(look, "rail-row-status"),
+				mentionBadge(model.mentioned),
+			),
+			h(
+				"span",
+				{ class: "rail-row-copy" },
+				h("strong", null, model.displayName),
+				line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
+			),
 		),
 	);
 }
@@ -1298,7 +1322,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
 		if (entry !== kept && parts.settled)
-			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead, parts.waitingRead);
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -1339,7 +1363,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					? cofounderSessionId
 					: company.primarySessionFor(agent.id)?.sessionId,
 			),
-			...(waiting ? { waiting: waiting.what ? { what: waiting.what } : {} } : {}),
+			...(waiting
+				? {
+						waiting: {
+							...(waiting.what ? { what: waiting.what } : {}),
+							...(waiting.kind ? { kind: waiting.kind } : {}),
+						},
+					}
+				: {}),
 		};
 	};
 	const cofounderElement =
@@ -1734,7 +1765,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	for (const member of state.team?.members ?? []) parts.known.add(`#/c/${profileId}/member/${member.userId}`);
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
-	parts.waitingRead = parts.settled && (state.waitingOnMe !== undefined || state.approvals !== undefined);
 	parts.notices = notices;
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {
@@ -2123,6 +2153,19 @@ function groupIcon(name: string, count: number, colour: string | undefined): HTM
 	return tile;
 }
 
+/** Each tile on its way out of the drawer, and its fold into a group if it has one. The drawer draws a tile it shows
+ * again with the same element, so a tile that comes back, or goes at the end of its way out, loses its fold (`fill`
+ * holds the fold's end, small and clear, until cancelled), and only the latest way out ends one (review F1 on #1729). */
+const leavingTiles = new WeakMap<HTMLElement, { readonly fold?: Animation }>();
+
+/** A tile out of its way out: whole again, in the grid's flow, its fold cancelled. */
+function unleave(element: HTMLElement): void {
+	leavingTiles.get(element)?.fold?.cancel();
+	leavingTiles.delete(element);
+	element.classList.remove("is-leaving", "is-folding");
+	for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+}
+
 /** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
  * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
 function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
@@ -2136,13 +2179,15 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		: undefined;
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
-	for (const element of drawn)
-		if (element.classList.contains("is-leaving")) {
-			element.classList.remove("is-leaving");
-			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
-		}
+	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
 	reconcile(grid, drawn);
+	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
+	// collapsing").
+	const folding = parts.appFolding;
+	parts.appFolding = undefined;
 	if (!before || !box) return;
+	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
+	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
 	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
@@ -2164,8 +2209,24 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				easing: easing("--ease-out"),
 			});
 	}
-	for (const [element, was] of before) {
-		if (kept.has(element)) continue;
+	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
+	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
+	for (const element of before.keys())
+		if (!kept.has(element) && leavingTiles.has(element)) {
+			// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
+			element.removeAttribute("data-app-key");
+			if (element.parentElement !== grid) grid.append(element);
+		}
+	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
+	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
+	// wraps).
+	const into = target ? centre(target) : undefined;
+	const far = (rect: DOMRect) => (into ? Math.hypot(centre(rect).x - into.x, centre(rect).y - into.y) : 0);
+	const turn = new Map(
+		[...leaving].sort(([, a], [, b]) => far(a) - far(b)).map(([element], index) => [element, index] as const),
+	);
+	for (const [element, was] of leaving) {
 		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
 		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
@@ -2173,9 +2234,33 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.top = `${was.top - box.top}px`;
 		element.style.width = `${was.width}px`;
 		grid.append(element);
+		let ms = 240;
+		let fold: Animation | undefined;
+		if (into) {
+			// Into the group's tile: each app shrinks and goes back behind it, a moment after the one nearer it.
+			const from = centre(element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was);
+			const dx = into.x - from.x;
+			const dy = into.y - from.y;
+			const delay = Math.min(turn.get(element) ?? 0, 6) * 18;
+			element.classList.add("is-folding");
+			fold = element.animate(
+				[
+					{ translate: "0 0", scale: "1", opacity: 1 },
+					{ opacity: 1, offset: 0.4 },
+					{ translate: `${dx}px ${dy}px`, scale: "0.2", opacity: 0 },
+				],
+				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
+			);
+			ms = 340 + delay + 20;
+		}
+		const leave = { fold };
+		leavingTiles.set(element, leave);
 		setTimeout(() => {
-			if (element.classList.contains("is-leaving")) element.remove();
-		}, 240);
+			// Come back meanwhile, or gone again on a newer way out: not this one's to end.
+			if (leavingTiles.get(element) !== leave) return;
+			element.remove();
+			unleave(element);
+		}, ms);
 	}
 }
 
@@ -2201,6 +2286,7 @@ function toggleAppGroup(company: CompanyController, parts: RailParts, id: string
 			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
 			: undefined;
 		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+		parts.appFolding = groupKey(id);
 	} else parts.appGroupsOpen.add(id);
 	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
 	parts.redraw();

@@ -5,6 +5,7 @@ import {
 	cloudCodingCommandTools,
 	parseCloudCodingCommandReceipt,
 } from "../src/cloud-coding-command-tools.ts";
+import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -159,29 +160,212 @@ describe("isolated coding command tools", () => {
 			f.boundary.close();
 		}
 	});
-	it("shrinks escaped log pages so the native fence preserves a complete JSON cursor", async () => {
-		const f = fixture();
+	/** A log of `totalBytes` whose page at `offset` the gateway answers with as many bytes as the read asks for. */
+	const paged = (
+		f: ReturnType<typeof fixture>,
+		text: (bytes: number) => string,
+		totalBytes: number,
+		state = "succeeded",
+	) =>
 		f.gateway.read.mockImplementation(async (_scope, input) => {
-			const length = Math.min(16000, input.limit ?? 4096);
+			const offset = input.offset ?? 0;
+			const output = text(offset + (input.limit ?? 4096)).slice(text(offset).length);
+			const nextOffset = offset + Buffer.byteLength(output);
 			return {
 				...f.receipt,
-				output: "<".repeat(length),
-				truncated: length < 16000,
-				log: { offset: 0, nextOffset: length, totalBytes: 16000, limitBytes: 67108864, limitReached: false },
+				state,
+				exitCode: state === "succeeded" ? 0 : state === "failed" ? 1 : null,
+				output,
+				truncated: nextOffset < totalBytes,
+				log: { offset, nextOffset, totalBytes, limitBytes: 67108864, limitReached: false },
 			};
 		});
+	/** The first `bytes` of a build log: plain lines. */
+	const lines = (bytes: number) => {
+		let text = "";
+		for (let n = 0; text.length < bytes; n++)
+			text += `[${String(n).padStart(5, "0")}] PASS test/case-${n}.test.ts (12 ms)\n`;
+		return text.slice(0, bytes);
+	};
+	const shown = (result: unknown) => {
+		const envelope = JSON.parse((result as { contentItems: { text: string }[] }).contentItems[0].text);
+		return { envelope, page: JSON.parse(envelope.content.text) };
+	};
+	it("shows as much of a long log as one result holds, in one read (keyholes S1)", async () => {
+		const f = fixture();
+		paged(f, (bytes) => lines(Math.min(bytes, 60_000)), 60_000);
+		try {
+			const result = await f.boundary.invoke("page", "qorpera", "coding_read_command", { commandId: f.commandId });
+			expect(result.success).toBe(true);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read).toHaveBeenCalledWith(
+				f.scope,
+				{ commandId: f.commandId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK },
+				expect.any(AbortSignal),
+			);
+			const { envelope, page } = shown(result);
+			// The fence did not cut it: the cut is the tool's, at the page's own cursor.
+			expect(envelope.content.truncated).toBe(false);
+			expect(Buffer.byteLength(page.output)).toBeGreaterThan(28_000);
+			expect(lines(60_000).startsWith(page.output)).toBe(true);
+			expect(page.log.nextOffset).toBe(Buffer.byteLength(page.output));
+			expect(page.truncated).toBe(true);
+			// The next page goes on where this one ends.
+			const next = shown(
+				await f.boundary.invoke("next", "qorpera", "coding_read_command", {
+					commandId: f.commandId,
+					offset: page.log.nextOffset,
+				}),
+			).page;
+			expect(page.output + next.output).toBe(lines(page.log.nextOffset + Buffer.byteLength(next.output)));
+			// A tail shows the log's end, its offset where the shown part begins.
+			f.gateway.read.mockImplementationOnce(async () => ({
+				...f.receipt,
+				state: "succeeded",
+				exitCode: 0,
+				output: lines(60_000).slice(60_000 - CLOUD_COMMAND_PAGE_ASK),
+				truncated: false,
+				log: {
+					offset: 60_000 - CLOUD_COMMAND_PAGE_ASK,
+					nextOffset: 60_000,
+					totalBytes: 60_000,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			}));
+			const tail = shown(
+				await f.boundary.invoke("tail", "qorpera", "coding_read_command", { commandId: f.commandId, tail: true }),
+			).page;
+			expect(lines(60_000).endsWith(tail.output)).toBe(true);
+			expect(tail.log.offset).toBe(60_000 - Buffer.byteLength(tail.output));
+			expect(Buffer.byteLength(tail.output)).toBeGreaterThan(28_000);
+		} finally {
+			f.boundary.close();
+		}
+	});
+	it("cuts an escaped page to fit at a complete JSON cursor, without asking again", async () => {
+		const f = fixture();
+		paged(f, (bytes) => "<".repeat(Math.min(bytes, 16000)), 16000);
 		try {
 			const result = await f.boundary.invoke("page", "qorpera", "coding_read_command", {
 				commandId: f.commandId,
 				limit: 16384,
 			});
 			expect(result.success).toBe(true);
-			const envelope = JSON.parse(result.contentItems[0].text);
+			const { envelope, page } = shown(result);
 			expect(envelope.content.truncated).toBe(false);
-			const page = JSON.parse(envelope.content.text);
 			expect(page.log.nextOffset).toBe(page.output.length);
 			expect(page.log.nextOffset).toBeGreaterThan(0);
-			expect(f.gateway.read.mock.calls.length).toBeGreaterThan(1);
+			expect(page.log.nextOffset).toBeLessThan(16000);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read.mock.calls[0][1].limit).toBe(16384);
+		} finally {
+			f.boundary.close();
+		}
+	});
+	it("asks again for exactly what fits when the page cannot tell its cut's cursor (U+FFFD on both sides)", async () => {
+		const f = fixture();
+		// U+FFFD stands for a byte that is not UTF-8 too: a cut between two of them leaves the cursor unknown.
+		const unit = Array.from(`\uFFFD${"<".repeat(9)}`);
+		const text = (bytes: number) => {
+			let out = "";
+			for (let i = 0, used = 0; ; i++) {
+				const c = unit[i % unit.length];
+				used += Buffer.byteLength(c);
+				if (used > bytes) return out;
+				out += c;
+			}
+		};
+		paged(f, (bytes) => text(Math.min(bytes, 20000)), 20000);
+		try {
+			const result = await f.boundary.invoke("page", "qorpera", "coding_read_command", { commandId: f.commandId });
+			expect(result.success).toBe(true);
+			const limits = f.gateway.read.mock.calls.map(([, input]) => input.limit);
+			expect(limits).toEqual([CLOUD_COMMAND_PAGE_ASK, expect.any(Number)]);
+			expect(limits[1]).toBeLessThan(20000);
+			const { envelope, page } = shown(result);
+			expect(envelope.content.truncated).toBe(false);
+			expect(page.output).toBe(text(limits[1] as number));
+			expect(page.log.nextOffset).toBe(limits[1]);
+		} finally {
+			f.boundary.close();
+		}
+	});
+	it("takes a smaller limit as it is, and refuses one past one result's bound", async () => {
+		const f = fixture();
+		try {
+			expect(
+				(await f.boundary.invoke("small", "qorpera", "coding_read_command", { commandId: f.commandId, limit: 100 }))
+					.success,
+			).toBe(true);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({ commandId: f.commandId, offset: 0, limit: 100 });
+			expect(
+				(await f.boundary.invoke("big", "qorpera", "coding_read_command", { commandId: f.commandId, limit: 32769 }))
+					.success,
+			).toBe(false);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			const schema = f.tools.find((tool) => tool.name === "coding_read_command")?.inputSchema as {
+				properties: { limit: { maximum: number } };
+			};
+			expect(schema.properties.limit.maximum).toBe(32768);
+		} finally {
+			f.boundary.close();
+		}
+	});
+	it("shows a command that ended at its start with as much output as one result holds, in the same call", async () => {
+		const f = fixture();
+		const log = lines(50_000);
+		f.gateway.start.mockResolvedValue({
+			...f.receipt,
+			state: "failed",
+			exitCode: 1,
+			output: log.slice(0, 4096),
+			truncated: true,
+			log: { offset: 0, nextOffset: 4096, totalBytes: 50_000, limitBytes: 67108864, limitReached: false },
+		});
+		paged(f, (bytes) => log.slice(0, Math.min(bytes, 50_000)), 50_000, "failed");
+		try {
+			const result = await f.boundary.invoke("run", "qorpera", "coding_run_command", {
+				operationKey: "test",
+				command: "npm test",
+			});
+			expect(result.success).toBe(true);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({
+				commandId: f.commandId,
+				offset: 0,
+				limit: CLOUD_COMMAND_PAGE_ASK,
+			});
+			const { page } = shown(result);
+			expect(page.state).toBe("failed");
+			expect(Buffer.byteLength(page.output)).toBeGreaterThan(28_000);
+			expect(log.startsWith(page.output)).toBe(true);
+			// A read that fails keeps the start's own answer.
+			f.gateway.read.mockRejectedValueOnce(new Error("transport_unavailable"));
+			const kept = shown(
+				await f.boundary.invoke("run2", "qorpera", "coding_run_command", {
+					operationKey: "again",
+					command: "npm test",
+				}),
+			).page;
+			expect(kept.output).toBe(log.slice(0, 4096));
+		} finally {
+			f.boundary.close();
+		}
+	});
+	it("reads nothing more at a start whose command still runs, or whose output its start shows whole", async () => {
+		const f = fixture();
+		try {
+			await f.boundary.invoke("run", "qorpera", "coding_run_command", { operationKey: "a", command: "npm run dev" });
+			f.gateway.start.mockResolvedValue({
+				...f.receipt,
+				state: "succeeded",
+				exitCode: 0,
+				output: "ok\n",
+				log: { offset: 0, nextOffset: 3, totalBytes: 3, limitBytes: 67108864, limitReached: false },
+			});
+			await f.boundary.invoke("run2", "qorpera", "coding_run_command", { operationKey: "b", command: "true" });
+			expect(f.gateway.read).not.toHaveBeenCalled();
 		} finally {
 			f.boundary.close();
 		}
@@ -241,7 +425,7 @@ describe("isolated coding command tools", () => {
 		{ state: "failed", exitCode: 0 },
 		{ state: "running", exitCode: 0 },
 		{ state: "machine_stopped", exitCode: 137 },
-		{ output: "x".repeat(16385) },
+		{ output: "x".repeat(65537) },
 		{ token: "unexpected" },
 	])("rejects inconsistent guest receipt %j", (patch) => {
 		const f = fixture();

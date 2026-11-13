@@ -408,6 +408,24 @@ span.mailbox-open { cursor: default; }
 .mailbox-sender > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
 .mailbox-sender[aria-expanded="true"] { background: var(--hover); }
 
+/* Who answers an address, on its line (and in the form that adds one): a chip that opens the agents, as the Writer
+   chip does, and how much came to the address. Nobody yet: the chip asks, with a dashed edge. */
+.mailbox-answer-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; min-width: 0; }
+.mailbox-answer-line .mailbox-address-agent { flex-wrap: wrap; }
+.mailbox-answer-line .mailbox-address-week { white-space: nowrap; }
+.mailbox-answer-line .mailbox-error { flex-basis: 100%; margin: 0; }
+.mailbox-answerer { min-width: 0; padding-right: 9px; }
+.mailbox-answerer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
+.mailbox-answerer:not(.is-current) { border-style: dashed; color: var(--mailbox-accent-text); font-weight: 600; }
+.mailbox-answerer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+.mailbox-answerer:disabled { cursor: default; }
+.mailbox-answerer:disabled:not([aria-busy="true"]) { opacity: 0.5; }
+.mailbox-nobody {
+	flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 1px dashed var(--border-strong);
+	border-radius: 50%; color: var(--text-muted);
+}
+.mailbox-nobody svg { width: 12px; height: 12px; }
+
 /* ---- making addresses: the mailboxes, the form that adds one, Digital Post ------------ */
 /* Settings' cards (views/settings-hooks.ts, views/settings-digital-post.ts), drawn here as lines of the page like the
    addresses over them: no box and no mark, a hairline under each, quiet buttons at the line's end, and fields like
@@ -426,6 +444,9 @@ span.mailbox-open { cursor: default; }
 	padding: 10px var(--manage-end) 10px var(--manage-start); border-top: 0; border-bottom: 1px solid var(--border);
 }
 .mailbox-manage :is(.hook-icon, .connection-logo) { display: none; }
+/* An address's line: the address, who answers it, its buttons. With less room who answers it has a line of its own. */
+.mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) auto; }
+.mailbox-manage .hook-form .mailbox-answer-line { padding: 2px 16px; }
 .mailbox-manage :is(.hook-address, .service-outcome, .digital-post-steps, .service-token-form) { grid-column: 1 / -1; }
 .mailbox-manage .settings-copy { gap: 1px; }
 .mailbox-manage .settings-copy strong { font-size: 15px; font-weight: 650; }
@@ -593,6 +614,13 @@ span.mailbox-open { cursor: default; }
 	.mailbox-address-row > :nth-child(3) { justify-self: start; }
 }
 
+/* ---- less room: who answers an address goes under it ---------------------------------- */
+@container mailbox not (min-width: 58em) {
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr) auto; }
+	.mailbox-manage .service-card > .mailbox-answer-line { grid-area: 2 / 1 / auto / -1; }
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) > .connection-actions { grid-area: 1 / 2; }
+}
+
 /* ---- narrower: the drawer folds to a rail of icons, so the lines keep their room ----- */
 @container mailbox (min-width: 34em) and (max-width: 55em) {
 	.mailbox-frame { --mailbox-who: 124px; }
@@ -709,7 +737,9 @@ span.mailbox-open { cursor: default; }
 
 	.mailbox-address-row, .mailbox-picks { padding-left: var(--mailbox-gutter); }
 	.mailbox-manage { --manage-start: var(--mailbox-gutter); }
-	.mailbox-manage .service-card { grid-template-columns: minmax(0, 1fr); }
+	.mailbox-manage .service-card, .mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr); }
+	.mailbox-manage .service-card > .mailbox-answer-line,
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) > .connection-actions { grid-area: auto; }
 	.mailbox-manage .connection-actions { justify-content: flex-start; margin: 0 0 0 -12px; }
 	.mailbox-manage .connection-actions:has(> .btn-primary) { margin: 0; }
 

@@ -1619,8 +1619,9 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 		inputSchema: { required: string[] };
 	}[];
 	const list = tools.find((tool) => tool.name === "company_list");
-	// The folder core pages a folder by its last path; no listing pins a snapshot.
-	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
+	// The folder core pages a folder by its last path; no listing pins a snapshot. Since keyholes S2 (12 November 2026)
+	// depth, glob, after and limit may be left out: one level, the first 500 entries.
+	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
@@ -3245,6 +3246,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
+	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
+	// again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3291,9 +3295,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"bf3b8c3cc1af7742802b37e631a45f0366d37f351790dffd4712b675a628bb5e",
+		"1ddee247300918c03f84377e967be3c033c354cf9d0fc324518f75213f2997c2",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"22d644baf4629d20d75a344f72c748ee2579d0392d22c89d2cf3b6f0726d6b3a",
+		"6436c6723e5bcfe11e4cf4bf37d1e1005dc7e650aa7b792b54ef55f0ef6f48e0",
 	);
 });
