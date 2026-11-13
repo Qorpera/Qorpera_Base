@@ -456,10 +456,23 @@ export class CloudCodexHomeSteps {
 		await this.#log.precommit(j, signal);
 	}
 
-	/** The result fence releasing this call's output: its step keeps the exact envelope the model got. */
-	finish(callId: string, envelope: string): void {
+	/** The result fence releasing this call's output: its step keeps the exact envelope the model got. A call that
+	 * never acted on the machine (refused, or failed before it got there) is kept as a step too, written and finished
+	 * at once, when this host knows what it was: the run's record is never thinner than what the model did and saw. */
+	finish(callId: string, envelope: string, otherwise?: CloudCodexHomeAction["step"]): void {
 		const step = this.#open.get(callId);
-		if (!step) return;
+		if (!step) {
+			if (!otherwise) return;
+			const j = this.#log.step({
+				call: callId,
+				tool: otherwise.tool,
+				argumentsText: otherwise.argumentsText,
+				argumentSha256: sha256(otherwise.argumentsText),
+			});
+			this.finished++;
+			this.#log.finish(j, envelope, [], []);
+			return;
+		}
 		this.#open.delete(callId);
 		this.finished++;
 		this.#log.finish(step.j, envelope, [], step.paths);
@@ -579,6 +592,9 @@ export class CloudCodexHome {
 	#down?: string;
 	/** The calls of the model's that reached the machine: they ran there, so "nothing ran there" is never theirs. */
 	readonly #reached = new Set<string>();
+	/** What this host knows of a call of the model's that may never act on the machine (Codex announced it, or the
+	 * review refused it): the step it is kept as, should it end without one. */
+	readonly #known = new Map<string, CloudCodexHomeAction["step"]>();
 	/** The model's processes, by the id Codex gave each: what a write into one is typed into. */
 	readonly #processes = new Map<string, { readonly command: string; readonly cwd: string; readonly callId: string }>();
 	/** The model's patches in progress, by call, as Codex announced them; a file change belongs to the one that names
@@ -636,7 +652,9 @@ export class CloudCodexHome {
 
 	/** The result fence released this call's output: its step keeps the exact envelope the model got. */
 	released(callId: string, envelope: string): void {
-		this.#steps?.finish(callId, envelope);
+		const known = this.#known.get(callId);
+		this.#known.delete(callId);
+		this.#steps?.finish(callId, envelope, known);
 	}
 
 	/** This host's words for one call of the model's, when it knows the call. */
@@ -653,6 +671,18 @@ export class CloudCodexHome {
 	 */
 	noteItem(method: string, params: Record<string, unknown>): void {
 		if (method !== "item/started" && method !== "item/completed") return;
+		const item = params.item && typeof params.item === "object" ? (params.item as Record<string, unknown>) : {};
+		// A command Codex announced: should it end before it reached the machine, it is still the run's step.
+		if (
+			method === "item/started" &&
+			item.type === "commandExecution" &&
+			typeof item.id === "string" &&
+			CALL_ID.test(item.id)
+		) {
+			const command = typeof item.command === "string" ? item.command : "";
+			this.#known.set(item.id, { tool: "exec_command", argumentsText: JSON.stringify({ command }), paths: [] });
+			remember(this.#known, MAX_REMEMBERED);
+		}
 		const patch = parseCloudCodexHomePatch(params.item);
 		if (!patch) return;
 		if (method === "item/completed") {
@@ -662,6 +692,8 @@ export class CloudCodexHome {
 		}
 		this.#patches.set(patch.callId, patch);
 		remember(this.#patches, MAX_REMEMBERED);
+		this.#known.set(patch.callId, cloudHomePatchAction(this.#machine, patch).step);
+		remember(this.#known, MAX_REMEMBERED);
 		for (const wake of this.#patchNotices) wake();
 	}
 
@@ -1040,6 +1072,11 @@ export class CloudCodexHome {
 			const gate = await this.#review.check(action, this.#signal);
 			if (!gate.run) {
 				this.counts.declined++;
+				// Refused, it never acts; it is still the step the run keeps of what the model did and was told.
+				if (!action.callId.startsWith("home:")) {
+					this.#known.set(action.callId, action.step);
+					remember(this.#known, MAX_REMEMBERED);
+				}
 				return gate.text;
 			}
 		}

@@ -204,6 +204,21 @@ describe("the record the run keeps of what its home did", () => {
 		expect(native.finished).toBe(1);
 	});
 
+	it("keeps a call that never acted (refused, or failed before the machine) as a step of its own", () => {
+		const { steps, log } = runLog();
+		const native = new CloudCodexHomeSteps(log);
+		native.finish("call-x", '{"status":"error"}', {
+			tool: "exec_command",
+			argumentsText: '{"command":"rm x"}',
+			paths: [],
+		});
+		expect(steps).toHaveLength(1);
+		expect(steps[0]).toMatchObject({ call: "call-x", tool: "exec_command", result: '{"status":"error"}' });
+		// Without word of what it was, nothing is invented.
+		native.finish("call-y", '{"status":"ok"}');
+		expect(steps).toHaveLength(1);
+	});
+
 	it("refuses the action when the run cannot keep the record: an effect with no record must not happen", async () => {
 		const { log } = runLog({
 			precommit: async () => {
