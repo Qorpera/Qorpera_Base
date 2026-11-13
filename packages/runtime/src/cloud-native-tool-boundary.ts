@@ -186,6 +186,18 @@ export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 8_192;
 /** One fence frame each way, the same bound as the patched Codex. It bounds the
  * size of a request's released outputs, never their number. */
 export const CLOUD_NATIVE_FENCE_FRAME_BYTES = 64 * 1024 * 1024;
+/** What still runs after a run's final send, a card's included: only its own bookkeeping, so the member gets the answer
+ * without waiting for it (2026-11-13 amendment, "the answer first"). Any other call, but the answer's own call again (its
+ * key replays it), runs nothing and ends the turn. The kernel admits these tools' folder receipts after the final, and no
+ * other (20260930748000). */
+export const CLOUD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set([
+	"update_wall",
+	"manage_todo",
+	"organize_apps",
+	"organize_sidebar",
+]);
+const AFTER_ANSWER =
+	"TOOL_UNAVAILABLE: the final send is made, so only the wall, to-do list, apps and sidebar change now; this call ran nothing";
 
 /** Keeps a key in insertion order and forgets the oldest past the window. */
 function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
@@ -248,7 +260,8 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
 	/** Host-only: a confirmed final public send, or a worker's saved report (unless its answer tells of desktop paths the
-	 * folder did not take). The turn ends after this result is fenced. */
+	 * folder did not take). A report ends the turn after this result is fenced; a final send leaves the turn to the
+	 * run's bookkeeping (CloudDynamicToolResponse.answered). */
 	completesTurn?: boolean;
 	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
 	 * converted), handed to the model right after the envelope. */
@@ -316,6 +329,9 @@ export interface CloudDynamicToolResponse {
 	 * result. `alone`: only when this was the model response's one call, counting the calls Codex answers itself, so no
 	 * other answer goes unread. */
 	completesTurn?: true | "alone";
+	/** Host-only, never written to the provider: a confirmed final send (or a card's), so the member has the answer. The
+	 * turn goes on for the run's bookkeeping alone (CLOUD_AFTER_ANSWER_TOOLS). */
+	answered?: true;
 }
 
 export interface CloudNativeResultInput {
@@ -533,6 +549,9 @@ export class CloudNativeToolBoundary {
 	readonly #shownImages = new Map<string, string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
+	/** The calls (by tool and arguments) that made the run's final send, or a card's: once there is one, what the run
+	 * calls next is its bookkeeping, or the same call again, which only replays it. */
+	readonly #answers = new Set<string>();
 	readonly #folderReports?: CloudNativeFolderReports;
 	/** The mark of the last folder report a result the model got showed. */
 	#folderShown = "";
@@ -876,7 +895,20 @@ export class CloudNativeToolBoundary {
 		}
 		const result =
 			previous?.result ??
-			this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation, logged));
+			this.#pending.then(async () => {
+				// After the answer only the run's bookkeeping runs, and the answer's own call again (its key replays it).
+				// Anything else runs nothing and ends the turn at the next model request, as a final send ended it before
+				// (the 2026-11-13 amendment).
+				if (this.#answers.size > 0 && !CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) && !this.#answers.has(digest))
+					return {
+						...this.#result(callId, tool, digest, "denied", { kind: "text", value: AFTER_ANSWER }),
+						completesTurn: true as const,
+					};
+				const executed = await this.#execute(callId, tool, digest, argumentsText, observation, logged);
+				// Before the next call starts: calls run one after another.
+				if (executed.answered) this.#answers.add(digest);
+				return executed;
+			});
 		if (!previous) {
 			this.#calls.set(callId, { digest, result, observation });
 			// Calls run one after another, so what this forgets has long settled.
@@ -1348,24 +1380,25 @@ export class CloudNativeToolBoundary {
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
 		this.#issuedResults.add(fingerprint);
 		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
-		// A final send closes the turn whatever else its answer says or its response holds (contract 7.1). A worker's report
-		// waits for one more round when its answer tells of desktop paths the folder did not take, or that more of that
-		// report is to come, and when its response held another call (`alone`): the worker is the only one who can act on
-		// those, and this is the last result it would read.
+		// A final send is the member's answer (contract 7.1): after it only the run's bookkeeping runs (#respond), so the
+		// turn goes on for that alone (the 2026-11-13 amendment). A worker's report waits for one more round when its answer
+		// tells of desktop paths the folder did not take, or that more of that report is to come, and when its response
+		// held another call (`alone`): the worker is the only one who can act on those, and this is the last result it
+		// would read.
 		const folderUnread =
 			folder && (folder.report.notSaved || folder.report.refused !== undefined || folder.report.more);
+		const ends = status === "ok" && content.completesTurn === true;
+		const answered =
+			ends && tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member");
 		const completesTurn =
-			status !== "ok" || content.completesTurn !== true
-				? undefined
-				: tool?.source === "runtime" && (tool.name === "send_message" || tool.name === "ask_member")
-					? (true as const)
-					: tool?.source === "worker" && tool.name === "report_work" && !folderUnread
-						? ("alone" as const)
-						: undefined;
+			ends && tool?.source === "worker" && tool.name === "report_work" && !folderUnread
+				? ("alone" as const)
+				: undefined;
 		const response: CloudDynamicToolResponse = {
 			contentItems: [{ type: "inputText", text: serialized }],
 			success: status === "ok",
 			...(completesTurn ? { completesTurn } : {}),
+			...(answered ? { answered: true as const } : {}),
 		};
 		if (folder && result.companyFolder) this.#folderIssued = { response, mark: folder.mark };
 		return response;
