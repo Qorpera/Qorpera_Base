@@ -6631,6 +6631,26 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
    what it takes and says so for the rest.
 
+### 2026-11-13 amendment: agents are named after their work
+
+> **Built, not live.** Jonas, 13 November 2026, after creating a company and reading its rail: "I don't know who
+> does what, and their human-like names makes it difficult to know. their names should be a name of their
+> responsibility/work so that it's easier to find the agent that does the work you care about or have a note for".
+> Runtime text only: no migration, no new tool and no stored field. It goes live with a runtime bundle.
+
+1. **A name is the work, not a person.** An agent's `name` names what it owns, in one to three plain words and in
+   the founders' language (Customer research, Market, Strategy, Brand, Product, Engineering, Bookkeeping), never a
+   person's name and never a name a coworker already carries. `hire_agent`'s description and its `name` schema say
+   so, so it binds every hire, the Co-Founder's first team included.
+2. **An agent hired before this is renamed, not moved.** The app shows `agent.md`'s `name`, which the roster's
+   `display_name` follows on the file's next commit (section 5.6's agent index), while the folder handle it was
+   hired with is only a path. So a rename is one `company_edit` on that file's `name` line, review class `plain`
+   (no status change), with the folder left where it is: nothing that points at the agent's folder or id changes,
+   and `sections.md`'s readable names, which are notes beside the ids, go stale until their next write.
+3. **Who does it.** The Co-Founder's role overlay is `qorpera.hire-overlay/v16`: an agent whose name says who it is
+   rather than what it owns is a sign its planning run fixes, in that run, telling the founders once which names
+   changed. No other run is asked to rename anything, and nothing renames an agent by itself.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
