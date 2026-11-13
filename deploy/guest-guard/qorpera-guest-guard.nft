@@ -48,6 +48,7 @@ table inet qorpera_guest_guard {
 	set allowed_services {
 		type ifname . ipv4_addr . inet_proto . inet_service
 		elements = {
+			"qorpera0" . 10.41.0.1 . tcp . 443,
 			"qorpera0" . 10.41.0.1 . tcp . 8789,
 			"qorpera0" . 100.75.4.70 . tcp . 443,
 			"qorpera0" . 100.75.4.70 . tcp . 8443,
