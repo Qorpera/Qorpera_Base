@@ -1971,10 +1971,12 @@ export class LxdUnixClient
 		return volumes.map(storageVolume);
 	}
 
-	/** The pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them), then each
-	 * named virtual machine's disk volume's own use (`/state`), one request at a time, each within 5 s. A pool whose
-	 * figures are missing or not whole byte counts fails the read; a volume LXD does not have (404) or whose use it does
-	 * not give is left out, so its use stays unknown. */
+	/** Each named virtual machine's disk volume's own use (`/state`), one request at a time, each within 5 s, then the
+	 * pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them). The pool is read
+	 * last, so what a machine writes while the disks are read is in the pool's used bytes and not credited to its disk:
+	 * the room a report gives is never more than there is (review r1 F2 of #1773). A pool whose figures are missing or not
+	 * whole byte counts fails the read; a volume LXD does not have (404) or whose use it does not give is left out, so its
+	 * use stays unknown. */
 	async readStoragePoolUse(
 		pool: string,
 		volumes: readonly { project: string; name: string }[],
@@ -1986,20 +1988,6 @@ export class LxdUnixClient
 			volumes.some((volume) => !INSTANCE_NAME.test(volume.project) || !INSTANCE_NAME.test(volume.name))
 		)
 			throw new Error("LXD storage scope is invalid");
-		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
-		const space = record(resources.space, "LXD storage pool space");
-		const totalBytes = space.total;
-		const usedBytes = space.used;
-		if (
-			typeof totalBytes !== "number" ||
-			typeof usedBytes !== "number" ||
-			!Number.isSafeInteger(totalBytes) ||
-			!Number.isSafeInteger(usedBytes) ||
-			totalBytes <= 0 ||
-			usedBytes < 0 ||
-			usedBytes > totalBytes
-		)
-			throw new Error("LXD storage pool use is invalid");
 		const use = new Map<string, number>();
 		for (const volume of volumes) {
 			signal.throwIfAborted();
@@ -2016,9 +2004,23 @@ export class LxdUnixClient
 			const state = envelopeMetadata(result);
 			const usage = state && typeof state === "object" ? (state as Record<string, unknown>).usage : undefined;
 			const used = usage && typeof usage === "object" ? (usage as Record<string, unknown>).used : undefined;
-			if (typeof used === "number" && Number.isSafeInteger(used) && used >= 0 && used <= totalBytes)
-				use.set(volume.name, used);
+			if (typeof used === "number" && Number.isSafeInteger(used) && used >= 0) use.set(volume.name, used);
 		}
+		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
+		const space = record(resources.space, "LXD storage pool space");
+		const totalBytes = space.total;
+		const usedBytes = space.used;
+		if (
+			typeof totalBytes !== "number" ||
+			typeof usedBytes !== "number" ||
+			!Number.isSafeInteger(totalBytes) ||
+			!Number.isSafeInteger(usedBytes) ||
+			totalBytes <= 0 ||
+			usedBytes < 0 ||
+			usedBytes > totalBytes
+		)
+			throw new Error("LXD storage pool use is invalid");
+		for (const [name, used] of use) if (used > totalBytes) use.delete(name);
 		return { totalBytes, usedBytes, volumes: use };
 	}
 

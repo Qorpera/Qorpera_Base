@@ -354,11 +354,39 @@ describe("LXD Unix client", () => {
 			volumes: new Map([["qorpera-machine-running", 30721536]]),
 		});
 		expect(urls).toEqual([
-			"/1.0/storage-pools/qorpera-vm/resources",
 			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-running/state?project=machines",
 			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-gone/state?project=machines",
 			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-nousage/state?project=machines",
+			"/1.0/storage-pools/qorpera-vm/resources",
 		]);
+	});
+	it("reads the pool after the disks, so a write while it reads is in the pool's used bytes, not credited to a disk", async () => {
+		// The machine's disk holds 1 GiB when it is read; then it writes 5 GiB before the pool is read.
+		const gib = 1024 ** 3;
+		let written = 1 * gib;
+		const base = 500 * gib;
+		const socket = await unixServer((_method, url) => {
+			if (url.endsWith("/resources"))
+				return {
+					body: {
+						type: "sync",
+						status_code: 200,
+						metadata: { space: { total: 1000 * gib, used: base + written } },
+					},
+				};
+			const own = written;
+			written += 5 * gib;
+			return { body: { type: "sync", status_code: 200, metadata: { usage: { total: 40 * gib, used: own } } } };
+		});
+		const use = await new LxdUnixClient(socket).readStoragePoolUse(
+			"qorpera-vm",
+			[{ project: "machines", name: "qorpera-machine-writing" }],
+			new AbortController().signal,
+		);
+		// Its disk is credited what it held when read (1 GiB), the pool counts all 6 GiB: what it may still grow into
+		// (40 - 1) is held back beside the 5 GiB already written, never less.
+		expect(use.volumes.get("qorpera-machine-writing")).toBe(1 * gib);
+		expect(use.usedBytes).toBe(base + 6 * gib);
 	});
 	it("fails a pool read whose figures are not whole byte counts, and never reads outside a valid scope", async () => {
 		let space: unknown = { total: 100, used: 101 };

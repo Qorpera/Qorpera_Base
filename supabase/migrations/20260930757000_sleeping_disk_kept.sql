@@ -13,10 +13,11 @@
 --   candidates, the placement itself) is, with a fresh report: the pool's real free space less a reserve of a fifth of
 --   the pool (for what shares it and whose growth the executor cannot see: db-standby, the exec and code hosts, the test
 --   machine, the images; ZFS also stays under 80 % full) and less what the awake machines here could still grow into
---   (each one's disk size less what it already holds; a new one counts whole). A sleeping machine cannot grow: it counts
---   only what it holds, which the pool's used figure has. Without a fresh report it is the paper budget, as before.
--- * A sleeping disk is given away only for a machine in line that fits nowhere and that giving away sleeping disks here
---   makes fit. On real figures a disk frees what it really holds (nothing when that is not known: such a disk is never
+--   (each one's disk size less what it already holds; a new one counts whole). A sleeping machine cannot grow: once it
+--   slept since 30 s before the report it counts only what it holds, which the pool's used figure has. Without a fresh
+--   report it is the paper budget, as before.
+-- * A sleeping disk is given away only for a machine in line that fits nowhere now (no node takes it as it is) and that
+--   giving away sleeping disks here makes fit. On real figures a disk frees what it really holds (nothing when that is not known: such a disk is never
 --   given away for room), on paper its whole size as before; when all of them together would not make the room, none
 --   goes and the machine waits in line. A disk deleted after the report, or less than 30 s before it (ZFS frees a
 --   deleted disk's space in the background), still counts as coming free, so one shortage never takes a second disk. Which goes: never one used in the last 24 hours while an older one can go (one skipped
@@ -24,7 +25,8 @@
 --   another's; then the longest asleep; only as many as needed. The placement keeps what its give-away was counted to
 --   free (disk_frees_bytes), since a report after the deletion no longer names the disk.
 -- * Nothing is lost silently: the machine's row keeps when its disk was freed (disk_freed_at: a give-away, or a wake
---   that had to move it to a new disk after it slept on the old one), and its view says so in plain words (`diskFreed`)
+--   that had to move it to a new disk after it slept on the old one, an executor given up, an operator's release), and
+--   its view says so in plain words (`diskFreed`)
 --   while it has no disk and on its first new disk until it sleeps or is woken again; machine_start, status and list
 --   carry the view. The agent's own free machine taken again (20260930747000) is first one that still holds its disk,
 --   and `reused` says when the one given starts empty.
@@ -145,9 +147,11 @@ language sql stable security definer set search_path = '' as $$
 $$;
 
 -- The disk a new machine may take on this executor now (one may be placed when its whole disk is at most this). On a
--- fresh report: the pool's real free space, less a fifth of the pool, less what each awake placement here (not asleep;
--- p_except_placement_id, one being replaced, aside) could still grow into: its disk size less what it holds (all of it
--- when unknown, as a new one). Without one: the paper budget less every placement's whole disk, as before.
+-- fresh report: the pool's real free space, less a fifth of the pool, less what each placement here could still grow
+-- into: its disk size less what it holds (all of it when unknown, as a new one). Only one asleep since 30 s before the
+-- report or longer is left out: what it wrote is in the report's figures (one that fell asleep later may have written
+-- after LXD was read; review r1 F1 of #1773). A retired one not deleted yet counts too; p_except_placement_id, one being
+-- replaced, does not. Without a fresh report: the paper budget less every placement's whole disk, as before.
 create function public.qorpera_machine_executor_disk_room(p_owner text, p_except_placement_id uuid default null) returns bigint
 language plpgsql stable security definer set search_path = '' as $$
 declare v_report public.qorpera_machine_executor_disks := public.qorpera_machine_executor_disk_report(p_owner);
@@ -162,10 +166,10 @@ begin
 		into v_growth
 	from public.qorpera_company_machine_placements placement
 	join public.qorpera_company_machines machine on machine.id = placement.machine_id
-	where placement.owner = p_owner and placement.retired_at is null and placement.removed_at is null
+	where placement.owner = p_owner and placement.removed_at is null
 		and placement.id is distinct from p_except_placement_id
 		and not exists (select 1 from public.qorpera_runtime_node_demands demand where demand.allocation_id = placement.id
-			and demand.suspended_at is not null and demand.released_at is null);
+			and demand.suspended_at <= v_report.reported_at - interval '30 seconds' and demand.released_at is null);
 	return v_report.total_bytes - v_report.used_bytes - v_report.total_bytes / 5 - v_growth;
 end $$;
 
@@ -217,6 +221,14 @@ do $$ begin execute pg_temp.disk_kept_patched(
 	$old$		select coalesce(sum(machine.disk_bytes), 0) into v_asleep_disk from public.qorpera_company_machine_placements placement$old$,
 	$new$		select coalesce(sum(public.qorpera_machine_executor_disk_frees(v_report, placement.id, machine.disk_bytes)), 0)
 			into v_asleep_disk from public.qorpera_company_machine_placements placement$new$,
+	$old$			and (here.id is null or here.running_at is null)
+			-- A last-resort node (20260930749000) gives up no disk for a machine another node could take now.$old$,
+	$new$			and (here.id is null or here.running_at is null)
+			-- 20260930757000: and only one that fits nowhere now: no node, this one, another or a last resort, takes it as it
+			-- is (review r1 F3 of #1773).
+			and not exists (select 1 from public.qorpera_company_machine_candidates(machine.cpus::bigint * 1000, machine.memory_bytes,
+				machine.disk_bytes, null, here.id))
+			-- A last-resort node (20260930749000) gives up no disk for a machine another node could take now.$new$,
 	$old$			for v_asleep in select placement.id, placement.profile_id, machine.id as machine_id, machine.disk_bytes$old$,
 	$new$			for v_asleep in select placement.id, placement.profile_id, machine.id as machine_id, machine.disk_bytes,
 				public.qorpera_machine_executor_disk_frees(v_report, placement.id, machine.disk_bytes) as frees,
@@ -269,6 +281,26 @@ do $$ begin execute pg_temp.disk_kept_patched(
 					where demand.allocation_id = v_placement.id and demand.suspended_at is not null);$new$]); end $$;
 
 -- 4. Nothing lost silently -----------------------------------------------------------------------------------------------
+
+-- An executor given up (its server lost) and an operator's release of a placement not retired: a machine asleep on that
+-- disk loses it there, and is told (review r1 F4 of #1773).
+do $$ begin execute pg_temp.disk_kept_patched(
+	'public.qorpera_abandon_machine_executor(text,text)'::regprocedure,
+	array[$old$		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;$old$,
+	$new$		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;
+		-- 20260930757000: a machine asleep on this disk loses it here; it is told (its view).
+		if v_placement.retired_at is null and exists (select 1 from public.qorpera_runtime_node_demands demand
+			where demand.allocation_id = v_placement.id and demand.suspended_at is not null) then
+			update public.qorpera_company_machines set disk_freed_at = clock_timestamp() where id = v_machine.id; end if;$new$]); end $$;
+do $$ begin execute pg_temp.disk_kept_patched(
+	'public.qorpera_release_company_machine(uuid,text,text,text)'::regprocedure,
+	array[$old$		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;$old$,
+	$new$		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;
+		-- 20260930757000: released without being retired first (an operator's release), a machine asleep on this disk loses
+		-- it here; it is told (its view).
+		if v_placement.retired_at is null and exists (select 1 from public.qorpera_runtime_node_demands demand
+			where demand.allocation_id = v_placement.id and demand.suspended_at is not null) then
+			update public.qorpera_company_machines set disk_freed_at = clock_timestamp() where id = v_machine.id; end if;$new$]); end $$;
 
 do $$ begin execute pg_temp.disk_kept_patched(
 	'public.qorpera_company_machine_view(public.qorpera_company_machines)'::regprocedure,

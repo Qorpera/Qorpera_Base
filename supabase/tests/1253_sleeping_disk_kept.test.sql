@@ -32,8 +32,30 @@ create function pg_temp.d_policy(p_image text default repeat('a', 64)) returns j
 	select jsonb_build_object('providerId','machine-1253','providerPolicySha256',repeat('f',64),'project','machines',
 		'imageFingerprint',p_image,'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0')
 $$;
-create function pg_temp.d_budget(p_gib bigint, p_image text default repeat('a', 64)) returns void language sql as $$
-	select public.qorpera_configure_machine_executor('mx-1253', repeat('c',64), true, pg_temp.d_policy(p_image), pg_temp.g(p_gib))
+create function pg_temp.d_budget(p_gib bigint, p_image text default repeat('a', 64), p_enabled boolean default true)
+returns void language sql as $$
+	select public.qorpera_configure_machine_executor('mx-1253', repeat('c',64), p_enabled, pg_temp.d_policy(p_image), pg_temp.g(p_gib))
+$$;
+-- A second node with its machine provider and executor (mx-1253e), observed now, its report giving 700 GiB of room.
+create function pg_temp.d_node_b() returns void language plpgsql as $$
+begin
+	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+		'nodeId','12530000-0000-4000-8000-000000000411','machineIdSha256',repeat('e',64),'label','machine-e','cpuMillis',16000,
+		'memoryBytes',68719476736,'headroomCpuMillis',2000,'headroomMemoryBytes',8589934592,'standardCpuMillis',2000,
+		'standardMemoryBytes',4294967296,'enabled',true),0);
+	perform public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-inventory-policy/v1',
+		'nodeId','12530000-0000-4000-8000-000000000411','host',jsonb_build_object('machineIdSha256',repeat('e',64),
+		'socketPath','/var/snap/lxd/common/lxd/unix.socket','socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd',
+		'serverVersion','6.9','architecture','x86_64'),'operatingCpuMillis',500,'operatingMemoryBytes',536870912,'infrastructure','[]'::jsonb));
+	perform pg_temp.d_observe('12530000-0000-4000-8000-000000000411', repeat('e',64));
+	perform public.qorpera_enroll_runtime_node_provider('12530000-0000-4000-8000-000000000411', repeat('e',64), 'machine', 'machine-1253e',
+		repeat('9',64), 8000, 34359738368);
+	perform public.qorpera_configure_machine_executor('mx-1253e', repeat('e',64), true, jsonb_build_object('providerId','machine-1253e',
+		'providerPolicySha256',repeat('9',64),'project','machines','imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),
+		'storagePool','machines','network','qagent0'), pg_temp.g(300));
+	perform public.qorpera_report_executor_disk('mx-1253e', repeat('e',64), jsonb_build_object('schema','qorpera.machine-executor-disk/v1',
+		'pool','machines','totalBytes',pg_temp.g(1000),'usedBytes',pg_temp.g(100),'placements','{}'::jsonb));
+end
 $$;
 create function pg_temp.d_machine(p_name text) returns public.qorpera_company_machines language sql as $$
 	select machine from public.qorpera_company_machines machine where machine.name = p_name and machine.removed_at is null
@@ -47,11 +69,12 @@ create function pg_temp.d_latest(p_name text) returns public.qorpera_company_mac
 	select placement from public.qorpera_company_machine_placements placement
 	where placement.machine_id = (pg_temp.d_machine(p_name)).id order by placement.created_at desc, placement.id limit 1
 $$;
-create function pg_temp.d_observe() returns void language plpgsql as $$
-declare v_context jsonb := public.qorpera_runtime_node_inventory_context('12530000-0000-4000-8000-000000000410');
+create function pg_temp.d_observe(p_node uuid default '12530000-0000-4000-8000-000000000410', p_sha text default repeat('c',64))
+returns void language plpgsql as $$
+declare v_context jsonb := public.qorpera_runtime_node_inventory_context(p_node);
 begin
 	perform public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
-		'nodeId','12530000-0000-4000-8000-000000000410','machineIdSha256',repeat('c',64),'observationId',extensions.gen_random_uuid(),
+		'nodeId',p_node,'machineIdSha256',p_sha,'observationId',extensions.gen_random_uuid(),
 		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
 		'cpuMillis',16000,'memoryBytes',68719476736,'state','ready'),v_context ->> 'contextSha256',
 		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries',
@@ -239,6 +262,29 @@ begin
 		and (select count(*) from public.qorpera_company_machines where disk_freed_at is not null) = 0, '1: no disk was given away');
 	-- n1 is awake: what it could grow into (its whole 40 GiB, not in the report yet) is held back.
 	perform pg_temp.base_assert(pg_temp.d_room() = pg_temp.g(460), '1: n1''s growth is held: ' || pg_temp.d_room());
+	-- n1 runs, writes and falls asleep after the report (taken back after): what it may have written is held until a
+	-- report taken 30 s after it slept or later (review r1 F1 of #1773); then only what that report says it holds.
+	begin
+		perform pg_temp.d_run('n1');
+		perform pg_temp.d_sleep('n1', interval '0 seconds');
+		v_paper_room := pg_temp.d_room();
+		update public.qorpera_runtime_node_demands set suspended_at = (select reported_at - interval '31 seconds'
+			from public.qorpera_machine_executor_disks where owner = 'mx-1253')
+		where allocation_id = (pg_temp.d_current('n1')).id;
+		v := to_jsonb(pg_temp.d_room());
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v_paper_room = pg_temp.g(460) and v = to_jsonb(pg_temp.g(500)),
+		'1: asleep after the report, its growth stays held; asleep before it, not: ' || v_paper_room || ' ' || v::text);
+	-- n1 deleted while awake (taken back after): until its disk is gone, what it may have written stays held.
+	begin
+		perform public.qorpera_set_company_machine_desired(pg_temp.d_machine('n1'), 'deleted', 'agent');
+		v := to_jsonb(pg_temp.d_room());
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v = to_jsonb(pg_temp.g(460)), '1: an awake disk being deleted stays held: ' || v::text);
 end $$;
 
 -- 2. Real pressure: the right disk goes, only it, and the row says so ---------------------------------------------------------
@@ -265,6 +311,17 @@ begin
 	exception when sqlstate 'P0D01' then null;
 	end;
 	perform pg_temp.base_assert(v = '"b-old"'::jsonb, '2: a disk of unknown use is passed over: ' || v::text);
+	-- Were another node able to take n2 now (taken back after): this node's pass gives no disk away (review r1 F3 of #1773).
+	begin
+		perform pg_temp.d_node_b();
+		perform pg_temp.base_assert(exists (select 1 from public.qorpera_company_machine_candidates(1000, 2147483648, pg_temp.g(40))
+			where owner = 'mx-1253e'), '2: the other node takes 40 GiB now');
+		v_count := pg_temp.d_admit();
+		v := to_jsonb(pg_temp.d_freed(array['a-new','a-old','b-old']));
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v = '""'::jsonb, '2: no disk goes while another node takes it: ' || v::text);
 	-- Need 15 GiB: a-old (Alice's own, unused for 3 days, holds 30) goes; b-old (another company's, asleep longest) and
 	-- a-new (used 2 hours ago) stay.
 	v_count := pg_temp.d_admit();
@@ -397,6 +454,49 @@ begin
 	perform pg_temp.base_assert(pg_temp.d_view('a-old') -> 'diskFreed' = 'null'::jsonb, '5: woken on it again: nothing to say');
 end $$;
 
+-- 5b. An executor given up and an operator's release: a sleeping machine's agent is told (review r1 F4 of #1773) ----------
+do $$
+declare v jsonb; v_lost text; v_released text;
+begin
+	-- n3 runs and sleeps; its server is given up (taken back after): n3 says its disk was freed, n2 (awake: its commands
+	-- are told lost) does not; taken again (on another node), the answer says it starts empty.
+	begin
+		perform pg_temp.d_run('n3');
+		perform pg_temp.d_sleep('n3', interval '1 hour');
+		perform pg_temp.d_budget(120, repeat('a', 64), false);
+		perform public.qorpera_abandon_machine_executor('mx-1253', repeat('c', 64));
+		v_lost := concat_ws(' | ', ((pg_temp.d_machine('n3')).disk_freed_at is not null)::text,
+			((pg_temp.d_machine('n2')).disk_freed_at is null)::text, pg_temp.d_view('n3') ->> 'state',
+			left(pg_temp.d_view('n3') ->> 'diskFreed', 33));
+		-- Another node runs machines meanwhile: the one taken again starts there, on a new disk.
+		perform pg_temp.d_node_b();
+		v := pg_temp.d_start('take-3', 'after-loss');
+		v_lost := concat_ws(' | ', v_lost, v #>> '{machine,name}', v #>> '{machine,state}', left(v #>> '{machine,diskFreed}', 33),
+			v ->> 'reused');
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v_lost = 'true | true | stopped | its disk was freed while it slept | n3 | starting | '
+		|| 'its disk was freed while it slept | your own free machine n3 of this size was given to you again instead of a new one: use the name n3. '
+		|| 'Its disk was freed while it slept, so it starts with an empty disk: what you left on it is gone',
+		'5b: an executor given up: ' || v_lost);
+	-- An operator releases n3's placement while it sleeps (its allocation released first; taken back after).
+	begin
+		perform pg_temp.d_run('n3');
+		perform pg_temp.d_sleep('n3', interval '1 hour');
+		update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = (pg_temp.d_current('n3')).id;
+		v := public.qorpera_release_company_machine((pg_temp.d_current('n3')).id, 'mx-1253',
+			public.qorpera_company_machine_binding_text((pg_temp.d_current('n3')).binding), repeat('c', 64));
+		v_released := concat_ws(' | ', v ->> 'state', ((pg_temp.d_machine('n3')).disk_freed_at is not null)::text,
+			left(pg_temp.d_view('n3') ->> 'diskFreed', 33));
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v_released = 'released | true | its disk was freed while it slept', '5b: an operator''s release: '
+		|| v_released);
+	perform pg_temp.base_assert((pg_temp.d_machine('n3')).disk_freed_at is null, '5b: taken back');
+end $$;
+
 -- 6. A wake that moves a sleeping machine to a new disk says so too ---------------------------------------------------------
 do $$
 declare v jsonb; v_old uuid;
@@ -469,6 +569,7 @@ begin
 			'public.qorpera_place_company_machine(uuid,text,uuid)', 'public.qorpera_admit_company_machine(uuid,text)',
 			'public.qorpera_company_machine_view(public.qorpera_company_machines)', 'public.qorpera_company_machine_reusable(jsonb,uuid,jsonb)',
 			'public.qorpera_native_machine_start(jsonb,text,text,uuid,text)', 'public.qorpera_report_executor_disk(text,text,jsonb)',
+			'public.qorpera_abandon_machine_executor(text,text)', 'public.qorpera_release_company_machine(uuid,text,text,text)',
 			'public.qorpera_machine_executor_disk_report(text)', 'public.qorpera_machine_executor_disk_room(text,uuid)',
 			'public.qorpera_machine_executor_disk_frees(public.qorpera_machine_executor_disks,uuid,bigint)',
 			'public.qorpera_company_machine_disk_freed(public.qorpera_company_machines)']) fn
