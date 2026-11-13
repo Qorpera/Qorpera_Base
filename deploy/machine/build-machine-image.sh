@@ -402,11 +402,12 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(HOME=/tmp/render-home blender --version | head -1) == "Blender ${BLENDER_VERSION}" ]] || { echo "blender is not ${BLENDER_VERSION}" >&2; exit 1; }
 	HOME=/tmp/render-home blender -b --factory-startup --python-exit-code 1 -P /opt/qorpera-machine/render-check.py -- /opt/qorpera-assets /tmp/render-check.png
 	[[ $(file -b /tmp/render-check.png) == "PNG image data, 320 x 180,"* ]] || { echo "the render check left no frame" >&2; exit 1; }
-	# Pictures: ImageMagick writes the frame as WebP (what the object kit asks a turntable in), and Python opens it.
+	# Pictures: ImageMagick writes the frame as WebP (what the object kit asks a turntable in), and Python opens that
+	# WebP and decodes all of it, so an image whose Pillow cannot read WebP is refused.
 	convert /tmp/render-check.png /tmp/render-check.webp
 	[[ $(file -b /tmp/render-check.webp) == *"Web/P image"* ]] || { echo "ImageMagick wrote no WebP" >&2; exit 1; }
 	cwebp -quiet /tmp/render-check.png -o /tmp/render-check-2.webp
-	python3 -c "from PIL import Image; import numpy; assert Image.open(\"/tmp/render-check.png\").size == (320, 180)"
+	python3 -c "from PIL import Image; import numpy; picture = Image.open(\"/tmp/render-check.webp\"); picture.load(); assert picture.size == (320, 180) and numpy.asarray(picture).shape[:2] == (180, 320)"
 	# The builder has the smallest machine disk: say what the render tools take of it, and refuse an image that
 	# leaves that machine too little room to work in.
 	echo "Blender takes $(du -sm /opt/blender/ | cut -f1) MiB and the starter set $(du -sm /opt/qorpera-assets | cut -f1) MiB of the image" >&2

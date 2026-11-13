@@ -259,6 +259,8 @@ test("the image has Blender pinned, a starter set fetched by its pinned list, an
 		'\t[[ $(file -b /tmp/render-check.png) == "PNG image data, 320 x 180,"* ]] || { echo "the render check left no frame" >&2; exit 1; }\n',
 		"\tconvert /tmp/render-check.png /tmp/render-check.webp\n",
 		"\tcwebp -quiet /tmp/render-check.png -o /tmp/render-check-2.webp\n",
+		// Python opens the WebP ImageMagick wrote, decoded in full, not the PNG it came from (review r1 of #1765, F1).
+		'\tpython3 -c "from PIL import Image; import numpy; picture = Image.open(\\"/tmp/render-check.webp\\"); picture.load(); assert picture.size == (320, 180) and numpy.asarray(picture).shape[:2] == (180, 320)"\n',
 		// The smallest machine has the builder's 10 GiB: an image that leaves it under 1.5 GiB is refused.
 		'\t(( free_mib >= 1536 )) || { echo "the image leaves the smallest machine only $free_mib MiB free: too little to work in" >&2; exit 1; }\n',
 	])
