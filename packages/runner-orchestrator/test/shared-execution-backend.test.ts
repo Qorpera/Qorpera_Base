@@ -477,8 +477,8 @@ describe("shared execution provider backend", () => {
 		]);
 		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
 		expect(environment).toContain("QORPERA_FOLDER_SEARCH_SOCKET=/run/qorpera-folder-relay/0.sock\n");
-		// Off unless on; anything else is refused at start.
-		expect(folderSearch({})).toBe(false);
+		// On unless an operator set it off (keyholes S4: search for every run); anything else is refused at start.
+		expect(folderSearch({})).toBe(true);
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "off" })).toBe(false);
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" })).toBe(true);
 		expect(() => folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "yes" })).toThrow("on or off");

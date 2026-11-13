@@ -15,6 +15,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	CloudToolRefusal,
+	redactCloudWebhookSecrets,
 } from "../src/cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "../src/cloud-worker-tools.ts";
 
@@ -41,8 +42,9 @@ const found = (body: Record<string, unknown>) => ({
 });
 const refused = (code: string) => ({ kind: 0x65, body: { code, message: "no" } });
 
-/** A stand-in node folder service on a Unix socket: hellos, then search pages as the test says. */
-async function node(answer: Answer) {
+/** A stand-in node folder service on a Unix socket: hellos (saying `search` when given, as a node of keyholes S4 does),
+ * then search pages as the test says. */
+async function node(answer: Answer, search?: { version: number; regex: boolean }) {
 	const root = await mkdtemp(join(tmpdir(), "folder-search-"));
 	const path = join(root, "relay.sock");
 	const hellos: Record<string, unknown>[] = [];
@@ -67,7 +69,13 @@ async function node(answer: Answer) {
 					if (kind === 0x48) {
 						hellos.push(body);
 						socket.write(
-							frame(0x68, { protocol: body.protocol, viewId: body.viewId, asOfSeq: 1, readOnly: true }),
+							frame(0x68, {
+								protocol: body.protocol,
+								viewId: body.viewId,
+								asOfSeq: 1,
+								readOnly: true,
+								...(search ? { search } : {}),
+							}),
 						);
 					} else {
 						searches.push(body);
@@ -150,6 +158,9 @@ describe("company_search", () => {
 			query: "plan",
 			path: "",
 			glob: "*.md",
+			regex: false,
+			context: 0,
+			files_only: false,
 			names_only: false,
 			case_sensitive: false,
 			cursor: null,
@@ -201,6 +212,32 @@ describe("company_search", () => {
 		expect(none.value).toBe("No matches here.\n\n0 files searched. Nothing more.");
 		expect(none.companyReadId).toBeUndefined();
 		expect(quiet.releases).toEqual([]);
+	});
+
+	it("releases an answer with a token in a line under the hash of the text the boundary shows, the token cut out", async () => {
+		const token = `ghp_${"A".repeat(36)}`;
+		const n = await node(() =>
+			found({
+				hits: [hit("ops/deploy.md", 2, `the deploy token is ${token}`)],
+				searched: 1,
+				reads: [read("ops/deploy.md")],
+			}),
+		);
+		const { client, releases } = folder();
+		const search = tool(n.path, client);
+		const content = await search.execute(search.parseArguments({ query: "deploy token" }), context());
+		expect(content.value).toBe(
+			"ops/deploy.md:2: the deploy token is ghp_[REDACTED]\n\n1 file searched. Nothing more.",
+		);
+		// The boundary cuts it again (a no-op) and hashes what it shows: the context view cites that hash, which must be
+		// the release's (qorpera_folder_record_context_view refuses any other).
+		expect(redactCloudWebhookSecrets(content.value as string)).toBe(content.value);
+		expect(releases[0]!.sha).toBe(
+			createHash("sha256")
+				.update(content.value as string)
+				.digest("hex"),
+		);
+		expect(content.companyReadId).toBe(releases[0]!.id);
 	});
 
 	it("shows a link found by its name with what it names, exactly, and releases the link's read with the page", async () => {
@@ -275,9 +312,9 @@ describe("company_search", () => {
 
 	it("gives an opaque cursor to go on with, and passes back where the node said, never a path the model sent", async () => {
 		const next = { path: "docs/big.md", version: VERSION, offset: 4096, line: 80 };
-		const n = await node((search) =>
-			search.after === null ? found({ hits: [hit("a.md", 1, "x")], next }) : found({}),
-		);
+		// A first page that shows enough for one answer (about 20 KiB): the call asks for no other.
+		const full = Array.from({ length: 6 }, (_, i) => hit(`a${i}.md`, 1, "x".repeat(3500)));
+		const n = await node((search) => (search.after === null ? found({ hits: full, next }) : found({})));
 		const search = tool(n.path, folder().client);
 		const first = (await search.execute(search.parseArguments({ query: "x" }), context())).value as string;
 		const cursor = /call again with cursor (\S+)$/.exec(first)?.[1] ?? "";
@@ -321,7 +358,15 @@ describe("company_search", () => {
 			line: shown,
 		});
 		// A page cut short counts nothing: the next page searches those files again.
-		expect(text).toContain("Part of a page");
+		expect(text).toContain("Part of the answer");
+		// Lines a pattern passed over before the cut are still named: the next call goes on after the cut and would never
+		// name them (review r5 F1).
+		const skipped = folderSearchText({ hits, searched: 2, binary: 0, longLines: 1, reads: [], next: null }, seal);
+		expect(fitsOneResult(skipped)).toBe(true);
+		expect(skipped).toMatch(
+			/\n\nPart of the answer; 1 line over 1 MiB not searched by the pattern \(search them as text, or read them\)\. More: call again with cursor \S+$/,
+		);
+		expect(skipped.split("\n").filter((line) => line.startsWith("page.html:")).length).toBeLessThan(40);
 		// One hit too long for a result is still shown, cut, and the search goes on after it.
 		const long = folderSearchText(
 			{
@@ -436,14 +481,302 @@ describe("company_search", () => {
 			{ query: "x", path: "/" },
 			{ query: "x", names_only: "yes" },
 			{ query: "x", glob: "" },
+			{ path: "docs" },
+			{ glob: "*.md", regex: true },
+			{ glob: "*.md", files_only: true },
+			{ glob: "*.md", context: 1 },
+			{ query: "x", context: 6 },
+			{ query: "x", context: 1.5 },
+			{ query: "x", context: "2" },
+			{ query: "x", files_only: true, names_only: true },
+			{ query: "x", context: 2, files_only: true },
+			{ query: "x", context: 2, names_only: true },
+			{ query: "x", regex: "yes" },
 		])
-			expect(() => search.parseArguments(bad as JsonValue)).toThrow(CloudToolArgumentRefusal);
+			expect(() => search.parseArguments(bad as JsonValue), JSON.stringify(bad)).toThrow(CloudToolArgumentRefusal);
+		// A glob alone is a find, of names.
+		expect(search.parseArguments({ glob: "**/*.csv" })).toMatchObject({
+			query: null,
+			glob: "**/*.csv",
+			names_only: true,
+		});
 		expect(search.parseArguments({ query: "x", path: "docs", names_only: true, case_sensitive: true })).toMatchObject(
 			{
 				path: "docs",
 				names_only: true,
 				case_sensitive: true,
 			},
+		);
+	});
+
+	it("asks a node that speaks search 2 for its version, pages on until the answer is full, and releases every page's reads once", async () => {
+		const V2 = { version: 2, regex: true };
+		const pageOf = (n: number) =>
+			found({
+				hits: [hit(`p${n}.md`, n + 1, `plan ${n}`)],
+				searched: 1,
+				reads: [read(`p${n}.md`)],
+				next: n < 3 ? { path: `p${n + 1}.md`, version: "", offset: 0, line: 0 } : null,
+			});
+		const n = await node(
+			(search) => pageOf(search.after === null ? 0 : Number((search.after as { path: string }).path[1])),
+			V2,
+		);
+		const f = folder();
+		const search = tool(n.path, f.client);
+		const content = await search.execute(search.parseArguments({ query: "pl.n", regex: true }), context());
+		expect(content.value).toBe(
+			"p0.md:1: plan 0\np1.md:2: plan 1\np2.md:3: plan 2\np3.md:4: plan 3\n\n4 files searched. Nothing more.",
+		);
+		expect(n.searches[0]).toEqual({
+			version: 2,
+			query: "pl.n",
+			regex: true,
+			path: "",
+			glob: null,
+			namesOnly: false,
+			filesOnly: false,
+			caseSensitive: false,
+			context: 0,
+			after: null,
+		});
+		expect(n.searches.map((s) => (s.after as { path: string } | null)?.path ?? null)).toEqual([
+			null,
+			"p1.md",
+			"p2.md",
+			"p3.md",
+		]);
+		expect(f.releases).toHaveLength(1);
+		expect(f.releases[0]!.reads.map((r) => r.path)).toEqual(["p0.md", "p1.md", "p2.md", "p3.md"]);
+		// An endless search answers after six pages, with a cursor.
+		const endless = await node(
+			(search) =>
+				found({
+					hits: [hit("e.md", 1, "x")],
+					next: {
+						path: "e.md",
+						version: VERSION,
+						offset: ((search.after as { offset: number } | null)?.offset ?? 0) + 2,
+						line: 1,
+					},
+				}),
+			V2,
+		);
+		const e = tool(endless.path, folder().client);
+		const answer = (await e.execute(e.parseArguments({ query: "x" }), context())).value as string;
+		expect(endless.searches).toHaveLength(6);
+		expect(answer).toMatch(/More: call again with cursor [A-Za-z0-9_-]{16}$/);
+	});
+
+	it("shows lines around each hit as rg does, and counts files with files_only, a file two pages counted being one", async () => {
+		const V2 = { version: 2, regex: true };
+		const ctx = (line: number, text: string, before: string[], after: string[], from = 0) => ({
+			...hit("a.md", line, text, from + 10),
+			before,
+			after,
+			from,
+		});
+		const n = await node(
+			() =>
+				found({
+					hits: [
+						ctx(4, "line 4 plan", ["line 2", "line 3"], []),
+						ctx(5, "line 5 plan", [], ["line 6"]),
+						ctx(10, "line 10 plan", ["line 9"], []),
+						{ ...hit("b.md", 1, "plan b"), before: [], after: [], from: 0 },
+					],
+					searched: 2,
+				}),
+			V2,
+		);
+		const search = tool(n.path, folder().client);
+		const shown = await search.execute(search.parseArguments({ query: "plan", context: 2 }), context());
+		expect(shown.value).toBe(
+			[
+				"a.md-2- line 2",
+				"a.md-3- line 3",
+				"a.md:4: line 4 plan",
+				"a.md:5: line 5 plan",
+				"a.md-6- line 6",
+				"--",
+				"a.md-9- line 9",
+				"a.md:10: line 10 plan",
+				"--",
+				"b.md:1: plan b",
+				"",
+				"2 files searched. Nothing more.",
+			].join("\n"),
+		);
+		expect(n.searches[0]).toMatchObject({ context: 2 });
+		// Files only: a file the first page ended inside, counted on by the second, shows once with its whole count.
+		const counts = await node(
+			(search) =>
+				search.after === null
+					? found({
+							files: [
+								{ path: "a.md", version: VERSION, count: 2 },
+								{ path: "big.md", version: VERSION, count: 40, partial: true },
+							],
+							searched: 1,
+							next: { path: "big.md", version: VERSION, offset: 900, line: 80 },
+						})
+					: found({ files: [{ path: "big.md", version: VERSION, count: 2 }], searched: 1 }),
+			V2,
+		);
+		const c = tool(counts.path, folder().client);
+		expect((await c.execute(c.parseArguments({ query: "plan", files_only: true }), context())).value).toBe(
+			"a.md: 2\nbig.md: 42\n\n2 files searched. Nothing more.",
+		);
+		expect(counts.searches[0]).toMatchObject({ filesOnly: true });
+		// A glob alone finds paths: names, with no query.
+		const finds = await node(() => found({ hits: [hit("docs/q3.csv", 0, ""), hit("docs", 0, "", 0, "folder")] }), V2);
+		const g = tool(finds.path, folder().client);
+		expect((await g.execute(g.parseArguments({ glob: "**/*.csv" }), context())).value).toBe(
+			"docs/q3.csv\ndocs/\n\n0 files searched. Nothing more.",
+		);
+		expect(finds.searches[0]).toMatchObject({ query: null, glob: "**/*.csv", namesOnly: true });
+	});
+
+	it("asks a node that has not said search 2 only what it takes, and says so for the rest without sending it", async () => {
+		const n = await node(() => found({}));
+		const search = tool(n.path, folder().client);
+		const asks: JsonValue[] = [
+			{ query: "a+", regex: true },
+			{ query: "a", files_only: true },
+			{ query: "a", context: 1 },
+			{ glob: "*.md" },
+		];
+		for (const args of asks)
+			await expect(search.execute(search.parseArguments(args), context())).rejects.toThrow(/^SEARCH_NOT_HERE_YET: /);
+		expect(n.searches).toEqual([]);
+		await search.execute(search.parseArguments({ query: "a", names_only: true }), context());
+		expect(n.searches).toEqual([
+			{ query: "a", path: "", glob: null, namesOnly: true, caseSensitive: false, after: null },
+		]);
+		// A node of search 2 without the linear engine (the unit as it ships since v240) takes no pattern, and the
+		// description says so before the model asks: a pattern only where the search runs them.
+		const plain = await node(() => found({}), { version: 2, regex: false });
+		const p = tool(plain.path, folder().client);
+		await expect(p.execute(p.parseArguments({ query: "a+", regex: true }), context())).rejects.toThrow(
+			/^REGEX_OFF: this node's folder search runs no regular expressions yet; search for text$/,
+		);
+		expect(plain.searches).toEqual([]);
+		expect(p.description).toContain(
+			"if the folder's search runs them; REGEX_OFF means it does not, so search for text.",
+		);
+	});
+
+	it("says what the node said of a pattern it does not run, or of being full, and keeps the connection", async () => {
+		const V2 = { version: 2, regex: true };
+		const n = await node(
+			(search) =>
+				search.query === "(a)\\1"
+					? {
+							kind: 0x65,
+							body: {
+								code: "BAD_REQUEST",
+								message: "REGEX_BACKREFERENCE: a back-reference cannot run in linear time; search without it",
+							},
+						}
+					: search.query === "busy"
+						? {
+								kind: 0x65,
+								body: {
+									code: "UNAVAILABLE",
+									message: "SEARCH_BUSY: the node's folder search is busy; try again shortly",
+								},
+							}
+						: search.query === "odd"
+							? { kind: 0x65, body: { code: "BAD_REQUEST", message: "Bad query\nsecond line" } }
+							: found({}),
+			V2,
+		);
+		const search = tool(n.path, folder().client);
+		await expect(search.execute(search.parseArguments({ query: "(a)\\1", regex: true }), context())).rejects.toThrow(
+			/^REGEX_BACKREFERENCE: a back-reference cannot run in linear time/,
+		);
+		await expect(search.execute(search.parseArguments({ query: "busy" }), context())).rejects.toThrow(
+			/^COMPANY_FOLDER_BUSY: /,
+		);
+		// Any other message is not the search's own words: it is not passed on.
+		await expect(search.execute(search.parseArguments({ query: "odd" }), context())).rejects.toThrow(
+			/^BAD_REQUEST: the folder search refused the request$/,
+		);
+		await search.execute(search.parseArguments({ query: "x" }), context());
+		expect(n.hellos).toHaveLength(1);
+	});
+
+	it("answers with what came when a later page fails, and goes on from where that page began", async () => {
+		const next = { path: "b.md", version: VERSION, offset: 0, line: 0 };
+		const n = await node(
+			(search) =>
+				search.after === null
+					? found({ hits: [hit("a.md", 1, "plan")], reads: [read("a.md")], searched: 1, next })
+					: refused("UNAVAILABLE"),
+			{ version: 2, regex: true },
+		);
+		const f = folder();
+		const search = tool(n.path, f.client);
+		const first = (await search.execute(search.parseArguments({ query: "plan" }), context())).value as string;
+		expect(first).toMatch(/^a\.md:1: plan\n\n1 file searched\. More: call again with cursor [A-Za-z0-9_-]{16}$/);
+		expect(f.releases[0]!.reads.map((r) => r.path)).toEqual(["a.md"]);
+		const cursor = /cursor (\S+)$/.exec(first)![1]!;
+		await expect(search.execute(search.parseArguments({ query: "plan", cursor }), context("call-2"))).rejects.toThrow(
+			/^COMPANY_FOLDER_UNAVAILABLE/,
+		);
+		expect(n.searches.at(-1)!.after).toEqual(next);
+	});
+
+	it("closes a count a page carried when the file ends with nothing more, and carries it across calls", async () => {
+		const V2 = { version: 2, regex: true };
+		const mid = (offset: number) => ({ path: "big.md", version: VERSION, offset, line: 9 });
+		// Within one call: a count of 0 at the file's end closes the count the first page left going on.
+		const within = await node(
+			(search) =>
+				search.after === null
+					? found({ files: [{ path: "big.md", version: VERSION, count: 2, partial: true }], next: mid(900) })
+					: found({ files: [{ path: "big.md", version: VERSION, count: 0 }], searched: 1 }),
+			V2,
+		);
+		const w = tool(within.path, folder().client);
+		expect((await w.execute(w.parseArguments({ query: "plan", files_only: true }), context())).value).toBe(
+			"big.md: 2\n\n1 file searched. Nothing more.",
+		);
+		// Across calls: a call that ends inside the file shows its count as going on, and the next call shows the whole.
+		let t = 0;
+		const clock = () => {
+			t += 20_000;
+			return t;
+		};
+		const across = await node(
+			(search) =>
+				search.after === null
+					? found({ files: [{ path: "big.md", version: VERSION, count: 40, partial: true }], next: mid(900) })
+					: found({ files: [{ path: "big.md", version: VERSION, count: 2 }], searched: 1 }),
+			V2,
+		);
+		const f = folder();
+		const search = new CloudFolderSearch({
+			socketPath: across.path,
+			folder: f.client,
+			environmentId: ENV,
+			now: clock,
+		});
+		const a = cloudFolderSearchTool({ search, folder: f.client, runId: RUN });
+		const first = (await a.execute(a.parseArguments({ query: "plan", files_only: true }), context())).value as string;
+		expect(first).toMatch(
+			/^big\.md: 40 so far \(the count goes on with the cursor\)\n\n0 files searched\. More: call again with cursor /,
+		);
+		expect(across.searches).toHaveLength(1);
+		const cursor = /cursor (\S+)$/.exec(first)![1]!;
+		expect(
+			(await a.execute(a.parseArguments({ query: "plan", files_only: true, cursor }), context("call-2"))).value,
+		).toBe("big.md: 42\n\n1 file searched. Nothing more.");
+		// A line a pattern could not search is named, not left out silently.
+		const longs = await node(() => found({ hits: [hit("a.md", 3, "plan")], searched: 1, longLines: 2 }), V2);
+		const l = tool(longs.path, folder().client);
+		expect((await l.execute(l.parseArguments({ query: "pl.n", regex: true }), context())).value).toBe(
+			"a.md:3: plan\n\n1 file searched; 2 lines over 1 MiB not searched by the pattern (search them as text, or read them). Nothing more.",
 		);
 	});
 });
