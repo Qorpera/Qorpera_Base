@@ -271,6 +271,11 @@ test("the image has Blender pinned, a starter set fetched by its pinned list, an
 		assert.ok(imageScript.includes(line), line);
 	// The fetch runs before the image's last clean-up, which empties /tmp of the check's frames.
 	assert.ok(imageScript.indexOf("done </opt/qorpera-assets/SOURCES.tsv") < imageScript.indexOf("rm -rf /var/lib/apt/lists/* /tmp/*"));
+	// The free room is measured after that clean-up and before the builder stops: it is what a machine gets, without
+	// the packages apt downloaded and the build's caches (the second build on a node measured before it and refused).
+	assert.ok(imageScript.indexOf("rm -rf /var/lib/apt/lists/* /tmp/*") < imageScript.indexOf("free_mib=$(df -BM --output=avail / | tail -1 | tr -dc 0-9)"));
+	assert.ok(imageScript.indexOf("(( free_mib >= 1536 ))") < imageScript.indexOf('lx stop "$BUILDER"'));
+	assert.equal(imageScript.split("free_mib=$(df").length, 2);
 
 	// The render check asks what a render needs: the pinned version, Cycles on the processors with OpenImageDenoise, a
 	// light, a material and a thing of the set at its real size, and a frame that is neither black nor flat.

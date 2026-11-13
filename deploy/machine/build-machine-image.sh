@@ -421,12 +421,8 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	python3 -c "import pypdf; pdf = pypdf.PdfWriter(); pdf.add_blank_page(width=200, height=200); pdf.write(\"/tmp/pdf-check.pdf\"); assert len(pypdf.PdfReader(\"/tmp/pdf-check.pdf\").pages) == 1"
 	pdftotext /tmp/pdf-check.pdf /tmp/pdf-check.txt
 	rm -f /tmp/font-check.woff2 /tmp/pdf-check.pdf /tmp/pdf-check.txt
-	# The builder has the smallest machine disk: say what the render tools take of it, and refuse an image that
-	# leaves that machine too little room to work in.
+	# What the render tools take of a machine root (the room that is left is measured after the last clean-up below).
 	echo "Blender takes $(du -sm /opt/blender/ | cut -f1) MiB and the starter set $(du -sm /opt/qorpera-assets | cut -f1) MiB of the image" >&2
-	free_mib=$(df -BM --output=avail / | tail -1 | tr -dc 0-9)
-	echo "the root has $free_mib MiB free with everything installed" >&2
-	(( free_mib >= 1536 )) || { echo "the image leaves the smallest machine only $free_mib MiB free: too little to work in" >&2; exit 1; }
 	# Pages without a screen: root runs the image Chromium headless (its wrapper drops the sandbox root cannot use), and
 	# a login shell in an empty folder finds Playwright and its browser with nothing installed.
 	[[ $(chromium --headless --dump-dom "data:text/html,<p>qorpera-root-headless</p>" 2>/dev/null) == *qorpera-root-headless* ]] ||
@@ -1128,6 +1124,14 @@ JS
 	cloud-init clean --logs --machine-id
 	rm -f /etc/ssh/ssh_host_*
 	journalctl --rotate --vacuum-time=1s >/dev/null 2>&1 || true
+	# The builder has the smallest machine disk (10 GiB): say how much of it is free, and refuse an image that leaves
+	# that machine too little room to work in. Measured here, after the clean-up, because that is what a machine gets:
+	# the packages apt downloaded and the caches of this build are gone (measured before it, the second build on a
+	# node counted them and refused an image at 1013 MiB).
+	sync
+	free_mib=$(df -BM --output=avail / | tail -1 | tr -dc 0-9)
+	echo "the root has $free_mib MiB free with everything installed" >&2
+	(( free_mib >= 1536 )) || { echo "the image leaves the smallest machine only $free_mib MiB free: too little to work in" >&2; exit 1; }
 	sync
 '
 lx stop "$BUILDER"
