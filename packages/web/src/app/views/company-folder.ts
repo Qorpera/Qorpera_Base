@@ -550,11 +550,14 @@ export class CompanyFolderBrowser {
 			return;
 		}
 		if (!this.#pendingSection) {
-			// What the place holds changed while the member is in it: the folder's hint may come late or not at all.
+			// What the place holds changed while the member is in it: the folder's hint may come late or not at all. Not while
+			// Recents shows: the list is not on screen, a read there would forget Recents (#load), and every way back to
+			// Documents reads a folder or ends here.
+			if (this.#section === "recents") return;
 			const places = [...this.#changed];
 			this.#changed.clear();
 			if (places.some((place) => this.#dir === place || this.#dir.startsWith(`${place}/`)))
-				void this.#run(() => this.#reloadFolder());
+				void this.#run(() => this.#reloadFolder(true));
 			return;
 		}
 		const section = this.#pendingSection;
@@ -675,13 +678,22 @@ export class CompanyFolderBrowser {
 
 	// ---- the folder -------------------------------------------------------------
 
-	async #load(dir: string, append = false): Promise<void> {
+	/** `quiet`: the open folder read again for an import (code-import.ts); when it holds what is shown, nothing is drawn
+	 * again, so no row fades in twice and focus stays where it is. */
+	async #load(dir: string, append = false, quiet = false): Promise<void> {
 		const page = await this.#client!.list(dir || null, append ? this.#next : null, PAGE, this.#signal());
 		this.#live();
-		const moved = dir !== this.#dir;
-		this.#dir = dir;
 		// A place's mark is left out while its import runs (code-import.ts), so the count says what is shown.
 		const entries = page.entries.filter((entry) => !this.#import?.hidden(entry.path));
+		if (
+			quiet &&
+			dir === this.#dir &&
+			page.next === this.#next &&
+			JSON.stringify(entries) === JSON.stringify(this.#items)
+		)
+			return;
+		const moved = dir !== this.#dir;
+		this.#dir = dir;
 		this.#items = append ? [...this.#items, ...entries] : entries;
 		this.#next = page.next;
 		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
@@ -943,7 +955,7 @@ export class CompanyFolderBrowser {
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
-	async #reloadFolder(): Promise<void> {
+	async #reloadFolder(quiet = false): Promise<void> {
 		let dir = this.#dir;
 		while (dir) {
 			const read = await this.#client!.read(dir, this.#signal());
@@ -952,7 +964,7 @@ export class CompanyFolderBrowser {
 			dir = parentOf(dir);
 		}
 		if (dir !== this.#dir) this.#close();
-		await this.#load(dir);
+		await this.#load(dir, false, quiet);
 	}
 
 	/** The open file or link at its latest version, when it changed; an earlier version on screen stays. */

@@ -18,8 +18,9 @@ import { presentationLocale, t, timeZoneOption } from "../../ui/preferences.ts";
  * import stands: being brought in, step by step (read from the company's code list, again every few seconds while one
  * runs, so it outlives a reload); brought in, in its folder; or not brought in, and why. A question whose answer never
  * came claims no outcome: the page reads the list until it shows one. While the member is in a place whose import moves
- * a step or ends, Storage reads that folder again; the place's mark is left out while its import runs. Nothing of it
- * shows on a cloud whose list has no `bringing` key. The member's words name no path, branch, commit, code or request. */
+ * a step or ends (or is first seen to have ended), Storage reads that folder again; the place's mark is left out while
+ * its import runs. Nothing of it shows on a cloud whose list has no `bringing` key. The member's words name no path,
+ * branch, commit, code or request. */
 
 /** The company's code list, as "Download the code" reads and keeps it (code-download.ts). */
 export interface CodeListSource {
@@ -47,8 +48,9 @@ export interface CodeImportHost {
 	readonly code: CodeListSource;
 	/** Opens a folder of the company's in Storage. */
 	open(path: string): void;
-	/** What the place code/<owner>/<name> holds changed: its import came, moved a step or ended. The browser reads its
-	 * open folder again when that is the place or a folder below it, whether or not the folder's hint said so. */
+	/** What the place code/<owner>/<name> holds may have changed: its import came, moved a step or ended, or this page
+	 * sees for the first time how it stands. The browser reads its open folder again when that is the place or a folder
+	 * below it, whether or not the folder's hint said so. */
 	changed(path: string): void;
 }
 
@@ -299,8 +301,8 @@ export class CodeImport {
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	/** A question is open over the page. */
 	#asking = false;
-	/** The step of each place being brought in, by owner/name, as the last read of the list said it. */
-	#steps = new Map<string, string | null>();
+	/** How each place's import stands, by owner/name, as the last read of the list said it. */
+	#states = new Map<string, string>();
 
 	constructor(host: CodeImportHost) {
 		this.#host = host;
@@ -390,15 +392,20 @@ export class CodeImport {
 		const list = code.list;
 		const imports = list?.imports;
 		if (!list || !imports) return;
-		// A place whose import came, moved a step or ended since the last read holds something else now (the set-aside,
-		// the build and the open each change it): Storage reads it again when the member is there. The folder's own hint
-		// may come late, and the mark below is hidden only while the import runs.
-		// A step is text or null, so a place that came or ended differs too (undefined on one side).
-		const steps = new Map(imports.bringing.map((each) => [keyOf(each), each.step] as const));
-		const before = this.#steps;
-		this.#steps = steps;
-		for (const key of new Set([...before.keys(), ...steps.keys()]))
-			if (before.get(key) !== steps.get(key)) this.#host.changed(`code/${key}`);
+		// How the list says each place's import stands: being brought in (its step), in (since when), or not brought in
+		// (why). A place whose word differs from the last read's may hold something else than a folder read before it
+		// shows (the set-aside, the build and the open each change it), and so may one this page sees for the first time:
+		// an import can end before the page's first read of the list. Storage reads it again when the member is there. The
+		// folder's own hint may come late, and the mark below is hidden only while the import runs.
+		const states = new Map<string, string>();
+		if (imports.last) states.set(keyOf(imports.last), JSON.stringify(["not", endKey(imports.last)]));
+		for (const each of list.repositories)
+			if (each.imported) states.set(keyOf(each), JSON.stringify(["in", each.imported.at]));
+		for (const each of imports.bringing) states.set(keyOf(each), JSON.stringify(["step", each.step]));
+		const before = this.#states;
+		this.#states = states;
+		for (const key of new Set([...before.keys(), ...states.keys()]))
+			if (before.get(key) !== states.get(key)) this.#host.changed(`code/${key}`);
 		// Not brought in, and since brought in or being brought in again (by an agent, another member): the line after a
 		// reload no longer says it was not, nor does this one.
 		const ended = this.#followed;
