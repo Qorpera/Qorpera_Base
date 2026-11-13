@@ -391,6 +391,8 @@ interface RailParts {
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
+	/** The group folding as the drawer is drawn next (its drawer key): its apps go back into its tile. */
+	appFolding: string | undefined;
 	/** Dragging the drawer's icons to reorder them. */
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
@@ -670,6 +672,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
+			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
@@ -2123,6 +2126,19 @@ function groupIcon(name: string, count: number, colour: string | undefined): HTM
 	return tile;
 }
 
+/** Each tile on its way out of the drawer, and its fold into a group if it has one. The drawer draws a tile it shows
+ * again with the same element, so a tile that comes back, or goes at the end of its way out, loses its fold (`fill`
+ * holds the fold's end, small and clear, until cancelled), and only the latest way out ends one (review F1 on #1729). */
+const leavingTiles = new WeakMap<HTMLElement, { readonly fold?: Animation }>();
+
+/** A tile out of its way out: whole again, in the grid's flow, its fold cancelled. */
+function unleave(element: HTMLElement): void {
+	leavingTiles.get(element)?.fold?.cancel();
+	leavingTiles.delete(element);
+	element.classList.remove("is-leaving", "is-folding");
+	for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+}
+
 /** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
  * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
 function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
@@ -2136,13 +2152,15 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		: undefined;
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
-	for (const element of drawn)
-		if (element.classList.contains("is-leaving")) {
-			element.classList.remove("is-leaving");
-			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
-		}
+	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
 	reconcile(grid, drawn);
+	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
+	// collapsing").
+	const folding = parts.appFolding;
+	parts.appFolding = undefined;
 	if (!before || !box) return;
+	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
+	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
 	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
@@ -2164,8 +2182,24 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 				easing: easing("--ease-out"),
 			});
 	}
-	for (const [element, was] of before) {
-		if (kept.has(element)) continue;
+	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
+	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
+	for (const element of before.keys())
+		if (!kept.has(element) && leavingTiles.has(element)) {
+			// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
+			element.removeAttribute("data-app-key");
+			if (element.parentElement !== grid) grid.append(element);
+		}
+	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
+	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
+	// wraps).
+	const into = target ? centre(target) : undefined;
+	const far = (rect: DOMRect) => (into ? Math.hypot(centre(rect).x - into.x, centre(rect).y - into.y) : 0);
+	const turn = new Map(
+		[...leaving].sort(([, a], [, b]) => far(a) - far(b)).map(([element], index) => [element, index] as const),
+	);
+	for (const [element, was] of leaving) {
 		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
 		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
@@ -2173,9 +2207,33 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 		element.style.top = `${was.top - box.top}px`;
 		element.style.width = `${was.width}px`;
 		grid.append(element);
+		let ms = 240;
+		let fold: Animation | undefined;
+		if (into) {
+			// Into the group's tile: each app shrinks and goes back behind it, a moment after the one nearer it.
+			const from = centre(element.querySelector(".rail-app-stand")?.getBoundingClientRect() ?? was);
+			const dx = into.x - from.x;
+			const dy = into.y - from.y;
+			const delay = Math.min(turn.get(element) ?? 0, 6) * 18;
+			element.classList.add("is-folding");
+			fold = element.animate(
+				[
+					{ translate: "0 0", scale: "1", opacity: 1 },
+					{ opacity: 1, offset: 0.4 },
+					{ translate: `${dx}px ${dy}px`, scale: "0.2", opacity: 0 },
+				],
+				{ duration: 340, delay, easing: easing("--ease-out"), fill: "both" },
+			);
+			ms = 340 + delay + 20;
+		}
+		const leave = { fold };
+		leavingTiles.set(element, leave);
 		setTimeout(() => {
-			if (element.classList.contains("is-leaving")) element.remove();
-		}, 240);
+			// Come back meanwhile, or gone again on a newer way out: not this one's to end.
+			if (leavingTiles.get(element) !== leave) return;
+			element.remove();
+			unleave(element);
+		}, ms);
 	}
 }
 
@@ -2201,6 +2259,7 @@ function toggleAppGroup(company: CompanyController, parts: RailParts, id: string
 			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
 			: undefined;
 		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+		parts.appFolding = groupKey(id);
 	} else parts.appGroupsOpen.add(id);
 	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
 	parts.redraw();
