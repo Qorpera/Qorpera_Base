@@ -27,7 +27,7 @@ import { CodeImport } from "./code-import.ts";
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
  * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
  * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
- * poll backs it up. */
+ * poll backs it up; a place under code/ whose import moves a step is read again at once (code-import.ts). */
 
 type Client = Pick<
 	CloudMemberFolderClient,
@@ -266,6 +266,9 @@ export class CompanyFolderBrowser {
 	#pendingSection: "documents" | "recents" | null = null;
 	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
 	#pendingPath: string | null = null;
+	/** Places under code/ whose import came, moved a step or ended (code-import.ts): the open folder is read again once
+	 * no other action runs, when it is one of them or below one. */
+	readonly #changed = new Set<string>();
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
@@ -463,6 +466,10 @@ export class CompanyFolderBrowser {
 				calls,
 				code: this.#code,
 				open: (path) => this.reveal(path),
+				changed: (path) => {
+					this.#changed.add(path);
+					this.#navigate();
+				},
 			});
 		replace(
 			this.#documents,
@@ -542,7 +549,14 @@ export class CompanyFolderBrowser {
 			);
 			return;
 		}
-		if (!this.#pendingSection) return;
+		if (!this.#pendingSection) {
+			// What the place holds changed while the member is in it: the folder's hint may come late or not at all.
+			const places = [...this.#changed];
+			this.#changed.clear();
+			if (places.some((place) => this.#dir === place || this.#dir.startsWith(`${place}/`)))
+				void this.#run(() => this.#reloadFolder());
+			return;
+		}
 		const section = this.#pendingSection;
 		this.#pendingSection = null;
 		void this.#run(
@@ -666,7 +680,9 @@ export class CompanyFolderBrowser {
 		this.#live();
 		const moved = dir !== this.#dir;
 		this.#dir = dir;
-		this.#items = append ? [...this.#items, ...page.entries] : [...page.entries];
+		// A place's mark is left out while its import runs (code-import.ts), so the count says what is shown.
+		const entries = page.entries.filter((entry) => !this.#import?.hidden(entry.path));
+		this.#items = append ? [...this.#items, ...entries] : entries;
 		this.#next = page.next;
 		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
 		// so an open file is read again when the position moves.
@@ -773,9 +789,11 @@ export class CompanyFolderBrowser {
 		this.#count.textContent =
 			this.#next !== null
 				? t("{shown} of {count} loaded items", { shown: items.length, count: this.#items.length })
-				: items.length === this.#items.length
-					? t("{count} items", { count: items.length })
-					: t("{shown} of {count} items", { shown: items.length, count: this.#items.length });
+				: items.length !== this.#items.length
+					? t("{shown} of {count} items", { shown: items.length, count: this.#items.length })
+					: items.length === 1
+						? t("1 item")
+						: t("{count} items", { count: items.length });
 	}
 
 	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
