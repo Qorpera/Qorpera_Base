@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
 	API,
@@ -14,6 +15,7 @@ import {
 	lockedSitePage,
 	main,
 	probeName,
+	RELAY_PROBE_URL,
 	readToken,
 	SERVICE,
 	WEB_MARKER,
@@ -66,6 +68,11 @@ function cloudflare({
 	cacheAccess = "edit",
 	robots = { status: 200, text: "User-agent: *\nDisallow: /\n" },
 	health = { status: 200, text: "ok\n" },
+	relay = {
+		status: 403,
+		headers: { "cache-control": "no-store" },
+		text: "<!doctype html><title>Sent from another site</title>",
+	},
 	siteHost = LOCKED,
 	apiSite = { status: 404, headers: {}, text: "" },
 	web = WEB_LIVE,
@@ -117,10 +124,12 @@ function cloudflare({
 			body: init.body,
 			authorization: init.headers?.authorization,
 			forwardedHost: init.headers?.["x-forwarded-host"],
+			origin: init.headers?.origin,
 		});
 		if (url === `https://${HOST}/robots.txt`) return new Response(robots.text, { status: robots.status });
 		if (url === APP_HEALTH_URL) return new Response(health.text, { status: health.status });
 		const answer = ({ status, headers, text }) => new Response(text, { status, headers });
+		if (url === RELAY_PROBE_URL) return answer(relay);
 		for (const host of [`${PROBE}.qorpera.com`, `${PROBE}--next.qorpera.com`])
 			if (url === `https://${host}/` || url === `https://${host}/rest/v1/`)
 				return answer(typeof siteHost === "function" ? siteHost(url) : siteHost);
@@ -317,6 +326,65 @@ describe("sites-route: what --check reads of the site hosts and robots.txt", () 
 		);
 	});
 
+	it("makes probe names whose own and next hosts the one host rule takes, as the migration writes the rule (1252's list)", () => {
+		// The rule as migration 20260930756000 writes it: its one regex (qorpera_site_host_pattern, for qorpera.com), the
+		// length, and the name rule (no qorpera, no -preview ending, none of its reserved names).
+		const migration = readFileSync(
+			new URL("../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		assert.ok(
+			migration.includes(
+				String.raw`select '^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.' || replace(p_domain, '.', '\.') || '$'`,
+			),
+		);
+		const pattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+		const reserved = new Set(
+			(
+				/qorpera_site_reserved_names\(\) returns text[^\n]*\n\t-- 20260930756000\n\tselect '([a-z0-9 -]+)'::text/.exec(
+					migration,
+				)?.[1] ?? ""
+			).split(" "),
+		);
+		assert.equal(reserved.size, 118);
+		const rule = (host) => {
+			const match = pattern.exec(host);
+			const slug = match?.[1] ?? "";
+			return match &&
+				slug.length >= 3 &&
+				slug.length <= 48 &&
+				!slug.endsWith("-preview") &&
+				!slug.includes("qorpera") &&
+				!reserved.has(slug)
+				? { slug, scope: match[2] ? "next" : "site" }
+				: null;
+		};
+		// That rule gives every host of the one host list its verdict (a host as written; 1252 says what each means).
+		const lines = readFileSync(
+			new URL("../../supabase/tests/1252_site_hosts.test.sql", import.meta.url),
+			"utf8",
+		).split("\n");
+		const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+		const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+		assert.ok(begin > 0 && end > begin + 50, "1252's one host list");
+		for (const line of lines.slice(begin + 1, end)) {
+			const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+			assert.ok(entry, line);
+			const [, host, slug, scope, verdict] = entry;
+			assert.deepEqual(rule(host), verdict === "taken" ? { slug, scope } : null, host);
+		}
+		// --check's made-up names: their own host and next host are site hosts (the locked page answers them), every one.
+		const names = [
+			...Array.from({ length: 50 }, () => probeName()),
+			probeName(() => Buffer.from([0, 0, 0, 0])),
+			probeName(() => Buffer.from([255, 255, 255, 255])),
+		];
+		for (const name of names) {
+			assert.deepEqual(rule(`${name}.qorpera.com`), { slug: name, scope: "site" }, name);
+			assert.deepEqual(rule(`${name}--next.qorpera.com`), { slug: name, scope: "next" }, name);
+		}
+	});
+
 	it("reads robots.txt's last group: only '*' and only Disallow: /", () => {
 		assert.equal(lastGroupDisallowsAll("User-agent: *\nDisallow: /\n"), true);
 		assert.equal(lastGroupDisallowsAll(`${MANAGED_ROBOTS}User-agent: *\nDisallow: /\n`), true);
@@ -373,19 +441,25 @@ describe("sites-route: the script", () => {
 		assert.equal(fake.state.cacheRuleset.phase, "http_request_cache_settings");
 		assert.equal(fake.state.cacheRuleset.kind, "zone");
 		assert.deepEqual(fake.state.cacheRuleset.rules, [{ id: "r1", ...CACHE_RULE }]);
-		const order = fake.sent.filter((call) => call.method !== "GET").map((call) => call.url.slice(API.length));
+		const order = fake.sent
+			.filter((call) => call.method !== "GET" && call.url.startsWith(API))
+			.map((call) => call.url.slice(API.length));
 		assert.ok(order.indexOf("/zones/zone1/rulesets") < order.indexOf("/zones/zone1/dns_records"), order.join(" "));
-		const writes = fake.sent.filter((call) => call.method !== "GET").length;
+		const writes = fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length;
 		const again = await run(["--apply"], fake);
 		assert.equal(again.code, 0);
-		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes, "a second apply writes nothing");
+		assert.equal(
+			fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length,
+			writes,
+			"a second apply writes nothing",
+		);
 		assert.match(again.output, /is there already/);
 		const before = fake.sent.length;
 		const check = await run(["--check"], fake);
 		assert.equal(check.code, 0);
 		assert.match(check.output, /\ncheck: PASS$/);
-		// The check makes no change.
-		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes);
+		// The check makes no change at Cloudflare (its one POST is the relay's probe, refused before anything).
+		assert.equal(fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length, writes);
 		// The site hosts: a made-up name's own and next host and its /rest/v1/ are site-serve's locked page; the API name
 		// answers 404 for site-serve with that name forged. Nothing but Cloudflare's API ever gets the token.
 		for (const line of [
@@ -403,8 +477,13 @@ describe("sites-route: the script", () => {
 				),
 		);
 		const probes = fake.sent.slice(before).filter((call) => !call.url.startsWith(API));
-		assert.equal(probes.length, 6 + 3);
-		assert.ok(probes.every((call) => call.method === "GET" && call.authorization === undefined));
+		assert.equal(probes.length, 6 + 3 + 1);
+		// GETs, but the relay's probe (a POST with another site's Origin, refused before anything); never the token.
+		assert.ok(probes.every((call) => call.authorization === undefined));
+		assert.deepEqual(
+			probes.filter((call) => call.method !== "GET").map((call) => [call.method, call.url, call.origin]),
+			[["POST", RELAY_PROBE_URL, "https://probe.example"]],
+		);
 		assert.deepEqual(
 			probes.filter((call) => call.forwardedHost !== undefined).map((call) => [call.url, call.forwardedHost]),
 			[[`https://${API_HOST}/functions/v1/site-serve/`, `${PROBE}.qorpera.com`]],
@@ -498,6 +577,46 @@ describe("sites-route: the script", () => {
 				`site hosts, own host: https://${PROBE}.qorpera.com/: TypeError NOT site-serve's page for a site without a session (401, HTML, noindex, no-transform)`,
 			),
 		);
+	});
+
+	it("fails the check until the relay refuses a change from another site (P1): 403, never stored", async () => {
+		const fake = cloudflare();
+		await run(["--apply"], fake);
+		const done = {
+			ingress: fake.state.config.ingress,
+			records: fake.state.records,
+			cacheRuleset: fake.state.cacheRuleset,
+		};
+		const live = cloudflare(done);
+		const passed = await run(["--check"], live);
+		assert.equal(passed.code, 0, passed.output);
+		assert.match(passed.output, /\/forged-post-probe, a change from another site \(P1\): 403\n/);
+		// One POST with another site's Origin: nothing a session or an app sees (the relay refuses it before the gate).
+		assert.deepEqual(
+			live.sent.filter((request) => request.url === RELAY_PROBE_URL),
+			[
+				{
+					url: RELAY_PROBE_URL,
+					method: "POST",
+					body: "x=1",
+					authorization: undefined,
+					forwardedHost: undefined,
+					origin: "https://probe.example",
+				},
+			],
+		);
+		for (const [label, relay] of [
+			// Before P1 the relay passes it on to the gate: its password page.
+			["the gate's password page", { status: 401, headers: { "cache-control": "no-store" }, text: "" }],
+			["403 that may be kept", { status: 403, headers: { "cache-control": "private, no-cache" }, text: "" }],
+			["403 with no Cache-Control", { status: 403, headers: {}, text: "" }],
+			["the app's own answer", { status: 200, headers: {}, text: "ok" }],
+		]) {
+			const before = await run(["--check"], cloudflare({ ...done, relay }));
+			assert.equal(before.code, 1, label);
+			assert.match(before.output, /\(P1\): \d+: NOT refused \(403, no-store\)\n/, label);
+			assert.match(before.output, /\ncheck: FAILED$/, label);
+		}
 	});
 
 	it("fails the check until the live web takes a site's own host (E1a's marker)", async () => {
@@ -602,10 +721,10 @@ describe("sites-route: the script", () => {
 		assert.equal((await run(["--apply"], fake)).code, 0);
 		assert.deepEqual(fake.state.cacheRuleset.rules, [theirs, { id: "r2", ...CACHE_RULE }]);
 		assert.ok(fake.sent.some((call) => call.method === "PATCH" && call.url.endsWith("/rulesets/rs9/rules/r2")));
-		const writes = fake.sent.filter((call) => call.method !== "GET").length;
+		const writes = fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length;
 		assert.equal((await run(["--check"], fake)).code, 0);
 		await run(["--apply"], fake);
-		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, writes);
+		assert.equal(fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length, writes);
 	});
 
 	it("makes everything else, and says so plainly, when the token may not touch Cache Rules; the check warns", async () => {
@@ -664,13 +783,13 @@ describe("sites-route: the script", () => {
 			records: [{ id: "x", name: APPS_HOST, type: "CNAME", content: "elsewhere.example", proxied: true }],
 		});
 		await assert.rejects(run(["--apply"], fake), /\*\.qorpera\.com already has 1 other DNS record/);
-		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, 0);
+		assert.equal(fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length, 0);
 	});
 
 	it("changes nothing when another record holds the name", async () => {
 		const fake = cloudflare({ records: [{ id: "x", name: HOST, type: "A", content: "192.0.2.1", proxied: true }] });
 		await assert.rejects(run(["--apply"], fake), /other DNS record/);
-		assert.equal(fake.sent.filter((call) => call.method !== "GET").length, 0);
+		assert.equal(fake.sent.filter((call) => call.method !== "GET" && call.url.startsWith(API)).length, 0);
 	});
 
 	it("keeps the token out of errors, and refuses unknown arguments", async () => {

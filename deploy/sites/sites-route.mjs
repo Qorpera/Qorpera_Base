@@ -24,9 +24,11 @@
  *   node deploy/sites/sites-route.mjs --check   read-only: the DNS records, the ingress rules, the cache rule, an
  *                                              HTTPS GET of https://sites.qorpera.com/robots.txt (its last group: the
  *                                              origin's own file, after what Cloudflare puts first), one of an app
- *                                              host's /.qorpera/health, and the site hosts: a made-up name's own host,
- *                                              its next host and its /rest/v1/ answer site-serve's page for a site
- *                                              without a session (401, HTML, noindex, Cache-Control no-transform), and
+ *                                              host's /.qorpera/health, a forged change from another site to an app
+ *                                              host (the relay's 403, no-store: P1), and the site hosts: a made-up
+ *                                              name's own host, its next host and its /rest/v1/ answer site-serve's
+ *                                              page for a site without a session (401, HTML, noindex, Cache-Control
+ *                                              no-transform), and
  *                                              api.qorpera.com/functions/v1/site-serve/ with a forged X-Forwarded-Host
  *                                              answers 404; and the live web at app.qorpera.com holds E1a's marker
  *                                              (the Sites page takes a site's own host as its link); exit 1 unless all
@@ -428,6 +430,33 @@ export async function webMarkerAnswer(fetcher = fetch) {
 	}
 }
 
+/** A change sent to an app host from another site's page (release 5.1, part P1), which the relay must refuse. */
+export const RELAY_PROBE_URL = "https://qorpera-health-preview.qorpera.com/forged-post-probe";
+
+/** The relay refuses a change from another site (P1, D22): a POST with a foreign Origin answers 403, never stored, before
+ * the gate (no session needed, nothing reaches an app). Before P1 the relay passes it on to the gate, whose password
+ * page answers 401. Sites must never have hosts of their own before this answers 403 (SITE-HOSTS.md). */
+export async function relayRefusalAnswer(fetcher = fetch) {
+	try {
+		const response = await fetcher(RELAY_PROBE_URL, {
+			method: "POST",
+			redirect: "manual",
+			signal: AbortSignal.timeout(30_000),
+			headers: { origin: "https://probe.example", "content-type": "application/x-www-form-urlencoded" },
+			body: "x=1",
+		});
+		await response.text();
+		return {
+			ok:
+				response.status === 403 &&
+				/(?:^|,)\s*no-store\s*(?:,|$)/i.test(response.headers.get("cache-control") ?? ""),
+			status: response.status,
+		};
+	} catch (error) {
+		return { ok: false, status: error instanceof Error ? error.name : "error" };
+	}
+}
+
 /** An app host answers: the app relay's health, over HTTPS (through the wildcard name, rule and the apps host). */
 export async function appHealthAnswer(fetcher = fetch) {
 	try {
@@ -492,6 +521,10 @@ export async function main(
 		log(`https://${HOST}/robots.txt: ${robots.status}`);
 		const health = await appHealthAnswer(fetcher);
 		log(`${APP_HEALTH_URL}: ${health.status}`);
+		const relay = await relayRefusalAnswer(fetcher);
+		log(
+			`${RELAY_PROBE_URL}, a change from another site (P1): ${relay.status}${relay.ok ? "" : ": NOT refused (403, no-store)"}`,
+		);
 		const sites = await siteHostAnswers(fetcher, siteName);
 		for (const site of sites)
 			log(`site hosts, ${site.what}: ${site.url}: ${site.status} ${site.ok ? "ok" : `NOT ${site.expected}`}`);
@@ -507,6 +540,7 @@ export async function main(
 			(cache.action === "none" || cache.action === "unknown") &&
 			robots.ok &&
 			health.ok &&
+			relay.ok &&
 			sites.every((site) => site.ok) &&
 			web.ok;
 		log(`check: ${ok ? (warnings.length ? `PASS, with a warning: ${warnings.join("; ")}` : "PASS") : "FAILED"}`);

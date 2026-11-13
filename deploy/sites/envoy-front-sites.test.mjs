@@ -29,6 +29,24 @@ const APP = "shop-preview.qorpera.com";
 /** A company site's own host (step 5, release 5.1; SITE-HOSTS.md). */
 const SITE = "look-shop.qorpera.com";
 
+/** The one host list of SQL test 1252 (own code storage step 5.1's cross-check), which every reader of a site host runs:
+ * a host, the slug and scope the one host rule reads in it, and its verdict (1252 says what each means). */
+function oneHostList() {
+	const lines = readFileSync(new URL("../../supabase/tests/1252_site_hosts.test.sql", import.meta.url), "utf8").split(
+		"\n",
+	);
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	assert.ok(begin > 0 && end > begin, "1252's one host list");
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		assert.ok(entry, line);
+		return { host: entry[1], slug: entry[2], scope: entry[3], verdict: entry[4] };
+	});
+	assert.ok(list.length >= 50);
+	return list;
+}
+
 /** The block as front-sites.py puts it in: from `virtual_hosts:` on, its comment header dropped. */
 function virtualHosts() {
 	const lines = BLOCK.split("\n");
@@ -707,6 +725,37 @@ describe(
 			assert.match(realtime.head, /\r\nx-seen-path: \/realtime\/v1\/websocket(\r\n|$)/i);
 			const app = await upgrade(APP, "/.qorpera/connect");
 			assert.equal(app.status, 101, app.head);
+		});
+
+		it("sends every host of the one host list (SQL test 1252) on: a site's host to site-serve with its bare name", async () => {
+			for (const { host, verdict } of oneHostList()) {
+				// No Host at all is no name to route by.
+				if (!host) continue;
+				const answer = seen(
+					await raw(front, "/rest/v1/x", [
+						["Host", host],
+						["X-Forwarded-Host", API],
+					]),
+				);
+				// The name the front matches: lower-cased, its port and trailing dot dropped.
+				const bare = host.toLowerCase().replace(/(:\d+|\.)$/, "");
+				const got = { path: answer.path, forwardedHost: answer.forwardedHost.map((value) => value.toLowerCase()) };
+				if (["taken", "case", "port", "dot"].includes(verdict))
+					// A site's own or next host: site-serve, with the bare name, whatever the path.
+					assert.deepEqual(got, { path: "/site-serve/rest/v1/x", forwardedHost: [bare] }, host);
+				// No site has it: an exact name keeps its own host, an app host (*-preview) goes to the relay, any other name
+				// under qorpera.com to site-serve (which answers it as a name with no site), anything else to the API's "*".
+				else
+					assert.deepEqual(
+						got,
+						bare === SITES
+							? { path: "/site-serve/rest/v1/x", forwardedHost: [SITES] }
+							: bare !== API && /^.+\.qorpera\.com$/.test(bare) && !/^.+-preview\.qorpera\.com$/.test(bare)
+								? { path: "/site-serve/rest/v1/x", forwardedHost: [bare] }
+								: { path: "/rest/v1/x", forwardedHost: [bare] },
+						`${host} (${verdict})`,
+					);
+			}
 		});
 
 		it("keeps the exact names and app hosts ahead of the site hosts", async () => {

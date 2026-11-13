@@ -37,6 +37,15 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   its 410 page, or `none`. While `hosts_enabled` is false every site host answers `none`, so the front can change before
   hosts are on. `none` and a locked site look the same to a visitor (the private site's password page, 401): whether a
   site of that name exists never shows.
+- **Between the front's change and `hosts_enabled`** (rollout steps 7 to 9), with the migration and the new site-serve
+  in: every first-level name that is no exact host answers site-serve's own pages, a made-up name, a reserved one and a
+  live site's own name alike. `https://<name>.qorpera.com/` and every site path under it: the private site's password
+  page, 401 (`cache-control: no-store, no-transform`); its password opens nothing and counts nothing (the database
+  answers `wrong` while hosts are off). `https://<name>--next.qorpera.com/`: "Not live yet", 401. `/robots.txt` on
+  either: 200, `Disallow: /`. A site taken down answers the same there (hosts off, no site host is read); its old link
+  on `sites.qorpera.com` answers 410. Every other old link on `sites.qorpera.com` answers as before. (Before the
+  migration, if the order slipped, the new site-serve answers a site host today's 404 page; the old site-serve answers
+  it 404 too.)
 - **Names with a record of their own never reach the front through the wildcard:** `qorpera.com` and `www` (the
   marketing site on Vercel), `app` (Cloudflare Pages), `api` and `sites` (this tunnel, by exact rule), `objects` (the
   object gateway), `inbox` and `send` (mail), later `screens` (#1746). The reserved list holds all of them.
@@ -159,9 +168,16 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 - An app link: the password page, and the right password no longer opens it, within 30 seconds (the relay keeps an
   open session that long). Its link program is refused at its next check (within 5 minutes) and stops.
 
-**What members see:** the site does not go live again: Put live and Go back answer `SITE_TAKEN_DOWN`, and Look first
-answers `gone`. `qorpera_company_site_access` gives every member the reason. In 5.1 no web part shows that reason yet
-(A1.md), so tell the company's owner yourself, in plain words. An agent can still upload to the site; it stays down.
+**What members see:** Sites shows the site's row as "Taken down" with the operator's reason, in place of its link and
+password, and where to write if they think it is wrong (the address is one constant, `SUPPORT_ADDRESS` in
+`packages/web/src/app/views/settings-sites.ts`: confirm it reaches someone, or set it to null to leave that clause out);
+its menu keeps only Take offline. What's new offers no link to it and says it was taken down. The site does not go live
+again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain words. The
+reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
+
+**What an agent sees:** nothing of it yet. An agent can still publish to the site (`publish_site`, `share_app`, a
+project's next version for What's new): it stays down, but `publish_site` answers `"state": "live"` with the link, so
+the agent may tell a member a link that shows the "gone" page. Tell the company's owner yourself.
 
 **Restore** when the cause is gone: `qorpera_site_restore('<slug>')`; the site answers as before at once (its sessions
 were kept). Write each takedown and restore in the registry with its UTC time from `date -u`.
@@ -311,13 +327,14 @@ update public.qorpera_site_settings set hosts_domain = 'qorpera.com';   -- first
 
 Then `node deploy/sites/sites-route.mjs --check` from the operator's Mac. It reads the tunnel's rules, the records, the
 app links' cache rule, `sites.qorpera.com/robots.txt` (its last group, the origin's own file), an app host's health,
-the site hosts (a made-up name's own host, next host and `/rest/v1/` answer site-serve's 401 page; the API name answers
+the relay's refusal of a forged change from another site (P1: 403 with `no-store`; before P1 the gate's 401), the site
+hosts (a made-up name's own host, next host and `/rest/v1/` answer site-serve's 401 page; the API name answers
 404 for site-serve with that name forged) and E1a's marker in the live web. A token that may not read Cache Rules ends
 in `check: PASS, with a warning: the cache rule was not readable`: the relay's own `cdn-cache-control: no-store` on every
 forwarded answer is the first layer; read the rule in the dashboard (Caching → Cache Rules) once by eye. Anything else
 not right ends in `check: FAILED` (exit 1), and its line says what was seen.
 
-Only when the check passes, P1's forged POST answers 403 and the front answers a site host:
+Only when the check passes (so P1 refuses the forged POST, the front answers a site host and E1a is live):
 
 ```sql
 update public.qorpera_site_settings set hosts_enabled = true;          -- note the time: date -u
