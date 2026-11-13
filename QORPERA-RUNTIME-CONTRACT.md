@@ -6533,6 +6533,62 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    fits its product or area, and to leave a group inside a group unset, so it takes its parent's. The Co-Founder's
    tidy pass (`qorpera.hire-overlay/v15`) takes a top-level group without a colour as a sign to sort the drawer.
 
+### 2026-11-12 amendment: more of the company folder in one call
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slices S2 and S3): "Yes, build them". Runtime only: no migration and no Codex
+> rebuild. It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB
+> too, with less a call). It amends the 2026-10-21 amendment's item 5 for listings and reads.
+
+1. **A listing shows a tree.** `company_list` takes `depth` (1 to 8; default 1, or 8 with a glob) and `glob`
+   (`company_search`'s syntax: `*` and `?` within a name, `**` across folders, a glob without `/` matches names
+   alone; matched on folder keys, so case does not matter), and `after` and `limit` may be left out. A call without
+   them lists one level, as before.
+   - One call shows up to 500 entries (`limit`, default 500), as many as fit one result, one short line each: a
+     file's path and size in bytes, a folder's path and `/`, a link's path and the first 512 bytes of its target. A
+     listing no longer shows each entry's version; `company_read` does.
+   - Past depth 1 the runtime filters the folder core's subtree listing (`p_recursive`, which the native host's
+     entry point passes by its declared name, 20260928409985) by depth and glob. One call looks through at most
+     5,000 entries, or stops after about 2 s of pages, and then says where it got to.
+   - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
+     stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
+     the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
+   - `asOfSeq` is the folder clock of the call's first page, as `company_move` takes it.
+2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
+   `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
+   - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
+     largest that fits: small files are whole and the larger ones share what is left alike. Each file says what a
+     read of it alone would: its version, `offset` 0, `bytesRead`, `totalBytes` and `nextOffset`, from which it is
+     read on with `path` and `offset`. A link's target is shown the same way.
+   - Each path is answered on its own: absent (also for a path the run may not read, as today), a folder, a file
+     that is not text or an image format not shown (`refused`, with today's words), or one the folder could not
+     read now (its own failure, or a request that timed out or lost its connection, also after the answer began).
+     A company whose work is stopped, a cancel, bytes that fail their check, or a read the run may no longer show
+     at its release, shows nothing.
+   - An image among several is named, never shown (`kind: "image"`, its media type and size, `shown: false`): one
+     result shows one picture, after the answer that names it. Read alone from offset 0, it is shown as before.
+   - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,
+     and the answer cites the first, as `company_search` cites its first part: the context view cites one release an
+     output, and the run log keeps every release of the step. No SQL changes.
+   - The paths' entries are read side by side, and their bytes one file at a time: the object gateway serves bytes
+     from two NAS lanes, one operation at a time on any one object, and answers 503 for a file with no Storage copy
+     yet (one just written) when it cannot take it now. Files of the same content share objects, so one call never
+     contends with itself there.
+   - A secret the boundary cuts out of an answer (#1721) is cut before the answer is hashed and released, for a read
+     of several files as for one, so the context view cites what the model was shown.
+   - A window never starts or ends inside a secret, for a file read from any offset, files read together and cut
+     alike, a link's target, and a listed target's start (keyholes S3, 13 November 2026). A window's end that falls
+     inside one moves to where it starts, so the next window holds it whole and the boundary cuts it; a window that
+     starts at one takes it whole, past `limit` if need be (shown cut); an offset inside one starts the window where it
+     starts, and the answer's `offset` says so. To see them the read takes 1 KiB past the window and before it.
+     `nextOffset` stays an exact byte position in the file. A secret-shaped run longer than a window plus that 1 KiB
+     (no real key is) is shown cut as far as read, and the answer says in `secretRun` that reading on shows the rest
+     of it, which nothing can cut on its own; a read asked to start more than 1 KiB inside such a run cannot see it.
+   - Codex still sends one call a model response, so this is what lets one round read several files.
+3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
+   `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`
+   added; no property is required).
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
