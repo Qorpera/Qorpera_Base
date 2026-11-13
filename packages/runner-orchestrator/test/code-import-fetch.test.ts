@@ -423,6 +423,14 @@ describe("the import's fetch, against real git upload-pack", { timeout: 120_000 
 			feature,
 			{ name: "refs/heads/feature", sha: feature },
 		]);
+		// GitHub's own default beside it, which the refs plan keeps whatever its age (the lead's call 6a), second in the
+		// header and in the wants (review round 3 of #1725, F2); none when the branch asked for is the source's own.
+		expect(fetched.sourceBranch).toBe("master");
+		expect(fetched.refs[1]).toEqual({
+			name: "refs/heads/master",
+			sha: await git(repos.small, ["rev-parse", "master"]),
+		});
+		expect(await fetchOf(transport(source.port), memory(), { branch: "master" })).not.toHaveProperty("sourceBranch");
 		expect(await stopped(fetchOf(transport(source.port), memory(), { branch: "gone" }))).toEqual(
 			stop("refused", "IMPORT_BRANCH_UNKNOWN"),
 		);

@@ -1,4 +1,5 @@
-import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
+import type { Activity as MotionActivity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
+import { type AtComputerFrame, atComputerFrame, atComputerLight } from "./at-computer-motion.ts";
 import {
 	type Act,
 	type Ask,
@@ -30,7 +31,11 @@ import {
 import { alignRegion, boxCanvas, bucketOf, level, type Region } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 
-export type { Activity, Ask, Moment };
+export type { Ask, Moment };
+/** The studio's activities, and "AtComputer": the agent uses its desktop computer (20260930742000). */
+export type Activity = MotionActivity | "AtComputer";
+/** The studio's own activity a state stands on: using its computer stands as Idle has settled. */
+const studio = (activity: Activity): MotionActivity => (activity === "AtComputer" ? "Idle" : activity);
 
 /** Where a figure's eye is drawn on its artwork, in the 100-unit frame (motion-model.js `faces`). */
 export interface EyeGeometry {
@@ -354,6 +359,9 @@ const PACE = 0.85;
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
 	if (reduced) {
+		// Using its computer still: what waits on the member shows as its symbol, as for a working figure.
+		if (activity === "AtComputer")
+			return entry.ask ? askingStill(entry.ask) : atComputer(entry, atComputerFrame(0, clock.seed, true));
 		// What waits on the member shows at rest whatever the figure is busy with: the symbol alone, as the badge
 		// that stood beside a working or a writing figure did.
 		if (activity === "Waiting") return askingStill(entry.ask ?? "bang");
@@ -376,6 +384,16 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		// The dots write on; every few seconds they become what waits on the member, at the pace of one that asks.
 		act = writingAsk(elapsed * PACE, entry.ask);
 		for (const cue of writingAskCues(since * PACE, elapsed * PACE)) effects.push(cue.effect);
+	} else if (activity === "AtComputer") {
+		// At its computer; with something waiting on the member it becomes that symbol now and then, as a writing
+		// figure does (at the same pace), so the ask is never out of sight for long.
+		const asked = entry.ask ? writingAsk(elapsed * PACE, entry.ask) : undefined;
+		// The ask's own act whenever it shows anything: the symbol (also held at rest) or the hops into and out of it.
+		act =
+			asked && (asked.symbol || asked.body !== REST)
+				? asked
+				: atComputer(entry, atComputerFrame(elapsed, clock.seed, false));
+		if (entry.ask) for (const cue of writingAskCues(since * PACE, elapsed * PACE)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {
 		// The studio's flourish, with the short cheer's jump under it.
@@ -401,6 +419,31 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	}
 	for (const effect of effects) burst(entry, effect);
 	return act;
+}
+
+/** Using its computer (20260930742000; ui/at-computer-motion.ts): the eyes dart, kept inside the figure (as far toward
+ * an edge as its eyes have room: a heart's sit near its right), and now and then a small lean toward the screen. */
+function atComputer(entry: LiveMotion, desk: AtComputerFrame): Act {
+	const [left, right] = entry.artwork.faces[entry.id] ?? [];
+	const spacing = left && right ? right.x - left.x : 1;
+	const lowest = left ? -Math.max(0, (left.x - 18) / spacing) : 0;
+	const highest = right ? Math.max(0, (82 - right.x) / spacing) : 0;
+	const eye = (face: AtComputerFrame["face"][number]): EyePose => ({
+		...face,
+		x: Math.min(highest, Math.max(lowest, face.x)),
+		y: face.y + 0.12 * desk.lean,
+		smile: 0,
+	});
+	return {
+		body: {
+			x: 0,
+			y: round(1.8 * desk.lean, 2),
+			turn: 0,
+			scaleX: 1 + 0.03 * desk.lean,
+			scaleY: 1 - 0.035 * desk.lean,
+		},
+		eyes: [eye(desk.face[0]), eye(desk.face[1])],
+	};
 }
 
 /** Puts the body's pose on the canvas, writing only what changed. */
@@ -631,25 +674,30 @@ function burst(entry: LiveMotion, effect: Effect): void {
 
 /** The symbolic states draw themselves from the studio's pose, which changes every frame; the others change
  * only when their drawn eyes do. */
-const SYMBOLIC: readonly Activity[] = ["Blocked", "Thinking", "Done"];
+const SYMBOLIC: readonly MotionActivity[] = ["Blocked", "Thinking", "Done"];
 
 // The studio's 100-unit compositor. Bodies keep their original shading and silhouette; every eye is drawn.
 function paint(entry: LiveMotion): void {
-	const { canvas, artwork, activity } = entry;
+	const { canvas, artwork } = entry;
+	const activity = studio(entry.activity);
 	const { localTime, pose, timelines } = motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
+	// Using its computer: its own frame (the light, the eyes, the lean) over Idle's settled stand.
+	const desk =
+		entry.activity === "AtComputer" ? atComputerFrame(entry.clock.elapsed, entry.clock.seed, reduced) : undefined;
 	// A member who wants no motion sees each state's still: its end, or (working, which has none) one second in.
-	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
+	const elapsed = desk || reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
 	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
-	const act = acting(entry, elapsed, reduced);
+	// Using its computer acts on its own clock (its frame, and the ask's turns), over Idle's settled stand.
+	const act = acting(entry, desk && !reduced ? entry.clock.elapsed : elapsed, reduced);
 	place(entry, act);
 	const p = pose(activity, elapsed, { reduced });
 	const { symbol } = act;
 	const drawn: EyePose[] = act.eyes ?? p.face.map((face) => ({ ...face, smile: 0 }));
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
 	const look = symbol ?? signature(drawn);
-	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${look}`;
+	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${look}${desk ? `:${desk.key}` : ""}`;
 	canvas.dataset.frame = String(sample);
 	if (entry.painted === key) return;
 	entry.painted = key;
@@ -763,6 +811,8 @@ function paint(entry: LiveMotion): void {
 			);
 		ctx.restore();
 	}
+	// The screen lights the figure, not the symbol it has become for a moment.
+	if (desk && !symbol) deskLight(ctx, canvas, desk, side);
 	ctx.fillStyle = entry.shown;
 	if (p.stemWidth > 0.001) {
 		const half = p.stemWidth / 2,
@@ -805,6 +855,54 @@ function paint(entry: LiveMotion): void {
 	if (!entry.fallback.hidden) entry.fallback.hidden = true;
 }
 
+/** The screen's light (20260930742000): a glow from below and in front, laid over the figure as light (screen blend,
+ * on the figure only), and a soft pool of it under the figure. */
+let lightCanvas: HTMLCanvasElement | undefined;
+function deskLight(
+	ctx: CanvasRenderingContext2D,
+	canvas: HTMLCanvasElement,
+	desk: AtComputerFrame,
+	side: number,
+): void {
+	const [r, g, b] = atComputerLight(desk);
+	const dark = document.documentElement.dataset.theme === "dark";
+	const s = desk.strength;
+	lightCanvas ??= document.createElement("canvas");
+	if (lightCanvas.width !== side) lightCanvas.width = lightCanvas.height = side;
+	const lc = lightCanvas.getContext("2d")!;
+	lc.setTransform(1, 0, 0, 1, 0, 0);
+	lc.globalCompositeOperation = "source-over";
+	lc.clearRect(0, 0, side, side);
+	lc.setTransform(side / 100, 0, 0, side / 100, 0, 0);
+	// From below and in front: the lower face takes the light, the top keeps its own colour.
+	const glow = lc.createRadialGradient(50, 118, 4, 50, 118, 72);
+	glow.addColorStop(0, `rgba(${r},${g},${b},${1 * s})`);
+	glow.addColorStop(0.55, `rgba(${r},${g},${b},${0.85 * s})`);
+	glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
+	lc.fillStyle = glow;
+	lc.fillRect(0, 0, 100, 100);
+	lc.setTransform(1, 0, 0, 1, 0, 0);
+	lc.globalCompositeOperation = "destination-in";
+	lc.drawImage(canvas, 0, 0);
+	ctx.save();
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	ctx.globalCompositeOperation = "screen";
+	ctx.drawImage(lightCanvas, 0, 0);
+	// The pool of light the screen throws under the figure, behind it.
+	ctx.globalCompositeOperation = "destination-over";
+	ctx.setTransform(side / 100, 0, 0, side / 100, 0, 0);
+	ctx.translate(50, 97);
+	ctx.scale(1, 0.16);
+	const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
+	pool.addColorStop(0, `rgba(${r},${g},${b},${(dark ? 0.55 : 0.5) * s})`);
+	pool.addColorStop(1, `rgba(${r},${g},${b},0)`);
+	ctx.fillStyle = pool;
+	ctx.beginPath();
+	ctx.arc(0, 0, 36, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.restore();
+}
+
 /** Repaint a ready figure whose shown colour the theme has changed. */
 function recolor(entry: LiveMotion): void {
 	if (!entry.ready || shownColor(entry) === entry.shown) return;
@@ -823,7 +921,8 @@ function moving(entry: LiveMotion, now = performance.now()): boolean {
 	if (!motion || entry.still || media?.matches) return false;
 	if (entry.moment) return true;
 	const { activity, clock } = entry;
-	if (activity === "Working" || activity === "Thinking" || activity === "Waiting") return true;
+	if (activity === "Working" || activity === "Thinking" || activity === "Waiting" || activity === "AtComputer")
+		return true;
 	const { timelines } = motion;
 	// Idle plays its drawn opening; Blocked and Done play the studio's time.
 	if (clock.elapsed < (activity === "Idle" ? IDLE_OPENING : timelines[activity].end - timelines[activity].start))
