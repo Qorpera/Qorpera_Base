@@ -768,16 +768,20 @@ export class CompanyMail {
 	}
 
 	/** Sends the member's own email from one of the company's addresses, with no agent (the Mailbox's "Send",
-	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`). It throws what the cloud refuses, for the Write window to say.
-	 * The lists a page shows are then read again, so the email is in Sent. */
+	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`), as a new email or as an answer in a thread. It throws what the
+	 * cloud refuses, for the window it was written in to say. The lists and the threads a page shows are then read
+	 * again, so the email is in Sent and an answer stands in its thread. */
 	async send(request: MailMemberSend): Promise<MailMemberSent> {
 		const sent = await sendMemberMail(this.#cloud, this.#environmentId, request);
-		await Promise.all([...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)));
+		await Promise.all([
+			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
+			...[...this.#watched.threads].map((thread) => this.#readThread(thread)),
+		]);
 		return sent;
 	}
 
 	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's
-	 * "Tell Ida what to answer", "Write an email" and an address's new handler, views/mailbox.ts). It goes from here
+	 * answer or new email an agent is asked to write, and an address's new handler, views/mailbox.ts). It goes from here
 	 * only into a conversation with nothing drafted in it, on the account the cloud chooses for that conversation (as an
 	 * answer does); otherwise, or when the send doesn't go, the note waits in that conversation's composer, and `href`
 	 * is the agent's thread where it waits. Throws when the agent's thread can't be opened or the note can't be added. */

@@ -36,8 +36,9 @@ import {
 
 /* The rebuilt Mailbox (views/mailbox.ts): the company's mail as a mail app's inbox, from the member mail read (the fake
  * in test/mail-fixtures.ts). The sends waiting for a person come first and are answered on their line; a thread opens
- * with its older messages folded; a note to the handling agent goes as the member's own message, with the email's
- * outside words as quotes; Sent, Addresses, Write and search; what a viewer may not do is not drawn. */
+ * with its older messages folded, and Reply, Reply all and Forward under them; an answer goes as the member's own
+ * email in the thread, or its words go to an agent as the member's own message, with the email's outside words as
+ * quotes; Sent, Addresses, Write and search; what a viewer may not do is not drawn. */
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -350,51 +351,7 @@ describe("a thread", () => {
 		expect(main.querySelector(".mailbox-thread")).toBeNull();
 	});
 
-	it("tells the handling agent what to answer, quoting the email's subject and sender", async () => {
-		const { main, controller } = await mailbox((mail) => {
-			mail.threads = [summary(1, { subject: "Invoice 42", fromName: "Jane", state: "handled" })];
-		});
-		const open = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
-		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
-		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
-		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
-		const note = main.querySelector<HTMLInputElement>(".mailbox-composer input")!;
-		expect(note.placeholder).toBe("Tell Ada what to answer");
-		type(note, "Say we pay on Friday.");
-		main.querySelector<HTMLFormElement>(".mailbox-composer")!.requestSubmit();
-		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-		expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: ada.id }));
-		const draft = "About the email «Invoice 42» from «Jane»: Say we pay on Friday.";
-		expect(send).toHaveBeenCalledWith(session.sessionId, draft);
-		const quote = (words: string) => ({
-			start: draft.indexOf(words),
-			end: draft.indexOf(words) + words.length,
-			source: "mail",
-			ref: thread(1),
-		});
-		expect(controller.draftQuotes(session.sessionId)).toEqual([quote("Invoice 42"), quote("Jane")]);
-		await vi.waitFor(() => expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada has your note"));
-		expect(main.querySelector<HTMLInputElement>(".mailbox-composer input")?.value).toBe("");
-	});
-
-	it("leaves a note that can't go from here waiting in the agent's thread", async () => {
-		const { main, controller } = await mailbox((mail) => {
-			mail.threads = [summary(1, { state: "handled" })];
-		});
-		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
-		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(false);
-		// Something is drafted there already: the note is added after it, and nothing is sent from here.
-		controller.conversation(session.sessionId).set({ draft: "Earlier words" });
-		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
-		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
-		type(main.querySelector<HTMLInputElement>(".mailbox-composer input")!, "Answer kindly.");
-		main.querySelector<HTMLFormElement>(".mailbox-composer")!.requestSubmit();
-		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
-		expect(send).not.toHaveBeenCalled();
-		expect(controller.conversation(session.sessionId).get().draft).toContain("Answer kindly.");
-	});
-
-	it("shows an account thread's mail only as who used the account, with nothing to tell", async () => {
+	it("shows an account thread's mail only as who used the account, with nothing to answer", async () => {
 		const { main } = await mailbox((mail) => {
 			mail.threads = [summary(1, { subject: undefined, account: { site: "wolt.example" }, state: "handled" })];
 			mail.reads[thread(1)] = {
@@ -417,7 +374,366 @@ describe("a thread", () => {
 		expect(main.querySelector(".mailbox-thread-head h1")?.textContent).toBe("Account mail · wolt.example");
 		expect(main.querySelector(".mailbox-message.is-account")?.textContent).toContain("Ada used the account");
 		expect(main.querySelector(".mailbox-text-body")).toBeNull();
+		expect(main.querySelector(".mailbox-answers")).toBeNull();
+	});
+});
+
+/** The answer being written at the foot of the open thread. */
+const reply = (main: HTMLElement) => main.querySelector<HTMLFormElement>(".mailbox-reply-box")!;
+/** Opens the list's first thread once its answers show. */
+async function openFirst(main: HTMLElement): Promise<void> {
+	await vi.waitFor(() => expect(lines(main)).not.toHaveLength(0));
+	lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+	await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+}
+/** Opens the list's first thread, starts a reply and gives it to the agent `name` with `words`. */
+async function answerAs(main: HTMLElement, name: string, words: string): Promise<void> {
+	await openFirst(main);
+	button(main, "Reply")!.click();
+	reply(main).querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+	menuRow(name).click();
+	type(reply(main).querySelector("textarea")!, words);
+	reply(main).requestSubmit();
+}
+
+describe("answering in a thread", () => {
+	// Jonas, 12 Nov 2026: "you should get similar answer/reply buttons as in the real gmail/outlook app, not the
+	// chatcomposer to tell other agents what to reply".
+	it("replies as the member themself, in the thread, to who sent the email", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		// Under the messages: the answers a mail app has, and no line to an agent. The email went to the company alone,
+		// so there is nobody else to reply to.
+		expect(texts(main, ".mailbox-answers button")).toEqual(["Reply", "Forward"]);
 		expect(main.querySelector(".mailbox-composer")).toBeNull();
+		button(main, "Reply")!.click();
+		// The answer opens in their place: to the sender, written by the member, from the thread's address.
+		expect(main.querySelector(".mailbox-answers")).toBeNull();
+		expect(reply(main).getAttribute("aria-label")).toBe("Reply");
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["sender1@outside.example"]);
+		expect(reply(main).querySelector(".mailbox-writer-name")?.textContent).toBe("You");
+		expect(main.querySelector(".mailbox-reply > .person-avatar")).not.toBeNull();
+		expect(reply(main).querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		expect(document.activeElement).toBe(reply(main).querySelector("textarea"));
+		expect(reply(main).querySelector("textarea")?.placeholder).toBe("Write your reply");
+		// With no text it is held, and says why.
+		reply(main).requestSubmit();
+		expect(reply(main).querySelector(".mailbox-write-error")?.textContent).toBe("The email needs its text");
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
+		type(reply(main).querySelector("textarea")!, "Yes, Friday works.\n");
+		expect(reply(main).querySelector(".mailbox-write-error")).toBeNull();
+		reply(main).requestSubmit();
+		expect(button(reply(main), "Sending")?.disabled).toBe(true);
+		expect(button(reply(main), "Discard")?.disabled).toBe(true);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		// One email, as an answer to the message: the cloud puts it in the thread.
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([
+			{
+				p_environment_id: profileA.environmentId,
+				p_request: {
+					sendId: expect.stringMatching(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
+					from: "hello@acme.example",
+					to: ["sender1@outside.example"],
+					subject: "Re: Subject 1",
+					text: "Yes, Friday works.",
+					replyTo: { kind: "received", id: "delivery-1" },
+				},
+			},
+		]);
+		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your reply is on its way");
+		// It stands in the thread as the member's own, and the answers are back under it, with the keyboard on Reply.
+		await vi.waitFor(() => expect(main.querySelectorAll(".mailbox-message")).toHaveLength(2));
+		const sent = [...main.querySelectorAll<HTMLElement>(".mailbox-message")].at(-1)!;
+		expect(sent.querySelector(".mailbox-from strong")?.textContent).toBe("You");
+		expect(sent.querySelector(".mailbox-text-body")?.textContent).toBe("Yes, Friday works.");
+		expect(sent.querySelector(".mailbox-status")?.textContent).toBe("Sending");
+		expect(document.activeElement).toBe(button(main, "Reply"));
+	});
+
+	it("replies to all: everyone else the email went to, the company's own addresses left out", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { subject: "Re: Lunch" })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						subject: "Re: Lunch",
+						to: ["Hello <hello@acme.example>", "Bo Berg <bo@outside.example>", "SENDER1@outside.example"],
+						cc: ["carla@outside.example", "hello+orders@acme.example", "undisclosed-recipients:;"],
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		expect(texts(main, ".mailbox-answers button")).toEqual(["Reply", "Reply all", "Forward"]);
+		button(main, "Reply all")!.click();
+		expect(reply(main).getAttribute("aria-label")).toBe("Reply all");
+		const rows = [...reply(main).querySelectorAll<HTMLElement>(".mailbox-write-to")];
+		expect(rows.map((row) => row.querySelector(".mailbox-write-label")?.textContent)).toEqual(["To", "Cc"]);
+		expect(texts(rows[0]!, ".mailbox-chip-text")).toEqual(["sender1@outside.example", "bo@outside.example"]);
+		expect(texts(rows[1]!, ".mailbox-chip-text")).toEqual(["carla@outside.example"]);
+		// One more copy, typed and left in the field: it goes with the chips.
+		type(rows[1]!.querySelector("input")!, "dan@outside.example");
+		type(reply(main).querySelector("textarea")!, "See you all there.");
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		// The subject says "Re:" once.
+		expect(calls(fake, "qorpera_send_member_mail").map((call) => call.p_request)).toEqual([
+			expect.objectContaining({
+				to: ["sender1@outside.example", "bo@outside.example"],
+				cc: ["carla@outside.example", "dan@outside.example"],
+				subject: "Re: Lunch",
+				text: "See you all there.",
+				replyTo: { kind: "received", id: "delivery-1" },
+			}),
+		]);
+		// The member's own email is now the thread's newest: a reply to it follows it up, to who it went to.
+		await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+		button(main, "Reply")!.click();
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["sender1@outside.example", "bo@outside.example"]);
+		type(reply(main).querySelector("textarea")!, "One more thing.");
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_send_member_mail")).toHaveLength(2));
+		expect(calls(fake, "qorpera_send_member_mail")[1]?.p_request).toMatchObject({
+			to: ["sender1@outside.example", "bo@outside.example"],
+			subject: "Re: Lunch",
+			replyTo: { kind: "sent", id: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+		});
+		expect(calls(fake, "qorpera_send_member_mail")[1]?.p_request).not.toHaveProperty("cc");
+	});
+
+	// Review of #1716, round 1: an email from an address nobody reads got its answer there.
+	it("answers where the email asks its answers to go, in both modes, and its sender when it asks nowhere else", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1), summary(2)];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						fromAddress: "no-reply@vendor.example",
+						// A name beside the address, the company's own address, and the same address again.
+						replyTo: ["Support <support@vendor.example>", "hello@acme.example", "SUPPORT@vendor.example"],
+						to: [ADDRESS.address, "bo@outside.example", "support@vendor.example"],
+						cc: ["no-reply@vendor.example"],
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["support@vendor.example"]);
+		button(reply(main), "Discard")!.click();
+		// To all: where it asks first, then everyone else it went to; its sender has only the copy it had.
+		button(main, "Reply all")!.click();
+		const rows = [...reply(main).querySelectorAll<HTMLElement>(".mailbox-write-to")];
+		expect(texts(rows[0]!, ".mailbox-chip-text")).toEqual(["support@vendor.example", "bo@outside.example"]);
+		expect(texts(rows[1]!, ".mailbox-chip-text")).toEqual(["no-reply@vendor.example"]);
+		// An email that asks for nowhere else is answered to its sender.
+		button(main, "Back to Inbox")!.click();
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+		button(main, "Reply")!.click();
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["sender2@outside.example"]);
+	});
+
+	// Review of #1716, round 1: with the thread's mailbox paused, the answer left from another one, and a retry after a
+	// lost answer was a new email.
+	it("sends an answer from its thread's address, whatever happens to that address meanwhile", async () => {
+		const orders = { ...ADDRESS, address: "orders@acme.example", handledBy: [], routines: [] };
+		const { main, fake, controller } = await mailbox((mail) => {
+			// The thread's own mailbox is paused from the start, and another one is in use.
+			mail.addresses = [orders, { ...ADDRESS, status: "paused" }];
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		expect(reply(main).querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		type(reply(main).querySelector("textarea")!, "Yes.");
+		// The cloud refuses a paused mailbox, and says so: no other address stands in.
+		fake.sendError = { message: "The mailbox is paused; resume it to send from it", code: "0A000" };
+		reply(main).requestSubmit();
+		await vi.waitFor(() =>
+			expect(reply(main).querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		// It is resumed, and then removed from what the page knows: the answer is still the same email, from the same
+		// address, under the same send id.
+		const mail = controller.store.get().mail!;
+		controller.store.set({
+			mail: { ...mail, addresses: mail.addresses.filter((each) => each.address === orders.address) },
+		});
+		expect(reply(main).querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		fake.sendError = undefined;
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		const requests = calls(fake, "qorpera_send_member_mail").map(
+			(call) => call.p_request as { sendId: string; from: string },
+		);
+		expect(requests.map((request) => request.from)).toEqual(["hello@acme.example", "hello@acme.example"]);
+		expect(requests[1]?.sendId).toBe(requests[0]?.sendId);
+	});
+
+	it("forwards a message as a new email of the member's own, its text under their words", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Forward")!.click();
+		expect(reply(main).getAttribute("aria-label")).toBe("Forward");
+		// Nobody has it yet, so the keyboard is on who it goes to; an agent sends no email on, so it has no Writer chip.
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual([]);
+		expect(document.activeElement).toBe(reply(main).querySelector("[data-focus-key='reply-to']"));
+		expect(reply(main).querySelector(".mailbox-writer")).toBeNull();
+		const text = reply(main).querySelector("textarea")!;
+		expect(text.value.split("\n").slice(0, 8)).toEqual([
+			"",
+			"",
+			"---------- Forwarded message ----------",
+			"From: Sender 1 <sender1@outside.example>",
+			expect.stringMatching(/^Date: .+/),
+			"Subject: Subject 1",
+			"To: hello@acme.example",
+			"",
+		]);
+		expect(text.value.endsWith("Hello from sender 1.")).toBe(true);
+		reply(main).requestSubmit();
+		expect(reply(main).querySelector(".mailbox-write-error")?.textContent).toBe("Add who the email goes to");
+		type(reply(main).querySelector<HTMLInputElement>("[data-focus-key='reply-to']")!, "boss@outside.example ");
+		type(text, `For you.${text.value}`);
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		const [request] = calls(fake, "qorpera_send_member_mail").map(
+			(call) => call.p_request as Record<string, unknown>,
+		);
+		expect(request).toMatchObject({ to: ["boss@outside.example"], subject: "Fwd: Subject 1" });
+		expect(request).not.toHaveProperty("replyTo");
+		expect(String(request?.text).startsWith("For you.\n\n---------- Forwarded message ----------\n")).toBe(true);
+		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your email is on its way");
+	});
+
+	it("gives a reply to an agent from its Writer chip, quoting the email's subject and sender", async () => {
+		const { main, controller, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { subject: "Invoice 42", fromName: "Jane", state: "handled" })];
+		});
+		const open = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		reply(main).querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+		menuRow("Ada").click();
+		// The agent answers whoever it finds right: the answer keeps its text alone, and says who writes it.
+		expect(reply(main).querySelector(".mailbox-writer-name")?.textContent).toBe("Ada");
+		expect(main.querySelector(".mailbox-reply > .figure")).not.toBeNull();
+		expect(reply(main).querySelector(".mailbox-write-to")).toBeNull();
+		expect(reply(main).querySelector("textarea")?.placeholder).toBe("What should it say?");
+		expect(reply(main).querySelector(".mailbox-write-foot .mailbox-muted")?.textContent).toBe(
+			"Ada writes and sends it",
+		);
+		type(reply(main).querySelector("textarea")!, "Say we pay on Friday.");
+		expect(button(reply(main), "Ask Ada to write it")?.type).toBe("submit");
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+		expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: ada.id }));
+		const draft = "Please answer the email «Invoice 42» from «Jane»: Say we pay on Friday.";
+		expect(send).toHaveBeenCalledWith(session.sessionId, draft);
+		const quote = (words: string) => ({
+			start: draft.indexOf(words),
+			end: draft.indexOf(words) + words.length,
+			source: "mail",
+			ref: thread(1),
+		});
+		expect(controller.draftQuotes(session.sessionId)).toEqual([quote("Invoice 42"), quote("Jane")]);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada is writing it"));
+		// The member sent no email themself, and the answer has left the thread's foot.
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
+		expect(main.querySelector(".mailbox-reply")).toBeNull();
+		expect(texts(main, ".mailbox-answers button")).toEqual(["Reply", "Forward"]);
+	});
+
+	it("leaves a note that can't go from here waiting in the agent's thread", async () => {
+		const { main, controller } = await mailbox((mail) => {
+			mail.threads = [summary(1, { state: "handled" })];
+		});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(false);
+		// Something is drafted there already: the note is added after it, and nothing is sent from here.
+		controller.conversation(session.sessionId).set({ draft: "Earlier words" });
+		await answerAs(main, "Ada", "Answer kindly.");
+		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
+		expect(send).not.toHaveBeenCalled();
+		expect(controller.conversation(session.sessionId).get().draft).toContain("Answer kindly.");
+	});
+
+	it("keeps an answer with its thread while the member reads elsewhere, until it is sent or let go", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1), summary(2)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		type(reply(main).querySelector("textarea")!, "Half an answer");
+		// Another thread has no answer of its own.
+		button(main, "Back to Inbox")!.click();
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+		expect(main.querySelector(".mailbox-reply")).toBeNull();
+		// Back in the first, it is as it was left.
+		button(main, "Back to Inbox")!.click();
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).not.toBeNull());
+		expect(reply(main).querySelector("textarea")?.value).toBe("Half an answer");
+		// The bin lets it go: the answers are back, with the keyboard on the one it was.
+		button(reply(main), "Discard")!.click();
+		expect(main.querySelector(".mailbox-reply")).toBeNull();
+		expect(document.activeElement).toBe(button(main, "Reply"));
+		button(main, "Reply")!.click();
+		expect(reply(main).querySelector("textarea")?.value).toBe("");
+	});
+
+	it("keeps an answer the cloud did not take, back in its thread, and sends it again as the same email", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		type(reply(main).querySelector("textarea")!, "Yes.");
+		let release = () => {};
+		fake.sendHold = new Promise((resolve) => {
+			release = resolve;
+		});
+		fake.sendError = { message: "The mailbox is paused; resume it to send from it", code: "0A000" };
+		reply(main).requestSubmit();
+		// The member goes back to the Inbox while it is on its way; refused, it is in front of them again.
+		button(main, "Back to Inbox")!.click();
+		expect(main.querySelector(".mailbox-thread")).toBeNull();
+		release();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		expect(reply(main).querySelector("textarea")?.value).toBe("Yes.");
+		expect(document.activeElement).toBe(button(reply(main), "Send"));
+		// Sent again as it stands it is the same email; changed, it is a new one.
+		fake.sendHold = undefined;
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_send_member_mail")).toHaveLength(2));
+		await vi.waitFor(() => expect(button(reply(main), "Send")?.disabled).toBe(false));
+		type(reply(main).querySelector("textarea")!, "Yes, gladly.");
+		fake.sendError = undefined;
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		const ids = calls(fake, "qorpera_send_member_mail").map((call) => (call.p_request as { sendId: string }).sendId);
+		expect(ids[1]).toBe(ids[0]);
+		expect(ids[2]).not.toBe(ids[0]);
 	});
 });
 
@@ -1566,7 +1882,7 @@ describe("Sent, Addresses and Write", () => {
 			expect(rule(fixed)).toContain("flex: none;");
 	});
 
-	it("draws no Send, note, Write or Change for a viewer", async () => {
+	it("draws no Send, answer, Write or Change for a viewer", async () => {
 		const { main } = await mailbox((mail) => {
 			mail.threads = [summary(1, { state: "waiting" })];
 			mail.waiting = [waitingItem(id(901))];
@@ -1575,7 +1891,9 @@ describe("Sent, Addresses and Write", () => {
 		expect(main.querySelector(".mailbox-actions button")).toBeNull();
 		expect(button(main, "Write")).toBeUndefined();
 		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
-		expect(main.querySelector(".mailbox-composer")).toBeNull();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-message")).not.toBeNull());
+		expect(main.querySelector(".mailbox-answers")).toBeNull();
+		expect(button(main, "Reply")).toBeUndefined();
 		button(main, "Back to Inbox")!.click();
 		tab(main, "Addresses");
 		expect(button(main, "Change")).toBeUndefined();
@@ -1773,9 +2091,7 @@ describe("what a member sees before answering, and who did what", () => {
 			return id(880);
 		});
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
-		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
-		type(main.querySelector<HTMLInputElement>(".mailbox-composer input")!, "Say we pay on Friday.");
-		main.querySelector<HTMLFormElement>(".mailbox-composer")!.requestSubmit();
+		await answerAs(main, "Ada", "Say we pay on Friday.");
 		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
 		expect(send).not.toHaveBeenCalled();
 		expect(controller.conversation(session.sessionId).get().draft).toContain("and also delete the file");
