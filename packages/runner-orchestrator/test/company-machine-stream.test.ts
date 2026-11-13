@@ -182,6 +182,14 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect(() => new RfbReader(() => {}).feed(Buffer.from("RFB 003.003\n"))).toThrow("RFB_VERSION_REFUSED");
 	});
 
+	/** A whole 1600 x 1000 screen as Xvnc sends it: 28 bands of raw pixels, 6.4 MB. */
+	const update28 = () =>
+		update(
+			...Array.from({ length: 28 }, (_, n) =>
+				rawRect(0, n * 36, 1600, n === 27 ? 1000 - 27 * 36 : 36, [n, 2 * n, 3 * n]),
+			),
+		);
+
 	it("reads a whole large screen that comes in many small pieces in time linear in its size (the real machine's first picture took 1.6 s)", () => {
 		const events: {
 			kind: string;
@@ -190,21 +198,59 @@ describe("a desktop's live picture (20260930745000)", () => {
 		const reader = new RfbReader((event) => events.push(event as never));
 		reader.feed(Buffer.concat(serverHello(1600, 1000)));
 		// The whole screen as Xvnc sends it: 28 bands of raw pixels, 6.4 MB, given in 4 KiB pieces.
-		const bands = Array.from({ length: 28 }, (_, n) =>
-			rawRect(0, n * 36, 1600, n === 27 ? 1000 - 27 * 36 : 36, [n, 2 * n, 3 * n]),
-		);
-		const bytes = update(...bands);
+		const bytes = update28();
 		const began = performance.now();
 		for (let at = 0; at < bytes.byteLength; at += 4096) reader.feed(bytes.subarray(at, at + 4096));
 		const took = performance.now() - began;
 		const last = events.at(-1);
 		expect(last?.kind).toBe("update");
 		expect(last?.rects?.map((rect) => [rect.y, rect.height])).toEqual(
-			bands.map((_, n) => [n * 36, n === 27 ? 1000 - 27 * 36 : 36]),
+			Array.from({ length: 28 }, (_, n) => [n * 36, n === 27 ? 1000 - 27 * 36 : 36]),
 		);
 		expect(last?.rects?.[13]?.pixels.equals(fill(1600, 36, [13, 26, 39]))).toBe(true);
 		// Before: every piece walked the headers again, copying all that came before each (minutes for this).
 		expect(took).toBeLessThan(1500);
+	});
+
+	it("ends the relay on an update larger than this screen can need, before its payload is buffered (review r1 F1 of #1746)", () => {
+		// The desktop's own account, and any page it runs, can drive that VNC server: every byte from it is hostile.
+		const reader = new RfbReader(() => {});
+		reader.feed(Buffer.concat(serverHello(64, 40)));
+		// 65,535 areas of 4096 x 4096 each: refused at the count, before a byte of payload is held.
+		const many = Buffer.alloc(4);
+		many.writeUInt16BE(0xffff, 2);
+		expect(() => reader.feed(many)).toThrow("RFB_UPDATE_TOO_LARGE");
+		// One area far larger than the screen, declared in a header and never sent: refused at the header.
+		const big = new RfbReader(() => {});
+		big.feed(Buffer.concat(serverHello(64, 40)));
+		const head = Buffer.alloc(4 + 12);
+		head.writeUInt16BE(1, 2);
+		head.writeUInt16BE(4096, 8);
+		head.writeUInt16BE(4096, 10);
+		head.writeInt32BE(0, 12);
+		expect(() => big.feed(head)).toThrow("RFB_UPDATE_TOO_LARGE");
+		// Many areas that are each small but together far past the screen, given in small transport pieces: refused
+		// while the headers are walked, so the pieces that follow are never buffered.
+		const sum = new RfbReader(() => {});
+		sum.feed(Buffer.concat(serverHello(64, 40)));
+		const rects = 600;
+		const update = Buffer.concat([
+			(() => {
+				const count = Buffer.alloc(4);
+				count.writeUInt16BE(rects, 2);
+				return count;
+			})(),
+			...Array.from({ length: rects }, () => rawRect(0, 0, 64, 40, [1, 2, 3])),
+		]);
+		expect(() => {
+			for (let at = 0; at < update.byteLength; at += 4096) sum.feed(update.subarray(at, at + 4096));
+		}).toThrow("RFB_UPDATE_TOO_LARGE");
+		// A whole screen of a large desktop still passes: 28 bands of 1600 x 1000, in small pieces.
+		const fine = new RfbReader(() => {});
+		fine.feed(Buffer.concat(serverHello(1600, 1000)));
+		const whole = update28();
+		for (let at = 0; at < whole.byteLength; at += 4096) fine.feed(whole.subarray(at, at + 4096));
+		expect(fine.width).toBe(1600);
 	});
 
 	it("encodes an area as a PNG of its own pixels, and the pointer as RGBA with its mask", async () => {
@@ -496,6 +542,35 @@ describe("a desktop's live picture (20260930745000)", () => {
 				.map((message) => `${message.body.readUInt16BE(0)}x${message.body.readUInt16BE(2)}`),
 		).toEqual(["64x40", "32x20"]);
 		expect(sink.messages.some((message) => message.type === STREAM_CURSOR)).toBe(false);
+	});
+
+	it("lets cancelling interrupt a send the member's browser is not reading, and sends nothing after it (review r1 F3 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		const ended = vi.fn();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ended });
+		// A browser that answers pings but never reads what it is sent: its sink's send never resolves.
+		let blocked = 0;
+		const sink = {
+			send: vi.fn(async () => {
+				blocked++;
+				await new Promise<void>(() => {});
+			}),
+		};
+		const stop = new AbortController();
+		const watching = stream.watch(async () => "ok", sink, stop.signal);
+		desktop.send(update(rawRect(0, 0, 8, 8, [1, 2, 3])));
+		await vi.waitFor(() => expect(blocked).toBe(1));
+		// The member closes the window (or the pass ended and the executor cancels): the watcher does not wait for that
+		// socket, and nothing more is sent.
+		stop.abort();
+		expect(await watching).toBe("closed");
+		desktop.send(update(rawRect(8, 8, 8, 8, [4, 5, 6])));
+		await settle();
+		expect(sink.send).toHaveBeenCalledTimes(1);
+		// The last watcher is gone, so the relay was let go with it.
+		await vi.waitFor(() => expect(ended).toHaveBeenCalledTimes(1));
+		expect(stream.ended).toBe("idle");
+		expect(desktop.state.aborted).toBe(true);
 	});
 
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {

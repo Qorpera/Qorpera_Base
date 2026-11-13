@@ -55,17 +55,23 @@ function tokenPart(segment: string): Record<string, unknown> | undefined {
 }
 
 /**
- * Whether a bearer is a member's own access token of this project that has not run out (step 2 of the member's
- * pointer, 20260930745000; v242 release prep), read here alone: three base64url parts, a JSON header naming one of the
- * project's signing algorithms, and claims of a signed-in member: role and audience `authenticated`, a user id, this
- * project's issuer, and an expiry still ahead. The project's publishable (anon) key, a service key, another project's
- * token, an expired one or any other string is no member's. Its signature is not checked here (no key, no call out):
- * the executor has the database (PostgREST) check it before any SQL runs for a pass's begin, and a move or a live
- * picture's ticket is matched in its memory against the pass that token began (no SQL, no call). So nobody's request
- * leaves the bridge, and a forged one that looks right costs the executor one refused call to PostgREST, within its
- * own bound on begins.
+ * Whether a bearer is a member's own access token that has not run out (step 2 of the member's pointer,
+ * 20260930745000), read here alone: three base64url parts, a JSON header naming one of the project's signing
+ * algorithms, and the claims of a signed-in member: role and audience `authenticated`, a user id, and an expiry still
+ * ahead. The project's publishable (anon) key, a service key, an expired token or any other string is no member's.
+ *
+ * `issuer` is checked only when the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): it is the auth service's own
+ * `API_EXTERNAL_URL` plus `/auth/v1`, which lives in the stack's environment and not in this repo, so only the
+ * deployment can tell it and nothing here derives it (review r1 F2 of #1746: deriving it from `SUPABASE_URL`, the
+ * address the functions reach the stack at, would have refused every real member token). Unnamed, every other check
+ * still holds and no issuer is assumed.
+ *
+ * The signature is not checked here (no key, no call out): the executor has the database (PostgREST) check it before
+ * any SQL runs for a pass's begin, and a move or a live picture's ticket is matched in the executor's memory against
+ * the pass that token began (no SQL, no call). So nobody's request leaves the bridge, and a forged one that looks
+ * right costs the executor one refused call to PostgREST, within its own bound on begins.
  */
-export function memberTokenShaped(authorization: string, issuer: string, nowSeconds: number): boolean {
+export function memberTokenShaped(authorization: string, issuer: string | undefined, nowSeconds: number): boolean {
 	const parts = /^Bearer ([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,1024})$/.exec(authorization);
 	if (!parts || authorization.length > 8192) return false;
 	const header = tokenPart(parts[1] as string);
@@ -77,7 +83,7 @@ export function memberTokenShaped(authorization: string, issuer: string, nowSeco
 	return (
 		claims.role === "authenticated" &&
 		(audience === "authenticated" || (Array.isArray(audience) && audience.includes("authenticated"))) &&
-		claims.iss === issuer &&
+		(issuer === undefined || claims.iss === issuer) &&
 		typeof claims.sub === "string" &&
 		MEMBER_ID.test(claims.sub) &&
 		Number.isSafeInteger(claims.exp) &&
@@ -104,8 +110,9 @@ export interface MemberCompanyGatewayOptions {
 	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
 	 * signed out can make the bridge hold a body. */
 	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
-	/** The issuer of the project's member tokens (`<project URL>/auth/v1`), for the routes that read a member's token
-	 * here (memberTokenShaped). Without it those routes are not served. */
+	/** The auth service's own issuer (its `API_EXTERNAL_URL` plus `/auth/v1`), when the deployment names one
+	 * (`QORPERA_MEMBER_TOKEN_ISSUER`): a token of another issuer is then refused here. Never derived from the address
+	 * the functions reach the stack at, which is not the issuer (review r1 F2 of #1746). */
 	memberTokenIssuer?: string;
 	/** The clock, in milliseconds (the tests'). */
 	now?: () => number;
@@ -341,19 +348,17 @@ export async function forwardMemberCompanyGateway(
 		return refuse(400, "Member gateway request could not be read");
 	const size = Number(length ?? "0");
 	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
-	// A route that asks no auth service takes only a member's own token of this project that has not run out: nobody's
-	// request goes no further than here (20260930745000).
-	if (policy.memberToken) {
-		if (!options.memberTokenIssuer) return refuse(503, "Member gateway is not configured");
-		if (
-			!memberTokenShaped(
-				request.headers.get("authorization") ?? "",
-				options.memberTokenIssuer,
-				Math.floor((options.now ?? Date.now)() / 1000),
-			)
+	// A route that asks no auth service takes only a member's own token that has not run out, and of the issuer the
+	// deployment names when it names one: nobody's request goes further than here (20260930745000).
+	if (
+		policy.memberToken &&
+		!memberTokenShaped(
+			request.headers.get("authorization") ?? "",
+			options.memberTokenIssuer,
+			Math.floor((options.now ?? Date.now)() / 1000),
 		)
-			return refuse(401, "Member sign-in is required");
-	}
+	)
+		return refuse(401, "Member sign-in is required");
 	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
 		let signedIn: boolean;
 		try {

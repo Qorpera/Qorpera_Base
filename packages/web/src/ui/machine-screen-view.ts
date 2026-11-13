@@ -692,8 +692,14 @@ export class MachineScreenView {
 		return drawn.catch(() => false);
 	}
 
-	/** The live picture ended (20260930745000): the picture stays as it was drawn, the pointer is the page's own again. */
+	/**
+	 * The live picture ended (20260930745000): the picture stays as it was drawn, the pointer is the page's own again,
+	 * and anything of that stream still being decoded draws nothing. Without this, an area that was decoding when the
+	 * socket closed could land after the window's next look and paint the screen as it was before (review r1 F4 of
+	 * #1746).
+	 */
 	streamEnded(): void {
+		this.#cleared++;
 		this.#cursor = "";
 		this.#showCursor();
 	}

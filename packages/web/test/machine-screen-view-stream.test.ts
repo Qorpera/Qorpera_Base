@@ -12,6 +12,10 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
+/** Each view's canvas, for the tests that read it after the view was handed around. */
+const canvases = new WeakMap<MachineScreenView, HTMLCanvasElement>();
+const canvasOf = (screen: MachineScreenView) => canvases.get(screen) as HTMLCanvasElement;
+
 function view() {
 	const drawn: [string, number, number][] = [];
 	const context = {
@@ -38,6 +42,7 @@ function view() {
 		return { x, y, width, height, png } satisfies MachineStreamRect;
 	};
 	const canvas = mount.querySelector<HTMLCanvasElement>(".machine-screen-canvas")!;
+	canvases.set(screen, canvas);
 	return { screen, area, drawn, canvas };
 }
 
@@ -85,6 +90,29 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(await late).toBe(false);
 		expect(drawn).toEqual([]);
 		expect(screen.shown).toBe(false);
+	});
+
+	it("draws nothing of a stream that ended, however late its areas decode (review r1 F4 of #1746)", async () => {
+		const { screen, area, drawn } = view();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		let release: () => void = () => {};
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const late = screen.stream({ kind: "rects", rects: [area("late", 0, 0, 10, 10, slow)] });
+		// The socket closes while that area is still decoding, and the window's next look paints the screen as it is.
+		screen.streamEnded();
+		expect(await screen.show(new Blob(["look"], { type: "image/png" }))).toBe(false);
+		release();
+		expect(await late).toBe(false);
+		expect(drawn).toEqual([]);
+		// A pointer shape still being read when it ended paints nothing either.
+		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
+		screen.capture({ act: vi.fn() });
+		const shape = screen.stream({ kind: "cursor", hotX: 1, hotY: 1, width: 16, height: 16, png });
+		screen.streamEnded();
+		expect(await shape).toBe(false);
+		expect(canvasOf(screen).style.cursor).toBe("");
 	});
 
 	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {

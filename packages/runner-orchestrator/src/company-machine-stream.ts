@@ -249,6 +249,12 @@ class ByteQueue {
 	}
 }
 
+/** At most this many rectangles in one update: Xvnc sends a screen in bands (28 for 1600 x 1000), never thousands.
+ * RFB allows 65,535, each of up to MAX_SIDE², which is why a bound of our own is needed (review r1 F1 of #1746). */
+const MAX_RECTS = 1024;
+/** Besides the screen's own pixels, this much slack for an update's headers, its pointer shape and overlapping areas. */
+const UPDATE_SLACK_BYTES = 1024 * 1024;
+
 /** The largest screen a machine has (`desktop size`), and so the largest area a server may send. */
 const MAX_SIDE = 4096;
 
@@ -276,9 +282,20 @@ export class RfbReader {
 	get height(): number {
 		return this.#height;
 	}
+	/**
+	 * What one update of this screen may need at most: twice its own pixels (areas may overlap) and the slack above.
+	 * The desktop's own account, and anything a page runs there, can drive that VNC server, so every byte from it is
+	 * taken as hostile: an update that declares more than this, or bytes held past it, end the relay (review r1 F1).
+	 */
+	get #budget(): number {
+		return 2 * 4 * Math.max(this.#width * this.#height, 1) + UPDATE_SLACK_BYTES;
+	}
+
 	/** Takes the server's next bytes; answers what to send it now (the handshake's answers only). */
 	feed(chunk: Buffer): Buffer[] {
 		this.#queue.push(chunk);
+		// Nothing of an update is buffered past what this screen's update may need.
+		if (this.#queue.length > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
 		const out: Buffer[] = [];
 		for (;;) {
 			const step = this.#step();
@@ -367,6 +384,7 @@ export class RfbReader {
 		// Walk its rectangles' sizes first: nothing is taken until the whole update is there. The walk goes on from where
 		// the last piece left it.
 		const walk = this.#walk ?? { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
+		if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
 		this.#walk = walk;
 		for (; walk.index < walk.count; walk.index++) {
 			if (queue.length < walk.at + 12) return null;
@@ -379,6 +397,8 @@ export class RfbReader {
 			else if (encoding === -239) walk.at += 12 + w * h * 4 + Math.ceil(w / 8) * h;
 			else if (encoding === -223) walk.at += 12;
 			else throw new Error("RFB_UNKNOWN_ENCODING");
+			// The whole update's size is known as its headers are walked: refused before any more of it is buffered.
+			if (walk.at > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
 		}
 		if (queue.length < walk.at) return null;
 		this.#walk = null;
@@ -569,6 +589,28 @@ class Outbox {
 	}
 }
 
+/** Thrown when a stream was cancelled while a message was on its way to a member's sink (review r1 F3 of #1746). */
+const STREAM_CANCELLED = "STREAM_CANCELLED";
+
+/** Sends one message, and gives up the moment `signal` aborts: a browser that stops reading but keeps answering pings
+ * can hold a sink's send for as long as it likes, and must hold neither this watcher nor the relay (review r1 F3). The
+ * message may still be on the socket; nothing after it is sent. */
+async function sendOrStop(sink: DesktopStreamSink, message: Buffer, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) throw new Error(STREAM_CANCELLED);
+	let give: () => void = () => {};
+	const stopped = new Promise<never>((_, reject) => {
+		give = () => reject(new Error(STREAM_CANCELLED));
+		signal.addEventListener("abort", give, { once: true });
+	});
+	// The rejection is handled by the race below; nothing is left unhandled when the send wins.
+	stopped.catch(() => {});
+	try {
+		await Promise.race([sink.send(message), stopped]);
+	} finally {
+		signal.removeEventListener("abort", give);
+	}
+}
+
 /** Waits `ms`, or until `signal` aborts; leaves no timer behind either way. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
 	if (ms <= 0 || signal.aborted) return Promise.resolve();
@@ -680,12 +722,15 @@ export class DesktopStream {
 					continue;
 				}
 				if (done.aborted) continue;
-				sizeSent = await this.#send(watcher, upTo, sink, sizeSent);
+				sizeSent = await this.#send(watcher, upTo, sink, sizeSent, done);
 				watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
 				this.#trim();
 				await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
 			}
-		} catch {
+		} catch (error) {
+			// Cancelled while a message was on its way: the member closed it, or the executor is stopping.
+			if (error instanceof Error && error.message === STREAM_CANCELLED)
+				return this.#ended ?? (signal.aborted ? "closed" : "stopping");
 			return this.#ended ?? "STREAM_UNAVAILABLE";
 		} finally {
 			done.removeEventListener("abort", wakeOnEnd);
@@ -774,6 +819,7 @@ export class DesktopStream {
 		upTo: number,
 		sink: DesktopStreamSink,
 		sizeSent: { width: number; height: number },
+		signal: AbortSignal,
 	): Promise<{ width: number; height: number }> {
 		const updates = this.#ring.filter((update) => update.seq > watcher.sentSeq && update.seq <= upTo);
 		// A member who joined after the screen's size was told is told it first.
@@ -794,7 +840,7 @@ export class DesktopStream {
 			message[0] = STREAM_SIZE;
 			message.writeUInt16BE(size.width, 1);
 			message.writeUInt16BE(size.height, 3);
-			await sink.send(message);
+			await sendOrStop(sink, message, signal);
 		}
 		const kept = rects.filter((rect, index) => !rects.slice(index + 1).some((later) => covers(later, rect)));
 		let batch: Buffer[] = [];
@@ -805,12 +851,14 @@ export class DesktopStream {
 			const head = Buffer.alloc(3);
 			head[0] = STREAM_RECTS;
 			head.writeUInt16BE(count, 1);
-			await sink.send(Buffer.concat([head, ...batch]));
+			await sendOrStop(sink, Buffer.concat([head, ...batch]), signal);
 			batch = [];
 			batchBytes = 0;
 			count = 0;
 		};
 		for (const rect of kept) {
+			// Cancelled between batches: nothing more is encoded or sent.
+			if (signal.aborted) throw new Error(STREAM_CANCELLED);
 			const png = await this.#encoded(rect, () => encodePng(rect.width, rect.height, rect.pixels));
 			const head = Buffer.alloc(12);
 			head.writeUInt16BE(rect.x, 0);
@@ -824,6 +872,7 @@ export class DesktopStream {
 			count++;
 		}
 		await flush();
+		if (signal.aborted) throw new Error(STREAM_CANCELLED);
 		if (cursor) {
 			const shape = cursor;
 			const stride = Math.ceil(shape.width / 8);
@@ -844,7 +893,7 @@ export class DesktopStream {
 			head.writeUInt16BE(shape.width, 5);
 			head.writeUInt16BE(shape.height, 7);
 			head.writeUInt32BE(png.byteLength, 9);
-			await sink.send(Buffer.concat([head, png]));
+			await sendOrStop(sink, Buffer.concat([head, png]), signal);
 		}
 		return size;
 	}
