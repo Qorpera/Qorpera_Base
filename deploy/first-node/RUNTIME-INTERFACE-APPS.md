@@ -335,8 +335,12 @@ migration `20260930746000`, which only names the tool among a run's observations
   a link: each picture costs the member's plan. Exists and version are checked at the commit only, as company_write's.
 - **An app's room.** For a path under `apps/<name>/`, before the picture is made the tool lists the app as save_app
   does (`appFileSizes`, `APP_LIST_LIMIT`) and refuses (`APP_TOO_LARGE`) when one more file would pass 64, or when less
-  than 4 MiB of the 48 MiB of pictures and videos is left (the file the call replaces not counted). A picture that comes
-  back larger than the room left is refused before it is saved (it was made, and is not saved).
+  than 4 MiB of the 48 MiB of pictures and videos is left (the file the call replaces not counted). Once the picture is
+  made, the app is listed again and counted the same way with the picture's real bytes, since another run may have
+  filled it during the generation (`APP_TOO_LARGE`: made, not saved). The commit checks the target's version only (the
+  folder core has no precondition on a folder's listing for a write), so the moment between that listing and the commit
+  stays open, as between save_app's own listing and commit: the bound is held at each save and by the page's reader,
+  not by the commit.
 - **A repeat costs no picture within the run.** The tool keeps, for the run's life, what it answered per
   `operationKey` (the newest 256 calls, with the picture itself for the newest 4). A repeat of the same call is answered
   from there before anything is made: the same answer, the picture again when it is kept; a call whose outcome stayed

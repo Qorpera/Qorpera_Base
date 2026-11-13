@@ -177,6 +177,28 @@ export function cloudPictureTool(options: {
 			return unavailable(error, "saved");
 		}
 	};
+	/** An app's room for a picture at `app.inner`, as save_app counts the app from a listing of it: whether one more
+	 * file fits beside its files (the one at that path, which the picture replaces, not counted), and the bytes its
+	 * pictures and videos have left. Listed before the picture is made, and again before it is saved. */
+	const appRoom = async (
+		app: NonNullable<ReturnType<typeof appPath>>,
+		signal: AbortSignal,
+	): Promise<{ oneMoreFile: boolean; mediaLeft: number }> => {
+		const root = `${APPS_FOLDER}/${app.name}`;
+		const listed = await folder
+			.list(root, { recursive: true, limit: APP_LIST_LIMIT }, signal)
+			.catch((error) => unavailable(error, "saved"));
+		const sizes = appFileSizes(listed.entries, root);
+		sizes.delete(app.inner.toLowerCase());
+		const media = [...sizes].reduce(
+			(sum, [inner, bytes]) => (APP_MEDIA_KINDS.has(appFileKind(inner)) ? sum + bytes : sum),
+			0,
+		);
+		return {
+			oneMoreFile: listed.next === null && sizes.size + 1 <= APP_MAX_FILES,
+			mediaLeft: APP_VIDEOS_MAX_BYTES - media,
+		};
+	};
 	return {
 		name: "make_picture" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -301,21 +323,10 @@ export function cloudPictureTool(options: {
 			}
 			// A picture for an app goes in only while the app has room for it, as save_app counts the app's files: one
 			// more file, and a picture's room among its pictures and videos.
-			let room: number | undefined;
 			const app = appPath(request.path);
 			if (app) {
-				const root = `${APPS_FOLDER}/${app.name}`;
-				const listed = await folder
-					.list(root, { recursive: true, limit: APP_LIST_LIMIT }, context.signal)
-					.catch((error) => unavailable(error, "saved"));
-				const sizes = appFileSizes(listed.entries, root);
-				sizes.delete(app.inner.toLowerCase());
-				const media = [...sizes].reduce(
-					(sum, [inner, bytes]) => (APP_MEDIA_KINDS.has(appFileKind(inner)) ? sum + bytes : sum),
-					0,
-				);
-				room = APP_VIDEOS_MAX_BYTES - media;
-				if (listed.next !== null || sizes.size + 1 > APP_MAX_FILES || room < APP_PICTURE_ROOM_BYTES)
+				const room = await appRoom(app, context.signal);
+				if (!room.oneMoreFile || room.mediaLeft < APP_PICTURE_ROOM_BYTES)
 					throw new CloudToolRefusal(
 						`APP_TOO_LARGE: nothing was made; the app ${app.name} has no room for another picture (an app holds at most ${APP_MAX_FILES} files and ${APP_VIDEOS_MAX_BYTES / MIB} MiB of pictures and videos). Remove pictures it no longer shows with company_delete first, or save this one outside the app.`,
 					);
@@ -336,10 +347,6 @@ export function cloudPictureTool(options: {
 				return pictureRefusal(error);
 			}
 			if (made.png.byteLength > MAX_CLOUD_PICTURE_BYTES) pictureRefusal(new CloudPictureFailure("too_large"));
-			if (room !== undefined && made.png.byteLength > room)
-				throw new CloudToolRefusal(
-					`APP_TOO_LARGE: the picture was made but not saved; at ${made.png.byteLength} bytes it is more than the ${room} bytes the app ${app?.name} has left for pictures and videos. Remove pictures it no longer shows with company_delete first, or save it outside the app.`,
-				);
 			// The picture decodes as a PNG, or it is not saved; the model sees it fitted as company_read fits an image.
 			let view: FolderImageView;
 			try {
@@ -358,6 +365,20 @@ export function cloudPictureTool(options: {
 						? { revisedPrompt: made.revisedPrompt }
 						: { revisedPromptCut: true as const }
 					: {};
+			// The app is listed again once the picture is made, as late as a refusal can still begin nothing: another run may
+			// have filled it during the generation. The commit checks the target's version only, so the moment between this
+			// listing and the commit stays open, as it does between save_app's own listing and commit.
+			if (app) {
+				const room = await appRoom(app, context.signal);
+				if (!room.oneMoreFile || made.png.byteLength > room.mediaLeft) {
+					const full = room.oneMoreFile
+						? `at ${made.png.byteLength} bytes it is more than the ${Math.max(0, room.mediaLeft)} bytes left for pictures and videos`
+						: `one more file would pass the ${APP_MAX_FILES} an app holds`;
+					throw new CloudToolRefusal(
+						`APP_TOO_LARGE: the picture was made but not saved; the app ${app.name} has no room for it now, as it changed while the picture was made or was full already: ${full}. Remove pictures it no longer shows with company_delete first, or save it outside the app.`,
+					);
+				}
+			}
 			let content: CloudToolContent;
 			try {
 				content = await operations.execute({
