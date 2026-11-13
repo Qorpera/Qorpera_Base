@@ -1619,8 +1619,9 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 		inputSchema: { required: string[] };
 	}[];
 	const list = tools.find((tool) => tool.name === "company_list");
-	// The folder core pages a folder by its last path; no listing pins a snapshot.
-	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
+	// The folder core pages a folder by its last path; no listing pins a snapshot. Since keyholes S2 (12 November 2026)
+	// depth, glob, after and limit may be left out: one level, the first 500 entries.
+	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
@@ -3245,10 +3246,13 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
 	// and its description says how to choose them, so they moved again.
+	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
+	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
+	// again.
 	// On 13 November 2026 manage_code's from takes branch beside github too, and its schema says so (the import's
 	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
-	// once more.
+	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3295,9 +3299,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"691511855979ca3e33f491db46533da241300231b0d7af8304a71ccbb2506a8e",
+		"413603241623974ce678f2da5f29d477b212cb25a65570c769e8a53a50261250",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"5aed3950c73c23fd286212abfba3f887e7f90ea4538494ed8fab12e0d28f5929",
+		"f1a8171be8cbab82d88555d023f4b1b8090203f6d7178e3c5063b86635e310e0",
 	);
 });

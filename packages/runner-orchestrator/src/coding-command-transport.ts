@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+	CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandScope,
 	CODING_GUEST_HELPER_MAX_BYTES,
@@ -258,7 +259,13 @@ export class LxdCodingCommandTransport {
 		return this.#invoke("start", input.commandId, input.inputSha256, signal);
 	}
 	async read(scope: CloudCodingCommandScope, input: CloudCodingCommandRead, signal: AbortSignal) {
-		const read = parseCloudCodingCommandRead(input);
+		// The session's guest helper comes with the coding image and says nothing of its pages: it is asked for no more
+		// than the legacy 16,384 (keyholes S1). A smaller page answers the read as well.
+		const asked = parseCloudCodingCommandRead(input);
+		const read = parseCloudCodingCommandRead({
+			...asked,
+			limit: Math.min(asked.limit ?? 4096, CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES),
+		});
 		await this.#gate("read", scope, read.commandId, null, signal);
 		return this.#invoke("read", read.commandId, null, signal, read);
 	}

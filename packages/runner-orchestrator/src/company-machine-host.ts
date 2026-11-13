@@ -4,6 +4,8 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import {
+	CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
 	CLOUD_MACHINE_GUEST_PATHS,
@@ -961,6 +963,10 @@ export class LxdCompanyMachineHost {
 	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
 	 * busy since SQL last took that. */
 	readonly #guests = new Map<string, { bootId: string; sample: IdleRuleSample; busy: boolean }>();
+	/** Per placement: what its guest's helper said, when the executor last claimed its boot (`prepare`), it takes for a
+	 * page of a command's log (keyholes S1). A helper from before says nothing: it takes the legacy 16,384, and a read is
+	 * asked of it for no more. Its image's helper is the placement's for as long as the placement lives. */
+	readonly #pages = new Map<string, number>();
 	/** Per placement and file: the word last written into the machine for its desktop, the boot it was written on, whether
 	 * the write went through and how often it was tried (#desktopWord). */
 	readonly #desktopWords = new Map<
@@ -1322,6 +1328,12 @@ export class LxdCompanyMachineHost {
 			!UUID.test(prepared.bootId)
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
+		this.#pages.set(
+			e.placementId,
+			Number.isSafeInteger(prepared.pageBytes) && (prepared.pageBytes as number) >= 4
+				? Math.min(prepared.pageBytes as number, CLOUD_CODING_COMMAND_PAGE_BYTES)
+				: CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+		);
 		const bootId = prepared.bootId;
 		// A guest whose boot's folder ended (6d-2), whatever came of that folder: nothing of the boot is looked at,
 		// recorded or marked running, nor is its lease renewed (its commands are lost, and its watchdog stops any still
@@ -1980,6 +1992,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (released.state !== "released") throw new Error("COMPANY_MACHINE_RELEASE_INVALID");
 		this.#guests.delete(e.placementId);
+		this.#pages.delete(e.placementId);
 		this.#starting.delete(e.placementId);
 		this.#folders.delete(e.placementId);
 		this.#desktopWords.delete(e.placementId);
@@ -3048,14 +3061,20 @@ export class LxdCompanyMachineHost {
 			on = boot?.bootId;
 			args = ["start", commandId];
 		} else if (request.action === "cancel") args = ["cancel", commandId];
-		else
+		else {
+			// The guest is asked for no more than its helper said it takes; a smaller page answers the read as well.
+			const limit = String(
+				Math.min(
+					request.read.limit ?? 4096,
+					this.#pages.get(authority.placementId) ?? CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+				),
+			);
 			args = [
 				"read",
 				commandId,
-				...(request.read.tail
-					? ["tail", String(request.read.limit ?? 4096)]
-					: [String(request.read.offset ?? 0), String(request.read.limit ?? 4096)]),
+				...(request.read.tail ? ["tail", limit] : [String(request.read.offset ?? 0), limit]),
 			];
+		}
 		const helper = ["/usr/bin/node", PATHS.helper, nonce, ...args];
 		// A start that crosses its guest's restart (it was let in before, and reaches the next boot) fails in the guest's
 		// shell, and nothing starts (ON_BOOT).
