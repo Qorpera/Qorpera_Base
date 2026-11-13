@@ -251,7 +251,16 @@ function paint(entry: LiveMotion): void {
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced: reduced || atComputer });
 	if (desk) {
-		p.face = desk.face.map((face) => ({ ...face, y: face.y + 0.12 * desk.lean }));
+		// The darts stay inside the figure: as far toward an edge as its eyes have room (a heart's sit near its right).
+		const [left, right] = artwork.faces[entry.id] ?? [];
+		const spacing = left && right ? right.x - left.x : 1;
+		const lowest = left ? -Math.max(0, (left.x - 18) / spacing) : 0;
+		const highest = right ? Math.max(0, (82 - right.x) / spacing) : 0;
+		p.face = desk.face.map((face) => ({
+			...face,
+			x: Math.min(highest, Math.max(lowest, face.x)),
+			y: face.y + 0.12 * desk.lean,
+		}));
 		p.scaleX *= 1 + 0.03 * desk.lean;
 		p.scaleY *= 1 - 0.035 * desk.lean;
 		p.y += 1.8 * desk.lean;
