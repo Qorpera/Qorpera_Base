@@ -3248,7 +3248,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// and its description says how to choose them, so they moved again.
 	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
 	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
-	// again.
+	// again. On 13 November 2026 send_message and update_wall no longer say the final send is the last act (the answer
+	// first, the contract's 2026-11-13 amendment, proposed), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3295,9 +3296,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"413603241623974ce678f2da5f29d477b212cb25a65570c769e8a53a50261250",
+		"88a143aabe64c0b088e2a683aa317499463903c0394d346db9cbcff2dc309806",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"ccd9bd0f1dbabfd5f4c74393645ad1b0b8d7081ed4e34b4fa97d57fd0e766dad",
+		"87306c52916407f9a3230024ccf7556d953933d0079ca1bc23fd29fbefd19927",
 	);
 });

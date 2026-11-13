@@ -720,7 +720,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					// Contract 7.1: the final send is the member's answer. Nothing after it reaches them; only the run's
+					// bookkeeping still runs (the tool boundary, the 2026-11-13 amendment).
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};

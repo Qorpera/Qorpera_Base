@@ -971,9 +971,9 @@ function publicSendTool(): CloudNativeTool {
 		}),
 	};
 }
-it("ends the turn after the fence that follows a confirmed final send", async () => {
+it("leaves the turn open after a confirmed final send: the model ends it, and the marker stays with the host", async () => {
 	const { rows, observability } = observationCollector();
-	const { result, evidence } = run("final-send-ends-turn", { observability, tools: [publicSendTool()] });
+	const { result, evidence } = run("final-send-natural", { observability, tools: [publicSendTool()] });
 	await expect(result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
@@ -982,35 +982,78 @@ it("ends the turn after the fence that follows a confirmed final send", async ()
 	});
 	await observability.close();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
-	// The host-only marker never reaches the provider.
+	// The answer no longer ends the turn (the 2026-11-13 amendment): no interrupt is asked for.
+	expect(recorded.interrupt).toBeNull();
+	// The host-only markers never reach the provider.
 	expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
-	// The fence reply for the final send arrived before the interrupted completion.
 	expect(recorded.fenced).toBeTypeOf("object");
 	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
 		status: "succeeded",
 		errorCategory: null,
 	});
 });
-it("ends the turn after a final send even when its response held another call (contract 7.1)", async () => {
+/** A bookkeeping tool of the run's (CLOUD_AFTER_ANSWER_TOOLS), as the fixture calls it. */
+function wallTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }))): CloudNativeTool {
+	return {
+		name: "update_wall",
+		source: "company_file",
+		description: "Synthetic wall.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		parseArguments: () => ({}),
+		execute,
+	};
+}
+it("runs the run's bookkeeping after the answer, and the turn goes on until the model ends it", async () => {
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }));
+	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), wallTool(execute)] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toBeNull();
+	expect(execute).toHaveBeenCalledOnce();
+	const wall = JSON.parse(recorded.outputs[1].output);
+	expect(wall).toMatchObject({ status: "ok", content: { text: "PUBLIC_WALL" } });
+});
+it("lets the answer's own call again after it: its key replays it, and the turn goes on", async () => {
+	const send = publicSendTool();
+	const execute = vi.spyOn(send, "execute");
+	const { result, evidence } = run("final-send-replay", { tools: [send] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toBeNull();
+	expect(execute).toHaveBeenCalledTimes(2);
+	expect(recorded.outputs.map((output: { output: string }) => JSON.parse(output.output).status)).toEqual(["ok", "ok"]);
+});
+it("after the answer, runs no call that is not bookkeeping, and ends the turn at the next request", async () => {
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_NOTE" }));
 	const note: CloudNativeTool = {
 		name: "read_note",
 		source: "company_file",
 		description: "Synthetic note.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		parseArguments: () => ({}),
-		execute: async () => ({ kind: "text", value: "PUBLIC_NOTE" }),
+		execute,
 	};
 	const { result, evidence } = run("final-send-then-note", { tools: [publicSendTool(), note] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	expect(execute).not.toHaveBeenCalled();
+	const refused = JSON.parse(recorded.outputs[1].output);
+	expect(refused.status).toBe("denied");
+	expect(refused.content.text).toMatch(/^TOOL_UNAVAILABLE: the final send is made/);
 });
-it("still accepts a natural completion after requesting the turn end", async () => {
-	const { result, evidence } = run("final-send-natural", { tools: [publicSendTool()] });
+it("keeps the run delivered when the provider fails after its answer, and records the turn as failed", async () => {
+	const { rows, observability } = observationCollector();
+	const { result, evidence } = run("final-send-then-failed", { observability, tools: [publicSendTool()] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+	await observability.close();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	expect(recorded.interrupt).toBeNull();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "failed",
+		errorCategory: "transport_unavailable",
+	});
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
 });
 it("does not end the turn after a progress send", async () => {
 	const { result, evidence } = run("progress-send-no-end", { tools: [publicSendTool()] });
@@ -1019,7 +1062,7 @@ it("does not end the turn after a progress send", async () => {
 	expect(recorded.interrupt).toBeNull();
 });
 describe("a turn that ended with the run's closing act undone", () => {
-	it("gives the model one more turn in the same thread, told what is missing, and ends on its final send", async () => {
+	it("gives the model one more turn in the same thread, told what is missing, and takes its final send", async () => {
 		const { rows, observability } = observationCollector();
 		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
 		const { result, evidence } = run("correct-final", { observability, tools: [publicSendTool()], turnCorrection });
@@ -1038,8 +1081,8 @@ describe("a turn that ended with the run's closing act undone", () => {
 			threadId: "thread_fixture",
 			input: [{ type: "text", text: "You sent no final message. Send it now.", text_elements: [] }],
 		});
-		// The final send ends the added turn as it ends any turn, and its marker stays with the host.
-		expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture_2" });
+		// The final send leaves the added turn open as any turn, and the model ends it; its marker stays with the host.
+		expect(recorded.interrupt).toBeNull();
 		expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
 		// Each turn is observed by itself: the second counts what the thread used since it began, not the thread.
 		const turns = rows.filter((row) => row.operation === "model_turn" && row.phase === "finish");

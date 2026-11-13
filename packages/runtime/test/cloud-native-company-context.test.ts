@@ -5,8 +5,9 @@ import {
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
-import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
@@ -24,7 +25,11 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_AFTER_ANSWER_TOOLS,
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	CloudNativeToolBoundary,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
@@ -57,6 +62,27 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
+// The answer first (the contract's 2026-11-13 amendment, proposed): the words say once, with the reason, that only the
+// run's bookkeeping follows its final send, and name exactly the tools the boundary still runs then. Nothing says the
+// final send is the turn's last act any more.
+it("tells every run once that only its bookkeeping follows its final send, naming exactly the tools that still run", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const rule =
+		/After it only ([a-z_, ]+) run: keep that bookkeeping for after the final send, so the member gets the answer without waiting for it\./.exec(
+			instructions,
+		);
+	expect(rule).not.toBeNull();
+	expect(rule![1].split(/, | and /).sort()).toEqual([...CLOUD_AFTER_ANSWER_TOOLS].sort());
+	expect(instructions.split("keep that bookkeeping for after the final send")).toHaveLength(2);
+	expect(instructions).toContain(
+		"It is your last message, so make every file change, check and coworker message first.",
+	);
+	for (const text of [CLOUD_COMPANY_RUNTIME_INSTRUCTIONS, CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_WALL_TOOL_DESCRIPTION])
+		expect(text).not.toMatch(
+			/ends the turn at once|nothing (you do )?after it runs|before you send the message|before you write to them/,
+		);
 });
 
 // Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
@@ -1553,14 +1579,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
 // a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026). A change
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for the
+// answer first (the run's bookkeeping after its final send; the contract's 2026-11-13 amendment, proposed). A change
 // to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			instructions: "5bff0fd308aa5febe03ba4898348058d56cee3a07fe844242a2a73d9c139eb46",
 			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
@@ -1568,7 +1595,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "7a4324870a2dca042a478c6abad6a1bbbcb56277686a8ba40b1188591bbdc02e",
+			instructions: "59cab85f3399f945accb5b1ce81ded763c8c4b50b428cf2a7cd860883bad325f",
 			prompt: "de59a35b6dee5f88548a53006c57d72cbb811ace25785453fee81703bd777797",
 		},
 	],
@@ -1576,7 +1603,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			instructions: "5bff0fd308aa5febe03ba4898348058d56cee3a07fe844242a2a73d9c139eb46",
 			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],

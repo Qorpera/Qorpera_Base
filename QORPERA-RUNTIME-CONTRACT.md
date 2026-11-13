@@ -837,6 +837,12 @@ On a human-authored wake, the agent MUST:
 “On it” is acknowledgement, not delivery. A long job MUST NOT disappear, and
 raw command-by-command narration MUST NOT become the substitute.
 
+2026-11-13 amendment (proposed, not approved): the closing message is the last
+message, not the last act. After it a run may still keep its own bookkeeping
+(its wall, to-do list, apps layout and sidebar) and nothing else, so the member
+gets the answer without waiting for it. See the
+[2026-11-13 amendment](#2026-11-13-amendment-the-answer-first-then-the-bookkeeping).
+
 ### 7.2 Other wakes
 
 The wake envelope determines whether an initial or terminal send is required,
@@ -6630,6 +6636,35 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
    hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
    what it takes and says so for the rest.
+
+### 2026-11-13 amendment: the answer first, then the bookkeeping
+
+> **Proposed, not approved.** The agent's home program, build B2 (lanes/agent-box-20261113/B2-ANSWER-FIRST.md): the
+> lead's recommendation "let the agent answer before its bookkeeping", which Jonas agreed to with the program on 13
+> November 2026 ("I agree on almost all of this"). It amends 7.1 item 4 and the kernel's reading of it ("No governed
+> effect … after the final report"). It goes live with migration `20260930748000`, then the runtime bundle.
+
+1. **The closing message is the last message, not the last act.** A run's final send (a card's sentence counts as one)
+   still carries the result, a concrete blocker or the decision it needs, and everything it names is done before it.
+   After it the run may still change only its own bookkeeping: its wall (`update_wall`), its to-do list
+   (`manage_todo`), the apps drawer's layout (`organize_apps`) and the sidebar (`organize_sidebar`). Why: a chat turn
+   spent 5.7 s on average on these before its answer (8.5 s in the 30 of 45 measured turns that did any), and the
+   member waited through it.
+2. **Nothing else.** After the final the runtime runs no other call: one ends the turn without running, as the final
+   used to (the answer's own call again only replays it). The kernel admits only those four tools' folder receipts
+   after the final (each keyed with the tool's own name) and still refuses a second send, so nothing after the answer
+   speaks. The acknowledgement rule, a paused company, a cancelled worker and the wake's authority apply as before.
+3. **The turn ends when the model stops**, or at a call outside the four. No count or time caps it (the 24 September
+   2026 rule: no caps on a run's calls). A second message waits for the rest of it, as it waited for the same
+   bookkeeping before the answer.
+4. **A failure after the answer is not the run's failure.** When the model provider fails a turn after its final send,
+   the run ends as delivered; the turn's own record says it failed. A tool left unconfirmed, or a run cut off, ends as
+   before (a run cut off after its final is never resumed, 20260930547000).
+5. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
+   about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
+6. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
+   final send", the closing reminder, "Writing to people") and the descriptions of `send_message` and `update_wall`.
+   Nothing else; no tool's schema changes.
 
 ## 20. Enforcement matrix
 

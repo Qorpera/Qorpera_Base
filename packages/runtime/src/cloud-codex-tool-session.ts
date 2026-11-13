@@ -677,7 +677,7 @@ class CodexBoundaryRpc {
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
 	#modelRequestCount = 0;
-	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
+	/** Call ids whose fenced result closes the turn (a call after the answer that is not bookkeeping). */
 	readonly #turnEndCallIds = new Set<string>();
 	/** Calls that end the turn only if their model response made no other call. */
 	readonly #turnEndAloneCallIds = new Set<string>();
@@ -720,6 +720,8 @@ class CodexBoundaryRpc {
 	/** Releases the side thread starts held while the agent's thread starts: its bind, or the boundary's end. */
 	#threadStarted?: () => void;
 	#turnEndRequested = false;
+	/** The run made its final send (or a card's): the member has the answer, and the turn goes on for bookkeeping. */
+	#answered = false;
 	#finished = false;
 	#closed = false;
 
@@ -1825,8 +1827,9 @@ class CodexBoundaryRpc {
 			if (fresh.length === 1 && this.#turnEndAloneCallIds.has(fresh[0])) this.#turnEndCallIds.add(fresh[0]);
 		}
 		this.#observeFence(request);
-		// Contract 7.1: the final send closes the turn, and a worker's saved report is
-		// its last act. Once that result has been fenced, stop the provider instead of
+		// A worker's saved report is its last act, and after the answer (a final send)
+		// a call that is not the run's bookkeeping ends the turn (the 2026-11-13
+		// amendment). Once that result has been fenced, stop the provider instead of
 		// paying for a closing model round whose text is never delivered. The
 		// interrupted completion is a success.
 		if (
@@ -2138,17 +2141,18 @@ class CodexBoundaryRpc {
 			const boundary = this.#boundary;
 			if (!boundary) throw new Error("Native tool binding failed");
 			void boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
-				({ completesTurn, ...result }) => {
+				({ completesTurn, answered, ...result }) => {
 					this.#activeCalls--;
 					if (this.#finished) {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
-					// The host-only marker (a final send, a worker's saved report) never reaches
-					// the provider; the fence that follows this result is where the turn ends
-					// (see assertModelRequest).
+					// The host-only markers (a worker's saved report, a call after the answer that is not bookkeeping, a
+					// final send) never reach the provider; the fence that follows a turn-ending result is where the turn
+					// ends (see assertModelRequest).
 					if (completesTurn === "alone") this.#turnEndAloneCallIds.add(callId);
 					else if (completesTurn) this.#turnEndCallIds.add(callId);
+					if (answered) this.#answered = true;
 					this.#write({ id: message.id, result });
 				},
 				() => {
@@ -2183,13 +2187,30 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native completion binding failed");
 			this.#finished = true;
+			const error =
+				turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
+					? (turn.error as Record<string, unknown>)
+					: undefined;
 			if (turn.status === "interrupted" && turn.error == null && this.#turnEndRequested) {
 				this.#resolveCompleted();
+			} else if (
+				this.#answered &&
+				turn.status !== "interrupted" &&
+				(turn.status !== "completed" || turn.error != null)
+			) {
+				// The member has the answer: the provider failed only the bookkeeping after it, which the agent's next run
+				// finds as it was left. The run stands as delivered, never as failed under its answer; the turn's own record
+				// says it failed (the 2026-11-13 amendment).
+				try {
+					this.#turnObservation?.finish("failed", {
+						errorCategory:
+							nativeErrorCategory(error?.codexErrorInfo) ?? this.#providerErrorCategory ?? "provider_failed",
+					});
+				} catch {
+					// Optional diagnostics cannot change native execution or authority.
+				}
+				this.#resolveCompleted();
 			} else if (turn.status !== "completed" || turn.error != null) {
-				const error =
-					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
-						? (turn.error as Record<string, unknown>)
-						: undefined;
 				this.#providerUsageSignal =
 					turn.status === "interrupted"
 						? null
