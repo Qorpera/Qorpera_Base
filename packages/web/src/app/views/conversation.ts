@@ -2874,9 +2874,11 @@ export class ConversationView {
 							]),
 				]);
 				// The agent's figure, waiting, as it stands beside its question in the questions dock: the head of a card
-				// that waits for the member.
+				// that waits for the member. It becomes a "?" for a question and a "!" for anything else that waits (a
+				// secret, a takeover, a draft), as in the rail.
+				const ask = item.request.surface === "question" ? "question" : "bang";
 				const waitingFigure = agent
-					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting" })
+					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
 					: undefined;
 				const card = keep(
 					item.id,

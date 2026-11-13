@@ -1,5 +1,10 @@
 # Assets Room: 2D Motion Studio, September 5, 2026
 
+> November 13, 2026: every eye is drawn now (`src/ui/figure-acts.ts`), and the recorded eye clips, the Working
+> stripes and their sequencer were removed (see `../README.md`, "Acting, and drawn eyes"). What follows describes
+> the studio's recording as the product used it until then; of its files, `motion.mjs`, `eye-tracks.mjs` and the
+> figures' artwork remain.
+
 Source: `Qorpera_Base-step2/.artifacts/qorpera-avatar-assets/status-2d`, linked
 to `Documents/Codex/2026-09-05/ope/outputs/qorpera-2d-motion`.
 

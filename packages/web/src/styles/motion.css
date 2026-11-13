@@ -151,7 +151,6 @@
 @keyframes figure-unfold { from { opacity: 0; transform: scale(0.3, 0.6); } }
 @keyframes disc-pop { from { transform: scale(0); } }
 .mention-arrived .rail-mention { animation: disc-pop var(--motion-spring) var(--ease-bounce) both; }
-.hand-arrived .rail-hand { animation: disc-pop var(--motion-spring) var(--ease-bounce) both; }
 
 /* A new hire or a new chat drops into the rail with a little squash. */
 :is(.rail-row, .rail-pin).is-arriving { animation: row-drop var(--motion-spring) var(--ease-out) both; }

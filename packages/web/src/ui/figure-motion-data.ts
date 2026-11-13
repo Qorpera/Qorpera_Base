@@ -1,13 +1,5 @@
-/* The 2D studio's recorded motion: about 950 KB of frame and eye data
- * (status-2d-v1's working-frames, eye-clips and eye-tracks) and the code that
- * reads it. figure-motion.ts loads this module on the first figure it mounts,
- * so it is its own chunk and never holds up the first screen; until it
- * arrives a figure shows its still artwork. */
+/* The 2D studio's motion sampler (status-2d-v1 `motion.mjs`): the symbolic states' poses (the writing dots, the
+ * "!" and the Done flourish) and each state's time. figure-motion.ts loads this module on the first figure it
+ * mounts, so it is its own chunk and never holds up the first screen; until it arrives a figure shows its
+ * still artwork. Every eye is drawn (ui/figure-acts.ts); the studio's recorded eye clips are no longer read. */
 export { localTime, pose, timelines } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
-export {
-	drawRecordedEyes,
-	drawWorkingStrokes,
-	loadRecordedMotion,
-	recordedEyesBox,
-} from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
-export { createWorkingSchedule, stepKey, workingStep } from "./working-sequence.ts";

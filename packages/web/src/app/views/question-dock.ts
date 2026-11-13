@@ -199,7 +199,7 @@ export class QuestionDock {
 			h(
 				"span",
 				{ class: "question-dock-figure" },
-				agentFigure(agent, name, { size: 34, activity: answered ? "Done" : "Waiting" }),
+				agentFigure(agent, name, { size: 34, activity: answered ? "Done" : "Waiting", ask: "question" }),
 			),
 			h(
 				"span",
@@ -276,7 +276,11 @@ export class QuestionDock {
 				"aria-expanded": "false",
 				onclick: () => this.#setFolded(false),
 			},
-			h("span", { class: "question-dock-figure" }, agentFigure(agent, name, { size: 26, activity: "Waiting" })),
+			h(
+				"span",
+				{ class: "question-dock-figure" },
+				agentFigure(agent, name, { size: 26, activity: "Waiting", ask: "question" }),
+			),
 			h("span", { class: "question-dock-pill-label" }, label),
 			count > 1 ? h("span", { class: "question-dock-badge" }, String(count)) : null,
 		);
