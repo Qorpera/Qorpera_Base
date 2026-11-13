@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { finish, pass, platformCommit, proveCompanyRun, sha256, textObjects } from "./prove-company-run.mjs";
+import { ENVIRONMENT, finish, pass, platformCommit, proveCompanyRun, sha256, textObjects } from "./prove-company-run.mjs";
 
 // The agent's home program, B2: the answer first, then the bookkeeping. End to end, through the real patched Codex and a
 // migrated database with 20260930748000 (scripts/prove-company-run.mjs says what is real and what stands in):
@@ -120,6 +120,17 @@ function stored(db, runId) {
 			where r.run_id = '${runId}'))::text`);
 }
 
+/** The agents' activity of this company, as the owner reads it (the web's read: a failed run of an agent is a card in
+ * its thread). Entries of every agent, each without its times. */
+function activityOf(db) {
+	const rows = db.json(`begin;
+		select set_config('request.jwt.claims', '{"role":"authenticated","sub":"92400000-0000-4000-8000-000000000001"}', true) \\g /dev/null
+		set local role authenticated;
+		select coalesce(public.qorpera_list_staff_execution_activity('${ENVIRONMENT}'), '[]'::jsonb)::text;
+		rollback;`);
+	return rows.map(({ updated_at, phase, ...entry }) => entry);
+}
+
 const at = (value) => Date.parse(value);
 const seconds = (ms) => (ms / 1000).toFixed(2);
 /** When the answer was confirmed and when the run's turn ended, from the first model request. */
@@ -211,6 +222,31 @@ async function main() {
 					`the record holds after the answer as before it: the run's log keeps all ${log.index.length} steps in order with each envelope, and the context views each of the ${outputs.length} outputs the model got`,
 				);
 				assert.equal(code.CLOUD_AFTER_ANSWER_TOOLS.has("update_wall") && code.CLOUD_AFTER_ANSWER_TOOLS.has("manage_todo"), true);
+				// The runner dies in the tail: the run's job fails after its answer. The member's thread shows the answer
+				// and nothing under it, because the agents' activity read no longer calls such a run needs_attention
+				// (20260930751000); the failure itself is kept for whoever looks after the platform.
+				assert.deepEqual(
+					activityOf(db).map((entry) => [entry.run_id, entry.activity]),
+					[[runId, "working"]],
+					"before it fails, the run is the agent's work",
+				);
+				db.direct("qorpera_fail_runner_job", {
+					p_runner_id: binding.runnerId,
+					p_session_token_sha256: "2".repeat(64),
+					p_job_id: binding.jobId,
+					p_lease_token_sha256: "3".repeat(64),
+					p_error: "Qorpera lost contact with this run",
+					p_retryable: false,
+				});
+				const listed = activityOf(db);
+				assert.deepEqual(listed, [], `nothing is listed for the agent: ${JSON.stringify(listed)}`);
+				const job = db.json(`select to_jsonb(job) - 'payload' - 'result' from public.qorpera_runner_jobs job
+					join public.qorpera_execution_runs run on run.job_id = job.id where run.id = '${runId}'`);
+				assert.equal(job.status, "failed");
+				assert(job.last_error, "the job keeps its error");
+				pass(
+					`the runner failing after the answer leaves nothing under it: the agent's activity read, as the owner reads it, listed the working run before and nothing after (the job is ${job.status} with its error kept for operators)`,
+				);
 				times.after = timing(state, run, sent);
 				pass(
 					`with ${seconds(ROUND_MS)} s model rounds the answer was confirmed ${seconds(times.after.answer)} s after the first model request; the turn ended at ${seconds(times.after.end)} s`,

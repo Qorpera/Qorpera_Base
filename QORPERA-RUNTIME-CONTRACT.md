@@ -6668,9 +6668,15 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    the run ends as delivered; the turn's own record says it failed, and a usage limit, rate limit or outage it met is
    recorded against the run's login as a failed run's is (section 17). A tool left unconfirmed, or a run cut off, ends
    as before (a run cut off after its final is never resumed, 20260930547000).
-5. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
+5. **A delivered answer carries no failure for the member.** A run that has sent its final message is no longer part of
+   its agent's activity for a member once it fails: the thread shows the answer alone, and the Try again that would
+   answer the same message twice is not offered. A failure with no answer still stands, and so does a delivered run
+   whose work left a proposal to decide, which is shown as that decision. The failure itself stays in the run's record,
+   its job's error and the operator views (migration 20260930751000). Why here: 7.1's tail widens that window from
+   0.13 s to a few seconds, and a duplicate answer to a member is worse than the seconds the tail saves.
+6. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
    about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
-6. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
+7. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
    final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
    `update_wall`. Nothing else; no tool's schema changes.
 
