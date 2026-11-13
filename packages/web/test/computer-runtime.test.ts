@@ -1854,7 +1854,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
 	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent;
 
-	it("stands its controls in the large view's titlebar, never on the desktop's picture, and under the picture again in the preview (v239 real test, 13 Nov 2026)", async () => {
+	it("stands its controls in the large view's own row above the picture, never on the desktop's picture, and on the picture again in the preview (v239 real test, 13 Nov 2026)", async () => {
 		const s = setup();
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1865,7 +1865,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		press(canvas(p), 10, 10);
 		await flush();
 		expect(entered(p)).toBe(true);
-		expect(control.closest(".screen-viewer-titlebar")).not.toBeNull();
+		expect(control.closest(".machine-screen-bar-slot")).not.toBeNull();
 		expect(control.closest(".screen-viewer-stage")).toBeNull();
 		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
 		await flush();
