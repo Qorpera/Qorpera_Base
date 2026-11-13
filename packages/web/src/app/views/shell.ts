@@ -2896,7 +2896,7 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	// group sets the group's colour.
 	const items: MenuEntry[] = isGroupKey(key)
 		? groupMenu(company, parts, groupIdOf(key))
-		: [moveToMenu(company, parts, key), lookMenu(company, parts, key, name), ...pageMenuItems(company, parts, tile)];
+		: [moveToMenu(company, parts, key), lookMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, tile);
@@ -2938,7 +2938,7 @@ function moveToMenu(company: CompanyController, parts: RailParts, key: string): 
 
 /** Colour for a group: the member's own colour for it and so for everything in it (Jonas, 12 Nov 2026), from the
  * palette row the apps' Icon and colour panel has; Default takes the member's choice away. */
-function groupColourMenu(company: CompanyController, parts: RailParts, id: string, name: string): MenuEntry {
+function groupColourMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry {
 	const key = groupKey(id);
 	return {
 		kind: "panel",
@@ -2968,7 +2968,7 @@ function groupColourMenu(company: CompanyController, parts: RailParts, id: strin
 /** Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the member's own colour (an app in a group: the group's) and
  * icon for an entry of the drawer, and for an agent's app its own icons and Generate icon. Each choice is written to
  * the member's own layout at once; the panel follows the store while it is open. */
-function lookMenu(company: CompanyController, parts: RailParts, key: string, name: string): MenuEntry {
+function lookMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
 	const appName = key.startsWith("app:") ? key.slice("app:".length) : undefined;
 	const tileOf = () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawerKey(key)}"]`);
 	return {
@@ -3054,7 +3054,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
 			},
 		},
-		groupColourMenu(company, parts, id, group.name),
+		groupColourMenu(company, parts, id),
 		{
 			label: t("Ungroup"),
 			icon: "grid",
