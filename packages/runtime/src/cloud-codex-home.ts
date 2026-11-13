@@ -90,6 +90,10 @@ export function cloudHomeRefusalWords(reason: string | undefined): string {
 const FS_READS = new Set(["fs/readFile", "fs/getMetadata", "fs/readDirectory", "fs/exists", "fs/canonicalize"]);
 /** An answer from the machine, read from the head of its line: which request of the model's it belongs to. */
 const ANSWER_ID = /^\{(?:"jsonrpc":"[^"]{1,16}",)?"id":(\d{1,20}|"[^"]{1,128}")/;
+/** The machine's word that one of the model's processes is closed, read from the head of its line: the process id,
+ * as JSON text, as the requests about it carry it. */
+const PROCESS_CLOSED =
+	/^\{(?:"jsonrpc":"[^"]{1,16}",)?"method":"process\/closed","params":\{"processId":("[^"]{1,64}"|\d{1,20})/;
 /** Past this a line the head did not answer is left alone: an answer is small, a command's output is not. */
 const ANSWER_READ_CHARS = 262_144;
 /** A call id as Codex names it, kept only when it is one. */
@@ -862,6 +866,9 @@ export class CloudCodexHome {
 					continue;
 				}
 				answered(line, connection.waiting);
+				// A process the machine closed is no longer one a loss could cut short.
+				const closed = PROCESS_CLOSED.exec(line.slice(0, 200))?.[1];
+				if (closed !== undefined) connection.live.delete(closed);
 				if (!connection.client.writable) break;
 				connection.client.write(`${line}\n`);
 			}
@@ -871,8 +878,10 @@ export class CloudCodexHome {
 			if (connection.stream === stream) connection.stream = undefined;
 			if (!connection.closing && !connection.client.destroyed) {
 				this.#failure ??= CLOUD_HOME_LOST;
-				// A call the machine never saw is told the home cannot be reached until a channel opens again.
-				this.#down = CLOUD_HOME_UNAVAILABLE;
+				// Until a channel opens again, a call the machine never saw is told why: its home was lost under the
+				// processes it had running (a poll of one is answered by Codex itself, never reaching this host), or,
+				// with none running, that its home cannot be reached.
+				this.#down = connection.live.size > 0 ? CLOUD_HOME_LOST : CLOUD_HOME_UNAVAILABLE;
 				for (const started of connection.live) connection.gone.add(started);
 				connection.live.clear();
 				remember(connection.gone, MAX_REMEMBERED);
