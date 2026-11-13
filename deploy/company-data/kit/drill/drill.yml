@@ -1,0 +1,38 @@
+# The drill's additions to docker-compose.yml (drill.mjs). Never on a real machine.
+#  - link: one docker network that stands in for the office LAN between the two nodes. Each machine's data-db joins it
+#    under the machine's name (DRILL_LINK_NAME: data-primary or data-standby), so the standby dials the primary there
+#    and the database's port stays unpublished. Real machines use replication.yml instead.
+#  - platform-standin: a stand-in for the platform's API, which a test machine cannot reach. It answers the two folder
+#    reads the gateway makes as the caller from a JSON file the drill writes (DRILL_FOLDER). It is not the platform:
+#    it takes any token whose subject is the drill's one member.
+# Paths are relative to the kit folder, the project's folder.
+services:
+  data-db:
+    networks:
+      default: {}
+      link:
+        aliases: ["${DRILL_LINK_NAME:?set DRILL_LINK_NAME}"]
+
+  data-gateway:
+    depends_on:
+      platform-standin:
+        condition: service_started
+
+  platform-standin:
+    image: node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    entrypoint: ["node", "/standin/platform-standin.mjs"]
+    environment:
+      STANDIN_KEY: ${DATA_PLATFORM_KEY:?set DATA_PLATFORM_KEY}
+    volumes:
+      - ./drill/platform-standin.mjs:/standin/platform-standin.mjs:ro
+      - ${DRILL_FOLDER:?set DRILL_FOLDER}:/folder:ro
+    cpus: 0.5
+    mem_limit: 256m
+
+networks:
+  link:
+    external: true
+    name: ${DRILL_LINK_NETWORK:?set DRILL_LINK_NETWORK}

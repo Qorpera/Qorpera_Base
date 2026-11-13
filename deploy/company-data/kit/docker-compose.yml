@@ -1,0 +1,92 @@
+# The company data store and its data gateway on one machine (deploy/company-data/kit/README.md). One compose project
+# per machine: the primary's machine runs both services, the standby's machine runs data-db as a standby (standby.sh)
+# and starts data-gateway only when it takes over.
+#
+# Settings come from the environment, or from a .env file beside this file:
+#   COMPOSE_PROJECT_NAME   this machine's project, for example company-data
+#   DATA_LOCAL             the machine's own folder, root only: passwords, the CA, TLS files (init.sh makes it)
+#   DATA_BACKUP            the backup folder (the NAS folder), mounted at /backup: wal/ and base/
+#   DATA_GATEWAY_LISTEN    where the gateway's port is published, address:port, for example 127.0.0.1:8480
+#   DATA_PLATFORM_URL      the platform's API, the gateway asks it as the caller
+#   DATA_PLATFORM_KEY      the platform's publishable key (not a secret)
+#   DATA_NODE_MODULES      a node_modules folder that holds pg (README.md: how it is packaged for real)
+#   DATA_DB_CPUS, DATA_DB_MEMORY   the database's caps (2 and 7g by default: the machine is 2 vCPU and 8 GiB)
+#   DATA_BACKUP_MODE       rw (the default); restore.sh sets ro, so a restored copy never writes the archive
+#
+# The database's port is not published: only the gateway reaches it, over this project's network. A standby on
+# another machine reaches it through replication.yml.
+services:
+  data-db:
+    # scripts/test-hosted-db.mjs POSTGRES_IMAGE: the image the SQL tests run on.
+    image: docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    restart: unless-stopped
+    command: ["postgres", "-c", "config_file=/etc/company-data/postgresql.conf"]
+    environment:
+      # initdb only, on an empty volume. The superuser never logs in with it: pg_hba.conf lets it in over the socket.
+      POSTGRES_PASSWORD_FILE: /run/company-data/superuser
+      # Production's locale, as every test PostgreSQL of the repository (scripts/test-hosted-db.mjs POSTGRES_LOCALE).
+      POSTGRES_INITDB_ARGS: --locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8
+    volumes:
+      - data:/var/lib/postgresql/data
+      - ./postgres:/etc/company-data:ro
+      - ${DATA_LOCAL:?set DATA_LOCAL}/postgres:/etc/company-data-local:ro
+      - ${DATA_LOCAL}/secrets/superuser:/run/company-data/superuser:ro
+      - ${DATA_BACKUP:?set DATA_BACKUP}:/backup:${DATA_BACKUP_MODE:-rw}
+    shm_size: 256m
+    cpus: ${DATA_DB_CPUS:-2}
+    mem_limit: ${DATA_DB_MEMORY:-7g}
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: 50m, max-file: "5" }
+    healthcheck:
+      # Over TCP, so the server initdb starts for a moment on a new volume (socket only) does not count as up.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+
+  data-gateway:
+    # scripts/run-on-node-plan.mjs NODE_IMAGE, as deploy/sites/app-relay/compose-service.yml uses it.
+    image: node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    depends_on:
+      data-db:
+        condition: service_healthy
+    working_dir: /app
+    entrypoint: ["node", "/app/kit/gateway-main.mjs"]
+    environment:
+      DATA_STORE_HOST: data-db
+      DATA_STORE_PORT: "5432"
+      DATA_LOGINS: /run/company-data/logins
+      DATA_PLATFORM_URL: ${DATA_PLATFORM_URL:?set DATA_PLATFORM_URL}
+      DATA_PLATFORM_KEY: ${DATA_PLATFORM_KEY:?set DATA_PLATFORM_KEY}
+      DATA_LISTEN: 0.0.0.0:8480
+    volumes:
+      - ../gateway:/app/gateway:ro
+      - ./gateway-main.mjs:/app/kit/gateway-main.mjs:ro
+      - ${DATA_NODE_MODULES:?set DATA_NODE_MODULES}:/app/node_modules:ro
+      - ${DATA_LOCAL}/secrets/gateway:/run/company-data/logins:ro
+    ports:
+      - ${DATA_GATEWAY_LISTEN:?set DATA_GATEWAY_LISTEN}:8480
+    cpus: 1
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: 20m, max-file: "3" }
+    healthcheck:
+      # Any answer is an answer: the gateway says 404 to a path it does not serve.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8480/').then((r) => process.exit(r.status === 404 ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  data:
