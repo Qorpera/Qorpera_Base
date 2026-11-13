@@ -8,6 +8,8 @@ import {
 	DesktopStream,
 	type DesktopStreamRelease,
 	encodePng,
+	PNG_PIXELS_PER_TURN,
+	RFB_TAKE_PER_TURN,
 	RFB_VERSION,
 	RfbReader,
 	rfbSetEncodings,
@@ -16,6 +18,7 @@ import {
 	STREAM_CURSOR,
 	STREAM_RECTS,
 	STREAM_SIZE,
+	visibleRects,
 } from "../src/company-machine-stream.ts";
 
 /** A PNG's pixels, as RGB (or RGBA) bytes, undoing the Sub filter this module uses. */
@@ -220,15 +223,26 @@ describe("a desktop's live picture (20260930745000)", () => {
 		const many = Buffer.alloc(4);
 		many.writeUInt16BE(0xffff, 2);
 		expect(() => reader.feed(many)).toThrow("RFB_UPDATE_TOO_LARGE");
-		// One area far larger than the screen, declared in a header and never sent: refused at the header.
+		// One area larger than any screen a machine has (3840 x 2160), declared in a header: refused at the header.
+		const huge = new RfbReader(() => {});
+		huge.feed(Buffer.concat(serverHello(64, 40)));
+		const hugeHead = Buffer.alloc(4 + 12);
+		hugeHead.writeUInt16BE(1, 2);
+		hugeHead.writeUInt16BE(4096, 8);
+		hugeHead.writeUInt16BE(4096, 10);
+		hugeHead.writeInt32BE(0, 12);
+		expect(() => huge.feed(hugeHead)).toThrow("RFB_INVALID");
+		// One area far larger than this screen, declared in a header and never sent: refused at the header.
 		const big = new RfbReader(() => {});
 		big.feed(Buffer.concat(serverHello(64, 40)));
 		const head = Buffer.alloc(4 + 12);
 		head.writeUInt16BE(1, 2);
-		head.writeUInt16BE(4096, 8);
-		head.writeUInt16BE(4096, 10);
+		head.writeUInt16BE(3840, 8);
+		head.writeUInt16BE(2160, 10);
 		head.writeInt32BE(0, 12);
 		expect(() => big.feed(head)).toThrow("RFB_UPDATE_TOO_LARGE");
+		// A server that says its screen is larger than any machine's: refused at its hello.
+		expect(() => new RfbReader(() => {}).feed(Buffer.concat(serverHello(3841, 2160)))).toThrow("RFB_INVALID");
 		// Many areas that are each small but together far past the screen, given in small transport pieces: refused
 		// while the headers are walked, so the pieces that follow are never buffered.
 		const sum = new RfbReader(() => {});
@@ -554,7 +568,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 		const empty = Buffer.alloc(4);
 		for (let n = 0; n < 200; n++) desktop.send(empty);
 		await settle();
-		expect(stream.held).toEqual({ ring: 8, outbox: expect.any(Number) });
+		expect(stream.held).toEqual({ ring: 8, rects: 0, outbox: expect.any(Number) });
 		// The guest stops reading its socket: the requests the reader answers with pile up, bounded too, and a
 		// whole-screen request is never the one dropped.
 		expect(stream.held.outbox).toBeLessThanOrEqual(64);
@@ -704,6 +718,151 @@ describe("a desktop's live picture (20260930745000)", () => {
 		}
 		desktop.end(95);
 		await watching;
+	});
+
+	it("keeps what one member is sent at once bounded in AREAS, and walks them in one pass, however many tiny ones a guest piles up behind a held cycle (v245 release review F1)", async () => {
+		const desktop = fakeDesktop();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0 });
+		const sink = sinkOf();
+		const { release, asked } = gate();
+		const stop = new AbortController();
+		const watching = stream.watch(release, sink, stop.signal);
+		await settle();
+		// The member's first cycle is asked and held: everything the guest sends now waits in the ring for it.
+		desktop.send(update(rawRect(0, 0, 64, 40, [1, 1, 1])));
+		await settle();
+		expect(asked).toHaveLength(1);
+		// 100 updates of 1,024 one-pixel areas each: 400 KiB of pixels, 102,400 areas.
+		const tiny = (n: number) => rawRect(n % 64, Math.floor(n / 64) % 40, 1, 1, [n & 0xff, 2, 3]);
+		const wholesBefore = desktop.requests().filter((request) => request === "update whole").length;
+		for (let u = 0; u < 100; u++) {
+			desktop.send(update(...Array.from({ length: 1024 }, (_, n) => tiny(u * 1024 + n))));
+			await settle();
+			// Never more than 2,048 areas held, whatever came.
+			expect(stream.held.rects).toBeLessThanOrEqual(2048);
+		}
+		// Past the bound the oldest went, and the member gets the whole screen anew, as for the other bounds.
+		expect(desktop.requests().filter((request) => request === "update whole").length).toBeGreaterThan(wholesBefore);
+		// The held cycle lets go: it releases nothing the eviction left (the member was moved on past it), and the next
+		// cycle releases what the ring holds — at most the bound's areas, walked in one pass, never each against every
+		// later one. (Each tiny area is then encoded and sent in turn, which takes a while for 2,048 of them.)
+		asked[0]!.resolve("ok");
+		await vi.waitFor(() => expect(asked.length).toBe(2));
+		asked[1]!.resolve("ok");
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_RECTS)).toBe(true), {
+			timeout: 20_000,
+		});
+		expect(sink.areas().flat().length).toBeLessThanOrEqual(2048);
+		stop.abort();
+		await watching;
+	}, 30_000);
+
+	it("keeps a large area as bands of whole rows sharing its pixels, so no PNG or message is much over a megabyte to make (v245 release review)", async () => {
+		const desktop = fakeDesktop();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0 });
+		const sink = sinkOf();
+		const stop = new AbortController();
+		const watching = stream.watch(async () => "ok", sink, stop.signal);
+		await settle();
+		// The screen grows to 1024 x 600 (its own update, as Xvnc sends it), then comes whole in one area of 2.4 MB.
+		const resize = Buffer.alloc(12);
+		resize.writeUInt16BE(1024, 4);
+		resize.writeUInt16BE(600, 6);
+		resize.writeInt32BE(-223, 8);
+		desktop.send(update(resize));
+		await settle();
+		desktop.send(update(rawRect(0, 0, 1024, 600, [7, 8, 9])));
+		// Bands of at most 262,144 pixels: 256 rows of 1,024, in order, the last what is left.
+		await vi.waitFor(() => expect(sink.areas().flat()).toHaveLength(3));
+		expect(sink.areas().flat()).toEqual(["0,0 1024x256 #070809", "0,256 1024x256 #070809", "0,512 1024x88 #070809"]);
+		for (const message of sink.messages.filter((one) => one.type === STREAM_RECTS))
+			expect(message.body.byteLength).toBeLessThanOrEqual(2 * 1024 * 1024);
+		// A pointer shape larger than the browser shows (128 a side) is not sent at all; one it shows is.
+		const shape = (side: number) => {
+			const head = Buffer.alloc(12);
+			head.writeUInt16BE(side, 4);
+			head.writeUInt16BE(side, 6);
+			head.writeInt32BE(-239, 8);
+			return Buffer.concat([head, Buffer.alloc(side * side * 4), Buffer.alloc(Math.ceil(side / 8) * side, 0xff)]);
+		};
+		desktop.send(update(shape(200)));
+		await settle();
+		await settle();
+		expect(sink.messages.some((message) => message.type === STREAM_CURSOR)).toBe(false);
+		desktop.send(update(shape(16)));
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_CURSOR)).toBe(true));
+		stop.abort();
+		await watching;
+	});
+
+	it("leaves out an area a later one covers in ONE pass, keeping their order, linear in how many there are (v245 release review F1)", () => {
+		const at = (x: number, y: number, width: number, height: number) => ({
+			x,
+			y,
+			width,
+			height,
+			pixels: Buffer.alloc(0),
+		});
+		// The same spot later, and a later area that covers an earlier one, hide it; the order of the rest stands.
+		const a = at(0, 0, 10, 10);
+		const b = at(5, 5, 2, 2);
+		const c = at(0, 0, 10, 10);
+		const d = at(20, 20, 4, 4);
+		expect(visibleRects([a, b, c, d])).toEqual([c, d]);
+		const whole = at(0, 0, 64, 40);
+		expect(visibleRects([b, d, whole, at(1, 1, 1, 1)])).toEqual([whole, at(1, 1, 1, 1)]);
+		// 102,400 tiny areas: the old pairwise check took minutes on node 2 (49 ms for 4,096, 545 ms for 16,384).
+		const many = Array.from({ length: 102_400 }, (_, n) => at(n % 1600, Math.floor(n / 1600), 1, 1));
+		const began = performance.now();
+		expect(visibleRects(many)).toHaveLength(102_400);
+		expect(performance.now() - began).toBeLessThan(1500);
+	});
+
+	it("takes a whole screen of the largest desktop out over many turns, each within its budget (v245 release review)", () => {
+		const events: { kind: string; rects?: { width: number; height: number; pixels: Buffer }[] }[] = [];
+		const reader = new RfbReader((event) => events.push(event as never));
+		reader.feed(Buffer.concat(serverHello(3840, 2160)));
+		// One area of the whole 3840 x 2160 screen: 33 MB, in 64 KiB pieces, all pushed before any is read.
+		const head = Buffer.alloc(4 + 12);
+		head.writeUInt16BE(1, 2);
+		head.writeUInt16BE(3840, 8);
+		head.writeUInt16BE(2160, 10);
+		head.writeInt32BE(0, 12);
+		// Every byte non-zero: a resumed take that read the pixels as a message's type would be refused, not lucky.
+		const pixels = Buffer.alloc(3840 * 2160 * 4, 0x5a);
+		for (let i = 0; i < pixels.length; i += 4096) pixels[i] = ((i >> 12) & 0xff) | 1;
+		const bytes = Buffer.concat([head, pixels]);
+		for (let at = 0; at < bytes.byteLength; at += 65536) reader.push(bytes.subarray(at, at + 65536));
+		let drains = 0;
+		do {
+			reader.drain(RFB_TAKE_PER_TURN);
+			drains++;
+		} while (reader.busy && drains < 1000);
+		// Never all of it in one turn: about one turn for every RFB_TAKE_PER_TURN bytes.
+		expect(drains).toBeGreaterThanOrEqual(Math.floor(pixels.byteLength / RFB_TAKE_PER_TURN));
+		const last = events.at(-1);
+		expect(last?.kind).toBe("update");
+		expect(last?.rects?.[0]?.pixels.equals(pixels)).toBe(true);
+		// A screen like this in many small pieces still reads in time linear in its size.
+		const small = new RfbReader(() => {});
+		small.feed(Buffer.concat(serverHello(3840, 2160)));
+		const began = performance.now();
+		for (let at = 0; at < bytes.byteLength; at += 1024) small.feed(bytes.subarray(at, at + 1024));
+		expect(performance.now() - began).toBeLessThan(3000);
+	});
+
+	it("filters a PNG's rows a slice at a time, giving the event loop a turn after each (v245 release review)", async () => {
+		const turns = vi.spyOn(globalThis, "setImmediate");
+		const before = turns.mock.calls.length;
+		const png = await encodePng(1600, 1000, fill(1600, 1000, [10, 20, 30]));
+		const yielded = turns.mock.calls.length - before;
+		turns.mockRestore();
+		const rowsPerTurn = Math.floor(PNG_PIXELS_PER_TURN / 1600);
+		expect(yielded).toBeGreaterThanOrEqual(Math.floor(1000 / rowsPerTurn) - 1);
+		const decoded = decodePng(png);
+		expect([decoded.width, decoded.height]).toEqual([1600, 1000]);
+		expect([...decoded.data.subarray(0, 3)]).toEqual([10, 20, 30]);
+		expect([...decoded.data.subarray(-3)]).toEqual([10, 20, 30]);
 	});
 
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {

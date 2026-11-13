@@ -1,4 +1,4 @@
-import { deflate } from "node:zlib";
+import { crc32, deflate } from "node:zlib";
 
 /**
  * A desktop's live picture (20260930745000; POINTER-PROGRESS.md 05:15Z, step 2): the machine's own VNC server (Xvnc,
@@ -185,10 +185,16 @@ export type RfbEvent =
 			readonly size: { readonly width: number; readonly height: number } | null;
 	  };
 
-/** Bytes that came in pieces, read off in order without copying more than is asked. */
+/** Bytes that came in pieces, read off in order without copying more than is asked. Every operation is linear in what
+ * it reads or takes, however small the pieces (the v245 release review: CPU time on node 1's shared event loop is paid
+ * per byte the guest sends, so nothing here may be quadratic in the pieces either). */
 class ByteQueue {
 	readonly #chunks: Buffer[] = [];
+	/** The first piece still held: taken pieces are left behind and dropped in bulk, never shifted one by one. */
+	#head = 0;
 	#length = 0;
+	/** Where the last look ahead began: a walk of increasing offsets (an update's headers) goes on from there. */
+	#mark = { offset: 0, index: 0, base: 0 };
 	get length(): number {
 		return this.#length;
 	}
@@ -205,12 +211,18 @@ class ByteQueue {
 	 * span pieces (never of what comes before them: a large update read header by header costs no more than its size). */
 	peekAt(offset: number, size: number): Buffer {
 		if (offset < 0 || offset + size > this.#length) throw new Error("RFB_SHORT");
-		let index = 0;
-		let skip = offset;
-		while (skip > 0 && skip >= (this.#chunks[index] as Buffer).byteLength) {
-			skip -= (this.#chunks[index] as Buffer).byteLength;
+		let index = this.#head;
+		let base = 0;
+		if (offset >= this.#mark.offset && this.#mark.index >= this.#head) {
+			index = this.#mark.index;
+			base = this.#mark.base;
+		}
+		while (offset - base >= (this.#chunks[index] as Buffer).byteLength) {
+			base += (this.#chunks[index] as Buffer).byteLength;
 			index++;
 		}
+		this.#mark = { offset, index, base };
+		const skip = offset - base;
 		const first = this.#chunks[index] as Buffer;
 		if (first.byteLength - skip >= size) return first.subarray(skip, skip + size);
 		const out = Buffer.allocUnsafe(size);
@@ -225,38 +237,63 @@ class ByteQueue {
 		return out;
 	}
 	take(size: number): Buffer {
-		const first = this.#chunks[0];
+		if (size === 0) return Buffer.alloc(0);
+		const first = this.#chunks[this.#head];
 		// A part of one piece is copied out (the piece is let go); one made of several pieces is a copy already.
-		const out =
-			size === 0
-				? Buffer.alloc(0)
-				: first && first.byteLength >= size
-					? Buffer.from(first.subarray(0, size))
-					: this.peek(size);
+		const out = first && first.byteLength >= size ? Buffer.from(first.subarray(0, size)) : this.peek(size);
+		this.#drop(size);
+		return out;
+	}
+	/** Moves the next `size` bytes into `target` at `at`, piece by piece (so a large area is taken across several turns
+	 * without ever copying it twice). */
+	takeInto(target: Buffer, at: number, size: number): void {
+		let left = size;
+		let to = at;
+		for (let i = this.#head; left > 0; i++) {
+			const chunk = this.#chunks[i] as Buffer;
+			const part = Math.min(chunk.byteLength, left);
+			chunk.copy(target, to, 0, part);
+			to += part;
+			left -= part;
+		}
+		this.#drop(size);
+	}
+	#drop(size: number): void {
 		let left = size;
 		while (left > 0) {
-			const first = this.#chunks[0] as Buffer;
+			const first = this.#chunks[this.#head] as Buffer;
 			if (first.byteLength <= left) {
-				this.#chunks.shift();
+				this.#head++;
 				left -= first.byteLength;
 			} else {
-				this.#chunks[0] = first.subarray(left);
+				this.#chunks[this.#head] = first.subarray(left);
 				left = 0;
 			}
 		}
 		this.#length -= size;
-		return out;
+		// Pieces left behind go in one splice once they are most of the array: each piece is moved at most once more.
+		if (this.#head > 64 && this.#head * 2 > this.#chunks.length) {
+			this.#chunks.splice(0, this.#head);
+			this.#head = 0;
+		}
+		this.#mark = { offset: 0, index: this.#head, base: 0 };
 	}
 }
 
 /** At most this many rectangles in one update: Xvnc sends a screen in bands (28 for 1600 x 1000), never thousands.
- * RFB allows 65,535, each of up to MAX_SIDE², which is why a bound of our own is needed (review r1 F1 of #1746). */
+ * RFB allows 65,535, each of up to the whole screen, which is why a bound of our own is needed (review r1 F1 of #1746). */
 const MAX_RECTS = 1024;
 /** Besides the screen's own pixels, this much slack for an update's headers, its pointer shape and overlapping areas. */
 const UPDATE_SLACK_BYTES = 1024 * 1024;
 
-/** The largest screen a machine has (`desktop size`), and so the largest area a server may send. */
-const MAX_SIDE = 4096;
+/** The largest screen a machine has (`desktop size`: 3840 x 2160), and so the largest area a server may send. A server
+ * that says it is larger is ended (the v245 release review: the bounds are what CPU time is paid against). */
+const MAX_WIDTH = 3840;
+const MAX_HEIGHT = 2160;
+/** At most this many bytes of areas are taken out of what came in, in one turn of the event loop: a whole update of the
+ * largest screen (twice its 33 MB) is taken over many turns, each about a millisecond on node 2, never in one stretch
+ * that holds node 1's executor (the v245 release review). */
+export const RFB_TAKE_PER_TURN = 1024 * 1024;
 
 /**
  * Reads an RFB 3.8 server's bytes as they come (feed) and answers what the handshake asks, with nothing else: the
@@ -273,6 +310,23 @@ export class RfbReader {
 	#height = 0;
 	/** How far the sizes of an update's rectangles were walked while its bytes come: each piece goes on from there. */
 	#walk: { count: number; index: number; at: number } | null = null;
+	/** An update whose bytes are all here, being taken out over several turns: what is taken so far, and the area that is
+	 * part taken (its buffer and how much of it is filled). */
+	#taking: {
+		readonly count: number;
+		index: number;
+		/** Bytes of this update still in the queue. */
+		left: number;
+		readonly rects: RfbRect[];
+		cursor: RfbCursor | null;
+		size: { width: number; height: number } | null;
+		width: number;
+		height: number;
+		part: { readonly head: Buffer; readonly pixels: Buffer; filled: number } | null;
+	} | null = null;
+	/** Bytes taken out in this call of drain(): past its budget, the rest waits for the next. */
+	#taken = 0;
+	#budgetLeft = Number.POSITIVE_INFINITY;
 	constructor(onEvent: (event: RfbEvent) => void) {
 		this.#onEvent = onEvent;
 	}
@@ -291,17 +345,34 @@ export class RfbReader {
 		return 2 * 4 * Math.max(this.#width * this.#height, 1) + UPDATE_SLACK_BYTES;
 	}
 
-	/** Takes the server's next bytes; answers what to send it now (the handshake's answers only). */
+	/** Takes the server's next bytes and reads all it can at once; answers what to send it now (the handshake's answers
+	 * only). The stream itself does not use it: it pushes, and drains a little at a time (`push`, `drain`). */
 	feed(chunk: Buffer): Buffer[] {
+		this.push(chunk);
+		return this.drain(Number.POSITIVE_INFINITY);
+	}
+	/** Takes the server's next bytes, reading none of them yet. Nothing of an update is buffered past what this screen's
+	 * update may need (counting apart what is left of an update being taken out). */
+	push(chunk: Buffer): void {
 		this.#queue.push(chunk);
-		// Nothing of an update is buffered past what this screen's update may need.
-		if (this.#queue.length > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
+		if (this.#queue.length - (this.#taking?.left ?? 0) > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
+	}
+	/** Reads what is here, taking out at most about `budget` bytes of areas: answers what to send the server now. While
+	 * `busy`, more can be read without more bytes coming. */
+	drain(budget: number): Buffer[] {
+		this.#taken = 0;
+		this.#budgetLeft = budget;
 		const out: Buffer[] = [];
 		for (;;) {
 			const step = this.#step();
 			if (step === null) return out;
 			out.push(...step);
 		}
+	}
+	/** Whether an update is being taken out (all its bytes are here; drain() paused at its budget): drain again on the
+	 * next turn. */
+	get busy(): boolean {
+		return this.#taking !== null;
 	}
 	/** One step if its bytes are all there: what to send for it; null when more bytes are needed. */
 	#step(): Buffer[] | null {
@@ -340,7 +411,7 @@ export class RfbReader {
 				const init = queue.take(24 + nameLength);
 				this.#width = init.readUInt16BE(0);
 				this.#height = init.readUInt16BE(2);
-				if (this.#width < 1 || this.#height < 1 || this.#width > MAX_SIDE || this.#height > MAX_SIDE)
+				if (this.#width < 1 || this.#height < 1 || this.#width > MAX_WIDTH || this.#height > MAX_HEIGHT)
 					throw new Error("RFB_INVALID");
 				this.#stage = "messages";
 				this.#onEvent({ kind: "init", width: this.#width, height: this.#height });
@@ -351,6 +422,8 @@ export class RfbReader {
 		}
 	}
 	#message(): Buffer[] | null {
+		// An update being taken out goes on where it paused: its type byte was taken long ago.
+		if (this.#taking) return this.#update();
 		const queue = this.#queue;
 		if (queue.length < 1) return null;
 		const type = queue.peek(1)[0] as number;
@@ -377,96 +450,113 @@ export class RfbReader {
 		}
 		throw new Error("RFB_UNKNOWN_MESSAGE");
 	}
-	/** A FramebufferUpdate, once all of it is there (it is read whole, so a half one never shows). */
+	/** A FramebufferUpdate, once all of it is there (it is read whole, so a half one never shows), taken out over as
+	 * many turns as its size needs: at most about RFB_TAKE_PER_TURN bytes a turn. */
 	#update(): Buffer[] | null {
 		const queue = this.#queue;
-		if (queue.length < 4) return null;
-		// Walk its rectangles' sizes first: nothing is taken until the whole update is there. The walk goes on from where
-		// the last piece left it.
-		const walk = this.#walk ?? { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
-		if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
-		this.#walk = walk;
-		for (; walk.index < walk.count; walk.index++) {
-			if (queue.length < walk.at + 12) return null;
-			const head = queue.peekAt(walk.at, 12);
-			const w = head.readUInt16BE(4);
-			const h = head.readUInt16BE(6);
-			const encoding = head.readInt32BE(8);
-			if (w > MAX_SIDE || h > MAX_SIDE) throw new Error("RFB_INVALID");
-			if (encoding === 0) walk.at += 12 + w * h * 4;
-			else if (encoding === -239) walk.at += 12 + w * h * 4 + Math.ceil(w / 8) * h;
-			else if (encoding === -223) walk.at += 12;
-			else throw new Error("RFB_UNKNOWN_ENCODING");
-			// The whole update's size is known as its headers are walked: refused before any more of it is buffered.
-			if (walk.at > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
-		}
-		if (queue.length < walk.at) return null;
-		this.#walk = null;
-		const count = walk.count;
-		// A size change in this update bounds its later areas.
-		let width = this.#width;
-		let height = this.#height;
-		queue.take(4);
-		const rects: RfbRect[] = [];
-		let cursor: RfbCursor | null = null;
-		let size: { width: number; height: number } | null = null;
-		for (let index = 0; index < count; index++) {
-			const head = queue.take(12);
-			const x = head.readUInt16BE(0);
-			const y = head.readUInt16BE(2);
-			const w = head.readUInt16BE(4);
-			const h = head.readUInt16BE(6);
-			const encoding = head.readInt32BE(8);
-			if (encoding === 0) {
-				const pixels = queue.take(w * h * 4);
-				if (w > 0 && h > 0 && x + w <= width && y + h <= height) rects.push({ x, y, width: w, height: h, pixels });
-				else if (w > 0 && h > 0) throw new Error("RFB_INVALID");
-			} else if (encoding === -239) {
-				const pixels = queue.take(w * h * 4);
-				const mask = queue.take(Math.ceil(w / 8) * h);
-				cursor = { hotX: x, hotY: y, width: w, height: h, pixels, mask };
-			} else {
-				size = { width: w, height: h };
-				this.#width = w;
-				this.#height = h;
-				width = w;
-				height = h;
-				if (w < 1 || h < 1) throw new Error("RFB_INVALID");
-				// The areas of this update that came before the resize are of the screen that is gone: they are dropped
-				// here, so one update — and so one ring entry — never holds pixels of two sizes (review r5 F3 of #1746).
-				// The server sends the whole screen of the new size right after, which this module asks for.
-				rects.length = 0;
+		if (!this.#taking) {
+			if (queue.length < 4) return null;
+			// Walk its rectangles' sizes first: nothing is taken until the whole update is there. The walk goes on from
+			// where the last piece left it.
+			const walk = this.#walk ?? { count: queue.peek(4).readUInt16BE(2), index: 0, at: 4 };
+			if (walk.count > MAX_RECTS) throw new Error("RFB_UPDATE_TOO_LARGE");
+			this.#walk = walk;
+			for (; walk.index < walk.count; walk.index++) {
+				if (queue.length < walk.at + 12) return null;
+				const head = queue.peekAt(walk.at, 12);
+				const w = head.readUInt16BE(4);
+				const h = head.readUInt16BE(6);
+				const encoding = head.readInt32BE(8);
+				if (w > MAX_WIDTH || h > MAX_HEIGHT) throw new Error("RFB_INVALID");
+				if (encoding === 0) walk.at += 12 + w * h * 4;
+				else if (encoding === -239) walk.at += 12 + w * h * 4 + Math.ceil(w / 8) * h;
+				else if (encoding === -223) walk.at += 12;
+				else throw new Error("RFB_UNKNOWN_ENCODING");
+				// The whole update's size is known as its headers are walked: refused before any more of it is buffered.
+				if (walk.at > this.#budget) throw new Error("RFB_UPDATE_TOO_LARGE");
 			}
+			if (queue.length < walk.at) return null;
+			this.#walk = null;
+			queue.take(4);
+			this.#taking = {
+				count: walk.count,
+				index: 0,
+				left: walk.at - 4,
+				rects: [],
+				cursor: null,
+				size: null,
+				// A size change in this update bounds its later areas.
+				width: this.#width,
+				height: this.#height,
+				part: null,
+			};
 		}
-		this.#onEvent({ kind: "update", rects, cursor, size });
+		const taking = this.#taking;
+		for (; taking.index < taking.count; taking.index++) {
+			if (this.#taken >= this.#budgetLeft) return null;
+			if (!taking.part) {
+				const head = queue.take(12);
+				taking.left -= 12;
+				const w = head.readUInt16BE(4);
+				const h = head.readUInt16BE(6);
+				const encoding = head.readInt32BE(8);
+				if (encoding === -223) {
+					taking.size = { width: w, height: h };
+					this.#width = w;
+					this.#height = h;
+					taking.width = w;
+					taking.height = h;
+					if (w < 1 || h < 1) throw new Error("RFB_INVALID");
+					// The areas of this update that came before the resize are of the screen that is gone: they are
+					// dropped here, so one update — and so one ring entry — never holds pixels of two sizes (review r5 F3
+					// of #1746). The server sends the whole screen of the new size right after, which this module asks for.
+					taking.rects.length = 0;
+					continue;
+				}
+				const bytes = w * h * 4 + (encoding === -239 ? Math.ceil(w / 8) * h : 0);
+				taking.part = { head, pixels: Buffer.allocUnsafe(bytes), filled: 0 };
+			}
+			// The area's bytes, as many as this turn's budget allows: a whole screen's area goes over several turns.
+			const part = taking.part;
+			const now = Math.min(part.pixels.byteLength - part.filled, Math.max(1, this.#budgetLeft - this.#taken));
+			queue.takeInto(part.pixels, part.filled, now);
+			part.filled += now;
+			taking.left -= now;
+			this.#taken += now;
+			if (part.filled < part.pixels.byteLength) return null;
+			taking.part = null;
+			const x = part.head.readUInt16BE(0);
+			const y = part.head.readUInt16BE(2);
+			const w = part.head.readUInt16BE(4);
+			const h = part.head.readUInt16BE(6);
+			if (part.head.readInt32BE(8) === -239) {
+				taking.cursor = {
+					hotX: x,
+					hotY: y,
+					width: w,
+					height: h,
+					pixels: part.pixels.subarray(0, w * h * 4),
+					mask: part.pixels.subarray(w * h * 4),
+				};
+			} else if (w > 0 && h > 0 && x + w <= taking.width && y + h <= taking.height)
+				taking.rects.push({ x, y, width: w, height: h, pixels: part.pixels });
+			else if (w > 0 && h > 0) throw new Error("RFB_INVALID");
+		}
+		this.#taking = null;
+		this.#onEvent({ kind: "update", rects: taking.rects, cursor: taking.cursor, size: taking.size });
 		return [];
 	}
 }
 
 // PNG, as small as is cheap: RGB (or RGBA for the pointer), each row filtered by its byte to the left, deflated off the
-// event loop (zlib's own threads).
+// event loop (zlib's own threads), its checksums zlib's own.
 
-const CRC_TABLE = (() => {
-	const table = new Uint32Array(256);
-	for (let n = 0; n < 256; n++) {
-		let c = n;
-		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-		table[n] = c >>> 0;
-	}
-	return table;
-})();
-function crc32(parts: readonly Buffer[]): number {
-	let c = 0xffffffff;
-	for (const part of parts)
-		for (let i = 0; i < part.byteLength; i++) c = (CRC_TABLE[(c ^ (part[i] as number)) & 0xff] as number) ^ (c >>> 8);
-	return (c ^ 0xffffffff) >>> 0;
-}
 function chunk(type: string, data: Buffer): Buffer {
 	const head = Buffer.alloc(8);
 	head.writeUInt32BE(data.byteLength, 0);
 	head.write(type, 4, "latin1");
 	const crc = Buffer.alloc(4);
-	crc.writeUInt32BE(crc32([head.subarray(4), data]), 0);
+	crc.writeUInt32BE(crc32(data, crc32(head.subarray(4))), 0);
 	return Buffer.concat([head, data, crc]);
 }
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -475,8 +565,13 @@ function deflated(data: Buffer): Promise<Buffer> {
 		deflate(data, { level: 6 }, (error, result) => (error ? reject(error) : resolve(result))),
 	);
 }
+/** At most this many pixels are filtered in one turn of the event loop (about a millisecond on node 2): a whole screen of
+ * the largest desktop held it for 64 ms in one stretch before (the v245 release review). An area is at most four such
+ * slices now (MAX_AREA_PIXELS), the pointer at most one. */
+export const PNG_PIXELS_PER_TURN = 65_536;
 /** A PNG of `width` x `height` pixels given as blue, green, red, unused; `alpha` (a function of the pixel's index) makes
- * it RGBA. Each row is filtered by the byte one pixel to its left (PNG's Sub), which suits a screen's flat areas. */
+ * it RGBA. Each row is filtered by the byte one pixel to its left (PNG's Sub), which suits a screen's flat areas. The
+ * rows are filtered a slice at a time, each followed by a turn of everything else; the deflating is zlib's threads'. */
 export async function encodePng(
 	width: number,
 	height: number,
@@ -487,7 +582,9 @@ export async function encodePng(
 	const stride = width * channels;
 	const raw = Buffer.allocUnsafe((stride + 1) * height);
 	const line = Buffer.allocUnsafe(stride);
+	const rowsPerTurn = Math.max(1, Math.floor(PNG_PIXELS_PER_TURN / Math.max(width, 1)));
 	for (let y = 0; y < height; y++) {
+		if (y > 0 && y % rowsPerTurn === 0) await new Promise<void>((resolve) => setImmediate(resolve));
 		for (let x = 0; x < width; x++) {
 			const from = (y * width + x) * 4;
 			const to = x * channels;
@@ -540,6 +637,10 @@ export interface DesktopStreamOptions {
 	/** How many updates the ring keeps at most, whatever they weigh (4096): an update of no areas at all costs no bytes
 	 * but one entry, and a member whose cycles lag must not let a guest pile up entries (review r2 F1 of #1746). */
 	ringEntries?: number;
+	/** How many areas the ring keeps at most across all its updates (2048): a tiny area weighs almost nothing, and what a
+	 * lagging member is sent at once is walked area by area (the v245 release review). Past it, the oldest updates go
+	 * and those members get the whole screen anew, as for the other two bounds. */
+	ringRects?: number;
 	/** At most one cycle a member this often (34 ms: at most 30 updates a second, the accepted design's bound), and
 	 * none while nothing changed. Each cycle is one read-only SQL call for that member. */
 	cycleEveryMs?: number;
@@ -679,10 +780,77 @@ function covers(outer: RfbRect, inner: RfbRect): boolean {
 	);
 }
 
-const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+/** How many of the largest later areas an area is checked against for being covered. */
+const VISIBLE_CANDIDATES = 8;
+/**
+ * The areas worth sending, in their order: one wholly covered by a LATER one is left out, since it would only be
+ * painted over. In ONE pass from the newest back, each area checked against the same spot seen later and against the
+ * few largest later areas only — linear in the number of areas (the v245 release review: the old pairwise check copied
+ * and scanned the rest of the list for every area, 49 ms for 4,096 tiny areas on node 2 and minutes for a hundred
+ * updates of 1,024). A covered area the check does not catch is sent and painted over; nothing visible is ever left out.
+ */
+export function visibleRects(rects: readonly RfbRect[]): RfbRect[] {
+	const keep: boolean[] = new Array(rects.length);
+	const spots = new Set<string>();
+	const largest: RfbRect[] = [];
+	for (let index = rects.length - 1; index >= 0; index--) {
+		const rect = rects[index] as RfbRect;
+		const spot = `${rect.x},${rect.y},${rect.width},${rect.height}`;
+		const hidden = spots.has(spot) || largest.some((later) => covers(later, rect));
+		keep[index] = !hidden;
+		// A hidden area covers nothing its own cover does not: only kept ones are remembered.
+		if (hidden) continue;
+		spots.add(spot);
+		const area = rect.width * rect.height;
+		if (largest.length < VISIBLE_CANDIDATES) largest.push(rect);
+		else {
+			let smallest = 0;
+			for (let i = 1; i < largest.length; i++)
+				if (
+					(largest[i] as RfbRect).width * (largest[i] as RfbRect).height <
+					(largest[smallest] as RfbRect).width * (largest[smallest] as RfbRect).height
+				)
+					smallest = i;
+			if (area > (largest[smallest] as RfbRect).width * (largest[smallest] as RfbRect).height)
+				largest[smallest] = rect;
+		}
+	}
+	return rects.filter((_, index) => keep[index]);
+}
+
+/** A batch of areas goes out once it passes this many bytes (the browser and the peer take up to 8 MiB a message; a
+ * smaller batch keeps every join of one message near a millisecond, the v245 release review). */
+const BATCH_BYTES = 1024 * 1024;
+/** At most this many pixels in one area as it is kept and sent (768 KiB of RGB): a larger area is kept as bands of
+ * whole rows, without copying, so no PNG is more than about that to encode in one call or to join into a message
+ * (the v245 release review). Xvnc's own bands are smaller (1600 x 36). */
+const MAX_AREA_PIXELS = 262_144;
+/** The browser shows a pointer shape of at most this many pixels a side; a larger one is not sent at all. */
+const MAX_CURSOR_SIDE = 128;
+/** `rect` as bands of whole rows of at most MAX_AREA_PIXELS each, its pixels shared, never copied. */
+function bands(rect: RfbRect): RfbRect[] {
+	const rows = Math.max(1, Math.floor(MAX_AREA_PIXELS / Math.max(rect.width, 1)));
+	if (rect.height <= rows) return [rect];
+	const out: RfbRect[] = [];
+	for (let y = 0; y < rect.height; y += rows) {
+		const height = Math.min(rows, rect.height - y);
+		out.push({
+			x: rect.x,
+			y: rect.y + y,
+			width: rect.width,
+			height,
+			pixels: rect.pixels.subarray(y * rect.width * 4, (y + height) * rect.width * 4),
+		});
+	}
+	return out;
+}
 /** How many updates the ring keeps at most (review r2 F1 of #1746): an empty update weighs nothing and still costs an
  * entry, so bytes alone bound nothing. At 30 updates a second this is over two minutes of a lagging member's cycles. */
 const MAX_RING_ENTRIES = 4096;
+/** How many areas the ring holds at most across its updates (the v245 release review): what one member is sent at once
+ * is at most this many areas, walked in one pass (about a millisecond on node 2). A whole screen is 28 to 32 bands, so
+ * this is some 64 whole screens. */
+const MAX_RING_RECTS = 2048;
 /** At most 30 updates a second for a member (the accepted design, 05:15Z): a hover shows one cycle after it was drawn,
  * not up to one pace later (100 ms on the real machine's run 3). */
 const STREAM_CYCLE_EVERY_MS = 34;
@@ -707,6 +875,7 @@ export class DesktopStream {
 	readonly #outbox = new Outbox();
 	readonly #png = new WeakMap<RfbRect | RfbCursor, Promise<Buffer>>();
 	#ringBytes = 0;
+	#ringRects = 0;
 	#seq = 0;
 	#width = 0;
 	#height = 0;
@@ -723,8 +892,8 @@ export class DesktopStream {
 
 	/** What the stream holds right now, in entries: the ring's updates and the messages waiting for the VNC server.
 	 * Both are bounded whatever the guest sends (review r2 F1 of #1746); read by the tests and by nothing else. */
-	get held(): { readonly ring: number; readonly outbox: number } {
-		return { ring: this.#ring.length, outbox: this.#outbox.waiting };
+	get held(): { readonly ring: number; readonly rects: number; readonly outbox: number } {
+		return { ring: this.#ring.length, rects: this.#ringRects, outbox: this.#outbox.waiting };
 	}
 
 	/** Streams the desktop to `sink`, released by `release`, until `signal` aborts, a cycle ends it, or the relay ends:
@@ -813,10 +982,32 @@ export class DesktopStream {
 			// Keep the changes coming: the next request at once.
 			this.#outbox.push(rfbUpdateRequest(true, this.#width, this.#height));
 		});
+		// What the server sends is taken in as it comes (bounded at once), and read in turns of at most about
+		// RFB_TAKE_PER_TURN bytes, each followed by a turn of everything else node 1's executor does (the v245 release
+		// review: a large update must not hold its event loop in one stretch).
+		let reading = false;
+		const read = () => {
+			reading = false;
+			if (this.#ended) return;
+			try {
+				for (const message of reader.drain(RFB_TAKE_PER_TURN)) this.#outbox.push(message);
+			} catch {
+				// What the server sent is not the protocol, or past its bounds: as a refusal in the relay's own handler.
+				this.#end("STREAM_UNAVAILABLE");
+				return;
+			}
+			if (reader.busy) readSoon();
+		};
+		const readSoon = () => {
+			if (reading) return;
+			reading = true;
+			setImmediate(read);
+		};
 		this.#relay = this.#options
 			.run(
 				(chunk) => {
-					for (const message of reader.feed(chunk)) this.#outbox.push(message);
+					reader.push(chunk);
+					readSoon();
 				},
 				this.#outbox.messages(),
 				this.#stop.signal,
@@ -832,11 +1023,13 @@ export class DesktopStream {
 		cursor: RfbCursor | null;
 		size: { width: number; height: number } | null;
 	}): void {
+		// Kept as bands of at most MAX_AREA_PIXELS: every member's PNG of a band is the same one (#encoded).
+		const rects = update.rects.flatMap(bands);
 		const bytes =
-			update.rects.reduce((sum, rect) => sum + rect.pixels.byteLength, 0) + (update.cursor?.pixels.byteLength ?? 0);
+			rects.reduce((sum, rect) => sum + rect.pixels.byteLength, 0) + (update.cursor?.pixels.byteLength ?? 0);
 		this.#ring.push({
 			seq: ++this.#seq,
-			rects: update.rects,
+			rects,
 			cursor: update.cursor,
 			// The screen's size as it stands for these pixels (the caller set it before pushing).
 			at: { width: this.#width, height: this.#height },
@@ -844,23 +1037,36 @@ export class DesktopStream {
 			bytes,
 		});
 		this.#ringBytes += bytes;
-		// Over the ring's bound, in bytes or in entries: the oldest go, and every member who had not been sent them gets
-		// the whole screen anew.
-		let dropped = 0;
+		this.#ringRects += rects.length;
+		// Over the ring's bound, in bytes, in entries or in areas: the oldest go (in one splice), and every member who had
+		// not been sent them gets the whole screen anew.
+		let cut = 0;
+		let cutBytes = 0;
+		let cutRects = 0;
 		while (
-			(this.#ringBytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) ||
-				this.#ring.length > (this.#options.ringEntries ?? MAX_RING_ENTRIES)) &&
-			this.#ring.length > 1
+			this.#ring.length - cut > 1 &&
+			(this.#ringBytes - cutBytes > (this.#options.ringBytes ?? 64 * 1024 * 1024) ||
+				this.#ring.length - cut > (this.#options.ringEntries ?? MAX_RING_ENTRIES) ||
+				this.#ringRects - cutRects > (this.#options.ringRects ?? MAX_RING_RECTS))
 		) {
-			const old = this.#ring.shift() as StreamUpdate;
-			this.#ringBytes -= old.bytes;
-			dropped = old.seq;
+			const old = this.#ring[cut] as StreamUpdate;
+			cutBytes += old.bytes;
+			cutRects += old.rects.length;
+			cut++;
+		}
+		const dropped = cut > 0 ? (this.#ring[cut - 1] as StreamUpdate).seq : 0;
+		if (cut > 0) {
+			this.#ring.splice(0, cut);
+			this.#ringBytes -= cutBytes;
+			this.#ringRects -= cutRects;
 		}
 		if (dropped > 0) {
 			// What is left of the ring begins at the newest size change in it, if any: pixels from before that change
 			// belong to a size this member was never told and are of no use now, since the whole screen is coming anyway
 			// (review r4 F2 of #1746).
-			const newestResize = [...this.#ring].reverse().find((update) => update.resized);
+			let newestResize: StreamUpdate | undefined;
+			for (let i = this.#ring.length - 1; i >= 0 && !newestResize; i--)
+				if ((this.#ring[i] as StreamUpdate).resized) newestResize = this.#ring[i];
 			const from = Math.max(dropped, newestResize ? newestResize.seq - 1 : 0);
 			let refresh = false;
 			for (const watcher of this.#watchers)
@@ -878,11 +1084,16 @@ export class DesktopStream {
 
 	/** Drops what every member was sent. */
 	#trim(): void {
-		const least = Math.min(...[...this.#watchers].map((watcher) => watcher.sentSeq), this.#seq);
-		while (this.#ring.length > 0 && (this.#ring[0] as StreamUpdate).seq <= least) {
-			const old = this.#ring.shift() as StreamUpdate;
+		let least = this.#seq;
+		for (const watcher of this.#watchers) least = Math.min(least, watcher.sentSeq);
+		let cut = 0;
+		while (cut < this.#ring.length && (this.#ring[cut] as StreamUpdate).seq <= least) {
+			const old = this.#ring[cut] as StreamUpdate;
 			this.#ringBytes -= old.bytes;
+			this.#ringRects -= old.rects.length;
+			cut++;
 		}
+		if (cut > 0) this.#ring.splice(0, cut);
 	}
 
 	/**
@@ -917,7 +1128,7 @@ export class DesktopStream {
 			message.writeUInt16BE(size.height, 3);
 			await sendOrStop(sink, message, signal);
 		}
-		const kept = rects.filter((rect, index) => !rects.slice(index + 1).some((later) => covers(later, rect)));
+		const kept = visibleRects(rects);
 		let batch: Buffer[] = [];
 		let batchBytes = 0;
 		let count = 0;
@@ -941,14 +1152,15 @@ export class DesktopStream {
 			head.writeUInt16BE(rect.width, 4);
 			head.writeUInt16BE(rect.height, 6);
 			head.writeUInt32BE(png.byteLength, 8);
-			if (batchBytes + 12 + png.byteLength > MAX_MESSAGE_BYTES || count === 0xffff) await flush();
+			if (batchBytes + 12 + png.byteLength > BATCH_BYTES || count === 0xffff) await flush();
 			batch.push(head, png);
 			batchBytes += 12 + png.byteLength;
 			count++;
 		}
 		await flush();
 		if (signal.aborted) throw new Error(STREAM_CANCELLED);
-		if (cursor) {
+		// A pointer shape larger than the browser shows is not sent at all (the member keeps the last one).
+		if (cursor && cursor.width <= MAX_CURSOR_SIDE && cursor.height <= MAX_CURSOR_SIDE) {
 			const shape = cursor;
 			const stride = Math.ceil(shape.width / 8);
 			const png =
@@ -989,6 +1201,7 @@ export class DesktopStream {
 		this.#outbox.close();
 		this.#ring.length = 0;
 		this.#ringBytes = 0;
+		this.#ringRects = 0;
 		for (const watcher of this.#watchers) watcher.wake();
 		void this.#relay.finally(() => this.#options.ended?.());
 	}

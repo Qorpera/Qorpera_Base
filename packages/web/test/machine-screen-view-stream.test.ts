@@ -306,6 +306,29 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
 	});
 
+	it("keeps nothing of a message once it is drawn: a long stream's jobs and waits stay at none (v245 release review F2)", async () => {
+		const { screen, area, closed } = view();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		// Half an hour at 30 messages a second was 54,000 finished jobs and their waits kept until the stream ended.
+		for (let n = 0; n < 600; n++) {
+			const drawn = screen.stream({ kind: "rects", rects: [area(`m-${n}`, n % 90, 0, 10, 10)] });
+			// While one is under way, what is kept is that one's alone.
+			expect(screen.retained.jobs).toBeLessThanOrEqual(1);
+			expect(await drawn).toBe("drawn");
+			expect(screen.retained).toEqual({ jobs: 0, waits: 0 });
+		}
+		// Many at once, too: what is kept is bounded by what is pending, and goes back to none.
+		const burst = Array.from({ length: 16 }, (_, n) =>
+			screen.stream({ kind: "rects", rects: [area(`b-${n}`, n, 0, 10, 10)] }),
+		);
+		expect(screen.retained.jobs).toBeLessThanOrEqual(16);
+		expect(await Promise.all(burst)).toEqual(Array(16).fill("drawn"));
+		expect(screen.retained).toEqual({ jobs: 0, waits: 0 });
+		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
+		// And each picture was closed once it was on the canvas: the view holds none of them either.
+		expect([closed("m-0"), closed("m-599"), closed("b-15")]).toEqual([1, 1, 1]);
+	});
+
 	it("gives the window's own pictures and the live picture a canvas each: neither ever writes where the other draws (review r6 of #1746)", async () => {
 		const { screen, area, look, canvas, live, on, handedBack } = view();
 		// Only the window's own picture: it is the one shown.

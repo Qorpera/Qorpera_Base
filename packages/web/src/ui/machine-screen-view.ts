@@ -142,11 +142,12 @@ interface StreamPaint {
 	size: { readonly width: number; readonly height: number } | null;
 	/** This stream's own order: each message waits for the one before it, and for nothing of any other stream. */
 	chain: Promise<void>;
-	/** Settles the moment this stream is dropped. EVERY await of one of its messages is raced against it, so a decode
-	 * that never settles cannot hold that message, or any message behind it, or their callers, past the stream's end
-	 * (the lead's audit of #1746, 13 Nov): the stream's work answers `dropped` at once, whatever it was waiting for. */
-	readonly gone: Promise<typeof GONE>;
-	readonly end: () => void;
+	/** One entry for each wait of one of its messages still under way, each answering GONE the moment this stream is
+	 * dropped: EVERY await of a message ends with the stream, so a decode that never settles cannot hold that message, or
+	 * any message behind it, or their callers, past the stream's end (the lead's audit of #1746, 13 Nov). A wait that
+	 * settles takes its entry out, so a long stream keeps none of them (the v245 release review: a shared promise that
+	 * never settled kept a handler for every wait of every message, 54,000 in half an hour). */
+	readonly cancels: Set<() => void>;
 	decoding: number;
 	readonly waiting: (() => void)[];
 	readonly held: Set<{ readonly bytes: number; readonly pixels: number }>;
@@ -871,12 +872,18 @@ export class MachineScreenView {
 		// Each wait below ends with the stream: a decode that never settles holds nothing past the drop, neither this
 		// message nor the ones behind it, nor whoever awaits them. Pictures that land later are closed where they land
 		// (`stale()` above); those already decoded were closed by the drop with the job.
-		const decoded = await Promise.race([pictures, paint.gone]);
-		const turn = decoded === GONE ? GONE : await Promise.race([behind, paint.gone]);
+		const decoded = await this.#whileLive(paint, pictures);
+		const turn = decoded === GONE ? GONE : await this.#whileLive(paint, behind);
 		const url =
-			turn === GONE || message.kind !== "cursor" ? "" : await Promise.race([cursor.catch(() => ""), paint.gone]);
+			turn === GONE || message.kind !== "cursor"
+				? ""
+				: await this.#whileLive(
+						paint,
+						cursor.catch(() => ""),
+					);
 		if (decoded === GONE || turn === GONE || url === GONE || paint.dropped || this.#stop.signal.aborted) {
 			this.#dispose(job);
+			paint.jobs.delete(job);
 			letGo();
 			ready();
 			return "dropped";
@@ -927,19 +934,38 @@ export class MachineScreenView {
 				return "drawn";
 			});
 		} finally {
+			// Committed (and so disposed of): the stream keeps no record of it (the v245 release review: finished jobs
+			// were kept until the stream ended, 54,000 in half an hour at 30 messages a second).
+			paint.jobs.delete(job);
 			letGo();
 			ready();
 		}
+	}
+
+	/** `work`, or GONE the moment `paint`'s stream is dropped, whichever comes first; once either has happened, the
+	 * stream keeps nothing of this wait. */
+	#whileLive<T>(paint: StreamPaint, work: Promise<T>): Promise<T | typeof GONE> {
+		if (paint.dropped) return Promise.resolve(GONE);
+		return new Promise<T | typeof GONE>((resolve, reject) => {
+			const cancel = () => resolve(GONE);
+			paint.cancels.add(cancel);
+			work.then(
+				(value) => {
+					paint.cancels.delete(cancel);
+					resolve(value);
+				},
+				(error: unknown) => {
+					paint.cancels.delete(cancel);
+					reject(error);
+				},
+			);
+		});
 	}
 
 	/** This stream's own work, started when a stream's first message comes and left behind when its generation goes. */
 	#paintFor(): StreamPaint {
 		const paint = this.#paint;
 		if (paint && !paint.dropped && paint.generation === this.#cleared) return paint;
-		let end: () => void = () => {};
-		const gone = new Promise<typeof GONE>((resolve) => {
-			end = () => resolve(GONE);
-		});
 		const made: StreamPaint = {
 			generation: this.#cleared,
 			dropped: false,
@@ -947,8 +973,7 @@ export class MachineScreenView {
 			jobs: new Set(),
 			size: null,
 			chain: Promise.resolve(),
-			gone,
-			end,
+			cancels: new Set(),
 			decoding: 0,
 			waiting: [],
 			held: new Set(),
@@ -974,7 +999,8 @@ export class MachineScreenView {
 		// message starts on a settled chain, and every message already waiting — on a decode, on the one before it, on
 		// its pointer shape — answers now, because each of those awaits is raced against the stream's end.
 		paint.chain = Promise.resolve();
-		paint.end();
+		for (const cancel of paint.cancels) cancel();
+		paint.cancels.clear();
 		// What its jobs had already decoded is closed now, not left behind a sibling that may never finish.
 		for (const job of paint.jobs) this.#dispose(job);
 		paint.jobs.clear();
@@ -1016,6 +1042,14 @@ export class MachineScreenView {
 			} else this.updating();
 			return copy ? "drawn" : "dropped";
 		});
+	}
+
+	/** What the current stream keeps besides its pending work: its jobs and its waits under way. Both go back to none
+	 * once its messages are drawn, however many there were (the v245 release review). Read by the tests and nothing
+	 * else. */
+	get retained(): { readonly jobs: number; readonly waits: number } {
+		const paint = this.#paint;
+		return { jobs: paint?.jobs.size ?? 0, waits: paint?.cancels.size ?? 0 };
 	}
 
 	/** Whether pixels of the live picture are on the canvas: until they are, the window keeps its own pictures. */

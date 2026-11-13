@@ -579,16 +579,58 @@ export function parseCloudMemberMachineStreamPeerRequest(value: unknown): CloudM
 		epoch: input.epoch as number | null,
 	});
 }
-/** One frame of the peer's streamed answer: a message for the browser (1), or why the stream ended (2). */
-export function cloudMemberMachineStreamFrame(kind: 1 | 2, payload: Buffer): Buffer {
+/** The head of one frame of the peer's streamed answer: a message for the browser (1), or why the stream ended (2),
+ * and its length. A picture's payload is written after it as it is, never copied into one buffer with it (the v245
+ * release review: up to 8 MiB a message, on the machine node's own event loop). */
+export function cloudMemberMachineStreamFrameHead(kind: 1 | 2, length: number): Buffer {
 	const head = Buffer.alloc(5);
 	head[0] = kind;
-	head.writeUInt32BE(payload.byteLength, 1);
-	return Buffer.concat([head, payload]);
+	head.writeUInt32BE(length, 1);
+	return head;
+}
+/** One whole frame (a short one: why the stream ended). */
+export function cloudMemberMachineStreamFrame(kind: 1 | 2, payload: Buffer): Buffer {
+	return Buffer.concat([cloudMemberMachineStreamFrameHead(kind, payload.byteLength), payload]);
 }
 /** The largest message of a stream (a batch of changed areas): what the host itself can build (8 MiB) and nothing
  * more, so the peer reader holds at most one such frame plus one chunk (review r2 F1 of #1746). */
 const STREAM_MESSAGE_BYTES = 8 * 1024 * 1024 + 1024;
+
+/** A peer stream's bytes as they come, read off as `kind u8, length u32, payload` frames. Each byte is copied once into
+ * the frame it belongs to, whatever the pieces' sizes. */
+class PeerFramePieces {
+	readonly #pieces: Buffer[] = [];
+	#length = 0;
+	push(piece: Buffer): void {
+		if (piece.byteLength === 0) return;
+		this.#pieces.push(piece);
+		this.#length += piece.byteLength;
+	}
+	/** The next frame's kind and length, once its five header bytes are here. */
+	head(): { kind: number; length: number } | null {
+		if (this.#length < 5) return null;
+		if ((this.#pieces[0] as Buffer).byteLength < 5) {
+			// A header split across pieces: just the leading pieces it needs are joined into one, once.
+			let count = 0;
+			let size = 0;
+			while (size < 5) size += (this.#pieces[count++] as Buffer).byteLength;
+			this.#pieces.splice(0, count, Buffer.concat(this.#pieces.slice(0, count), size));
+		}
+		const head = this.#pieces[0] as Buffer;
+		return { kind: head[0] as number, length: head.readUInt32BE(1) };
+	}
+	/** The next frame's payload of `length` bytes, once all of it is here (its header taken with it); else null. */
+	take(length: number): Buffer | null {
+		if (this.#length < 5 + length) return null;
+		const all = this.#pieces.length === 1 ? (this.#pieces[0] as Buffer) : Buffer.concat(this.#pieces, this.#length);
+		const payload = all.subarray(5, 5 + length);
+		const rest = all.subarray(5 + length);
+		this.#pieces.length = 0;
+		this.#length = 0;
+		this.push(rest);
+		return payload;
+	}
+}
 
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
@@ -1458,19 +1500,21 @@ export function createHttpMemberMachineScreenPeer(options: {
 				return "STREAM_UNAVAILABLE";
 			}
 			const reader = response.body.getReader();
-			let held = Buffer.alloc(0);
+			// The pieces of the frame being read, joined once it is whole: never a growing buffer copied again for every
+			// piece (the v245 release review: 8 MiB in small pieces was quadratic copying on node 1's event loop).
+			const pieces = new PeerFramePieces();
 			try {
 				for (;;) {
 					const next = await reader.read();
 					if (next.done) return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
-					held = Buffer.concat([held, Buffer.from(next.value)]);
-					while (held.byteLength >= 5) {
-						const kind = held[0];
-						const length = held.readUInt32BE(1);
+					pieces.push(Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength));
+					for (;;) {
+						const head = pieces.head();
+						if (!head) break;
+						const { kind, length } = head;
 						if ((kind !== 1 && kind !== 2) || length > STREAM_MESSAGE_BYTES) return "STREAM_UNAVAILABLE";
-						if (held.byteLength < 5 + length) break;
-						const payload = Buffer.from(held.subarray(5, 5 + length));
-						held = held.subarray(5 + length);
+						const payload = pieces.take(length);
+						if (!payload) break;
 						if (kind === 2) {
 							const reason = payload.toString("utf8");
 							return /^[A-Za-z_]{1,64}$/.test(reason) ? reason : "STREAM_UNAVAILABLE";

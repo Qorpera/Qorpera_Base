@@ -3130,6 +3130,50 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		expect(f.host.memberStream).not.toHaveBeenCalled();
 	});
 
+	it("joins a peer's large frame from its small pieces once, never a growing buffer copied again for every piece (v245 release review)", async () => {
+		const f = fixture("mx-c");
+		// A whole 8 MiB picture, then the end, in 1 KiB pieces, with the frames' heads split across pieces too.
+		const picture = Buffer.alloc(8 * 1024 * 1024);
+		for (let i = 0; i < picture.length; i += 997) picture[i] = i & 0xff;
+		const head = (kind: number, length: number) => {
+			const out = Buffer.alloc(5);
+			out[0] = kind;
+			out.writeUInt32BE(length, 1);
+			return out;
+		};
+		const reason = Buffer.from("DESKTOP_ENDED");
+		const bytes = Buffer.concat([
+			head(1, picture.length),
+			picture,
+			head(1, 3),
+			Buffer.from("abc"),
+			head(2, reason.length),
+			reason,
+		]);
+		f.peer(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							for (let at = 0; at < bytes.length; at += 1024) controller.enqueue(bytes.subarray(at, at + 1024));
+							controller.close();
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		f.reads((requestOwner) => f.answer(requestOwner, { private: true, generation: 9 }));
+		const sold = (await f.ticket({ epoch: 3, seat: 9 })) as { ticket: string };
+		const sink = sinkOf();
+		const began = performance.now();
+		expect(await f.router.admitMemberStream(sold.ticket, f.origin)!(sink, f.signal)).toBe("DESKTOP_ENDED");
+		// Before: 8,192 pieces each copying all that came before them, about 34 GB of copying on node 1's event loop.
+		expect(performance.now() - began).toBeLessThan(3000);
+		expect(sink.messages).toHaveLength(2);
+		expect(Buffer.from(sink.messages[0]!).equals(picture)).toBe(true);
+		expect(String(sink.messages[1])).toBe("abc");
+	});
+
 	it("gives up a peer's send the moment the stream is cancelled, and sends nothing after it (review r2 F3 of #1746)", async () => {
 		const f = fixture("mx-c");
 		// The machine's node keeps sending; the member's browser answers pings but never reads.

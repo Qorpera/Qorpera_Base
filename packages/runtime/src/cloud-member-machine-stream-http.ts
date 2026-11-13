@@ -64,21 +64,23 @@ export function cloudMemberMachineStreamClose(reason: string): { code: number; r
 	return { code: 4003, reason: /^[A-Z_]{1,64}$/.test(reason) ? reason : "STREAM_UNAVAILABLE" };
 }
 
+/** A frame's head: its opcode and its length. The payload goes after it as it is, never copied into one buffer with it
+ * (a picture is up to 8 MiB; the v245 release review: no copying on node 1's event loop that the guest can make long). */
+function frameHead(opcode: number, length: number): Buffer {
+	return length < 126
+		? Buffer.from([0x80 | opcode, length])
+		: length < 65536
+			? Buffer.from([0x80 | opcode, 126, length >> 8, length & 0xff])
+			: (() => {
+					const big = Buffer.alloc(10);
+					big[0] = 0x80 | opcode;
+					big[1] = 127;
+					big.writeBigUInt64BE(BigInt(length), 2);
+					return big;
+				})();
+}
 function frame(opcode: number, payload: Buffer): Buffer {
-	const length = payload.byteLength;
-	const head =
-		length < 126
-			? Buffer.from([0x80 | opcode, length])
-			: length < 65536
-				? Buffer.from([0x80 | opcode, 126, length >> 8, length & 0xff])
-				: (() => {
-						const big = Buffer.alloc(10);
-						big[0] = 0x80 | opcode;
-						big[1] = 127;
-						big.writeBigUInt64BE(BigInt(length), 2);
-						return big;
-					})();
-	return Buffer.concat([head, payload]);
+	return Buffer.concat([frameHead(opcode, payload.byteLength), payload]);
 }
 function closeFrame(code: number, reason: string): Buffer {
 	const text = Buffer.from(reason, "utf8").subarray(0, 123);
@@ -277,7 +279,11 @@ export class CloudMemberMachineStreamListener {
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
 				if (ended || socket.destroyed) throw new Error("MEMBER_MACHINE_STREAM_CLOSED");
-				socket.write(frame(0x2, message));
+				// The head and the picture as two writes in one: the picture's bytes are never copied here.
+				socket.cork();
+				socket.write(frameHead(0x2, message.byteLength));
+				socket.write(message);
+				socket.uncork();
 				if (socket.writableLength > HIGH_WATER_BYTES)
 					await new Promise<void>((resolve) => {
 						const done = () => {
