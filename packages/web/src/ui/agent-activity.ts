@@ -17,6 +17,13 @@ export const AGENT_LOOK: Record<AgentState, AgentLook> = {
 	idle: { figure: "Idle" },
 	working: { figure: "Working", line: phrase("Working"), caption: phrase("{name} is working"), disc: "working" },
 	writing: { figure: "Thinking", line: phrase("Writing"), caption: phrase("{name} is writing"), disc: "working" },
+	// Working, and using its desktop computer now (20260930742000): the figure is lit by its screen.
+	computer: {
+		figure: "AtComputer",
+		line: phrase("Using its computer"),
+		caption: phrase("{name} is using its computer"),
+		disc: "working",
+	},
 	decision: { figure: "Waiting", line: phrase("Needs you") },
 	failed: { figure: "Idle", note: phrase("A run did not finish"), disc: "failed" },
 };

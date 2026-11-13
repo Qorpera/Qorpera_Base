@@ -323,6 +323,10 @@ function importManifest(
 		!isUuid(facts.environmentId) ||
 		typeof facts.defaultBranch !== "string" ||
 		!codeImportBranchValid(facts.defaultBranch) ||
+		(facts.sourceBranch !== undefined &&
+			(typeof facts.sourceBranch !== "string" ||
+				!codeImportBranchValid(facts.sourceBranch) ||
+				facts.sourceBranch === facts.defaultBranch)) ||
 		!refs.some((ref) => ref.name === `refs/heads/${facts.defaultBranch}` && ref.sha === facts.mainSha) ||
 		!Number.isSafeInteger(facts.leftOut) ||
 		facts.leftOut < 0 ||
@@ -342,6 +346,9 @@ function importManifest(
 		createdAt: facts.createdAt,
 		from,
 		defaultBranch: facts.defaultBranch,
+		// The source's own default beside the branch brought in as main, which the refs plan keeps (review round 1 of
+		// #1725, F1: a half-done snapshot's import is looked at again from this manifest).
+		...(facts.sourceBranch === undefined ? {} : { sourceBranch: facts.sourceBranch }),
 		mainSha: facts.mainSha,
 		refs: refs.slice(0, CODE_BUNDLE_MANIFEST_REFS).map((ref) => ({ name: ref.name, sha: ref.sha })),
 		refsCount: refs.length,
@@ -396,6 +403,11 @@ function importManifestOf(value: unknown, target: CodeBundleTarget, name: string
 		CODE_IMPORT_BUNDLE_NAME.test(name) &&
 		name.endsWith(`-${value.mainSha.slice(0, 12)}`) &&
 		typeof value.defaultBranch === "string" &&
+		// Absent from a manifest made before it; when there, a name the import keeps that is not the default branch.
+		(!("sourceBranch" in value) ||
+			(typeof value.sourceBranch === "string" &&
+				codeImportBranchValid(value.sourceBranch) &&
+				value.sourceBranch !== value.defaultBranch)) &&
 		fromOf(value.from) !== null &&
 		typeof value.sha256 === "string" &&
 		SHA256_HEX_PATTERN.test(value.sha256) &&

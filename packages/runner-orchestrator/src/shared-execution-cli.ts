@@ -24,11 +24,12 @@ function required(name: string, environment: NodeJS.ProcessEnv = process.env): s
 	return value;
 }
 
-/** QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" gives each slot's native host the node's folder search. */
+/** QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: each slot's native host gets the node's folder search unless an operator set
+ * it "off" (keyholes S4: search for every run; it was off unless "on" until then). */
 export function folderSearch(environment: NodeJS.ProcessEnv = process.env): boolean {
 	const value = environment.QORPERA_SHARED_EXECUTION_FOLDER_SEARCH;
-	if (value === undefined || value === "off") return false;
-	if (value === "on") return true;
+	if (value === undefined || value === "on") return true;
+	if (value === "off") return false;
 	throw new Error("QORPERA_SHARED_EXECUTION_FOLDER_SEARCH must be on or off");
 }
 
@@ -142,7 +143,7 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		...(process.env.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS
 			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
 			: {}),
-		// The node's folder search (F3): off unless on.
+		// The node's folder search (F3): on unless an operator set it off.
 		...(folderSearch() ? { folderSearch: true } : {}),
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };

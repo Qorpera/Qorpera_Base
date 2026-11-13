@@ -961,6 +961,9 @@ begin
 		(d || 'restoring.json', 'write', 'member', false, 'git_platform_only'),
 		(d || 'restoring.json', 'write', 'session', true, 'git_platform_only'),
 		(d || 'restoring.json', 'delete', 'session', true, 'git_platform_only'),
+		-- (20260930741000's item 4: a session moves nothing onto the mark and links nothing at it.)
+		(d || 'restoring.json', 'move', 'session', true, 'git_platform_only'),
+		(d || 'restoring.json', 'symlink', 'session', true, 'git_platform_only'),
 		(d || 'restoring.json', 'write', 'platform', false, null),
 		(s || 'company', 'mkdir', 'member', false, 'git_platform_only'),
 		(s || 'company/at-20261110T120000Z', 'mkdir', 'session', true, 'git_platform_only'),

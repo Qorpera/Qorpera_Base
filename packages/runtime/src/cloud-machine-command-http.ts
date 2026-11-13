@@ -11,6 +11,7 @@ import {
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { CloudCommandPages } from "./cloud-command-pages.ts";
 import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
 import {
 	MACHINE_SCREEN_MAX_PNG_BYTES,
@@ -915,6 +916,9 @@ export function createHttpCloudMachineCommandGateway(options: {
 	/** G2-6b: the run's holder credential, read per request (NativeHostDispatch.holderHeader). Null only for an
 	 * executor forwarding to its peer, which holds no run's lease. */
 	holder: (() => string) | null;
+	/** What the executors said they take for a page (keyholes S1): one per process, shared by its gateways (an
+	 * executor's to its peers too). A gateway without it learns only from its own answers. */
+	pages?: CloudCommandPages;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudMachineCommandGateway {
@@ -922,15 +926,19 @@ export function createHttpCloudMachineCommandGateway(options: {
 	if (!validToken(options.token)) throw new Error(ERROR);
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const transport = options.fetch ?? fetch;
-	const request = async (
+	const pages = options.pages ?? new CloudCommandPages();
+	const send = async (
 		action: "start" | "read" | "cancel",
 		scope: CloudMachineCommandScope,
 		input: unknown,
 		signal: AbortSignal,
 	): Promise<CloudMachineCommandReceipt> => {
 		try {
+			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
+			const read = action === "read" ? parseCloudCodingCommandRead(input) : undefined;
+			const asked = read ? { ...read, limit: Math.min(read.limit ?? 4096, pages.of(base)) } : input;
 			const admitted = parseCloudMachineCommandHttpRequest(
-				{ schema: "qorpera.machine-command-http/v1", binding, scope, action, input },
+				{ schema: "qorpera.machine-command-http/v1", binding, scope, action, input: asked },
 				action,
 			);
 			const body = JSON.stringify(admitted);
@@ -950,6 +958,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 					}).catch(() => {
 						throw new CloudMachineCommandUnanswered();
 					});
+					pages.heard(base, response.headers);
 					if (response.status >= 500) {
 						void response.body?.cancel().catch(() => undefined);
 						throw new CloudMachineCommandUnanswered();
@@ -986,6 +995,36 @@ export function createHttpCloudMachineCommandGateway(options: {
 			if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
 				throw new CloudMachineCommandUnanswered();
 			throw error instanceof Error && /^[A-Z][A-Z0-9_]{2,60}$/.test(error.message) ? error : new Error(ERROR);
+		}
+	};
+	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. */
+	const request = async (
+		action: "start" | "read" | "cancel",
+		scope: CloudMachineCommandScope,
+		input: unknown,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> => {
+		// What a read may ask the executor for now; nothing for any other call, or a read that does not parse (`send`
+		// refuses it).
+		const limit = (): number => {
+			try {
+				return action === "read" ? Math.min(parseCloudCodingCommandRead(input).limit ?? 4096, pages.of(base)) : 0;
+			} catch {
+				return 0;
+			}
+		};
+		const asked = limit();
+		try {
+			return await send(action, scope, input, signal);
+		} catch (error) {
+			if (
+				error instanceof CloudMachineCommandRefusal ||
+				error instanceof CloudMachineCommandUnanswered ||
+				limit() >= asked
+			)
+				throw error;
+			return send(action, scope, input, signal);
 		}
 	};
 	return Object.freeze<CloudMachineCommandGateway>({

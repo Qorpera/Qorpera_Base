@@ -100,6 +100,11 @@ export const CODE_IMPORT_LOOK_COLUMN_BYTES = 16 * KiB;
 export const CODE_IMPORT_LOOK_PATH_BYTES = 200;
 export const CODE_IMPORT_LOOK_PATHS = 10;
 export const CODE_IMPORT_LOOK_SHOWN = 30;
+/** Other lines of work (kept heads that hold changes main lacks) the look shows by name; the measure's commands each
+ * end within this many seconds, and a line's tree listing is read only up to this many bytes. */
+export const CODE_IMPORT_LOOK_LINES = 10;
+export const CODE_IMPORT_LINES_SECONDS = 300;
+export const CODE_IMPORT_LINE_TREE_BYTES = 32 * MiB;
 /** A request's progress (the step call's own bound), and what of it the executor sends (the kernel adds its words). */
 export const CODE_IMPORT_PROGRESS_BYTES = 3 * KiB;
 export const CODE_IMPORT_PROGRESS_SENT_BYTES = 2_560;
@@ -655,16 +660,21 @@ export interface CodeImportWanted {
 	/** The default branch's name (after `refs/heads/`) and its commit. */
 	readonly defaultBranch: string;
 	readonly mainSha: string;
-	/** The first bundle's header, the default branch first, then the other heads and the tags, each in its names' byte
-	 * order. */
+	/** The first bundle's header, the default branch first (then the source's own default, when the request named
+	 * another branch), then the other heads and the tags, each in its names' byte order. */
 	readonly refs: readonly CodeBundleRef[];
 	/** The objects to fetch, each once, in that order. */
 	readonly wants: readonly string[];
 	/** Refs not in the header: names git or the header refuses, refs past the wants' cap, and the list's unreadable. */
 	readonly leftOut: number;
+	/** The source's own default branch (HEAD's `symref-target`, after `refs/heads/`) when the request named another one,
+	 * HEAD names a listed head whose name the import takes, and its ref is in the header; null otherwise. The refs plan
+	 * keeps it whatever its age (`codeImportRefsPlan`'s `sourceBranch`). */
+	readonly sourceBranch: string | null;
 }
 
-/** From the ref list to the fetch: the default branch is `branch` when the request named one
+/** From the ref list to the fetch (when the request named a branch, the source's own default, HEAD's, comes second):
+ * the default branch is `branch` when the request named one
  * (`IMPORT_BRANCH_UNKNOWN` when the list has no such head), else HEAD's `symref-target` (`IMPORT_SOURCE_EMPTY` when
  * HEAD is missing or names no commit, `IMPORT_BRANCH_UNKNOWN` when it is no listed head); a name `codeImportBranchValid`
  * refuses is `IMPORT_BRANCH_NAME`. Then every head and tag whose name the header takes, each object wanted once, until
@@ -689,13 +699,27 @@ export function codeImportWants(
 	}
 	const defaultBranch = target.slice("refs/heads/".length);
 	if (!codeImportBranchValid(defaultBranch)) throw refused("IMPORT_BRANCH_NAME");
+	// When another branch comes in as main, the source's own default is kept beside it whatever its age (the lead's
+	// call 6a of the import's follow-ups): its name, when HEAD names a listed head the import would take as a name. It
+	// is wanted right after the branch brought in, before every other head and tag, so the cap on wanted objects never
+	// leaves it out (review round 3 of #1725, F2), and it stands second in the bundle's header.
+	const ownName = list.head?.target;
+	const own =
+		typeof ownName === "string" &&
+		ownName !== target &&
+		ownName.startsWith("refs/heads/") &&
+		codeImportBranchValid(ownName.slice("refs/heads/".length))
+			? byName.get(ownName)
+			: undefined;
 	const main = byName.get(target) as CodeImportListedRef;
 	const sorted = (prefix: string) =>
-		list.refs.filter((ref) => ref.name.startsWith(prefix) && ref !== main).sort((a, b) => byBytes(a.name, b.name));
+		list.refs
+			.filter((ref) => ref.name.startsWith(prefix) && ref !== main && ref !== own)
+			.sort((a, b) => byBytes(a.name, b.name));
 	const wanted = new Set<string>(),
 		refs: CodeBundleRef[] = [];
 	let leftOut = list.unreadable;
-	for (const ref of [main, ...sorted("refs/heads/"), ...sorted("refs/tags/")]) {
+	for (const ref of [main, ...(own ? [own] : []), ...sorted("refs/heads/"), ...sorted("refs/tags/")]) {
 		if (!codeImportHeaderRefValid(ref.name)) {
 			leftOut += 1;
 			continue;
@@ -709,7 +733,9 @@ export function codeImportWants(
 		}
 		refs.push({ name: ref.name, sha: ref.oid });
 	}
-	return { defaultBranch, mainSha: main.oid, refs, wants: [...wanted], leftOut };
+	// Named only when its ref is in the bundle (a cap of one want can still leave it out): there is nothing to keep else.
+	const sourceBranch = own && refs.some((ref) => ref.name === own.name) ? own.name.slice("refs/heads/".length) : null;
+	return { defaultBranch, mainSha: main.oid, refs, wants: [...wanted], leftOut, sourceBranch };
 }
 
 /** The fetch request: `ofs-delta`, the wants and `done` (no haves, so no acknowledgments and a pack that needs nothing
@@ -1065,7 +1091,9 @@ export interface CodeImportRefsPlan {
 
 /** From the proof repository's refs to what the imported repository keeps (5.3 step 5, X11): `refs/heads/main` and
  * `refs/qorpera/kept-here` at the default branch; tags whose target is a commit, newest first, at most 500; other heads
- * changed in the last 90 days, newest first, at most 200, as `refs/qorpera/imported/heads/<name>`; every other ref
+ * changed in the last 90 days, newest first, at most 200, as `refs/qorpera/imported/heads/<name>` (and, when the
+ * request named another branch as main, the source's own default, `sourceBranch`, first and whatever its age; it
+ * counts toward the 200 and must pass the same name rules); every other ref
  * deleted, and counted with its reason (`CodeImportLeftOut`). Each kept name must be one git, restore's own name test,
  * the code host's disk (`codeImportRefPartsFit`) and the folder (at `code/<owner>/<name>/repo.git/<ref>`,
  * `codeImportFolderPathValid`) take, and not one name to the
@@ -1076,6 +1104,8 @@ export function codeImportRefsPlan(value: {
 	defaultBranch: string;
 	refs: readonly CodeImportRefSeen[];
 	now: number;
+	/** The source's own default branch when the request named another one as main (`CodeImportRaw.sourceBranch`). */
+	sourceBranch?: string | null;
 }): CodeImportRefsPlan {
 	let repository: CloudCodingRepository;
 	try {
@@ -1084,9 +1114,11 @@ export function codeImportRefsPlan(value: {
 		throw new Error("INVALID_CODE_IMPORT");
 	}
 	const { defaultBranch, refs, now } = value;
+	const sourceBranch = value.sourceBranch ?? null;
 	if (
 		repository.host !== "qorpera" ||
 		!whole(now) ||
+		(sourceBranch !== null && (typeof sourceBranch !== "string" || !codeImportBranchValid(sourceBranch))) ||
 		!Array.isArray(refs) ||
 		!refs.every(
 			(ref) =>
@@ -1136,7 +1168,14 @@ export function codeImportRefsPlan(value: {
 	const left = { name: 0, clash: 0, notCommit: 0, older: 0, over: 0, other: 0 };
 	const newest = (a: CodeImportRefSeen, b: CodeImportRefSeen) => b.time - a.time || byBytes(a.name, b.name);
 	const tags = refs.filter((ref) => ref.name.startsWith("refs/tags/")).sort(newest);
-	const heads = refs.filter((ref) => ref.name.startsWith("refs/heads/") && ref !== base).sort(newest);
+	// The source's own default, when another branch came in as main: considered first and kept whatever its age.
+	const own =
+		sourceBranch === null || sourceBranch === defaultBranch
+			? undefined
+			: refs.find((ref) => ref.name === `refs/heads/${sourceBranch}`);
+	const heads = refs
+		.filter((ref) => ref.name.startsWith("refs/heads/") && ref !== base)
+		.sort((a, b) => Number(b === own) - Number(a === own) || newest(a, b));
 	left.other = refs.length - 1 - tags.length - heads.length;
 	const since = Math.floor(now / 1000) - CODE_IMPORT_BRANCH_DAYS * 86_400;
 	/** One ref considered for keeping under `name`, until `cap` of its kind are kept. */
@@ -1175,7 +1214,7 @@ export function codeImportRefsPlan(value: {
 			head,
 			`${CODE_IMPORT_IMPORTED_HEADS}${head.name.slice("refs/heads/".length)}`,
 			head.type === "commit",
-			head.time >= since,
+			head === own || head.time >= since,
 			CODE_IMPORT_BRANCHES,
 			keptHeads,
 		);
@@ -1373,6 +1412,12 @@ export interface CodeImportLook {
 	readonly authors30d: number;
 	readonly tags: { readonly seen: number; readonly kept: number };
 	readonly branches: { readonly seen: number; readonly kept: number };
+	/** The other lines of work: of the heads kept beside main (`branches.kept`), how many hold changes main lacks
+	 * (`count`), how many such changes there are, each counted once however many lines hold it (`changes`), and at most
+	 * 10 of those lines (`codeImportLinesShown`'s order): the head's name, its changes main lacks and main's it lacks,
+	 * when it last changed, and whether the company folder takes every name in its tree (null when that was not read
+	 * whole). Absent from a look made before the measure, or when it did not end well. */
+	readonly lines?: CodeImportLines;
 	/** Refs the fetch and the plan left out. */
 	readonly leftOut: number;
 	/** Main's blobs, and its entries (files and folders). */
@@ -1405,6 +1450,58 @@ export interface CodeImportLook {
 	readonly why: string | null;
 }
 
+/** One other line of work as the look shows it. */
+export interface CodeImportLine {
+	readonly name: string | null;
+	readonly ahead: number;
+	readonly behind: number;
+	readonly lastAt: string | null;
+	readonly fits: boolean | null;
+}
+export interface CodeImportLines {
+	readonly count: number;
+	readonly changes: number;
+	readonly shown: readonly CodeImportLine[];
+}
+
+/** One other line of work as part B's measure found it: a kept head's name (after `refs/heads/`), its changes main
+ * lacks (`ahead`, at least 1) and main's it lacks (`behind`), its commit's time (`CodeImportRefSeen.time`), and `fits`. */
+export interface CodeImportLineSeen {
+	readonly name: string;
+	readonly ahead: number;
+	readonly behind: number;
+	readonly time: number;
+	readonly fits: boolean | null;
+}
+
+/** Two shown lines in the look's order, by what is shown alone: most `ahead` first, then the newest `lastAt` (null
+ * last), then `name` by its UTF-8 bytes (null last). Below 0 when `a` comes first. */
+function lineOrder(a: CodeImportLine, b: CodeImportLine): number {
+	const last = (x: string | null, y: string | null) => (x === null ? 1 : 0) - (y === null ? 1 : 0);
+	return (
+		b.ahead - a.ahead ||
+		last(a.lastAt, b.lastAt) ||
+		byBytes(b.lastAt ?? "", a.lastAt ?? "") ||
+		last(a.name, b.name) ||
+		byBytes(a.name ?? "", b.name ?? "")
+	);
+}
+const lineShown = (line: Omit<CodeImportLineSeen, "fits">) => ({
+	name: codeImportShown(line.name),
+	ahead: line.ahead,
+	behind: line.behind,
+	lastAt: codeImportTime(line.time),
+	fits: null,
+});
+
+/** The lines the look shows, at most 10, in its order (`lineOrder`); lines that show the same keep their names' byte
+ * order. Part B reads the trees of these alone. */
+export function codeImportLinesShown<T extends Omit<CodeImportLineSeen, "fits">>(lines: readonly T[]): T[] {
+	return [...lines]
+		.sort((a, b) => lineOrder(lineShown(a), lineShown(b)) || byBytes(a.name, b.name))
+		.slice(0, CODE_IMPORT_LOOK_LINES);
+}
+
 /** What part B's look gathers, before the look's rules: paths as git gave them (decoded as UTF-8), every refused path
  * and every hit. */
 export interface CodeImportLookFacts {
@@ -1417,6 +1514,9 @@ export interface CodeImportLookFacts {
 	authors30d: number;
 	tags: { seen: number; kept: number };
 	branches: { seen: number; kept: number };
+	/** The measure of the other lines of work: how many kept heads hold changes main lacks, how many such changes, and
+	 * the lines the look shows (`codeImportLinesShown`, each with `fits`). Left out when the measure did not end well. */
+	lines?: { count: number; changes: number; shown: readonly CodeImportLineSeen[] };
 	leftOut: number;
 	files: number;
 	entries: number;
@@ -1454,10 +1554,11 @@ export function codeImportJsonbBound(value: unknown): number {
 const lookFits = (look: CodeImportLook) =>
 	utf8(JSON.stringify(look)) <= CODE_IMPORT_LOOK_BYTES && codeImportJsonbBound(look) <= CODE_IMPORT_LOOK_BYTES;
 
-/** The look, from what part B found: every path and the default branch shown or null (`codeImportShown`), never cut;
- * the found keys deduplicated as shown, still in main first, then by kind and path, at most 30; at most 10 refused
- * paths (`more` counts the rest). Then whole shown keys are dropped from the last until it fits its bounds (`found`
- * still counts them). The result is one `codeImportLookOf` takes. */
+/** The look, from what part B found: every path, line name and the default branch shown or null (`codeImportShown`),
+ * never cut; the found keys deduplicated as shown, still in main first, then by kind and path, at most 30; at most 10
+ * refused paths (`more` counts the rest); at most 10 other lines of work, in `codeImportLinesShown`'s order, when they
+ * were measured. Then whole shown keys are dropped from the last until it fits its bounds (`found` still counts them).
+ * The result is one `codeImportLookOf` takes. */
 export function codeImportLook(facts: CodeImportLookFacts): CodeImportLook {
 	const refusedPaths = (facts.refused?.paths ?? []).map((path) => codeImportShown(path));
 	const order = (kind: CodeImportKeyKind) => CODE_IMPORT_KEY_KINDS.indexOf(kind);
@@ -1488,6 +1589,18 @@ export function codeImportLook(facts: CodeImportLookFacts): CodeImportLook {
 		authors30d: facts.authors30d,
 		tags: { seen: facts.tags?.seen, kept: facts.tags?.kept },
 		branches: { seen: facts.branches?.seen, kept: facts.branches?.kept },
+		...(facts.lines === undefined
+			? {}
+			: {
+					lines: {
+						count: facts.lines.count,
+						changes: facts.lines.changes,
+						shown: codeImportLinesShown(facts.lines.shown ?? []).map((line) => ({
+							...lineShown(line),
+							fits: line.fits,
+						})),
+					},
+				}),
 		leftOut: facts.leftOut,
 		files: facts.files,
 		entries: facts.entries,
@@ -1510,8 +1623,9 @@ export function codeImportLook(facts: CodeImportLookFacts): CodeImportLook {
 		refused: { paths: (string | null)[]; more: number };
 		secrets: { shown: CodeImportLook["secrets"]["shown"][number][] };
 	};
-	// Without the shown keys a look always fits: ten refused paths, the largest file's and the branch are at most 200
-	// bytes each, at most 400 as JSON (a path with a control character is never shown).
+	// Without the shown keys a look always fits: ten refused paths, ten line names, the largest file's and the branch are
+	// at most 200 bytes each, at most 400 as JSON (a name with a control character is never shown), and every number a
+	// safe integer; under 11 KiB as JSON and as the jsonb bound (code-import.test.ts, "the look": its largest).
 	while (!lookFits(look)) {
 		if (!look.secrets.shown.length) throw new Error("INVALID_CODE_IMPORT_LOOK");
 		look.secrets.shown.pop();
@@ -1539,9 +1653,9 @@ const time = (value: unknown) =>
 const shownOrNull = (value: unknown) =>
 	value === null || (typeof value === "string" && codeImportShown(value) === value);
 
-/** A look, read back as the kernel keeps it (the claim's `looked`, and a look made here): exactly its keys, each of
- * its kind and within its bounds, every path and the default branch shown or null, and within its bounds as a whole.
- * Anything else: `INVALID_CODE_IMPORT_LOOK`. */
+/** A look, read back as the kernel keeps it (the claim's `looked`, and a look made here): exactly its keys (`lines` may
+ * be missing), each of its kind and within its bounds, every path, line name and the default branch shown or null, the
+ * lines in their order, and within its bounds as a whole. Anything else: `INVALID_CODE_IMPORT_LOOK`. */
 export function codeImportLookOf(value: unknown): CodeImportLook {
 	const fail = "INVALID_CODE_IMPORT_LOOK";
 	const look = closed(
@@ -1568,12 +1682,40 @@ export function codeImportLookOf(value: unknown): CodeImportLook {
 			"fits",
 			"why",
 		],
-		[],
+		["lines"],
 		fail,
 	);
 	const pair = (item: unknown, cap: number) => {
 		const { seen, kept } = closed(item, ["seen", "kept"], [], fail);
 		return whole(seen) && whole(kept) && kept <= seen && kept <= cap;
+	};
+	/** The other lines of work, of at most `kept` heads. */
+	const linesFit = (item: unknown, kept: number) => {
+		const { count, changes, shown } = closed(item, ["count", "changes", "shown"], [], fail);
+		if (
+			!whole(count) ||
+			!whole(changes) ||
+			count > kept ||
+			count >= 1 !== changes >= 1 ||
+			!Array.isArray(shown) ||
+			shown.length > Math.min(CODE_IMPORT_LOOK_LINES, count)
+		)
+			return false;
+		const read = shown.map((line) => closed(line, ["name", "ahead", "behind", "lastAt", "fits"], [], fail));
+		if (
+			!read.every(
+				(line) =>
+					shownOrNull(line.name) &&
+					whole(line.ahead, 1) &&
+					line.ahead <= changes &&
+					whole(line.behind) &&
+					time(line.lastAt) &&
+					(line.fits === null || typeof line.fits === "boolean"),
+			)
+		)
+			return false;
+		const lines = read as unknown as CodeImportLine[];
+		return lines.every((line, index) => index === 0 || lineOrder(lines[index - 1] as CodeImportLine, line) <= 0);
 	};
 	const biggest = closed(look.biggest, ["path", "bytes"], [], fail),
 		lfs = closed(look.lfs, ["pointers"], [], fail),
@@ -1595,6 +1737,7 @@ export function codeImportLookOf(value: unknown): CodeImportLook {
 		!whole(look.authors30d) ||
 		!pair(look.tags, CODE_IMPORT_TAGS) ||
 		!pair(look.branches, CODE_IMPORT_BRANCHES) ||
+		("lines" in look && !linesFit(look.lines, (look.branches as { kept: number }).kept)) ||
 		!whole(look.leftOut) ||
 		!whole(look.files) ||
 		!whole(look.entries) ||
@@ -1737,7 +1880,8 @@ export const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside",
 export type CodeImportStep = (typeof CODE_IMPORT_STEPS)[number];
 
 /** The first bundle, as stored: its name, bytes and their SHA-256, the default branch and its commit, how many refs its
- * header names and how many the fetch left out. */
+ * header names and how many the fetch left out; and, when the request named another branch as main, the source's own
+ * default (`sourceBranch`, which the refs plan keeps whatever its age). */
 export interface CodeImportRaw {
 	readonly name: string;
 	readonly sha256: string;
@@ -1746,6 +1890,7 @@ export interface CodeImportRaw {
 	readonly mainSha: string;
 	readonly refs: number;
 	readonly leftOut: number;
+	readonly sourceBranch?: string;
 }
 /** The restore-shaped bundle, as stored: what restore's jobs take (`CodeRestoreBundle`), and how many refs it has. */
 export interface CodeImportKept {
@@ -1782,7 +1927,12 @@ const PROGRESS_OWN = ["step", "raw", "kept", "at", "setAside", "built", "relayRe
 const SET_ASIDE = /^code\/_set-aside\/./;
 
 function rawOf(value: unknown, fail: string): CodeImportRaw {
-	const raw = closed(value, ["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"], [], fail);
+	const raw = closed(
+		value,
+		["name", "sha256", "bytes", "defaultBranch", "mainSha", "refs", "leftOut"],
+		["sourceBranch"],
+		fail,
+	);
 	if (
 		typeof raw.name !== "string" ||
 		!CODE_IMPORT_BUNDLE_NAME.test(raw.name) ||
@@ -1795,7 +1945,11 @@ function rawOf(value: unknown, fail: string): CodeImportRaw {
 		!SHA.test(raw.mainSha) ||
 		!raw.name.endsWith(`-${raw.mainSha.slice(0, 12)}`) ||
 		!whole(raw.refs, 1) ||
-		!whole(raw.leftOut)
+		!whole(raw.leftOut) ||
+		(raw.sourceBranch !== undefined &&
+			(typeof raw.sourceBranch !== "string" ||
+				!codeImportBranchValid(raw.sourceBranch) ||
+				raw.sourceBranch === raw.defaultBranch))
 	)
 		throw new Error(fail);
 	return {
@@ -1806,6 +1960,7 @@ function rawOf(value: unknown, fail: string): CodeImportRaw {
 		mainSha: raw.mainSha,
 		refs: raw.refs,
 		leftOut: raw.leftOut,
+		...(raw.sourceBranch === undefined ? {} : { sourceBranch: raw.sourceBranch as string }),
 	};
 }
 
@@ -2120,6 +2275,8 @@ export interface CodeImportFetched {
 	readonly mainSha: string;
 	readonly refs: readonly CodeBundleRef[];
 	readonly leftOut: number;
+	/** The source's own default branch, when the request named another one (`CodeImportRaw.sourceBranch`). */
+	readonly sourceBranch?: string | null;
 }
 
 /** Part C2's `fetchGitHubImport` (`code-import-fetch.ts`): the advertisement, the ref list (once more after a `not our
@@ -2142,6 +2299,8 @@ export interface CodeImportBundleFacts {
 	readonly createdAt: string;
 	readonly from: CodeImportFrom;
 	readonly defaultBranch: string;
+	/** The source's own default when the request named another branch as main (`CodeImportRaw.sourceBranch`). */
+	readonly sourceBranch?: string;
 	readonly mainSha: string;
 	readonly refs: readonly CodeBundleRef[];
 	readonly leftOut: number;
@@ -2158,6 +2317,10 @@ export interface CodeImportBundleManifest {
 	readonly createdAt: string;
 	readonly from: CodeImportFrom;
 	readonly defaultBranch: string;
+	/** The source's own default when the request named another branch as main, so an import that goes on from this
+	 * bundle (a half-done snapshot's, `#snapshot` in code-import-run.ts) looks at it as the first look did. Absent from a
+	 * manifest made before (review round 1 of #1725, F1). */
+	readonly sourceBranch?: string;
 	readonly mainSha: string;
 	/** The first 2,000 refs in the order they were given (the fetch's header: the default branch first), of
 	 * `refsCount`. */

@@ -51,6 +51,7 @@ import type {
 import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
+import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
 	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
@@ -176,6 +177,8 @@ function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
  * in this deployment's peer allowlist is ever a destination. */
 export class MachineCommandRouter {
 	readonly #options: MachineCommandRouterOptions;
+	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
+	readonly #pages = new CloudCommandPages();
 	readonly #pointers = new Map<string, MemberPointerPass>();
 	readonly #streamTickets = new Map<string, MemberStreamTicket>();
 	readonly #streamsOpen = new Set<{ readonly userId: string; readonly machineId: string }>();
@@ -215,7 +218,7 @@ export class MachineCommandRouter {
 		const gateway = createHttpCloudMachineCommandGateway({
 			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
 			// The peer listener takes no holder: this executor proved the guest's at its own ingress.
-			holder: null, fetch: this.#options.fetch,
+			holder: null, fetch: this.#options.fetch, pages: this.#pages,
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
 		// its own credential, rechecks SQL and may only execute locally; its

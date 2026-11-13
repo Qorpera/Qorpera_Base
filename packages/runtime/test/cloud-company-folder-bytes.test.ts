@@ -8,6 +8,7 @@ import { HttpCloudCompanyFolderBytes } from "@qorpera/runtime/cloud-company-fold
 import { CloudCompanyFolderError, type CloudCompanyFolderFile } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../../object-gateway/src/dependency.ts";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
@@ -736,4 +737,50 @@ it("keeps any other refusal's 400, which never opens the gateway's circuit", asy
 		);
 		expect(authority.health().api.status).toBe("healthy");
 	}
+});
+
+// Review r2 of #1700 (keyholes S3): a connection that drops after the answer's headers is a lost answer, as a fetch
+// that fails is, so a read of several files keeps it as that file's; a cancel while the body comes stays a cancel.
+it("reads a body cut off after its headers as a lost answer, and a cancel while it comes as a cancel", async () => {
+	const f = nativeToolAuthorityFixture();
+	let cut = true;
+	const bytes = new HttpCloudCompanyFolderBytes({
+		baseUrl: "http://127.0.0.1:9",
+		token: "t".repeat(43),
+		binding: f.binding,
+		holder: () => `job.${f.binding.jobId.toLowerCase()}.${"h".repeat(43)}`,
+		identity: f.authority.identity,
+		control: {
+			call: vi.fn(async () => {
+				throw new Error("A read makes no control call");
+			}),
+		},
+		fetch: async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new Uint8Array([123]));
+						if (cut) controller.error(new TypeError("terminated"));
+					},
+				}),
+				{ status: 200 },
+			),
+	});
+	const file = {
+		manifestSha256: "a".repeat(64),
+		fileSha256: "b".repeat(64),
+		bytes: 10,
+		mediaType: "text/plain",
+		executable: false,
+	};
+	const lost = await bytes.range(file, 0, 4, new AbortController().signal).catch((error: unknown) => error);
+	expect(lost).toBeInstanceOf(CloudRuntimeDiagnosticError);
+	expect(lost).toMatchObject({ category: "transport_unavailable" });
+	// The body stays open: the call is cancelled while it waits for the rest.
+	cut = false;
+	const abort = new AbortController();
+	const pending = bytes.range(file, 0, 4, abort.signal);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	abort.abort();
+	await expect(pending).rejects.toMatchObject({ category: "cancelled" });
 });
