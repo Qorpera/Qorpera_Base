@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -47,6 +47,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // 2. With the switch on, Codex's own tools reach the machine through the whole channel and work there.
 // 3. The run's work log holds a step for each of Codex's own calls, with the envelope the model was shown.
 // 4. A command the review declines never reaches the machine, and the model is told in words it can act on.
+// 5. The two identities on a machine (only in a run that is root, `run-on-node --sudo`): Codex's own shell is the
+//    agent's account, it reaches root through the image's own sudo rule, and it can change a file root wrote.
 
 const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 const ONLY = process.env.P1_ONLY ? new Set(process.env.P1_ONLY.split(",")) : null;
@@ -60,6 +62,11 @@ const CANARY_AUTH = `HOMECANARY-auth-${randomBytes(16).toString("hex")}`;
 const CANARY_ENV = `HOMECANARY-env-${randomBytes(16).toString("hex")}`;
 const CANARIES = { auth: CANARY_AUTH, env: CANARY_ENV };
 const PROVIDER_BASE = "http://scripted-provider.invalid/v1";
+/** The account Codex's own tools run as on a machine, and its uid, as the image makes them (CLOUD_MACHINE_HOME). */
+const CLOUD_AGENT_ACCOUNT = "qorpera-agent";
+const CLOUD_AGENT_UID = 2000;
+/** Whether this run may make that account and give it the image's sudo rule: only `run-on-node --sudo` can. */
+const AS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
 const README = "# Readme\n\nThe company's readme, in the folder (read with company_read).\n";
 const SEED = "# Seed\n\nThe first line of the seed.\nA line apply_patch will change.\nThe last line.\n";
 
@@ -481,12 +488,74 @@ function setup(on) {
 }
 
 /**
+ * The agent's account on the test machine, made exactly as `deploy/machine/build-machine-image.sh` makes it in the
+ * image, with the image's own sudo rule (`deploy/machine/qorpera-agent.sudoers`). Returns how to take it away again:
+ * this proof leaves nothing of itself on the test machine.
+ */
+function agentAccount() {
+	const run = (file, args) => execFileSync(file, args, { stdio: ["ignore", "pipe", "pipe"] }).toString();
+	const rule = "/etc/sudoers.d/qorpera-agent";
+	const madeAccount = !existsSync(`/var/lib/${CLOUD_AGENT_ACCOUNT}`) && !hasAccount();
+	if (madeAccount) {
+		run("/usr/sbin/groupadd", ["--gid", String(CLOUD_AGENT_UID), CLOUD_AGENT_ACCOUNT]);
+		run("/usr/sbin/useradd", [
+			"--uid", String(CLOUD_AGENT_UID), "--gid", String(CLOUD_AGENT_UID), "--home-dir",
+			`/var/lib/${CLOUD_AGENT_ACCOUNT}`, "--create-home", "--shell", "/bin/bash", CLOUD_AGENT_ACCOUNT,
+		]);
+	}
+	const madeRule = !existsSync(rule);
+	if (madeRule) {
+		run("/usr/bin/install", ["-o", "root", "-g", "root", "-m", "0440",
+			join(repositoryRoot, "deploy/machine/qorpera-agent.sudoers"), rule]);
+		run("/usr/sbin/visudo", ["-cf", rule]);
+	}
+	return () => {
+		try {
+			if (madeRule) execFileSync("/bin/rm", ["-f", rule]);
+			if (madeAccount) execFileSync("/usr/sbin/userdel", ["-r", CLOUD_AGENT_ACCOUNT], { stdio: "ignore" });
+		} catch {}
+	};
+}
+
+function hasAccount() {
+	try {
+		execFileSync("/usr/bin/id", ["-u", CLOUD_AGENT_ACCOUNT], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * The machine, as this proof stands in for it: `codex exec-server --listen stdio` in its own namespaces (user, PID,
  * network, IPC, UTS), with its own /company and home and nothing of the slot, and every line it carries written down.
- * Production runs the same binary inside the run's own company machine, over LXD, as the agent's user.
+ * Production runs the same binary inside the run's own company machine, over LXD, as the agent's account.
+ *
+ * `machine.asAgent` runs it as the agent's own account instead, with the image's own sudo rule in place
+ * (`agentAccount` above): a namespace that drops every capability and sets no-new-privileges cannot show what the
+ * account may do, and
+ * what it may do on its machine is the whole point of the home (13 Nov 2026, the lead's correction). It needs root,
+ * so only a run through `run-on-node --sudo` has that scenario.
  */
 function standInMachine(machine, logDir, state) {
-	const child = spawn(
+	const child = machine.asAgent
+		? spawn(
+				"/usr/bin/setpriv",
+				[
+					`--reuid=${CLOUD_AGENT_UID}`, `--regid=${CLOUD_AGENT_UID}`, "--init-groups", "--",
+					binary, "exec-server", "--listen", "stdio",
+				],
+				{
+					stdio: ["pipe", "pipe", "pipe"],
+					cwd: machine.company,
+					env: {
+						HOME: machine.home, USER: CLOUD_AGENT_ACCOUNT, LOGNAME: CLOUD_AGENT_ACCOUNT,
+						CODEX_HOME: join(machine.home, ".codex"), PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+						LANG: "C.UTF-8", TZ: "UTC",
+					},
+				},
+			)
+		: spawn(
 		"/usr/bin/bwrap",
 		[
 			"--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
@@ -557,7 +626,7 @@ function standInMachine(machine, logDir, state) {
 
 /** One run of Alice's (SQL test 924) through the slot, with a home or without, the model making `calls`; `check`
  * judges what was seen. A failed run is returned when `expectFailure`. */
-async function scenario(code, built, cluster, name, { home, calls, check, expectFailure = false }) {
+async function scenario(code, built, cluster, name, { home, calls, check, expectFailure = false, asAgent = false }) {
 	if (ONLY && !ONLY.has(name)) return;
 	process.stdout.write(`\n== scenario ${name}\n`);
 	const database = `qorpera_home_${name.replaceAll("-", "_")}`;
@@ -567,11 +636,28 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 	mkdirSync(join(process.cwd(), ".home-scratch"), { recursive: true });
 	const scratch = await mkdtemp(join(process.cwd(), ".home-scratch", `${name}-`));
 	const logDir = join(scratch, "logs");
-	const machine = { company: join(scratch, "machine/company"), home: join(scratch, "machine/home"), id: undefined, name: undefined };
+	const machine = { company: join(scratch, "machine/company"), home: join(scratch, "machine/home"), id: undefined, name: undefined, asAgent };
 	for (const path of [logDir, join(machine.company, "docs"), join(machine.home, ".codex")]) mkdirSync(path, { recursive: true });
 	writeFileSync(join(machine.company, "docs/seed.md"), SEED);
 	writeFileSync(join(machine.company, "docs/readme.md"), README);
 	writeFileSync(join(machine.company, "pic.png"), png());
+	// The machine run as the agent's own account: its folder and home are the account's, as the image's are; the
+	// company folder is where the environment says it is (/company, CLOUD_HOME_CWD), bound there for this scenario and
+	// unbound after; and one file in it is root's, as a `machine_run` command leaves it.
+	let unbind;
+	if (machine.asAgent) {
+		execFileSync("chown", ["-R", `${CLOUD_AGENT_UID}:${CLOUD_AGENT_UID}`, join(scratch, "machine")]);
+		writeFileSync(join(machine.company, "root-owned.txt"), ROOT_OWNED);
+		execFileSync("chown", ["root:root", join(machine.company, "root-owned.txt")]);
+		execFileSync("chmod", ["0644", join(machine.company, "root-owned.txt")]);
+		mkdirSync("/company", { recursive: true });
+		execFileSync("mount", ["--bind", machine.company, "/company"]);
+		unbind = () => {
+			try {
+				execFileSync("umount", ["/company"]);
+			} catch {}
+		};
+	}
 	const identityRoot = join(scratch, "identity");
 	mkdirSync(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
 	chmodSync(identityRoot, 0o700);
@@ -681,13 +767,19 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 						// Stand-in: this harness's own command is the slot wrapper, so the home names the Codex the
 						// namespace really has; in production the session's artifact is that binary.
 						program: binary,
-						machineId: machine.id,
+						machine: { id: machine.id, name: machine.name },
 						review: {
-							check: async (call, signal) => {
-								state.reviews.push({ kind: call.kind, summary: call.summary });
-								const decided = home.decide?.(call);
+							check: async (action, signal) => {
+								state.reviews.push({
+									tool: action.tool,
+									summary: action.summary.slice(0, 200),
+									// The identity an approval covers: the whole action, not the words on the card (F1).
+									argumentSha256: action.argumentSha256,
+									argumentsBytes: Buffer.byteLength(action.argumentsText),
+								});
+								const decided = home.decide?.(action);
 								if (decided) return decided;
-								return await input.review.check(call, signal);
+								return await input.review.check(action, signal);
 							},
 						},
 						...(input.log ? { steps: new code.CloudCodexHomeSteps(input.log) } : {}),
@@ -745,6 +837,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 		await closeIngress?.();
 		server.closeAllConnections?.();
 		await new Promise((done) => server.close(() => done()));
+		unbind?.();
 		await rm(scratch, { recursive: true, force: true });
 		cluster.drop(database);
 	}
@@ -968,6 +1061,9 @@ const PATCH = [
 /** What the switch-off run sent, so the switch-on run can be read against it. */
 let switchOff;
 
+/** A file on the machine as a `machine_run` command leaves it: root's own, in the company folder. */
+const ROOT_OWNED = "written by a machine_run command, which runs as root on a company machine\n";
+
 async function main() {
 	if (!binary) {
 		process.stdout.write("NOT RUN: set QORPERA_CODEX_FENCE_BINARY to the patched Codex this tree pins\n");
@@ -1091,9 +1187,45 @@ async function main() {
 				assert(!state.exec.some((line) => line.line.includes("declined.txt")), "no line of the declined command reached the machine");
 				const listed = shown(state, state.calls[2].callId)?.text ?? "";
 				assert(listed.includes("reviewed.txt") && !listed.includes("declined.txt"), listed);
-				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.kind}: ${review.summary.slice(0, 48)}`).join("; ")}); the declined one never reached it (${starts.length} of ${state.reviews.length} were started there), the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
+				for (const review of state.reviews)
+					assert(review.argumentSha256?.length === 64 && review.argumentsBytes > review.summary.length,
+						`each review's identity is the whole action, not the card's words: ${JSON.stringify(review)}`);
+				pass(`the review at the host: ${state.reviews.length} actions were reviewed before the machine saw them (${state.reviews.map((review) => `${review.tool}: ${review.summary.slice(0, 48)}`).join("; ")}); the declined one never reached it (${starts.length} of ${state.reviews.length} were started there), the machine's own listing shows reviewed.txt and no declined.txt, and the model was told ${JSON.stringify(declined.slice(0, 90))}`);
 			},
 		});
+		// 5. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the
+		// agent can do everything a `machine_run` command can do there as root — including changing a file root wrote.
+		// It needs the real account and the image's own sudo rule, so this scenario runs only as root.
+		if (!AS_ROOT) {
+			note("the two identities were not proven in this run: it is not root (run it again with run-on-node --sudo and P1_ONLY=home-root)");
+		} else {
+			const undoAccount = agentAccount();
+			try {
+				await run("home-root", {
+					home: {},
+					asAgent: true,
+					calls: [
+						exec({ cmd: "id -un; sudo -n id -u; sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-home-proof && stat -c %U /etc/qorpera-home-proof; sudo -n rm -f /etc/qorpera-home-proof" }),
+						exec({ cmd: "cd /company; echo 'from the agent, plainly' >> root-owned.txt; echo plain-rc=$?; echo 'from the agent, as root' | sudo -n tee -a root-owned.txt >/dev/null; echo sudo-rc=$?; stat -c '%U %a' root-owned.txt; cat root-owned.txt" }),
+					],
+					check: async ({ state, machine }) => {
+						const own = shown(state, state.calls[0].callId)?.text ?? "";
+						assert(own.includes(CLOUD_AGENT_ACCOUNT), `Codex's own shell runs as the agent's account: ${own}`);
+						assert(/(^|\n)0(\n|$)/.test(own) && own.includes("root"), `and reaches root with sudo: ${own}`);
+						const both = shown(state, state.calls[1].callId)?.text ?? "";
+						assert(both.includes("plain-rc=1"), `a plain write to a file root wrote is refused: ${both}`);
+						assert(both.includes("sudo-rc=0"), `the same write through sudo works: ${both}`);
+						assert(both.includes("root 644"), `and the file is still root's: ${both}`);
+						const kept = readFileSync(join(machine.company, "root-owned.txt"), "utf8");
+						assert(kept.includes("from the agent, as root") && !kept.includes("plainly"), kept);
+						assert.equal(state.reviews.length, 2, `both went through the review: ${JSON.stringify(state.reviews)}`);
+						pass(`the two identities on one machine: Codex's own shell is ${CLOUD_AGENT_ACCOUNT} and reaches root through the image's own sudo rule (it installed a file under /etc as root); a file a machine_run command wrote as root refuses its plain write (plain-rc=1) and takes the same write through sudo (sudo-rc=0), staying root's own`);
+					},
+				});
+			} finally {
+				undoAccount();
+			}
+		}
 	} finally {
 		database.close();
 		await rm(scratch, { recursive: true, force: true });

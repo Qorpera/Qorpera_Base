@@ -251,17 +251,22 @@ export async function runCloudNativeRunToolSession(options: {
 		const review = reviewer && options.actionReview ? options.actionReview(reviewer) : undefined;
 		home = options.home?.({
 			review: {
-				check: async (call, signal) =>
+				check: async (action, signal) =>
 					review
 						? await review.check(
 								{
-									// The review's own classification of work on a company machine: `machine_run`'s rule, its
-									// card and its words, for an action of exactly the same kind (cloud-action-review.ts).
-									tool: { name: "machine_run", source: "runtime" },
-									parsed: { machine: "home", command: call.summary },
-									argumentsText: JSON.stringify({ machine: "home", command: call.summary }),
-									argumentSha256: call.argumentSha256,
-									callId: call.callId,
+									// Work on a company machine, under its own name, so an approval of one native action is
+									// never an approval of another and a parked card names what the model actually asked for
+									// (`home_command`, `home_change`; cloud-action-review.ts). The identity is the whole
+									// action, which is also what the step below keeps.
+									tool: { name: action.tool, source: "runtime" },
+									parsed: JSON.parse(action.argumentsText) as JsonValue,
+									argumentsText: action.argumentsText,
+									argumentSha256: action.argumentSha256,
+									callId: action.callId,
+									// A parked card of a home action is answered by doing the thing again on the machine, not
+									// by calling a tool the model does not have (review round 1, F8).
+									repeat: action.repeat,
 								},
 								signal,
 							)
@@ -369,8 +374,8 @@ export async function runCloudNativeRunToolSession(options: {
 		throw error;
 	} finally {
 		boundary?.close();
-		// The home's socket goes with the run, whatever ended it.
-		if (home) await home.close().catch(() => undefined);
+		// The home's socket and its session go with the run, whatever ended it (review round 1, F10).
+		if (home) await home.close(run.signal.aborted ? "stopped" : "ended").catch(() => undefined);
 		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
 		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
 		// writing the log.

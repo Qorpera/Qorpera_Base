@@ -26,6 +26,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_bind_native_company_context"
 	// The agent's home: whether this run has one, and which machine it is (20260930752000).
 	| "qorpera_company_home_available"
+	| "qorpera_close_home_session"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"

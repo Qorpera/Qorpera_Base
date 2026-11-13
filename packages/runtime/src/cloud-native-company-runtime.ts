@@ -13,6 +13,7 @@ import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-h
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
 import {
+	CLOUD_HOME_CLOSE_MS,
 	CloudCodexHome,
 	type CloudCodexHomeChannel,
 	type CloudCodexHomeReview,
@@ -895,9 +896,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									new CloudCodexHome({
 										channel: this.#homeChannel!(binding),
 										sessionId: randomUUID(),
-										machineId: home.machineId,
+										machine: { id: home.machineId, name: home.machine },
 										review: input.review,
 										...(input.log ? { steps: new CloudCodexHomeSteps(input.log) } : {}),
+										// The run's session is ended in SQL when the run ends, however it ended, so its
+										// next attempt opens its own instead of meeting this one (review round 1, F10).
+										endSession: async (sessionId, reason) => {
+											await this.#paths.call(
+												"qorpera_close_home_session",
+												{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
+												AbortSignal.timeout(CLOUD_HOME_CLOSE_MS),
+											);
+										},
 										signal: input.signal,
 									}),
 							}
