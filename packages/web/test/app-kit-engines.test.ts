@@ -475,15 +475,8 @@ describe("the model kit's engine with live values", () => {
 
 	it("neither stops nor moves a slider being dragged when a value moves, and keeps an open note open", async () => {
 		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
-		const noted = {
-			...orders,
-			groups: [
-				{
-					...orders.groups[0],
-					inputs: [{ ...orders.groups[0].inputs[0], note: "Paid orders" }, orders.groups[0].inputs[1]],
-				},
-			],
-		};
+		const noted = structuredClone(orders);
+		Object.assign(noted.groups[0]?.inputs[0] ?? {}, { note: "Paid orders" });
 		const { qorpera } = await openLive("model", noted, db);
 		const range = document.querySelector<HTMLInputElement>('.mk-range[aria-label="Orders"]') as HTMLInputElement;
 		range.dispatchEvent(new Event("pointerdown"));
