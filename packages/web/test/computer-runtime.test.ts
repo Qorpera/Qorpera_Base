@@ -24,6 +24,7 @@ import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
 import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
+import { ComputerScene } from "../src/ui/computer-scene.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { DOUBLE_CLICK_MS, inputSpan, joinInputs, machineTexts, TYPE_BATCH_MS } from "../src/ui/machine-screen-view.ts";
 import { fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
@@ -5547,6 +5548,28 @@ describe("a window that showed by itself (20260930742000)", () => {
 		await advance(AUTO);
 		expect(panels.get(staff.id)).toBeUndefined();
 		expect(p.el.isConnected).toBe(false);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
+	});
+
+	it("leaves nothing of the window running after the rule's close: no loop, no timer, no scene (review r3 F2)", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const timersBefore = vi.getTimerCount();
+		const sceneGone = vi.spyOn(ComputerScene.prototype, "dispose");
+		const { panels, p } = byItself(s);
+		await flush();
+		panels.byItself.seen(staff.id, undefined);
+		await advance(AUTO);
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(sceneGone).toHaveBeenCalled();
+		await advance(1_000);
+		expect(p.el.isConnected).toBe(false);
+		const looks = s.looks.length,
+			rpcs = s.rpcs.length;
+		await advance(10 * 60_000);
+		expect(s.looks.length).toBe(looks);
+		expect(s.rpcs.length).toBe(rpcs);
+		expect(vi.getTimerCount()).toBe(timersBefore);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
 	});
 

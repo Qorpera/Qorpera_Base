@@ -58,7 +58,7 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
-import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
+import { type AgentState, agentWorks, type CompanyController, isAgentPairSession } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
@@ -597,13 +597,13 @@ function changedRow(
 				? "state-failed"
 				: was.state === "failed"
 					? "state-recovered"
-					: now.state === "working"
+					: now.state === "working" || now.state === "computer"
 						? "state-working"
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
 	// Its work is done: the figure cheers.
-	if ((was.state === "working" || was.state === "writing") && now.state === "idle")
+	if (was.state && agentWorks(was.state) && now.state === "idle")
 		playFigure(element.querySelector(".figure"), "cheer");
 }
 

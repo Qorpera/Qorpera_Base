@@ -820,17 +820,9 @@ export class ComputerPanel {
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
+		// The rule's close (closeByRule): nothing of the member's is here to give back or end; only the window goes.
 		if (this.#quiet) {
-			// The rule's close: nothing of the member's is here to give back or end.
-			this.#stop.abort();
-			this.#poke();
-			this.#close = () => {};
-			this.#view?.dispose();
-			this.el.style.removeProperty("animation");
-			leave(this.el, "is-closing", () => {
-				replace(this.el);
-				this.el.remove();
-			});
+			this.#teardown();
 			return;
 		}
 		// The window closes: what the member may hold of the agent's desktops goes back through the company's ledger, which
@@ -842,11 +834,21 @@ export class ComputerPanel {
 		this.#endShared();
 		this.#released();
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
+		this.#teardown();
+	}
+
+	/** Everything the window runs ends, on both of its closes (the member's and the rule's): its signal (every listener,
+	 * the loop and its waits, the hints, the holds' subscription, the drag), its timers, the picture's view and the
+	 * scene. Never the release ledger: the member's close asks that first, the rule's never needs it. */
+	#teardown(): void {
 		this.#stop.abort();
 		this.#poke();
 		this.#close = () => {};
 		this.#view?.dispose();
 		clearTimeout(this.#settleTimer);
+		this.#settleTimer = undefined;
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = undefined;
 		this.#scene.dispose();
 		this.el.style.removeProperty("animation");
 		leave(this.el, "is-closing", () => {

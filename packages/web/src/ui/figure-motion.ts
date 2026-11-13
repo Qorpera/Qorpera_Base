@@ -354,8 +354,10 @@ const EFFECTS_GAP = 0.5;
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
-	if (activity === "AtComputer") return atComputer(entry, atComputerFrame(clock.elapsed, clock.seed, reduced));
 	if (reduced) {
+		// Using its computer still: what waits on the member shows as its symbol, as for a working figure.
+		if (activity === "AtComputer")
+			return entry.ask ? askingStill(entry.ask) : atComputer(entry, atComputerFrame(0, clock.seed, true));
 		// What waits on the member shows at rest whatever the figure is busy with: the symbol alone, as the badge
 		// that stood beside a working or a writing figure did.
 		if (activity === "Waiting") return askingStill(entry.ask ?? "bang");
@@ -378,6 +380,12 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		// The dots write on; every few seconds they become what waits on the member.
 		act = writingAsk(elapsed, entry.ask);
 		for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
+	} else if (activity === "AtComputer") {
+		// At its computer; with something waiting on the member it becomes that symbol now and then, as a writing
+		// figure does, so the ask is never out of sight for long.
+		const asked = entry.ask ? writingAsk(elapsed, entry.ask) : undefined;
+		act = asked && asked.body !== REST ? asked : atComputer(entry, atComputerFrame(elapsed, clock.seed, false));
+		if (entry.ask) for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {
 		// The studio's flourish, with the short cheer's jump under it.
@@ -673,7 +681,8 @@ function paint(entry: LiveMotion): void {
 	// A member who wants no motion sees each state's still: its end, or (working, which has none) one second in.
 	const elapsed = desk || reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
 	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
-	const act = acting(entry, elapsed, reduced);
+	// Using its computer acts on its own clock (its frame, and the ask's turns), over Idle's settled stand.
+	const act = acting(entry, desk && !reduced ? entry.clock.elapsed : elapsed, reduced);
 	place(entry, act);
 	const p = pose(activity, elapsed, { reduced });
 	const { symbol } = act;
@@ -794,7 +803,8 @@ function paint(entry: LiveMotion): void {
 			);
 		ctx.restore();
 	}
-	if (desk) deskLight(ctx, canvas, desk, side);
+	// The screen lights the figure, not the symbol it has become for a moment.
+	if (desk && !symbol) deskLight(ctx, canvas, desk, side);
 	ctx.fillStyle = entry.shown;
 	if (p.stemWidth > 0.001) {
 		const half = p.stemWidth / 2,

@@ -294,6 +294,18 @@ describe("the rail", () => {
 		expect(f.row().querySelector(".rail-row-status")).not.toBeNull();
 	});
 
+	it("cheers when a run ends straight from its computer, and pops as working when it starts there", () => {
+		const f = rail();
+		const play = vi.fn();
+		f.motion.mockReturnValue({ dispose: () => {}, play });
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		f.draw();
+		f.controller.store.set({ activity: [] });
+		f.draw();
+		expect(f.controller.agentState(staff.id)).toBe("idle");
+		expect(play).toHaveBeenCalledWith("cheer");
+	});
+
 	it("says it in Danish", () => {
 		setLanguagePreference("da");
 		const f = rail();

@@ -48,6 +48,8 @@ const context = Object.fromEntries(
 		"clip",
 	].map((key) => [key, vi.fn()]),
 );
+// The screen's light of a figure at its computer (20260930742000) is a gradient.
+context.createRadialGradient = vi.fn(() => ({ addColorStop: vi.fn() }));
 const artwork: FigureArtwork = {
 	faces: {
 		crown: [
@@ -120,7 +122,7 @@ function advance(milliseconds: number): void {
 	for (const callback of callbacks) callback(now);
 }
 function mount(
-	activity: "Idle" | "Working" | "Thinking" | "Waiting" = "Idle",
+	activity: "Idle" | "Working" | "Thinking" | "Waiting" | "AtComputer" = "Idle",
 	identity = "agent",
 	options: { ask?: "question" | "bang"; alive?: boolean } = {},
 ): HTMLElement {
@@ -264,6 +266,42 @@ describe("2D studio playback in the shell", () => {
 		show([busy]);
 		expect(bangStem()).toBe(false);
 		expect(busy.querySelectorAll(".figure-prop")).toHaveLength(3);
+	});
+	it("keeps what waits on the member in sight while the figure uses its computer, at rest too (20260930742000)", async () => {
+		const questionDot = () => vi.mocked(context.arc!).mock.calls.some((call) => call[0] === 50.5 && call[2] === 9.3);
+		const bangStem = () =>
+			vi.mocked(context.roundRect!).mock.calls.some((call) => call[0] === 41.25 && call[2] === 17.5);
+		const lit = () => vi.mocked(context.createRadialGradient!).mock.calls.length > 0;
+		const asking = mount("AtComputer", "uses-and-asks", { ask: "question" });
+		await settle();
+		show([asking]);
+		vi.mocked(context.arc!).mockClear();
+		vi.mocked(context.createRadialGradient!).mockClear();
+		// It uses its computer first: lit by its screen, no symbol.
+		for (let frame = 0; frame < 120; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(false);
+		expect(lit()).toBe(true);
+		// A few seconds on it has become its question for a moment, unlit.
+		for (let frame = 0; frame < 270; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(true);
+		// With nothing waiting it never draws a symbol.
+		const plain = mount("AtComputer", "only-uses");
+		await settle();
+		show([asking], false);
+		show([plain]);
+		vi.mocked(context.arc!).mockClear();
+		for (let frame = 0; frame < 600; frame++) advance(1000 / 60);
+		expect(questionDot()).toBe(false);
+		// No motion: the symbol stands in its place.
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		advance(1000);
+		const approval = mount("AtComputer", "uses-and-waits", { ask: "bang" });
+		await settle();
+		vi.mocked(context.roundRect!).mockClear();
+		show([approval]);
+		expect(bangStem()).toBe(true);
+		expect(frames.size).toBe(0);
 	});
 	it("shows a figure that was out of view none of the effects it missed", async () => {
 		// The effects are elements with an animation each; here an animation never ends, so they can be counted.
