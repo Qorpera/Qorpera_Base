@@ -12,11 +12,12 @@ it is installed anywhere yet.
 | --- | --- |
 | `docker-compose.yml` | `data-db`: PostgreSQL 17.6, the pinned image the SQL tests run on, data on a named volume, its port not published. `data-gateway`: the pinned Node 24 image running the packaged gateway (below) only if it matches its sha256, its port published on `DATA_GATEWAY_LISTEN` only. The settings it takes are listed at its top |
 | `replication.yml` | the primary's machine only: the database's port on the machine's private address, for the standby |
-| `postgres/postgresql.conf` | the whole server configuration: memory for 2 vCPU and 8 GiB (`shared_buffers` 2GB, `effective_cache_size` 5GB, `max_connections` 200), `wal_level replica`, archiving every 60 s at most, TLS, scram, and a log that never holds a parameter's value |
+| `postgres/postgresql.conf` | the whole server configuration: memory for 2 vCPU and 8 GiB (`shared_buffers` 2GB, `effective_cache_size` 5GB, `max_connections` 200), `wal_level replica`, archiving every 60 s at most, TLS, scram, and a log that never holds a parameter or a failed statement's text (an operator sees an error without its STATEMENT line) |
 | `postgres/pg_hba.conf` | the superuser over the socket only; the gateway by address (the compose network); replication over TLS from the standby's address only (`hba-standby.conf`, written by `standby.sh allow`) |
 | `postgres/archive-wal.sh`, `restore-wal.sh` | each finished WAL file to `/backup/wal/<name>.gz` (gzip, flush, rename, flush the folder), and back |
 | `gateway-main.mjs` | the gateway's entry: settings from the environment, its secrets from one file each; it serves the gateway and starts its watcher (every 10 s) |
 | `lib.sh` | what the scripts share, and the list of the gateway's secrets (`GATEWAY_PASSWORDS`, `GATEWAY_KEYS`) |
+| `env.sh` | reads the kit's `.env` as docker compose reads it: quotes, a ` #` comment after an unquoted value, `export`; nothing is expanded |
 | `tls.sh` | the kit's own CA, and the server cert it signs |
 | `init.sh` | the first start on an empty volume: secrets, CA and cert, `store/cluster.sql`, `store/template.sql`, the replication login, then the gateway. Refuses to run twice |
 | `base-backup.sh` | a base backup into `base/<UTC>`, keeps the newest 7, removes WAL older than the oldest kept |
@@ -32,7 +33,7 @@ in `.env` is the kit's (`lib.sh`), so a systemd unit that runs them from `/` fin
 
 ### What never goes onto a machine
 
-`drill.mjs`, `drill/` (its platform stand-in takes any token) and `kit.test.mjs`. `.gitattributes` marks them
+`drill.mjs`, `drill/` (its platform stand-in takes any token; `own-file.mjs`) and `kit.test.mjs`. `.gitattributes` marks them
 `export-ignore`, so `git archive <commit> deploy/company-data/kit` leaves them out (`kit.test.mjs` checks that it
 does). A machine gets the kit from such an archive, never from a working tree or a copy of the repository folder.
 
@@ -135,9 +136,14 @@ gateway answering with every committed row; (f) nothing left. Every script runs 
 the kit's `.env` alone, with a relative `COMPOSE_FILE`; the restore runs as the README's line does, with that `.env`
 present.
 
+It also checks: no company value in the database's log (a parameter, a value a cast failed on, a row's value a
+constraint named, a word in a slow statement's text), while the server's own lines (start-up, checkpoints, a refused
+superuser login) are there; retention with KEEP=2 in a backup folder whose path has a space, removing only backups'
+own names; a WAL archive with a cut gzip trailer never acknowledged, then replaced.
+
 Last result: 13 November 2026, node01's test machine, against the gateway of `claude/company-data-gateway` at
-d8a933a19: 35 of 35 checks passed in 89 s. Package 0.1 s, init 13.4 s, apply 0.1 s, base backup 1.2 s, restore 2.8 s
-(to the time, promoted), standby seed over TLS 3.1 s, promote and the gateway answering 7.2 s.
+a0202fb0b: 43 of 43 checks passed. Package 0.1 s, init 13.6 s, apply 0.2 s, base backup 1.0 s, restore 2.5 s,
+standby seed over TLS 3.2 s, promote and the gateway answering 7.2 s.
 
 ## Not done here
 
