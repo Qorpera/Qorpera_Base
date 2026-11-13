@@ -33,6 +33,31 @@
 
 ### Added
 
+- Every company website can have an address of its own, the kernel's side (own code storage, step 5, release 5.1, part
+  A1; migration `20260930756000`, SQL test 1252; `lanes/own-code-storage/STEP5-BUILD.md`). Inert until the operator sets
+  `qorpera_site_settings.hosts_domain` and then `hosts_enabled`: while on, a files site's link is
+  `https://<slug>.qorpera.com/`, the old host's links move there, and owners and admins open the ready version on
+  `https://<slug>--next.qorpera.com/` with a one-time ticket (`qorpera_open_site_preview`, `qorpera_site_enter`).
+  site-serve's calls: `qorpera_site_serve_host`, `qorpera_site_unlock_host`, `qorpera_site_enter`. The name rule (D20)
+  holds at once: no `--`, no `-preview` ending, no `qorpera`, and a reserved list of 118 names (today's 24, the
+  pre-check's 77, the lead's 17), which the coding executor copies byte for byte. An operator takes a site down
+  (`qorpera_site_take_down`, `qorpera_site_restore`): every host answers gone and nothing goes live (`SITE_TAKEN_DOWN`);
+  members read why (`qorpera_company_site_access`). The checks switch says `rootLinks` while hosts are on and hands an
+  operator's drill (`qorpera_code_set_drill`) over once; the list file says what is being prepared while hosts are on.
+  SQL test 1252 holds the one host list every reader of a site host runs in its own tests (site-serve, the web's two
+  link parses, the executor's change record, the front's Envoy and `sites-route.mjs`'s probe names).
+- A website's own address on the executor's side (own code storage, step 5, release 5.1, part X1;
+  `lanes/own-code-storage/STEP5-BUILD.md`, migration `20260930756000`). While the checks switch says `rootLinks` (only
+  while sites have hosts of their own) the collect lets a site's links from `/` through: the host always sets
+  `QORPERA_SITE_ROOT_LINKS` for it, `allowed` or `refused`, and only `allowed` skips the scan. An operator's drill
+  (`qorpera_code_set_drill`), which the switch hands over once: `check` runs one more check after the repository's own
+  (`qorpera-drill`), which fails; `site` takes the site from a folder no repository has (`qorpera-drill-missing`);
+  either way the turn fails on its usual refusal path and its words start "This was a drill by Qorpera's operator:
+  nothing is wrong with your work, and the next try goes through. Finish again." The change record's list says
+  "Being prepared for What's new: change N (about a minute)." while the index answers `preparing`, and its Live line
+  links a site's own host `https://<slug>.qorpera.com/` (the one host rule) beside today's form. Moves at release: the
+  coding executor, node 2 then node 1, after the migration and before the runtime bundle.
+
 - The shared execution service hands each run's provider host the company data run door (company databases; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §3): with `QORPERA_COMPANY_DATA_URL`, `QORPERA_LXD_COMPANY_DATA_TOKEN_FILE`, `QORPERA_LXD_COMPANY_DATA_CA_FILE` and `QORPERA_LXD_COMPANY_DATA_CA_SHA256` set together (all or none; the token distinct from every other credential, the CA pinned by its sha256 as the secret broker's), the slot gets the URL in its env and the credentials `qorpera-company-data` and `qorpera-company-data-ca` (empty when off), which `qorpera-shared-run-host@.service` loads, the CA's path set by the unit. One-run VMs (the overflow path) do not get it yet.
 
 - The import's look measures the other lines of work (own code storage, the import's follow-ups, part B; `STEP6-FOLLOW-UPS-PLAN.md` section 1 as the lead's calls of 13 Nov corrected it). **Needs migration `20260930741000` live first**: today's `qorpera_code_import_looked` refuses a look with `lines` (22023). The look (`qorpera.code-import-look/v1`) gains an optional key `lines: {count, changes, shown: [{name, ahead, behind, lastAt, fits}]}`: of the heads kept beside main, how many hold commits main does not reach (`count`), those commits counted once (`changes`), and at most 10 such lines (most `ahead` first, then the newest `lastAt`, null last, then the name by its bytes, null last), each with its commits main lacks and main's it lacks, its last commit's time, and whether the company folder takes every name in its tree (`fits`; null when its listing is over 32 MiB). Names are shown as the look's paths are (null over 200 bytes or key-like). C1's `codeImportLook` builds it and never drops it to fit (the look without shown keys is at most 10,754 bytes of JSON, `lines` included); `codeImportLookOf` reads it by its rules. Part B's `lookCodeImport` measures it in the code host on the proof repository before the refs plan moves the heads: one `for-each-ref --stdin` with `%(ahead-behind:<main>)`, one `rev-list --count --stdin` with `^<main>`, and the shown lines' trees through `Run.checkNames` and `codeFolderRefuses`, each command under `timeout 300` through `CODE_HOST_IMPORT_MEASURE`, which hands out what it said only within its bound. A measure that fails or times out leaves `lines` out and the import goes on. No new executor call; the code host image's proof runs the script with its git. When the request named another branch as main (`from.branch`), the source's own default (GitHub's HEAD, or a file's by the read's own rule) goes with the first bundle's facts (`raw.sourceBranch`, optional, in the request's progress) and the refs plan keeps it as `refs/qorpera/imported/heads/<name>` whatever its age, first among the 200 and under the same name rules, so it is measured as a line like every kept head (the lead's call 6a); without it the plan is as before. The fetch wants it right after the branch brought in and puts it second in the first bundle's header, before every other head and tag, so the 5,000 wanted objects' cap never leaves it out (review round 3 of #1725, F2); without `from.branch` the wants and their order are as before.
@@ -263,6 +288,14 @@
 - The coding executor's `coding-folder-mount` log line says whether the machine's package caches were ready at that mount (`packageCaches`, true or false), so a live proof reads it from the executor's log instead of looking inside a machine (own code storage, step 6, part W; no migration). The folder model's `onMount` takes `packageCaches`, what the guest agent said in its mount answer; `deploy/coding-worker/executor.ts` logs the mount whole, so its line has it.
 
 ### Changed
+- A site's name follows the name rule D20 (own code storage, step 5, release 5.1, part X1): no two hyphens in a row,
+  not ending `-preview`, not holding `qorpera`, and none of 118 reserved names, `CODE_SITE_RESERVED_NAMES`, which is
+  `qorpera_site_reserved_names()`'s text byte for byte (a test pins its SHA-256 and compares it with the migration). A
+  checks file's bad `site.name` is refused with words that say the rule and which part the name breaks. These words
+  change with this executor whatever the database: on a database before migration `20260930756000` a name today's
+  rule refused (`api`, `ab`) gets the new words too, and a name only the new rule refuses (`a--b`) is refused by this
+  executor before the kernel would.
+
 - The shared execution service gives every slot's native host the node's folder search unless `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off` (keyholes S4, 12 Nov 2026: search for every run; it was off unless `on`). `shared-execution.env.example` names the off switch; its pin moved in `install-shared-execution-guest.sh`. Before a host runs this service, one hello through a slot's relay must reach its node's folder service (`RUNTIME-FOLDER-SERVICE.md`, "The relay").
 
 - A coding session's worktree, a seed from GitHub and a landing ask the company folder's rule for names where a session's worktree holds them, 42 bytes deeper than `main/` (own code storage, the import's follow-ups, items 5 and 6): `codeFolderRefuses(area, records, under = "main")` also takes `worktrees/<workerId>` or `CODE_FOLDER_ANY_SESSION`. `addCodeWorktree` refuses a worktree whose names the code host's rules or the folder's refuse (`CodeWorktreeNamesRefused`, `of: "branch" | "base"`; `CODE_HOST_NAMES_FOLDER_REFUSES` with the paths) before anything is written; `seedCodeArea` refuses `CODE_HOST_NAMES_FOLDER_REFUSES` before its repack, so nothing of the seed enters `repo.git`; a landing refuses a path no session's worktree could hold, so main holds nothing a session cannot check out; nightly care keeps a worktree whose head the folder's rule refuses (`NAMES_REFUSED`). A landing refused for such names says where the path is long: "…or a path longer than 4,096 bytes where a session's workspace holds it" (it said "a path longer than 4,096 bytes", and a path up to 42 bytes shorter than that where `main/` holds it is refused too).
