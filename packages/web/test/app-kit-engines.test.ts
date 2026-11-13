@@ -603,7 +603,8 @@ describe("each data kit's note to the app's owner", () => {
 		// Two things of the same name whose ids the call cannot take: both send no `at`, and the note of one said
 		// nothing about the other (their state was once kept under what went out, which was empty for both).
 		const thing = KIT_THING[kit];
-		const [one, two] = thing.odd.map((id) => ({ id, name: "Lys", ask: "Get a quote from them" }));
+		const one: Thing = { id: thing.odd[0], name: "Lys", ask: "Get a quote from them" };
+		const two: Thing = { id: thing.odd[1], name: "Lys", ask: "Get a quote from them" };
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
 		await open(kit, thing.data([one, two], WORDS), undefined, tell);
 		thing.open(one, 0);
