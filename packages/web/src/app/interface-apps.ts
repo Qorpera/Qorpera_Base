@@ -50,6 +50,7 @@ import {
 	type AppQuestionSource,
 	type AppTellSource,
 	appQuestions,
+	noteKept,
 	type PreparedAsk,
 	prepareAnswer,
 	prepareRow,
@@ -808,6 +809,13 @@ export class AppBridge {
 		if (call.method === "tell") {
 			const tell = this.#host.tell;
 			if (!gate || !tell) return refuse("Nothing can be sent from this page");
+			// The app's one note is kept still (on its way, or waiting for the member): the page waits, and a kept note no
+			// bar shows is on the bar again (one the bar shows already stays as it is).
+			const kept = noteKept(tell, this.#app.name);
+			if (kept) {
+				void this.restore();
+				return refuse(kept);
+			}
 			// A sent note leaves the page a pause before its next: no bar on the heels of the last.
 			if (Date.now() - (told.get(this.#key) ?? Number.NEGATIVE_INFINITY) < TELL_AGAIN_MS)
 				return refuse("A note was sent from this app a moment ago: ask again in a few seconds");

@@ -509,9 +509,8 @@ export function prepareTell(
 	const draft = typeof text === "string" ? text : "";
 	if (characters(draft) > APP_NOTE_DRAFT_MAX)
 		throw new AppActionRefused(`tell's text is at most ${APP_NOTE_DRAFT_MAX} characters`);
-	// One note at a time an app: the one on its way is kept for the app until it went or is held again.
-	if (source.held(app.name)?.sending)
-		throw new AppActionRefused("A note from this app is on its way: ask again in a moment");
+	const kept = noteKept(source, app.name);
+	if (kept) throw new AppActionRefused(kept);
 	const receiver = source.receiver(app.manifest.owner);
 	if ("refused" in receiver) throw new AppActionRefused(receiver.refused);
 	const thing = typeof at === "string" ? at : null;
@@ -525,6 +524,18 @@ export function prepareTell(
 		ask: { kind: "tell", agentId: receiver.agentId, app: app.manifest.name, about: said, draft },
 		...noteSending(source, app.name, held),
 	};
+}
+
+/** An app has at most one note, from the moment the member's words exist until they went, wait in the agent's thread,
+ * or the member said not now (`HeldNote`, kept by the company): while it has one, its page's next note is refused
+ * before any bar, with why (and the bridge shows the kept note again where no bar shows it). Undefined when the app has
+ * none. */
+export function noteKept(source: AppTellSource, app: string): string | undefined {
+	const kept = source.held(app);
+	if (!kept) return undefined;
+	return kept.sending
+		? "A note from this app is on its way: ask again in a moment"
+		: "An earlier note from this app is still waiting above the page: send it or say not now first";
 }
 
 /** The note held for `app`, as the bar shows it again when the member comes back to the app: their words in the
@@ -552,12 +563,10 @@ function noteSending(
 			const own = words.trim();
 			// The bar's Send is off while its field is empty.
 			if (!own) throw new AppActionRefused(t("Write your note first."));
-			// An app sends one note at a time: this one is kept for the app as on its way, so no bar shows it meanwhile
-			// (the member left the app and came back) and the app's page is told to wait (`prepareTell`). A note about
-			// another thing kept for the app (its bar was let go: its send failed, or the page was put away) gives way
-			// while this one goes, and is kept again after, unless this one is held in its place.
+			// The app's one note (`noteKept`): kept for the app as on its way, so no bar shows it meanwhile (the member
+			// left the app and came back) and the page's next note waits. What was kept before is this note itself (it
+			// was held, or shown again from the company), or nothing.
 			const kept = source.held(app);
-			const other = kept !== undefined && kept.header !== note.header ? kept : undefined;
 			const going: HeldNote = { ...note, words, sending: true };
 			source.hold(app, going);
 			// What becomes of it is this send's to say only while the entry is still the one it made.
@@ -568,17 +577,17 @@ function noteSending(
 			try {
 				went = await source.send(note.agentId, { header: note.header, text: own });
 			} catch (error) {
-				// It did not go: a note that was kept stays kept, with these words, for when the app's page is next shown
-				// (the bar says why now); a new one is not kept.
-				settle(other ?? (kept === undefined ? undefined : { ...note, words }));
+				// It did not go: a note that was kept stays kept, with these words (its bar says why, and stays); a new one is
+				// not kept.
+				settle(kept === undefined ? undefined : { ...note, words });
 				throw new AppActionRefused(
 					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),
 				);
 			}
 			// Held again: kept with its words, and back on the bar of the app's page on screen. Went, or waits in the
-			// thread: let go, and the other note it stood in for is kept again.
+			// thread: let go.
 			if (went.held) settle({ ...note, words }, true);
-			else settle(other);
+			else settle(undefined);
 			return went;
 		},
 		keep: (words) => source.hold(app, words === undefined ? undefined : { ...note, words }),

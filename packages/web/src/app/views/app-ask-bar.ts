@@ -25,7 +25,7 @@ import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome, type 
  *   within reach.
  * - The member sees how it went: saved, sent, waiting in the agent's thread (with the way there), or why not. A note
  *   that thread cannot take now (its draft answers something else already, app/tell-agent.ts) stays on the bar with its
- *   words, and a line says why, with the way there. */
+ *   words, and a line says why, with the way there; so does such a kept note whose send then fails. */
 
 export interface AppAskBarHost {
 	/** The app's emblem, drawn afresh. */
@@ -317,6 +317,7 @@ export class AppAskBar implements AppGate {
 							" ",
 							h("a", { class: "app-ask-link", href: note.href }, t("Open")),
 						);
+						held.setAttribute("role", "status");
 						held.hidden = false;
 						ready();
 						field?.focus({ preventScroll: true });
@@ -352,6 +353,20 @@ export class AppAskBar implements AppGate {
 				(error: unknown) => {
 					const message =
 						error instanceof AppActionRefused ? error.message : t("That could not be saved. Try again.");
+					if (ask.kind === "tell" && holding) {
+						// A kept note that did not go is still the app's note: its bar stays, with why and the member's
+						// words, so Send tries again, typing keeps the words, and Not now lets it go.
+						pending.working = false;
+						later.disabled = false;
+						if (field) field.readOnly = false;
+						yes.textContent = t("Send note");
+						replace(held, message);
+						held.setAttribute("role", "alert");
+						held.hidden = false;
+						ready();
+						field?.focus({ preventScroll: true });
+						return;
+					}
 					pending.settle({ outcome: "failed", message });
 					this.#settled(h("p", { class: "app-ask-note is-failed", role: "alert" }, message), FAILED_MS);
 				},

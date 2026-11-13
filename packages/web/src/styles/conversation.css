@@ -1638,6 +1638,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* Why a note stays on the bar (its thread's draft answers something else), with the way there. */
 .app-ask-held { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
 .app-ask-held[hidden] { display: none; }
+.app-ask-held[role="alert"] { color: var(--danger); }
 .app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .app-ask-field:read-only { color: var(--text-muted); }
 .app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }

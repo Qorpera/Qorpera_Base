@@ -652,14 +652,19 @@ describe("the bridge's requests for a change", () => {
 	it("tells the page whether the note went or waits in the agent's thread, and why one did not go", async () => {
 		const answer = (source: AppTellSource, gate: AppGate) => bridge("", { gate, tell: source }).answer(tell(lund));
 		const yes = gateThat("allow", undefined, "Please").gate;
-		expect(await answer(notes(undefined, { sent: false, href: "#/c/p/staff/a" }), yes)).toEqual({
+		// Waiting in the thread, the note is no longer the app's to keep; nor is a new note that did not go.
+		const waits = notes(undefined, { sent: false, href: "#/c/p/staff/a" });
+		expect(await answer(waits, yes)).toEqual({
 			ok: true,
 			value: { sent: false, waiting: true },
 		});
-		expect(await answer(notes(undefined, new Error("That agent is no longer at work.")), yes)).toEqual({
+		expect(waits.kept.size).toBe(0);
+		const failing = notes(undefined, new Error("That agent is no longer at work."));
+		expect(await answer(failing, yes)).toEqual({
 			ok: false,
 			error: "That agent is no longer at work.",
 		});
+		expect(failing.kept.size).toBe(0);
 		// The Send is off while the field is empty; were it pressed, nothing would go.
 		const empty = notes();
 		expect(await answer(empty, gateThat("allow", undefined, "  \n").gate)).toEqual({
@@ -685,7 +690,7 @@ describe("the bridge's requests for a change", () => {
 		expect(waiting.receiver).not.toHaveBeenCalled();
 	});
 
-	it("keeps a note its thread can't take for the app, with the member's words, until a note with its line went", async () => {
+	it("keeps a note its thread can't take for the app, and refuses the page's next note while it is kept", async () => {
 		const source = notes(undefined, { sent: false, href: "#/c/p/staff/a", held: true });
 		const { gate } = gateThat("allow", undefined, "Two quotes");
 		expect(await bridge("", { gate, tell: source }).answer(tell(lund))).toEqual({
@@ -699,19 +704,25 @@ describe("the bridge's requests for a change", () => {
 			header: "app:orders-board#1043 · Lund, A",
 			words: "Two quotes",
 		});
-		// A held note leaves the app no pause: it went nowhere.
-		const again = bridge("", { gate: gateThat("allow", undefined, "Still two").gate, tell: source });
-		source.send.mockResolvedValueOnce({ sent: false, href: "#/c/p/staff/a", held: true });
-		expect(await again.answer(tell(lund))).toMatchObject({ ok: true });
-		expect(source.kept.get("orders-board")?.words).toBe("Still two");
-		// Another thing's note going leaves it kept; the same note going lets it go.
-		source.send.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
-		expect(await again.answer(tell({ about: "Hansen", at: "1042" }))).toMatchObject({ value: { sent: true } });
-		expect(source.kept.has("orders-board")).toBe(true);
-		source.send.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
-		const later = bridge("", { gate: gateThat("allow", undefined, "Now").gate, tell: source });
-		expect(await later.answer(tell(lund))).toMatchObject({ value: { sent: true } });
-		expect(source.kept.has("orders-board")).toBe(false);
+		// One note an app: the page's next one, about this thing or another, is refused while that one is kept (a held
+		// note leaves no pause, so this is not the pause speaking), and the kept note is the bar's again.
+		const shown = gateThat("decline");
+		const again = bridge("", { gate: shown.gate, tell: source });
+		for (const params of [lund, { about: "Hansen", at: "1042" }])
+			expect(await again.answer(tell(params))).toEqual({
+				ok: false,
+				error: "An earlier note from this app is still waiting above the page: send it or say not now first",
+			});
+		expect(shown.asked).toContainEqual(
+			expect.objectContaining({ kind: "tell", about: "Lund, A", draft: "Two quotes", held: true }),
+		);
+		expect(source.send).toHaveBeenCalledOnce();
+		// On its way, it is said so.
+		source.kept.set("orders-board", { ...source.kept.get("orders-board")!, sending: true });
+		expect(await again.answer(tell(lund))).toEqual({
+			ok: false,
+			error: "A note from this app is on its way: ask again in a moment",
+		});
 	});
 
 	it("costs five calls, and after a sent note refuses the app's next one for ten seconds", async () => {

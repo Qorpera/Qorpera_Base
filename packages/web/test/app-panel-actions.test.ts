@@ -460,57 +460,91 @@ describe("a note an app's page asks the member to send its owner", () => {
 		expect(back.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("And this one");
 	});
 
-	it("lets another thing's note take the place of a kept note no bar shows, when that one is held too (#1739 r3, F1)", async () => {
-		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
-		const notes = withNotes(host);
-		const kept = { agentId: OWNER, app: "Shop", about: "Lund, A", header: "app:shop · Lund, A", words: "Kept words" };
-		notes.held.set("shop", kept);
-		// The kept note's send fails: the bar says why, and it is kept again, on no bar now.
-		notes.next(async () => {
-			throw new Error("Ada's thread can't be opened now.");
-		});
-		const app = await opened(notes.told);
-		await app.shown();
-		await pressSend(app.bar());
-		await vi.waitFor(() =>
-			expect(app.bar().querySelector('[role="alert"]')?.textContent).toBe("Ada's thread can't be opened now."),
-		);
-		expect(notes.held.get("shop")).toEqual(kept);
-		// The page asks about another thing, and its thread can't take that either: it is kept in the place, words and
-		// all, so following Open loses nothing.
-		notes.next(async () => ({ sent: false, href: `#/c/x/staff/${OWNER}`, held: true }));
-		void app.call("tell", { about: "Hansen", at: "1042", text: "And this one" });
-		await vi.waitFor(() => expect(app.bar().querySelector("textarea")?.value).toBe("And this one"));
-		await pressSend(app.bar());
-		await vi.waitFor(() => expect(app.bar().querySelector<HTMLElement>(".app-ask-held")?.hidden).toBe(false));
-		expect(notes.held.get("shop")).toEqual({
-			agentId: OWNER,
-			app: "Shop",
-			about: "Hansen",
-			header: "app:shop#1042 · Hansen",
-			words: "And this one",
-		});
+	/** A note kept for the shop app from before (its thread couldn't take it), as the company keeps it. */
+	const keptNote = () => ({
+		agentId: OWNER,
+		app: "Shop",
+		about: "Lund, A",
+		header: "app:shop · Lund, A",
+		words: "Kept words",
 	});
+	const STILL = "An earlier note from this app is still waiting above the page: send it or say not now first";
 
-	it("keeps a kept note no bar shows again once another thing's note went in its place (#1739 r3, F1)", async () => {
+	it("keeps a kept note's bar when its send fails, refuses the page's next note, and sends the kept one after (#1739 r4, F1)", async () => {
 		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
 		const notes = withNotes(host);
-		const kept = { agentId: OWNER, app: "Shop", about: "Lund, A", header: "app:shop · Lund, A", words: "Kept words" };
-		notes.held.set("shop", kept);
+		notes.held.set("shop", keptNote());
 		notes.next(async () => {
 			throw new Error("Ada's thread can't be opened now.");
 		});
 		const app = await opened(notes.told);
 		await app.shown();
 		await pressSend(app.bar());
-		await vi.waitFor(() => expect(app.bar().querySelector('[role="alert"]')).not.toBeNull());
+		// It did not go: still the app's note, on its bar, with why and its words; nothing was let go.
+		await vi.waitFor(() =>
+			expect(app.bar().querySelector('.app-ask-held[role="alert"]')?.textContent).toBe(
+				"Ada's thread can't be opened now.",
+			),
+		);
+		expect(app.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words");
+		expect(notes.held.get("shop")).toEqual(keptNote());
+		write(app.bar(), "Kept words, kept");
+		expect(notes.held.get("shop")?.words).toBe("Kept words, kept");
+		// The page asks about another thing: refused, and the kept note's bar stays as it is.
+		notes.next(async () => ({ sent: false, href: `#/c/x/staff/${OWNER}`, held: true }));
+		expect(await app.call("tell", { about: "Hansen", at: "1042", text: "And this one" })).toMatchObject({
+			ok: false,
+			error: STILL,
+		});
+		expect(app.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words, kept");
+		expect(notes.sent).toHaveLength(1);
+		// The kept note is still the member's to send.
 		notes.next(async () => ({ sent: true, href: `#/c/x/staff/${OWNER}` }));
-		void app.call("tell", { about: "Hansen", text: "And this one" });
-		await vi.waitFor(() => expect(app.bar().querySelector("textarea")?.value).toBe("And this one"));
 		await pressSend(app.bar());
 		await vi.waitFor(() => expect(app.bar().textContent).toContain("Sent to Ada"));
-		expect(notes.held.get("shop")).toEqual(kept);
-		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Kept words", "And this one"]);
+		expect(notes.sent.map(([, note]) => note.text)).toEqual(["Kept words", "Kept words, kept"]);
+		expect(notes.held.size).toBe(0);
+		// Once it went, and its pause is over, the page's other note has the bar.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + TELL_AGAIN_MS);
+		void app.call("tell", { about: "Hansen", text: "And this one" });
+		await vi.waitFor(() => expect(app.bar().querySelector("textarea")?.value).toBe("And this one"));
+	});
+
+	it("refuses another note while a kept note is on the bar, and takes it once the member let that go (#1739 r4, F1)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		notes.held.set("shop", keptNote());
+		// The kept note is on the bar with the page: the page's note about another thing is refused, and the bar stays
+		// the kept note's.
+		const back = await opened(notes.told);
+		await back.shown();
+		expect(await back.call("tell", { about: "Hansen", text: "And this one" })).toMatchObject({
+			ok: false,
+			error: STILL,
+		});
+		expect(back.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words");
+		// Not now lets it go: the page's next note has the bar.
+		[...back.bar().querySelectorAll("button")].find((each) => each.textContent === "Not now")!.click();
+		expect(notes.held.size).toBe(0);
+		void back.call("tell", { about: "Hansen", text: "And this one" });
+		await vi.waitFor(() => expect(back.bar().querySelector("textarea")?.value).toBe("And this one"));
+		expect(notes.sent).toEqual([]);
+	});
+
+	it("puts a kept note no bar shows back on the bar when the page asks for another note (#1739 r4, F1)", async () => {
+		const { host } = company(`${MAY_NOT}owner = "${OWNER}"\n`);
+		const notes = withNotes(host);
+		const app = await opened(notes.told);
+		// Kept while no bar shows it (the member left another page of the app while its note was held there).
+		notes.held.set("shop", keptNote());
+		expect(app.bar().hidden).toBe(true);
+		expect(await app.call("tell", { about: "Hansen", text: "And this one" })).toMatchObject({
+			ok: false,
+			error: STILL,
+		});
+		await app.shown();
+		expect(app.bar().querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Kept words");
+		expect(notes.held.get("shop")).toEqual(keptNote());
 	});
 
 	it("puts a kept note back on the bar when the app's manifest changes under a page that stays (#1739 r2, F3)", async () => {
