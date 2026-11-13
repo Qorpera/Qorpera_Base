@@ -291,3 +291,81 @@ describe("coding command gateway (Order 9)", () => {
 		},
 	);
 });
+
+describe("company databases: the data gateway's run door", () => {
+	async function dataEnvironment() {
+		const current = await environment();
+		const folder = dirname(current.QORPERA_LXD_NATIVE_OBJECT_TOKEN_FILE!);
+		const tokenFile = join(folder, "company-data-token");
+		const caFile = join(folder, "company-data-ca.crt");
+		const ca = await readFile(current.QORPERA_LXD_CLOUD_SECRET_CA_FILE!, "utf-8");
+		await writeFile(tokenFile, `${"d".repeat(43)}\n`, { mode: 0o600 });
+		await writeFile(caFile, ca, { mode: 0o644 });
+		current.QORPERA_COMPANY_DATA_URL = "https://10.41.0.1:8481";
+		current.QORPERA_LXD_COMPANY_DATA_TOKEN_FILE = tokenFile;
+		current.QORPERA_LXD_COMPANY_DATA_CA_FILE = caFile;
+		current.QORPERA_LXD_COMPANY_DATA_CA_SHA256 = createHash("sha256").update(ca).digest("hex");
+		return { current, tokenFile, caFile, ca };
+	}
+	const names = [
+		"QORPERA_COMPANY_DATA_URL",
+		"QORPERA_LXD_COMPANY_DATA_TOKEN_FILE",
+		"QORPERA_LXD_COMPANY_DATA_CA_FILE",
+		"QORPERA_LXD_COMPANY_DATA_CA_SHA256",
+	] as const;
+
+	it("is absent unless all four settings are there, and then holds the origin, the token and the pinned CA", async () => {
+		expect(lxdNativeCompanyRuntimeFromEnvironment(await environment())?.companyData).toBeUndefined();
+		const { current, ca } = await dataEnvironment();
+		expect(lxdNativeCompanyRuntimeFromEnvironment(current)?.companyData).toEqual({
+			origin: "https://10.41.0.1:8481",
+			token: "d".repeat(43),
+			caCertificate: ca,
+			caSha256: createHash("sha256").update(ca).digest("hex"),
+		});
+		for (const name of names)
+			expect(() => lxdNativeCompanyRuntimeFromEnvironment({ ...current, [name]: undefined })).toThrow("together");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment(Object.fromEntries(names.map((name) => [name, current[name]]))),
+		).toThrow("requires QORPERA_NATIVE_RUNTIME");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({ ...current, QORPERA_COMPANY_DATA_TOKEN: "d".repeat(43) }),
+		).toThrow("protected credential file");
+	});
+
+	it.each([
+		"http",
+		"path",
+		"query",
+		"readable-token",
+		"shared-object",
+		"shared-secret",
+		"shared-coding",
+		"short",
+		"ca-digest",
+		"ca-writable",
+		"ca-not-a-certificate",
+	])("refuses an unsafe door, token or CA (%s)", async (kind) => {
+		const { current, tokenFile, caFile } = await dataEnvironment();
+		if (kind === "http") current.QORPERA_COMPANY_DATA_URL = "http://10.41.0.1:8481";
+		if (kind === "path") current.QORPERA_COMPANY_DATA_URL = "https://10.41.0.1:8481/v1/run-data";
+		if (kind === "query") current.QORPERA_COMPANY_DATA_URL = "https://10.41.0.1:8481/?token=leak";
+		if (kind === "readable-token") await chmod(tokenFile, 0o644);
+		if (kind === "shared-object") await writeFile(tokenFile, `${"q".repeat(43)}\n`);
+		if (kind === "shared-secret") await writeFile(tokenFile, `${"s".repeat(43)}\n`);
+		if (kind === "shared-coding") {
+			const codingFile = join(dirname(tokenFile), "coding-command-token");
+			await writeFile(codingFile, `${"d".repeat(43)}\n`, { mode: 0o600 });
+			current.QORPERA_CODING_COMMAND_URL = "https://10.41.0.1:8789";
+			current.QORPERA_LXD_CODING_COMMAND_TOKEN_FILE = codingFile;
+		}
+		if (kind === "short") await writeFile(tokenFile, "short\n");
+		if (kind === "ca-digest") current.QORPERA_LXD_COMPANY_DATA_CA_SHA256 = "0".repeat(64);
+		if (kind === "ca-writable") await chmod(caFile, 0o666);
+		if (kind === "ca-not-a-certificate") {
+			await writeFile(caFile, "not a certificate\n");
+			current.QORPERA_LXD_COMPANY_DATA_CA_SHA256 = createHash("sha256").update("not a certificate\n").digest("hex");
+		}
+		expect(() => lxdNativeCompanyRuntimeFromEnvironment(current)).toThrow();
+	});
+});

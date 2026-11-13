@@ -42,8 +42,10 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   app opens and on Reload; a page that follows the app's light and dark is shown afresh when that changes. A concept
  *   and a page of the Company File are shown exactly as written.
  * - A link the member clicks in an app's page opens here, never in the frame (§4): another app on its page, a file of
- *   the company in Storage, a web page in a new tab. A tab the browser stops is offered in a line of Qorpera's own
- *   above the frame, where the member's click opens it. A page of the Company File opens no links. */
+ *   the company in Storage, or a web page in a new tab, which opens only after the member has seen its whole address
+ *   on the bar and pressed Open there (Jonas, 13 November 2026: "Show the address first"; views/app-ask-bar.ts). A tab
+ *   the browser still stops is offered in a line of Qorpera's own above the frame, where the member's click opens it.
+ *   A page of the Company File opens no links. */
 
 /** What is shown: an app by its name, or a page of the Company File by its path. */
 export type AppPanelTarget =
@@ -101,10 +103,9 @@ const control = (name: string, label: string, onclick: () => void) =>
 	h("button", { type: "button", class: "side-panel-button", title: label, "aria-label": label, onclick }, icon(name));
 
 /** Opens a web page in a new tab, as a link in a message opens: with no way back to this window, and with no referrer
- * (the site sends none, public/_headers). False when the browser stopped the tab. The member's click was in the frame:
- * a browser counts it for the pages the frame stands in, or it does not and stops the tab as a pop-up. The tab is asked
- * for without `noopener`, which would hide whether it opened; its way back is cut at once, before it has loaded
- * anything. */
+ * (the site sends none, public/_headers). False when the browser stopped the tab. It runs in the member's press on the
+ * bar's Open, so the browser counts that press and opens it. The tab is asked for without `noopener`, which would hide
+ * whether it opened; its way back is cut at once, before it has loaded anything. */
 function openTab(href: string): boolean {
 	const tab = window.open(href, "_blank");
 	if (!tab) return false;

@@ -216,7 +216,7 @@ connections each, and it serves tables directly (§11, P1).
 | Caller | Road | What proves them |
 | --- | --- | --- |
 | A member, from an interface app | the web page, then `member-company-gateway` on `api.qorpera.com`, then node 1's mux: `/v1/company-data/<company>/…` | the member's own token. The gateway begins each call as the member: `qorpera_member_folder_read_many` with the member's token and the publishable key, as the coding executor begins a look at a screen. Then it reads the store as itself. |
-| An agent's run | a tool in the execution host, to the gateway's loopback address | the node's private token says "a host of ours"; a data pass says which run. The tool gets the pass from the platform as the run (`qorpera_run_data_pass`: 32 random bytes, only their hash kept, one use, 60 s, as the folder's view passes are); the gateway redeems it once. |
+| An agent's run | a tool in the run's provider host (a slot of its node's execution host) dials one address on its own node, `https://10.41.0.1:8481`, which the guest guard lets through; the node forwards it to the gateway's run door on the store's machine (node 2's through node 1); TLS ends at the gateway. A run on an overflow machine (a one-run VM) has no data tools yet | the node's private token says "a host of ours"; a data pass says which run. The tool gets the pass from the platform as the run (`qorpera_run_data_pass`: 32 random bytes, only their hash kept, one use, 60 s, as the folder's view passes are); the gateway redeems it once. |
 | Qorpera itself | the gateway's own timers | nothing leaves the service |
 
 The gateway holds no service key and no login to the platform's database. Everything it asks the platform, it asks

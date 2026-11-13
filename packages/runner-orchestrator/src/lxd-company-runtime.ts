@@ -27,6 +27,10 @@ export interface LxdNativeCompanyRuntimeConfig {
 	 * distinct transport token the guest presents. Absent, the node carries no
 	 * coding composition and a coding wake fails visibly. */
 	codingCommand?: { origin: string; token: string };
+	/** The data gateway's run door (company databases): the HTTPS origin every host on this node dials, the distinct
+	 * token it presents (the systemd credential `qorpera-company-data`) and the store's own CA, pinned by its sha256.
+	 * Absent, a host offers no data tools. */
+	companyData?: { origin: string; token: string; caCertificate: string; caSha256: string };
 }
 
 export function exactHttpsOrigin(value: string, label: string): string {
@@ -82,9 +86,9 @@ function privateToken(path: string, label: string): string {
 	return token;
 }
 
-function pinnedCaCertificate(path: string, expectedSha256: string): string {
+function pinnedCaCertificate(path: string, expectedSha256: string, label = "Cloud secret broker CA"): string {
 	if (!isAbsolute(path) || realpathSync(path) !== resolve(path)) {
-		throw new Error("Cloud secret broker CA file must be an absolute physical path");
+		throw new Error(`${label} file must be an absolute physical path`);
 	}
 	const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 	let encoded: Buffer;
@@ -97,7 +101,7 @@ function pinnedCaCertificate(path: string, expectedSha256: string): string {
 			(metadata.mode & 0o022) !== 0 ||
 			(metadata.uid !== 0 && metadata.uid !== process.getuid?.())
 		) {
-			throw new Error("Cloud secret broker CA file has unsafe ownership, permissions, or size");
+			throw new Error(`${label} file has unsafe ownership, permissions, or size`);
 		}
 		encoded = Buffer.alloc(metadata.size);
 		let length = 0;
@@ -106,22 +110,26 @@ function pinnedCaCertificate(path: string, expectedSha256: string): string {
 			if (read === 0) break;
 			length += read;
 		}
-		if (length !== encoded.length) throw new Error("Cloud secret broker CA file changed while reading");
+		if (length !== encoded.length) throw new Error(`${label} file changed while reading`);
 	} finally {
 		closeSync(descriptor);
 	}
-	if (!/^[0-9a-f]{64}$/.test(expectedSha256)) throw new Error("Cloud secret broker CA digest is invalid");
+	if (!/^[0-9a-f]{64}$/.test(expectedSha256)) throw new Error(`${label} digest is invalid`);
 	if (createHash("sha256").update(encoded).digest("hex") !== expectedSha256) {
-		throw new Error("Cloud secret broker CA digest does not match its pinned authority");
+		throw new Error(`${label} digest does not match its pinned authority`);
 	}
+	assertCaCertificate(encoded, label);
+	return encoded.toString("utf-8");
+}
+
+function assertCaCertificate(encoded: string | Buffer, label: string): void {
 	let certificate: X509Certificate;
 	try {
 		certificate = new X509Certificate(encoded);
 	} catch {
-		throw new Error("Cloud secret broker CA certificate is invalid");
+		throw new Error(`${label} certificate is invalid`);
 	}
-	if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
-	return encoded.toString("utf-8");
+	if (!certificate.ca) throw new Error(`${label} certificate is not a certificate authority`);
 }
 
 export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeConfig): void {
@@ -137,6 +145,7 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 		"recoveryVolumeSize",
 		...(config.offices !== undefined ? ["offices"] : []),
 		...(config.codingCommand !== undefined ? ["codingCommand"] : []),
+		...(config.companyData !== undefined ? ["companyData"] : []),
 	];
 	if (
 		Object.keys(config).length !== keys.length ||
@@ -183,18 +192,30 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 			throw new Error("Coding command transport requires an HTTPS origin and a distinct private token");
 		exactHttpsOrigin(coding.origin, "Coding command gateway");
 	}
-	let certificate: X509Certificate;
-	try {
-		certificate = new X509Certificate(config.secretBroker.caCertificate);
-	} catch {
-		throw new Error("Cloud secret broker CA certificate is invalid");
+	if (config.companyData !== undefined) {
+		const data = config.companyData;
+		if (
+			!data ||
+			typeof data !== "object" ||
+			Object.keys(data).sort().join() !== "caCertificate,caSha256,origin,token" ||
+			typeof data.origin !== "string" ||
+			typeof data.caCertificate !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(data.token) ||
+			!/^[0-9a-f]{64}$/.test(data.caSha256) ||
+			createHash("sha256").update(data.caCertificate).digest("hex") !== data.caSha256 ||
+			[config.objectGatewayToken, config.secretBroker.runtimeToken, config.codingCommand?.token].includes(data.token)
+		)
+			throw new Error("Company databases require an HTTPS origin, a distinct private token and a pinned CA");
+		exactHttpsOrigin(data.origin, "Company data run door");
+		assertCaCertificate(data.caCertificate, "Company data CA");
 	}
-	if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
+	assertCaCertificate(config.secretBroker.caCertificate, "Cloud secret broker CA");
 	if (config.offices !== undefined)
 		validateLxdNativeCompanyOffices(config.offices, [
 			config.objectGatewayToken,
 			config.secretBroker.runtimeToken,
 			...(config.codingCommand ? [config.codingCommand.token] : []),
+			...(config.companyData ? [config.companyData.token] : []),
 		]);
 }
 
@@ -229,10 +250,19 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 	if (environment.QORPERA_CODING_COMMAND_TOKEN !== undefined)
 		throw new Error("Coding command transport requires a protected credential file, not a token in the environment");
 	const codingNames = ["QORPERA_CODING_COMMAND_URL", "QORPERA_LXD_CODING_COMMAND_TOKEN_FILE"] as const;
+	if (environment.QORPERA_COMPANY_DATA_TOKEN !== undefined)
+		throw new Error("Company databases require a protected credential file, not a token in the environment");
+	const dataNames = [
+		"QORPERA_COMPANY_DATA_URL",
+		"QORPERA_LXD_COMPANY_DATA_TOKEN_FILE",
+		"QORPERA_LXD_COMPANY_DATA_CA_FILE",
+		"QORPERA_LXD_COMPANY_DATA_CA_SHA256",
+	] as const;
 	if (
 		names.every((name) => environment[name] === undefined) &&
 		environment.QORPERA_LXD_OFFICE_ROUTES_FILE === undefined &&
-		codingNames.every((name) => environment[name] === undefined)
+		codingNames.every((name) => environment[name] === undefined) &&
+		dataNames.every((name) => environment[name] === undefined)
 	)
 		return undefined;
 	const values = names.map((name) => {
@@ -279,6 +309,24 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 		config.codingCommand = {
 			origin: exactHttpsOrigin(url as string, "Coding command gateway"),
 			token: privateToken(tokenFile as string, "Coding command token"),
+		};
+	}
+	// The run door of the company databases: all four together, or none (then a host offers no data tools).
+	const dataConfigured = dataNames.filter((name) => environment[name] !== undefined);
+	if (dataConfigured.length > 0 && dataConfigured.length < dataNames.length)
+		throw new Error(`Company databases require ${dataNames.join(", ")} together`);
+	if (dataConfigured.length === dataNames.length) {
+		const [url, tokenFile, caFile, caSha256] = dataNames.map((name) => {
+			const value = environment[name] as string;
+			if (!value || value !== value.trim() || /[\0\r\n]/.test(value))
+				throw new Error(`Company databases require ${name}`);
+			return value;
+		});
+		config.companyData = {
+			origin: exactHttpsOrigin(url as string, "Company data run door"),
+			token: privateToken(tokenFile as string, "Company data token"),
+			caCertificate: pinnedCaCertificate(caFile as string, caSha256 as string, "Company data CA"),
+			caSha256: caSha256 as string,
 		};
 	}
 	validateLxdNativeCompanyRuntime(config);

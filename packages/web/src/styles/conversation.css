@@ -1640,6 +1640,19 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-held[role="alert"] { color: var(--danger); }
 .app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .app-ask-field:read-only { color: var(--text-muted); }
+/* A web page a link in the app leads to (Jonas, 13 Nov 2026: "Show the address first"). The site first, a size up, its
+ * registered part in the bar's ink and any labels before it quieter; then the whole address in the house monospace (0
+ * and O, l and 1 apart), wrapping anywhere, selectable, and scrolled inside its own line past six lines, so a long one
+ * is all there to see and never cut. Nothing of it is the page's: the bar writes it as plain text. */
+.app-ask-lines.is-link { align-items: baseline; }
+.app-ask-site { font-size: 15px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.app-ask-site-lead, .app-ask-site-port { color: var(--text-muted); font-weight: 500; }
+.app-ask-address {
+	display: block; max-height: calc(6 * 1.45em); overflow-y: auto; overscroll-behavior: contain;
+	font-family: var(--font-mono); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; word-break: break-all;
+	user-select: text; -webkit-user-select: text; unicode-bidi: isolate;
+}
+.app-ask-address:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 3px; }
 .app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .app-ask-button {
 	min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);

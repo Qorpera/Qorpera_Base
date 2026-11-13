@@ -2539,7 +2539,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
+it("gives a company conversation's run the machine tools with notify, and a start that waits up to a minute", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2549,10 +2549,10 @@ it("gives a company conversation's run the machine tools with notify, and a wait
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	// agent-box B1: it waits in place while its machine starts, by default, for a minute at most; 0 asks for no wait.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
 		type: "integer",
-		minimum: 1,
+		minimum: 0,
 		maximum: 60,
 	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");

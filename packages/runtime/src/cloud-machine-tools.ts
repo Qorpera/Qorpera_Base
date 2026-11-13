@@ -98,6 +98,11 @@ const WAIT_STEP_MS = 5000;
 /** How long a run waits for the executor to take a wake it does not wait on. A lost word costs only the executor's next
  * pass, 10 s at most. */
 const WAKE_SENT_MS = 2000;
+/** How many times a waiting start asks the machine's executor for a word: a machine in line is placed first and boots
+ * after, each a step the executor tells of (agent-box B1). */
+const WAKE_WORDS = 3;
+/** How long a run gives its report of a wait (20260930755000): beside the answer, never holding it long. */
+const WAIT_REPORT_MS = 5000;
 
 /** A pause that the run's abort ends early. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -165,12 +170,16 @@ export const CLOUD_MACHINE_DESKTOP_LEAST = Object.freeze({ cpus: 2, memoryGiB: 4
 const SHARE_APP_START =
 	"To let members open a server in their browser, run it on an always-on machine and share its port with share_app. ";
 const SHARE_APP_RUN = "To let members open one in their browser, share its port with share_app. ";
-/** How long machine_start's waitSeconds may wait in one call (agent-box B1, 13 Nov 2026). A worker has no conversation to
- * be woken in. A conversation's run may wait in place too, for about a boot (p50 15 to 23 s, p90 28 to 31 s): it holds
- * its slot and its conversation meanwhile (one run of an agent at a time, a member's next message waits for it), so the
- * wait is short and a machine in line answers at once; past it the run is woken when the machine runs, as before. */
-export const CLOUD_MACHINE_START_WAIT_SECONDS = Object.freeze({ worker: 300, conversation: 60 });
-const CONVERSATION_START_WAIT = `With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.conversation}) the call waits while it starts, and no model turn is spent; if it is not running yet, finish this run normally: you are woken when it runs. `;
+/** How long machine_start waits for its machine in one call (agent-box B1, 13 Nov 2026). It waits by default, for
+ * `byDefault` seconds, unless waitSeconds asks for less (0: not at all) or, in a worker's run, for more: a wait the model
+ * must remember to ask for mostly does not happen (v244's first live start did not ask). A boot is p50 15 to 23 s, p90
+ * 28 to 31 s, and a new machine is often first in line for about 2 s while its node's executor frees a sleeping machine's
+ * disk (22 of 36 new machines, 7 to 13 Nov), so the wait goes on through that line too. A conversation's run holds its
+ * slot and its conversation meanwhile (one run of an agent at a time: a member's next message waits for it), so its wait
+ * is a minute at most; past it the run is woken when the machine runs, as before (20260930747000). A worker has no
+ * conversation to be woken in: it may wait up to 300 s a call. */
+export const CLOUD_MACHINE_START_WAIT_SECONDS = Object.freeze({ worker: 300, conversation: 60, byDefault: 60 });
+const CONVERSATION_START_WAIT = `The call waits up to ${CLOUD_MACHINE_START_WAIT_SECONDS.byDefault} s while it starts, with no model turn spent (waitSeconds: less, 0 for none); if it is not running yet, finish this run normally: you are woken when it runs. `;
 /** Why an agent asks for more than the default 2 cpus (Jonas, 13 Nov 2026, on renders that did not look real: custom
  * machines are "built, just not used well enough"). No machine had been started with more than 4 cpus, and the agent
  * whose render raised the question ran Blender with -t 2 on a default machine. The figures are measured
@@ -193,7 +202,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
-	"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait). " +
+	"To wake a stopped machine, pass only machine with its name. " +
 	"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
 	SHARE_APP_START +
@@ -207,8 +216,8 @@ export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRI
 	"",
 ).replace(
 	CONVERSATION_START_WAIT,
-	`You are a worker: nothing wakes you. With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.worker}) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). ` +
-		"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry. ",
+	`You are a worker: nothing wakes you. The call waits up to ${CLOUD_MACHINE_START_WAIT_SECONDS.byDefault} s while it starts, with no model turn spent (waitSeconds: 0 to ${CLOUD_MACHINE_START_WAIT_SECONDS.worker}); to wait longer, call machine_start again with the same operationKey and arguments. ` +
+		"If it still waits in line for room, use another running machine from machine_list, or say in your report that it is waiting so your agent can retry. ",
 );
 /** What a command's result says of the company folder (F3 6e-2a). */
 const FOLDER_REPORT =
@@ -456,17 +465,24 @@ export function cloudMachineTools(options: {
 			}
 		}
 	};
-	/** A worker waits: it looks every few seconds until settled, the time passes or its work is stopped, and at once when
-	 * `word` comes (its machine's executor saying to look again). No model turn is spent. A failed look is only a failed
-	 * look; the answer comes after the wait either way. */
+	/** A run waits: it looks every few seconds until settled, the time passes or its work is stopped, and at once when a
+	 * word comes from `listen` (its machine's executor saying a step took the machine somewhere). Told, it looks now and
+	 * asks for the next word, at most WAKE_WORDS in all; not told, the looks go on every few seconds. No model turn is
+	 * spent. A failed look is only a failed look; the answer comes after the wait either way. */
 	const waitUntil = async (
 		seconds: number,
 		signal: AbortSignal,
 		settled: () => Promise<boolean | "stopped">,
-		word?: Promise<boolean>,
+		listen?: () => Promise<boolean>,
 	): Promise<"stopped" | undefined> => {
 		const deadline = Date.now() + seconds * 1000;
-		let waiting = word;
+		let words = listen ? WAKE_WORDS : 0;
+		const ask = (): Promise<boolean> | undefined => {
+			if (!listen || words <= 0) return undefined;
+			words -= 1;
+			return listen();
+		};
+		let waiting = ask();
 		for (;;) {
 			try {
 				const outcome = await settled();
@@ -477,11 +493,12 @@ export function cloudMachineTools(options: {
 			}
 			const left = deadline - Date.now();
 			if (left <= 0) return undefined;
-			// One word only: told, the wait ends now; not told, the looks go on every few seconds.
 			const cut = new AbortController();
-			void waiting?.then((told) => {
-				waiting = undefined;
+			const heard = waiting;
+			void heard?.then((told) => {
 				if (told) cut.abort();
+				// Each word is taken once, by the first look that hears it.
+				if (waiting === heard) waiting = told ? ask() : undefined;
 			});
 			await pause(Math.min(WAIT_STEP_MS, left), AbortSignal.any([signal, cut.signal])).catch(() => undefined);
 			signal.throwIfAborted();
@@ -492,14 +509,16 @@ export function cloudMachineTools(options: {
 		options.gateway.wake
 			? options.gateway.wake({ machineId: machine.machineId }, wait, signal).catch(() => false)
 			: Promise.resolve(false);
-	/** A worker waits in machine_start and machine_read; a conversation's run only in machine_start, and less long. */
+	/** A worker waits in machine_start and machine_read; a conversation's run only in machine_start, and less long. A
+	 * start waits by default; its waitSeconds may be 0 (no wait). A read waits only when asked. */
 	const waitMost = worker ? CLOUD_MACHINE_START_WAIT_SECONDS.worker : CLOUD_MACHINE_START_WAIT_SECONDS.conversation;
-	const waitSecondsOf = (value: JsonValue): number => {
-		if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > waitMost)
+	const waitSecondsOf = (value: JsonValue, least: number): number => {
+		if (!Number.isSafeInteger(value) || Number(value) < least || Number(value) > waitMost)
 			throw new Error("Invalid machine wait");
 		return Number(value);
 	};
 	const waitSchema = { type: "integer", minimum: 1, maximum: waitMost };
+	const startWaitSchema = { type: "integer", minimum: 0, maximum: waitMost };
 	const fits = cloudCommandFits;
 	const receipt = (value: CloudMachineCommandReceipt, machine: string) => {
 		// As much of a start's or a cancel's first page as fits; a handle without a preview is still a complete, honest
@@ -668,7 +687,7 @@ export function cloudMachineTools(options: {
 				lifetime: { type: "string", enum: ["task", "always-on"] },
 				desktop: { type: "boolean" },
 				machine: machineName,
-				waitSeconds: waitSchema,
+				waitSeconds: startWaitSchema,
 			},
 		},
 		parseArguments(value): JsonValue {
@@ -680,7 +699,7 @@ export function cloudMachineTools(options: {
 			key(input.operationKey);
 			// The wait is how this call answers, never part of the start or its receipt.
 			const wait: Record<string, JsonValue> =
-				input.waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(input.waitSeconds) };
+				input.waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(input.waitSeconds, 0) };
 			if (Object.hasOwn(input, "machine")) {
 				if (Object.keys(input).length !== 2 + Object.keys(wait).length)
 					throw new Error("A wake names only the machine");
@@ -769,34 +788,81 @@ export function cloudMachineTools(options: {
 					return { content: { kind: "json", value: result } };
 				},
 			});
-			// A run that asks (waitSeconds) waits while its machine starts; one waiting in line for room answers at once. A
-			// conversation's run stays on the machine's list of runs to tell (the kernel's, at the start): when its wait ends
-			// first, it is woken when the machine runs, and its look that sees it running keeps it from being woken for it
-			// (20260930747000).
+			// The call waits while its machine starts, by default (agent-box B1): in line for room too (a new machine is
+			// often first in line for about 2 s while its node's executor frees a sleeping machine's disk), but not for
+			// computer hours, which only a member adds. waitSeconds asks for less (0: not at all), or in a worker's run for
+			// more. A conversation's run stays on the machine's list of runs to tell (the kernel's, at the start): when its
+			// wait ends first, it is woken when the machine runs, and its look that sees it running keeps it from being woken
+			// for it (20260930747000). Each wait is reported to the kernel when it ends (20260930755000).
 			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
 			const machine = started?.machine as MachineView | undefined;
-			if (waitSeconds === undefined || machine?.state !== "starting") {
-				// In line or starting: its executor need not wait for its next pass to see it.
-				if (machine?.state === "starting" || machine?.state === "waiting")
-					await wake(machine, false, AbortSignal.any([context.signal, AbortSignal.timeout(WAKE_SENT_MS)]));
+			const pending = (view: MachineView): boolean => view.state === "starting" || view.state === "waiting";
+			const forHours = (view: MachineView): boolean => view.waitingFor === "COMPUTER_HOURS_EXHAUSTED";
+			if (!machine || !pending(machine)) return result;
+			const asked = waitSeconds !== undefined;
+			const limit = asked ? Number(waitSeconds) : CLOUD_MACHINE_START_WAIT_SECONDS.byDefault;
+			const report = async (waitedMs: number, outcome: string, after: MachineView): Promise<void> => {
+				if (context.signal.aborted) return;
+				try {
+					await manage(
+						{
+							action: "waited",
+							machine: machine.name,
+							// The machine the start answered, never a later one of its name (review r1 F1 of #1771).
+							machineId: machine.machineId,
+							wait: {
+								asked,
+								limitSeconds: limit,
+								stateBefore: machine.state,
+								waitingFor: typeof machine.waitingFor === "string" ? machine.waitingFor : null,
+								waitedMs: Math.min(600_000, Math.max(0, Math.round(waitedMs))),
+								outcome,
+								stateAfter: after.state,
+							},
+						},
+						AbortSignal.any([context.signal, AbortSignal.timeout(WAIT_REPORT_MS)]),
+					);
+				} catch {
+					// A kernel without the report (before 20260930755000), or a lost report: the answer goes on without it.
+				}
+			};
+			if (limit === 0 || forHours(machine)) {
+				// Not waited on: its executor need not wait for its next pass to see it.
+				await wake(machine, false, AbortSignal.any([context.signal, AbortSignal.timeout(WAKE_SENT_MS)]));
+				await report(0, limit === 0 ? "not_asked" : "hours", machine);
 				return result;
 			}
+			const began = Date.now();
 			let latest: MachineView = machine;
 			const stopWord = new AbortController();
-			const word = wake(machine, true, AbortSignal.any([context.signal, stopWord.signal]));
 			const outcome = await waitUntil(
-				Number(waitSeconds),
+				limit,
 				context.signal,
 				async () => {
 					const now = await status(machine.name, undefined, context.signal);
 					if (now.workStopped) return "stopped";
 					latest = now.machine ?? { ...latest, state: "deleted" };
-					return latest.state !== "starting";
+					return !pending(latest) || forHours(latest);
 				},
-				word,
+				() => wake(machine, true, AbortSignal.any([context.signal, stopWord.signal])),
 			);
 			stopWord.abort();
 			check(context);
+			await report(
+				Date.now() - began,
+				outcome === "stopped"
+					? "work_stopped"
+					: latest.state === "running"
+						? "running"
+						: latest.state === "deleted"
+							? "gone"
+							: forHours(latest)
+								? "hours"
+								: pending(latest)
+									? "limit"
+									: "stopped",
+				latest,
+			);
 			// The machine was started either way: a stopped run is told so beside it, not refused.
 			return {
 				kind: "json",
@@ -955,7 +1021,7 @@ export function cloudMachineTools(options: {
 				throw new Error("Invalid coding log read");
 			return {
 				machine,
-				...(waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(waitSeconds) }),
+				...(waitSeconds === undefined ? {} : { waitSeconds: waitSecondsOf(waitSeconds, 1) }),
 				...read,
 				limit: rest.limit === undefined ? CLOUD_COMMAND_PAGE_ASK : Number(read.limit),
 			} as unknown as JsonValue;
