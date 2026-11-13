@@ -148,6 +148,11 @@ export class DesktopHoldLedger {
 	readonly #machineReleasedAt = new Map<string, number>();
 	readonly #agentReleasedAt = new Map<string, number>();
 	#pageReleasedAt = 0;
+	/** The page's pointer moves on each machine whose answer has not come, and until when one whose answer never came may
+	 * still land (its pass's end on every node): by machine, here, because the executor keeps a pass for its 10 s whatever
+	 * the page made of it, and stamps a late move with the fence of then (v242 release review r1 F1). A hold or sharing
+	 * made anew for the same desktop (Back and in again), or another window, waits for them as the one that sent them. */
+	readonly #moves = new Map<string, { readonly going: Set<Promise<void>>; unsure: number }>();
 
 	constructor(computer: WebCompanyComputer | undefined, signal?: AbortSignal) {
 		this.#computer = computer;
@@ -167,6 +172,66 @@ export class DesktopHoldLedger {
 			},
 			{ once: true },
 		);
+	}
+
+	/** A pointer move of this page's on `machineId` is on its way until `moved` settles. */
+	moveGoing(machineId: string, moved: Promise<void>): void {
+		const entry = this.#movesOf(machineId);
+		entry.going.add(moved);
+		void moved.finally(() => {
+			entry.going.delete(moved);
+			this.#pruneMoves(machineId);
+		});
+	}
+
+	/** A pointer move on `machineId` got no answer: it may still land until `until` (its pass's end on every node). */
+	moveUnsure(machineId: string, until: number): void {
+		const entry = this.#movesOf(machineId);
+		entry.unsure = Math.max(entry.unsure, until);
+	}
+
+	/** Waits until no pointer move of this page's on `machineId` can land any more: those on their way answered, and one
+	 * that got no answer has had its pass end everywhere (or `signal` ended the wait). True when nothing was waited for. */
+	async movesSettled(machineId: string, signal: AbortSignal): Promise<boolean> {
+		let settled = true;
+		for (;;) {
+			const entry = this.#moves.get(machineId);
+			if (!entry || signal.aborted) return settled;
+			if (entry.going.size > 0) {
+				settled = false;
+				await Promise.all(entry.going);
+				continue;
+			}
+			const unsure = entry.unsure - Date.now();
+			if (unsure <= 0) {
+				this.#pruneMoves(machineId);
+				return settled;
+			}
+			settled = false;
+			await new Promise<void>((resolve) => {
+				const done = () => {
+					clearTimeout(timer);
+					signal.removeEventListener("abort", done);
+					resolve();
+				};
+				const timer = setTimeout(done, unsure);
+				signal.addEventListener("abort", done, { once: true });
+			});
+		}
+	}
+
+	#movesOf(machineId: string): { readonly going: Set<Promise<void>>; unsure: number } {
+		let entry = this.#moves.get(machineId);
+		if (!entry) {
+			entry = { going: new Set(), unsure: Number.NEGATIVE_INFINITY };
+			this.#moves.set(machineId, entry);
+		}
+		return entry;
+	}
+
+	#pruneMoves(machineId: string): void {
+		const entry = this.#moves.get(machineId);
+		if (entry && entry.going.size === 0 && entry.unsure <= Date.now()) this.#moves.delete(machineId);
 	}
 
 	/** Calls `listener` whenever what the ledger holds changes. */
