@@ -158,8 +158,9 @@ being copied there, another of slots 1-4 stays free after it for the next run, a
 it reaches three slots only on an idle machine, two beside one other run. It never takes the kept slot or an extra one,
 it holds no queue ticket, and one such run per machine at a time widens. While a run waits there, it gives its extra
 slots back, the last taken first: its steps start nothing past one slot fewer at once, and the slot goes back once the
-steps still running fit in the slots it keeps (`planScript` keeps the cores they need in `.run-on-node-using`), so the
-machine never runs more than its slots give. `--cores 2` keeps a run to its one slot. The record says how many slots a run
+steps still running fit in the slots it keeps, or one step runs alone (`planScript` keeps the cores they need and how many
+run in `.run-on-node-using`), so the machine never runs more than a run in those slots would. `--cores 2` keeps a run to
+its one slot. The record says how many slots a run
 held at most (`slots`) and the cores they gave (`slotCores`).
 
 Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least

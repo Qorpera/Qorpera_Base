@@ -807,7 +807,8 @@ export function growScript({ locks = LOCKS, allStarted, meminfo = "/proc/meminfo
  *
  * While a run waits, it gives its extra slots back, the last taken first, without running more than its slots give: it
  * first lowers `$cores_file` by one slot's cores, so its steps start nothing past that (planScript), and frees the slot on
- * a later turn, once the cores its running steps need (`using`, planScript's, in hundredths) fit in the slots it keeps.
+ * a later turn, once the cores its running steps need (`using`, planScript's, in hundredths) fit in the slots it keeps, or
+ * one step runs alone: planScript always lets one step run, so a run in one slot runs it the same way.
  * The later turn lets a step that started under the old budget show in `using` first. When nobody waits any more before
  * that, `$cores_file` goes back up. On 13 Nov (node01, 11:04Z) two runs of 30-43 s waited 412-438 s behind a run that held
  * three slots, though it kept one of slots 1-4 free. It says why it takes no more once per reason, again only after it
@@ -830,10 +831,11 @@ export function freeGrowScript({ locks = LOCKS, allStarted, sideBySide, using, m
 		'\t\t\t\tlowered=1; give $(( held - 1 ))',
 		'\t\t\t\t[ "$said" = back ] || { said=back; echo "== run-on-node: another run waits for a slot here: no new step past $(( (held - 1) * per )) cores, and a slot goes back once its steps fit"; }',
 		`\t\t\telse`,
-		`\t\t\t\tneed=""; { read -r need <${shellQuote(using)}; } 2>/dev/null`,
-		'\t\t\t\tif [[ "$need" =~ ^[0-9]+$ ]] && [ "$need" -le $(( (held - 1) * per * 100 )) ]; then',
+		`\t\t\t\tneed=""; steps=""; { read -r need steps <${shellQuote(using)}; } 2>/dev/null`,
+		'\t\t\t\tif [[ "$need" =~ ^[0-9]+$ ]] && { [ "$need" -le $(( (held - 1) * per * 100 )) ] || [[ "$steps" =~ ^[01]$ ]]; }; then',
 		'\t\t\t\t\tlast=$(( ${#fds[@]} - 1 )); fd=${fds[last]}; exec {fd}>&-',
-		'\t\t\t\t\techo "== run-on-node: slot ${taken[last]} back for a run that waits: $(( held - 1 )) slots, $(( (held - 1) * per )) cores"',
+		'\t\t\t\t\t[ "$held" = 2 ] && kept="1 slot" || kept="$(( held - 1 )) slots"',
+		'\t\t\t\t\techo "== run-on-node: slot ${taken[last]} back for a run that waits: $kept, $(( (held - 1) * per )) cores"',
 		'\t\t\t\t\tfds=("${fds[@]:0:last}"); taken=("${taken[@]:0:last}"); held=$(( held - 1 )); lowered=""; said=""',
 		"\t\t\t\tfi",
 		"\t\t\tfi",

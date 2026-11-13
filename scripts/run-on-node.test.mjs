@@ -1462,7 +1462,24 @@ test(
 			await until("the lower budget once more", () => seventh.out.split(lower(4)).length === 3);
 			await sleep(4_500);
 			assert.deepEqual([readFileSync(cores, "utf8"), free(slot(3)), free(slot(4))], ["4\n", false, false]);
+			// One step runs alone, needing more than two slots give: it fits all the same (planScript always lets one step
+			// run, as a run in one slot does), so both slots go back, the last taken first.
+			writeFileSync(using, "500 1\n");
+			await until("slot 4 back", () => seventh.out.includes("== run-on-node: slot 4 back for a run that waits: 1 slot, 2 cores\n"));
+			assert.match(seventh.out, /== run-on-node: slot 3 back for a run that waits: 2 slots, 4 cores\n[^]*== run-on-node: slot 4 back/);
+			assert.deepEqual([readFileSync(cores, "utf8"), free(slot(3)), free(slot(4))], ["2\n", true, true]);
+			// Two steps that need more than one slot gives are not one alone: from three slots, none goes back.
 			await end(seventh);
+			assert.deepEqual([free(slot(3)), free(slot(4)), existsSync(cores)], [true, true, false]);
+			await release(owner2);
+			writeFileSync(using, "500 2\n");
+			const eighth = session(3);
+			await until("three slots", () => eighth.out.includes(three));
+			await hold(owner2);
+			await until("the lower budget", () => eighth.out.includes(lower(4)));
+			await sleep(4_500);
+			assert.deepEqual([eighth.out.includes("back for"), readFileSync(cores, "utf8"), free(slot(3))], [false, "4\n", false]);
+			await end(eighth);
 			assert.deepEqual([free(slot(3)), free(slot(4)), existsSync(cores)], [true, true, false]);
 		} finally {
 			for (const child of [...holders.values(), ...sessions]) child.kill("SIGKILL");

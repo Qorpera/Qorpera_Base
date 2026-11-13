@@ -393,10 +393,10 @@ test("side by side within the cores the run's slots give it, read again as they 
 		assert.equal(mostCores(events, cores), 4);
 		assert.equal(existsSync(join(cwd, ALL_STARTED)), true);
 		assert.equal(existsSync(join(cwd, SIDE_BY_SIDE)), true);
-		// What its running steps need, in hundredths: four steps of one core halfway, none at the end.
+		// What its running steps need, in hundredths, and how many run: four steps of one core halfway, none at the end.
 		assert.deepEqual(
 			["using-early", "using-seen", USING].map((file) => readFileSync(join(cwd, file), "utf8")),
-			["400\n", "400\n", "0\n"],
+			["400 4\n", "400 4\n", "0 0\n"],
 		);
 		// The most cores its slots gave, for the run's record: 4, though it asked for 6.
 		assert.equal(readFileSync(join(cwd, ".run-on-node-status"), "utf8"), "slot_cores=4\n");

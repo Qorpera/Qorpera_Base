@@ -475,8 +475,9 @@ export const ALL_STARTED = ".run-on-node-all-started";
 export const SIDE_BY_SIDE = ".run-on-node-side-by-side";
 
 /** A side-by-side run started by run-on-node.mjs keeps in this file of its directory the cores its running steps need, in
- * hundredths (their `cores`), replaced whole as it changes: a run without --front gives a slot back to a run that waits
- * only once they fit in the slots it keeps (run-on-node.mjs freeGrowScript). */
+ * hundredths (their `cores`), and how many steps run, as `NEED STEPS`, replaced whole as it changes: a run without --front
+ * gives a slot back to a run that waits only once they fit in the slots it keeps, or one step runs alone (which a run in
+ * one slot runs too, whatever its cores; run-on-node.mjs freeGrowScript). */
 export const USING = ".run-on-node-using";
 
 /** A --fail-fast run's part stops once run-on-node.mjs makes this file in its directory: another part failed. */
@@ -614,7 +615,7 @@ export function planScript(steps, { cores = null, stepWorkers = true, failFast =
 		// The runner user's tasks count against its 512-task limit (run-on-node.mjs RUNNERS): the run reports its peak.
 		`pending="${rest.join(" ")}"; running=""; used=0; tick=0; tasks=0; least=""`,
 		`budget=${limit}; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && budget=100; top=0; most=0; told=""`,
-		`tell() { [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ "$used" != "$told" ] && { echo "$used" >${USING}.tmp && mv -f ${USING}.tmp ${USING}; told=$used; }; }`,
+		`tell() { local steps=($running) now; now="$used \${#steps[@]}"; [ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && [ "$now" != "$told" ] && { echo "$now" >${USING}.tmp && mv -f ${USING}.tmp ${USING}; told=$now; }; }`,
 		`[ -n "\${QORPERA_RUN_CORES_FILE:-}" ] && : >${SIDE_BY_SIDE}`,
 		'while [ -n "${pending// }${running// }" ]; do',
 		...(failFast ? [`\tif ${halted}; then stop; break; fi`] : []),
