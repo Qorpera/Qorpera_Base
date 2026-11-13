@@ -1105,6 +1105,41 @@ describe("the company's databases on an app's page", () => {
 		expect(calls.at(-1)?.watches.map((one) => one.question)).not.toContain("sales");
 	});
 
+	it("counts an answer's size in UTF-8 bytes, so a name in another script is counted in full", async () => {
+		// Under 1 MiB in characters as the page gets it, over it in bytes: each 界 is three.
+		const wide = "界".repeat(200);
+		const big = result(
+			"wide",
+			Array.from({ length: 3000 }, () => [1]),
+			[wide],
+		);
+		const text = JSON.stringify(
+			shown(
+				Array.from({ length: 3000 }, () => ({ [wide]: 1 })),
+				[wide],
+			),
+		);
+		expect(text.length).toBeLessThan(1024 * 1024 - 1024);
+		expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(1024 * 1024);
+		const words =
+			"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
+		const { bridge, calls, data } = setup({ wide: big });
+		const on = page();
+		expect(await bridge(on).answer(query("shop/wide"))).toEqual({ ok: false, error: words });
+		const first = bridge(on).answer(watch("shop/wide"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toEqual({ ok: false, error: words });
+		expect(data.questions).toBe(0);
+		// A later answer: not sent, and the watch ends.
+		const started = bridge(on).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(600);
+		expect(await started).toMatchObject({ ok: true });
+		calls.at(-1)?.answer({ changed: [{ index: 0, answer: big }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(on.sent).toEqual([]);
+		expect(data.questions).toBe(0);
+	});
+
 	it("keeps every parameter as given, `__proto__` and `constructor` too, and one question for any order", async () => {
 		const { bridge, asked, calls, data } = setup();
 		const given = JSON.parse('{"__proto__":"x","constructor":"y","since":"2026-11-01"}') as Record<string, unknown>;

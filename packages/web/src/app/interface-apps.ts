@@ -983,9 +983,10 @@ export interface PageDataAnswer {
 	asOf: string;
 }
 
-/** An answer a page may be handed, at most, as JSON in the shape the page gets (rows as objects, each repeating its
- * column names): under the bridge's 1 MiB for any answer, with room for a watch's id around it. */
-const DATA_ANSWER_CHARS = MAX_ANSWER_BYTES - 1024;
+/** An answer a page may be handed, at most, in UTF-8 bytes of JSON in the shape the page gets (rows as objects, each
+ * repeating its column names): under the bridge's 1 MiB for any answer, with room for a watch's id around it. */
+const DATA_ANSWER_BYTES = MAX_ANSWER_BYTES - 1024;
+const UTF8 = new TextEncoder();
 const ANSWER_TOO_LARGE =
 	"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
 
@@ -993,7 +994,8 @@ const ANSWER_TOO_LARGE =
  * first answer and each later one. */
 export function fittedAnswer(answer: CloudMemberDataAnswer): PageDataAnswer | null {
 	const shown = pageAnswer(answer);
-	return JSON.stringify(shown).length > DATA_ANSWER_CHARS ? null : shown;
+	// Bytes, not characters: a column name in another script takes up to three bytes a character.
+	return UTF8.encode(JSON.stringify(shown)).byteLength > DATA_ANSWER_BYTES ? null : shown;
 }
 
 /** What the company's watches need of the member's client of its databases (CloudMemberData). */
