@@ -25,8 +25,10 @@ export type AgentsAtComputers = Readonly<Record<string, AgentAtComputer>>;
 export const READ_PAST_END_MS = 1000;
 /** A burst of `machines` hints is one read. */
 export const HINT_SETTLE_MS = 300;
-/** After a failed read with entries showing, the next try. */
+/** After a failed read, the next try: then twice as long each time, up to RETRY_MAX_MS, until a read answers. A read
+ * that fails never ends the watch: an agent may still be at its computer, and its stretch sends no new hint. */
 export const RETRY_MS = 15_000;
+export const RETRY_MAX_MS = 60_000;
 
 export interface AtComputerWatchOptions {
 	read(): Promise<ScreensInUse>;
@@ -44,6 +46,8 @@ export class AtComputerWatch {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#hint: ReturnType<typeof setTimeout> | undefined;
 	#reading = false;
+	/** Reads that failed in a row. */
+	#failures = 0;
 	#again = false;
 	#owed = false;
 	#done = false;
@@ -78,6 +82,7 @@ export class AtComputerWatch {
 			(answer) => {
 				this.#reading = false;
 				if (this.#done) return;
+				this.#failures = 0;
 				this.#take(answer);
 				this.#next();
 			},
@@ -91,7 +96,8 @@ export class AtComputerWatch {
 					return;
 				}
 				this.#expire();
-				this.#next(Object.keys(this.#agents).length ? RETRY_MS : undefined);
+				this.#failures++;
+				this.#next(Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** (this.#failures - 1)));
 			},
 		);
 	}
@@ -146,7 +152,8 @@ export class AtComputerWatch {
 		this.#options.onChange(agents);
 	}
 
-	/** The next read: a coalesced call at once, else at the soonest entry's end (or after `retry`), else none. */
+	/** The next read: a coalesced call at once, else at the soonest entry's end or after `retry` (a failed read's),
+	 * whichever is first, else none (a read answered and nobody is at a computer). */
 	#next(retry?: number): void {
 		clearTimeout(this.#timer);
 		this.#timer = undefined;

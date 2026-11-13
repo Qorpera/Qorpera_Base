@@ -2036,7 +2036,15 @@ export class ComputerPanel {
 export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
 	/** When a window shows by itself in its agent's thread, and goes again (20260930742000). */
-	readonly byItself = new ComputerByItself({ close: (agentId) => this.close(agentId) });
+	readonly byItself = new ComputerByItself({
+		current: (agentId) => {
+			const panel = this.#panels.get(agentId);
+			return panel
+				? { el: panel.el, theirs: panel.holding || panel.el.classList.contains("is-entered") }
+				: undefined;
+		},
+		close: (agentId) => this.close(agentId),
+	});
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #options: ComputerPanelOptions;
@@ -2086,6 +2094,8 @@ export class ComputerPanels {
 	/** End the agent's panel. */
 	close(agentId: string): void {
 		const panel = this.#panels.get(agentId);
+		// Whatever closes it, the window that showed by itself is no longer the rule's (20260930742000).
+		this.byItself.released(agentId);
 		this.#panels.delete(agentId);
 		panel?.dispose();
 	}

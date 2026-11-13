@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AtComputerWatch, HINT_SETTLE_MS, READ_PAST_END_MS } from "../src/app/agents-at-computers.ts";
+import { AtComputerWatch, HINT_SETTLE_MS, READ_PAST_END_MS, RETRY_MS } from "../src/app/agents-at-computers.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ComputerPanels } from "../src/app/views/computer.ts";
@@ -160,6 +160,35 @@ describe("the page's watch", () => {
 		expect(read).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps reading after a failed read at an entry's end, until a read answers (review r1 F2)", async () => {
+		vi.useFakeTimers({ now: 1_000_000 });
+		const read = vi.fn(async () => answer(Date.now(), [{ agent: staff.id }]));
+		const f = watch(read);
+		f.w.read();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.w.agents[staff.id]).toBeDefined();
+		// The read at the end fails: the entry goes, and the watch tries again.
+		read.mockImplementation(async () => {
+			throw new Error("network");
+		});
+		await vi.advanceTimersByTimeAsync(90_000 + READ_PAST_END_MS);
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(f.w.agents).toEqual({});
+		await vi.advanceTimersByTimeAsync(RETRY_MS);
+		expect(read).toHaveBeenCalledTimes(3);
+		// Back: the agent still uses its computer, and shows again.
+		read.mockImplementation(async () => answer(Date.now(), [{ agent: staff.id }]));
+		await vi.advanceTimersByTimeAsync(2 * RETRY_MS);
+		expect(read).toHaveBeenCalledTimes(4);
+		expect(f.w.agents[staff.id]).toBeDefined();
+		// An answered read with nobody at a computer ends the reading.
+		read.mockImplementation(async () => answer(Date.now(), []));
+		await vi.advanceTimersByTimeAsync(90_000 + READ_PAST_END_MS);
+		expect(read).toHaveBeenCalledTimes(5);
+		await vi.advanceTimersByTimeAsync(30 * 60_000);
+		expect(read).toHaveBeenCalledTimes(5);
+	});
+
 	it("gives up for good on a cloud without the list", async () => {
 		vi.useFakeTimers();
 		const read = vi.fn(async () => {
@@ -293,51 +322,148 @@ describe("the figure's motion", () => {
 });
 
 describe("the window's rules", () => {
-	const el = () => document.createElement("div");
+	/** A company's windows as the rule sees them: the agent's current window, and whether it is the member's. */
+	function windows() {
+		const shown = new Map<string, { el: HTMLElement; theirs: boolean }>();
+		const close = vi.fn((agentId: string) => {
+			shown.delete(agentId);
+			rules.released(agentId);
+		});
+		const rules = new ComputerByItself({ current: (agentId) => shown.get(agentId), close });
+		cleanup.push(() => rules.dispose());
+		/** The member's own click opens the agent's window (a new one). */
+		const open = (agentId: string) => {
+			const el = document.createElement("div");
+			shown.set(agentId, { el, theirs: false });
+			return el;
+		};
+		/** The rule opens it. */
+		const auto = (agentId: string, since: string) => {
+			const el = open(agentId);
+			rules.opened(agentId, since, el);
+			return el;
+		};
+		/** The member closes it by hand. */
+		const shut = (agentId: string, since: string | undefined) => {
+			shown.delete(agentId);
+			rules.closed(agentId, since);
+		};
+		return { rules, close, shown, open, auto, shut };
+	}
 
 	it("shows once per stretch, never while open or busy, and a closed one stays closed through its stretch", () => {
-		const rules = new ComputerByItself({ close: vi.fn() });
-		cleanup.push(() => rules.dispose());
-		expect(rules.wanted(staff.id, undefined, false, false)).toBe(false);
-		expect(rules.wanted(staff.id, "s1", true, false)).toBe(false);
-		expect(rules.wanted(staff.id, "s1", false, true)).toBe(false);
-		expect(rules.wanted(staff.id, "s1", false, false)).toBe(true);
-		rules.opened(staff.id, "s1", el());
-		rules.closed(staff.id, "s1");
-		expect(rules.wanted(staff.id, "s1", false, false)).toBe(false);
+		const w = windows();
+		expect(w.rules.wanted(staff.id, undefined, false, false)).toBe(false);
+		expect(w.rules.wanted(staff.id, "s1", true, false)).toBe(false);
+		expect(w.rules.wanted(staff.id, "s1", false, true)).toBe(false);
+		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(true);
+		w.auto(staff.id, "s1");
+		w.shut(staff.id, "s1");
+		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
 		// A pause (writing, between runs) in the same stretch: still closed.
-		rules.seen(staff.id, undefined);
-		expect(rules.wanted(staff.id, "s1", false, false)).toBe(false);
+		w.rules.seen(staff.id, undefined);
+		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
 		// The agent stopped and began again.
-		expect(rules.wanted(staff.id, "s2", false, false)).toBe(true);
+		expect(w.rules.wanted(staff.id, "s2", false, false)).toBe(true);
 	});
 
 	it("takes a window that came by itself away a minute after the agent stopped, unless touched or begun again", () => {
 		vi.useFakeTimers();
-		const close = vi.fn();
-		const rules = new ComputerByItself({ close });
-		cleanup.push(() => rules.dispose());
-		const window1 = el();
-		rules.opened(staff.id, "s1", window1);
-		rules.seen(staff.id, undefined);
+		const w = windows();
+		w.auto(staff.id, "s1");
+		w.rules.seen(staff.id, undefined);
 		vi.advanceTimersByTime(AUTO_CLOSE_MS - 1);
 		// Began again before the minute: it stays.
-		rules.seen(staff.id, "s1");
+		w.rules.seen(staff.id, "s1");
 		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(close).not.toHaveBeenCalled();
-		rules.seen(staff.id, undefined);
+		expect(w.close).not.toHaveBeenCalled();
+		w.rules.seen(staff.id, undefined);
 		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(close).toHaveBeenCalledWith(staff.id);
+		expect(w.close).toHaveBeenCalledWith(staff.id);
 		// It does not come back in that stretch.
-		expect(rules.wanted(staff.id, "s1", false, false)).toBe(false);
+		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
 		// Touched: it is the member's.
-		const window2 = el();
-		rules.opened(other.id, "t1", window2);
-		window2.dispatchEvent(new Event("pointerdown"));
-		rules.seen(other.id, undefined);
+		const touched = w.auto(other.id, "t1");
+		touched.dispatchEvent(new Event("pointerdown"));
+		w.rules.seen(other.id, undefined);
 		vi.advanceTimersByTime(10 * AUTO_CLOSE_MS);
-		expect(close).toHaveBeenCalledTimes(1);
-		expect(rules.untouched(other.id)).toBe(false);
+		expect(w.close).toHaveBeenCalledTimes(1);
+		expect(w.rules.owns(other.id)).toBe(false);
+	});
+
+	it("never closes a window the member opened after it closed one by itself, used or not (review r1 F1)", () => {
+		vi.useFakeTimers();
+		const w = windows();
+		w.auto(staff.id, "s1");
+		w.rules.seen(staff.id, undefined);
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close).toHaveBeenCalledTimes(1);
+		// The member opens it by hand, and uses it; the agent is still not at its computer.
+		const theirs = w.open(staff.id);
+		theirs.dispatchEvent(new Event("pointerdown"));
+		for (let i = 0; i < 5; i++) {
+			w.rules.seen(staff.id, undefined);
+			vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		}
+		expect(w.close).toHaveBeenCalledTimes(1);
+		expect(w.shown.get(staff.id)?.el).toBe(theirs);
+		// Opened by hand while the rule's timer ran (the rule's window closed some other way): the timer closes nothing.
+		w.auto(other.id, "t1");
+		w.rules.seen(other.id, undefined);
+		w.shown.delete(other.id);
+		w.open(other.id);
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("never closes a window through which the member holds a desktop or has its large view open", () => {
+		vi.useFakeTimers();
+		const w = windows();
+		w.auto(staff.id, "s1");
+		w.rules.seen(staff.id, undefined);
+		// A take-over from the agent's card: no touch on the window, but the member holds its desktop.
+		w.shown.get(staff.id)!.theirs = true;
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close).not.toHaveBeenCalled();
+		// Given back: the rule let go of it for good.
+		w.shown.get(staff.id)!.theirs = false;
+		w.rules.seen(staff.id, undefined);
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close).not.toHaveBeenCalled();
+		expect(w.rules.owns(staff.id)).toBe(false);
+	});
+
+	it("follows the company's word for every window it owns, whatever thread shows (review r1 F3)", () => {
+		vi.useFakeTimers();
+		const w = windows();
+		w.auto(staff.id, "s1");
+		w.auto(other.id, "t1");
+		const using = new Map<string, string | undefined>([
+			[staff.id, "s1"],
+			[other.id, "t1"],
+		]);
+		const feed = () => w.rules.refresh((agentId) => using.get(agentId));
+		// Both stop while no thread of theirs is shown; one begins again within the minute.
+		using.set(staff.id, undefined);
+		using.set(other.id, undefined);
+		feed();
+		vi.advanceTimersByTime(AUTO_CLOSE_MS / 2);
+		using.set(other.id, "t1");
+		feed();
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close.mock.calls).toEqual([[staff.id]]);
+		expect(w.rules.owns(other.id)).toBe(true);
+	});
+
+	it("owns nothing once the company is left", () => {
+		vi.useFakeTimers();
+		const w = windows();
+		w.auto(staff.id, "s1");
+		w.rules.seen(staff.id, undefined);
+		w.rules.dispose();
+		vi.advanceTimersByTime(AUTO_CLOSE_MS);
+		expect(w.close).not.toHaveBeenCalled();
+		expect(w.rules.wanted(staff.id, "s2", false, false)).toBe(false);
 	});
 });
 
@@ -417,6 +543,28 @@ describe("the agent's thread", () => {
 		f.controller.store.set({ activity: [] });
 		await settle();
 		vi.advanceTimersByTime(5 * AUTO_CLOSE_MS);
+		expect(f.panel()).not.toBeNull();
+	});
+
+	it("leaves a window the member reopened by hand after one went by itself (review r1 F1)", async () => {
+		vi.useFakeTimers();
+		const f = thread();
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s1") } });
+		await settle();
+		f.controller.store.set({ activity: [] });
+		await settle();
+		vi.advanceTimersByTime(AUTO_CLOSE_MS + 1_000);
+		await settle();
+		expect(f.panel()).toBeNull();
+		// The member opens it from the agent's card, and uses it.
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		f.panel()!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		for (let i = 0; i < 3; i++) {
+			f.controller.store.set({ activity: [], atComputers: {} });
+			await settle();
+			vi.advanceTimersByTime(AUTO_CLOSE_MS + 1_000);
+			await settle();
+		}
 		expect(f.panel()).not.toBeNull();
 	});
 });

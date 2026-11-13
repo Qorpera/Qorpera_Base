@@ -80,11 +80,13 @@ do $$ begin execute pg_temp.agent_at_computer_patched('public.qorpera_authorize_
 	$new$	update public.qorpera_company_machines set screen_staff_agent_id = v_run.staff_agent_id, screen_used_at = clock_timestamp(),
 		-- 20260930742000: the agent's own use, for the members' "using its computer" (qorpera_list_company_screens_in_use):
 		-- a stretch begins anew after a pause longer than the window, or when another agent drives the screen.
+		-- One instant for both (a new stretch begins at the call that stamps it).
 		screen_agent_since = case when screen_agent_used_at is null
-				or screen_agent_used_at < clock_timestamp() - public.qorpera_machine_screen_in_use()
+				or screen_agent_used_at < stamp.at - public.qorpera_machine_screen_in_use()
 				or screen_staff_agent_id is distinct from v_run.staff_agent_id
-			then clock_timestamp() else screen_agent_since end,
-		screen_agent_used_at = clock_timestamp()
+			then stamp.at else screen_agent_since end,
+		screen_agent_used_at = stamp.at
+	from (select clock_timestamp() as at) as stamp
 	where id = v_machine.id and (screen_staff_agent_id is distinct from v_run.staff_agent_id or screen_used_at is null
 		or screen_used_at < clock_timestamp() - interval '30 seconds'
 		-- 20260930742000: also when only the agent's own stamp is old (a member's desktop start stamped screen_used_at).

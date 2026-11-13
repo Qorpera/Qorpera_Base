@@ -88,7 +88,7 @@ function setup() {
 		close: vi.fn(),
 		dispose: vi.fn(),
 		// The window that shows by itself (20260930742000): never in these tests.
-		byItself: new ComputerByItself({ close: vi.fn() }),
+		byItself: new ComputerByItself({ current: () => undefined, close: vi.fn() }),
 		busy: vi.fn(() => false),
 		releaseAgent: vi.fn(
 			(_agentId: string) =>
