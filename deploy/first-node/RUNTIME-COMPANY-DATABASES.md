@@ -378,7 +378,8 @@ Then Qorpera's own numbers on Qorpera.
 ## 11. Proofs
 
 On a test machine, 13 November 2026, each against a throwaway PostgreSQL 17.6 capped at 2 CPUs and 4 GiB. Scripts:
-`deploy/company-data/proof/`. Nothing touched production or a node.
+`deploy/company-data/proof/` (P1 to P4 here; the end-to-end run with the gateway's slice). Nothing touched production
+or a node.
 
 | | What | Result |
 | --- | --- | --- |
@@ -386,7 +387,7 @@ On a test machine, 13 November 2026, each against a throwaway PostgreSQL 17.6 ca
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
 | P3 | limits and walls, 39 checks | all pass: no company reaches another's database, role or statements; connection, time and temp file limits hold; a read cannot write or become the owner; a step that destroys is held with what it destroys and lands after a yes |
 | P4 | the snapshot of a 918 MiB database | 839 MiB of parts in 7 to 9 s; a usual day changes 2 of 51 parts (3 %), the worst day all of them; loaded back from the files alone with the same rows in 12 s |
-| E2E | the whole road for a member (`proof/e2e.mjs`): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 43 of 43 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
+| E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 43 of 43 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
 
 ## 12. Build order
 
