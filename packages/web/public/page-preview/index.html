@@ -288,8 +288,9 @@
 	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
 	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
-	// it; the app checks each. A call that asks for a change (answer, setRow, addRow) changes nothing here: the app shows
-	// the member what it would save, outside this frame, and the promise settles once the member chose. A link the
+	// it; the app checks each. A call that asks for a change (answer, setRow, addRow) or a note (tell) changes and sends
+	// nothing here: the app shows the member what it would save or send, outside this frame, and the promise settles
+	// once the member chose. A link the
 	// member clicked goes out on it too (`follow`), from this document alone: the page's object has no call for it.
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
@@ -343,6 +344,13 @@
 			answer: freeze((id, value) => call("answer", { id: String(id), value })),
 			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
 			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
+			// A note to the app's owner, about a thing in the app: the member writes it on the app's bar, where `text` is
+			// only the draft they start from.
+			tell: freeze((note) => {
+				const given = note !== null && typeof note === "object" ? note : {};
+				const kept = (value) => (value === undefined || value === null ? null : String(value));
+				return call("tell", { about: String(given.about ?? ""), at: kept(given.at), text: kept(given.text) });
+			}),
 			onChange: freeze((listener) => {
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),

@@ -7,21 +7,25 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024199_runtime_bundle_activation_v241.sql";
-const activationVersion = 241;
-const previousActivationVersion = 240;
-const previousActivationSha256 = "729f0efe44ca88d3695316488e897e60c69626d5ce619970c0259b82c68504c9";
-// This release's own migrations, which its activation requires before it registers the bundle (v241): one entry per
+const activation = "supabase/migrations/20260929024299_runtime_bundle_activation_v242.sql";
+const activationVersion = 242;
+const previousActivationVersion = 241;
+const previousActivationSha256 = "de4b67f237c8cb4ac9e47dd520b8dc23816143193bba7becf2e6d62018176805";
+// This release's own migrations, which its activation requires before it registers the bundle (v242): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v242 replaces these entries with the migrations v242 brings (or an empty list).
-// v242's activation already requires v241 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v241's list is EMPTY on purpose: its release switches the bundle BEFORE its migrations (20260930741000, 20260930743000;
-// the import's follow-ups, #1725): the runtime reads every new key optionally and needs nothing new from SQL, while the
-// runtime before it reads the import's read answer closed, so these migrations come after the switch and the activation
-// must not require them. An entry sorting before the activation file is checked on every database; one sorting after it
-// only on a database past 20260930534000, since a fresh chain in file order reaches it only after the activation (as with
-// the guards in the activation's text below).
-const activationRequires = Object.freeze([]);
+// version lines, when it sets them: v243 replaces these entries with the migrations v243 brings (or an empty list).
+// v243's activation already requires v242 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v242's release runs its migration (20260930744000, the member's pointer, #1733) BEFORE the
+// executors and this switch. An entry sorting before the activation file is checked on every database; one sorting
+// after it only on a database past 20260930534000, since a fresh chain in file order reaches it only after the
+// activation (as with the guards in the activation's text below).
+const activationRequires = Object.freeze([
+	[
+		"20260930744000_machine_desktop_pointer",
+		"the member's pointer: the executor this release moves reads a pointer pass with qorpera_member_machine_desktop_pointer_authority; it rides in this release's migrate, before this switch",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_member_machine_desktop_pointer_begin(uuid,uuid,bigint,bigint,bigint)') and strpos(prosrc, '20260930744000') > 0)",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

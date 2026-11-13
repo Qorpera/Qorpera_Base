@@ -4,11 +4,13 @@ import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-mac
 import {
 	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
-	CloudMemberMachineActRefusal, CloudMemberMachineScreenRefusal, CloudMemberMachineStartRefusal, cloudMemberMachineActRecord,
+	CloudMemberMachineActRefusal, CloudMemberMachinePointerRefusal, type CloudMemberMachinePointerRefusalCode,
+	CloudMemberMachineScreenRefusal, CloudMemberMachineStartRefusal, cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
+import { CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 
 /** What SQL says about one machine command: where it runs, and for a start
  * the receipt's input digest, which binds the exact command. */
@@ -309,6 +311,69 @@ export async function authorizeMemberMachineScreen(
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
 		userId: result.userId as string, served: result.served as boolean, keepDesktop: result.keepDesktop,
 		desktopGeneration: result.desktopGeneration as number };
+}
+
+/** What SQL says about one member's pointer pass (20260930744000): where the machine runs, whose pass it is, the lease
+ * generation that stands now (the host refuses the pass's moves once it sees a newer one), whether it is the holder's
+ * private pass, how long it lasts, and whether this executor serves it (the machine's own executor moves the pointer;
+ * another reads it to forward the moves). */
+export interface MemberMachinePointerAuthority {
+	passId: string;
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	userId: string;
+	generation: number;
+	private: boolean;
+	milliseconds: number;
+	served: boolean;
+}
+
+/** A pointer pass, begun as the member, read again live in SQL (qorpera_member_machine_desktop_pointer_authority) by this
+ * executor (`owner`, `providerId`): once per pass, never per move. Its refusals are the member's; a pass SQL no longer
+ * holds (replaced, older than 10 s, a member made a viewer) is POINTER_PASS_ENDED; anything else fails. */
+export async function authorizeMemberMachinePointer(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: { passId: string; owner: string; providerId: string },
+	signal: AbortSignal,
+): Promise<MemberMachinePointerAuthority> {
+	if (!UUID.test(request.passId)) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+	let value: unknown;
+	try {
+		value = await control.call("qorpera_member_machine_desktop_pointer_authority", {
+			p_pass_id: request.passId, p_owner: request.owner, p_provider_id: request.providerId,
+		}, signal);
+	} catch (error) {
+		// SQL no longer holds the pass (42501): the window begins another.
+		if (error instanceof CodingControlRefused) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		throw error;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.member-machine-desktop-pointer-authority/v1") throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+	if (result.state === "refused" && Object.keys(result).sort().join() === "reason,schema,state" &&
+		["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW", "DESKTOP_MEMBER_IN_CONTROL", "DESKTOP_HELD_SINCE",
+			"DESKTOP_CONTROL_ENDED"].includes(result.reason as string))
+		throw new CloudMemberMachinePointerRefusal(result.reason as CloudMemberMachinePointerRefusalCode);
+	if (result.state !== "authorized" ||
+		Object.keys(result).sort().join() !==
+			"bootId,executorOwner,generation,machineId,milliseconds,passId,placementId,private,providerId,schema,served,state,userId" ||
+		result.passId !== request.passId ||
+		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		!Number.isSafeInteger(result.generation) || (result.generation as number) < 0 ||
+		typeof result.private !== "boolean" ||
+		!Number.isSafeInteger(result.milliseconds) || (result.milliseconds as number) < 0 || (result.milliseconds as number) > 10000 ||
+		result.served !== (result.executorOwner === request.owner && result.providerId === request.providerId))
+		throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { passId: result.passId as string, machineId: result.machineId as string, placementId: result.placementId as string,
+		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
+		userId: result.userId as string, generation: result.generation as number, private: result.private,
+		milliseconds: result.milliseconds as number, served: result.served as boolean };
 }
 
 /** What SQL says about one member's start of a desktop (20260930714000): where the machine runs, and whether this

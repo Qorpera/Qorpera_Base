@@ -339,12 +339,17 @@ export class CloudFolderSearch {
 	#closed = false;
 	/** Calls go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
 	#turn: Promise<unknown> = Promise.resolve();
-	/** Where each answer said to go on, the search it belongs to, and a file count it showed as going on, kept here:
-	 * the model holds only an opaque token, so it never reads (or forges) a path the answer did not show. Kept for the
-	 * run. */
+	/** Where each answer said to go on, the search it belongs to, a file count it showed as going on, and whether an
+	 * answer showed part of the file the cursor is inside (`shown`), kept here: the model holds only an opaque token, so
+	 * it never reads (or forges) a path the answer did not show. Kept for the run. */
 	readonly #cursors = new Map<
 		string,
-		{ readonly cursor: SearchCursor; readonly search: string; readonly carried?: SearchFile }
+		{
+			readonly cursor: SearchCursor;
+			readonly search: string;
+			readonly carried?: SearchFile;
+			readonly shown?: true;
+		}
 	>();
 
 	constructor(options: {
@@ -359,23 +364,26 @@ export class CloudFolderSearch {
 		this.#now = options.now ?? Date.now;
 	}
 
-	/** One call's search, after any call asked for before it: its pages, one after another, as one answer. */
-	search(ask: SearchAsk, signal: AbortSignal): Promise<SearchPage> {
-		const call = this.#turn.then(() => this.#search(ask, signal));
+	/** One call's search, after any call asked for before it: its pages, one after another, as one answer. `shown`: an
+	 * earlier answer showed part of the file `ask.after` is inside. */
+	search(ask: SearchAsk, signal: AbortSignal, shown = false): Promise<SearchPage> {
+		const call = this.#turn.then(() => this.#search(ask, signal, shown));
 		this.#turn = call.catch(() => undefined);
 		return call;
 	}
 
 	/** Pages until the answer has about a result's worth (CALL_FILL), the search ends, CALL_PAGES were asked or CALL_MS
 	 * passed. A later page that fails ends the call with what came before it, and its cursor where that page began. */
-	async #search(ask: SearchAsk, signal: AbortSignal): Promise<SearchPage> {
+	async #search(ask: SearchAsk, signal: AbortSignal, shown: boolean): Promise<SearchPage> {
 		// A call cancelled while it waited its turn sends nothing.
 		signal.throwIfAborted();
 		const started = this.#now();
 		let answer = await this.#page(ask, signal);
 		// The file the call's cursor is inside, of which an earlier answer showed part: the node goes on in it only at
-		// that version, and says nothing when it did not, so the answer does.
-		const earlier = ask.after && (ask.after.offset > 0 || ask.after.line > 0) ? ask.after : undefined;
+		// that version, and says nothing when it did not, so the answer does. A cursor inside a file is no proof the model
+		// saw any of it (the search may have run out of time there before a hit, or the fitting left out its first hit):
+		// then there is nothing to take back, and nothing is said (release review r2 of #1731).
+		const earlier = shown && ask.after && (ask.after.offset > 0 || ask.after.line > 0) ? ask.after : undefined;
 		if (earlier && !wentOn(earlier, answer)) answer = { ...answer, restarted: [restartOf(earlier, answer)] };
 		for (
 			let pages = 1;
@@ -445,10 +453,11 @@ export class CloudFolderSearch {
 		return this.#link;
 	}
 
-	/** A token for where an answer of `search` said to go on, with the count it showed as going on there. */
-	seal(cursor: SearchCursor, search: string, carried?: SearchFile): string {
+	/** A token for where an answer of `search` said to go on, with the count it showed as going on there, and whether
+	 * an answer showed part of the file it is inside. */
+	seal(cursor: SearchCursor, search: string, carried?: SearchFile, shown = false): string {
 		const token = randomBytes(12).toString("base64url");
-		this.#cursors.set(token, { cursor, search, ...(carried ? { carried } : {}) });
+		this.#cursors.set(token, { cursor, search, ...(carried ? { carried } : {}), ...(shown ? { shown } : {}) });
 		return token;
 	}
 
@@ -456,11 +465,15 @@ export class CloudFolderSearch {
 	open(
 		token: string,
 		search: string,
-	): { readonly cursor: SearchCursor; readonly carried?: SearchFile } | "other" | undefined {
+	): { readonly cursor: SearchCursor; readonly carried?: SearchFile; readonly shown?: true } | "other" | undefined {
 		const sealed = this.#cursors.get(token);
 		if (!sealed) return undefined;
 		if (sealed.search !== search) return "other";
-		return sealed.carried ? { cursor: sealed.cursor, carried: sealed.carried } : { cursor: sealed.cursor };
+		return {
+			cursor: sealed.cursor,
+			...(sealed.carried ? { carried: sealed.carried } : {}),
+			...(sealed.shown ? { shown: sealed.shown } : {}),
+		};
 	}
 
 	close(): void {
@@ -702,13 +715,18 @@ function shownBytes(page: SearchPage): number {
 	return joined(unitsOf(page)).reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
 }
 
+/** Whether a cursor is inside this version of this file. */
+function inFile(file: { readonly path: string; readonly version: string }, cursor: SearchCursor): boolean {
+	return cursor.path === file.path && cursor.version === file.version;
+}
+
 /** The text the model is shown of one answer, fitted to one tool result: hits (or files) that do not fit go to the
  * next call, and the first is always shown (without its context lines, its line cut, and at worst its path, if that
  * is what fits). `seal` turns where to go on into the token the model passes back, with the file count the answer
- * shows as going on there. */
+ * shows as going on there, and whether the answer shows anything of the file (at that version) the cursor is inside. */
 export function folderSearchText(
 	page: SearchPage,
-	seal: (cursor: SearchCursor, carried?: SearchFile) => string,
+	seal: (cursor: SearchCursor, carried?: SearchFile, shown?: boolean) => string,
 ): string {
 	const units = unitsOf(page);
 	const longLines = page.longLines ?? 0;
@@ -750,7 +768,8 @@ export function folderSearchText(
 		if (!next) return text;
 		// A count shown as going on goes on with the cursor, when the answer showed it (nothing after it was cut).
 		const carried = shown === units.length && last?.partial ? last : undefined;
-		return lay(shown, first, seal(next, carried)).text;
+		const showsFile = units.slice(0, shown).some((unit) => inFile(unit.resume, next));
+		return lay(shown, first, seal(next, carried, showsFile)).text;
 	};
 	let shown = units.length;
 	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
@@ -965,6 +984,7 @@ export function cloudFolderSearchTool(options: {
 						after: opened?.cursor ?? null,
 					},
 					context.signal,
+					opened?.shown === true,
 				);
 				page = withCarried(page, opened?.carried);
 			} catch (error) {
@@ -986,9 +1006,17 @@ export function cloudFolderSearchTool(options: {
 			}
 			// The text as the model is shown it: the boundary cuts a secret out of every answer (a line of a file may hold a
 			// token), so the release is under the hash of the text after that cut, which is what the context view cites.
-			// The cut only shortens, so the fitted text still fits.
+			// The cut only shortens, so the fitted text still fits. A cursor still inside the file an earlier answer showed
+			// part of (at the version it showed) keeps saying so, whether or not this answer shows more of it.
 			const text = redactCloudWebhookSecrets(
-				folderSearchText(page, (cursor, carried) => search.seal(cursor, asked, carried)),
+				folderSearchText(page, (cursor, carried, shown) =>
+					search.seal(
+						cursor,
+						asked,
+						carried,
+						shown === true || (opened?.shown === true && inFile(opened.cursor, cursor)),
+					),
+				),
 			);
 			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
