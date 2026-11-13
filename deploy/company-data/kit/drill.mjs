@@ -10,13 +10,14 @@
 // drill.yml, DATA_DB_MEMORY), every published port is on 127.0.0.1, and nothing is pulled: the images must be there.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { companyDatabase } from "../gateway/gateway.mjs";
 import { check, finish, note, sleep } from "../proof/lib.mjs";
+import { claimFile } from "./drill/own-file.mjs";
 
 const KIT = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(KIT, "../../..");
@@ -24,7 +25,9 @@ const POSTGRES_IMAGE = "docker.io/library/postgres:17.6-bookworm@sha256:f3bd19c6
 const NODE_IMAGE = "node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 const RUN = `cdkit-${process.pid}-${Date.now().toString(36)}`;
 const WORK = mkdtempSync(join(tmpdir(), `${RUN}-`));
-const NAS = join(WORK, "nas");
+// The NAS stand-in's path has a space; a sibling "nas" folder is what a path split at that space would name.
+const NAS = join(WORK, "nas folder");
+const DECOY = join(WORK, "nas");
 const FOLDER = join(WORK, "folder");
 const LINK = `${RUN}-link`;
 const PACKAGE = join(WORK, "package");
@@ -34,7 +37,13 @@ const BARE = { PATH: process.env.PATH, HOME: process.env.HOME ?? "/root" };
 const ENV = "64000000-0000-4000-8000-000000000001";
 const MEMBER = "64000000-0000-4000-8000-000000000002";
 const STORE = companyDatabase(ENV);
-const SECRET = `drill-value-${randomBytes(8).toString("hex")}`;
+// Company values that must never reach the server's log: a parameter, a parameter a cast fails on, a row's value a
+// constraint names, and a word in a slow statement's own text.
+const marker = (kind) => `drill-${kind}-${randomBytes(8).toString("hex")}`;
+const SECRET = marker("parameter");
+const MARKER_CAST = marker("cast");
+const MARKER_ROW = marker("row");
+const MARKER_TEXT = marker("text");
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 const timings = [];
 const timed = async (label, work) => {
@@ -54,6 +63,10 @@ const FILES = {
 	"data/shop/queries/count.sql": "-- How many orders there are, and the newest.\nselect count(*) as orders, coalesce(max(id), 0) as newest from orders;\n",
 	"data/shop/queries/slow.sql": "-- Waits a little.\nselect pg_sleep(1.3) as waited, length(:value::text) as n;\n",
 	"data/shop/queries/fails.sql": "-- Divides by zero.\nselect 1 / (length(:value::text) - length(:value::text)) as boom;\n",
+	"data/shop/queries/cast.sql": "-- Reads a number.\nselect :value::integer as n;\n",
+	"data/shop/queries/slow-word.sql": `-- Waits, with a word in its own text.\nselect pg_sleep(1.3) as waited, '${MARKER_TEXT}' as word;\n`,
+	"data/dup/database.toml": 'format = "qorpera.database/v1"\nname = "Dup"\nabout = "A step that breaks a key"\n',
+	"data/dup/tables/001-dup.sql": `create table t (k text primary key);\ninsert into t values ('${MARKER_ROW}'), ('${MARKER_ROW}');\n`,
 };
 const TEXT_BY_HASH = new Map(Object.values(FILES).map((text) => [sha256(text), text]));
 
@@ -147,6 +160,7 @@ B.scriptEnv = B.env;
 R.scriptEnv = { ...BARE, COMPOSE_PROJECT_NAME: R.project, DATA_LOCAL: R.local };
 const MACHINES = [A, B, R];
 let failure = null;
+let releaseDotenv = null;
 
 try {
 	note(`run ${RUN}; work folder ${WORK}; machine: ${run("nproc", []).out.trim()} vCPU`);
@@ -156,9 +170,12 @@ try {
 		if (!there) throw new Error(`missing image ${image}: report it, do not pull`);
 	}
 	mkdirSync(NAS, { mode: 0o755 });
-	if (existsSync(DOTENV)) throw new Error(`${DOTENV} exists: the drill writes its own and removes it`);
-	writeFileSync(DOTENV, ["# Written by drill.mjs for machine A, removed at its end.", "COMPOSE_FILE=docker-compose.yml:drill/drill.yml",
-		...DOTENV_KEYS.map((key) => `${key}=${A.env[key]}`), ""].join("\n"), { mode: 0o600 });
+	mkdirSync(DECOY, { mode: 0o755 });
+	writeFileSync(join(DECOY, "keep-me"), "a sibling folder retention must never touch\n");
+	// Created exclusively: a .env this run did not write is never written over, and never removed (drill/own-file.mjs).
+	releaseDotenv = claimFile(DOTENV, ["# Written by drill.mjs for machine A, removed at its end.", `# run ${RUN}`,
+		"COMPOSE_FILE=docker-compose.yml:drill/drill.yml  # relative, as a machine's setup writes it",
+		...DOTENV_KEYS.map((key) => `${key}=${/\s/.test(A.env[key]) ? `"${A.env[key]}"` : A.env[key]}`), ""].join("\n"));
 	const packaged = await timed("package", async () => run(process.execPath, [join(ROOT, "scripts/package-company-data-gateway.mjs"), "--out", PACKAGE], { cwd: ROOT }));
 	check("the gateway is packaged into one file with its sha256 (scripts/package-company-data-gateway.mjs)", packaged.ok && existsSync(join(PACKAGE, "qorpera-company-data-gateway.mjs.sha256")), tail(packaged.err, 3));
 	if (!packaged.ok) throw new Error("no package");
@@ -215,15 +232,27 @@ try {
 	const superuser = compose(A, ["run", "--rm", "--no-deps", "-T", "-e", "PGPASSWORD=x", "--entrypoint", "psql", "data-db", "host=data-db dbname=postgres user=postgres sslmode=require connect_timeout=5", "-c", "select 1"]);
 	check("(b) the superuser cannot log in over the network, even from the compose network", !superuser.ok && /pg_hba\.conf rejects connection/.test(superuser.err), tail(superuser.err, 1));
 
-	// ---- (e) no company value in the log
+	// ---- (e) no company value in the log; the server's own lines still are
 	const slow = await ask(A, "query", { database: "shop", question: "slow", params: { value: SECRET } });
 	const fails = await ask(A, "query", { database: "shop", question: "fails", params: { value: SECRET } });
-	check("(e) a slow question with a parameter ran, and one that fails failed", slow.status === 200 && fails.status === 400, `${slow.status} ${fails.status}`);
+	const cast = await ask(A, "query", { database: "shop", question: "cast", params: { value: MARKER_CAST } });
+	const slowWord = await ask(A, "query", { database: "shop", question: "slow-word" });
+	const dup = await ask(A, "apply", { database: "dup" });
+	check("(e) the company's statements ran: a slow one with a parameter, a slow one with a word, a division by zero, a failed cast, a broken key",
+		slow.status === 200 && slowWord.status === 200 && fails.status === 400 && cast.status === 400 && dup.value.results?.[0]?.state === "failed",
+		`${slow.status} ${slowWord.status} ${fails.status} ${cast.status} ${dup.value.results?.[0]?.state}`);
+	check("(e) the caller still hears the store's own words: the failed cast names the value to the caller", String(cast.value.error).includes(MARKER_CAST));
+	const dbSettings = sql(A, `select coalesce((select array_to_string(setconfig, ',') from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase where d.datname = '${STORE}' and s.setrole = 0), 'none')`);
+	check("(e) the company's database carries the gateway's logging settings (log_min_messages fatal, log_min_error_statement panic, log_min_duration_statement -1, log_statement none)",
+		["log_min_messages=fatal", "log_min_error_statement=panic", "log_min_duration_statement=-1", "log_statement=none"].every((one) => dbSettings.includes(one)), dbSettings);
+	sql(A, "checkpoint");
 	await sleep(500);
 	const logs = run("docker", ["logs", container(A, "data-db")]);
 	const log = `${logs.out}${logs.err}`;
-	check("(e) the slow statement and the error are in the database's log", /duration: \d+\.\d+ ms\s+execute/.test(log) && /division by zero/.test(log));
-	check("(e) the parameter's value is not in the log", !log.includes(SECRET), `${log.split("\n").length} lines searched`);
+	for (const [what, value] of [["a parameter", SECRET], ["a value a cast failed on", MARKER_CAST], ["a row's value a constraint named", MARKER_ROW], ["a word in a slow statement's text", MARKER_TEXT]])
+		check(`(e) ${what} is not in the database's log`, !log.includes(value), `${log.split("\n").length} lines searched`);
+	check("(e) the server's own lines are: start-up, checkpoints, the refused superuser login",
+		/database system is ready to accept connections/.test(log) && /checkpoint complete/.test(log) && /pg_hba\.conf rejects connection for host .* user "postgres"/.test(log));
 
 	// ---- (c) base backup, then a point-in-time restore into a new project
 	const insert = (m, label, n) => sql(m, `insert into shop.orders (note) select '${label} ' || g from generate_series(1, ${n}) g`, STORE);
@@ -254,6 +283,41 @@ try {
 	check("(c) the restored store holds exactly the rows up to the time: count and hash", restoredRows === atTarget, restoredRows);
 	check("(c) no row written after the time is there", restored.ok && sql(R, "select count(*) from shop.orders where note like 'after target%'", STORE) === "0");
 	compose(R, ["down", "-v", "--timeout", "20"]);
+
+	// ---- retention, with a backup folder whose path has a space: only backups' own names directly inside base/ go
+	const BASE = join(NAS, "base");
+	mkdirSync(join(BASE, "keep-me"));
+	writeFileSync(join(BASE, "keep-me", "note"), "not a backup\n");
+	const dayAgo = new Date(Date.now() - 2 * 86_400_000);
+	for (const name of ["20200101T000000Z.partial", "not-a-backup.partial"]) {
+		mkdirSync(join(BASE, name));
+		utimesSync(join(BASE, name), dayAgo, dayAgo);
+	}
+	const stamps = () => readdirSync(BASE).filter((name) => /^[0-9]{8}T[0-9]{6}Z$/.test(name)).sort();
+	const firstBackup = stamps()[0];
+	let retained = true;
+	for (let i = 0; i < 2 && retained; i++) retained = script(A, "base-backup.sh", [], { env: { CHECKPOINT: "fast", KEEP: "2" } }).ok;
+	const after = stamps();
+	check("retention with KEEP=2, the backup folder's path holding a space: the newest 2 backups stay, the oldest goes",
+		retained && after.length === 2 && !after.includes(firstBackup), `${firstBackup} then ${after.join(" ")}`);
+	check("retention removes an unfinished backup older than a day, and nothing that is not a backup's own name",
+		!existsSync(join(BASE, "20200101T000000Z.partial")) && existsSync(join(BASE, "not-a-backup.partial")) && existsSync(join(BASE, "keep-me", "note")) && existsSync(join(DECOY, "keep-me")));
+
+	// ---- a WAL archive whose gzip trailer is damaged is not taken for a whole copy
+	const walDrill = compose(A, ["exec", "-T", "-u", "postgres", "data-db", "sh", "-c", `
+src=$(mktemp); head -c 1048576 /dev/urandom >"$src"
+name=DRILLDAMAGEDTRAILER; f=/backup/wal/$name.gz
+/etc/company-data/archive-wal.sh "$src" "$name" && echo first=ok
+head -c -8 "$f" >"$f.cut" && mv "$f.cut" "$f"
+if gzip -dc "$f" 2>/dev/null | cmp -s - "$src"; then echo trap=bytes-equal; fi
+if gzip -t "$f" 2>/dev/null; then echo damaged=whole; else echo damaged=broken; fi
+if /etc/company-data/archive-wal.sh /nonexistent "$name" 2>/dev/null; then echo cannot-replace=acknowledged; else echo cannot-replace=refused; fi
+if /etc/company-data/archive-wal.sh "$src" "$name" 2>/dev/null; then echo retry=acknowledged; else echo retry=refused; fi
+if gzip -t "$f" && gzip -dc "$f" >"$src.back" && cmp -s "$src.back" "$src"; then echo after=whole-and-equal; fi
+rm -f "$f" "$src" "$src.back"`]);
+	const walOut = walDrill.out.trim().split("\n").join(" ");
+	check("archive-wal.sh never acknowledges a copy with a damaged trailer (its bytes alone compare equal), and the next try replaces it",
+		walOut === "first=ok trap=bytes-equal damaged=broken cannot-replace=refused retry=acknowledged after=whole-and-equal", walOut || tail(walDrill.err, 3));
 
 	// ---- (d) a standby on the other machine, then the take-over
 	const allow = script(A, "standby.sh", ["allow", linkSubnet]);
@@ -307,14 +371,15 @@ try {
 	for (const m of MACHINES) compose(m, ["down", "-v", "--remove-orphans", "--timeout", "20"]);
 	run("docker", ["network", "rm", LINK]);
 	rmSync(WORK, { recursive: true, force: true });
-	rmSync(DOTENV, { force: true });
+	const dotenvMine = releaseDotenv !== null;
+	if (dotenvMine) releaseDotenv();
 	const left = MACHINES.flatMap((m) => [
 		...run("docker", ["ps", "-aq", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 		...run("docker", ["volume", "ls", "-q", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 		...run("docker", ["network", "ls", "-q", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 	]).filter(Boolean);
 	left.push(...run("docker", ["network", "ls", "-q", "--filter", `name=^${LINK}$`]).out.split("\n").filter(Boolean));
-	check("(f) every container, volume, network and folder of the drill, and the kit's .env it wrote, is removed", left.length === 0 && !existsSync(WORK) && !existsSync(DOTENV), left.join(" ") || "none left");
+	check("(f) every container, volume, network and folder of the drill, and the kit's .env it wrote, is removed", left.length === 0 && !existsSync(WORK) && (!dotenvMine || !existsSync(DOTENV)), left.join(" ") || "none left");
 	note(`timings: ${timings.join(", ")}`);
 }
 finish();

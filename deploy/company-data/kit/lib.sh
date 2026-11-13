@@ -4,16 +4,12 @@
 # Every script runs as root: the machine's folder holds passwords and keys. They work from any current folder.
 
 K=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [ -f "$K/.env" ]; then
-	while IFS= read -r line || [ -n "$line" ]; do
-		[[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-		name=${BASH_REMATCH[1]}
-		value=${BASH_REMATCH[2]}
-		[[ $value =~ ^\"(.*)\"$ || $value =~ ^\'(.*)\'$ ]] && value=${BASH_REMATCH[1]}
-		[ -n "${!name+set}" ] || export "$name=$value"
-	done <"$K/.env"
-	unset line name value
-fi
+# shellcheck disable=SC1091
+. "$K/env.sh"
+[ ! -f "$K/.env" ] || load_env "$K/.env" || {
+	echo "$(basename "$0"): $K/.env: a value with no closing quote" >&2
+	exit 1
+}
 # Every compose file is taken from the kit's folder when it is named relative, whichever folder a script is run from
 # (a systemd unit runs it from /). Compose's own project folder is the kit's too (dc below).
 files=
