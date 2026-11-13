@@ -371,6 +371,18 @@ describe('colours (Jonas, 12 Nov 2026: "I would like for all the icons to share 
 		expect(appLayoutChanges(mine)).toBe(3);
 	});
 
+	it("draws a group in the company's colour from apps/groups.md, below the member's own, above its first app's", () => {
+		const painted = parseAppGroups(
+			"- group trips: Trips\n  - app:planner Planner\n  - group routes: Routes\n    - app:lofoten Lofoten\n- app:finances Finances\n<!-- group colours: trips=purple -->\n",
+		);
+		const colours = appColours(arrangeApps(painted, EMPTY_APP_LAYOUT, keys), EMPTY_APP_LAYOUT, own);
+		expect(colours.get("group:trips")).toBe("purple");
+		expect(colours.get("group:routes")).toBe("purple");
+		expect(colours.get("app:lofoten")).toBe("purple");
+		const mine = colourApp(EMPTY_APP_LAYOUT, "group:trips", "gold");
+		expect(appColours(arrangeApps(painted, mine, keys), mine, own).get("app:planner")).toBe("gold");
+	});
+
 	it("leaves no colours in the document when the last goes, reads only palette colours, and ungroups a group's colour away", () => {
 		const one = colourApp(EMPTY_APP_LAYOUT, "app:finances", "blue");
 		expect(colourApp(one, "app:finances", null)).toEqual(EMPTY_APP_LAYOUT);

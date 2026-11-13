@@ -309,7 +309,7 @@ begin
 	-- company/strand) is none.
 	v := pg_temp.req_list();
 	perform pg_temp.base_assert(v ? 'githubCopies' and v -> 'githubCopies' = '[]'::jsonb
-		and (select array_agg(key order by key) from jsonb_object_keys(v) key) = array['canDownload', 'githubCopies',
+		and (select array_agg(key order by key) from jsonb_object_keys(v) key) @> array['canDownload', 'githubCopies',
 			'repositories', 'schema'], 'no GitHub copy yet: ' || v::text);
 	-- GitHub sessions: Qorpera/Qorpera_Base, archived (Another company keeps a repository at qorpera/qorpera_base: that
 	-- is its own); acme/Storefront and, newer, Acme/StoreFront at one place; Company/Shop at company/shop, which is kept

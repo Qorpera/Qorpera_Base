@@ -2523,3 +2523,246 @@ describe("the company's code: undo, its request and a change's description (2026
 			).rejects.toThrow("Company folder response is invalid");
 	});
 });
+
+// Own code storage, step 6 (migration 20260930736000): an agent's ask to bring existing code in, and how the import
+// stands. Both are sent with the run's binding, as the run effects are, and both answers are read closed.
+describe("the company's code: an import and how it stands (20260930736000)", () => {
+	const REQUEST = "73600000-0000-4000-8000-000000000001";
+	const ask = { operationKey: "bring-shop", owner: "acme", name: "shop", from: { github: "Acme/Shop" }, look: false };
+	const queued = { schema: "qorpera.code-import/v1", state: "queued", requestId: REQUEST };
+	const look = (over: Record<string, unknown> = {}) => ({
+		schema: "qorpera.code-import-look/v1",
+		bytes: 1000,
+		defaultBranch: "main",
+		mainSha: "b".repeat(40),
+		commits: 3,
+		firstAt: "2026-01-01T00:00:00Z",
+		lastAt: "2026-11-01T00:00:00Z",
+		authors30d: 1,
+		tags: { seen: 2, kept: 1 },
+		branches: { seen: 4, kept: 3 },
+		leftOut: 1,
+		files: 5,
+		entries: 7,
+		biggest: { path: null, bytes: 900 },
+		lfs: { pointers: 0 },
+		submodules: 0,
+		refused: { code: null, paths: [], more: 0 },
+		secrets: {
+			found: 1,
+			shown: [{ kind: "aws", path: null, inMain: true }],
+			scan: { blobs: 9, bytes: 1000, all: true },
+		},
+		fits: true,
+		why: null,
+		...over,
+	});
+	const stands = (over: Record<string, unknown> = {}) => ({
+		schema: "qorpera.code-import/v1",
+		requestId: REQUEST,
+		owner: "acme",
+		name: "shop",
+		state: "running",
+		step: "look",
+		waiting: null,
+		look: null,
+		result: null,
+		change: null,
+		code: null,
+		...over,
+	});
+
+	it("asks with the run's binding and exactly the request's keys, and reads each answer", async () => {
+		const { client, calls, binding } = fixture(() => queued);
+		await expect(client.requestCodeImport(ask, signal())).resolves.toEqual({ state: "queued", requestId: REQUEST });
+		expect(calls).toEqual([
+			{ method: "qorpera_folder_request_code_import", args: { p_binding: binding, p_request: ask } },
+		]);
+		// A file with its branch; nothing the caller adds is sent.
+		const file = fixture(() => queued);
+		await file.client.requestCodeImport(
+			{
+				...ask,
+				from: { file: "code/_incoming/shop/shop.bundle", branch: "release", extra: 1 },
+				look: true,
+				extra: 1,
+			} as never,
+			signal(),
+		);
+		expect(file.calls[0]?.args.p_request).toEqual({
+			...ask,
+			from: { file: "code/_incoming/shop/shop.bundle", branch: "release" },
+			look: true,
+		});
+		const bare = fixture(() => queued);
+		await bare.client.requestCodeImport({ ...ask, from: { file: "code/_incoming/shop/shop.bundle" } }, signal());
+		expect(bare.calls[0]?.args.p_request).toEqual({ ...ask, from: { file: "code/_incoming/shop/shop.bundle" } });
+		for (const reason of [
+			"kept_here",
+			"already_here",
+			"busy",
+			"sessions_open",
+			"no_executor",
+			"file_missing",
+			"deleting",
+		])
+			await expect(
+				fixture(() => ({ schema: "qorpera.code-import/v1", state: "refused", reason })).client.requestCodeImport(
+					ask,
+					signal(),
+				),
+			).resolves.toEqual({ state: "refused", reason });
+		// The design's two dropped reasons, an undo's, and every other shape are not answers.
+		for (const wrong of [
+			null,
+			{ ...queued, schema: "qorpera.code-request/v1" },
+			{ ...queued, requestId: "not-a-uuid" },
+			{ ...queued, extra: 1 },
+			{ schema: "qorpera.code-import/v1", state: "queued" },
+			{ schema: "qorpera.code-import/v1", state: "refused", reason: "no_grant" },
+			{ schema: "qorpera.code-import/v1", state: "refused", reason: "file_too_large" },
+			{ schema: "qorpera.code-import/v1", state: "refused", reason: "wall" },
+			{ schema: "qorpera.code-import/v1", state: "done", reason: "busy" },
+		])
+			await expect(
+				fixture(() => wrong).client.requestCodeImport(ask, signal()),
+				JSON.stringify(wrong),
+			).rejects.toThrow("Company folder response is invalid");
+		// What SQL raised instead of taking it is a refusal, asked once; a lost answer is asked again with the same key.
+		const raised = fixture(() => {
+			throw new CloudCompanyFolderRpcError("22023", "Code request is invalid");
+		});
+		await expect(raised.client.requestCodeImport(ask, signal())).resolves.toEqual({
+			state: "refused",
+			reason: "invalid",
+		});
+		expect(raised.calls).toHaveLength(1);
+		let tries = 0;
+		const again = fixture(() => {
+			if (++tries === 1)
+				throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
+			return queued;
+		});
+		await expect(again.client.requestCodeImport(ask, signal())).resolves.toEqual({
+			state: "queued",
+			requestId: REQUEST,
+		});
+		expect(again.calls.map((call) => call.args.p_request)).toEqual([ask, ask]);
+	});
+
+	it("reads how an import stands, with the run's binding and no receipt, and its look key by key", async () => {
+		const { client, calls, binding } = fixture(() => stands());
+		await expect(client.codeImport(REQUEST, signal())).resolves.toEqual({
+			requestId: REQUEST,
+			owner: "acme",
+			name: "shop",
+			state: "running",
+			step: "look",
+			waiting: null,
+			look: null,
+			result: null,
+			change: null,
+			code: null,
+		});
+		expect(calls).toEqual([
+			{ method: "qorpera_folder_code_import", args: { p_binding: binding, p_request_id: REQUEST } },
+		]);
+		const { schema: _schema, ...read } = look();
+		await expect(
+			fixture(() =>
+				stands({ state: "done", step: "tidy", look: look(), result: "imported", change: 1 }),
+			).client.codeImport(REQUEST, signal()),
+		).resolves.toMatchObject({ state: "done", result: "imported", change: 1, look: read });
+		await expect(
+			fixture(() => stands({ state: "queued", step: null, waiting: "SESSIONS_OPEN" })).client.codeImport(
+				REQUEST,
+				signal(),
+			),
+		).resolves.toMatchObject({ state: "queued", step: null, waiting: "SESSIONS_OPEN" });
+		await expect(
+			fixture(() =>
+				stands({
+					state: "refused",
+					code: "IMPORT_USES_LFS",
+					look: look({
+						fits: false,
+						refused: { code: "IMPORT_USES_LFS", paths: ["a.gitattributes", null], more: 4 },
+						why: "IMPORT_USES_LFS",
+					}),
+				}),
+			).client.codeImport(REQUEST, signal()),
+		).resolves.toMatchObject({
+			state: "refused",
+			code: "IMPORT_USES_LFS",
+			look: { fits: false, refused: { code: "IMPORT_USES_LFS", paths: ["a.gitattributes", null], more: 4 } },
+		});
+		// A commit time out of git's range is null.
+		await expect(
+			fixture(() => stands({ look: look({ firstAt: null, lastAt: null }) })).client.codeImport(REQUEST, signal()),
+		).resolves.toMatchObject({ look: { firstAt: null, lastAt: null } });
+		await expect(
+			fixture(() => stands({ state: "failed", code: "DID_NOT_FINISH" })).client.codeImport(REQUEST, signal()),
+		).resolves.toMatchObject({ state: "failed", code: "DID_NOT_FINISH" });
+		const hit = { kind: "aws", path: null, inMain: true };
+		for (const wrong of [
+			null,
+			stands({ schema: "qorpera.code-request/v1" }),
+			stands({ requestId: randomUUID() }),
+			stands({ owner: 1 }),
+			stands({ state: "expired" }),
+			stands({ step: "push" }),
+			stands({ waiting: "sessions busy" }),
+			stands({ waiting: 5 }),
+			stands({ result: "imported" }),
+			stands({ state: "done", result: null }),
+			stands({ state: "done", result: "undone" }),
+			stands({ change: 0 }),
+			stands({ code: 5 }),
+			stands({ extra: 1 }),
+			(({ code: _code, ...rest }) => rest)(stands()),
+			stands({ look: look({ schema: "qorpera.code-import-look/v2" }) }),
+			stands({ look: look({ extra: 1 }) }),
+			stands({ look: (({ why: _why, ...rest }) => rest)(look()) }),
+			stands({ look: look({ bytes: -1 }) }),
+			stands({ look: look({ commits: null }) }),
+			stands({ look: look({ mainSha: "b".repeat(39) }) }),
+			stands({ look: look({ firstAt: "yesterday" }) }),
+			stands({ look: look({ lastAt: "2026-11-01T00:00:00.000Z" }) }),
+			stands({ look: look({ fits: false }) }),
+			stands({ look: look({ why: "IMPORT_USES_LFS" }) }),
+			stands({ look: look({ refused: { code: "IMPORT_USES_LFS", paths: [], more: 0 } }) }),
+			stands({ look: look({ refused: { code: null, paths: [] } }) }),
+			stands({ look: look({ refused: { code: null, paths: [7], more: 0 } }) }),
+			stands({ look: look({ tags: { seen: 1 } }) }),
+			stands({ look: look({ biggest: { path: 7, bytes: 1 } }) }),
+			stands({ look: look({ refused: { code: "LFS", paths: [], more: 0 }, fits: false, why: "LFS" }) }),
+			stands({ look: look({ refused: { code: null, paths: Array.from({ length: 11 }, () => "a"), more: 0 } }) }),
+			stands({ look: look({ why: "too big" }) }),
+			stands({ look: look({ fits: "yes" }) }),
+			stands({
+				look: look({ secrets: { found: 1, shown: [{ ...hit, kind: "AWS key" }], scan: look().secrets.scan } }),
+			}),
+			stands({ look: look({ secrets: { found: 1, shown: [{ ...hit, kind: "env" }], scan: look().secrets.scan } }) }),
+			stands({ look: look({ secrets: { found: 1, shown: [{ ...hit, inMain: 1 }], scan: look().secrets.scan } }) }),
+			stands({ look: look({ secrets: { found: 1, shown: [{ ...hit, value: "x" }], scan: look().secrets.scan } }) }),
+			stands({
+				look: look({
+					secrets: { found: 31, shown: Array.from({ length: 31 }, () => hit), scan: look().secrets.scan },
+				}),
+			}),
+			stands({ look: look({ secrets: { found: 1, shown: [hit], scan: { blobs: 1, bytes: 1, all: 1 } } }) }),
+		])
+			await expect(fixture(() => wrong).client.codeImport(REQUEST, signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		// Another company's request is SQL's answer, and a read is asked once.
+		const none = fixture(() => {
+			throw new CloudCompanyFolderRpcError("P0002", "No such code import");
+		});
+		await expect(none.client.codeImport(REQUEST, signal())).rejects.toBeInstanceOf(CloudCompanyFolderRpcError);
+		expect(none.calls).toHaveLength(1);
+		await expect(fixture(() => stands()).client.codeImport("not-a-uuid", signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+	});
+});

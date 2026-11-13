@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type CloudCodingRepository, folderKey, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
+import { codeFolderRefuses } from "./code-folder-names.ts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
  * a member's root. Each job runs in the company's code host VM, through its `code_host` view of `/company` (code/
@@ -1235,7 +1236,9 @@ export interface CodeBranchLanded {
  * worktree); a conflict lands nothing and is refused naming its paths (`CODE_HOST_LAND_CONFLICT`), for the session to
  * merge itself. The landed tree passes the same name checks as a seed. For the change's record (step 2b) the answer
  * says where the default branch was before, what the landing changed in its files and what the session's picture
- * is; all of that is read before the branch moves, so the move is the landing's last step.
+ * is; all of that is read before the branch moves, so the move is the landing's last step. The names checks are
+ * `Run.checkNames`, then the company folder's rule for each path where main/ will hold it (`codeFolderRefuses`,
+ * `CODE_HOST_NAMES_FOLDER_REFUSES` naming the paths), as the import's look asks them.
  *
  * A landing whose checks run between two jobs (own code storage, step 3): with `checks`, after the names of the
  * commit that would become the default branch passed, the checks file is read there and at the default branch, and
@@ -1371,6 +1374,11 @@ export async function landCodeBranch(
 			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
 		}
 		const records = await run.checkNames(run.repo, next);
+		// Every path where main/ will hold it, by the company folder's own rule, as the import's look asks: git takes a
+		// name such as `bad.` that the folder refuses, and it would refuse main/'s whole change set at the publish, with
+		// no word to the session. Before the checks, so none runs on a commit that cannot land.
+		const refused = codeFolderRefuses(run.area, records);
+		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		if (checks) {
 			const found = await commitFile(run, next, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES),
 				mainFound = await commitFile(run, current, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES);

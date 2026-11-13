@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AGENT_COLOURS } from "@qorpera/cloud-client/company-state-shared";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudActionEffect } from "@qorpera/runtime/cloud-action-review";
 import { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
@@ -10,6 +11,7 @@ import {
 	CloudToolArgumentRefusal,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -320,8 +322,17 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		"Two group levels at most. Three to twelve apps in a group; a group with one app goes away",
 		"what a member changed in their own drawer is theirs",
 		"After a change, say it in one line to the member who asked, or on your wall.",
+		// The groups' colours (12 November 2026).
+		"Give every group a colour that sets it apart from the others and fits its product or area, by the palette's names",
+		"a group inside a group usually takes its parent's colour, so leave its own unset.",
+		"Members can pick their own colours, which win in their drawer.",
+		`one of ${AGENT_COLOURS.join(", ")}; null takes it away.`,
 	])
 		expect(ORGANIZE_APPS_DESCRIPTION).toContain(rule);
+	// The Co-Founder's tidy pass takes a group without a colour as a sign to sort the drawer.
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"more than eight apps loose, a group with one app or with more than twelve, a top-level group without a colour, or a new product or area with no group of its own.",
+	);
 	const f = await fixture();
 	const tool = f.tool();
 	expect([tool.name, tool.source]).toEqual(["organize_apps", "runtime"]);
@@ -507,4 +518,156 @@ it("says when save_app saved the app but its place in a group did not save", asy
 		groupPlaced: expect.stringMatching(/^not placed \(version_changed\)/),
 	});
 	expect(f.text(PATH)).not.toContain("app:route-bergen");
+});
+
+// The groups' colours (Jonas, 12 November 2026: "have the co-founder pick colours for fjeldtur's groups"): the company's
+// colour of a group is one note line of apps/groups.md, and every change keeps it.
+it("keeps a group's colour through a rename, a move of the group and a move of an app into it; ungroup takes it away", async () => {
+	const f = await fixture({ ...APPS, [PATH]: `${SEEDED}\n<!-- group colours: trips=teal, routes=blue -->\n` });
+	await expect(f.call({ action: "rename_group", group: "routes", name: "Hiking routes" })).resolves.toMatchObject({
+		changed: true,
+	});
+	await expect(f.call({ action: "move", item: "group:routes", group: null })).resolves.toMatchObject({
+		changed: true,
+	});
+	await expect(f.call({ action: "move", item: "app:finances", group: "trips" })).resolves.toMatchObject({
+		changed: true,
+	});
+	expect(f.text(PATH)).toBe(`# Apps
+Our own note: trips first.
+
+- page:mailbox Mailbox
+- group trips: Trips
+  - app:trip-planner Trip planner
+  - app:finances Company finances
+- page:members Members
+- page:bank Bank
+- app:draft Draft
+- app:travel-supply Travel supply
+- concepts Concepts
+- group routes: Hiking routes
+  - app:route-lofoten
+
+<!-- group colours: trips=teal, routes=blue -->
+`);
+	await expect(f.call({ action: "list" })).resolves.toMatchObject({
+		layout: expect.arrayContaining([
+			"group trips: Trips (2 apps, teal)",
+			"group routes: Hiking routes (1 app, blue)",
+		]),
+	});
+	// save_app putting a new app in a group keeps them too.
+	const save = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity }).find(
+		(tool) => tool.name === "save_app",
+	) as CloudNativeTool;
+	const parsed = save.parseArguments({
+		name: "route-bergen",
+		operationKey: "bergen-1",
+		manifest: { title: "Bergen" },
+		files: [{ path: "index.html", text: "<!doctype html><h1>Bergen</h1>" }],
+		group: "routes",
+	});
+	await save.execute((await save.prepare?.(parsed, f.context)) ?? parsed, { ...f.context, callId: randomUUID() });
+	expect(f.text(PATH)).toContain(
+		"- group routes: Hiking routes\n  - app:route-lofoten\n  - app:route-bergen\n\n<!-- group colours: trips=teal, routes=blue -->\n",
+	);
+	// A group taken away takes its colour with it.
+	await expect(f.call({ action: "ungroup", group: "routes" })).resolves.toMatchObject({ changed: true });
+	expect(f.text(PATH)).toMatch(
+		/- app:route-lofoten\n- app:route-bergen\n\n<!-- retired group ids: routes -->\n\n<!-- group colours: trips=teal -->\n$/,
+	);
+});
+
+it("gives a group a colour and takes it away, says when it is already so, and lists each group's colour", async () => {
+	const f = await fixture();
+	await expect(
+		f.call({ action: "create_group", name: "Market", items: ["app:finances"], colour: "green" }),
+	).resolves.toMatchObject({ changed: true, group: "market" });
+	await expect(f.call({ action: "colour_group", group: "trips", colour: "teal" })).resolves.toMatchObject({
+		action: "colour_group",
+		changed: true,
+	});
+	expect(f.text(PATH)).toBe(`# Apps
+Our own note: trips first.
+
+- page:mailbox Mailbox
+- group trips: Trips
+  - app:trip-planner Trip planner
+  - group routes: Routes
+    - app:route-lofoten
+- group market: Market
+  - app:finances Company finances
+
+<!-- group colours: trips=teal, market=green -->
+`);
+	// The colour it has already: nothing is saved.
+	await expect(f.call({ action: "colour_group", group: "trips", colour: "teal" })).resolves.toMatchObject({
+		changed: false,
+		note: "Already so: nothing changed",
+	});
+	expect(f.commits).toHaveLength(2);
+	await expect(f.call({ action: "list" })).resolves.toMatchObject({
+		groups: 3,
+		layout: [
+			"page:mailbox Mailbox",
+			"group trips: Trips (2 apps, teal)",
+			"  app:trip-planner Trip planner",
+			"  group routes: Routes (1 app)",
+			"    app:route-lofoten Lofoten",
+			"group market: Market (1 app, green)",
+			"  app:finances Company finances",
+			"page:members Members",
+			"page:bank Bank",
+			"app:draft Draft (not posted)",
+			"app:travel-supply Travel supply",
+			"concepts Concepts",
+		],
+	});
+	// null takes it away; once gone, it is already so.
+	await expect(f.call({ action: "colour_group", group: "trips", colour: null })).resolves.toMatchObject({
+		changed: true,
+	});
+	expect(f.text(PATH)).toMatch(
+		/\n- group market: Market\n {2}- app:finances Company finances\n\n<!-- group colours: market=green -->\n$/,
+	);
+	await expect(f.call({ action: "colour_group", group: "trips", colour: null })).resolves.toMatchObject({
+		changed: false,
+	});
+	// create_group of a name already there gives that group the colour.
+	await expect(f.call({ action: "create_group", name: "trips", colour: "gold" })).resolves.toMatchObject({
+		changed: true,
+		group: "trips",
+		reused: true,
+	});
+	expect(f.text(PATH)).toContain("<!-- group colours: trips=gold, market=green -->\n");
+	await refuses(f.call({ action: "colour_group", group: "nothing", colour: "teal" }), "No group nothing");
+	const tool = f.tool();
+	for (const [value, text] of [
+		[{ action: "colour_group", group: "trips", colour: "red" }, "colour must be one of the palette's colours"],
+		[{ action: "colour_group", group: "trips", colour: "Teal" }, "colour must be one of the palette's colours"],
+		[{ action: "create_group", name: "Hiking", colour: "" }, "colour must be one of the palette's colours"],
+		[{ action: "colour_group", group: "trips" }, "colour_group needs colour"],
+		[{ action: "colour_group", colour: "teal" }, "colour_group needs group"],
+		[{ action: "colour_group", group: "Trips!", colour: "teal" }, "group must be a group's id"],
+		[{ action: "rename_group", group: "trips", name: "Trips", colour: "teal" }, "rename_group takes group, name"],
+	] as [JsonValue, string][]) {
+		expect(() => tool.parseArguments(value)).toThrow(CloudToolArgumentRefusal);
+		expect(() => tool.parseArguments(value)).toThrow(text);
+	}
+	expect(() => tool.parseArguments({ action: "colour_group", group: "trips", colour: "red" })).toThrow(
+		`colour must be one of the palette's colours (${AGENT_COLOURS.join(", ")}), or null for none`,
+	);
+	// create_group's null is no colour, as leaving it out is.
+	expect(tool.parseArguments({ action: "create_group", name: "Hiking", colour: null })).toEqual({
+		action: "create_group",
+		name: "Hiking",
+	});
+	expect(tool.parseArguments({ action: "colour_group", group: "group:trips", colour: null })).toEqual({
+		action: "colour_group",
+		group: "trips",
+		colour: null,
+	});
+	const properties = (tool.inputSchema as { properties: Record<string, JsonValue> }).properties;
+	expect(properties.colour).toEqual({ type: ["string", "null"], enum: [...AGENT_COLOURS, null] });
+	expect((properties.action as { enum: string[] }).enum).toContain("colour_group");
 });

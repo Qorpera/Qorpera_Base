@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v14",
+			schema: "qorpera.hire-overlay/v15",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3235,9 +3235,16 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
 	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
 	// moved once more.
+	// On 12 November 2026 manage_code took bring_in (existing code brought in, 20260930736000): its description, and its
+	// schema's from and look with change no longer required, so they moved again.
 	// On 12 November 2026 save_app's description no longer lists the emblems, which are 24 now and would put it past
 	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
-	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again.
+	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again. Both on one tree, they were
+	// measured once more.
+	// Master's v237 (#1530: one tool result holds up to 32 KiB) moved them too; with the import on one tree (the merge of
+	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
+	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
+	// and its description says how to choose them, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3284,9 +3291,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"51a28d3f0c5169cace2436016a41e33b5b06585d4e12630173182ace2f7d8769",
+		"691511855979ca3e33f491db46533da241300231b0d7af8304a71ccbb2506a8e",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"b35d34b8304c4395ce656c75d1277482321482a034a529a0fcacc3e8df760eaf",
+		"12b5fae5d4a4fec24ad9dbd397592d895adea0f0aea7bb54808c0e76e2169247",
 	);
 });

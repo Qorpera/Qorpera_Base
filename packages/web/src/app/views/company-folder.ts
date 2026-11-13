@@ -21,12 +21,13 @@ import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
 import { CodeDownload } from "./code-download.ts";
+import { CodeImport } from "./code-import.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
  * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
  * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
- * poll backs it up. */
+ * poll backs it up; a place under code/ whose import moves a step is read again at once (code-import.ts). */
 
 type Client = Pick<
 	CloudMemberFolderClient,
@@ -251,6 +252,8 @@ export class CompanyFolderBrowser {
 	#downloads?: WebFileDownloads;
 	/** "Download the code", on a repository's folder; absent where the product has no calls for it. */
 	#code?: CodeDownload;
+	/** "Bring code in", in the code's folders, and what a folder under code/ is (code-import.ts); beside #code. */
+	#import?: CodeImport;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -263,6 +266,9 @@ export class CompanyFolderBrowser {
 	#pendingSection: "documents" | "recents" | null = null;
 	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
 	#pendingPath: string | null = null;
+	/** Places under code/ whose import came, moved a step or ended (code-import.ts): the open folder is read again once
+	 * no other action runs, when it is one of them or below one. */
+	readonly #changed = new Set<string>();
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
@@ -453,6 +459,18 @@ export class CompanyFolderBrowser {
 				folder: () => client,
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
 			});
+		if (calls && this.#code)
+			this.#import ??= new CodeImport({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				code: this.#code,
+				open: (path) => this.reveal(path),
+				changed: (path) => {
+					this.#changed.add(path);
+					this.#navigate();
+				},
+			});
 		replace(
 			this.#documents,
 			this.#crumbs,
@@ -461,8 +479,11 @@ export class CompanyFolderBrowser {
 				{ class: "storage-toolbar" },
 				this.#title,
 				this.#code?.button ?? null,
+				this.#import?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
+			// What the folder is or how an import stands, then what a download did.
+			this.#import?.line ?? null,
 			this.#code?.line ?? null,
 			h(
 				"div",
@@ -528,7 +549,17 @@ export class CompanyFolderBrowser {
 			);
 			return;
 		}
-		if (!this.#pendingSection) return;
+		if (!this.#pendingSection) {
+			// What the place holds changed while the member is in it: the folder's hint may come late or not at all. Not while
+			// Recents shows: the list is not on screen, a read there would forget Recents (#load), and every way back to
+			// Documents reads a folder or ends here.
+			if (this.#section === "recents") return;
+			const places = [...this.#changed];
+			this.#changed.clear();
+			if (places.some((place) => this.#dir === place || this.#dir.startsWith(`${place}/`)))
+				void this.#run(() => this.#reloadFolder(true));
+			return;
+		}
 		const section = this.#pendingSection;
 		this.#pendingSection = null;
 		void this.#run(
@@ -647,12 +678,23 @@ export class CompanyFolderBrowser {
 
 	// ---- the folder -------------------------------------------------------------
 
-	async #load(dir: string, append = false): Promise<void> {
+	/** `quiet`: the open folder read again for an import (code-import.ts); when it holds what is shown, nothing is drawn
+	 * again, so no row fades in twice and focus stays where it is. */
+	async #load(dir: string, append = false, quiet = false): Promise<void> {
 		const page = await this.#client!.list(dir || null, append ? this.#next : null, PAGE, this.#signal());
 		this.#live();
+		// A place's mark is left out while its import runs (code-import.ts), so the count says what is shown.
+		const entries = page.entries.filter((entry) => !this.#import?.hidden(entry.path));
+		if (
+			quiet &&
+			dir === this.#dir &&
+			page.next === this.#next &&
+			JSON.stringify(entries) === JSON.stringify(this.#items)
+		)
+			return;
 		const moved = dir !== this.#dir;
 		this.#dir = dir;
-		this.#items = append ? [...this.#items, ...page.entries] : [...page.entries];
+		this.#items = append ? [...this.#items, ...entries] : entries;
 		this.#next = page.next;
 		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
 		// so an open file is read again when the position moves.
@@ -667,6 +709,7 @@ export class CompanyFolderBrowser {
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
 		this.#code?.enter(dir);
+		this.#import?.enter(dir);
 		this.#drawList(!append);
 		if (jumped) await this.#refreshOpened();
 	}
@@ -758,9 +801,11 @@ export class CompanyFolderBrowser {
 		this.#count.textContent =
 			this.#next !== null
 				? t("{shown} of {count} loaded items", { shown: items.length, count: this.#items.length })
-				: items.length === this.#items.length
-					? t("{count} items", { count: items.length })
-					: t("{shown} of {count} items", { shown: items.length, count: this.#items.length });
+				: items.length !== this.#items.length
+					? t("{shown} of {count} items", { shown: items.length, count: this.#items.length })
+					: items.length === 1
+						? t("1 item")
+						: t("{count} items", { count: items.length });
 	}
 
 	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
@@ -910,7 +955,7 @@ export class CompanyFolderBrowser {
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
-	async #reloadFolder(): Promise<void> {
+	async #reloadFolder(quiet = false): Promise<void> {
 		let dir = this.#dir;
 		while (dir) {
 			const read = await this.#client!.read(dir, this.#signal());
@@ -919,7 +964,7 @@ export class CompanyFolderBrowser {
 			dir = parentOf(dir);
 		}
 		if (dir !== this.#dir) this.#close();
-		await this.#load(dir);
+		await this.#load(dir, false, quiet);
 	}
 
 	/** The open file or link at its latest version, when it changed; an earlier version on screen stays. */

@@ -1038,6 +1038,60 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 		).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_MOVED" });
 		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
 	});
+
+	it("refuses a commit with a name the company folder does not take, naming it, before main moves, and before any check", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		/** A session's commit of `ok.txt` and `paths`, put in its index as git takes them (a name too long for a disk too). */
+		const named = async (paths: readonly string[], files: Record<string, string> = {}) => {
+			const s = await session(f, c, baseSha);
+			await s.commit({ "ok.txt": "ok\n", ...files });
+			const blob = await f.git(s.tree, "rev-parse", "HEAD:ok.txt");
+			for (const path of paths)
+				await f.git(s.tree, "update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+			await f.git(s.tree, "commit", "--quiet", "-m", "names");
+			return { s, head: await f.git(s.tree, "rev-parse", "HEAD") };
+		};
+		const long = "n".repeat(256);
+		// 4,071 bytes, every name within 255: 4,097 where main/ holds it (`code/qorpera/example/main/`), one past the
+		// folder's 4,096 bytes.
+		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(51)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4097);
+		for (const [paths, refused] of [
+			[["bad."], ["bad."]],
+			// A folder is named once, at the highest part the folder refuses.
+			[["x /file", "x /y/z.txt"], ["x "]],
+			[["a/b/c./d.txt"], ["a/b/c."]],
+			[["a\\b.txt"], ["a\\b.txt"]],
+			[[long], [long]],
+			[[deep], [deep]],
+		] as const) {
+			const { s, head } = await named(paths);
+			await expect(
+				landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: head }),
+			).rejects.toMatchObject({
+				code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+				paths: refused,
+			});
+			expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
+			expect(await readdir(join(c.code, "main"))).toEqual([".git"]);
+		}
+		// With checks: the candidate is refused before the checks file is read, so no check runs on it.
+		const commands = c.log.length;
+		const { s, head } = await named(["bad."], { [CODE_CHECKS_FILE]: "{}\n" });
+		await expect(
+			landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: head, checks: true }),
+		).rejects.toMatchObject({ code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths: ["bad."] });
+		expect(c.log.slice(commands).some((command) => command.argv.includes(CODE_CHECKS_FILE))).toBe(false);
+		// The longest name and names the folder takes on code/ (a colon, a percent sign, a device's name) land.
+		const { s: fine, head: kept255 } = await named(["n".repeat(255), "a:b.txt", "100%.txt", "con.txt"]);
+		expect((await landCodeBranch(c.job, { repository: kept, workerId: fine.workerId, headSha: kept255 })).state).toBe(
+			"fast-forward",
+		);
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(kept255);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
 });
 
 describe("code host: nightly care of a repository kept in Qorpera (own code storage, step 2)", () => {

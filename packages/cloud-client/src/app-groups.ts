@@ -1,3 +1,4 @@
+import { AGENT_COLOURS, type AgentColour } from "./company-state-shared.ts";
 import { isInterfaceName } from "./interfaces.ts";
 
 /* App groups (APP-GROUPS-SPEC §1; Jonas, 11 November 2026: "the same way we have categories and groups for agents, we
@@ -12,7 +13,9 @@ import { isInterfaceName } from "./interfaces.ts";
  * At most two group levels: a deeper line is read at its nearest allowed level. The first line of a key or group id
  * wins. Lines that are not list items are notes: the ones before the list stay before it, the others are written after
  * it. The ids of groups that are gone are kept in one note, so no new group takes an id a member's own changes point at.
- * The reader takes the first 64 KiB and ignores the rest. Browser-safe: the web's drawer reads the same file. */
+ * Each group may have a colour, all in one note line, `<!-- group colours: <id>=<colour>, … -->`, one of the agents'
+ * palette colours each (12 Nov 2026). The reader takes the first 64 KiB and ignores the rest. Browser-safe: the web's
+ * drawer reads the same file. */
 
 export const APP_GROUPS_PATH = "apps/groups.md";
 export const APP_GROUPS_MAX_BYTES = 64 * 1024;
@@ -37,6 +40,9 @@ export interface AppGroup {
 	readonly id: string;
 	readonly name: string;
 	readonly items: readonly AppGroupNode[];
+	/** The colour the company's agents gave it (12 Nov 2026), one of the agents' palette: the drawer draws the group and
+	 * everything in it in it, unless a member chose another. */
+	readonly colour?: AgentColour;
 }
 
 export type AppGroupNode = AppGroupItem | AppGroup;
@@ -60,6 +66,7 @@ export type AppGroupsDrawnNode =
 			readonly id: string;
 			readonly name: string;
 			readonly items: readonly AppGroupsDrawnNode[];
+			readonly colour?: AgentColour;
 	  };
 
 const GROUP_ID = /^[a-z0-9-]{1,40}$/;
@@ -69,6 +76,10 @@ const GROUP_ID = /^[a-z0-9-]{1,40}$/;
 const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*)$/s;
 const GROUP_LINE = /^group[ \t]+([^\s:]+)[ \t]*:[ \t]*(.*)$/s;
 const RETIRED_LINE = /^<!--[ \t]*retired group ids:([^>]*)-->[ \t]*$/;
+/** The groups' colours, one note line as the retired ids are (12 Nov 2026): `<!-- group colours: trips=teal,
+ * market=green -->`. A note, not part of a group's line, so a reader from before it keeps the line as it is and every
+ * group still reads. */
+const COLOURS_LINE = /^<!--[ \t]*group colours:([^>]*)-->[ \t]*$/;
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
 /** What would end a line where a list line is written: written as a space. */
 const BREAKS = /[\r\n\u2028\u2029]+/g;
@@ -123,17 +134,28 @@ export function parseAppGroups(text: string): AppGroupsFile {
 	const head: string[] = [];
 	const notes: string[] = [];
 	const retired: string[] = [];
+	const colours = new Map<string, AgentColour>();
 	const root: AppGroupNode[] = [];
 	// The open containers by level: the list itself, then the group open at each level.
 	const stack: AppGroupNode[][] = [root];
 	const keys = new Set<string>();
 	const ids = new Set<string>();
+	const made: { id: string; colour?: AgentColour }[] = [];
 	const retiredSeen = new Set<string>();
 	let listed = false;
 	for (const raw of lines) {
 		// Every carriage return at a line's end goes, so no line, key or words end in one and a written line reads back
 		// the same.
 		const line = trimTail(raw, "\r");
+		const painted = COLOURS_LINE.exec(line);
+		if (painted) {
+			for (const pair of (painted[1] ?? "").split(/[\s,]+/)) {
+				const [id = "", colour = ""] = pair.split("=");
+				const known = AGENT_COLOURS.find((name) => name === colour);
+				if (isAppGroupId(id) && known && !colours.has(id)) colours.set(id, known);
+			}
+			continue;
+		}
 		const kept = RETIRED_LINE.exec(line);
 		if (kept) {
 			for (const id of (kept[1] ?? "").split(/[\s,]+/))
@@ -161,7 +183,15 @@ export function parseAppGroups(text: string): AppGroupsFile {
 			if (ids.has(id)) continue;
 			ids.add(id);
 			const items: AppGroupNode[] = [];
-			stack[level]?.push({ kind: "group", id, name, items });
+			// The group's colour is in a line of its own, which may come before or after it: set once the file is read.
+			const node: { kind: "group"; id: string; name: string; items: AppGroupNode[]; colour?: AgentColour } = {
+				kind: "group",
+				id,
+				name,
+				items,
+			};
+			made.push(node);
+			stack[level]?.push(node);
 			stack.push(items);
 			continue;
 		}
@@ -183,6 +213,10 @@ export function parseAppGroups(text: string): AppGroupsFile {
 	while (head.length > 0 && !head.at(-1)?.trim()) head.pop();
 	while (notes.length > 0 && !notes[0]?.trim()) notes.shift();
 	while (notes.length > 0 && !notes.at(-1)?.trim()) notes.pop();
+	for (const node of made) {
+		const colour = colours.get(node.id);
+		if (colour) node.colour = colour;
+	}
 	return { head, items: root, notes, retired: retired.filter((id) => !ids.has(id)) };
 }
 
@@ -190,11 +224,13 @@ export function parseAppGroups(text: string): AppGroupsFile {
  * ids. What it writes reads back as the same file. */
 export function writeAppGroups(file: AppGroupsFile): string {
 	const list: string[] = [];
+	const painted: string[] = [];
 	const walk = (items: readonly AppGroupNode[], level: number) => {
 		const indent = "  ".repeat(level);
 		for (const node of items) {
 			if (node.kind === "group") {
 				list.push(`${indent}- group ${node.id}: ${node.name.replace(BREAKS, " ")}`);
+				if (node.colour) painted.push(`${node.id}=${node.colour}`);
 				walk(node.items, level + 1);
 			} else {
 				// A drawer key's words may come from a title: a break in them is written as a space. Any other item's line
@@ -210,6 +246,7 @@ export function writeAppGroups(file: AppGroupsFile): string {
 		list,
 		trimBlank(file.notes),
 		file.retired.length > 0 ? [`<!-- retired group ids: ${file.retired.join(", ")} -->`] : [],
+		painted.length > 0 ? [`<!-- group colours: ${painted.join(", ")} -->`] : [],
 	].filter((block) => block.length > 0);
 	return blocks.length === 0 ? "" : `${blocks.map((block) => block.join("\n")).join("\n\n")}\n`;
 }
@@ -244,7 +281,17 @@ export function resolveAppGroups(
 		nodes.flatMap((node): AppGroupsDrawnNode[] => {
 			if (node.kind === "group") {
 				const items = walk(node.items);
-				return items.length > 0 ? [{ kind: "group", id: node.id, name: node.name, items }] : [];
+				return items.length > 0
+					? [
+							{
+								kind: "group",
+								id: node.id,
+								name: node.name,
+								items,
+								...(node.colour ? { colour: node.colour } : {}),
+							},
+						]
+					: [];
 			}
 			if (!isAppDrawerKey(node.key) || seen.has(node.key)) return [];
 			seen.add(node.key);
