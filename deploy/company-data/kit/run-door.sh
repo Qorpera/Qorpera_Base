@@ -4,7 +4,8 @@
 #                        whether the gateway's port 8481 is published, and the gateway's own last word on its door:
 #                        "run door: on", or "run door: off (<why>)". Exit 0 when on, 1 when off.
 #   run-door.sh make     makes what is missing in secrets/run-door (lib.sh make_run_door): the token only if there is
-#                        none (never made again), the cert only if there is none. Then `compose.sh up -d data-gateway`.
+#                        none (never made again), the key and cert when either is missing (a cert without its key is
+#                        no cert). Then `compose.sh up -d data-gateway`.
 # Prints names, counts and yes/no; never a secret.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -14,7 +15,11 @@ make)
 	make_run_door
 	;;
 status)
-	secrets=$(find "$L/secrets/run-door" -type f \( -name token -o -name door.key -o -name door.crt \) 2>/dev/null | wc -l | tr -d ' ')
+	# A machine whose kit came before the run door has no such folder: that is 0 of 3, not a reason to stop.
+	secrets=0
+	if [ -d "$L/secrets/run-door" ]; then
+		secrets=$(find "$L/secrets/run-door" -type f \( -name token -o -name door.key -o -name door.crt \) | wc -l | tr -d ' ')
+	fi
 	published=$(dc port data-gateway 8481 </dev/null 2>/dev/null | grep -c . || true)
 	said=$(dc logs --no-log-prefix data-gateway </dev/null 2>/dev/null | grep -E '^data gateway: (run door|no run door)' | tail -1 || true)
 	echo "setting DATA_RUN_LISTEN: $([ -n "${DATA_RUN_LISTEN:-}" ] && echo set || echo unset); secrets: $secrets of 3; port 8481 published: $([ "$published" -gt 0 ] && echo yes || echo no)"

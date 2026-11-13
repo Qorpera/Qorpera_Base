@@ -83,7 +83,8 @@ make_run_door() {
 		mv "$d/token.new" "$d/token"
 		made="the token"
 	fi
-	if [ ! -e "$d/door.crt" ]; then
+	# The key and the cert are made together: one without the other is made again.
+	if [ ! -e "$d/door.crt" ] || [ ! -e "$d/door.key" ]; then
 		# shellcheck disable=SC2086
 		"$K/tls.sh" door "$L/ca" "$d" $RUN_DOOR_NAMES
 		made="${made:+$made and }the cert"

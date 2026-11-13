@@ -45,7 +45,7 @@ const RUN_ID = "64000000-0000-4000-8000-000000000003";
 const RUN_DOOR_NAME = "10.41.0.1";
 const newPass = () => randomBytes(32).toString("base64url");
 // Passes the stand-in redeems once each for "shop": A's first, B's after the take-over (each machine has its own stand-in).
-const PASSES = { a: Array.from({ length: 16 }, newPass), b: Array.from({ length: 6 }, newPass) };
+const PASSES = { a: Array.from({ length: 20 }, newPass), b: Array.from({ length: 6 }, newPass) };
 const STORE = companyDatabase(ENV);
 // Company values that must never reach the server's log: a parameter, a parameter a cast fails on, a row's value a
 // constraint names, and a word in a slow statement's own text.
@@ -380,7 +380,24 @@ try {
 	const afterBack = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
 	check("(g) with the token back and the gateway made again by compose.sh, the door answers", backUp.ok && afterBack.status === 200 && script(A, "run-door.sh", ["status"]).ok,
 		`${afterBack.status} ${afterBack.error ?? ""}`);
-	const doorStatusText = `${statusOn.out}${statusOn.err}${statusOff.out}${statusOff.err}${shutLog.out}${shutLog.err}`;
+	// A machine with no run-door folder at all (its kit came before the door): status still answers.
+	renameSync(RUN_SECRETS, `${RUN_SECRETS}.away`);
+	const noneUp = recreate();
+	const statusNone = script(A, "run-door.sh", ["status"]);
+	check("(g) with no run-door folder at all, run-door.sh status still counts the secrets and says the door is off",
+		noneUp.ok && !statusNone.ok && /secrets: 0 of 3/.test(statusNone.out) && /^run door: off/m.test(statusNone.out),
+		`${`${statusNone.out}`.trim().split("\n").join(" / ")} ${tail(statusNone.err, 1)}`);
+	renameSync(`${RUN_SECRETS}.away`, RUN_SECRETS);
+	// A lost key beside a cert that is still there: make gives the door a new key and cert, the token stays.
+	rmSync(join(RUN_SECRETS, "door.key"));
+	const remade = script(A, "run-door.sh", ["make"]);
+	const remadeUp = recreate();
+	const afterRemade = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	check("(g) run-door.sh make gives a door whose key was lost a new key and cert, keeps the token, and the door answers",
+		remade.ok && /the cert/.test(remade.out) && existsSync(join(RUN_SECRETS, "door.key")) && remadeUp.ok && afterRemade.status === 200 &&
+			readFileSync(join(RUN_SECRETS, "token"), "utf8").trim() === runToken,
+		`${`${remade.out}`.trim().split("\n").join(" / ")} | ${afterRemade.status} ${afterRemade.error ?? ""}`);
+	const doorStatusText = `${statusOn.out}${statusOn.err}${statusOff.out}${statusOff.err}${shutLog.out}${shutLog.err}${statusNone.out}${statusNone.err}${remade.out}${remade.err}`;
 
 	// Without DATA_RUN_LISTEN: the same machine's gateway again, as a machine without the setting starts it.
 	const plainEnv = { ...A.env, COMPOSE_FILE: ["docker-compose.yml", "drill/drill.yml"].map((file) => join(KIT, file)).join(":"), DATA_RUN_LISTEN: "" };
