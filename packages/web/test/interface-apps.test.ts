@@ -17,7 +17,7 @@ import {
 	sharedFolderHints,
 	warmApps,
 } from "../src/app/interface-apps.ts";
-import { markdown } from "../src/ui/markdown.ts";
+import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 
 /** A member's folder over fixed files: read, list and readFile as the cloud client answers them. */
 function fakeFolder(files: Record<string, string | Uint8Array>) {
@@ -730,13 +730,39 @@ describe("an app's card in a message", () => {
 		expect(paragraph?.textContent).toBe("See this first sketch: the desk is by the window.");
 		expect(paragraph?.querySelector(".app-card")).toBeNull();
 		expect(paragraph?.querySelector<HTMLElement>("[data-app-name]")?.dataset.appName).toBe("first-sketch");
-		expect(prose.querySelector(":scope > .app-card, p + .app-card")?.getAttribute("data-app-name")).toBe(
-			"first-sketch",
-		);
-		// Alone on its line, it is the card and nothing else.
+		// The card stands in a row of its own, right under the sentence.
+		expect(prose.querySelector("p + .app-cards > .app-card")?.getAttribute("data-app-name")).toBe("first-sketch");
+		// Alone on its line, it is the card and nothing else: no paragraph is left around it.
 		const alone = markdown("[First sketch](app:first-sketch)");
 		expect(alone.querySelectorAll("[data-app-name]")).toHaveLength(1);
-		expect(alone.querySelector(".app-card")).not.toBeNull();
+		expect(alone.querySelector(":scope > .app-cards > .app-card")).not.toBeNull();
+		expect(alone.querySelector("p")).toBeNull();
+	});
+
+	it("gives an app one card however often a sentence names it, and each app its own", () => {
+		const prose = markdown("[Sales](app:sales) is new. Open [it](app:sales), then [Hiring](app:hiring).");
+		expect(prose.querySelectorAll("p [data-app-name]")).toHaveLength(3);
+		const cards = [...prose.querySelectorAll<HTMLElement>(".app-cards > .app-card")];
+		expect(cards.map((card) => card.dataset.appName)).toEqual(["sales", "hiring"]);
+		// The card takes its name from the first place the sentence names the app.
+		expect(cards[0]?.querySelector(".app-card-title")?.textContent).toBe("Sales");
+	});
+
+	it("stands under the words' bubble in a thread, as a part of its own", () => {
+		const parts = markdownBubbles("[Sales](app:sales) has new numbers.\n\nMore tomorrow.");
+		expect(parts.map((part) => part.className)).toEqual(["message-prose", "app-cards", "message-prose"]);
+		expect(parts[0]?.textContent).toBe("Sales has new numbers.");
+		expect(parts[0]?.querySelector(".app-card")).toBeNull();
+		expect(parts[1]?.querySelector<HTMLElement>(".app-card")?.dataset.appName).toBe("sales");
+		expect(parts[2]?.textContent).toBe("More tomorrow.");
+		// A message that is only the app is only the row.
+		expect(markdownBubbles("[Sales](app:sales)").map((part) => part.className)).toEqual(["app-cards"]);
+		// A card in a list stays where the list has it, in the words.
+		const [list, ...rest] = markdownBubbles("- [Sales](app:sales)\n- [Hiring](app:hiring)");
+		expect(rest).toEqual([]);
+		expect(list?.className).toBe("message-prose");
+		expect(list?.querySelectorAll("li > .app-card")).toHaveLength(2);
+		expect(list?.querySelector(".app-cards")).toBeNull();
 	});
 
 	it("draws app: links as a card that names the app", () => {
@@ -753,7 +779,9 @@ describe("an app's card in a message", () => {
 		const [link, card] = prose.querySelectorAll<HTMLButtonElement>("[data-app-name]");
 		expect(link?.title).toBe("Open sales-board");
 		expect(card?.title).toBe("Open sales-board");
-		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App · opens on its own page");
+		// Drawn plain, before the company's apps are read: what it is, and that it leads somewhere.
+		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App");
+		expect(card?.querySelector(".app-card-go svg")).not.toBeNull();
 		expect(prose.textContent).not.toContain("beside the chat");
 	});
 });
