@@ -165,7 +165,9 @@ gateway, started from the packaged file, making a company database through an `a
 the cert's one name `10.41.0.1` signed by the kit's CA, a call over TLS with the CA pinned and that name checked and the
 right token reaching it (describe and a question), a pass that redeems to nothing, a wrong token and no pass all
 answered 401 alike, a wrong token never spending the pass, a pass redeemed once, no trust without the CA, no plain
-HTTP, the same gateway without `DATA_RUN_LISTEN` with no run door at all, the token in no log, and after the take-over
+HTTP, the documented upgrade (`compose.sh up -d data-gateway` from `/`) keeping the door, a door whose token cannot be
+read shut while members are served and `run-door.sh status` saying why, the same gateway without `DATA_RUN_LISTEN`
+with no run door at all, the token in no log, and after the take-over
 the promoted standby's door answering a run's question with every committed row; (c) rows, a base backup, rows, the
 time, rows, then a restore to that time with exactly the rows up to it (count and hash); (d) a standby seeded over TLS
 with a slot, streaming, a replication login without TLS refused, the primary stopped, the standby promoted, and its
@@ -181,9 +183,9 @@ deadlock). The company's database carries every setting the gateway's `LOG_SETTI
 It also checks retention with KEEP=2 in a backup folder whose path has a space, removing only backups' own names, and
 a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
-Last result: 13 November 2026, node02's test machine, at c40d9682c (the run door's PR): 61 of 61 checks passed.
-Package 0.1 s, init 15.0 s, apply 0.2 s, base backup 1.6 s, restore 3.0 s, standby seed over TLS 4.0 s, promote and
-the gateway answering 7.6 s. Log: lanes `company-databases-20261113/rundoor/drill-1.log`.
+Last result: 13 November 2026, a test machine, at 552e5d5ab (the run door's PR after review 1): 64 of 64 checks
+passed. Package 0.1 s, init 14.0 s, apply 0.2 s, base backup 1.0 s, restore 2.6 s, standby seed over TLS 3.6 s,
+promote and the gateway answering 7.2 s. Log: lanes `company-databases-20261113/rundoor/drill-3.log`.
 
 ## Not done here
 
