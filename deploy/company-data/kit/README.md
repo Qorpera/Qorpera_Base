@@ -23,7 +23,7 @@ installed anywhere yet.
 | `init.sh` | the first start on an empty volume: secrets, CA and cert, `store/cluster.sql`, `store/template.sql`, the replication login, then the gateway. Refuses to run twice |
 | `base-backup.sh` | a base backup into `base/<UTC>`, keeps the newest 7, removes WAL older than the oldest kept |
 | `restore.sh` | a point-in-time restore into a new project: a base backup, the archived WAL up to a time, then promoted |
-| `compose.sh` | `docker compose` for this machine with the files the scripts use (the `.env`'s `COMPOSE_FILE`, plus `run-door.yml` when `DATA_RUN_LISTEN` is set). Every compose command by hand goes through it: a bare `docker compose up` would bring the gateway back without its run door |
+| `compose.sh` | `docker compose` for this machine with the files the scripts use (the `.env`'s `COMPOSE_FILE`, plus `run-door.yml` when `DATA_RUN_LISTEN` is set). Every compose command by hand goes through it: a bare docker compose would bring the gateway back without its run door |
 | `run-door.sh` | `status`: whether the run door is on, or off and why (the gateway's own last word, the secrets, the port); `make`: what is missing of its secrets, for a machine whose kit came before the door |
 | `standby.sh` | `allow`, `pack` and `unpack` (what the standby needs, from the primary's machine), `seed`, `status`, `promote` |
 | `drill.mjs`, `drill/` | the drill, its compose overlay and a stand-in for the platform's API. Never on a machine (below) |
