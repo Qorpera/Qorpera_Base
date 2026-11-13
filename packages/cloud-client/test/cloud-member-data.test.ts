@@ -199,12 +199,44 @@ describe("a member's questions to the company's databases", () => {
 			},
 			{ same: false },
 			{ same: true, extra: 1 },
+			{ same: true, partial: false },
+			{ changed: [{ index: 0, answer }], partial: "yes" },
 		]) {
 			const bad = fakeFetch([[200, odd]]);
 			await expect(client(bad.fetch).data.watch(watches, signal()), JSON.stringify(odd)).rejects.toThrow(
 				"an answer this page does not know",
 			);
 		}
+		// A call that reached its deadline before it asked every question: what it has is good, and it says so.
+		const partial = fakeFetch([
+			[200, { changed: [{ index: 1, answer }], partial: true }],
+			[200, { same: true, partial: true }],
+		]);
+		const late = client(partial.fetch).data;
+		expect(await late.watch(watches, signal())).toEqual({ changed: [{ index: 1, answer }], partial: true });
+		expect(await late.watch(watches, signal())).toEqual({ same: true, partial: true });
+	});
+
+	it("takes a watch call's answers together up to 8 MiB, and one question's answer up to 1 MiB", async () => {
+		// Five questions of about 220 KiB each that changed together: over 1 MiB in all, each well under it.
+		const wide = (etag: string) => ({ ...answer, columns: ["x"], rows: [["y".repeat(220 * 1024)]], etag });
+		const watches = Array.from({ length: 5 }, (_, index) => ({ ...asked, question: `q${index}`, etag: "old" }));
+		const changed = watches.map((_, index) => ({ index, answer: wide(`e${index}`) }));
+		expect(JSON.stringify({ changed }).length).toBeGreaterThan(1024 * 1024);
+		const together = fakeFetch([[200, { changed }]]);
+		const got = await client(together.fetch).data.watch(watches, signal());
+		expect("changed" in got && got.changed.map((one) => one.answer.etag)).toEqual(["e0", "e1", "e2", "e3", "e4"]);
+		// Past 8 MiB it is no answer.
+		const huge = Array.from({ length: 24 }, (_, index) => ({ ...asked, question: `q${index}`, etag: "old" }));
+		const tooMuch = huge.map((_, index) => ({
+			index,
+			answer: { ...answer, columns: ["x"], rows: [["y".repeat(360 * 1024)]], etag: `e${index}` },
+		}));
+		const over = fakeFetch([[200, { changed: tooMuch }]]);
+		await expect(client(over.fetch).data.watch(huge, signal())).rejects.toThrow("The answer is larger than 8 MiB");
+		// A question alone still stops at 1 MiB.
+		const one = fakeFetch([[200, { ...answer, columns: ["x"], rows: [["y".repeat(1024 * 1024)]] }]]);
+		await expect(client(one.fetch).data.query(asked, signal())).rejects.toThrow("The answer is larger than 1 MiB");
 	});
 
 	it("says a refusal in plain words", async () => {

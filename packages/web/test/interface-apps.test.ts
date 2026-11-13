@@ -922,6 +922,28 @@ describe("the company's databases on an app's page", () => {
 		});
 	});
 
+	it("takes the answers of a call that ran out of time, and watches on with the new etags", async () => {
+		const { bridge, calls } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		void bridge(a).answer(watch("shop/by-status"));
+		await vi.advanceTimersByTimeAsync(600);
+		const call = calls.at(-1)!;
+		expect(call.watches.map((one) => one.question)).toEqual(["sales", "by-status"]);
+		call.answer({ changed: [{ index: 0, answer: result("e2", [[2]]) }], partial: true });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: 1, value: shown([{ orders: 2 }]) }]);
+		await vi.advanceTimersByTimeAsync(500);
+		const next = calls.at(-1)!;
+		expect(next).not.toBe(call);
+		expect(next.watches.map((one) => one.etag)).toEqual(["e2", "e-by-status"]);
+		next.answer({ same: true, partial: true });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls.at(-1)).not.toBe(next);
+		expect(calls.at(-1)?.watches.map((one) => one.etag)).toEqual(["e2", "e-by-status"]);
+	});
+
 	it("watches a question: its first answer, then each new one, in one held call", async () => {
 		const { bridge, calls, asked } = setup();
 		const a = page();

@@ -22,8 +22,10 @@ export const CLOUD_MEMBER_DATA_TEXT_BYTES = 16 * 1024;
 const WATCH_WAIT_S = 20;
 const WATCH_DEADLINE_MS = 35_000;
 const QUERY_DEADLINE_MS = 15_000;
-/** An answer, at most; a refusal's body, at most. */
+/** A question's answer, at most; a watch call's answers together, at most (each question's rows are at most 256 KiB at
+ * the gateway and a call holds up to 24, and the member gateway passes at most 8 MiB); a refusal's body, at most. */
 const MAX_ANSWER_BYTES = 1024 * 1024;
+const MAX_WATCH_BYTES = 8 * 1024 * 1024;
 const MAX_REFUSAL_BYTES = 16 * 1024;
 /** Calls sent again with the texts the gateway asked for, at most. */
 const NEED_ROUNDS = 2;
@@ -60,9 +62,14 @@ export interface CloudMemberDataAnswer {
 	readonly asOf: string;
 }
 
+/** `partial`: the call reached its deadline before it asked every question; the answers it has are good, and the next
+ * call for the same questions goes on from the first one it did not reach. */
 export type CloudMemberDataWatchAnswer =
-	| { readonly changed: readonly { readonly index: number; readonly answer: CloudMemberDataAnswer }[] }
-	| { readonly same: true };
+	| {
+			readonly changed: readonly { readonly index: number; readonly answer: CloudMemberDataAnswer }[];
+			readonly partial?: true;
+	  }
+	| { readonly same: true; readonly partial?: true };
 
 /** A company file's text, read as the member, with the sha256 of its bytes; null when the member may not read it or
  * it is not there or not text. */
@@ -103,11 +110,14 @@ export function parseCloudMemberDataAnswer(value: unknown): CloudMemberDataAnswe
 }
 
 function parseWatchAnswer(value: unknown, count: number): CloudMemberDataWatchAnswer {
+	const partial = !!value && typeof value === "object" && Object.hasOwn(value, "partial");
+	if (partial && (value as Record<string, unknown>).partial !== true) invalid();
+	const more = partial ? (["partial"] as const) : ([] as const);
 	if (value && typeof value === "object" && Object.hasOwn(value, "same")) {
-		if (closed(value, ["same"]).same !== true) invalid();
-		return { same: true };
+		if (closed(value, ["same", ...more]).same !== true) invalid();
+		return partial ? { same: true, partial: true } : { same: true };
 	}
-	const changed = closed(value, ["changed"]).changed;
+	const changed = closed(value, ["changed", ...more]).changed;
 	if (!Array.isArray(changed) || changed.length === 0 || changed.length > count) invalid();
 	const seen = new Set<number>();
 	return {
@@ -124,6 +134,7 @@ function parseWatchAnswer(value: unknown, count: number): CloudMemberDataWatchAn
 			seen.add(index as number);
 			return { index: index as number, answer: parseCloudMemberDataAnswer(one.answer) };
 		}),
+		...(partial ? { partial: true as const } : {}),
 	};
 }
 
@@ -237,6 +248,7 @@ export class CloudMemberData {
 		const texts: Record<string, string> = {};
 		for (let round = 0; ; round++) {
 			const answer = await this.#post(
+				verb === "watch" ? MAX_WATCH_BYTES : MAX_ANSWER_BYTES,
 				verb,
 				Object.keys(texts).length > 0 ? { ...body, texts } : body,
 				deadlineMs,
@@ -276,7 +288,13 @@ export class CloudMemberData {
 		return token;
 	}
 
-	#post(verb: string, body: Record<string, unknown>, deadlineMs: number, signal: AbortSignal): Promise<unknown> {
+	#post(
+		maximumBytes: number,
+		verb: string,
+		body: Record<string, unknown>,
+		deadlineMs: number,
+		signal: AbortSignal,
+	): Promise<unknown> {
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const token = await this.#token(requestSignal);
@@ -291,11 +309,11 @@ export class CloudMemberData {
 				if (response.status !== 200) throw await refusal(response, requestSignal);
 				let bytes: Uint8Array;
 				try {
-					bytes = await readBoundedCloudResponse(response, MAX_ANSWER_BYTES, requestSignal);
+					bytes = await readBoundedCloudResponse(response, maximumBytes, requestSignal);
 				} catch (error) {
 					requestSignal.throwIfAborted();
 					if (error instanceof Error && /byte limit/.test(error.message))
-						throw new CloudMemberDataError("The answer is larger than 1 MiB");
+						throw new CloudMemberDataError(`The answer is larger than ${maximumBytes / 1024 / 1024} MiB`);
 					throw error;
 				}
 				try {
