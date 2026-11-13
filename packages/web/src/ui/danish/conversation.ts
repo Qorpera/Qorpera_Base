@@ -302,6 +302,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
 	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
 	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	// A web page a link in the app leads to, shown before it opens (Jonas, 13 November 2026: "Show the address first").
+	"This app wants to open a web page": "Appen vil åbne en webside",
+	Site: "Websted",
 	"Your answer": "Dit svar",
 	Table: "Tabel",
 	Row: "Række",
