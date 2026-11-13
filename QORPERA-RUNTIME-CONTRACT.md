@@ -6638,6 +6638,71 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
    what it takes and says so for the rest.
 
+### 2026-11-13 amendment: company databases
+
+Ratified 13 November 2026 (Jonas). To "Put a second Postgres on your nodes for companies' data?" he answered "Yes,
+go". The three points the design then left open were put to him with a recommendation each: the store as a small
+machine pair of its own (item 2), agents making and changing databases themselves with only what destroys data
+waiting for a member (item 5), and named questions and changes as the only road for interfaces (item 6). He
+answered: "Yes, all three".
+
+Jonas, 13 November 2026: "you can't act very much inside of the interfaces and [...] the numbers are never live. since
+we now host our own database, I think it's obvious that as long as we build the tools needed for companies to build
+their own databases on our servers too, we should absolutely be able to provide live numbers. if a company
+folder/file could contain databases that lived on our servers, and the interfaces could then project those
+numbers/values we would have it. that's a top priority item too. [...] I just like having the entire company inside
+the company folder/files, aiming for full centralization of data."
+
+This is the amendment the 2026-10-02 amendment "interfaces project company state from the company folder", item 4,
+left open: "A table that outgrows a file waits for the company's table store. The store has its own amendment, which
+says where it runs." It puts the store back in scope (the 2026-10-17 scope amendment had taken it out) and grows it
+from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`.
+
+1. **A company database is a folder of the company folder**, `data/<name>/`. Its files say everything it is:
+   - `database.toml`: its name, what it holds, who reads it and who changes it;
+   - `tables/NNN-<name>.sql`: numbered steps that make and change its tables, each applied once, in order;
+   - `queries/<name>.sql`: named questions, each one read with named parameters;
+   - `actions/<name>.sql`: named changes, each one write, with the words a member is shown;
+   - `snapshot/`: its rows, written by the platform at least daily (item 8).
+
+   `data/` joins the top of the folder (5.6) as the company's own work: agents and members write it, and the platform
+   writes `snapshot/`. They are plain files, and the folder stays their one truth: the platform uses a file's text
+   only when its hash is the live file's, read with the caller's own rights. A step that was applied is never applied
+   again; when one was changed afterwards, applying stops and says so.
+2. **The rows live in the company data store**: a PostgreSQL on Qorpera's own nodes that holds companies' rows and
+   nothing else, with a standby on the other node and backups on Qorpera's own storage. It is not the platform's
+   database and shares no server process with it. Each company has one database there, each `data/<name>/` one schema
+   in it. "It holds all company state" keeps the one exception the 2026-10-02 amendment gave it, now for these rows.
+3. **The rows belong to the company like the folder.** They never go to the platform's database. Deleting a
+   database's folder removes its rows; deleting or erasing the company removes all of them, and the store's backups
+   hold them no longer than those backups are kept.
+4. **One gateway is the only door.** No member, agent, machine or service holds a login to the store; the data
+   gateway does, and every caller goes through it with their own proven identity. A company is bounded there in
+   connections, time per statement, memory, temporary files and size, so no company's work reaches another's or the
+   platform's.
+5. **Agents make and change databases without a member.** They write the files as they write any of the company's
+   work. What destroys data waits for a member: a step that drops or empties a table, drops a column or deletes rows,
+   and deleting a database's folder. Until that approval is built these are refused with their reason. The rule that
+   agents do not define the earlier tables and pages (`QorperaOS/tables`, `QorperaOS/interfaces`) is unchanged.
+6. **Interfaces reach rows only through the named questions and changes.** A page never sends SQL of its own. A
+   question runs with the rights of the member looking: the folder's path authority for the question's file. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
+   amendment: the platform draws every confirmation), with the file's own words. Agents may also ask any read, because they analyse. Nothing is
+   public unless a file marks it public, and that road has its own design first.
+7. **Interfaces show the values live.** When rows change, a notice that carries no rows reaches the open page, and
+   the page shows the new answers within about a second of the change. Notices do not pass through the platform's
+   database.
+8. **The folder gets a snapshot of each database that changed, at least daily**: its shape as SQL and its rows as
+   text files, enough to make the database again from the folder alone. The platform writes it. Path versions are
+   kept for good (the 2026-09-27 amendment "every machine works in the company folder", item 6) with one exception
+   so far, git's objects (the same amendment, item 9); the old versions of files under `data/<name>/snapshot/` are
+   the second: they are pruned after 7 days. The newest snapshot is always whole.
+9. **The earlier tables stay.** `QorperaOS/tables/<table>/` (the 2026-10-02 amendment, item 4) is unchanged: rows in
+   a file, `rows = "store"` still refused. A table moves into a database by a step and a copy, when a company wants it.
+10. **Order.** Live reads first (the store, the files, the gateway, the agents' tools, the bridge and the kits, the
+    snapshot); then named changes from interfaces and routines that wake on a change; then the product's doors (a
+    server's own connection, public questions and changes, hooks into tables), each after its own design; then what
+    Qorpera holds about a company (bank, mail, todos, agents, usage) as read-only tables in its database.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
