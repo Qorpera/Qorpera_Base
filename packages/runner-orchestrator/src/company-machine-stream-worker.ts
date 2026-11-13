@@ -432,14 +432,21 @@ export function runDesktopStreamWorker(openRelay: (spec: DesktopRelaySpec) => De
 				members.set(id, member);
 				const release: DesktopStreamRelease = (signal) =>
 					new Promise((resolve, reject) => {
+						// The member's signal lives as long as its stream: its listener goes with each cycle's verdict, or
+						// 30 cycles a second would pile them up for hours.
+						const stopped = () => {
+							member.verdict = undefined;
+							reject(new Error("stopped"));
+						};
 						member.verdict = (verdict) => {
 							member.verdict = undefined;
+							signal.removeEventListener("abort", stopped);
 							if (verdict === "ok" || verdict === "pending") resolve(verdict);
 							else if (typeof verdict === "object" && verdict !== null && "end" in verdict)
 								resolve({ end: reasonOf((verdict as { end: unknown }).end) });
 							else reject(new Error("STREAM_RELEASE_FAILED"));
 						};
-						signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
+						signal.addEventListener("abort", stopped, { once: true });
 						port.postMessage({ t: "release", m: id });
 					});
 				const sink: DesktopStreamSink = {

@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RFB_VERSION, STREAM_RECTS, STREAM_SIZE } from "../src/company-machine-stream.ts";
@@ -165,6 +168,29 @@ describe("a desktop watched in a worker thread of its own (review r11 of #1746)"
 		expect(await ending).toBe("closed");
 		expect(watching.ended).toBe("idle");
 	});
+
+	it("leaves nothing on a member's signal from one release cycle to the next, however many there are", async () => {
+		const desktop = await tcpDesktop();
+		const file = join(mkdtempSync(join(tmpdir(), "desktop-stream-worker-")), "held");
+		cleanups.push(() => rmSync(dirname(file), { recursive: true, force: true }));
+		const { desktop: watching } = watched("listeners", `${desktop.port}:${file}`);
+		const sink = sinkOf();
+		const stop = new AbortController();
+		const ending = watching.watch(async () => "ok", sink, stop.signal);
+		await vi.waitFor(() => expect(sink.types()).toContain(STREAM_SIZE));
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const before = Number(readFileSync(file, "utf8"));
+		// Some 80 cycles of the member's: the screen changes every 25 ms for 3 s.
+		for (let n = 0; n < 120; n++) {
+			await desktop.send(update(rawRect(0, 0, 8, 8, [n, 0, 0])));
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(sink.types().filter((type) => type === STREAM_RECTS).length).toBeGreaterThan(40);
+		expect(Number(readFileSync(file, "utf8")) - before).toBeLessThan(5);
+		stop.abort();
+		expect(await ending).toBe("closed");
+	}, 30_000);
 
 	it("ends a member on its release check's refusal, and every member with the relay's end", async () => {
 		const desktop = await tcpDesktop();
