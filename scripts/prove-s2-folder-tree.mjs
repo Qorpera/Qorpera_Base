@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { ENVIRONMENT, finish, OWNER, pass, platformCommit, proveCompanyRun, sha256 } from "./prove-company-run.mjs";
+import {
+	ENVIRONMENT,
+	finish,
+	OWNER,
+	pass,
+	platformChange,
+	platformCommit,
+	proveCompanyRun,
+	sha256,
+} from "./prove-company-run.mjs";
 
 // keyholes S2 (PR #1697): company_list shows a folder's tree in one call. End to end, through the real patched Codex
 // and a migrated database (scripts/prove-company-run.mjs says what is real and what stands in):
@@ -12,6 +21,9 @@ import { ENVIRONMENT, finish, OWNER, pass, platformCommit, proveCompanyRun, sha2
 //   the rest, and nothing is lost between them.
 // - The read rights: a glob over the whole company shows only what Alice's run may read, and a folder it may not read
 //   is absent.
+// - One answer is one moment of the folder (owed from v240): a file the platform renames between two of a call's
+//   pages shows once, under its new name, whichever way the rename goes; a folder that changes under every look the
+//   call takes says so in one line, and the same call again, the folder still, is clean.
 // - What was stored, read back: the run's context view (each output's bytes and the release it cites), the release
 //   records (exactly the folder and the entries shown, under the hash of the answer), and the run's work log (each step
 //   keeps its whole envelope, its release, its paths and its reads copy; every block parses with the shared parser).
@@ -27,6 +39,17 @@ const LONG = 300;
 const longFile = (i) =>
 	`long/${"a-long-name-that-a-generator-writes-when-it-keeps-the-whole-title-of-the-report-in-the-file-name"}-${String(i).padStart(4, "0")}.md`;
 const SECRETS = { open: ["open/secret-1.md", "open/secret-2.md"], locked: ["locked/secret-3.md", "locked/inner/secret-4.md"] };
+/** turn/ and churn/: 250 files each, two of the folder core's pages of 200. */
+const TURNS = 250;
+const turnFile = (folder, i) => `${folder}/${String(i).padStart(4, "0")}.md`;
+/** What the platform does while a call lists turn/ (before the call's first second page: the look the change meets),
+ * and churn/ (before each look's second page, three times). */
+const RENAMES = {
+	twice: { from: "turn/0050.md", to: "turn/0230-renamed.md" },
+	missing: { from: "turn/0230.md", to: "turn/0050-renamed.md" },
+};
+const CHANGED_LINE =
+	"The folder changed while it was listed, so a path may show twice here or not at all; call again the same way for a clean listing.";
 
 const mkdir = (path) => ({ op: "mkdir", path });
 const write = (path, text) => ({ op: "write", path, text });
@@ -44,22 +67,30 @@ const SETUP = [
 		write("open/notes.md", "Open notes."),
 		...[...SECRETS.open, ...SECRETS.locked].map((path) => write(path, `Secret at ${path}.`)),
 	]),
+	...["turn", "churn"].map((folder) =>
+		platformCommit(`prove-s2-${folder}`, [
+			mkdir(folder),
+			...Array.from({ length: TURNS }, (_, i) => write(turnFile(folder, i), `${folder} ${i}.`)),
+		]),
+	),
 	// locked/ becomes a resource of its own with no grant: no agent reads under it (core §5), the platform still does.
 	`select public.qorpera_folder_set_resource('${ENVIRONMENT}', '${OWNER}', 'locked', 'subtree', 'company_shared', 'normal') \\g /dev/null`,
 ].join("\n");
 
-/** A listing's answer, read as its lines: the header, the entries (path and kind), and the ending. An answer of one
- * line (an absent folder) has no entries. */
+/** A listing's answer, read as its lines: the header, the entries (path and kind), the line that says the folder
+ * changed while it was listed (`changed`), and the ending. An answer of one line (an absent folder) has no entries. */
 function listing(text) {
 	const lines = text.split("\n");
-	if (lines.length === 1) return { header: null, entries: [], ending: text };
-	assert.equal(lines.at(-2), "", `a blank line before the ending: ${JSON.stringify(text.slice(-200))}`);
-	const entries = lines.slice(1, -2).map((line) => {
+	if (lines.length === 1) return { header: null, entries: [], ending: text, changed: false };
+	const changed = lines.at(-2) === CHANGED_LINE;
+	const blank = changed ? -3 : -2;
+	assert.equal(lines.at(blank), "", `a blank line before the ending: ${JSON.stringify(text.slice(-200))}`);
+	const entries = lines.slice(1, blank).map((line) => {
 		if (line.endsWith("/")) return { path: line.slice(0, -1), kind: "folder" };
 		const [path, rest] = line.split("\t");
 		return { path, kind: rest.startsWith("->") ? "symlink" : "file", bytes: Number(rest) };
 	});
-	return { header: lines[0], entries, ending: lines.at(-1) };
+	return { header: lines[0], entries, ending: lines.at(-1), changed };
 }
 
 /** Where a listing says to go on: its `after`, or null when it says nothing more follows. */
@@ -69,14 +100,55 @@ const afterOf = (outputs) => {
 	return more ? JSON.parse(more[1]) : null;
 };
 
+/** The platform's changes while the run lists turn/ and churn/: which listing of turn/ is going on and whether the first
+ * of churn/ is (set as the model makes each call), what was done, the folder's clock after each change, and turn/'s
+ * entries after each rename, churn/'s before each add. */
+const live = { turn: null, churning: false, done: {}, adds: 0, clocks: {}, seen: {} };
+
 const CALLS = [
 	() => ({ name: "company_list", arguments: { path: "big", depth: 8 } }),
 	(outputs) => ({ name: "company_list", arguments: { path: "big", depth: 8, after: afterOf(outputs) } }),
 	() => ({ name: "company_list", arguments: { path: "long" } }),
 	(outputs) => ({ name: "company_list", arguments: { path: "long", after: afterOf(outputs) } }),
 	() => ({ name: "company_list", arguments: { path: "", glob: "**/secret-*.md" } }),
+	() => {
+		live.turn = "twice";
+		return { name: "company_list", arguments: { path: "turn" } };
+	},
+	() => {
+		live.turn = "missing";
+		return { name: "company_list", arguments: { path: "turn" } };
+	},
+	() => {
+		live.churning = true;
+		return { name: "company_list", arguments: { path: "churn" } };
+	},
+	() => {
+		live.churning = false;
+		return { name: "company_list", arguments: { path: "churn" } };
+	},
 	() => ({ name: "company_list", arguments: { path: "locked" } }),
 ];
+
+/** Before a listing's second page (`p_after` set) of turn/: the rename of the call going on, once; of churn/, during
+ * its first call: a new file in the page already read, before each look's second page (at most three looks). */
+function beforeRpc(method, args, db) {
+	if (method !== "qorpera_folder_list" || args.p_after === null) return;
+	if (args.p_parent === "turn" && live.turn && !live.done[live.turn]) {
+		live.done[live.turn] = true;
+		const { from, to } = RENAMES[live.turn];
+		live.clocks[live.turn] = platformChange(db, `prove-s2-rename-${live.turn}`, [{ op: "move", from, to }]);
+		live.seen[live.turn] = entriesUnder(db, "turn").map((entry) => entry.path);
+	}
+	if (args.p_parent === "churn" && live.churning && live.adds < 3) {
+		live.adds++;
+		// A look shows the folder as it was before the add its second page met (in the page already read).
+		live.seen[`churn${live.adds}`] = entriesUnder(db, "churn").map((entry) => entry.path);
+		live.clocks[`churn${live.adds}`] = platformChange(db, `prove-s2-churn-${live.adds}`, [
+			{ op: "write", path: `churn/0001-${live.adds}.md`, text: `new ${live.adds}.` },
+		]);
+	}
+}
 
 /** The entries under a folder as the platform sees them (no read check), by path. */
 function entriesUnder(db, folder) {
@@ -99,6 +171,7 @@ await finish(proveCompanyRun({
 	setup: SETUP,
 	objects: new Map(),
 	calls: CALLS,
+	beforeRpc,
 	async check({ db, binding, outputs, log }) {
 		const runId = binding.runId;
 		const MAX = 32 * 1024;
@@ -167,7 +240,7 @@ await finish(proveCompanyRun({
 		);
 
 		// 3. The read rights: what the run may not read is never shown, and its folder is absent.
-		const [glob, locked] = answers.slice(4, 6);
+		const [glob, locked] = [answers[4], answers.at(-1)];
 		assert.deepEqual(
 			glob.list.entries.map((entry) => entry.path),
 			SECRETS.open,
@@ -182,7 +255,40 @@ await finish(proveCompanyRun({
 		assert.equal(locked.envelope.provenance.companyReadId, undefined, "nothing was released for it");
 		pass(`company_list locked/ answered ${JSON.stringify(locked.text)}, with nothing released`);
 
-		// 4. The context view: each output as the model got it, and the release it cites.
+		// 4. One answer is one moment of the folder (owed from v240). The platform renamed a file between the first two
+		//    pages of each turn/ listing: it shows once, under its new name, and the answer is as of after the rename.
+		const [twice, missing, churned, clean] = answers.slice(5, 9);
+		for (const [answer, name] of [
+			[twice, "twice"],
+			[missing, "missing"],
+		]) {
+			const { from, to } = RENAMES[name];
+			assert(live.done[name], `the platform renamed ${from} during the ${name} listing`);
+			assert.deepEqual(answer.list.entries.map((entry) => entry.path), live.seen[name], `${name}: turn/ as it is after the rename`);
+			assert(!answer.list.entries.some((entry) => entry.path === from), `${name}: nothing of ${from}`);
+			assert.equal(answer.list.entries.filter((entry) => entry.path === to).length, 1, `${name}: ${to} once`);
+			assert.equal(answer.list.changed, false, `${name}: one moment, so no word of a change`);
+			assert.equal(answer.list.ending, `${TURNS} entries. Nothing more.`);
+			const asOf = Number(/asOfSeq ([0-9]+)/.exec(answer.list.header)[1]);
+			assert(asOf >= live.clocks[name], `${name}: as of the rename's clock ${live.clocks[name]} or later (${asOf})`);
+		}
+		const lists = db.calls.filter((method) => method === "qorpera_folder_list").length;
+		pass(
+			`a file the platform renamed between two pages of one call shows once: turn/0050.md renamed to turn/0230-renamed.md (from the page read to the one not read yet; before, the call showed it under both names) and turn/0230.md renamed to turn/0050-renamed.md (the other way; before, under neither): each answer is turn/'s ${TURNS} entries as they are after the rename, as of its clock (${live.clocks.twice}, ${live.clocks.missing}) or later, with no word of a change; ${lists} folder listing pages in the run`,
+		);
+		// Three looks a call, each begun within the call's first 2 s: on a busy test machine a third may not begin, and the
+		// call answers with its last look all the same.
+		assert(live.adds >= 2, `the platform added a file under churn/ before each look's second page (${live.adds})`);
+		assert.equal(churned.list.changed, true, `churn/: ${churned.text.slice(-300)}`);
+		assert.deepEqual(churned.list.entries.map((entry) => entry.path), live.seen[`churn${live.adds}`], "the last look's churn/");
+		assert.equal(churned.list.ending, `${TURNS + live.adds - 1} entries. Nothing more.`);
+		assert.equal(clean.list.changed, false);
+		assert.deepEqual(clean.list.entries.map((entry) => entry.path), entriesUnder(db, "churn").map((entry) => entry.path));
+		pass(
+			`a folder the platform changed under every look of one call (a file added to the page already read, before each look's second page, ${live.adds} looks): the answer is the last look (${churned.list.entries.length} entries) and says so in one line before its ending ("${CHANGED_LINE}"); the same call again, the folder still, shows churn/'s ${clean.list.entries.length} entries with no such line`,
+		);
+
+		// 5. The context view: each output as the model got it, and the release it cites.
 		const views = db
 			.json(`select coalesce(jsonb_agg(v.view -> 'outputs'), '[]')::text from public.qorpera_native_context_views v
 				where v.run_id = '${runId}'`)
@@ -200,8 +306,8 @@ await finish(proveCompanyRun({
 			`the run's context views recorded each of the ${answers.length} outputs at its bytes (the largest ${Math.max(...answers.map((a) => a.bytes))}) with the release it cites`,
 		);
 
-		// 5. The release records: exactly the folder listed and the entries shown, under the hash of the answer.
-		for (const answer of answers.slice(0, 5)) {
+		// 6. The release records: exactly the folder listed and the entries shown, under the hash of the answer.
+		for (const answer of answers.slice(0, -1)) {
 			const id = answer.envelope.provenance.companyReadId;
 			assert(id, `${answer.callId} cites a release`);
 			const reads = releasedReads(db, runId, id);
@@ -215,7 +321,7 @@ await finish(proveCompanyRun({
 			`each listing's release recorded exactly the folder and the entries it showed (${releasedReads(db, runId, first.envelope.provenance.companyReadId).length} reads for the 500), under the hash of the answer; none under locked/`,
 		);
 
-		// 6. The run's work log, read back: each step keeps the envelope, its release, its paths and its reads copy. The
+		// 7. The run's work log, read back: each step keeps the envelope, its release, its paths and its reads copy. The
 		//    last call named locked/, which not every agent reads, so its step is written narrow (§4.5, as for any tool
 		//    whose arguments name such a path): its line keeps only its identity, keyed hashes and releases.
 		const NARROW = answers.length - 1;

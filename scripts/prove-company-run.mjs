@@ -80,6 +80,8 @@ class Database {
 	calls = [];
 	/** Each refused call, by its function, SQLSTATE and message: shown when the proof fails. */
 	refusals = [];
+	/** Called with each function call's name and arguments before it runs (a proof's change while the run goes on). */
+	before;
 
 	constructor(run) {
 		this.#run = run;
@@ -122,6 +124,7 @@ class Database {
 	}
 
 	rpc(method, args) {
+		this.before?.(method, args);
 		this.calls.push(method);
 		const keys = Object.keys(args);
 		const signature = this.#signature(method, keys);
@@ -503,9 +506,10 @@ export function answerOf(output) {
  * the platform; `pg_temp.base_*` helpers are there; or a function of the bundled code that gives it) and the objects of
  * its texts, Alice's run in Shared context through the real patched Codex making `calls` with the folder file tools
  * (and the interface tools, `interfaceTools`, and the tools `tools(code, {db, binding, folder, operations, identity})`
- * gives), then `check(run)` on what was stored. The model's rounds take `roundMs` each. A run whose turn ends before
- * its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every call and
- * then the closing answer. Without the binary it prints NOT RUN. */
+ * gives), then `check(run)` on what was stored. `beforeRpc(method, args, db)`, if given, is called before each function
+ * call of the run's (a change the proof makes while the run goes on, with `platformChange`). The model's rounds take
+ * `roundMs` each. A run whose turn ends before its last call (an interrupt) names the provider requests it expects in
+ * `requests(count)`; by default every call and then the closing answer. Without the binary it prints NOT RUN. */
 export async function proveCompanyRun({
 	name,
 	prompt,
@@ -514,6 +518,7 @@ export async function proveCompanyRun({
 	calls,
 	check,
 	interfaceTools = false,
+	beforeRpc,
 	tools,
 	roundMs = 0,
 	requests = (count) => count === calls.length + 1,
@@ -562,6 +567,7 @@ export async function proveCompanyRun({
 			server.listen(0, "127.0.0.1", done);
 		});
 		const startedAt = Date.now();
+		if (beforeRpc) db.before = (method, args) => beforeRpc(method, args, db);
 		const run = await attempt(code, {
 			db,
 			binding,
@@ -576,6 +582,7 @@ export async function proveCompanyRun({
 			tools,
 		});
 		Object.assign(run, { startedAt, endedAt: Date.now() });
+		db.before = undefined;
 		if (state.failure) throw state.failure;
 		assert(requests(state.agent.length), `the model's requests: ${state.agent.length} of ${calls.length} calls`);
 		// What the model got for each call, from the request right after it, as the provider received it. (A Shared
@@ -655,11 +662,30 @@ export function finish(proof) {
 	);
 }
 
-/** One commit of the platform's, through SQL test 924's `base_commit`: units `{op: "mkdir", path}` or
- * `{op: "write", path, text}` (each text staged with `base_stage`), in order. */
+/** One commit of the platform's, through SQL test 924's `base_commit`: units `{op: "mkdir", path}`,
+ * `{op: "write", path, text}` (each text staged with `base_stage`) or `{op: "move", from, to}` (a file, at the version it
+ * has), in order. */
 export function platformCommit(key, units) {
 	assert(/^[a-z0-9-]{8,64}$/.test(key) && units.length >= 1 && units.length <= 1000);
 	return `select pg_temp.base_commit('{"kind":"platform"}', '${key}', (select jsonb_agg(case when u ->> 'op' = 'mkdir' then u
+		when u ->> 'op' = 'move' then jsonb_build_object('op', 'move', 'from', u ->> 'from', 'to', u ->> 'to',
+			'expectedVersion', pg_temp.base_version(u ->> 'from'))
 		else jsonb_build_object('op', 'write', 'path', u ->> 'path', 'file', pg_temp.base_stage(u ->> 'text')) end order by n)
 		from jsonb_array_elements(${sqlText(JSON.stringify(units))}::jsonb) with ordinality t(u, n))) \\g /dev/null`;
+}
+
+/** A commit of the platform's while the run goes on, in a database session of its own (SQL test 924's helpers made
+ * there again): units as `platformCommit` takes them. Returns the folder's clock after it. */
+export function platformChange(db, key, units) {
+	const fixture = readFileSync(join(repositoryRoot, "supabase/tests/924_folder_runtime_base.test.sql"), "utf8");
+	const start = fixture.indexOf("create function pg_temp.base_claims");
+	const end = fixture.indexOf("-- END BASE HELPERS");
+	assert(start > 0 && end > start, "SQL test 924's helpers moved: update this script");
+	const out = db.query(`begin;
+		${fixture.slice(start, end)}
+		select pg_temp.base_claims('service_role') \\g /dev/null
+		${platformCommit(key, units)}
+		select last_seq::text from public.qorpera_folder_clocks where environment_id = '${ENVIRONMENT}';
+		commit;`);
+	return Number(out.split("\n").at(-1));
 }

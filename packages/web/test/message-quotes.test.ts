@@ -14,7 +14,7 @@ import {
 	withQuoteRecords,
 } from "../src/app/quotes.ts";
 import { type DraftStatus, DraftSync } from "../src/app/room-drafts.ts";
-import { applyEdit, compose, diffText, transform } from "../src/app/text-merge.ts";
+import { applyEdit, compose, diffText, editAfter, transform } from "../src/app/text-merge.ts";
 import { FieldHistory } from "../src/app/views/composer-quotes.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -371,6 +371,21 @@ describe("shared drafts merge each quote whole (review round 1, F2 and F3)", () 
 		// RoomDrafts.sent: the sent text goes, the words others added while it was on its way stay.
 		const [cleared] = transform(diffText("«A» «B»", ""), merged!.edit);
 		expect(applyEdit(merged!.text, cleared)).toBe("«A» «C»");
+	});
+
+	it("cuts an edit at a part the field does not show, keeping its quotes whole (#1739 r2, F1)", () => {
+		const lead = "> app:shop · Lund\n\n";
+		const L = lead.length;
+		// The part stays: the steps after it, as they were.
+		expect(editAfter([L, -7, "«Bob»", 2], L, L)).toEqual([-7, "«Bob»", 2]);
+		expect(editAfter([L + 3, -7, "«Bob»"], L, L)).toEqual([3, -7, "«Bob»"]);
+		// It comes, goes, or changes: what follows it keeps its own steps.
+		expect(editAfter([lead, -7, "«Bob»"], 0, L)).toEqual([-7, "«Bob»"]);
+		expect(editAfter([-L, 7], L, 0)).toEqual([7]);
+		expect(editAfter([2, -(L - 2), "app:x · Y\n\nnew ", 7], L, "> app:x · Y\n\n".length)).toEqual(["new ", 7]);
+		expect(editAfter(["> app:x · Y\n\nnew ", -L, 7], L, "> app:x · Y\n\n".length)).toEqual(["new ", 7]);
+		// A kept letter in the part on one side and after it on the other: no cut fits both.
+		expect(editAfter([L + 4], L, L - 2)).toBeUndefined();
 	});
 
 	it("counts astral letters as one, and keeps the member's own private-use letters", () => {
@@ -1038,6 +1053,50 @@ describe("sending quotes", () => {
 		// The sent message goes; the other tab's quotes stay whole, each with its own email.
 		expect(company.conversation(session.sessionId).get().draft).toBe("«A» «C»");
 		expect(company.draftQuotes(session.sessionId)).toEqual([quote(1, 2, otherThread), quote(5, 6)]);
+	});
+
+	it("keeps a quote whole when another tab replaces it while an app's note is on its way (#1739 r2, F1)", async () => {
+		// The draft is a note from an app's page: its line is the shared draft's first line (app/company.ts' room
+		// hooks), which the composer never shows, so the merge's edit is cut at it, quotes kept whole.
+		const LINE = "app:shop#1042 · Order 1042 · Hansen";
+		const lead = `> ${LINE}\n\n`;
+		const L = [...lead].length;
+		const f = fixture();
+		vi.mocked(f.api.listRoomDrafts)
+			.mockReset()
+			.mockResolvedValue([roomDraft(userA.id, `${lead}«Alice»`, 1, { quotes: [quote(L + 1, L + 6)] })]);
+		vi.spyOn(f.api, "putRoomDraft").mockReturnValue(new Promise(() => {}));
+		let live: ((draft: RoomDraft) => void) | undefined;
+		vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, onDraft, onHealth) => {
+			live = onDraft;
+			onHealth("connected");
+			return { stop: async () => {} };
+		});
+		const posted = deferred<{ inputId: string }>();
+		const write = vi.fn<SessionInputWriter>(() => posted.promise);
+		const company = new CompanyController(f.api, profileA, userA.id, write);
+		company.store.set({ team: { ...team, members }, staff: [staff], sessions: [group], loading: false });
+		company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+		const release = company.roomDrafts.watch(session.sessionId, { caret: () => undefined, busy: () => false });
+		dispose.push(() => {
+			release?.();
+			company.stop();
+		});
+		await settle();
+		// The room's draft came in: the app's line is what it answers, the words and their quote the draft.
+		expect(company.conversation(session.sessionId).get()).toMatchObject({ answering: LINE, draft: "«Alice»" });
+		expect(company.draftQuotes(session.sessionId)).toEqual([quote(1, 6)]);
+		const sent = company.sendPrompt(session.sessionId, "«Alice»");
+		// While it goes, another tab replaces the quote with one of another email's words.
+		live?.(roomDraft(userA.id, `${lead}«Bob»`, 2, { quotes: [quote(L + 1, L + 4, otherThread)] }));
+		expect(company.conversation(session.sessionId).get().draft).toBe("«Bob»");
+		posted.resolve({ inputId: id(96) });
+		expect(await sent).toBe(true);
+		expect(write.mock.calls[0]?.[2]).toBe(`${lead}«Alice»`);
+		expect(write.mock.calls[0]?.[7]).toEqual([quote(L + 1, L + 6)]);
+		// The sent words go; the other tab's quote stays a quote, with its own email, never bare words.
+		expect(company.conversation(session.sessionId).get().draft).toBe("«Bob»");
+		expect(company.draftQuotes(session.sessionId)).toEqual([quote(1, 4, otherThread)]);
 	});
 
 	it("puts quotes in the body of a conversation input and of a room post, with no displayText", async () => {

@@ -6559,7 +6559,12 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
      stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
      the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
-   - `asOfSeq` is the folder clock of the call's first page, as `company_move` takes it.
+   - One answer is one moment of the folder (13 November 2026, owed from v240: a rename between two of a call's
+     pages showed a path twice or not at all). A look whose pages answered at different folder clocks is taken
+     again, at most three looks a call, all within about 4 s; the answer is a look whose pages answered at one clock
+     (each page is one statement, so that look is the folder at that moment). If no look was, the answer says so in
+     one line and to call again the same way for a clean listing.
+   - `asOfSeq` is the folder clock of the first page of the look the call answers with, as `company_move` takes it.
 2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
    `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
    - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
@@ -6619,8 +6624,10 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    such lines it left, to search as text or read. A file that changes while a search is inside it shows in one
    version only, the one there now: what the same call had shown of the old version is left out and not released,
    and when an earlier answer showed part of it, the answer says it changed (searched again from its start) or is no
-   longer as that answer saw it (gone, emptied or no longer the run's to read). A search whose own path is gone by a
-   later page answers that there is no such path, and shows and releases nothing.
+   longer as that answer saw it (gone, emptied or no longer the run's to read). A cursor inside a file does not tell
+   that: the run keeps, with each cursor, whether an answer showed part of that file at that version (13 November
+   2026, the v240 release review's finding), and says nothing of a file no answer showed. A search whose own path
+   is gone by a later page answers that there is no such path, and shows and releases nothing.
 4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
    searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
    (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,
