@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
+import type { Writable } from "node:stream";
 
 // A member's live picture of an agent's desktop (20260930745000; POINTER-PROGRESS.md 05:15Z, the lead's B1): the
 // executor's own listener behind node 1's own Cloudflare tunnel (`screens.qorpera.com`), on the loopback only (the
@@ -21,7 +22,55 @@ const ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /** What a member's stream may say back at most at once (a ping, a pong, a close): control frames only. */
 const MAX_INCOMING_BYTES = 256;
 /** Past this much waiting to go out, a send waits for the way to drain. */
-const HIGH_WATER_BYTES = 2 * 1024 * 1024;
+export const MEMBER_STREAM_HIGH_WATER_BYTES = 2 * 1024 * 1024;
+/** And past this many messages written and not yet flushed (the lead's review r12, second round): a member that stops
+ * reading holds at most these, whatever their sizes, never hundreds of thousands of small ones (each its head and its
+ * bytes). A correct stream's messages leave as fast as the member reads; 16 is far past what one cycle sends a member
+ * with little to send (3) and still small. */
+export const MEMBER_STREAM_UNFLUSHED_MESSAGES = 16;
+/** What one member's way has written and not yet flushed, counted by the writes' own callbacks. */
+export interface MemberStreamWay {
+	unflushed: number;
+	wake?: (() => void) | undefined;
+}
+/** Writes one message to a member's way, its head and its bytes corked (its bytes never copied here), and resolves once
+ * the way holds at most MEMBER_STREAM_UNFLUSHED_MESSAGES messages and MEMBER_STREAM_HIGH_WATER_BYTES bytes not yet
+ * flushed, or the way closed, or `signal` aborted. Every head is a buffer of its own, never from Node's shared pool,
+ * which a queued write would keep alive 8 KiB at a time. */
+export async function writeMemberStreamMessage(
+	out: Writable,
+	way: MemberStreamWay,
+	head: Buffer,
+	message: Buffer,
+	signal?: AbortSignal,
+): Promise<void> {
+	way.unflushed++;
+	out.cork();
+	out.write(head);
+	out.write(message, () => {
+		way.unflushed--;
+		way.wake?.();
+	});
+	out.uncork();
+	while (
+		!out.destroyed &&
+		!signal?.aborted &&
+		(way.unflushed > MEMBER_STREAM_UNFLUSHED_MESSAGES || out.writableLength > MEMBER_STREAM_HIGH_WATER_BYTES)
+	)
+		await new Promise<void>((resolve) => {
+			const done = () => {
+				way.wake = undefined;
+				out.off("drain", done);
+				out.off("close", done);
+				signal?.removeEventListener("abort", done);
+				resolve();
+			};
+			way.wake = done;
+			out.once("drain", done);
+			out.once("close", done);
+			signal?.addEventListener("abort", done, { once: true });
+		});
+}
 const PING_EVERY_MS = 30_000;
 const PONG_WITHIN_MS = 60_000;
 /** How long a connection may take to send its whole upgrade request, and how often that is checked. Node checks the
@@ -36,8 +85,7 @@ const MAX_CONNECTIONS = 256;
 
 /** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
 export interface CloudMemberMachineStreamSink {
-	/** One message, whole or as the pieces it was read in (written in order, never joined). */
-	send(message: Buffer | readonly Buffer[]): Promise<void>;
+	send(message: Buffer): Promise<void>;
 }
 /** A stream admitted on its ticket: running it streams to `sink` until `signal` aborts or it ends, and answers why. */
 export type CloudMemberMachineStreamRun = (sink: CloudMemberMachineStreamSink, signal: AbortSignal) => Promise<string>;
@@ -68,17 +116,18 @@ export function cloudMemberMachineStreamClose(reason: string): { code: number; r
 /** A frame's head: its opcode and its length. The payload goes after it as it is, never copied into one buffer with it
  * (a picture is up to 8 MiB; the v245 release review: no copying on node 1's event loop that the guest can make long). */
 function frameHead(opcode: number, length: number): Buffer {
-	return length < 126
-		? Buffer.from([0x80 | opcode, length])
-		: length < 65536
-			? Buffer.from([0x80 | opcode, 126, length >> 8, length & 0xff])
-			: (() => {
-					const big = Buffer.alloc(10);
-					big[0] = 0x80 | opcode;
-					big[1] = 127;
-					big.writeBigUInt64BE(BigInt(length), 2);
-					return big;
-				})();
+	// A buffer of its own (Buffer.alloc never takes from Node's shared pool).
+	const head = Buffer.alloc(length < 126 ? 2 : length < 65536 ? 4 : 10);
+	head[0] = 0x80 | opcode;
+	if (length < 126) head[1] = length;
+	else if (length < 65536) {
+		head[1] = 126;
+		head.writeUInt16BE(length, 2);
+	} else {
+		head[1] = 127;
+		head.writeBigUInt64BE(BigInt(length), 2);
+	}
+	return head;
 }
 function frame(opcode: number, payload: Buffer): Buffer {
 	return Buffer.concat([frameHead(opcode, payload.byteLength), payload]);
@@ -277,28 +326,12 @@ export class CloudMemberMachineStreamListener {
 				this.#open.delete(open);
 			}
 		});
+		const way: MemberStreamWay = { unflushed: 0 };
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
 				if (ended || socket.destroyed) throw new Error("MEMBER_MACHINE_STREAM_CLOSED");
-				// The head and the picture's pieces (at most 34: a desktop's instance's message as main read it) as writes in one,
-				// corked: the picture's bytes are never copied here.
-				const pieces = Buffer.isBuffer(message) ? [message] : message;
-				let length = 0;
-				for (const piece of pieces) length += piece.byteLength;
-				socket.cork();
-				socket.write(frameHead(0x2, length));
-				for (const piece of pieces) socket.write(piece);
-				socket.uncork();
-				if (socket.writableLength > HIGH_WATER_BYTES)
-					await new Promise<void>((resolve) => {
-						const done = () => {
-							socket.off("drain", done);
-							socket.off("close", done);
-							resolve();
-						};
-						socket.once("drain", done);
-						socket.once("close", done);
-					});
+				// The head and the picture as writes in one, corked: the picture's bytes are never copied here.
+				await writeMemberStreamMessage(socket, way, frameHead(0x2, message.byteLength), message);
 			},
 		};
 		void run(sink, stop.signal).then(

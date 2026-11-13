@@ -1,7 +1,4 @@
-import { DESKTOP_STREAM_MESSAGE_BYTES } from "../../src/company-machine-stream-process.ts";
-
-// What the pieces fixture sends, from a seed: the test makes the same plan to check that every message arrived whole
-// and in order. Every message is a valid SEND (its first byte a kind, 2), its sizes at and around the bounds.
+// The fixtures' seeded helpers: a generator, a message's bytes, and how a hostile writer cuts what it writes.
 
 /** A small seeded generator (mulberry32). */
 export function seeded(seed: number): () => number {
@@ -13,22 +10,6 @@ export function seeded(seed: number): () => number {
 		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
 		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
-}
-
-const SIZES = [1, 2, 3, 9, 100, 4095, 4096, 4097, 65_535, 65_536, 65_537, 1024 * 1024, DESKTOP_STREAM_MESSAGE_BYTES];
-
-/** Each member's cycles: each cycle 1 to 4 messages of these sizes. */
-export function plan(seed: number, members: number, cycles: number): number[][][] {
-	const random = seeded(seed);
-	return Array.from({ length: members }, () =>
-		Array.from({ length: cycles }, () =>
-			Array.from({ length: 1 + Math.floor(random() * 4) }, () =>
-				random() < 0.7
-					? (SIZES[Math.floor(random() * SIZES.length)] as number)
-					: 1 + Math.floor(random() * DESKTOP_STREAM_MESSAGE_BYTES),
-			),
-		),
-	);
 }
 
 /** One message's bytes: its kind, then a pattern of its member, its place and its size. */

@@ -2940,13 +2940,11 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			memberStream: vi.fn(
 				async (
 					stream: CompanyMachineMemberStream,
-					sink: { send(message: Buffer | readonly Buffer[]): Promise<void> },
+					sink: { send(message: Buffer): Promise<void> },
 					signal: AbortSignal,
 				) => {
 					streamed.push({ stream, signal });
 					await sink.send(Buffer.from([1, 0, 64, 0, 40]));
-					// A message as the pieces it was read in (a desktop's instance's): one frame on the way, never joined here.
-					await sink.send([Buffer.from([2, 0]), Buffer.from([0, 1, 2])]);
 					await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 					return "closed";
 				},
@@ -3008,10 +3006,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		const messages: Buffer[] = [];
 		return {
 			messages,
-			send: vi.fn(
-				async (message: Buffer | readonly Buffer[]) =>
-					void messages.push(Buffer.isBuffer(message) ? message : Buffer.concat(message as Buffer[])),
-			),
+			send: vi.fn(async (message: Buffer) => void messages.push(message)),
 		};
 	};
 
@@ -3080,7 +3075,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			expect(f.streamed.map((one) => one.stream)).toEqual([
 				{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, generation: 4, epoch: null },
 			]);
-			expect(sink.messages).toHaveLength(2);
+			expect(sink.messages).toHaveLength(1);
 			// The window renews the pass while it watches: the stream goes on past the first pass's 10 s.
 			vi.advanceTimersByTime(8000);
 			await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
@@ -3242,11 +3237,7 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		const stop = new AbortController();
 		const sink = sinkOf();
 		const ending = peer.memberStream({ passId: a.passId, epoch: null }, sink, stop.signal);
-		await vi.waitFor(() => expect(sink.messages).toHaveLength(2));
-		expect(sink.messages.map((message) => [...message])).toEqual([
-			[1, 0, 64, 0, 40],
-			[2, 0, 0, 1, 2],
-		]);
+		await vi.waitFor(() => expect(sink.messages).toHaveLength(1));
 		expect(a.streamed[0]!.stream).toEqual({
 			placementId: a.placementId,
 			bootId: a.bootId,

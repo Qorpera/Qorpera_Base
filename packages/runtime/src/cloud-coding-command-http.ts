@@ -41,6 +41,7 @@ import {
 	parseCloudMemberMachineStreamPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
+import { type MemberStreamWay, writeMemberStreamMessage } from "./cloud-member-machine-stream-http.ts";
 import {
 	type CloudNativeToolBinding,
 	isNativeJobHolder,
@@ -588,34 +589,21 @@ export class HttpCloudCodingCommandService {
 					begun = true;
 					reply.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
 				};
+				const way: MemberStreamWay = { unflushed: 0 };
 				const sink = {
-					send: async (message: Buffer | readonly Buffer[]) => {
+					send: async (message: Buffer) => {
 						if (controller.signal.aborted) throw new Error(ERROR);
 						begin();
-						// The head and the picture's pieces (at most DESKTOP_STREAM_MESSAGE_PIECES, 34) as writes in one, corked:
-						// the picture's bytes are never copied here.
-						const pieces = Buffer.isBuffer(message) ? [message] : message;
-						let length = 0;
-						for (const piece of pieces) length += piece.byteLength;
-						reply.cork();
-						reply.write(cloudMemberMachineStreamFrameHead(1, length));
-						let room = true;
-						for (const piece of pieces) room = reply.write(piece);
-						reply.uncork();
-						if (!room)
-							// Waiting for the asking executor to drain ends with this request too: nothing of it waits past
-							// the stream's end (review r2 F3 of #1746).
-							await new Promise<void>((resolve) => {
-								const done = () => {
-									reply.off("drain", done);
-									reply.off("close", done);
-									controller.signal.removeEventListener("abort", done);
-									resolve();
-								};
-								reply.once("drain", done);
-								reply.once("close", done);
-								controller.signal.addEventListener("abort", done, { once: true });
-							});
+						// The head and the picture as writes in one, corked: the picture's bytes are never copied here. Waiting
+						// for the asking executor to drain ends with this request too: nothing of it waits past the stream's end
+						// (review r2 F3 of #1746); and at most MEMBER_STREAM_UNFLUSHED_MESSAGES wait unflushed.
+						await writeMemberStreamMessage(
+							reply,
+							way,
+							cloudMemberMachineStreamFrameHead(1, message.byteLength),
+							message,
+							controller.signal,
+						);
 					},
 				};
 				let reason: string;

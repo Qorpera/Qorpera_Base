@@ -727,10 +727,9 @@ export const STREAM_RECTS = 2;
 /** `3, hotX, hotY, width, height` (u16), `bytes` (u32) of an RGBA PNG: the pointer's shape. */
 export const STREAM_CURSOR = 3;
 
-/** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. A message may
- * come as the pieces it was read in (the executor hands on an instance's message without joining it), written in order. */
+/** Where a member's stream goes: `send` resolves once the message is on its way and the way is not full. */
 export interface DesktopStreamSink {
-	send(message: Buffer | readonly Buffer[]): Promise<void>;
+	send(message: Buffer): Promise<void>;
 }
 /** One release cycle (the three checks every picture passes, for this member): `ok` lets go what changed before it
  * began; `pending` holds it for the next (the folder's boundary did not answer in time); `{ end }` ends the stream
@@ -983,7 +982,8 @@ export function visibleRects(rects: readonly RfbRect[]): RfbRect[] {
 
 /** A batch of areas goes out once it passes this many bytes (the browser and the peer take up to 8 MiB a message; a
  * smaller batch keeps every join of one message near a millisecond, the v245 release review). */
-const BATCH_BYTES = 1024 * 1024;
+export const DESKTOP_STREAM_BATCH_BYTES = 1024 * 1024;
+const BATCH_BYTES = DESKTOP_STREAM_BATCH_BYTES;
 /** At most this many pixels in one area as it is kept and sent (768 KiB of RGB): a larger area is kept as bands of
  * whole rows, without copying, so no PNG is more than about that to encode in one call or to join into a message
  * (the v245 release review). Xvnc's own bands are smaller (1600 x 36). */

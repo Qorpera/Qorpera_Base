@@ -1,11 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { connect, type Socket } from "node:net";
+import { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CLOUD_MEMBER_MACHINE_STREAM_PROTOCOL,
 	CloudMemberMachineStreamListener,
 	type CloudMemberMachineStreamRun,
 	cloudMemberMachineStreamClose,
+	MEMBER_STREAM_HIGH_WATER_BYTES,
+	MEMBER_STREAM_UNFLUSHED_MESSAGES,
+	type MemberStreamWay,
+	writeMemberStreamMessage,
 } from "../src/cloud-member-machine-stream-http.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -159,19 +164,16 @@ describe("the live-picture listener (20260930745000)", () => {
 		const { port } = await listener(() => async (sink) => {
 			await sink.send(Buffer.from([1, 0, 64, 0, 40]));
 			await sink.send(big);
-			// A message handed on as the pieces it was read in (a desktop's instance's, never joined): one message.
-			await sink.send([big.subarray(0, 3), big.subarray(3, 65_536), big.subarray(65_536)]);
 			return new Promise<string>((resolve) => {
 				resolveRun = resolve;
 			});
 		});
 		const one = await open(port);
 		one.socket.write(masked(0x9, Buffer.from("hi")));
-		await vi.waitFor(() => expect(one.frames.map((f) => f.opcode)).toEqual([0x2, 0x2, 0x2, 0xa]));
+		await vi.waitFor(() => expect(one.frames.map((f) => f.opcode)).toEqual([0x2, 0x2, 0xa]));
 		expect(one.frames[0]!.payload).toEqual(Buffer.from([1, 0, 64, 0, 40]));
 		expect(one.frames[1]!.payload.equals(big)).toBe(true);
-		expect(one.frames[2]!.payload.equals(big)).toBe(true);
-		expect(one.frames[3]!.payload.toString()).toBe("hi");
+		expect(one.frames[2]!.payload.toString()).toBe("hi");
 		resolveRun("DESKTOP_HELD_SINCE");
 		await vi.waitFor(() => expect(one.frames.at(-1)?.opcode).toBe(0x8));
 		const close = one.frames.at(-1)!.payload;
@@ -283,6 +285,47 @@ describe("the live-picture listener (20260930745000)", () => {
 		expect(Date.now() - closing).toBeLessThan(3000);
 		await vi.waitFor(() => expect(idle.every((one) => one.destroyed)).toBe(true));
 	}, 15_000);
+
+	it("lets a send through while at most MEMBER_STREAM_UNFLUSHED_MESSAGES are written and not flushed, and the bytes under the mark (review r12 of #1746)", async () => {
+		// A member's way that flushes nothing until the test lets it: each write's callback held.
+		const held: (() => void)[] = [];
+		const out = new Writable({
+			highWaterMark: 1 << 30,
+			write(_chunk, _encoding, done) {
+				held.push(() => done());
+			},
+			writev(_chunks, done) {
+				held.push(() => done());
+			},
+		});
+		const way: MemberStreamWay = { unflushed: 0 };
+		const small = () => Buffer.alloc(13, 2);
+		const settled = async (send: Promise<void>) =>
+			Promise.race([send.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50))]);
+		for (let n = 0; n < MEMBER_STREAM_UNFLUSHED_MESSAGES; n++)
+			expect(await settled(writeMemberStreamMessage(out, way, Buffer.alloc(2), small()))).toBe(true);
+		// One more: it is written, and its send waits until one of them is flushed.
+		const waiting = writeMemberStreamMessage(out, way, Buffer.alloc(2), small());
+		expect(await settled(waiting)).toBe(false);
+		expect(way.unflushed).toBe(MEMBER_STREAM_UNFLUSHED_MESSAGES + 1);
+		(held.shift() as () => void)();
+		expect(await settled(waiting)).toBe(true);
+		// Bytes too: one message past the mark waits, whatever the count.
+		for (const flush of held.splice(0)) flush();
+		await new Promise((resolve) => setImmediate(resolve));
+		for (const flush of held.splice(0)) flush();
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(way.unflushed).toBe(0);
+		const large = writeMemberStreamMessage(
+			out,
+			way,
+			Buffer.alloc(10),
+			Buffer.alloc(MEMBER_STREAM_HIGH_WATER_BYTES + 1),
+		);
+		expect(await settled(large)).toBe(false);
+		(held.shift() as () => void)();
+		expect(await settled(large)).toBe(true);
+	});
 
 	it("tells the browser why, in a code and a reason it acts on", () => {
 		expect(cloudMemberMachineStreamClose("closed")).toEqual({ code: 1000, reason: "" });

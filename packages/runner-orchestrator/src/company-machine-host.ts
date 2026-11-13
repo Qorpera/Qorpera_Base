@@ -3373,7 +3373,8 @@ export class LxdCompanyMachineHost {
 		const desktops = this.#options.desktopStreams;
 		// No instance to watch it in: refused, never read in the executor.
 		if (!desktops) return "STREAM_UNAVAILABLE";
-		const now = this.#options.now ?? Date.now;
+		// Paced on a monotonic clock: a wall clock stepped back must not hold a start for the hour it went back.
+		const now = () => performance.now();
 		let kept = this.#streams.get(stream.placementId);
 		while (!kept || kept.bootId !== stream.bootId || kept.stream.ended) {
 			// A desktop not watched yet, past the node's cap of watched desktops: refused, the window keeps its pictures.

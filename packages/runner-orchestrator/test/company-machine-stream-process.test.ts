@@ -1,19 +1,22 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash, randomFillSync } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RFB_VERSION, STREAM_RECTS, STREAM_SIZE } from "../src/company-machine-stream.ts";
 import {
-	DESKTOP_STREAM_BLOCK_BYTES,
 	DESKTOP_STREAM_DRIP_MS,
 	DESKTOP_STREAM_GUARD_MS,
 	DESKTOP_STREAM_MEMBERS,
 	DESKTOP_STREAM_MESSAGE_BYTES,
-	DESKTOP_STREAM_MESSAGE_PIECES,
+	DESKTOP_STREAM_READ_BYTES,
 	DESKTOP_STREAM_ROLE,
+	DESKTOP_STREAM_SECOND_BYTES,
 	DESKTOP_STREAM_SECOND_UNITS,
 	DESKTOP_STREAM_TURN_BYTES,
 	DESKTOP_STREAM_TURN_UNITS,
@@ -21,7 +24,7 @@ import {
 	type DesktopStreamTurn,
 	InstanceDesktop,
 } from "../src/company-machine-stream-process.ts";
-import { message, plan } from "./fixtures/desktop-stream-plan.ts";
+import { message } from "./fixtures/desktop-stream-plan.ts";
 
 // A desktop's live picture watched in a process of its own (the lead's decision after review r11 of #1746): the
 // executor's side speaks frames with an instance it never trusts, and holds it back by not reading. Here each
@@ -103,17 +106,15 @@ async function played(reads: boolean) {
 	return { path, write: async (bytes: Buffer) => void (await connected).write(bytes) };
 }
 
-/** Every turn within its budget: the units checked before each (a frame's pieces may pass it by one frame's worth), the
- * bytes (a read may pass it by one read), what is held, and the wall time of main's work for it. */
+/** Every turn within its budget: the units checked before each (a frame and its message may pass it by 2), the bytes (a
+ * read may pass it by one read), what is held (a header and one payload being filled), and the wall time of main's work
+ * for it. */
 function withinBudget(turns: readonly DesktopStreamTurn[]): void {
 	expect(turns.length).toBeGreaterThan(0);
 	for (const turn of turns) {
-		expect(turn.units).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_UNITS + DESKTOP_STREAM_MESSAGE_PIECES + 1);
-		expect(turn.bytes).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_BYTES + DESKTOP_STREAM_BLOCK_BYTES);
-		expect(turn.heldBlocks).toBeLessThanOrEqual(
-			Math.ceil(DESKTOP_STREAM_MESSAGE_BYTES / DESKTOP_STREAM_BLOCK_BYTES) + 3,
-		);
-		expect(turn.heldBytes).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_BYTES + 9 + DESKTOP_STREAM_BLOCK_BYTES);
+		expect(turn.units).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_UNITS + 2);
+		expect(turn.bytes).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_BYTES + DESKTOP_STREAM_READ_BYTES);
+		expect(turn.held).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_BYTES + 9);
 		expect(turn.ms).toBeLessThan(25);
 	}
 }
@@ -130,16 +131,13 @@ function gate() {
 	};
 }
 
-/** A sink that keeps what it was sent (joined from its pieces): each message's type and its areas' first colours. */
+/** A sink that keeps what it was sent: each message's type and its areas' first colours. */
 function sinkOf() {
 	const messages: Buffer[] = [];
-	const pieces: number[] = [];
 	return {
 		messages,
-		pieces,
-		send: vi.fn(async (message: Buffer | readonly Buffer[]) => {
-			pieces.push(Buffer.isBuffer(message) ? 1 : message.length);
-			messages.push(Buffer.isBuffer(message) ? Buffer.from(message) : Buffer.concat(message as Buffer[]));
+		send: vi.fn(async (message: Buffer) => {
+			messages.push(message);
 		}),
 		types: () => messages.map((message) => message[0]),
 		areas: () =>
@@ -174,6 +172,15 @@ const rawRect = (x: number, y: number, width: number, height: number, rgb: [numb
 	head.writeUInt16BE(width, 4);
 	head.writeUInt16BE(height, 6);
 	return Buffer.concat([head, fill(width, height, rgb)]);
+};
+/** An area of noise (a PNG of it is as large as PNGs get). */
+const noiseRect = (x: number, y: number, width: number, height: number) => {
+	const head = Buffer.alloc(12);
+	head.writeUInt16BE(x, 0);
+	head.writeUInt16BE(y, 2);
+	head.writeUInt16BE(width, 4);
+	head.writeUInt16BE(height, 6);
+	return Buffer.concat([head, randomFillSync(Buffer.allocUnsafe(width * height * 4))]);
 };
 const update = (...rects: Buffer[]) => {
 	const head = Buffer.alloc(4);
@@ -351,7 +358,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 	});
 
 	for (const [mode, messages] of [
-		["overcycle", 160],
+		["overcycle", 3],
 		["overbytes", 35],
 	] as const)
 		it(`lets one ok through for one cycle only, by count and by bytes, and ends an instance that sends on (${mode})`, async () => {
@@ -498,7 +505,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		}
 	});
 
-	it("takes a largest message a byte a write through to a sink within every turn's budget, holding a few blocks, the loop free (the reviewer's scenario)", async () => {
+	it("takes a largest message a byte a write through to a sink within every turn's budget, holding one payload, the loop free (the reviewer's scenario)", async () => {
 		const turns: DesktopStreamTurn[] = [];
 		const { watched } = await instances(fixture("-pieces"));
 		const { desktop } = watched("fragment", { observe: (turn) => turns.push(turn) });
@@ -508,60 +515,203 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 			await vi.waitFor(() => expect(sink.messages).toHaveLength(1), { timeout: 60_000, interval: 50 });
 		});
 		expect(sink.messages[0]!.equals(message(1, 0, DESKTOP_STREAM_MESSAGE_BYTES))).toBe(true);
-		expect(Math.max(...sink.pieces)).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_PIECES);
 		withinBudget(turns);
 		expect(result.longest).toBeLessThan(50);
 		expect(desktop.ended).toBeNull();
 	}, 90_000);
 
 	for (const seed of [11, 4242, 90_210])
-		it(`stands guard over main's side of the connection: seeded random frames in random pieces, with long runs of 1-byte pieces (seed ${seed})`, async () => {
+		it(`stands guard over main's side: the REAL DesktopStream of a seeded desktop, its frames in random pieces with long runs of 1-byte pieces, through main's rules (seed ${seed})`, async () => {
 			const turns: DesktopStreamTurn[] = [];
-			const { watched } = await instances(fixture("-pieces"));
-			const { desktop } = watched(`random:${seed}`, { observe: (turn) => turns.push(turn) });
-			const cycles = plan(seed, 3, 3);
-			const sinks = cycles.map(() => sinkOf());
+			const dir = mkdtempSync(join(tmpdir(), "desktop-stream-real-"));
+			cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+			const file = join(dir, "sent");
+			writeFileSync(file, "");
+			const { watched } = await instances(fixture("-real"));
+			const { desktop } = watched(`${seed}:${file}`, { observe: (turn) => turns.push(turn) });
+			const sinks = [sinkOf(), sinkOf(), sinkOf()];
 			const result = await mainLoopWhile(async () => {
 				for (const sink of sinks) void desktop.watch(async () => "ok", sink, new AbortController().signal);
-				await vi.waitFor(
-					() =>
-						expect(sinks.map((sink) => sink.messages.length)).toEqual(
-							cycles.map((member) => member.flat().length),
-						),
-					{ timeout: 90_000, interval: 50 },
-				);
+				// Its desktop answers 150 update requests, then is still: wait until every SEND it wrote has arrived.
+				let last = -1;
+				for (;;) {
+					await sleep(1000);
+					const written = readFileSync(file, "utf8").split("\n").filter(Boolean).length;
+					const arrived = sinks.reduce((sum, sink) => sum + sink.messages.length, 0);
+					if (written === arrived && written === last) break;
+					last = written;
+				}
 			});
-			// Every message arrived whole and in order, each in at most DESKTOP_STREAM_MESSAGE_PIECES pieces.
-			cycles.forEach((member, n) => {
-				member.flat().forEach((size, index) => {
-					expect(sinks[n]!.messages[index]!.equals(message(n + 1, index, size))).toBe(true);
-				});
-				expect(Math.max(...sinks[n]!.pieces)).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_PIECES);
+			// Every message arrived whole and in order, as the real #send wrote it, and main's per-send rule held for every
+			// cycle (an instance that broke it would have been ended).
+			const sent = readFileSync(file, "utf8")
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => line.split(" "));
+			expect(sent.length).toBeGreaterThan(20);
+			sinks.forEach((sink, n) => {
+				const mine = sent.filter(([member]) => Number(member) === n + 1);
+				expect(sink.messages.map((one) => createHash("sha256").update(one).digest("hex"))).toEqual(
+					mine.map(([, hash]) => hash),
+				);
 			});
 			withinBudget(turns);
 			expect(result.longest).toBeLessThan(50);
 			expect(desktop.ended).toBeNull();
 		}, 120_000);
 
-	it("takes no more than its budget a second from an instance offering every small send the protocol allows, the loop free, nothing ended", async () => {
-		const turns: (DesktopStreamTurn & { at: number })[] = [];
+	it("takes no more than its budget of bytes a second from an instance offering every large send one ok allows, the loop free, nothing ended", async () => {
+		const turns: DesktopStreamTurn[] = [];
 		const { watched } = await instances(fixture("-pieces"));
-		const { desktop } = watched("smallflood", { observe: (turn) => turns.push({ ...turn, at: performance.now() }) });
-		const sinks = Array.from({ length: 8 }, () => sinkOf());
+		const { desktop } = watched("bigflood", { observe: (turn) => turns.push(turn) });
+		const sinks = Array.from({ length: 4 }, () => sinkOf());
 		const began = performance.now();
 		const result = await mainLoopWhile(async () => {
 			for (const sink of sinks) void desktop.watch(async () => "ok", sink, new AbortController().signal);
 			await sleep(3000);
 		});
 		const seconds = (performance.now() - began) / 1000;
-		const units = turns.reduce((sum, turn) => sum + turn.units, 0);
-		// At most the budget for every second begun, and the sends went on all along (each a write to a member's sink).
-		expect(units).toBeLessThanOrEqual((Math.ceil(seconds) + 1) * DESKTOP_STREAM_SECOND_UNITS);
-		expect(sinks.reduce((sum, sink) => sum + sink.messages.length, 0)).toBeGreaterThan(1000);
+		const bytes = turns.reduce((sum, turn) => sum + turn.bytes, 0);
+		expect(bytes).toBeLessThanOrEqual((Math.ceil(seconds) + 1) * DESKTOP_STREAM_SECOND_BYTES);
+		expect(bytes).toBeGreaterThan(DESKTOP_STREAM_SECOND_BYTES);
+		expect(turns.reduce((sum, turn) => sum + turn.units, 0)).toBeLessThanOrEqual(
+			(Math.ceil(seconds) + 1) * DESKTOP_STREAM_SECOND_UNITS,
+		);
 		withinBudget(turns);
 		expect(result.longest).toBeLessThan(50);
 		expect(desktop.ended).toBeNull();
 	}, 30_000);
+
+	it("lets one ok through for one cycle at every send: three small messages pass, a fourth ends the instance", async () => {
+		const { watched } = await instances(fixture("-pieces"));
+		const { desktop: allowed } = watched("smallflood");
+		const sinks = Array.from({ length: 8 }, () => sinkOf());
+		for (const sink of sinks) void allowed.watch(async () => "ok", sink, new AbortController().signal);
+		await sleep(1500);
+		// The most one ok allows a cycle with little to send, over and over: a delay at most, never an end.
+		expect(allowed.ended).toBeNull();
+		expect(sinks.reduce((sum, sink) => sum + sink.messages.length, 0)).toBeGreaterThan(100);
+		allowed.close();
+		const { desktop: fourth } = watched("fourth");
+		const sink = sinkOf();
+		expect(await fourth.watch(async () => "ok", sink, new AbortController().signal)).toBe("STREAM_UNAVAILABLE");
+		expect(sink.messages).toHaveLength(3);
+		expect(fourth.cause).toBe("more for one ok than one cycle can send");
+	});
+
+	it("lets the real stream's largest cycles through, by bytes and by areas", async () => {
+		const desktop = await tcpDesktop(3840, 2160);
+		const { watched } = await instances(fixture(""));
+		const { desktop: watching } = watched(`tcp:${desktop.port}`);
+		const sink = sinkOf();
+		// The member's cycles wait while the test sends screens, then go: the next window is the largest screen's whole
+		// of noise (about 25 MB of PNG in many batches: what the batch rule meets at its largest).
+		let gate: Promise<void> | null = null;
+		let open = () => {};
+		const close = () => {
+			gate = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+		};
+		const release = async () => {
+			if (gate) await gate;
+			return "ok" as const;
+		};
+		const settled = async () => {
+			let last = -1;
+			while (sink.messages.length !== last) {
+				last = sink.messages.length;
+				await sleep(700);
+			}
+		};
+		close();
+		const ending = watching.watch(release, sink, new AbortController().signal);
+		// A whole 3840 x 2160 screen of noise (one: what a member sees of more is the last one anyway).
+		await desktop.send(update(...Array.from({ length: 30 }, (_, band) => noiseRect(0, band * 72, 3840, 72))));
+		await sleep(1500);
+		gate = null;
+		open();
+		await settled();
+		const large = sink.messages.length;
+		expect({ cause: watching.cause, end: await Promise.race([ending, sleep(10).then(() => "")]) }).toEqual({
+			cause: null,
+			end: "",
+		});
+		expect(large).toBeGreaterThan(20);
+		// Then two thousand tiny areas while the cycles wait: one window of many areas, in few batches.
+		close();
+		await sleep(200);
+		for (let n = 0; n < 2000; n++)
+			await desktop.send(update(rawRect(n % 3840, Math.floor(n / 3840), 1, 1, [n & 0xff, 1, 2])));
+		await sleep(1500);
+		gate = null;
+		open();
+		await settled();
+		expect(sink.messages.length).toBeGreaterThan(large);
+		expect(watching.ended).toBeNull();
+	}, 60_000);
+
+	it("keeps nothing alive for a stalled member but what its own sink holds: small messages between another member's large ones", async () => {
+		// The stalled member's sink holds what a member's way holds when it stops reading (the listener's rule: at most 16
+		// messages and 2 MiB waiting), and then never answers again. A fast member takes 1 MiB messages meanwhile.
+		const kept: Buffer[] = [];
+		let keptBytes = 0;
+		const stalled = {
+			send: async (message: Buffer) => {
+				kept.push(message);
+				keptBytes += message.byteLength;
+				if (kept.length > 16 || keptBytes > 2 * 1024 * 1024) await new Promise<void>(() => {});
+			},
+		};
+		setFlagsFromString("--expose-gc");
+		const collect = runInNewContext("gc") as () => void;
+		const memory = () => {
+			collect();
+			const usage = process.memoryUsage();
+			return usage.heapUsed + usage.external;
+		};
+		const { watched } = await instances(fixture("-pieces"));
+		const { desktop } = watched("pinner");
+		// The fast member keeps nothing (a counting sink: a mock would keep every message it was called with).
+		let taken = 0;
+		const fast = {
+			send: async () => {
+				taken++;
+			},
+		};
+		void desktop.watch(async () => "ok", stalled, new AbortController().signal);
+		void desktop.watch(async () => "ok", fast, new AbortController().signal);
+		await sleep(1000);
+		const before = memory();
+		// Fifteen seconds of the budget (about 480 MiB through main).
+		await sleep(15_000);
+		const after = memory();
+		expect(taken).toBeGreaterThan(200);
+		expect(kept.length).toBeLessThanOrEqual(17);
+		expect(after - before).toBeLessThan(32 * 1024 * 1024);
+		expect(desktop.ended).toBeNull();
+	}, 60_000);
+
+	it("changes nothing when the wall clock steps back an hour", async () => {
+		const desktop = await tcpDesktop();
+		const { watched } = await instances(fixture(""));
+		const { desktop: watching } = watched(`tcp:${desktop.port}`);
+		const sink = sinkOf();
+		void watching.watch(async () => "ok", sink, new AbortController().signal);
+		await vi.waitFor(() => expect(sink.types()).toContain(STREAM_SIZE));
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(Date.now() - 3_600_000);
+			for (let n = 0; n < 20; n++) {
+				await desktop.send(update(rawRect(0, 0, 8, 8, [n, 0, 0])));
+				await sleep(40);
+			}
+			await vi.waitFor(() => expect(sink.areas().length).toBeGreaterThan(10), { timeout: 5000 });
+			expect(watching.ended).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 
 	it("reads a drip a few times a second at most: a byte a write costs main no more than 1000 / DESKTOP_STREAM_DRIP_MS reads a second", async () => {
 		const turns: DesktopStreamTurn[] = [];

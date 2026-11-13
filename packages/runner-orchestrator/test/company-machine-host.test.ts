@@ -5429,11 +5429,11 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 			nodeStartGapMs: undefined,
 			desktopStreams: (spec, ended) => {
 				const desktop = { ended: null as string | null, watch: async () => "closed" };
-				made.push({ at: Date.now(), spec, ended, desktop });
+				made.push({ at: performance.now(), spec, ended, desktop });
 				return desktop;
 			},
 		});
-		const began = Date.now();
+		const began = performance.now();
 		// Three desktops at once: one at a time, 500 ms apart.
 		const asked = [100, 101, 102].map((n) => f.host.memberStream(stream({ placementId: id(n) }), sinkOf(), f.signal));
 		expect(await Promise.all(asked)).toEqual(["closed", "closed", "closed"]);
@@ -5441,14 +5441,21 @@ describe("a member's live picture of a desktop (20260930745000)", () => {
 		expect(made.map((one) => one.spec.name).sort()).toEqual([100, 101, 102].map((n) => lxdCompanyMachineName(id(n))));
 		expect((made[1]!.at - made[0]!.at) / 100).toBeGreaterThanOrEqual(4.5);
 		expect((made[2]!.at - made[1]!.at) / 100).toBeGreaterThanOrEqual(4.5);
-		// The first desktop again, its instance ended: no sooner than 2 s after its last start.
+		// The first desktop again, its instance ended: no sooner than 2 s after its last start, and no later, even with the
+		// wall clock stepped back an hour meanwhile (the pacing runs on a monotonic clock).
 		const first = made.find((one) => one.spec.name === lxdCompanyMachineName(id(100)))!;
 		first.desktop.ended = "idle";
 		first.ended();
-		expect(await f.host.memberStream(stream({ placementId: id(100) }), sinkOf(), f.signal)).toBe("closed");
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(Date.now() - 3_600_000);
+			expect(await f.host.memberStream(stream({ placementId: id(100) }), sinkOf(), f.signal)).toBe("closed");
+		} finally {
+			vi.useRealTimers();
+		}
 		expect(made).toHaveLength(4);
 		expect(made[3]!.at - first.at).toBeGreaterThanOrEqual(1990);
-		expect(Date.now() - began).toBeLessThan(5000);
+		expect(performance.now() - began).toBeLessThan(5000);
 		// A member who leaves while waiting is not started at all.
 		const second = made.find((one) => one.spec.name === lxdCompanyMachineName(id(101)))!;
 		second.desktop.ended = "idle";
