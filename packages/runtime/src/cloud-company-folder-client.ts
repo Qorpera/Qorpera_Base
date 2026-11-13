@@ -1394,13 +1394,15 @@ export class CloudCompanyFolderClient {
 	 * every database's folder, for null) with its hash, and answers 32 random bytes that the gateway redeems once
 	 * within 60 s. */
 	async dataPass(database: string | null, signal: AbortSignal): Promise<CloudCompanyDataPass> {
-		if (database !== null && !/^[a-z][a-z0-9_]{0,39}$/.test(database)) throw new Error("Invalid company database name");
+		if (database !== null && !/^[a-z][a-z0-9_]{0,39}$/.test(database))
+			throw new Error("Invalid company database name");
 		let value: unknown;
 		try {
 			value = await this.#once("qorpera_run_data_pass", { p_database: database }, signal);
 		} catch (error) {
 			if (error instanceof CloudCompanyFolderRpcError) {
-				if (error.code === "P0002" && error.detail === "Data pass has no such database") return { state: "no_database" };
+				if (error.code === "P0002" && error.detail === "Data pass has no such database")
+					return { state: "no_database" };
 				if (error.code === "54000" && error.detail === "Data pass would keep more than 1,000 files")
 					return { state: "too_many_files" };
 			}

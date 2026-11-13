@@ -1,7 +1,7 @@
 import { request as httpsRequest } from "node:https";
 import type { JsonValue } from "@qorpera/contracts";
-import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import type { CloudCompanyDataPass, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
@@ -160,7 +160,8 @@ function record(value: unknown): Record<string, unknown> | null {
 /** A gateway's answer that is not one: a refusal for the model when it says why, else the door is unavailable. */
 function refusal(status: number, value: unknown): never {
 	const answer = record(value);
-	if (status === 401) throw new CloudRuntimeDiagnosticError("authority_unavailable", "Company data door refused the run");
+	if (status === 401)
+		throw new CloudRuntimeDiagnosticError("authority_unavailable", "Company data door refused the run");
 	if (status >= 400 && status < 500 && answer && typeof answer.error === "string" && status !== 413) {
 		const where = typeof answer.position === "number" ? ` (at character ${answer.position})` : "";
 		throw new CloudToolRefusal(plain(`${answer.error}${where}`));
@@ -299,9 +300,7 @@ export function cloudDataTools(options: {
 		parseArguments: (value) => parseApply(value) as unknown as JsonValue,
 		async execute(value, context) {
 			const request = value as unknown as ApplyRequest;
-			const answer = record(
-				await ask("apply", request.database, { database: request.database }, context.signal),
-			);
+			const answer = record(await ask("apply", request.database, { database: request.database }, context.signal));
 			const results = Array.isArray(answer?.results) ? (answer.results as Record<string, unknown>[]) : null;
 			if (!answer || !results || typeof answer.applied !== "boolean") refusal(502, answer);
 			// A held step says what it would destroy and that a member must say yes.
@@ -311,7 +310,8 @@ export function cloudDataTools(options: {
 					result.state === "held"
 						? {
 								...result,
-								detail: "It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
+								detail:
+									"It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
 							}
 						: result,
 				);
@@ -397,8 +397,11 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 		call: (verb, body, signal) =>
 			new Promise((resolve, reject) => {
 				const stop = AbortSignal.any([signal, AbortSignal.timeout(DOOR_MS)]);
-				if (stop.aborted) return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
+				if (stop.aborted)
+					return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
 				const text = Buffer.from(JSON.stringify(body));
+				/** Why the answer was cut off, when the tool cut it: the request then ends with this, not a transport error. */
+				let failure: CloudRuntimeDiagnosticError | undefined;
 				const outgoing = httpsRequest(
 					{
 						host,
@@ -419,13 +422,16 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 						let bytes = 0;
 						response.on("data", (chunk: Buffer) => {
 							bytes += chunk.byteLength;
-							if (bytes > ANSWER_BYTES)
-								response.destroy(
-									new CloudRuntimeDiagnosticError("invalid_response", "Company data answer is too large"),
+							if (bytes > ANSWER_BYTES) {
+								failure ??= new CloudRuntimeDiagnosticError(
+									"invalid_response",
+									"Company data answer is too large",
 								);
-							else chunks.push(chunk);
+								reject(failure);
+								response.destroy(failure);
+							} else chunks.push(chunk);
 						});
-						response.once("error", reject);
+						response.once("error", (error) => reject(failure ?? error));
 						response.once("end", () => {
 							let value: unknown;
 							try {
@@ -439,15 +445,18 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 					},
 				);
 				const end = (): void => {
-					outgoing.destroy(new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended"));
+					outgoing.destroy(
+						new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended"),
+					);
 				};
 				stop.addEventListener("abort", end, { once: true });
 				outgoing.once("close", () => stop.removeEventListener("abort", end));
 				outgoing.once("error", () =>
 					reject(
-						signal.aborted
-							? new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended")
-							: new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door unavailable"),
+						failure ??
+							(signal.aborted
+								? new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended")
+								: new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door unavailable")),
 					),
 				);
 				outgoing.end(text);

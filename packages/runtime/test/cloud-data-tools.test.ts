@@ -159,7 +159,9 @@ describe("the company data tools", () => {
 	});
 
 	it("asks with a new pass the run's folder client gets as the run, and shows the answer", async () => {
-		const f = await fixture(() => ok({ columns: ["orders"], rows: [[12]], more: false, asOf: "2026-11-13T10:00:00Z" }));
+		const f = await fixture(() =>
+			ok({ columns: ["orders"], rows: [[12]], more: false, asOf: "2026-11-13T10:00:00Z" }),
+		);
 		const answer = await f.invoke("data_query", { database: "shop", question: "count" });
 		expect(answer).toMatchObject({ success: true, status: "ok" });
 		expect(JSON.parse(answer.text)).toEqual({
@@ -199,7 +201,7 @@ describe("the company data tools", () => {
 
 	it("reads the files the gateway asks for as the run, and asks again with a new pass and their texts", async () => {
 		const step = FILES.get("data/shop/tables/001-orders.sql") ?? "";
-		const f = await fixture((call, count) =>
+		const f = await fixture((_call, count) =>
 			count === 1
 				? ok({ need: [{ path: "data/shop/tables/001-orders.sql", sha256: sha(step) }] })
 				: ok({ applied: true, results: [{ name: "001-orders", state: "applied" }] }),
@@ -217,7 +219,9 @@ describe("the company data tools", () => {
 	});
 
 	it("sends no text whose hash is not the one asked for, and gives up when the files keep changing", async () => {
-		const f = await fixture(() => ok({ need: [{ path: "data/shop/tables/001-orders.sql", sha256: "0".repeat(64) }] }));
+		const f = await fixture(() =>
+			ok({ need: [{ path: "data/shop/tables/001-orders.sql", sha256: "0".repeat(64) }] }),
+		);
 		const answer = await f.invoke("data_apply", { database: "shop" });
 		expect(answer).toMatchObject({
 			status: "denied",
@@ -290,7 +294,8 @@ describe("the company data tools", () => {
 				{
 					name: "003-clear",
 					state: "held",
-					detail: "It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
+					detail:
+						"It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
 					destroys: [{ what: "deleted rows", object: "shop.orders", rows: 40 }],
 				},
 			],
@@ -372,7 +377,9 @@ describe("the run door over HTTPS", () => {
 			});
 			request.on("end", () => {
 				seen.push({ path: request.url, authorization: request.headers.authorization, body });
-				const text = body.includes("huge") ? JSON.stringify({ rows: "x".repeat(5 * 1024 * 1024) }) : '{"columns":[]}';
+				const text = body.includes("huge")
+					? JSON.stringify({ rows: "x".repeat(5 * 1024 * 1024) })
+					: '{"columns":[]}';
 				response.writeHead(body.includes("refuse") ? 404 : 200, { "content-type": "application/json" });
 				response.end(text);
 			});

@@ -222,7 +222,9 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 /** The data gateway's run door (company databases, slice 5): its HTTPS origin and the CA file its certificate is pinned
  * to. Without the URL this host offers no data tool; a URL without its CA, or one that is not a plain HTTPS origin,
  * stops the host. The door takes the native object token, the credential this host already holds for a host of ours. */
-export function nativeCompanyDataConfiguration(environment: NodeJS.ProcessEnv): { url: string; caFile: string } | undefined {
+export function nativeCompanyDataConfiguration(
+	environment: NodeJS.ProcessEnv,
+): { url: string; caFile: string } | undefined {
 	if (environment.QORPERA_COMPANY_DATA_URL === undefined) return undefined;
 	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
 		throw new Error("Company databases require the cloud-native runtime");
