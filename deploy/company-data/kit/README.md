@@ -136,14 +136,18 @@ gateway answering with every committed row; (f) nothing left. Every script runs 
 the kit's `.env` alone, with a relative `COMPOSE_FILE`; the restore runs as the README's line does, with that `.env`
 present.
 
-It also checks: no company value in the database's log (a parameter, a value a cast failed on, a row's value a
-constraint named, a word in a slow statement's text), while the server's own lines (start-up, checkpoints, a refused
-superuser login) are there; retention with KEEP=2 in a backup folder whose path has a space, removing only backups'
-own names; a WAL archive with a cut gzip trailer never acknowledged, then replaced.
+It also checks: no company value in the database's log, while the server's own lines (start-up, checkpoints, a refused
+superuser login) are there. What stays out: a parameter, a value a cast failed on, a row's value a constraint named, a
+word in a slow statement's text, a word inside a company function that catches every cancel until the gateway's
+watcher ends its backend, and the values of two of the company's sessions that wait on each other's row lock (a
+deadlock). The company's database carries every setting the gateway's `LOG_SETTINGS` names (read from its code).
+It also checks retention with KEEP=2 in a backup folder whose path has a space, removing only backups' own names, and
+a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
 Last result: 13 November 2026, node01's test machine, against the gateway of `claude/company-data-gateway` at
-a0202fb0b: 43 of 43 checks passed. Package 0.1 s, init 13.6 s, apply 0.2 s, base backup 1.0 s, restore 2.5 s,
-standby seed over TLS 3.2 s, promote and the gateway answering 7.2 s.
+72dc09366: 48 of 48 checks passed. Package 0.1 s, init 14.5 s, apply 0.2 s, base backup 1.0 s, restore 2.5 s,
+standby seed over TLS 3.1 s, promote and the gateway answering 7.2 s; the watcher ended the stubborn function's
+backend 19.7 s after its call.
 
 ## Not done here
 

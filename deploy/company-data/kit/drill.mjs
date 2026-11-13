@@ -8,14 +8,14 @@
 // point-in-time restore holds exactly the rows up to the time; (d) a standby streams over TLS, takes over, and its
 // gateway answers with every committed row; (f) everything is removed. Every container is capped (docker-compose.yml,
 // drill.yml, DATA_DB_MEMORY), every published port is on 127.0.0.1, and nothing is pulled: the images must be there.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { companyDatabase } from "../gateway/gateway.mjs";
+import { companyDatabase, folderPassword } from "../gateway/gateway.mjs";
 import { check, finish, note, sleep } from "../proof/lib.mjs";
 import { claimFile } from "./drill/own-file.mjs";
 
@@ -44,6 +44,15 @@ const SECRET = marker("parameter");
 const MARKER_CAST = marker("cast");
 const MARKER_ROW = marker("row");
 const MARKER_TEXT = marker("text");
+const MARKER_LOOP = marker("loop");
+const MARKER_LOCK_A = marker("lock-a");
+const MARKER_LOCK_B = marker("lock-b");
+// The settings every company database must carry, as the gateway's own code names them (LOG_SETTINGS), read from it.
+const LOG_SETTINGS = (() => {
+	const source = readFileSync(join(KIT, "../gateway/gateway.mjs"), "utf8");
+	const block = /const LOG_SETTINGS = \[([\s\S]*?)\n\];/.exec(source)?.[1] ?? "";
+	return [...block.matchAll(/\["([a-z_]+)", "([^"]*)"\]/g)].map((match) => `${match[1]}=${match[2]}`);
+})();
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 const timings = [];
 const timed = async (label, work) => {
@@ -65,6 +74,19 @@ const FILES = {
 	"data/shop/queries/fails.sql": "-- Divides by zero.\nselect 1 / (length(:value::text) - length(:value::text)) as boom;\n",
 	"data/shop/queries/cast.sql": "-- Reads a number.\nselect :value::integer as n;\n",
 	"data/shop/queries/slow-word.sql": `-- Waits, with a word in its own text.\nselect pg_sleep(1.3) as waited, '${MARKER_TEXT}' as word;\n`,
+	// A function of the company's own that catches every cancel and goes on, an inner statement with a marker in it.
+	"data/shop/tables/002-stubborn.sql": `create function drill_stubborn() returns integer language plpgsql as $f$
+begin
+	loop
+		begin
+			perform pg_sleep(0.2) where '${MARKER_LOOP}' is not null;
+		exception when query_canceled then
+			null;
+		end;
+	end loop;
+end $f$;
+`,
+	"data/shop/queries/stubborn.sql": "-- Never ends by itself.\nselect drill_stubborn() as n;\n",
 	"data/dup/database.toml": 'format = "qorpera.database/v1"\nname = "Dup"\nabout = "A step that breaks a key"\n',
 	"data/dup/tables/001-dup.sql": `create table t (k text primary key);\ninsert into t values ('${MARKER_ROW}'), ('${MARKER_ROW}');\n`,
 };
@@ -129,20 +151,20 @@ const token = (() => {
 	const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
 	return `${part({ alg: "none" })}.${part({ sub: MEMBER, role: "authenticated" })}.stand-in`;
 })();
-const call = async (m, verb, body) => {
+const call = async (m, verb, body, waitMs = 30_000) => {
 	const response = await fetch(`http://127.0.0.1:${m.port}/v1/company-data/${ENV}/${verb}`, {
 		method: "POST",
 		headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
 		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(30_000),
+		signal: AbortSignal.timeout(waitMs),
 	});
 	return { status: response.status, value: await response.json() };
 };
-const ask = async (m, verb, body) => {
-	let answer = await call(m, verb, body);
+const ask = async (m, verb, body, waitMs = 30_000) => {
+	let answer = await call(m, verb, body, waitMs);
 	for (let round = 0; answer.status === 200 && answer.value.need && round < 3; round++) {
 		const texts = Object.fromEntries(answer.value.need.map((wanted) => [wanted.sha256, TEXT_BY_HASH.get(wanted.sha256)]));
-		answer = await call(m, verb, { ...body, texts });
+		answer = await call(m, verb, { ...body, texts }, waitMs);
 	}
 	return answer;
 };
@@ -242,14 +264,44 @@ try {
 		slow.status === 200 && slowWord.status === 200 && fails.status === 400 && cast.status === 400 && dup.value.results?.[0]?.state === "failed",
 		`${slow.status} ${slowWord.status} ${fails.status} ${cast.status} ${dup.value.results?.[0]?.state}`);
 	check("(e) the caller still hears the store's own words: the failed cast names the value to the caller", String(cast.value.error).includes(MARKER_CAST));
-	const dbSettings = sql(A, `select coalesce((select array_to_string(setconfig, ',') from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase where d.datname = '${STORE}' and s.setrole = 0), 'none')`);
-	check("(e) the company's database carries the gateway's logging settings (log_min_messages fatal, log_min_error_statement panic, log_min_duration_statement -1, log_statement none)",
-		["log_min_messages=fatal", "log_min_error_statement=panic", "log_min_duration_statement=-1", "log_statement=none"].every((one) => dbSettings.includes(one)), dbSettings);
+	const dbSettings = sql(A, `select coalesce((select array_to_string(setconfig, ',') from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase where d.datname = '${STORE}' and s.setrole = 0), 'none')`).split(",");
+	const missing = LOG_SETTINGS.filter((one) => !dbSettings.includes(one));
+	check(`(e) the company's database carries every setting the gateway's LOG_SETTINGS names (${LOG_SETTINGS.length}, read from its code)`,
+		LOG_SETTINGS.length >= 9 && missing.length === 0, missing.length ? `missing ${missing.join(" ")}` : LOG_SETTINGS.join(" "));
+
+	// A company function that catches every cancel: the gateway's watcher cancels it, then ends its backend at its next look.
+	const loopStarted = Date.now();
+	const stubborn = await ask(A, "query", { database: "shop", question: "stubborn" }, 90_000).catch((error) => ({ status: 0, value: { error: String(error) } }));
+	const loopSeconds = (Date.now() - loopStarted) / 1000;
+	const loopLeft = sql(A, `select count(*) from pg_stat_activity where datname = '${STORE}' and query like '%drill' || '_stubborn%' and pid <> pg_backend_pid()`);
+	check("(e) a company function that catches every cancel is ended by the gateway's watcher, its backend gone",
+		stubborn.status >= 400 && loopSeconds > 4 && loopLeft === "0", `${stubborn.status} ${stubborn.value?.error ?? ""} after ${loopSeconds.toFixed(1)} s, ${loopLeft} left`);
+
+	// Two sessions of the company's own write login that wait on each other's row lock: one is ended as a deadlock.
+	const n = sql(A, "select n from qorpera_data.databases where name = 'shop'", STORE);
+	const writer = `${STORE}_w${n}`;
+	const folderKey = readFileSync(join(A.local, "secrets/gateway/folder-key"), "utf8").trim();
+	const locker = (first, second, value) =>
+		new Promise((done) => {
+			const child = spawn("docker", ["compose", "exec", "-T", "-e", `PGPASSWORD=${folderPassword(folderKey, writer)}`, "data-db", "psql", "-X", "-At",
+				`host=data-db dbname=${STORE} user=${writer} sslmode=disable`, "-v", "ON_ERROR_STOP=1", "-c",
+				`begin; update shop.orders set note = '${value}' where id = ${first}; select pg_sleep(1); update shop.orders set note = '${value}' where id = ${second}; commit;`],
+				{ env: A.env, stdio: ["ignore", "pipe", "pipe"] });
+			let err = "";
+			child.stderr.on("data", (part) => {
+				err += part;
+			});
+			child.on("close", (code) => done({ code, err }));
+		});
+	const locks = await Promise.all([locker(1, 2, MARKER_LOCK_A), locker(2, 1, MARKER_LOCK_B)]);
+	check("(e) two sessions of the company's write login wait on each other's row lock, and one is ended as a deadlock",
+		locks.filter((one) => one.code === 0).length === 1 && locks.some((one) => /deadlock detected/.test(one.err)), locks.map((one) => `${one.code} ${tail(one.err, 1)}`).join("; "));
 	sql(A, "checkpoint");
 	await sleep(500);
 	const logs = run("docker", ["logs", container(A, "data-db")]);
 	const log = `${logs.out}${logs.err}`;
-	for (const [what, value] of [["a parameter", SECRET], ["a value a cast failed on", MARKER_CAST], ["a row's value a constraint named", MARKER_ROW], ["a word in a slow statement's text", MARKER_TEXT]])
+	for (const [what, value] of [["a parameter", SECRET], ["a value a cast failed on", MARKER_CAST], ["a row's value a constraint named", MARKER_ROW], ["a word in a slow statement's text", MARKER_TEXT],
+		["a word inside the function the watcher ended", MARKER_LOOP], ["the first locking session's value", MARKER_LOCK_A], ["the second locking session's value", MARKER_LOCK_B]])
 		check(`(e) ${what} is not in the database's log`, !log.includes(value), `${log.split("\n").length} lines searched`);
 	check("(e) the server's own lines are: start-up, checkpoints, the refused superuser login",
 		/database system is ready to accept connections/.test(log) && /checkpoint complete/.test(log) && /pg_hba\.conf rejects connection for host .* user "postgres"/.test(log));
