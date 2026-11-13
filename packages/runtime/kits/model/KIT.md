@@ -30,7 +30,9 @@ Write `model.json`. Every number comes from the company's files. What is not kno
   zero line and the break-even.
 - `scenarios`: optional, up to 4 `{label (≤16), values: {id: number}}`: chips that move those sliders.
 - `save`: optional `{table, key?, columns?}`: a button keeping the founder's numbers via `setRow(table, key, cells)`
-  (with `key`) or `addRow(table, cells)`. Cells: `{id: number or null}`.
+  (with `key`: the row's key value, or `{column: value}` for a key of several columns) or `addRow(table, cells)`.
+  Cells: `{id: number or null}` for the input and computed ids in `columns`, at most 12; with no `columns`, every
+  input. A model of more than 12 inputs names its `columns`, or it has no save button.
 
 Example:
 

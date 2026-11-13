@@ -34,7 +34,9 @@ Write \`model.json\`. Every number comes from the company's files. What is not k
   zero line and the break-even.
 - \`scenarios\`: optional, up to 4 \`{label (≤16), values: {id: number}}\`: chips that move those sliders.
 - \`save\`: optional \`{table, key?, columns?}\`: a button keeping the founder's numbers via \`setRow(table, key, cells)\`
-  (with \`key\`) or \`addRow(table, cells)\`. Cells: \`{id: number or null}\`.
+  (with \`key\`: the row's key value, or \`{column: value}\` for a key of several columns) or \`addRow(table, cells)\`.
+  Cells: \`{id: number or null}\` for the input and computed ids in \`columns\`, at most 12; with no \`columns\`, every
+  input. A model of more than 12 inputs names its \`columns\`, or it has no save button.
 
 Example:
 
@@ -549,7 +551,8 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 		if (!fin(max) || max <= min) max = fin(v0) && v0 > min ? min + (v0 - min) * 2 : min + 100;
 		let step = toNum(r.step);
 		if (!(step > 0) || step > max - min) step = niceStep((max - min) / 100);
-		const dec = decimals(step);
+		// a slider's values are min + k × step, so they carry the decimals of both
+		const dec = Math.max(decimals(step), decimals(min));
 		const snap = (v) => clamp(Number((Math.round((v - min) / step) * step + min).toFixed(dec)), min, max);
 		// the company's own numbers are kept exactly; only what a slider sets lands on its steps
 		const fit = (v) => clamp(v, min, max);
@@ -577,6 +580,14 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 			if (ast) inp.marks.push({ label: cut(m.label, 24), note: cut(m.note, 40), ast });
 		}
 		return inp;
+	}
+	// a save's key as the bridge takes it: the value of the table's key column, or {column: value} for a key of several
+	// columns; null when there is none (the button adds a row), undefined when it is no key at all
+	function saveKey(k) {
+		const one = (v) => (typeof v === "string" && v.trim() !== "") || typeof v === "boolean" || (typeof v === "number" && fin(v));
+		if (k == null) return null;
+		if (typeof k !== "object") return one(k) ? (typeof k === "string" ? k.trim() : k) : undefined;
+		return !Array.isArray(k) && Object.keys(k).length && Object.values(k).every(one) ? k : undefined;
 	}
 	function compile(src, where, errs) {
 		if (typeof src === "number") return fin(src) ? { k: "n", v: src } : null;
@@ -691,14 +702,16 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 			for (const k of Object.keys(s.values)) if (M.inp[k] && fin(toNum(s.values[k]))) values[k] = M.inp[k].fit(toNum(s.values[k]));
 			if (cut(s.label, 16) && Object.keys(values).length) M.scen.push({ label: cut(s.label, 16), values });
 		}
-		// save
+		// save: one row of at most 12 cells (the bridge's limit), the named columns or else every input
 		const sv0 = d.save;
-		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim())
-			M.save = {
-				table: sv0.table.trim(),
-				key: typeof sv0.key === "string" && sv0.key.trim() ? sv0.key.trim() : null,
-				columns: arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c])),
-			};
+		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim()) {
+			const key = saveKey(sv0.key);
+			const named = arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c]));
+			const columns = named.length ? named : M.inputs.map((i) => i.id);
+			if (key === undefined) errs.push("save: key is a value or {column: value}");
+			else if (columns.length > 12) errs.push("save: name at most 12 columns");
+			else M.save = { table: sv0.table.trim(), key, columns };
+		}
 		// names that point nowhere, and loops
 		const check = (ast, where) => {
 			for (const n of namesIn(ast)) if (!M.inp[n] && !M.comp[n]) errs.push(\`\${where}: no “\${n}”\`);
@@ -1126,7 +1139,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.reset.hidden = true;
 		ui.reset.addEventListener("click", resetAll);
 		tools.append(ui.reset);
-		if (M.save && window.qorpera && (typeof qorpera.setRow === "function" || typeof qorpera.addRow === "function")) {
+		if (M.save && window.qorpera && typeof qorpera[M.save.key === null ? "addRow" : "setRow"] === "function") {
 			ui.save = h("button", "mk-chip mk-save", W.save);
 			ui.save.type = "button";
 			ui.save.addEventListener("click", save);
@@ -2143,7 +2156,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	async function save() {
 		const W = M.words;
 		const b = ui.save;
-		const cols = M.save.columns.length ? M.save.columns : M.inputs.map((i) => i.id);
+		const cols = M.save.columns;
 		const E = evaluator();
 		const cells = {};
 		for (const c of cols) {
@@ -2157,7 +2170,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		b.textContent = W.saving;
 		ui.reason.textContent = "";
 		try {
-			if (M.save.key && typeof qorpera.setRow === "function") await qorpera.setRow(M.save.table, M.save.key, cells);
+			if (M.save.key !== null) await qorpera.setRow(M.save.table, M.save.key, cells);
 			else await qorpera.addRow(M.save.table, cells);
 			b.textContent = \`\${W.saved} ✓\`;
 			setTimeout(() => {
@@ -2194,11 +2207,14 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			if (!q || typeof q.read !== "function") throw new Error("no bridge");
 			const raw = await q.read(\`apps/\${KIT.app}/\${KIT.data || "model.json"}\`);
 			text = typeof raw === "string" ? raw : raw && (raw.text ?? (raw.content && raw.content.text) ?? raw.content);
+			if (typeof text !== "string") throw new Error("no text");
 		} catch (e) {
+			// keep what is shown, and read again ten seconds later, until a read works
 			quiet();
+			clearTimeout(pending);
+			pending = setTimeout(load, 10000);
 			return;
 		}
-		if (typeof text !== "string") return quiet();
 		if (text === lastText) return;
 		let data;
 		try {
@@ -3818,6 +3834,7 @@ body{margin:0}
 		ask();
 		return {
 			keep: () => ({ chosen: S.chosen, q: S.q, world: S.world }),
+			refresh: ask,
 			destroy() {
 				ac.abort();
 				if (world) world.remove(true);
@@ -3939,6 +3956,7 @@ body{margin:0}
 		const active = D.activeElement;
 		const focusId = active && active.closest ? (active.closest("[data-id]") || {}).dataset?.id : null;
 		if (app.view) app.view.destroy();
+		app.view = null;
 		if (app.root) app.root.remove();
 		WORDS = model.words;
 		LANG = model.lang;
@@ -3966,14 +3984,22 @@ body{margin:0}
 			text = typeof got === "string" ? got : got && typeof got === "object" ? got.text || got.content || "" : "";
 		} catch {
 			if (!app.model) empty();
+			// keep what is shown, and read again ten seconds later, until a read works
+			clearTimeout(app.timer);
+			app.timer = setTimeout(load, 10000);
 			return;
 		}
-		if (text === app.text) return;
-		let model;
-		try {
-			model = normalize(JSON.parse(text));
-		} catch {
-			if (!app.model) empty();
+		let model = null;
+		if (text !== app.text) {
+			try {
+				model = normalize(JSON.parse(text));
+			} catch {
+				if (!app.model) empty();
+			}
+		}
+		if (!model) {
+			// the page stays as it is, but open questions come and go by themselves: read them again
+			if (app.view && app.view.refresh) app.view.refresh();
 			return;
 		}
 		app.text = text;
@@ -4596,6 +4622,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		const keepFocus = document.activeElement && mapEl.contains(document.activeElement) ? document.activeElement.getAttribute("data-key") : null;
 		mapEl.replaceChildren();
 		closeTip(true);
+		// a sheet docked on a phone hangs on root, not on the map: take it away too before it is drawn again
+		if (sheetEl) sheetEl.remove();
 		sheetEl = null;
 		draw(m, g);
 		if (keepFocus) {
@@ -5398,13 +5426,14 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	async function load() {
 		lastRead = Date.now();
 		let raw;
+		let txt;
 		try {
 			const bridge = window.qorpera;
 			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
 			const app = KIT.app || "";
 			const file = KIT.data || "path.json";
 			const res = await bridge.read(\`apps/\${app}/\${file}\`);
-			const txt = typeof res === "string" ? res : res && (res.text ?? res.content);
+			txt = typeof res === "string" ? res : res && (res.text ?? res.content);
 			raw = JSON.parse(String(txt));
 			const next = normalize(raw);
 			if (!next.steps.length) throw new Error("no steps");
@@ -5414,6 +5443,11 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			lastH = window.innerHeight;
 		} catch (err) {
 			if (!model) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
 		}
 	}
 	function onChange() {
@@ -6520,13 +6554,19 @@ body{margin:0}
 	}
 
 	// ------------------------------------------------------------------ data in and out
+	/** The data; null when the file holds nothing to show, undefined when the read itself failed. */
 	async function read() {
 		const q = window.qorpera;
-		if (!q || typeof q.read !== "function" || !KIT.app) return null;
+		if (!q || typeof q.read !== "function" || !KIT.app) return undefined;
+		let text;
 		try {
 			const r = await q.read(\`apps/\${KIT.app}/\${KIT.data || "object.json"}\`);
-			const text = typeof r === "string" ? r : r && (r.text ?? r.content);
-			if (typeof text !== "string") return null;
+			text = typeof r === "string" ? r : r && (r.text ?? r.content);
+		} catch (e) {
+			return undefined;
+		}
+		if (typeof text !== "string") return undefined;
+		try {
 			return normalize(JSON.parse(text));
 		} catch (e) {
 			return null;
@@ -6541,18 +6581,24 @@ body{margin:0}
 	async function start() {
 		const style = h("style", null, { "data-kit": "object" }, STYLE);
 		D.head.append(style);
-		const data = await read();
-		if (!data) return empty(EN.empty);
-		S.data = data;
-		if (data.lang) D.documentElement.lang = data.lang;
-		build();
 		let lastRead = 0;
 		let pending = null;
 		const refresh = async () => {
 			pending = null;
 			lastRead = Date.now();
 			const next = await read();
-			if (!next) return; // keep what was last shown
+			if (!next) {
+				// keep what was last shown; a read that failed is tried again ten seconds later, until one works
+				if (!S.built) empty(EN.empty);
+				if (next === undefined && !pending) pending = setTimeout(refresh, 10000);
+				return;
+			}
+			if (!S.built) {
+				S.data = next;
+				if (next.lang) D.documentElement.lang = next.lang;
+				build();
+				return;
+			}
 			const keepVariant = V().id;
 			S.data = next;
 			const vi = next.variants.findIndex((v) => v.id === keepVariant);
@@ -6571,6 +6617,7 @@ body{margin:0}
 		} catch (e) {
 			/* no live changes here */
 		}
+		await refresh();
 	}
 	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
 	else start();

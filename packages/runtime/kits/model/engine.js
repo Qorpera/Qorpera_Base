@@ -283,7 +283,8 @@
 		if (!fin(max) || max <= min) max = fin(v0) && v0 > min ? min + (v0 - min) * 2 : min + 100;
 		let step = toNum(r.step);
 		if (!(step > 0) || step > max - min) step = niceStep((max - min) / 100);
-		const dec = decimals(step);
+		// a slider's values are min + k × step, so they carry the decimals of both
+		const dec = Math.max(decimals(step), decimals(min));
 		const snap = (v) => clamp(Number((Math.round((v - min) / step) * step + min).toFixed(dec)), min, max);
 		// the company's own numbers are kept exactly; only what a slider sets lands on its steps
 		const fit = (v) => clamp(v, min, max);
@@ -311,6 +312,14 @@
 			if (ast) inp.marks.push({ label: cut(m.label, 24), note: cut(m.note, 40), ast });
 		}
 		return inp;
+	}
+	// a save's key as the bridge takes it: the value of the table's key column, or {column: value} for a key of several
+	// columns; null when there is none (the button adds a row), undefined when it is no key at all
+	function saveKey(k) {
+		const one = (v) => (typeof v === "string" && v.trim() !== "") || typeof v === "boolean" || (typeof v === "number" && fin(v));
+		if (k == null) return null;
+		if (typeof k !== "object") return one(k) ? (typeof k === "string" ? k.trim() : k) : undefined;
+		return !Array.isArray(k) && Object.keys(k).length && Object.values(k).every(one) ? k : undefined;
 	}
 	function compile(src, where, errs) {
 		if (typeof src === "number") return fin(src) ? { k: "n", v: src } : null;
@@ -425,14 +434,16 @@
 			for (const k of Object.keys(s.values)) if (M.inp[k] && fin(toNum(s.values[k]))) values[k] = M.inp[k].fit(toNum(s.values[k]));
 			if (cut(s.label, 16) && Object.keys(values).length) M.scen.push({ label: cut(s.label, 16), values });
 		}
-		// save
+		// save: one row of at most 12 cells (the bridge's limit), the named columns or else every input
 		const sv0 = d.save;
-		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim())
-			M.save = {
-				table: sv0.table.trim(),
-				key: typeof sv0.key === "string" && sv0.key.trim() ? sv0.key.trim() : null,
-				columns: arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c])),
-			};
+		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim()) {
+			const key = saveKey(sv0.key);
+			const named = arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c]));
+			const columns = named.length ? named : M.inputs.map((i) => i.id);
+			if (key === undefined) errs.push("save: key is a value or {column: value}");
+			else if (columns.length > 12) errs.push("save: name at most 12 columns");
+			else M.save = { table: sv0.table.trim(), key, columns };
+		}
 		// names that point nowhere, and loops
 		const check = (ast, where) => {
 			for (const n of namesIn(ast)) if (!M.inp[n] && !M.comp[n]) errs.push(`${where}: no “${n}”`);
@@ -860,7 +871,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		ui.reset.hidden = true;
 		ui.reset.addEventListener("click", resetAll);
 		tools.append(ui.reset);
-		if (M.save && window.qorpera && (typeof qorpera.setRow === "function" || typeof qorpera.addRow === "function")) {
+		if (M.save && window.qorpera && typeof qorpera[M.save.key === null ? "addRow" : "setRow"] === "function") {
 			ui.save = h("button", "mk-chip mk-save", W.save);
 			ui.save.type = "button";
 			ui.save.addEventListener("click", save);
@@ -1877,7 +1888,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	async function save() {
 		const W = M.words;
 		const b = ui.save;
-		const cols = M.save.columns.length ? M.save.columns : M.inputs.map((i) => i.id);
+		const cols = M.save.columns;
 		const E = evaluator();
 		const cells = {};
 		for (const c of cols) {
@@ -1891,7 +1902,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		b.textContent = W.saving;
 		ui.reason.textContent = "";
 		try {
-			if (M.save.key && typeof qorpera.setRow === "function") await qorpera.setRow(M.save.table, M.save.key, cells);
+			if (M.save.key !== null) await qorpera.setRow(M.save.table, M.save.key, cells);
 			else await qorpera.addRow(M.save.table, cells);
 			b.textContent = `${W.saved} ✓`;
 			setTimeout(() => {
@@ -1928,11 +1939,14 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			if (!q || typeof q.read !== "function") throw new Error("no bridge");
 			const raw = await q.read(`apps/${KIT.app}/${KIT.data || "model.json"}`);
 			text = typeof raw === "string" ? raw : raw && (raw.text ?? (raw.content && raw.content.text) ?? raw.content);
+			if (typeof text !== "string") throw new Error("no text");
 		} catch (e) {
+			// keep what is shown, and read again ten seconds later, until a read works
 			quiet();
+			clearTimeout(pending);
+			pending = setTimeout(load, 10000);
 			return;
 		}
-		if (typeof text !== "string") return quiet();
 		if (text === lastText) return;
 		let data;
 		try {

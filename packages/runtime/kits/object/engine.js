@@ -1084,13 +1084,19 @@ body{margin:0}
 	}
 
 	// ------------------------------------------------------------------ data in and out
+	/** The data; null when the file holds nothing to show, undefined when the read itself failed. */
 	async function read() {
 		const q = window.qorpera;
-		if (!q || typeof q.read !== "function" || !KIT.app) return null;
+		if (!q || typeof q.read !== "function" || !KIT.app) return undefined;
+		let text;
 		try {
 			const r = await q.read(`apps/${KIT.app}/${KIT.data || "object.json"}`);
-			const text = typeof r === "string" ? r : r && (r.text ?? r.content);
-			if (typeof text !== "string") return null;
+			text = typeof r === "string" ? r : r && (r.text ?? r.content);
+		} catch (e) {
+			return undefined;
+		}
+		if (typeof text !== "string") return undefined;
+		try {
 			return normalize(JSON.parse(text));
 		} catch (e) {
 			return null;
@@ -1105,18 +1111,24 @@ body{margin:0}
 	async function start() {
 		const style = h("style", null, { "data-kit": "object" }, STYLE);
 		D.head.append(style);
-		const data = await read();
-		if (!data) return empty(EN.empty);
-		S.data = data;
-		if (data.lang) D.documentElement.lang = data.lang;
-		build();
 		let lastRead = 0;
 		let pending = null;
 		const refresh = async () => {
 			pending = null;
 			lastRead = Date.now();
 			const next = await read();
-			if (!next) return; // keep what was last shown
+			if (!next) {
+				// keep what was last shown; a read that failed is tried again ten seconds later, until one works
+				if (!S.built) empty(EN.empty);
+				if (next === undefined && !pending) pending = setTimeout(refresh, 10000);
+				return;
+			}
+			if (!S.built) {
+				S.data = next;
+				if (next.lang) D.documentElement.lang = next.lang;
+				build();
+				return;
+			}
 			const keepVariant = V().id;
 			S.data = next;
 			const vi = next.variants.findIndex((v) => v.id === keepVariant);
@@ -1135,6 +1147,7 @@ body{margin:0}
 		} catch (e) {
 			/* no live changes here */
 		}
+		await refresh();
 	}
 	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
 	else start();

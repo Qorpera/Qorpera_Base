@@ -1545,6 +1545,7 @@ body{margin:0}
 		ask();
 		return {
 			keep: () => ({ chosen: S.chosen, q: S.q, world: S.world }),
+			refresh: ask,
 			destroy() {
 				ac.abort();
 				if (world) world.remove(true);
@@ -1666,6 +1667,7 @@ body{margin:0}
 		const active = D.activeElement;
 		const focusId = active && active.closest ? (active.closest("[data-id]") || {}).dataset?.id : null;
 		if (app.view) app.view.destroy();
+		app.view = null;
 		if (app.root) app.root.remove();
 		WORDS = model.words;
 		LANG = model.lang;
@@ -1693,14 +1695,22 @@ body{margin:0}
 			text = typeof got === "string" ? got : got && typeof got === "object" ? got.text || got.content || "" : "";
 		} catch {
 			if (!app.model) empty();
+			// keep what is shown, and read again ten seconds later, until a read works
+			clearTimeout(app.timer);
+			app.timer = setTimeout(load, 10000);
 			return;
 		}
-		if (text === app.text) return;
-		let model;
-		try {
-			model = normalize(JSON.parse(text));
-		} catch {
-			if (!app.model) empty();
+		let model = null;
+		if (text !== app.text) {
+			try {
+				model = normalize(JSON.parse(text));
+			} catch {
+				if (!app.model) empty();
+			}
+		}
+		if (!model) {
+			// the page stays as it is, but open questions come and go by themselves: read them again
+			if (app.view && app.view.refresh) app.view.refresh();
 			return;
 		}
 		app.text = text;

@@ -594,6 +594,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		const keepFocus = document.activeElement && mapEl.contains(document.activeElement) ? document.activeElement.getAttribute("data-key") : null;
 		mapEl.replaceChildren();
 		closeTip(true);
+		// a sheet docked on a phone hangs on root, not on the map: take it away too before it is drawn again
+		if (sheetEl) sheetEl.remove();
 		sheetEl = null;
 		draw(m, g);
 		if (keepFocus) {
@@ -1396,13 +1398,14 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	async function load() {
 		lastRead = Date.now();
 		let raw;
+		let txt;
 		try {
 			const bridge = window.qorpera;
 			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
 			const app = KIT.app || "";
 			const file = KIT.data || "path.json";
 			const res = await bridge.read(`apps/${app}/${file}`);
-			const txt = typeof res === "string" ? res : res && (res.text ?? res.content);
+			txt = typeof res === "string" ? res : res && (res.text ?? res.content);
 			raw = JSON.parse(String(txt));
 			const next = normalize(raw);
 			if (!next.steps.length) throw new Error("no steps");
@@ -1412,6 +1415,11 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			lastH = window.innerHeight;
 		} catch (err) {
 			if (!model) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
 		}
 	}
 	function onChange() {
