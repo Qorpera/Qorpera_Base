@@ -74,6 +74,9 @@ export const LIMITS = Object.freeze({
 	/** A step: its own time, and its wait for a lock. */
 	stepMs: 60_000,
 	stepLockMs: 5_000,
+	/** An apply call starts no step once this has passed since it began: it answers `more: true` with the steps still
+	 * waiting, so a call lasts at most this and one step's time. */
+	applyMs: 45_000,
 	/** A file's text. */
 	questionTextBytes: 16 * 1024,
 	stepTextBytes: 64 * 1024,
@@ -437,25 +440,29 @@ export class Gateway {
 		return found;
 	}
 
-	/** A text by the hash the folder gave: from what the gateway holds, from the company's database, or from the caller. */
+	/** A text by the hash the folder gave: from what the gateway holds, from the company's database, or from the caller.
+	 * `database` null: the company has no database yet, so only what the gateway holds and what the caller gives. */
 	async #text(database, hash, supplied, maximum) {
 		const kept = this.#texts.get(hash);
 		if (kept !== undefined) return kept;
 		let text = null;
 		const given = supplied?.[hash];
 		if (typeof given === "string" && Buffer.byteLength(given) <= maximum && sha256(given) === hash) text = given;
-		const pool = this.#pool(database, "qorpera_data_keeper");
-		if (text === null) {
-			const row = await pool.query("select text from qorpera_data.texts where sha256 = $1", [hash]).catch((error) => {
-				throw storeProblem(error);
-			});
-			// A kept text is trusted only by its hash, read again here.
-			if (row.rows[0] && sha256(row.rows[0].text) === hash) text = row.rows[0].text;
-		} else {
-			await pool
-				.query("insert into qorpera_data.texts (sha256, text) values ($1, $2) on conflict (sha256) do nothing", [hash, text])
-				.catch(() => undefined);
+		if (database !== null) {
+			const pool = this.#pool(database, "qorpera_data_keeper");
+			if (text === null) {
+				const row = await pool.query("select text from qorpera_data.texts where sha256 = $1", [hash]).catch((error) => {
+					throw storeProblem(error);
+				});
+				// A kept text is trusted only by its hash, read again here.
+				if (row.rows[0] && sha256(row.rows[0].text) === hash) text = row.rows[0].text;
+			} else {
+				await pool
+					.query("insert into qorpera_data.texts (sha256, text) values ($1, $2) on conflict (sha256) do nothing", [hash, text])
+					.catch(() => undefined);
+			}
 		}
+		// Kept in memory also before the company has a database, so a describe whose texts come in several rounds ends.
 		if (text !== null) {
 			if (this.#texts.size >= 5_000) this.#texts.delete(this.#texts.keys().next().value);
 			this.#texts.set(hash, text);
@@ -921,6 +928,7 @@ export class Gateway {
 	/** Applies a database folder's waiting steps, in order. Anyone who may read the steps may ask for it: a step that is
 	 * live in the folder was put there by someone the folder let write it. */
 	async apply(caller, environmentId, body) {
+		const began = Date.now();
 		const name = body.database;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
 			refuse(400, "A database's name is a letter, then up to 39 of a-z, 0-9 and _");
@@ -973,7 +981,11 @@ export class Gateway {
 		}
 		if (need.length > 0) return { need };
 		for (const step of steps) if (applied.has(step.name)) results.push({ name: step.name, state: "already" });
-		for (const step of waiting) {
+		for (const [index, step] of waiting.entries()) {
+			if (Date.now() - began >= this.#limits.applyMs) {
+				for (const left of waiting.slice(index)) results.push({ name: left.name, state: "waiting" });
+				return { applied: false, more: true, results };
+			}
 			const outcome = await this.#step(database, name, n, step, texts.get(step.name));
 			results.push(outcome);
 			if (outcome.state !== "applied") break;
@@ -1127,12 +1139,7 @@ export class Gateway {
 			for (const [path, file] of caller.files) {
 				if (path !== `data/${name}/database.toml` && !(path.startsWith(`data/${name}/queries/`) && path.endsWith(".sql"))) continue;
 				if (file.bytes > this.#limits.questionTextBytes) continue;
-				let text = null;
-				if (exists) text = await this.#text(database, file.sha256, body.texts, this.#limits.questionTextBytes);
-				else {
-					const given = body.texts?.[file.sha256];
-					if (typeof given === "string" && sha256(given) === file.sha256) text = given;
-				}
+				const text = await this.#text(exists ? database : null, file.sha256, body.texts, this.#limits.questionTextBytes);
 				if (text === null) need.push({ path, sha256: file.sha256 });
 				else texts.set(path, text);
 			}

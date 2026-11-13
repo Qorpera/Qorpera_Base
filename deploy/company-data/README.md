@@ -61,7 +61,7 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | --- | --- | --- |
 | `query` | `{ database, question, params?, etag? }` | `{ columns, rows, more, asOf, etag }`, or `{ same: true, etag }` |
 | `watch` | `{ watches: [{ database, question, params?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait |
-| `apply` | `{ database }` | `{ applied, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed` or `missing` |
+| `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
 | `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows, columns }], companyBytes }` |
 
 ### The run door (agents)
@@ -98,7 +98,7 @@ that you may read), 405 (not POST), 408 (past the time limit), 409 (no step appl
 | A question | 2 s, 2,000 rows, 256 KiB; past those rows or bytes the answer says `more: true` |
 | An agent's question or own read | 15 s, 200 rows, 24 KiB, with `more: true` |
 | A change | 5 s |
-| A step | 60 s, 5 s for a lock |
+| A step | 60 s, 5 s for a lock; an apply call starts no step after 45 s (`applyMs`) |
 | A file | a question 16 KiB, a step 64 KiB, 500 steps a database |
 | A watch | 24 questions, held 20 s, asked again at most every 500 ms |
 | A member's folder read | kept 10 s |

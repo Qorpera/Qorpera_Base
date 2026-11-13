@@ -19,7 +19,11 @@ import {
 } from "@qorpera/runtime/cloud-data-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, type CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { CLOUD_RUNTIME_TOOL_OPERATIONS, CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
+import {
+	CLOUD_RUNTIME_TOOL_OPERATIONS,
+	CloudRuntimeDiagnosticError,
+	CloudRuntimeObservability,
+} from "@qorpera/runtime/cloud-runtime-observability";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -251,6 +255,19 @@ describe("the company data tools", () => {
 			text: "REFUSED: The company's databases hold more than 1,000 files together: name one database",
 		});
 		expect(none.doorCalls).toEqual([]);
+		// Looking through data/ has its own bound, with its own words.
+		const folders = await fixture(() => ok({}), {
+			platform: () => {
+				throw new CloudCompanyFolderRpcError(
+					"54000",
+					"Data pass would look through more than 5,000 folders under data/",
+				);
+			},
+		});
+		expect(await folders.invoke("data_describe", {})).toMatchObject({
+			status: "denied",
+			text: "REFUSED: data/ holds more than 5,000 folders to look through: name one database",
+		});
 	});
 
 	it("tells PostgreSQL's words and place as a refusal, and a door that refused the run as no answer", async () => {
@@ -302,6 +319,74 @@ describe("the company data tools", () => {
 		});
 	});
 
+	it("says which steps still wait when the gateway's apply ran out of time, and to call data_apply again", async () => {
+		const f = await fixture(() =>
+			ok({
+				applied: false,
+				more: true,
+				results: [
+					{ name: "001-orders", state: "applied" },
+					{ name: "002-notes", state: "waiting" },
+				],
+			}),
+		);
+		expect(JSON.parse((await f.invoke("data_apply", { database: "shop" })).text)).toEqual({
+			database: "shop",
+			applied: false,
+			steps: [
+				{ name: "001-orders", state: "applied" },
+				{ name: "002-notes", state: "waiting" },
+			],
+			more: true,
+			note: "Steps are still waiting: call data_apply again to apply them",
+		});
+	});
+
+	it("never says an apply failed when its call ended without an answer: the steps may still be applying", async () => {
+		const unknown =
+			"REFUSED: No answer came from the company's data store, so the steps may still be applying. Call data_describe to see which steps landed, then data_apply again for any still waiting.";
+		const ended = await fixture(() => {
+			throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended");
+		});
+		expect(await ended.invoke("data_apply", { database: "shop" })).toMatchObject({ status: "denied", text: unknown });
+		const failed = await fixture(() => ({ status: 500, value: { error: "The data gateway failed" } }));
+		expect(await failed.invoke("data_apply", { database: "shop" })).toMatchObject({
+			status: "denied",
+			text: unknown,
+		});
+		// A read that ended is no answer, as before.
+		const read = await ended.invoke("data_query", { database: "shop", question: "count" });
+		expect(read.status).not.toBe("ok");
+		expect(read.text).not.toMatch(/^REFUSED/);
+	});
+
+	it("sends the texts the gateway asks for in bodies that fit its 1 MiB as JSON, escaping counted", async () => {
+		// Nine distinct steps of 64 KiB, nearly all newlines: each doubles in size as JSON.
+		const files = new Map<string, string>();
+		for (let n = 1; n <= 9; n++) {
+			const head = `-- step ${n}\n`;
+			files.set(`data/shop/tables/00${n}-s.sql`, head + "\n".repeat(64 * 1024 - head.length));
+		}
+		const wanted = [...files].map(([path, text]) => ({ path, sha256: sha(text) }));
+		const held = new Set<string>();
+		const sizes: number[] = [];
+		const f = await fixture(
+			({ body }) => {
+				sizes.push(Buffer.byteLength(JSON.stringify(body)));
+				for (const hash of Object.keys((body.texts as Record<string, string> | undefined) ?? {})) held.add(hash);
+				const need = wanted.filter((one) => !held.has(one.sha256));
+				return need.length > 0
+					? ok({ need })
+					: ok({ applied: true, results: wanted.map((one) => ({ name: one.path, state: "applied" })) });
+			},
+			{ files },
+		);
+		expect((await f.invoke("data_apply", { database: "shop" })).status).toBe("ok");
+		expect(held.size).toBe(9);
+		expect(sizes.length).toBeGreaterThan(2);
+		for (const size of sizes) expect(size).toBeLessThanOrEqual(1024 * 1024);
+	});
+
 	it("shows as many rows as one result holds, with more", async () => {
 		const rows = Array.from({ length: 200 }, (_, index) => [index, "x".repeat(400)]);
 		const f = await fixture(() => ok({ columns: ["n", "text"], rows, more: false, asOf: "2026-11-13T10:00:00Z" }));
@@ -337,6 +422,7 @@ describe("the run door over HTTPS", () => {
 	let other: string;
 	let server: Server;
 	const seen: { path?: string; authorization?: string; body?: string }[] = [];
+	const slow: NodeJS.Timeout[] = [];
 	const token = randomBytes(32).toString("base64url");
 	const make = (name: string) => {
 		const made = spawnSync(
@@ -377,6 +463,16 @@ describe("the run door over HTTPS", () => {
 			});
 			request.on("end", () => {
 				seen.push({ path: request.url, authorization: request.headers.authorization, body });
+				// An answer after 32 s, past a read's 30 s.
+				if (body.includes("slow")) {
+					slow.push(
+						setTimeout(() => {
+							response.writeHead(200, { "content-type": "application/json" });
+							response.end('{"applied":true,"results":[]}');
+						}, 32_000),
+					);
+					return;
+				}
 				const text = body.includes("huge")
 					? JSON.stringify({ rows: "x".repeat(5 * 1024 * 1024) })
 					: '{"columns":[]}';
@@ -387,6 +483,7 @@ describe("the run door over HTTPS", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	});
 	afterAll(async () => {
+		for (const timer of slow) clearTimeout(timer);
 		server?.close();
 		server?.closeAllConnections();
 		if (directory) await rm(directory, { recursive: true, force: true });
@@ -410,6 +507,17 @@ describe("the run door over HTTPS", () => {
 		});
 		await expect(door.call("query", { huge: true }, new AbortController().signal)).rejects.toThrow(/too large/);
 	});
+
+	it("waits 120 s for an apply, whose steps may take longer than a read's 30 s, and 30 s for a read", async () => {
+		const door = httpsCompanyDataDoor({ url: url(), ca: cert, token });
+		const [applied, read] = await Promise.allSettled([
+			door.call("apply", { database: "slow" }, new AbortController().signal),
+			door.call("query", { database: "slow" }, new AbortController().signal),
+		]);
+		expect(applied).toEqual({ status: "fulfilled", value: { status: 200, value: { applied: true, results: [] } } });
+		expect(read.status).toBe("rejected");
+		expect(String((read as PromiseRejectedResult).reason)).toMatch(/unavailable/);
+	}, 60_000);
 
 	it("does not talk to a door whose certificate the pinned CA did not sign", async () => {
 		const door = httpsCompanyDataDoor({ url: url(), ca: other, token });

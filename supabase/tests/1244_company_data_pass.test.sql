@@ -4,7 +4,8 @@
 -- one it may not or that is not there; the kept list holds exactly the files the run may read under data/<name>/
 -- (database.toml, tables/, queries/, actions/), with their hashes and sizes; a pass for no name keeps every database the
 -- run may read; a pass is redeemed once, then answers nothing, as an expired one, an unknown one and one whose run's
--- job is no longer leased do; more than 1,000 files is refused; the grants (anon may redeem, nobody reads the table,
+-- job is no longer leased do; more than 1,000 files kept is refused with 54000, also when one database holds exactly
+-- 1,000 and another follows, and 1,001 empty folders under data/ keep nothing and are no reason to refuse; the grants (anon may redeem, nobody reads the table,
 -- only the service role makes a pass); the hourly retention deletes passes a day old and answers as before.
 
 create function pg_temp.dp_same(p_got text, p_want text, p_what text) returns void language plpgsql as $$
@@ -270,7 +271,8 @@ begin
 end $$;
 rollback to savepoint dp_job;
 
--- 8. More than 1,000 files: refused, for the database and for a pass for no name; 1,000 is kept.
+-- 8. More than 1,000 files: refused, for the database and for a pass for no name; 1,000 is kept. One database of exactly
+--    1,000 and another after it: refused with the same words, the moment the next database.toml makes 1,001.
 savepoint dp_big;
 do $$
 declare v_file jsonb := pg_temp.base_stage('select 1;'); v_tables jsonb := '[]'::jsonb; v_queries jsonb := '[]'::jsonb;
@@ -288,6 +290,8 @@ begin
 		jsonb_build_object('op', 'new_folder', 'path', 'data/big/tables', 'contents', v_tables),
 		jsonb_build_object('op', 'new_folder', 'path', 'data/big/queries', 'contents', v_queries)));
 	perform pg_temp.dp_same(pg_temp.dp_pass('big') ->> 'files', '1000', '1,000 files');
+	perform pg_temp.dp_same(pg_temp.dp_state($s$select pg_temp.dp_pass()$s$),
+		'54000 Data pass would keep more than 1,000 files', 'every database: big''s 1,000, then shop''s database.toml');
 	perform pg_temp.base_commit('{"kind":"platform"}', 'data-pass-big-2', jsonb_build_array(
 		jsonb_build_object('op', 'write', 'path', 'data/big/queries/q400.sql', 'file', v_file)));
 	perform pg_temp.dp_same(pg_temp.dp_state($s$select pg_temp.dp_pass('big')$s$),
@@ -297,6 +301,22 @@ begin
 	perform pg_temp.dp_same(pg_temp.dp_pass('shop') ->> 'files', '5', 'one database beside it');
 end $$;
 rollback to savepoint dp_big;
+select pg_temp.base_claims('service_role');
+
+-- 8b. 1,001 empty folders with database names under data/: they keep no file, so a pass for no name keeps shop's and
+--     stock's seven files as before.
+savepoint dp_empty;
+do $$
+declare v_units jsonb := '[]'::jsonb;
+begin
+	for i in 1..1001 loop
+		v_units := v_units || jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'data/e' || lpad(i::text, 4, '0')));
+	end loop;
+	perform pg_temp.base_commit('{"kind":"platform"}', 'data-pass-empty-folders', v_units);
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.dp_same(pg_temp.dp_pass() ->> 'files', '7', '1,001 empty folders keep nothing');
+end $$;
+rollback to savepoint dp_empty;
 select pg_temp.base_claims('service_role');
 
 -- 9. The hourly retention deletes passes older than a day, redeemed or not, and keeps younger ones; its answer has the

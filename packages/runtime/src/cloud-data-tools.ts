@@ -52,13 +52,19 @@ const SQL_BYTES = 16 * 1024;
 /** Parameters, as a question file takes them: 16 at most, 4 KiB together. */
 const PARAMETERS = 16;
 const PARAMETER_BYTES = 4096;
-/** Rounds of `need` a call answers before it gives up, and the texts one round sends: the gateway takes 1 MiB a body. */
+/** Rounds of `need` a call answers before it gives up, and the most one round's whole body may hold as JSON (escaping
+ * counted): the gateway takes 1 MiB a body. */
 const ROUNDS = 8;
-const TEXT_BYTES = 768 * 1024;
+const BODY_BYTES = 1024 * 1024;
 /** A step's file at most (the gateway's limit); a question's is 16 KiB. */
 const FILE_BYTES = 64 * 1024;
-/** How long one call to the run door may take: an agent's read takes 15 s at most. */
+/** How long one call to the run door may take: an agent's read takes 15 s at most. An apply call takes longer: the
+ * gateway starts no step once 45 s have passed, and a step takes 60 s at most, so it answers within about 105 s. */
 const DOOR_MS = 30_000;
+const APPLY_MS = 120_000;
+/** What data_apply says when its call ended without an answer: the gateway may still be applying. */
+const APPLY_UNKNOWN =
+	"No answer came from the company's data store, so the steps may still be applying. Call data_describe to see which steps landed, then data_apply again for any still waiting.";
 /** The most an answer of the run door may hold. */
 const ANSWER_BYTES = 4 * 1024 * 1024;
 /** Printable ASCII and Latin-1 letters: what a refusal may carry to the model (the boundary drops anything else). */
@@ -207,18 +213,32 @@ export function cloudDataTools(options: {
 				throw new CloudToolRefusal(
 					passed.state === "no_database"
 						? `No database ${name} that you may read: it needs data/${name}/database.toml (format = "qorpera.database/v1")`
-						: name === null
-							? "The company's databases hold more than 1,000 files together: name one database"
-							: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
+						: passed.state === "too_many_folders"
+							? "data/ holds more than 5,000 folders to look through: name one database"
+							: name === null
+								? "The company's databases hold more than 1,000 files together: name one database"
+								: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
 				);
-			const answer = await door.call(verb, { ...body, pass: passed.pass, ...(texts ? { texts } : {}) }, signal);
+			let answer: Awaited<ReturnType<CloudCompanyDataDoor["call"]>>;
+			try {
+				answer = await door.call(verb, { ...body, pass: passed.pass, ...(texts ? { texts } : {}) }, signal);
+			} catch (error) {
+				// An apply call that ended without an answer has an outcome no one knows: never "failed".
+				if (verb === "apply" && error instanceof CloudRuntimeDiagnosticError && !signal.aborted)
+					throw new CloudToolRefusal(APPLY_UNKNOWN);
+				throw error;
+			}
+			if (verb === "apply" && answer.status >= 500 && answer.status !== 507)
+				throw new CloudToolRefusal(APPLY_UNKNOWN);
 			if (answer.status !== 200) refusal(answer.status, answer.value);
 			const need = answerOf(answer.value).need;
 			if (need === undefined) return answer.value;
 			if (!Array.isArray(need) || need.length === 0) refusal(502, answer.value);
 			// The files the gateway asks for, read as the run: a file changed since the pass is left for the next pass.
 			texts = {};
-			let bytes = 0;
+			// The next body as the door sends it, each text as JSON escapes it (a hash and its text add `"hash":"text",`).
+			let bytes = Buffer.byteLength(JSON.stringify({ ...body, pass: passed.pass, texts: {} }));
+			let sent = 0;
 			for (const wanted of need) {
 				const { path, sha256: hash } = answerOf(wanted);
 				if (typeof path !== "string" || typeof hash !== "string") refusal(502, answer.value);
@@ -229,10 +249,11 @@ export function cloudDataTools(options: {
 					if (!(error instanceof CloudCompanyPathNotText)) throw error;
 				}
 				if (!read || read.entry.file.fileSha256 !== hash) continue;
-				const size = Buffer.byteLength(read.text);
-				if (bytes > 0 && bytes + size > TEXT_BYTES) break;
+				const size = Buffer.byteLength(JSON.stringify(hash)) + Buffer.byteLength(JSON.stringify(read.text)) + 2;
+				if (sent > 0 && bytes + size > BODY_BYTES) break;
 				texts[hash] = read.text;
 				bytes += size;
+				sent++;
 			}
 		}
 		throw new CloudToolRefusal("The database's files kept changing while they were read: try again");
@@ -324,10 +345,18 @@ export function cloudDataTools(options: {
 				applied: answer.applied,
 				...(already > 0 ? { alreadyApplied: already } : {}),
 				steps: told,
+				// The gateway starts no step after 45 s: the rest wait for the next call.
+				...(answer.more === true
+					? { more: true, note: "Steps are still waiting: call data_apply again to apply them" }
+					: {}),
 			};
 			return shown([
 				() => summary,
-				() => ({ ...summary, steps: told.slice(0, 20), note: "Cut short: the first 20 steps" }),
+				() => ({
+					...summary,
+					steps: told.slice(0, 20),
+					note: `Cut short: the first 20 steps${answer.more === true ? "; steps are still waiting: call data_apply again" : ""}`,
+				}),
 			]);
 		},
 	};
@@ -398,7 +427,7 @@ export function httpsCompanyDataDoor(options: { url: string; ca: string; token: 
 	return {
 		call: (verb, body, signal) =>
 			new Promise((resolve, reject) => {
-				const stop = AbortSignal.any([signal, AbortSignal.timeout(DOOR_MS)]);
+				const stop = AbortSignal.any([signal, AbortSignal.timeout(verb === "apply" ? APPLY_MS : DOOR_MS)]);
 				if (stop.aborted)
 					return reject(new CloudRuntimeDiagnosticError("cancelled", "Company data door call ended"));
 				const text = Buffer.from(JSON.stringify(body));

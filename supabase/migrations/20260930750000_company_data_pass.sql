@@ -10,7 +10,8 @@
 --    with the folder core's own reads and listings, it lists data/<database>/database.toml and the files directly in
 --    data/<database>/tables/, queries/ and actions/ (with no name, every folder data/<name>/ whose name is a database's,
 --    as the run may list data/), and keeps each file's path, fileSha256 and bytes as the run may read them now, with the
---    environment, the run, its job, its agent, its requester and the name asked. At most 1,000 files, else 54000. A
+--    environment, the run, its job, its agent, its requester and the name asked. At most 1,000 files kept, else 54000;
+--    with no name it looks through at most 5,000 folders under data/, else 54000 with its own words. A
 --    database named whose database.toml the run may not read, or that is not there, gets no pass (P0002, the same for
 --    both). It answers {schema, pass, expiresAt, files}. A pass lasts 60 s and is redeemed once.
 -- 3. qorpera_data_pass_redeem(p_pass): the publishable key alone (anon) may call it, since only knowing the pass opens
@@ -79,9 +80,10 @@ begin
 						and v_name !~ '^(pg_|qorpera_)' then
 					v_databases := v_databases || v_name; end if;
 			end loop;
-			-- Each database holds its database.toml: more databases than files a pass keeps is too many.
-			if cardinality(v_databases) > 1000 then
-				raise exception 'Data pass would keep more than 1,000 files' using errcode = '54000'; end if;
+			-- A bound on the looking alone: a folder without a database.toml keeps nothing, so the cap on files kept is
+			-- checked as files are kept, below.
+			if cardinality(v_databases) > 5000 then
+				raise exception 'Data pass would look through more than 5,000 folders under data/' using errcode = '54000'; end if;
 			v_after := v_page ->> 'next';
 			exit when v_after is null;
 		end loop;
@@ -94,6 +96,9 @@ begin
 		v_files := v_files || jsonb_build_array(jsonb_build_object('path', 'data/' || v_database || '/database.toml',
 			'sha256', v_read #>> '{entry,fileSha256}', 'bytes', (v_read #>> '{entry,bytes}')::bigint));
 		v_count := v_count + 1;
+		-- Checked as each file is kept, so the listings below always ask for at least one.
+		if v_count > 1000 then
+			raise exception 'Data pass would keep more than 1,000 files' using errcode = '54000'; end if;
 		foreach v_part in array array['tables', 'queries', 'actions'] loop
 			v_after := null;
 			loop

@@ -1319,6 +1319,16 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			"data/stock/queries/mine.sql",
 			"data/stock/queries/named.sql",
 		]);
+		// The texts may come in rounds, as the tool sends them when they are many: each round's are kept, so the next
+		// round asks only for the rest, and the call ends.
+		const [toml, ...questions] = asked.value.need.toSorted((a, b) => (a.path < b.path ? -1 : 1));
+		const textsOf = (wanted) => Object.fromEntries(wanted.map((one) => [one.sha256, TEXTS.get(one.sha256)]));
+		const half = await runSend("describe", { pass: passFor(ENV_D, OWNER), texts: textsOf([toml]) });
+		assert.deepEqual(half.value.need?.map((wanted) => wanted.path).sort(), questions.map((one) => one.path));
+		const rest = await runSend("describe", { pass: passFor(ENV_D, OWNER), texts: textsOf(questions) });
+		assert.equal(rest.status, 200, JSON.stringify(rest.value));
+		assert.equal(rest.value.need, undefined, "the first round's text was kept");
+		assert.deepEqual(rest.value.databases.map((database) => database.database), ["stock"]);
 		const described = await runAsk("describe", {});
 		assert.equal(described.status, 200, JSON.stringify(described.value));
 		assert.deepEqual(described.value, {
@@ -1444,5 +1454,26 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.deepEqual(answer.value.rows[0].slice(1), [100]);
 		const slow = await runAsk("query", { database: "stock", sql: "select pg_sleep(5) as slept" });
 		assert.equal(slow.status, 408);
+	});
+
+	it("starts no step once an apply call's time has passed, and says which steps still wait", async () => {
+		put(ENV_D, {
+			"data/slow/database.toml": 'format = "qorpera.database/v1"\n',
+			"data/slow/tables/001-a.sql": "create table a (id int);\nselect pg_sleep(1.2);\n",
+			"data/slow/tables/002-b.sql": "create table b (id int);\nselect pg_sleep(1.2);\n",
+			"data/slow/tables/003-c.sql": "create table c (id int);\n",
+		});
+		// 001 starts at once, 002 inside the call's 2 s, and 003 would start after them: it waits for the next call.
+		await withGateway({ limits: { ...LIMITS_HERE, applyMs: 2_000 } }, async () => {
+			const first = await ask(owner, "apply", { database: "slow" }, ENV_D);
+			assert.equal(first.status, 200, JSON.stringify(first.value));
+			assert.deepEqual(states(first), ["001-a applied", "002-b applied", "003-c waiting"]);
+			assert.equal(first.value.more, true);
+			assert.equal(first.value.applied, false);
+			const second = await ask(owner, "apply", { database: "slow" }, ENV_D);
+			assert.deepEqual(states(second), ["001-a already", "002-b already", "003-c applied"]);
+			assert.equal(second.value.more, undefined);
+			assert.equal(second.value.applied, true);
+		});
 	});
 });

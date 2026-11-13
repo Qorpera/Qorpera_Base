@@ -541,10 +541,11 @@ export interface CloudCompanyFolderRunView {
 }
 
 /** A run's data pass (`qorpera_run_data_pass`, 20260930750000), or why it has none: the database named is not there or
- * the run may not read it (the same answer), or more than 1,000 files would be kept. */
+ * the run may not read it (the same answer), more than 1,000 files would be kept, or (with no name) data/ holds more
+ * than 5,000 folders to look through. */
 export type CloudCompanyDataPass =
 	| { readonly state: "pass"; readonly pass: string; readonly files: number }
-	| { readonly state: "no_database" | "too_many_files" };
+	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" };
 
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
@@ -1467,6 +1468,11 @@ export class CloudCompanyFolderClient {
 					return { state: "no_database" };
 				if (error.code === "54000" && error.detail === "Data pass would keep more than 1,000 files")
 					return { state: "too_many_files" };
+				if (
+					error.code === "54000" &&
+					error.detail === "Data pass would look through more than 5,000 folders under data/"
+				)
+					return { state: "too_many_folders" };
 			}
 			throw error;
 		}
