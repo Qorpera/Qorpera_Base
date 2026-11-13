@@ -11,20 +11,25 @@ import type { Store } from "../state.ts";
 
 /* The questions dock on an app's page and in the Concepts viewer (app/open-questions.ts; Jonas, 10 November 2026:
  * agents engage the founder in their decisions where the work is, and it should be fun). Qorpera draws it, outside the
- * app's frame, over the stage's corner: the agent who asks (its figure waiting), the card itself as the thread draws
- * it (ui/interaction-card.ts), and a way to the chat. One tap answers; the card shows the answer at once, the figure
- * cheers, "Sent to Bob" pops, and after a moment the card flies off and the next one comes up. The member can fold the
- * dock to a pill and look at the app first. Nothing in the app can reach it: the frame reads only. */
+ * app's frame, over the stage's corner: the agent who asks (its figure waiting) and the card itself as the thread
+ * draws it (ui/interaction-card.ts). One tap answers; the card shows the answer at once, the figure cheers, "Sent to
+ * Bob" pops, and after a moment the card flies off and the next one comes up. The member can fold the dock to a pill
+ * and look at the app first. Nothing in the app can reach it: the frame reads only.
+ *
+ * The dock's head is the card's only head (Jonas, 13 November 2026: "In the question box I would also simplify and
+ * remove 'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'"): the figure, who asks, the way between
+ * several questions and the fold. The card below is the question itself — title, body, links, options and Skip — with
+ * its own label row kept for a screen reader (`inDock`). */
 
 export interface QuestionDockHost {
 	readonly questions: OpenQuestions;
 	readonly agent: (agentId: string) => HostedStaffAgent | undefined;
 	readonly memberName: (userId: string | undefined) => string;
 	readonly image?: InteractionCardContext["image"];
+	/** An app of the company by its name, for an option whose preview names one. */
+	readonly app?: InteractionCardContext["app"];
 	/** The thread's conversation, where an answer sent shows at once; never read in full for this. */
 	readonly conversation: (sessionId: string) => Store<ConversationState>;
-	/** Where the agent's chat is. */
-	readonly chatHref: (sessionId: string) => string;
 }
 
 /** Which cards a dock shows, by the apps a card points at. */
@@ -215,13 +220,8 @@ export class QuestionDock {
 								? t("Sent to {name}", { name })
 								: t("Sending to {name}…", { name }),
 				),
-				h(
-					"small",
-					{ class: "question-dock-note" },
-					sent && !declined
-						? t("{name} is on it", { name })
-						: h("a", { href: this.#host.chatHref(current.sessionId) }, t("Open the chat")),
-				),
+				// Nothing stands under who asks while the question waits: the question itself is right below it.
+				sent && !declined ? h("small", { class: "question-dock-note" }, t("{name} is on it", { name })) : null,
 			),
 			cards.length > 1
 				? h(
@@ -250,7 +250,9 @@ export class QuestionDock {
 				agentName: name,
 				memberName: (userId) => this.#host.memberName(userId),
 				canAnswer: !answered,
+				inDock: true,
 				...(this.#host.image ? { image: this.#host.image } : {}),
+				...(this.#host.app ? { app: this.#host.app } : {}),
 				answer: (outcome, value) => this.#answer(current, outcome, value),
 			},
 		);

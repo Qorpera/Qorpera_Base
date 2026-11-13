@@ -509,11 +509,18 @@ describe("a visual choice", () => {
 			],
 		},
 	};
+	/** The company's apps as the card reads them: one with a cover, one with only its emblem. */
+	const app = (name: string) =>
+		name === "bundle-demo"
+			? { title: "The bundle demo", emblem: "star" as const, cover: null }
+			: name === "saml-concepts"
+				? { title: "Entirely you", emblem: "page" as const, cover: "apps/saml-concepts/cover.png" }
+				: undefined;
 
 	it("shows options with pictures as big boxes; a click picks one", async () => {
 		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/svg+xml" }));
 		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:shown");
-		const ctx = context({ image });
+		const ctx = context({ image, app });
 		const card = renderInteractionCard(item(visual), ctx);
 		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
 		expect(boxes.map((box) => box.querySelector(".choice-label")?.textContent)).toEqual([
@@ -526,12 +533,52 @@ describe("a visual choice", () => {
 		expect(card.querySelector(".interaction-options")).toBeNull();
 		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture img")).toHaveLength(2));
 		expect(image.mock.calls.map(([path]) => path)).toEqual(["sketches/duo.svg", "sketches/pair.svg"]);
-		// An app's option shows its name, and its link opens the app's own page.
-		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("bundle-demo");
+		// An app with no cover of its own stands for itself: its title, never its folder name. Its link opens its page.
+		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("The bundle demo");
+		expect(boxes[2]?.querySelector(".choice-picture .interface-emblem")).not.toBeNull();
 		expect(card.querySelector(".choice-apps .app-card")).not.toBeNull();
 		boxes[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["pair"] });
 		created.mockRestore();
+	});
+
+	it("shows an app's own cover for an option that names it", async () => {
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Which headline?",
+				payload: { options: [{ label: "Entirely you", preview: "app:saml-concepts" }] },
+			}),
+			context({ image, app }),
+		);
+		await vi.waitFor(() => expect(card.querySelector(".choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		expect(card.querySelector(".choice-app-name")).toBeNull();
+		created.mockRestore();
+	});
+
+	it("draws no preview box for an option that has none, or whose preview cannot be shown", async () => {
+		const image = vi.fn(async () => null);
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+						{ label: "Vis en anden", value: "anden", preview: "app:not-in-this-company" },
+					],
+				},
+			}),
+			context({ image, app }),
+		);
+		expect(card.querySelectorAll(".choice-box")).toHaveLength(3);
+		// The cover could not be read: the frame goes rather than stand empty.
+		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture")).toHaveLength(0));
+		expect(card.textContent).toContain("Noget skal ændres");
 	});
 
 	it("links an app once when several options show it", () => {
@@ -547,7 +594,7 @@ describe("a visual choice", () => {
 					],
 				},
 			}),
-			context({ image: async () => null }),
+			context({ image: async () => null, app }),
 		);
 		expect(
 			[...card.querySelectorAll<HTMLElement>(".choice-apps .app-card")].map((link) => link.dataset.appName),

@@ -437,6 +437,21 @@ app's screenshot by someone other than its maker.
   on a hover, or "App" where it has none. Wall posters and choice cards draw the same card, and so does a member's
   note sent from an app's page (§5 "A note to the app's owner"), above the member's words, with the app's own name
   and what the note is about as its line.
+- **Concepts viewer.** `#/c/<profileId>/concepts[/<name>]` shows the company's concepts (`concept = true`): the open
+  one's frame fills the stage, edge to edge, with nothing of Qorpera's around it — no header, no border, no inset and
+  no band (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). The
+  only furniture is the side panel, which stands where the company rail stands and is the rail: the member's own rail
+  width, its surface, its rows, its hover and its selection (Jonas, 13 November 2026: "match the style and width of
+  the regular sidepanel"). It holds the way back, each concept (cover or emblem, title, `about`, who made it), Reload
+  and Show in Storage for the open one, and the strip that says whose the concept is and that Qorpera never asks for
+  passwords there (§7 H2). It folds to the compact rail's strip; at phone width it is a top bar with a menu.
+- **Questions dock.** The agents' open question cards stand over the corner of an app's page or the Concepts viewer's
+  stage, outside the frame: one tap answers, as in the chat. The dock heads the card itself — the agent's figure
+  waiting and "<Agent> asks you" — and the card below is the question alone: its title, body, app links, options and
+  Skip, with nothing else over it (Jonas, 13 November 2026: "In the question box I would also simplify and remove
+  'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'"). In the Concepts viewer a card shows on the
+  page of the concept it asks about and on no other; one that points at no concept, or at one that is gone, shows on
+  none and waits in its agent's thread.
 - **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
@@ -533,6 +548,10 @@ Rules:
   point at this app (the rule the questions dock uses: an option previews `app:<name>` or a picture in `apps/<name>/`,
   or the body links `app:<name>`): each card's id, the asking agent's name, its title, body, options (label, value,
   description), whether it takes several answers, and when it was asked. Never the conversation it is in.
+  An option's `preview` is what the card shows above its label, in the chat and in the dock alike: a picture of the
+  company's folder, or `app:<name>`, which shows that app's `cover`, or its own emblem beside its own title, never
+  its folder name. An option with no preview, or whose picture cannot be read, draws no preview at all: an empty
+  frame is no preview (Jonas, 13 November 2026, on his company's question: the previews "do not load their visual").
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.

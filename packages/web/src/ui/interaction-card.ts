@@ -1,3 +1,4 @@
+import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { pictureUrl } from "../app/folder-images.ts";
 import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
@@ -15,7 +16,7 @@ import { stoppedCardNote } from "./card-notes.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
 import { renderEmailDraftCard } from "./email-draft-card.ts";
 import { interfaceEmblem } from "./interface-emblem.ts";
-import { markdown } from "./markdown.ts";
+import { appCard, markdown } from "./markdown.ts";
 import { phrase, t } from "./preferences.ts";
 
 /* Cards an agent raises in its thread (THREAD-WIDGETS-DESIGN-20260922.md).
@@ -62,6 +63,15 @@ export function cardBody(text: string, key: string): HTMLElement {
 	return foldLong(body, long, key);
 }
 
+/** An app of the company an option's preview names (`app:<name>`), as the card shows it. */
+export interface InteractionCardApp {
+	/** The app's own title, never its folder name. */
+	readonly title: string;
+	readonly emblem: InterfaceEmblem;
+	/** Its cover's path in the company's folder, read as any other preview picture; null when it has none. */
+	readonly cover: string | null;
+}
+
 export interface InteractionCardContext {
 	agentName: string;
 	memberName: (userId: string | undefined) => string;
@@ -69,6 +79,9 @@ export interface InteractionCardContext {
 	canAnswer: boolean;
 	/** The card stands in a thread: once it has its answer it is drawn as the exchange it was (see above). */
 	inThread?: boolean;
+	/** The card stands in the questions dock (app/views/question-dock.ts), which heads it with the agent's figure and
+	 * "{name} asks you" of its own: the label row is then a screen reader's, as in a thread. */
+	inDock?: boolean;
 	/** The member looking, whose own answer stands on their side of the thread. */
 	viewerId?: string;
 	/** The agent's figure, waiting: the head of a card that waits for this member in a thread. */
@@ -88,6 +101,9 @@ export interface InteractionCardContext {
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
 	/** Reads a picture of the company's folder for an option's preview; null when there is none to show. */
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
+	/** An app of the company by its name, for an option whose preview names one; undefined when the company has no
+	 * such app, or where the apps cannot be reached. */
+	app?: (name: string) => InteractionCardApp | undefined;
 	now?: number;
 }
 
@@ -116,27 +132,38 @@ function picture(read: NonNullable<InteractionCardContext["image"]>, path: strin
 	return shown;
 }
 
-/** The picture area of a visual choice: the image the agent made, or the app's emblem and name. */
-function choicePicture(preview: string, context: InteractionCardContext): HTMLElement {
-	const app = /^app:(.+)$/.exec(preview);
-	if (app && isInterfaceName(app[1] ?? ""))
-		return h(
+/** The picture area of a visual choice: the picture the agent made, or, for a preview that names an app, that app's
+ * cover, or its emblem beside its title. Null when there is nothing to show (Jonas, 13 November 2026, on a question's
+ * options: the previews "do not load their visual"): an empty grey frame is no preview, so none is drawn. */
+function choicePicture(preview: string, context: InteractionCardContext): HTMLElement | null {
+	const read = context.image;
+	const shown = (path: string) => {
+		if (!read) return null;
+		const box = h("span", { class: "choice-picture is-loading", "aria-hidden": "true" });
+		void picture(read, path).then((url) => {
+			box.classList.remove("is-loading");
+			// A picture that is not there, or that cannot be shown, leaves no empty frame behind.
+			if (url) box.append(h("img", { src: url, alt: "", decoding: "async" }));
+			else box.remove();
+		});
+		return box;
+	};
+	const named = /^app:(.+)$/.exec(preview)?.[1];
+	if (named === undefined) return shown(preview);
+	// An app the company has: its cover is a picture of the folder like any other, and with none the app stands for
+	// itself, by its own emblem and title. An app that is not there has nothing to show.
+	const app = isInterfaceName(named) ? context.app?.(named) : undefined;
+	if (!app) return null;
+	const cover = app.cover ? shown(app.cover) : null;
+	return (
+		cover ??
+		h(
 			"span",
 			{ class: "choice-picture is-app", "aria-hidden": "true" },
-			interfaceEmblem(null, 40),
-			h("span", { class: "choice-app-name" }, app[1] ?? ""),
-		);
-	const box = h("span", { class: "choice-picture is-loading", "aria-hidden": "true" });
-	const read = context.image;
-	if (!read) {
-		box.classList.remove("is-loading");
-		return box;
-	}
-	void picture(read, preview).then((url) => {
-		box.classList.remove("is-loading");
-		if (url) box.append(h("img", { src: url, alt: "", decoding: "async" }));
-	});
-	return box;
+			interfaceEmblem(app.emblem, 40),
+			h("span", { class: "choice-app-name" }, app.title),
+		)
+	);
 }
 
 /** A question's options as big pictures to pick from (Jonas, 5 November 2026: a choice between something visual is two
@@ -159,7 +186,8 @@ function visualChoices(
 				...(pick && multi ? { "aria-pressed": String(chosen.has(option.value)) } : {}),
 				...(busy ? { "aria-disabled": "true" } : {}),
 			},
-			option.preview ? choicePicture(option.preview, context) : h("span", { class: "choice-picture is-empty" }),
+			// An option with no preview draws no preview: a box of its own, with its label, and nothing above it.
+			option.preview ? choicePicture(option.preview, context) : null,
 			h("strong", { class: "choice-label" }, option.label),
 			option.description ? h("span", { class: "choice-description" }, option.description) : null,
 		) as HTMLButtonElement;
@@ -183,7 +211,16 @@ function visualChoices(
 		{ class: "interaction-choices" },
 		...boxes,
 		apps.length
-			? h("div", { class: "choice-apps" }, markdown(apps.map((name) => `[${name}](app:${name})`).join(" ")))
+			? h(
+					"div",
+					{ class: "choice-apps" },
+					// By the app's own title, never its folder name (Jonas, 13 November 2026).
+					h(
+						"div",
+						{ class: "app-cards" },
+						...apps.map((name) => appCard(name, context.app?.(name)?.title ?? name)),
+					),
+				)
 			: null,
 	);
 	// Set through the style object: the page's CSP takes no inline style attribute.
@@ -625,7 +662,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				: null,
 			h(
 				"header",
-				{ class: `interaction-heading${exchange || asking ? " visually-hidden" : ""}` },
+				// Who asks, when, and the card's state. In a thread, and in the questions dock, that already stands over
+				// the card: the row is then a screen reader's alone.
+				{ class: `interaction-heading${exchange || asking || context.inDock === true ? " visually-hidden" : ""}` },
 				h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
 				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
 				badge(t(STATE_LABEL[state]), stateTone),

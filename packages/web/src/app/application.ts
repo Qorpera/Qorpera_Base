@@ -27,6 +27,7 @@ import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
+import type { InteractionCardApp } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -1127,9 +1128,8 @@ export function mountApplication(
 				agent: (agentId) => controller.staffById(agentId),
 				memberName: (userId) => controller.memberName(userId),
 				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				app: (name) => cardApp(name),
 				conversation: (sessionId) => controller.conversation(sessionId, false),
-				chatHref: (sessionId) =>
-					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
 			};
 		};
 		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
@@ -1253,6 +1253,19 @@ export function mountApplication(
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
 		}
+		// An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
+		// company's apps as last read. Undefined while they have not been read, or when no such app is there.
+		const cardApp = (name: string): InteractionCardApp | undefined => {
+			const found = companyApps?.apps.find((app) => app.name === name);
+			const manifest = found?.manifest;
+			return manifest
+				? {
+						title: manifest.name,
+						emblem: manifest.emblem,
+						cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
+					}
+				: undefined;
+		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1970,6 +1983,7 @@ export function mountApplication(
 								},
 							},
 							folderImage: cardImage,
+							folderApp: cardApp,
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

@@ -9,7 +9,6 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
-import { linkHref } from "../src/ui/dom.ts";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
@@ -168,7 +167,6 @@ function company(
 		agent: (id) => (id === AGENT ? agent : undefined),
 		memberName: () => "Jonas",
 		conversation,
-		chatHref: (sessionId) => `#/c/p/chat/${sessionId}`,
 	};
 	return {
 		controller,
@@ -209,8 +207,24 @@ describe("the questions dock", () => {
 		expect(dock.el.querySelectorAll(".interaction-card")).toHaveLength(1);
 		expect(dock.el.textContent).toContain("Bob asks you");
 		expect(dock.el.textContent).toContain("Which direction should the shop take?");
-		const chat = dock.el.querySelector<HTMLElement>(".question-dock-note a");
-		expect(chat && linkHref(chat)).toBe(`#/c/p/chat/${SESSION}`);
+		dock.dispose();
+	});
+
+	it("is headed once: who asks, and no label row, time or way to the chat under it", async () => {
+		const { host } = company({ questions: [question(CARD_A, directions)] });
+		const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+		document.body.append(dock.el);
+		await settle();
+		// Jonas, 13 November 2026: "remove 'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'".
+		expect(dock.el.querySelector(".question-dock-note")).toBeNull();
+		expect(dock.el.querySelector("a")).toBeNull();
+		const heading = dock.el.querySelector(".interaction-heading");
+		// Kept for a screen reader, shown to nobody: the dock's own head says who asks.
+		expect(heading?.classList.contains("visually-hidden")).toBe(true);
+		expect(heading?.textContent).toContain("Question");
+		expect(dock.el.querySelector(".question-dock-title")?.textContent).toBe("Bob asks you");
+		// The card draws no second "asks you" of its own under the dock's head.
+		expect(dock.el.querySelector(".interaction-call")).toBeNull();
 		dock.dispose();
 	});
 

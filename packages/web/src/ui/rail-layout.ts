@@ -18,6 +18,26 @@ export const MAX_SHARE = 0.44;
  * so every member starts once from the new default. */
 export const STORAGE_KEY = "qorpera.web.rail-width.v5";
 
+/** Two fifths of the window, but never below the narrowest expanded rail. */
+function cap(): number {
+	return Math.max(MIN, Math.floor((window.innerWidth * MAX_SHARE) / uiScale()));
+}
+
+/** The width the member chose for the rail, or this size's default; never more than the window allows. In design
+ * pixels, so a reader outside the stylesheets multiplies by `uiScale()`. The Concepts viewer's side panel reads it
+ * too, so that panel is the rail's width wherever the member set it (Jonas, 13 November 2026: the Concepts side panel
+ * should "match the style and width of the regular sidepanel"). */
+export function railWidth(): number {
+	let preferred: number | undefined;
+	try {
+		const stored = Number(localStorage.getItem(STORAGE_KEY));
+		if (Number.isFinite(stored) && (stored === COMPACT || stored >= MIN)) preferred = stored;
+	} catch {
+		/* Browser storage is optional. */
+	}
+	return Math.min(preferred ?? (uiSizePreference() === "small" ? SMALL_DEFAULT : DEFAULT), cap());
+}
+
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
 	readonly el: HTMLElement;
@@ -84,7 +104,7 @@ export class RailLayout {
 			if (matchesKey(event, "left")) width = this.#width <= MIN ? COMPACT : this.#width - 16;
 			if (matchesKey(event, "right")) width = this.#width === COMPACT ? MIN : this.#width + 16;
 			if (matchesKey(event, "first")) width = COMPACT;
-			if (matchesKey(event, "last")) width = this.#cap();
+			if (matchesKey(event, "last")) width = cap();
 			if (width !== undefined) {
 				event.preventDefault();
 				this.#set(width);
@@ -98,13 +118,9 @@ export class RailLayout {
 		});
 		this.#apply();
 	}
-	/** Two fifths of the window, but never below the narrowest expanded rail. */
-	#cap(): number {
-		return Math.max(MIN, Math.floor((window.innerWidth * MAX_SHARE) / uiScale()));
-	}
 	/** A choice the member makes now is bounded by what they can see now. */
 	#set(width: number, persist = true): void {
-		const next = width === COMPACT ? COMPACT : Math.round(Math.max(MIN, Math.min(this.#cap(), width)));
+		const next = width === COMPACT ? COMPACT : Math.round(Math.max(MIN, Math.min(cap(), width)));
 		// An action that moves nothing on screen is not a choice either.
 		if (next === this.#width) return;
 		this.#preferred = next;
@@ -127,7 +143,7 @@ export class RailLayout {
 		}
 	}
 	#apply(): void {
-		const max = this.#cap();
+		const max = cap();
 		const width = Math.min(this.#preferred ?? (uiSizePreference() === "small" ? SMALL_DEFAULT : DEFAULT), max);
 		const drawer = isPhoneLayout();
 		const scale = uiScale();
