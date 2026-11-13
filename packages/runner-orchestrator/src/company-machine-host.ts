@@ -35,6 +35,13 @@ import {
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./company-machine-figure.ts";
+import {
+	COMPANY_MACHINE_DESKTOP_VIEW,
+	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+	DesktopStream,
+	type DesktopStreamRelease,
+	type DesktopStreamSink,
+} from "./company-machine-stream.ts";
 import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
@@ -318,6 +325,8 @@ const POINTER_FENCE_MS = 3000;
 const POINTER_FENCE_AFTER_MOVER_MS = 5000;
 /** How many times one caller looks again for a confirmed fence while it keeps moving (#confirmFence) before it gives up. */
 const POINTER_FENCE_ROUNDS = 4;
+/** The largest of LXD's messages a desktop's live picture takes from its relay (20260930745000). */
+const MEMBER_STREAM_MESSAGE_BYTES = 4 * 1024 * 1024;
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
 /** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
@@ -652,6 +661,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	// The record of a desktop clipboard the host cleared after a member held it (F32 of #1661; F33: it was missing here,
 	// so the executor's closed control refused it in production).
 	"qorpera_machine_desktop_clipboard_cleared",
+	// A member's live picture, one release cycle (20260930745000).
+	"qorpera_member_machine_stream_release",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -858,6 +869,16 @@ export interface CompanyMachineMemberAct {
 export type CompanyMachineMemberActOutcome =
 	| { readonly done: { readonly exitCode: number | null } }
 	| { readonly refused: string };
+/** A member's live picture of a desktop of this node (20260930745000), as the executor that took the member's stream
+ * read it (the member's pointer pass): where it runs, whose it is, and its hold: shared at a lease generation (`epoch`
+ * null), or the member's own private hold under `epoch` in its seat (`generation`). */
+export interface CompanyMachineMemberStream {
+	placementId: string;
+	bootId: string;
+	userId: string;
+	generation: number;
+	epoch: number | null;
+}
 /** A member's pointer move on a desktop of this node (20260930744000), on the pass SQL gave (read once, kept by the
  * executor): where it runs, whose pass it is, the lease generation that stood at its read (the shared pass's generation,
  * or the private holder's seat), and where the pointer goes, in the screen's own pixels. */
@@ -1228,6 +1249,9 @@ export class LxdCompanyMachineHost {
 	/** Per placement: its pointer's mover while a member's pointer moves, the last mover's failure (its boot, reason and
 	 * when), and who moved its pointer when (their looks show no drawn pointer). */
 	readonly #movers = new Map<string, PointerMover>();
+	/** Per placement, its desktop's live picture while any member watches it (20260930745000): one relay, ended with the
+	 * last member's stream, the boot's, or the X server's. */
+	readonly #streams = new Map<string, { readonly bootId: string; readonly stream: DesktopStream }>();
 	readonly #moverFailed = new Map<
 		string,
 		{
@@ -2237,6 +2261,7 @@ export class LxdCompanyMachineHost {
 		// Its pointer (20260930744000): the mover ends with the instance anyway; what was known of it goes.
 		this.#movers.get(e.placementId)?.stop.abort();
 		this.#movers.delete(e.placementId);
+		this.#streams.delete(e.placementId);
 		this.#moverEnded.delete(e.placementId);
 		this.#fenceCounts.delete(e.placementId);
 		this.#fencePublished.delete(e.placementId);
@@ -3168,6 +3193,127 @@ export class LxdCompanyMachineHost {
 				this.#releaseDesktop(act.placementId, ended);
 			}
 		}
+	}
+
+	/**
+	 * A member's live picture of a desktop of this node (20260930745000): streams the desktop's changed areas to `sink`
+	 * until `signal` aborts (the member's stream ended at the executor that took it), a release cycle ends it, or the
+	 * desktop's relay ends (the X server, the boot). Answers why it ended.
+	 *
+	 * Every member watching a desktop shares its one relay (COMPANY_MACHINE_DESKTOP_VIEW: the machine's own VNC server,
+	 * through which nothing but the handshake, the pixel format, the encodings and update requests can pass: it only
+	 * shows). Each member's changes are let go by that member's own release cycles: what changed before a cycle began
+	 * leaves once the cycle passed, as every look's picture passes today (#streamCycle): the pointer fence confirmed on
+	 * the desktop while a mover is around (no picture while an older move could still run), the company folder's boundary
+	 * when the boot has /company, and SQL's one read (qorpera_member_machine_stream_release: the member may still act,
+	 * the machine runs on this boot, the take-over fence of the stream's hold, the disk's root rule and the member's own
+	 * read check of what the machine read). A refusal there ends the stream with its reason; a boundary not answered holds
+	 * the changes for the next cycle.
+	 */
+	async memberStream(
+		stream: CompanyMachineMemberStream,
+		sink: DesktopStreamSink,
+		signal: AbortSignal,
+	): Promise<string> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_STREAM_UNAVAILABLE");
+		if (
+			![stream.placementId, stream.bootId, stream.userId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(stream.generation) ||
+			stream.generation < 0 ||
+			!(stream.epoch === null || (Number.isSafeInteger(stream.epoch) && stream.epoch >= 0))
+		)
+			throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+		this.#seeGeneration(stream.placementId, stream.generation);
+		let kept = this.#streams.get(stream.placementId);
+		if (!kept || kept.bootId !== stream.bootId || kept.stream.ended) {
+			const placementId = stream.placementId;
+			const bootId = stream.bootId;
+			const desktop: DesktopStream = new DesktopStream({
+				run: (stdout, stdin, relaySignal) =>
+					pipe(
+						this.#policy.project,
+						lxdCompanyMachineName(placementId),
+						{
+							command: [
+								"/bin/sh",
+								"-c",
+								COMPANY_MACHINE_DESKTOP_VIEW,
+								bootId,
+								COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+							],
+							environment: {},
+							cwd: "/",
+							stdin,
+							// Each of LXD's messages, never the whole: the picture flows for as long as it is watched.
+							maxStdoutBytes: MEMBER_STREAM_MESSAGE_BYTES,
+							stdout,
+							stderrTailBytes: 0,
+						},
+						relaySignal,
+					).then((result) => result.exitCode),
+				ended: () => {
+					if (this.#streams.get(placementId)?.stream === desktop) this.#streams.delete(placementId);
+				},
+			});
+			kept = { bootId, stream: desktop };
+			this.#streams.set(placementId, kept);
+		}
+		return kept.stream.watch((cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal), sink, signal);
+	}
+	/** One release cycle of a member's live picture (memberStream). */
+	async #streamCycle(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		stream: CompanyMachineMemberStream,
+		signal: AbortSignal,
+	): ReturnType<DesktopStreamRelease> {
+		// No picture while an older move could still run (as a look: review r2 and r3 of #1733).
+		await this.#confirmFence(pipe, stream.placementId, stream.bootId, signal);
+		const asked = async (): Promise<"ok" | { readonly end: string }> => {
+			try {
+				const answer = record(
+					await this.#call(
+						"qorpera_member_machine_stream_release",
+						{
+							p_placement_id: stream.placementId,
+							p_boot_id: stream.bootId,
+							p_user_id: stream.userId,
+							p_generation: stream.generation,
+							p_epoch: stream.epoch,
+						},
+						signal,
+					),
+					"COMPANY_MACHINE_MEMBER_STREAM_INVALID",
+				);
+				if (answer.schema !== "qorpera.member-machine-stream-release/v1")
+					throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+				if (answer.state === "ok") return "ok";
+				if (answer.state === "refused" && typeof answer.reason === "string" && /^[A-Z_]{1,64}$/.test(answer.reason))
+					return { end: answer.reason };
+				throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+			} catch (error) {
+				// A read of the machine's the member may not read: this member's stream ends, nothing else.
+				if (error instanceof CodingControlRefused && error.detail === MEMBER_UNREADABLE)
+					return { end: "MEMBER_CANNOT_READ" };
+				throw error;
+			}
+		};
+		const folder = this.#options.folder;
+		if (!folder) return asked();
+		const at: FolderRelease = { placementId: stream.placementId, bootId: stream.bootId };
+		const f = this.#folders.get(stream.placementId);
+		const boot = f?.bootId === stream.bootId ? f : undefined;
+		// A boot whose folder ended, or that read something no longer readable, shows nothing more.
+		if (this.#heldAlready(at, boot) !== undefined) return { end: "DESKTOP_NOT_SHOWN" };
+		let verdict: "ok" | { readonly end: string } = "ok";
+		const held = await this.#release(folder, at, boot, SCREEN_BOUNDARY_MS, signal, async () => {
+			verdict = await asked();
+			return verdict === "ok" ? undefined : HELD.untaken;
+		});
+		if (verdict !== "ok") return verdict;
+		if (held === undefined) return "ok";
+		if (held === HELD.ended || held === HELD.unreadable) return { end: "DESKTOP_NOT_SHOWN" };
+		return "pending";
 	}
 
 	/**

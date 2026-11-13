@@ -801,6 +801,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* The picture of an agent's desktop (20260930712000): the same frame, a canvas instead of the remote screen. The picture keeps its proportions inside the stage; its mark says Live, or Updating… while the last picture is held. */
 .computer-panel .machine-screen[hidden] { display: none; }
 .computer-panel .machine-screen-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+/* There are two canvases in the stage (20260930745000, review r6 of #1746): the window's own pictures and the live picture, one shown at a time. The one that is not shown is away entirely — the display above would otherwise keep it over the other, since it outranks the browser's own rule for a hidden element. */
+.computer-panel .machine-screen-canvas[hidden] { display: none; }
 .computer-panel .machine-screen-mark { position: absolute; left: 8px; bottom: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: 999px; color: #fff; background: rgb(0 0 0 / 58%); font-size: 11px; font-weight: 500; line-height: 16px; pointer-events: none; }
 .computer-panel .machine-screen-mark::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #34c759; }
 .computer-panel .machine-screen-mark.is-updating::before { background: #f0c27a; }

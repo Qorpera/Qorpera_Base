@@ -552,6 +552,44 @@ export function parseCloudMemberMachinePointerAnswer(
 	return Object.freeze({ moved: answer.moved });
 }
 
+// /v1/machine-commands/member-stream (20260930745000): a member's live picture, asked by the executor that admitted the
+// member's stream (its listener behind node 1's own tunnel) of the executor of the machine's node, on the peer listener
+// only. It names the member's newest pointer pass (the receiving executor reads it in SQL itself, as a move's) and, for a
+// private hold, its epoch. The answer streams for as long as the asking executor keeps its request open: frames of a
+// kind byte and a length (u32), each `1` a message for the member's browser, the last `2` why it ended. Nothing comes
+// the other way: the stream only shows.
+export const CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA = "qorpera.member-machine-stream-http/v1";
+export interface CloudMemberMachineStreamPeerRequest {
+	readonly schema: typeof CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA;
+	readonly passId: string;
+	readonly epoch: number | null;
+}
+export function parseCloudMemberMachineStreamPeerRequest(value: unknown): CloudMemberMachineStreamPeerRequest {
+	const input = record(value, ["schema", "passId", "epoch"]);
+	if (
+		input.schema !== CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA ||
+		typeof input.passId !== "string" ||
+		!UUID.test(input.passId) ||
+		!(input.epoch === null || (Number.isSafeInteger(input.epoch) && (input.epoch as number) >= 0))
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA,
+		passId: input.passId,
+		epoch: input.epoch as number | null,
+	});
+}
+/** One frame of the peer's streamed answer: a message for the browser (1), or why the stream ended (2). */
+export function cloudMemberMachineStreamFrame(kind: 1 | 2, payload: Buffer): Buffer {
+	const head = Buffer.alloc(5);
+	head[0] = kind;
+	head.writeUInt32BE(payload.byteLength, 1);
+	return Buffer.concat([head, payload]);
+}
+/** The largest message of a stream (a batch of changed areas): what the host itself can build (8 MiB) and nothing
+ * more, so the peer reader holds at most one such frame plus one chunk (review r2 F1 of #1746). */
+const STREAM_MESSAGE_BYTES = 8 * 1024 * 1024 + 1024;
+
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
 	start(
@@ -1166,6 +1204,29 @@ export function createHttpCloudMachineCommandGateway(options: {
 	});
 }
 
+/** Sends one of a desktop's messages to a member's sink and gives up the moment `signal` aborts: a browser that stops
+ * reading while it still answers pings must hold neither this peer request, nor the admission slot, nor the socket past
+ * the pass's end (review r2 F3 of #1746). The message may still be on its way; nothing after it is sent. */
+async function sendOrAbort(
+	sink: { send(message: Buffer): Promise<void> },
+	message: Buffer,
+	signal: AbortSignal,
+): Promise<void> {
+	if (signal.aborted) throw new Error("MEMBER_MACHINE_STREAM_CANCELLED");
+	let give: () => void = () => {};
+	const stopped = new Promise<never>((_, reject) => {
+		give = () => reject(new Error("MEMBER_MACHINE_STREAM_CANCELLED"));
+		signal.addEventListener("abort", give, { once: true });
+	});
+	// Handled by the race below; nothing is left unhandled when the send wins.
+	stopped.catch(() => {});
+	try {
+		await Promise.race([sink.send(message), stopped]);
+	} finally {
+		signal.removeEventListener("abort", give);
+	}
+}
+
 /** A member's look sent to the executor of the machine's node (20260930712000), on its peer listener with the peer
  * token: sent once, never again (the use it carries is served once), and its refusal comes back as the same refusal. */
 export function createHttpMemberMachineScreenPeer(options: {
@@ -1191,6 +1252,13 @@ export function createHttpMemberMachineScreenPeer(options: {
 		request: { passId: string; x: number; y: number },
 		signal: AbortSignal,
 	): Promise<CloudMemberMachinePointerMove>;
+	/** A member's live picture (20260930745000): streams the peer's messages to `sink` until `signal` aborts or the peer
+	 * ends it; answers why it ended (STREAM_UNAVAILABLE when the peer's answer broke off). */
+	memberStream(
+		request: { passId: string; epoch: number | null },
+		sink: { send(message: Buffer): Promise<void> },
+		signal: AbortSignal,
+	): Promise<string>;
 } {
 	const base = origin(options.url, options.allowLoopback ?? false);
 	if (!validToken(options.token)) throw new Error(ERROR);
@@ -1357,6 +1425,69 @@ export function createHttpMemberMachineScreenPeer(options: {
 				throw new Error(ERROR);
 			}
 		},
+		memberStream: async (
+			input: { passId: string; epoch: number | null },
+			sink: { send(message: Buffer): Promise<void> },
+			signal: AbortSignal,
+		) => {
+			const admitted = parseCloudMemberMachineStreamPeerRequest({
+				schema: CLOUD_MEMBER_MACHINE_STREAM_HTTP_SCHEMA,
+				passId: input.passId,
+				epoch: input.epoch,
+			});
+			let response: Response;
+			try {
+				response = await transport(`${base}/v1/machine-commands/member-stream`, {
+					method: "POST",
+					redirect: "error",
+					signal,
+					headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+					body: JSON.stringify(admitted),
+				});
+			} catch {
+				return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
+			}
+			if (response.status === 409) {
+				const { code } = JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, signal)),
+				) as { code?: unknown };
+				return isCloudMemberMachinePointerRefusal(code) ? code : "STREAM_UNAVAILABLE";
+			}
+			if (response.status !== 200 || !response.body) {
+				void response.body?.cancel().catch(() => undefined);
+				return "STREAM_UNAVAILABLE";
+			}
+			const reader = response.body.getReader();
+			let held = Buffer.alloc(0);
+			try {
+				for (;;) {
+					const next = await reader.read();
+					if (next.done) return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
+					held = Buffer.concat([held, Buffer.from(next.value)]);
+					while (held.byteLength >= 5) {
+						const kind = held[0];
+						const length = held.readUInt32BE(1);
+						if ((kind !== 1 && kind !== 2) || length > STREAM_MESSAGE_BYTES) return "STREAM_UNAVAILABLE";
+						if (held.byteLength < 5 + length) break;
+						const payload = Buffer.from(held.subarray(5, 5 + length));
+						held = held.subarray(5 + length);
+						if (kind === 2) {
+							const reason = payload.toString("utf8");
+							return /^[A-Za-z_]{1,64}$/.test(reason) ? reason : "STREAM_UNAVAILABLE";
+						}
+						// The member's browser takes it before the next is read: a slow one slows this, nothing else. One
+						// that stops reading while it still answers pings holds nothing once the stream is cancelled:
+						// the send gives up with the signal, and nothing after it is sent (review r2 F3 of #1746).
+						if (signal.aborted) return "closed";
+						await sendOrAbort(sink, payload, signal);
+					}
+				}
+			} catch {
+				return signal.aborted ? "closed" : "STREAM_UNAVAILABLE";
+			} finally {
+				void reader.cancel().catch(() => undefined);
+			}
+		},
 		memberPointer: async (input: { passId: string; x: number; y: number }, signal: AbortSignal) => {
 			try {
 				const admitted = parseCloudMemberMachinePointerPeerRequest({
@@ -1472,6 +1603,14 @@ export interface CloudMachineCommandServiceOptions {
 		request: CloudMemberMachinePointerPeerRequest,
 		signal: AbortSignal,
 	): Promise<CloudMemberMachinePointerMove>;
+	/** A member's live picture (20260930745000), on the peer listener only: its pass read in SQL and the desktop streamed
+	 * from this node to `sink` until `signal` aborts or it ends; answers why it ended. A refusal before it began (the
+	 * pass) is a CloudMemberMachinePointerRefusal. */
+	memberStream?(
+		request: CloudMemberMachineStreamPeerRequest,
+		sink: { send(message: Buffer): Promise<void> },
+		signal: AbortSignal,
+	): Promise<string>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

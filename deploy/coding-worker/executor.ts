@@ -38,6 +38,7 @@ import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { HttpCloudMemberMachineScreenService } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
+import { CloudMemberMachineStreamListener } from "../../packages/runtime/src/cloud-member-machine-stream-http.ts";
 import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
@@ -48,7 +49,7 @@ import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
 	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
-	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
+	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -100,11 +101,16 @@ interface Config {
 	 * and the project's publishable key (not a secret), at `supabaseUrl`. Absent: this executor takes no member's look,
 	 * but still serves the ones another executor sends it (the peer listener). One node of a deployment has it. */
 	memberScreens: { port: number; publishableKey: string } | null;
+	/** Members' live pictures (20260930745000): the live-picture listener on loopback `port`, reached only through node 1's
+	 * own Cloudflare tunnel (its connector on this host: `qorpera-screens-tunnel.service`). Tickets are bought on the
+	 * member listener, so it needs `memberScreens`. Absent: no stream is taken here (the peer listener still serves the
+	 * ones another executor asks of it). */
+	memberStreams: { port: number } | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines", "memberScreens"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines", "memberScreens", "memberStreams"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -152,6 +158,14 @@ function memberScreensConfig(value: unknown, taken: readonly number[]): Config["
 		typeof input.publishableKey !== "string" || !/^[A-Za-z0-9._-]{8,8192}$/.test(input.publishableKey))
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { port: Number(input.port), publishableKey: input.publishableKey };
+}
+function memberStreamsConfig(value: unknown, screens: Config["memberScreens"], taken: readonly number[]): Config["memberStreams"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (!screens || Object.keys(input).join() !== "port" || !Number.isSafeInteger(input.port) || Number(input.port) < 1024 ||
+		Number(input.port) > 65535 || taken.includes(Number(input.port)) || Number(input.port) === screens.port)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { port: Number(input.port) };
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -245,6 +259,9 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost, folder: folderConfig(config.folder),
 		memberScreens: memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
+		memberStreams: memberStreamsConfig(config.memberStreams,
+			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
+			[Number(config.commandPort), Number(config.peerCommandPort)]),
 	};
 }
 
@@ -491,6 +508,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			memberActLocal: localMemberMachineAct(machineHost),
 			memberStartLocal: localMemberMachineStart(machineHost),
 			memberPointerLocal: localMemberMachinePointer(machineHost),
+			memberStreamLocal: localMemberMachineStream(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -542,11 +560,17 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		pointer: (pointer, signal) => machineRouter.memberPointer(pointer, signal),
 		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
 	}) : undefined;
+	// Members' live pictures (20260930745000): loopback only, behind node 1's own tunnel; nothing of a stream is logged.
+	const memberStreams = config.memberStreams ? new CloudMemberMachineStreamListener({
+		host: "127.0.0.1", port: config.memberStreams.port,
+		admit: (ticket, origin) => machineRouter.admitMemberStream(ticket, origin),
+	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
 		await peerCommands.start(stop.signal);
 		await memberScreens?.start(stop.signal);
+		await memberStreams?.listen();
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -722,6 +746,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await commands.close();
 		await peerCommands.close();
 		await memberScreens?.close();
+		await memberStreams?.close();
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}

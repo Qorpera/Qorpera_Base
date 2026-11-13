@@ -27,6 +27,7 @@ import {
 	cloudMemberMachinePointerAnswer,
 	cloudMemberMachineScreenAnswer,
 	cloudMemberMachineStartAnswer,
+	cloudMemberMachineStreamFrame,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
@@ -36,6 +37,7 @@ import {
 	parseCloudMemberMachinePointerPeerRequest,
 	parseCloudMemberMachineScreenPeerRequest,
 	parseCloudMemberMachineStartPeerRequest,
+	parseCloudMemberMachineStreamPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
 import {
@@ -460,6 +462,11 @@ export class HttpCloudCodingCommandService {
 				this.#options.proveBinding === null &&
 				this.#options.machines?.memberPointer &&
 				request.url === "/v1/machine-commands/member-pointer";
+			// A member's live picture (20260930745000): on the peer listener only, from the executor that admitted the stream.
+			const memberStreamRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberStream &&
+				request.url === "/v1/machine-commands/member-stream";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
@@ -471,7 +478,8 @@ export class HttpCloudCodingCommandService {
 					!memberScreenRoute &&
 					!memberActRoute &&
 					!memberStartRoute &&
-					!memberPointerRoute) ||
+					!memberPointerRoute &&
+					!memberStreamRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -566,6 +574,53 @@ export class HttpCloudCodingCommandService {
 					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
+				return;
+			}
+			if (memberStreamRoute && this.#options.machines?.memberStream) {
+				const admitted = parseCloudMemberMachineStreamPeerRequest(body);
+				// A live picture lasts while it is watched (its own bound, 8 h), not a command's 30 s; it ends when the asking
+				// executor closes its request.
+				clearTimeout(timeout);
+				let begun = false;
+				const begin = () => {
+					if (begun) return;
+					begun = true;
+					reply.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+				};
+				const sink = {
+					send: async (message: Buffer) => {
+						if (controller.signal.aborted) throw new Error(ERROR);
+						begin();
+						if (!reply.write(cloudMemberMachineStreamFrame(1, message)))
+							// Waiting for the asking executor to drain ends with this request too: nothing of it waits past
+							// the stream's end (review r2 F3 of #1746).
+							await new Promise<void>((resolve) => {
+								const done = () => {
+									reply.off("drain", done);
+									reply.off("close", done);
+									controller.signal.removeEventListener("abort", done);
+									resolve();
+								};
+								reply.once("drain", done);
+								reply.once("close", done);
+								controller.signal.addEventListener("abort", done, { once: true });
+							});
+					},
+				};
+				let reason: string;
+				try {
+					reason = await this.#options.machines.memberStream(admitted, sink, controller.signal);
+				} catch (error) {
+					// Only a refusal before anything was sent is told apart, by its fixed code.
+					if (!begun && error instanceof CloudMemberMachinePointerRefusal) {
+						replyJson(reply, 409, { code: error.code });
+						return;
+					}
+					if (!begun) throw error;
+					reason = "STREAM_UNAVAILABLE";
+				}
+				begin();
+				reply.end(cloudMemberMachineStreamFrame(2, Buffer.from(reason, "utf8")));
 				return;
 			}
 			if (memberPointerRoute && this.#options.machines?.memberPointer) {
