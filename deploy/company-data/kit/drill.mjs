@@ -362,7 +362,7 @@ try {
 	const statusOn = script(A, "run-door.sh", ["status"]);
 	check("(g) the documented upgrade (compose.sh up -d data-gateway, from /, only the kit's .env) brings the gateway back with its run door",
 		upgraded.ok && container(A, "data-gateway") !== gatewayBefore && afterUpgrade.status === 200 && statusOn.ok && /^run door: on$/m.test(statusOn.out),
-		`${upgraded.ok ? "" : tail(upgraded.err, 2)} ${afterUpgrade.status} ${afterUpgrade.error ?? ""} | ${statusOn.out.trim().split("\n").join(" / ")}`);
+		`${upgraded.ok ? "" : tail(upgraded.err, 2)} ${afterUpgrade.status} ${afterUpgrade.error ?? ""} | ${`${statusOn.out}`.trim().split("\n").join(" / ")}`);
 	// A door whose token cannot be read stays shut and says why; the members' door is up as always.
 	renameSync(join(RUN_SECRETS, "token"), join(RUN_SECRETS, "token.away"));
 	const shutUp = recreate();
@@ -374,7 +374,7 @@ try {
 		shutUp.ok && shutMembers.status === 200 && shutDoor.status === 0 &&
 			/data gateway: run door: off \(its token cannot be read \(ENOENT\)\)/.test(`${shutLog.out}${shutLog.err}`) &&
 			!statusOff.ok && /^run door: off \(its token cannot be read/m.test(statusOff.out) && /secrets: 2 of 3/.test(statusOff.out),
-		`${shutUp.ok ? "" : tail(shutUp.err, 2)} members ${shutMembers.status}; door ${shutDoor.status} ${shutDoor.error ?? ""} | ${statusOff.out.trim().split("\n").join(" / ")}`);
+		`${shutUp.ok ? "" : tail(shutUp.err, 2)} members ${shutMembers.status}; door ${shutDoor.status} ${shutDoor.error ?? ""} | ${`${statusOff.out}`.trim().split("\n").join(" / ")}`);
 	renameSync(join(RUN_SECRETS, "token.away"), join(RUN_SECRETS, "token"));
 	const backUp = recreate();
 	const afterBack = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
