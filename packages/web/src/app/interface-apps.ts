@@ -613,15 +613,14 @@ const REQUEST_COST = 5;
 /** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, a
  * request for a change reads the table or the questions before anything is shown, and a note costs as a change. A link
  * (`open`) costs one, and a link to a web page, which is put on the bar, what a request costs (`answer`). A question of
- * the company's databases (`query`) and the start of a watch (`watch`) cost one; ending a watch (`unwatch`) only takes
- * work away and costs nothing, and what a watch sends later costs nothing either. */
+ * the company's databases (`query`) and the start of a watch (`watch`) cost one; what a watch sends later costs nothing.
+ * Ending a watch (`unwatch`) is answered before the budget (`answer`). */
 const CALL_COST: Readonly<Record<string, number>> = {
 	todos: 10,
 	answer: REQUEST_COST,
 	setRow: REQUEST_COST,
 	addRow: REQUEST_COST,
 	tell: REQUEST_COST,
-	unwatch: 0,
 };
 /** A question's parameters: at most this many, each value at most this long. */
 const MAX_DATA_PARAMS = 16;
@@ -736,6 +735,9 @@ export class AppBridge {
 			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
 		)
 			return refuse("Not a call the app answers");
+		// Ending a watch goes first, outside the budget and the calls in flight: it only takes work away, and a refused
+		// one would keep the watch's place taken until the page reloads, since the page's stop runs once.
+		if (call.method === "unwatch") return this.#unwatch(call);
 		// The call's whole cost is known before anything is spent, and checked and charged in one step: a call that does
 		// not fit in the minute is refused and spends nothing (a note at 117 calls was let through to 122, and a web
 		// link refused there kept its first call; review r1 of #1770, F2).
@@ -838,8 +840,6 @@ export class AppBridge {
 			case "query":
 			case "watch":
 				return this.#data(call);
-			case "unwatch":
-				return this.#unwatch(call);
 			case "open": {
 				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
 				// needs nothing in `reads`: nothing is read for it, and the answer is the same whether or not what it names

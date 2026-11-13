@@ -1220,6 +1220,42 @@ describe("the company's databases on an app's page", () => {
 		expect(calls).toHaveLength(7);
 	});
 
+	it("ends a watch with 8 calls in flight, and gives its place back", async () => {
+		const { bridge, client, data } = setup();
+		// A question that never answers holds its call in flight.
+		const query = client.query;
+		client.query = (asked, signal) =>
+			asked.question === "hang" ? new Promise<never>(() => {}) : query(asked, signal);
+		const a = page();
+		const key = crypto.randomUUID();
+		const ids: number[] = [];
+		for (let index = 0; index < 8; index++) {
+			const started = bridge(a, ["data"], key).answer(watch(`shop/q${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			ids.push(((await started) as { value: { watch: number } }).value.watch);
+		}
+		expect(await bridge(a).answer(watch("shop/q8"))).toEqual({
+			ok: false,
+			error: "A page watches at most 8 questions at once",
+		});
+		for (let index = 0; index < 8; index++) void bridge(a, ["data"], key).answer(query8());
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await bridge(a, ["data"], key).answer(query8())).toEqual({
+			ok: false,
+			error: "Too many calls: wait a moment and try again",
+		});
+		// Ending a watch is never refused for the budget or the calls in flight, and its place is free again.
+		expect(await bridge(a, ["data"], key).answer({ method: "unwatch", params: { watch: ids[0] } })).toEqual({
+			ok: true,
+			value: null,
+		});
+		expect(data.questions).toBe(7);
+		const ninth = bridge(a).answer(watch("shop/q8"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await ninth).toMatchObject({ ok: true });
+	});
+	const query8 = () => ({ method: "query", params: { name: "shop/hang", params: {} } });
+
 	it("stops while the tab is hidden, when the company is put away, and when the page goes", async () => {
 		const { bridge, calls, company, data } = setup();
 		const a = page();
