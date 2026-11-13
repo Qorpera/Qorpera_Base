@@ -312,6 +312,14 @@ await finish(
 			const receipt = db.json(`select to_jsonb(r)::text from public.qorpera_run_operation_receipts r where r.id = '${webTests.reused_by_receipt_id}'`);
 			assert.equal(receipt.run_id, runId);
 			assert.equal(receipt.logical_operation_key, "machine_start:b1-market");
+			// The kernel finds a live run's earlier asks by the machine in their receipts: the runtime keeps it there.
+			assert.equal(receipt.result.content.value.machine.machineId, webTests.id, JSON.stringify(receipt.result).slice(0, 300));
+			assert.equal(
+				db.query(`select count(*) from public.qorpera_run_operation_receipts r where r.run_id = '${runId}'
+					and r.logical_operation_key like 'machine_start:%' and r.status = 'completed'
+					and r.result #>> '{content,value,machine,machineId}' = '${webTests.id}'`),
+				"1",
+			);
 			for (const name of ["bob-box", "for-another"]) {
 				const other = machine(name);
 				assert.equal(other.desired_state, "stopped", name);
@@ -319,7 +327,7 @@ await finish(
 				assert.equal(other.reused_by_receipt_id, null, name);
 			}
 			pass(
-				"her own free machine web-tests (asleep two days) was given to her again in place of a new one: woken, its purpose the new one, the start's receipt kept on it, its starter kept; Bob's and the one for another member were not touched",
+				"her own free machine web-tests (asleep two days) was given to her again in place of a new one: woken, its purpose the new one, the start's receipt kept on it (and the machine in that receipt's stored answer, where the kernel looks for a live run's asks), its starter kept; Bob's and the one for another member were not touched",
 			);
 			const waited = proof.starts[0].ms;
 			const booted = [...proof.boots.values()];

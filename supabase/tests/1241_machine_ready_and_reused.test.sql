@@ -27,7 +27,8 @@ create function pg_temp.b1_requester() returns uuid language sql as $$
 	select (public.qorpera_describe_native_tool_authority(pg_temp.b1_binding()) #>> '{identity,requesterUserId}')::uuid
 $$;
 -- 628's machine_start: the exact envelope Alice's run hashes; authorize, begin the receipt, perform (twice when asked: a
--- replay inside the same operation), complete.
+-- replay inside the same operation), complete with the result as the runtime keeps it (cloud-native-tool-operations.ts:
+-- the operation result, the answer its json content).
 create function pg_temp.b1_start_envelope(p_key text, p_args jsonb) returns text language sql as $$
 	select jsonb_build_object('schema','qorpera.cloud-tool-operation/v2',
 		'principals',(public.qorpera_describe_native_tool_authority(pg_temp.b1_binding()) -> 'identity')
@@ -49,7 +50,9 @@ begin
 			and v_again ->> 'reused' is not distinct from v_result ->> 'reused',
 			'a replay of the same receipt answers the same machine: ' || v_result::text || ' then ' || v_again::text);
 	end if;
-	perform public.qorpera_complete_native_tool_operation(pg_temp.b1_binding(), p_receipt, v_sha, v_result);
+	perform public.qorpera_complete_native_tool_operation(pg_temp.b1_binding(), p_receipt, v_sha,
+		jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'inputSha256', v_sha,
+			'content', jsonb_build_object('kind', 'json', 'value', v_result)));
 	return v_result;
 end
 $$;
@@ -266,6 +269,12 @@ begin
 		and pg_temp.b1_pick(pg_temp.b1_new('x', 2, 'task', 41)) is null
 		and pg_temp.b1_pick(pg_temp.b1_new('x', 4)) = 'bigger' and pg_temp.b1_pick(pg_temp.b1_new('x', 2, 'always-on')) is null,
 		'3: the size and the lifetime');
+	-- The kind of run: a worker's access must be the starter run's (none for a conversation's run and a member's start).
+	perform pg_temp.base_assert(public.qorpera_company_machine_takeable(pg_temp.b1_machine('free-new'),
+			public.qorpera_describe_native_tool_authority(pg_temp.b1_binding()) -> 'identity', pg_temp.b1_new('x'), null)
+		and not public.qorpera_company_machine_takeable(pg_temp.b1_machine('free-new'),
+			public.qorpera_describe_native_tool_authority(pg_temp.b1_binding()) -> 'identity', pg_temp.b1_new('x'), 'read'),
+		'3: a worker''s run takes no machine a conversation''s run started');
 	-- A starter run that ended does not count; one that still goes does.
 	set local session_replication_role = replica;
 	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp()
@@ -334,7 +343,7 @@ begin
 	perform pg_temp.base_assert(pg_temp.b1_pick(pg_temp.b1_new('x')) = 'bob-started', '3: an earlier wake of a run that still goes');
 	-- Her wake as if its answer were not kept yet (its receipt names no machine): taken_by_run_id alone.
 	set local session_replication_role = replica;
-	update public.qorpera_run_operation_receipts set result = '{"schema":"qorpera.machine-start/v1"}'
+	update public.qorpera_run_operation_receipts set result = result #- '{content,value,machine}'
 	where run_id = pg_temp.b1_run() and logical_operation_key = 'machine_start:wake-run-free';
 	set local session_replication_role = origin;
 	perform pg_temp.b1_shift('run-free', 'taken_by_run_id = ' || quote_literal(pg_temp.b1_run()));

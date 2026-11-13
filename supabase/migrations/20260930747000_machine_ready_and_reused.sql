@@ -107,13 +107,14 @@ returns boolean language sql stable security definer set search_path = '' as $$
 			join public.qorpera_runner_jobs job on job.id = run.job_id
 			where job.status in ('queued', 'leased'))
 		-- Nor any completed machine_start of a run that still goes that answered this machine (an earlier asker's, when a
-		-- later one is taken_by_run_id).
+		-- later one is taken_by_run_id), as the runtime keeps its answer: the operation result's content
+		-- (qorpera.cloud-tool-operation-result/v1, cloud-native-tool-operations.ts).
 		and not exists (select 1 from public.qorpera_runner_jobs job
 			join public.qorpera_execution_runs run on run.job_id = job.id
 			join public.qorpera_run_operation_receipts receipt on receipt.run_id = run.id
 			where job.status in ('queued', 'leased') and run.profile_id = p_machine.profile_id
 				and receipt.logical_operation_key like 'machine_start:%' and receipt.status = 'completed'
-				and receipt.result #>> '{machine,machineId}' = p_machine.id::text)
+				and receipt.result #>> '{content,value,machine,machineId}' = p_machine.id::text)
 $$;
 revoke all on function public.qorpera_company_machine_takeable(public.qorpera_company_machines, jsonb, jsonb, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
