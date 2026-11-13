@@ -424,12 +424,12 @@ export class ComputerScene {
 		ground.style.background = hour.ground;
 		const flatOn = svg("svg", {
 			class: "computer-scene-flat is-on",
-			viewBox: "0 0 1920 1200",
+			viewBox: "560 200 800 800",
 			preserveAspectRatio: "none",
 		});
 		const flatOff = svg("svg", {
 			class: "computer-scene-flat is-off",
-			viewBox: "0 0 1920 1200",
+			viewBox: "560 200 800 800",
 			preserveAspectRatio: "none",
 		});
 		void backdrop(figure).then((paths) => {

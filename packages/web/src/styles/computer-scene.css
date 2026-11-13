@@ -9,7 +9,7 @@
 /* Before boot the screen is off: dark at every hour. It lights up late as the machine boots. */
 .computer-scene-ground.is-off { transition: opacity 1300ms var(--ease-in) 500ms; }
 .computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-ground.is-off { opacity: 0; }
-.computer-scene-flat { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.computer-scene-flat { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
 .computer-scene-flat.is-on { opacity: 0; transition: opacity 1800ms var(--ease-in-out); }
 .computer-scene-flat.is-off { transition: opacity 1800ms var(--ease-in-out); }
 .computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-flat.is-on { opacity: 1; }
@@ -19,7 +19,9 @@
 .computer-scene[data-avatar=true] .computer-scene-flat.is-on { transition: none; }
 .computer-scene[data-avatar=false] .computer-scene-avatar { display: none; }
 /* The figure breathes from its base (78 % of the screen), slower while it sleeps. */
-.computer-scene-body { position: absolute; inset: 0; transform-origin: 50% 78%; animation: computer-scene-breathe 4800ms ease-in-out infinite alternate; }
+/* The figure's own 100-unit frame (translate(560 200) scale(8) of 1920x1200: a square box over 28 % of the screen) is the
+   one layer that moves, so a breath repaints nothing and composites a small layer (Safari: review of the probe). */
+.computer-scene-body { position: absolute; left: 29.1667%; top: 16.6667%; width: 41.6667%; height: 66.6667%; transform-origin: 50% 92%; will-change: transform; animation: computer-scene-breathe 4800ms ease-in-out infinite alternate; }
 .computer-scene-body.is-neutral { transform-origin: 50% 50%; animation-name: computer-scene-breathe-neutral; }
 .computer-scene[data-phase=asleep] .computer-scene-body { animation-duration: 6400ms; }
 .computer-scene:is([data-phase=off], [data-phase=settled]) .computer-scene-body { animation: none; }
@@ -27,7 +29,7 @@
 @keyframes computer-scene-breathe { from { transform: scale(1, 1); } to { transform: scale(1.006, 1.014); } }
 @keyframes computer-scene-breathe-neutral { from { transform: scale(1); } to { transform: scale(1.012); } }
 /* The avatar and the eyes in the figure's 100-unit frame: translate(560 200) scale(8) rotate(-4 50 50) of 1920x1200. */
-.computer-scene-avatar, .computer-scene-eyes { position: absolute; left: 29.1667%; top: 16.6667%; width: 41.6667%; height: 66.6667%; rotate: -4deg; }
+.computer-scene-avatar, .computer-scene-eyes { position: absolute; inset: 0; rotate: -4deg; }
 .computer-scene-avatar-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 /* The settle: the figure loses its colour first (onto the grey copy, its shading kept), then its shading flattens into
    the wallpaper; the eyes stay where they are throughout. */
@@ -71,12 +73,15 @@
    note and a failed wake stand in the dock's bar, the button where the clock will be: nothing near the figure
    (round 3: the rocket's feet touched a row under it). On the way up the scene says the line in the dock itself and
    these words are for screen readers only. The strip is the dock: 8 % of the 16:10 screen, at its foot. */
-.computer-loading.is-scene { --screen-h: min(100cqh, 62.5cqw); position: absolute; top: calc((100cqh - var(--screen-h)) / 2 + var(--screen-h) * 0.92); left: 0; right: 0; z-index: 1; width: min(100cqw, 160cqh); height: calc(var(--screen-h) * 0.08); margin: 0 auto; display: flex; flex-flow: row nowrap; align-items: center; justify-content: flex-start; gap: 6px; padding: 0 3px 0 10px; overflow: hidden; container-type: inline-size; pointer-events: none; }
+.computer-loading.is-scene { --screen-h: min(100cqh, 62.5cqw); position: absolute; top: calc((100cqh - var(--screen-h)) / 2 + var(--screen-h) * 0.92); left: 0; right: 0; z-index: 1; width: min(100cqw, 160cqh); height: calc(var(--screen-h) * 0.08); margin: 0 auto; display: flex; flex-flow: row nowrap; align-items: center; justify-content: flex-start; gap: 6px; padding: 0 5px 0 10px; overflow: hidden; container-type: inline-size; pointer-events: none; }
 .computer-loading.is-scene[hidden] { display: none; }
 .computer-loading.is-scene > * { pointer-events: auto; }
 .computer-loading.is-scene p { flex: 0 1 auto; min-width: 0; max-width: none; overflow: hidden; color: #e9ebf0; font-size: 11px; font-weight: 500; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; }
-.computer-loading.is-scene p.computer-loading-detail { flex: 0 1000 auto; margin-top: 0; color: rgb(233 235 240 / 62%); font-weight: 400; }
-.computer-panel .computer-loading.is-scene .computer-retry { flex: none; min-height: 0; height: calc(100% - 3px); max-height: 30px; margin-left: auto; padding: 0 10px; border: 0; border-radius: 999px; color: #1d1d1f; background: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
+.computer-loading.is-scene p.computer-loading-detail { flex: 0 1000 auto; margin-top: 0; color: rgb(233 235 240 / 78%); font-weight: 400; }
+/* Asleep the screen is off: the strip may stand a little taller than the dock (28 px at least), on the dock's own
+   colour, so its words and button have room (review r1 on the real component). */
+.computer-loading.is-scene[data-scene=asleep] { top: auto; bottom: calc((100cqh - var(--screen-h)) / 2); height: max(28px, calc(var(--screen-h) * 0.08)); background: #101218; }
+.computer-panel .computer-loading.is-scene .computer-retry { flex: none; min-height: 0; height: calc(100% - 8px); max-height: 30px; margin-left: auto; padding: 0 10px; border: 0; border-radius: 999px; color: #1d1d1f; background: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
 .computer-panel .computer-loading.is-scene .computer-retry:hover { background: #e9e9ec; }
 .computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @container (min-width: 44em) {
@@ -92,3 +97,6 @@
 	.computer-scene * { transition: none !important; }
 	.computer-panel .machine-screen.is-arriving { animation: none; }
 }
+/* On the dark screen the window's own ✕ and switcher take the dark surface's ink (dark.css), not a glow meant for a
+   light picture (review r1 on the real component). */
+.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }
