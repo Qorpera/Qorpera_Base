@@ -76,6 +76,12 @@ a text is used only when its hash is the kept one. One pass serves one call; a `
 pass and the texts. A wrong token, no pass and a pass that redeems to nothing (redeemed, unknown, expired, or its run's
 job ended) all answer 401 `{ error: "Not allowed" }`.
 
+Where it listens: on the store's machine the kit starts it when `DATA_RUN_LISTEN` is set (`kit/README.md`, "The run
+door"), over TLS with a cert from the kit's CA for `10.41.0.1`. A provider host (a slot of its node's execution host)
+dials `https://10.41.0.1:8481` on its own node, which the guest guard lets through, and the node forwards it to the run
+door (node 2's through node 1); TLS ends at the gateway. The host holds the token as its credential
+`qorpera-company-data` and pins the kit's CA by its sha256 (`deploy/shared-execution/shared-execution.env.example`).
+
 | Call | Body (with `pass`, and `texts` after a `need`) | Answer |
 | --- | --- | --- |
 | `describe` | `{ database? }` | `{ databases: [{ database, name, about, steps: { applied, waiting, changed, missing }, tables, questions: [{ name, words, parameters }] }], companyBytes, limitBytes }` |
