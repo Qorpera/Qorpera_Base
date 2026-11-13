@@ -26,8 +26,11 @@ import {
 	CODE_IMPORT_KEY_KINDS,
 	CODE_IMPORT_KEY_PATTERNS,
 	CODE_IMPORT_LEASE_MS,
+	CODE_IMPORT_LINE_TREE_BYTES,
+	CODE_IMPORT_LINES_SECONDS,
 	CODE_IMPORT_LOOK_BYTES,
 	CODE_IMPORT_LOOK_COLUMN_BYTES,
+	CODE_IMPORT_LOOK_LINES,
 	CODE_IMPORT_LOOK_PATH_BYTES,
 	CODE_IMPORT_LOOK_PATHS,
 	CODE_IMPORT_LOOK_SHOWN,
@@ -57,6 +60,7 @@ import {
 	CODE_IMPORT_TAGS,
 	CODE_IMPORT_WANTS,
 	type CodeImportAnswer,
+	type CodeImportLineSeen,
 	type CodeImportLookFacts,
 	type CodeImportRefList,
 	type CodeImportRefSeen,
@@ -82,6 +86,7 @@ import {
 	codeImportJsonbBound,
 	codeImportKeyIn,
 	codeImportLfsPointer,
+	codeImportLinesShown,
 	codeImportLook,
 	codeImportLookedAnswer,
 	codeImportLookOf,
@@ -192,6 +197,9 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_LOOK_PATH_BYTES,
 			CODE_IMPORT_LOOK_PATHS,
 			CODE_IMPORT_LOOK_SHOWN,
+			CODE_IMPORT_LOOK_LINES,
+			CODE_IMPORT_LINES_SECONDS,
+			CODE_IMPORT_LINE_TREE_BYTES,
 			CODE_IMPORT_PROGRESS_BYTES,
 			CODE_IMPORT_LEASE_MS,
 			CODE_IMPORT_RENEW_MS,
@@ -232,6 +240,9 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_LOOK_PATH_BYTES: 200,
 			CODE_IMPORT_LOOK_PATHS: 10,
 			CODE_IMPORT_LOOK_SHOWN: 30,
+			CODE_IMPORT_LOOK_LINES: 10,
+			CODE_IMPORT_LINES_SECONDS: 300,
+			CODE_IMPORT_LINE_TREE_BYTES: 32 * MiB,
 			CODE_IMPORT_PROGRESS_BYTES: 3_072,
 			CODE_IMPORT_LEASE_MS: 900_000,
 			CODE_IMPORT_RENEW_MS: 300_000,
@@ -1840,6 +1851,222 @@ describe("the look", () => {
 			],
 		] as [string, (copy: Record<string, unknown>) => void][])
 			expect(() => codeImportLookOf(broken(change)), what).toThrow("INVALID_CODE_IMPORT_LOOK");
+	});
+
+	/** A commit's time the look shows (2025-11-12T14:00:00Z), and an other line of work as the measure finds it. */
+	const T = 1_762_956_000;
+	const DAY_S = 86_400;
+	const line = (name: string, ahead: number, time: number, more: Partial<CodeImportLineSeen> = {}) =>
+		({ name, ahead, behind: 1, time, fits: true, ...more }) as CodeImportLineSeen;
+
+	it("shows the other lines of work: at most 10, most changes first, then the newest, then by name; names whole or null", () => {
+		const long = `q${"z".repeat(199)}`,
+			over = `x${"y".repeat(200)}`;
+		const seen = [
+			line("b-one", 1, T),
+			// The same changes and time as b-one: by name.
+			line("a-one", 1, T),
+			// Names that are not shown come after those that are, at the same changes and time; between them, their own.
+			line(over, 1, T),
+			line(PLANTED.aws, 1, T),
+			line("old", 1, T - DAY_S),
+			// Past the year 9999: no time shown, after every time at its changes.
+			line("far", 1, 253_402_300_800),
+			line("most", 5, T - 9 * DAY_S, { behind: 0 }),
+			line("two", 2, T - 2 * DAY_S, { fits: false }),
+			line("two-new", 2, T - DAY_S, { fits: null }),
+			line(long, 1, T + 1),
+			line("left-1", 1, T - 30 * DAY_S),
+			line("left-2", 1, T - 31 * DAY_S),
+		];
+		const order = ["most", "two-new", "two", long, "a-one", "b-one", PLANTED.aws, over, "old", "left-1"];
+		expect(codeImportLinesShown(seen).map((each) => each.name)).toEqual(order);
+		expect(codeImportLinesShown([...seen].reverse()).map((each) => each.name)).toEqual(order);
+		const look = codeImportLook(
+			facts({ branches: { seen: 20, kept: 12 }, lines: { count: 12, changes: 9, shown: [...seen].reverse() } }),
+		);
+		const at = (time: number) => codeImportTime(time);
+		expect(look.lines).toEqual({
+			count: 12,
+			changes: 9,
+			shown: [
+				{ name: "most", ahead: 5, behind: 0, lastAt: at(T - 9 * DAY_S), fits: true },
+				{ name: "two-new", ahead: 2, behind: 1, lastAt: at(T - DAY_S), fits: null },
+				{ name: "two", ahead: 2, behind: 1, lastAt: at(T - 2 * DAY_S), fits: false },
+				{ name: long, ahead: 1, behind: 1, lastAt: at(T + 1), fits: true },
+				{ name: "a-one", ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: "b-one", ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: null, ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: null, ahead: 1, behind: 1, lastAt: at(T), fits: true },
+				{ name: "old", ahead: 1, behind: 1, lastAt: at(T - DAY_S), fits: true },
+				{ name: "left-1", ahead: 1, behind: 1, lastAt: at(T - 30 * DAY_S), fits: true },
+			],
+		});
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(look)))).toEqual(look);
+		// The key both ways: left out when there was no measure, and a measure that found nothing says so.
+		const without = codeImportLook(facts());
+		expect("lines" in without).toBe(false);
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(without)))).toEqual(without);
+		const none = codeImportLook(
+			facts({ branches: { seen: 0, kept: 0 }, lines: { count: 0, changes: 0, shown: [] } }),
+		);
+		expect(none.lines).toEqual({ count: 0, changes: 0, shown: [] });
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(none)))).toEqual(none);
+		// A line whose last change shows no time sorts after one whose does, and the far one is left out above.
+		expect(
+			codeImportLinesShown([line("far", 1, 253_402_300_800), line("near", 1, 0)]).map((each) => each.name),
+		).toEqual(["near", "far"]);
+	});
+
+	it("fits its bounds with every line at its largest: the shown keys go first, the lines never", () => {
+		const big = '"'.repeat(200),
+			most = Number.MAX_SAFE_INTEGER,
+			end = 253_402_300_799;
+		const largest = facts({
+			bytes: most,
+			defaultBranch: big,
+			commits: most,
+			firstAt: "9999-12-31T23:59:59Z",
+			lastAt: "9999-12-31T23:59:59Z",
+			authors30d: most,
+			tags: { seen: most, kept: 500 },
+			branches: { seen: most, kept: 200 },
+			lines: {
+				count: 200,
+				changes: most,
+				shown: Array.from({ length: 12 }, () => line(big, most, end, { behind: most, fits: false })),
+			},
+			leftOut: most,
+			files: most,
+			entries: most,
+			biggest: { path: big, bytes: most },
+			lfsPointers: most,
+			submodules: most,
+			refused: { code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths: Array.from({ length: 11 }, () => big) },
+			scan: { blobs: most, bytes: most, all: false },
+			why: "CODE_HOST_NAMES_FOLDER_REFUSES",
+		});
+		const look = codeImportLook(largest);
+		expect(look.defaultBranch).toBe(big);
+		expect(look.lines?.shown).toHaveLength(10);
+		for (const shown of look.lines?.shown ?? []) expect(shown.name).toBe(big);
+		// No shown keys, and every number at its largest, `more` too: under 11 KiB as text and as the jsonb bound.
+		const worst = { ...look, refused: { ...look.refused, more: most } };
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(worst)))).toEqual(worst);
+		const text = Buffer.byteLength(JSON.stringify(worst));
+		expect(text).toBeLessThanOrEqual(11 * 1024);
+		expect(codeImportJsonbBound(worst)).toBeLessThanOrEqual(11 * 1024);
+		// With keys to show, whole shown keys go until it fits; the lines stay whole.
+		const keys = codeImportLook({
+			...largest,
+			secrets: Array.from({ length: 40 }, (_, i) => ({
+				kind: "aws" as const,
+				path: `${i}`.padEnd(200, '"'),
+				inMain: true,
+			})),
+		});
+		expect(keys.lines).toEqual(look.lines);
+		expect(keys.secrets.found).toBe(40);
+		expect(keys.secrets.shown.length).toBeGreaterThan(0);
+		expect(keys.secrets.shown.length).toBeLessThan(30);
+		expect(Buffer.byteLength(JSON.stringify(keys))).toBeLessThanOrEqual(CODE_IMPORT_LOOK_BYTES);
+		expect(codeImportJsonbBound(keys)).toBeLessThanOrEqual(CODE_IMPORT_LOOK_BYTES);
+		expect(codeImportLookOf(JSON.parse(JSON.stringify(keys)))).toEqual(keys);
+	});
+
+	it("reads the lines back only by their rules", () => {
+		const look = codeImportLook(
+			facts({
+				lines: {
+					count: 3,
+					changes: 4,
+					shown: [line("a", 3, T), line("b", 1, T, { fits: null }), line(PLANTED.aws, 1, T, { fits: false })],
+				},
+			}),
+		);
+		expect(look.lines?.shown.map((each) => each.name)).toEqual(["a", "b", null]);
+		expect(codeImportLookOf(look)).toEqual(look);
+		const changed = (change: (lines: Record<string, unknown>, shown: Record<string, unknown>[]) => void) => {
+			const copy = JSON.parse(JSON.stringify(look));
+			change(copy.lines, copy.lines.shown);
+			return copy;
+		};
+		const at = codeImportTime(T);
+		// Two names not shown, at the same changes and time: either order.
+		expect(() =>
+			codeImportLookOf(
+				changed((_, shown) => {
+					shown[1] = { ...(shown[1] as object), name: null };
+				}),
+			),
+		).not.toThrow();
+		const many = (count: number) =>
+			Array.from({ length: count }, (_, i) => ({
+				name: `n${String(i).padStart(2, "0")}`,
+				ahead: 1,
+				behind: 0,
+				lastAt: at,
+				fits: true,
+			}));
+		expect(() =>
+			codeImportLookOf({
+				...JSON.parse(JSON.stringify(look)),
+				branches: { seen: 200, kept: 200 },
+				lines: { count: 200, changes: 200, shown: many(10) },
+			}),
+		).not.toThrow();
+		for (const [what, change] of [
+			["shown not a list", (l) => Object.assign(l, { shown: {} })],
+			["a key more", (l) => Object.assign(l, { extra: 1 })],
+			["a key less", (l) => delete l.changes],
+			["a line's key more", (_, s) => Object.assign(s[0] as object, { extra: 1 })],
+			["a line's key less", (_, s) => delete s[0]?.fits],
+			["count over the kept heads", (l) => Object.assign(l, { count: 5 })],
+			["count not whole", (l) => Object.assign(l, { count: 3.5 })],
+			["no changes for lines", (l) => Object.assign(l, { changes: 0 })],
+			["changes without lines", (l) => Object.assign(l, { count: 0, changes: 1, shown: [] })],
+			["more shown than counted", (l) => Object.assign(l, { count: 2 })],
+			["ahead none", (_, s) => Object.assign(s[2] as object, { ahead: 0 })],
+			["ahead over changes", (_, s) => Object.assign(s[0] as object, { ahead: 5 })],
+			["behind below none", (_, s) => Object.assign(s[0] as object, { behind: -1 })],
+			["behind not whole", (_, s) => Object.assign(s[0] as object, { behind: 1.5 })],
+			[
+				"a time with its milliseconds",
+				(_, s) => Object.assign(s[0] as object, { lastAt: "2025-11-12T14:00:00.000Z" }),
+			],
+			["a name with a key", (_, s) => Object.assign(s[1] as object, { name: PLANTED.github })],
+			["a name of 201 bytes", (_, s) => Object.assign(s[1] as object, { name: "b".repeat(201) })],
+			["an empty name", (_, s) => Object.assign(s[1] as object, { name: "" })],
+			["fits a word", (_, s) => Object.assign(s[0] as object, { fits: "yes" })],
+			["fewer changes first", (_, s) => s.reverse()],
+			["older first", (_, s) => Object.assign(s[1] as object, { lastAt: codeImportTime(T - DAY_S) })],
+			["no time before a time", (_, s) => Object.assign(s[1] as object, { lastAt: null })],
+			[
+				"no name before a name",
+				(_, s) => {
+					Object.assign(s[1] as object, { name: null });
+					Object.assign(s[2] as object, { name: "c" });
+				},
+			],
+			[
+				"names out of their byte order",
+				(_, s) => {
+					Object.assign(s[1] as object, { name: "c" });
+					Object.assign(s[2] as object, { name: "b" });
+				},
+			],
+		] as [string, (lines: Record<string, unknown>, shown: Record<string, unknown>[]) => void][])
+			expect(() => codeImportLookOf(changed(change)), what).toThrow("INVALID_CODE_IMPORT_LOOK");
+		expect(() =>
+			codeImportLookOf({
+				...JSON.parse(JSON.stringify(look)),
+				branches: { seen: 200, kept: 200 },
+				lines: { count: 200, changes: 200, shown: many(11) },
+			}),
+		).toThrow("INVALID_CODE_IMPORT_LOOK");
+		expect(() => codeImportLookOf({ ...JSON.parse(JSON.stringify(look)), lines: null })).toThrow(
+			"INVALID_CODE_IMPORT_LOOK",
+		);
 	});
 });
 

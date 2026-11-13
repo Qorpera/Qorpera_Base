@@ -10,6 +10,7 @@ import {
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
+	type CodeHostShell,
 	closed,
 	codeRefsSha256,
 	keptRepositoryOf,
@@ -17,7 +18,7 @@ import {
 	MAX_PIECE,
 	MAX_READ,
 	MAX_REFS,
-	type Run,
+	Run,
 	SHA,
 	SHA256,
 	treeRecords,
@@ -27,6 +28,9 @@ import {
 	CODE_IMPORT_AUTHOR_DAYS,
 	CODE_IMPORT_FILE_MAXIMUM_BYTES,
 	CODE_IMPORT_FSCK_MS,
+	CODE_IMPORT_IMPORTED_HEADS,
+	CODE_IMPORT_LINE_TREE_BYTES,
+	CODE_IMPORT_LINES_SECONDS,
 	CODE_IMPORT_MAIN_ENTRIES,
 	CODE_IMPORT_MAXIMUM_BYTES_LIMIT,
 	CODE_IMPORT_READ_PIECE_BYTES,
@@ -40,12 +44,14 @@ import {
 	type CodeImportFetched,
 	type CodeImportJobs,
 	type CodeImportKeyKind,
+	type CodeImportLineSeen,
 	type CodeImportLooked,
 	type CodeImportLookFacts,
 	type CodeImportLookValue,
 	type CodeImportRaw,
 	type CodeImportReadValue,
 	type CodeImportRefSeen,
+	type CodeImportRefsPlan,
 	type CodeImportSink,
 	codeImportAuthors,
 	codeImportBundleHeaderOf,
@@ -54,6 +60,7 @@ import {
 	codeImportGitRefValid,
 	codeImportHistoryCode,
 	codeImportIncomingPathValid,
+	codeImportLinesShown,
 	codeImportLook,
 	codeImportProgressOf,
 	codeImportRefsPlan,
@@ -68,9 +75,9 @@ import {
  *
  *   read    a file source, `code/_incoming/<folder>/<name>.bundle`, copied to the scratch, checked against the
  *           request's SHA-256 and read out as the first bundle.
- *   look    the first bundle proven (the import's one fsck), what it holds looked at (the facts and the key scan), and
- *           then, unless the look was all that was asked or it found what stops the import, the refs plan applied and
- *           the restore-shaped bundle made, proven as care proves one, and read out.
+ *   look    the first bundle proven (the import's one fsck), what it holds looked at (the facts, the other lines of work
+ *           and the key scan), and then, unless the look was all that was asked or it found what stops the import, the
+ *           refs plan applied and the restore-shaped bundle made, proven as care proves one, and read out.
  *
  * Nothing here removes the file source: once the import is in, the agent that made the bundle removes it through its own
  * view, which has the folder's checks for a writer, and only if it is still that bundle. A code host job's view has no
@@ -708,6 +715,152 @@ async function scanKeys(
 	};
 }
 
+// The other lines of work ---------------------------------------------------------------------------------------------
+
+/** One command of the measure, in the code host: under `timeout` (TERM after `$1` seconds, KILL 10 s later), its
+ * stdout kept in the scratch (`$3`, its status in `$4`) and handed out only when it is at most `$2` bytes, after a first
+ * line of ours: `ok`, or `over` and nothing more. A command that did not end well ends the script with its status (124
+ * or 137 when it was stopped). */
+export const CODE_HOST_IMPORT_MEASURE = `seconds=$1 bound=$2 out=$3 status=$4
+shift 4
+{ timeout -k 10 "$seconds" "$@"; echo "$?" >"$status"; } | head -c "$((bound + 1))" >"$out" || exit 1
+read -r ended <"$status" || exit 1
+size=$(stat -c %s -- "$out") || exit 1
+if [ "$size" -gt "$bound" ]; then echo over; exit 0; fi
+[ "$ended" -eq 0 ] || exit "$ended"
+echo ok
+exec cat -- "$out"`;
+/** The ahead-behind walk's answer: at most 200 heads, each a name the folder takes and two numbers. */
+const AHEAD_BEHIND_BYTES = 1024 ** 2;
+
+/** A command of the measure whose stdout was over its bound. */
+class Over extends Error {}
+
+/** The job's run, with every command run as the measure's (`CODE_HOST_IMPORT_MEASURE`): it ends within `seconds`, and
+ * hands out at most `bound` bytes, or its own bound when that is smaller; more is `Over`. So the names checks of main's
+ * tree (`Run.checkNames`) read a line's tree as they are, within the measure's bounds. */
+function measuring(run: Run, seconds: number, bound: number): Run {
+	const out = `${run.directory}/measure.out`,
+		status = `${run.directory}/measure.status`;
+	const shell: CodeHostShell = {
+		run: async (command, signal) => {
+			const most = Math.min(command.maximumOutputBytes, bound);
+			const result = await run.job.shell.run(
+				{
+					...command,
+					argv: [
+						"/bin/sh",
+						"-c",
+						CODE_HOST_IMPORT_MEASURE,
+						"sh",
+						String(seconds),
+						String(most),
+						out,
+						status,
+						...command.argv,
+					],
+					maximumOutputBytes: most + 5,
+				},
+				signal,
+			);
+			if (result.status !== 0) return result;
+			if (result.stdout.equals(Buffer.from("over\n", "latin1"))) throw new Over();
+			if (result.stdout.subarray(0, 3).toString("latin1") !== "ok\n")
+				throw new CodeHostJobFailure(FAILED, "a measure's answer");
+			return { ...result, stdout: result.stdout.subarray(3) };
+		},
+	};
+	return new Run({ ...run.job, shell }, run.layout, run.repository, run.directory);
+}
+
+/** Whether the company folder takes every name in a line's tree where main/ would hold it, by main's own checks:
+ * `Run.checkNames` (UTF-8, NFC, names one to the folder by case, files over 256 MiB), then `codeFolderRefuses`. Null
+ * when its listing is over the measure's bound; a listing that fails is the measure's failure. */
+async function lineFits(measure: Run, proof: string, sha: string): Promise<boolean | null> {
+	try {
+		return codeFolderRefuses(measure.area, await measure.checkNames(proof, sha)).length === 0;
+	} catch (error) {
+		if (error instanceof CodeHostRefusal) return false;
+		if (error instanceof Over) return null;
+		throw error;
+	}
+}
+
+/** The other lines of work (STEP6-FOLLOW-UPS-PLAN.md section 1), measured in the proof repository before the plan is
+ * applied, where each head the plan keeps still stands under `refs/heads/`: one walk for each kept head's changes main
+ * lacks and main's it lacks (`for-each-ref --stdin` with `%(ahead-behind:<main>)`), one for the changes of those that
+ * hold any, each counted once (`rev-list --count --stdin`: their commits and `^<main>`), and the trees of the lines the
+ * look shows (`codeImportLinesShown`, at most 10) through main's names checks (`lineFits`). Each command ends within
+ * `seconds` and hands out no more than its bound (`measuring`); what comes out is ref names, numbers and the trees'
+ * names, ids and sizes, never a file's bytes. A measure that does not end well is left out of the look (undefined), and
+ * the look goes on: only the job's own stop goes on up. */
+async function linesOf(
+	run: Run,
+	proof: string,
+	plan: CodeImportRefsPlan,
+	refs: readonly CodeImportRefSeen[],
+	seconds: number,
+	treeBytes: number,
+): Promise<CodeImportLookFacts["lines"]> {
+	const kept = new Set(plan.refs.map((ref) => ref.name));
+	const heads = refs
+		.filter(
+			(ref) =>
+				ref.name.startsWith("refs/heads/") &&
+				kept.has(`${CODE_IMPORT_IMPORTED_HEADS}${ref.name.slice("refs/heads/".length)}`),
+		)
+		.map((ref) => ({ ...ref, name: ref.name.slice("refs/heads/".length), ref: ref.name }));
+	if (!heads.length) return { count: 0, changes: 0, shown: [] };
+	const measure = measuring(run, seconds, treeBytes);
+	try {
+		const listed = await measure.git(
+			proof,
+			["for-each-ref", "--stdin", `--format=%(refname)%00%(ahead-behind:${plan.mainSha})`],
+			{
+				stdin: Buffer.from(heads.map((head) => `${head.ref}\n`).join(""), "utf8"),
+				maximumOutputBytes: AHEAD_BEHIND_BYTES,
+			},
+		);
+		if (listed.status !== 0) return undefined;
+		const counts = new Map<string, { ahead: number; behind: number }>();
+		// Whole lines only: one without its line feed is no answer for its head.
+		for (const line of new TextDecoder("utf-8", { fatal: true }).decode(listed.stdout).split("\n").slice(0, -1)) {
+			const [, ref, ahead, behind] = /^([^\0]+)\0(\d{1,15}) (\d{1,15})$/.exec(line) ?? [];
+			if (ref === undefined || counts.has(ref)) return undefined;
+			counts.set(ref, { ahead: Number(ahead), behind: Number(behind) });
+		}
+		const lines: { name: string; sha: string; ahead: number; behind: number; time: number }[] = [];
+		for (const head of heads) {
+			const count = counts.get(head.ref);
+			if (count === undefined) return undefined;
+			if (count.ahead >= 1)
+				lines.push({ name: head.name, sha: head.sha, ahead: count.ahead, behind: count.behind, time: head.time });
+		}
+		if (!lines.length) return { count: 0, changes: 0, shown: [] };
+		const counted = await measure.git(proof, ["rev-list", "--count", "--stdin"], {
+			stdin: Buffer.from(`${lines.map((line) => `${line.sha}\n`).join("")}^${plan.mainSha}\n`, "latin1"),
+			maximumOutputBytes: 64,
+		});
+		const changes = Number(/^(\d{1,15})\n$/.exec(counted.stdout.toString("latin1"))?.[1]);
+		// Every change a line holds that main lacks is one of these: fewer is no answer of the same history.
+		if (counted.status !== 0 || !Number.isSafeInteger(changes) || lines.some((line) => line.ahead > changes))
+			return undefined;
+		const shown: CodeImportLineSeen[] = [];
+		for (const line of codeImportLinesShown(lines))
+			shown.push({
+				name: line.name,
+				ahead: line.ahead,
+				behind: line.behind,
+				time: line.time,
+				fits: await lineFits(measure, proof, line.sha),
+			});
+		return { count: lines.length, changes, shown };
+	} catch (error) {
+		if (run.job.signal.aborted) throw error;
+		return undefined;
+	}
+}
+
 /** The repository's refs, each with its object, as the fingerprint counts them. */
 async function refsOf(run: Run, gitDir: string): Promise<CodeAreaRef[]> {
 	const listed = ok(
@@ -751,7 +904,9 @@ function rawOf(value: unknown): CodeImportRaw {
  * 3. The refs plan's counts (`codeImportRefsPlan`, which refuses a default branch it does not take); main's tree
  *    (names, the folder's rule for each path where the build will check it out, entries, LFS pointers, gitlinks);
  *    main's history; the key scan (within `scanSeconds`, default 600, and
- *    `scanBytes`, default and at most 2 GiB).
+ *    `scanBytes`, default and at most 2 GiB); the other lines of work (`linesOf`: each command within `linesSeconds`,
+ *    default 300, and a line's tree read to `lineTreeBytes`, default and at most 32 MiB), left out of the look when
+ *    that measure does not end well.
  * 4. The look (`codeImportLook`). It answers `looked` when only the look was asked, or when the look found what stops
  *    the import (`why`): nothing else is made then.
  * 5. The plan applied (`git update-ref --no-deref -z --stdin`, a ref whose name is not UTF-8 deleted first), `HEAD` at
@@ -769,7 +924,14 @@ export async function lookCodeImport(
 	value: CodeImportLookValue,
 	source: AsyncIterable<Uint8Array>,
 	sink: CodeBundleSink,
-	options: { fsckMs?: number; scanSeconds?: number; chunkBytes?: number; scanBytes?: number } = {},
+	options: {
+		fsckMs?: number;
+		scanSeconds?: number;
+		chunkBytes?: number;
+		scanBytes?: number;
+		linesSeconds?: number;
+		lineTreeBytes?: number;
+	} = {},
 ): Promise<CodeImportLooked> {
 	const input = closed(value, ["repository", "raw", "look", "now"]);
 	const repository: CloudCodingRepository = keptRepositoryOf(input.repository),
@@ -778,7 +940,9 @@ export async function lookCodeImport(
 	const fsckMs = options.fsckMs ?? CODE_IMPORT_FSCK_MS,
 		scanSeconds = options.scanSeconds ?? CODE_IMPORT_SCAN_SECONDS,
 		chunkBytes = options.chunkBytes ?? CODE_IMPORT_READ_PIECE_BYTES,
-		scanBytes = options.scanBytes ?? CODE_IMPORT_SCAN_BYTES;
+		scanBytes = options.scanBytes ?? CODE_IMPORT_SCAN_BYTES,
+		linesSeconds = options.linesSeconds ?? CODE_IMPORT_LINES_SECONDS,
+		lineTreeBytes = options.lineTreeBytes ?? CODE_IMPORT_LINE_TREE_BYTES;
 	if (
 		typeof look !== "boolean" ||
 		!Number.isSafeInteger(now) ||
@@ -796,7 +960,13 @@ export async function lookCodeImport(
 		chunkBytes > MAX_PIECE ||
 		!Number.isSafeInteger(scanBytes) ||
 		scanBytes < 1 ||
-		scanBytes > CODE_IMPORT_SCAN_BYTES
+		scanBytes > CODE_IMPORT_SCAN_BYTES ||
+		!Number.isSafeInteger(linesSeconds) ||
+		linesSeconds < 1 ||
+		linesSeconds > 86_400 ||
+		!Number.isSafeInteger(lineTreeBytes) ||
+		lineTreeBytes < 1 ||
+		lineTreeBytes > CODE_IMPORT_LINE_TREE_BYTES
 	)
 		throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
@@ -861,7 +1031,8 @@ export async function lookCodeImport(
 				main,
 				scanSeconds,
 				scanBytes,
-			);
+			),
+			lines = await linesOf(run, proof, plan, seen.refs, linesSeconds, lineTreeBytes);
 		const found = codeImportLook({
 			bytes: raw.bytes,
 			defaultBranch: raw.defaultBranch,
@@ -869,6 +1040,7 @@ export async function lookCodeImport(
 			...history,
 			tags: plan.tags,
 			branches: plan.branches,
+			...(lines === undefined ? {} : { lines }),
 			leftOut: raw.leftOut + plan.leftOut + seen.raw.length,
 			files: main.files,
 			entries: main.entries,
