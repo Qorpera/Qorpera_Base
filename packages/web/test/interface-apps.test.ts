@@ -706,11 +706,12 @@ describe("the bridge", () => {
 		expect(folder.reads).toEqual([]);
 		// A bridge given no way to open one (none is today) opens none.
 		expect(await open("app:hiring", false)).toMatchObject({ ok: false });
-		// Each link is a call of the app's budget: 120 a minute, with its reads.
+		// Each link is a call of the app's budget: 120 a minute, with its reads. Thirteen are spent: eight links of one
+		// call, and the web page's, which costs what a request costs (five) wherever it is refused after that.
 		let refused = 0;
 		for (let index = 0; index < 115; index++) if (!(await open("app:hiring")).ok) refused++;
-		expect(refused).toBe(4);
-		expect(followed).toHaveLength(3 + 111);
+		expect(refused).toBe(8);
+		expect(followed).toHaveLength(3 + 107);
 		expect(await open("app:hiring")).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
 	});
 

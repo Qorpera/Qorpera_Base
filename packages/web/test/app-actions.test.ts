@@ -837,6 +837,59 @@ describe('a link the member clicks in an app\'s page (Jonas, 13 November 2026: "
 		]);
 	});
 
+	it("refuses a call that does not fit in the minute and spends nothing on it (review r1 of #1770, F2)", async () => {
+		const parsed = parseAppManifest('name = "Concepts"\nreads = ["agents"]\nwrites = ["table:orders"]\n');
+		if (!parsed.ok) throw new Error("manifest");
+		const followed: unknown[] = [];
+		const asked: AppAsk[] = [];
+		const gate: AppGate = {
+			closed: () => null,
+			ask: async (ask, perform) => {
+				asked.push(ask);
+				await perform("");
+				return { outcome: ask.kind === "link" ? "opened" : "saved" };
+			},
+		};
+		const folder = memberFolder({ [TABLE]: ORDERS, [FILE]: ROWS });
+		const at = (spent: number) => {
+			const bridge = new AppBridge(
+				{ folder: () => folder.folder, agents: () => [], writer: () => folder.folder, current: () => {} },
+				{ name: "concepts", path: "apps/concepts", manifest: parsed.manifest, problems: [], version: null },
+				crypto.randomUUID(),
+				new AbortController().signal,
+				gate,
+				(link) => followed.push(link),
+			);
+			const read = () => bridge.answer({ method: "agents", params: {} });
+			return {
+				bridge,
+				read,
+				spend: async () => {
+					for (let index = 0; index < spent; index++) expect(await read()).toMatchObject({ ok: true });
+				},
+			};
+		};
+		const tooMany = { ok: false, error: "Too many calls: wait a moment and try again" };
+		const link = { method: "open", params: { href: "https://example.com/" } };
+		const row = { method: "setRow", params: { table: "orders", key: "1042", cells: { status: "shipped" } } };
+		// 116 calls spent: a web link or a row change (five each) would make 121. Both are refused, and spend nothing.
+		const full = at(116);
+		await full.spend();
+		expect(await full.bridge.answer(link)).toEqual(tooMany);
+		expect(await full.bridge.answer(row)).toEqual(tooMany);
+		expect(asked).toEqual([]);
+		expect(followed).toEqual([]);
+		// So four reads still fit, and the fifth does not.
+		for (let index = 0; index < 4; index++) expect(await full.read()).toMatchObject({ ok: true });
+		expect(await full.read()).toEqual(tooMany);
+		// At 115 a web link fits exactly, and nothing fits after it.
+		const room = at(115);
+		await room.spend();
+		expect(await room.bridge.answer(link)).toEqual({ ok: true, value: null });
+		expect(await room.read()).toEqual(tooMany);
+		expect(followed).toEqual([{ kind: "web", href: "https://example.com/" }]);
+	});
+
 	it("costs a web page's link what any request costs: five calls of the minute's budget", async () => {
 		const { bridge, opened } = linked();
 		// 120 calls a minute: 24 web links fit, and the 25th is refused before any bar.
@@ -1345,6 +1398,9 @@ describe('a web page a link in the app leads to, on the bar (Jonas, 13 November 
 		expect(shown("https://paypal.com.login.example.net/x")).toEqual(["paypal.com.login.", "example.net"]);
 		expect(shown("https://example.com/")).toEqual([undefined, "example.com"]);
 		expect(shown("http://192.168.1.20:8080/")).toEqual([undefined, "192.168.1.20"]);
+		// The root's dot at a host's end is shown, and counts as no label (review r1 of #1770, F1).
+		expect(shown("https://shop.example.co.uk./")).toEqual(["shop.", "example.co.uk."]);
+		expect(shown("https://www.example.com./pricing")).toEqual(["www.", "example.com."]);
 	});
 });
 

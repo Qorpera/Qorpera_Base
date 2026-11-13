@@ -98,7 +98,10 @@ const TWO_LEVEL = new Set([
  * An address by number is shown whole. */
 function site(url: URL): HTMLElement {
 	const host = url.hostname;
-	const labels = host.split(".");
+	// A host may end in the root's dot (example.co.uk.): it is shown, as the browser will reach it, but it is no label,
+	// so the registered part is counted without it (review r1 of #1770, F1).
+	const root = host.endsWith(".") ? "." : "";
+	const labels = (root ? host.slice(0, -1) : host).split(".");
 	const numeric = host.startsWith("[") || /^[\d.]+$/.test(host);
 	const kept = numeric ? labels.length : TWO_LEVEL.has(labels.slice(-2).join(".")) ? 3 : 2;
 	const lead = labels.slice(0, Math.max(0, labels.length - kept));
@@ -106,7 +109,7 @@ function site(url: URL): HTMLElement {
 		"span",
 		{ class: "app-ask-site" },
 		lead.length ? h("span", { class: "app-ask-site-lead" }, `${lead.join(".")}.`) : null,
-		h("span", { class: "app-ask-site-name" }, labels.slice(-kept).join(".")),
+		h("span", { class: "app-ask-site-name" }, `${labels.slice(-kept).join(".")}${root}`),
 		url.port ? h("span", { class: "app-ask-site-port" }, `:${url.port}`) : null,
 	);
 }

@@ -591,7 +591,7 @@ const MAX_ROW_PARAMS_CHARS = 16 * 1024;
 const REQUEST_COST = 5;
 /** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, a
  * request for a change reads the table or the questions before anything is shown, and a note costs as a change. A link
- * (`open`) costs one, and a web page's link the rest of a request's once it is put on the bar. */
+ * (`open`) costs one, and a link to a web page, which is put on the bar, what a request costs (`answer`). */
 const CALL_COST: Readonly<Record<string, number>> = {
 	todos: 10,
 	answer: REQUEST_COST,
@@ -703,10 +703,17 @@ export class AppBridge {
 			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
 		)
 			return refuse("Not a call the app answers");
+		// The call's whole cost is known before anything is spent, and checked and charged in one step: a call that does
+		// not fit in the minute is refused and spends nothing (a note at 117 calls was let through to 122, and a web
+		// link refused there kept its first call; review r1 of #1770, F2).
 		const spent = budget(this.#key);
-		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
+		const cost =
+			call.method === "open" && appLink(call.params.href)?.kind === "web"
+				? REQUEST_COST
+				: (CALL_COST[call.method] ?? 1);
+		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls + cost > MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		spent.calls += CALL_COST[call.method] ?? 1;
+		spent.calls += cost;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -877,10 +884,6 @@ export class AppBridge {
 	async #web(link: Extract<AppLink, { kind: "web" }>, follow: (link: AppLink) => void): Promise<AppAnswer> {
 		const gate = this.#gate;
 		if (!gate) return refuse("No web page opens from this page");
-		const spent = budget(this.#key);
-		const rest = REQUEST_COST - (CALL_COST.open ?? 1);
-		if (spent.calls + rest > MAX_PER_MINUTE) return refuse("Too many calls: wait a moment and try again");
-		spent.calls += rest;
 		const closed = gate.closed();
 		if (closed) return refuse(GATE_SAYS[closed]);
 		// The tab opens in the press itself: `follow` runs before the first await of the bar's perform.
