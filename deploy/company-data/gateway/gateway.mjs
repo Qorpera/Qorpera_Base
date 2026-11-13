@@ -707,7 +707,11 @@ export class Gateway {
 				await admin.query(
 					`alter database ${quoted(database)} connection limit ${COMPANY_CONNECTIONS}; ` +
 						`alter database ${quoted(database)} set temp_file_limit = '256MB'; alter database ${quoted(database)} set work_mem = '16MB'; ` +
-						`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0`,
+						`alter database ${quoted(database)} set max_parallel_workers_per_gather = 0; ` +
+						// No session in a company's database writes its errors or its statements into the server's log: they
+						// carry the company's values. The caller hears the error through the gateway.
+						`alter database ${quoted(database)} set log_min_messages = 'fatal'; alter database ${quoted(database)} set log_min_error_statement = 'panic'; ` +
+						`alter database ${quoted(database)} set log_min_duration_statement = -1; alter database ${quoted(database)} set log_statement = 'none'`,
 				);
 				await admin.query(`revoke all on database ${quoted(database)} from public`);
 				await this.#onProvision(database, "revoked");
