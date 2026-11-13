@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ENVIRONMENT, finish, pass, proveCompanyRun } from "./prove-company-run.mjs";
+import { ENVIRONMENT, finish, pass, proveCompanyRun, textObjects } from "./prove-company-run.mjs";
 
 // The agent's home, slice 3 (migration 20260930754000): a folder window per run. End to end, through the real patched
 // Codex and a migrated database (scripts/prove-company-run.mjs says what is real and what stands in):
@@ -108,7 +108,8 @@ await finish(
 		name: "qorpera_prove_home_folder_window",
 		prompt: "Read the two files you were given, then say what you found.",
 		setup: `${SEED}${SETUP}`,
-		objects: new Map(),
+		// The bytes of the two files the setup stages, as the gateway holds them.
+		objects: textObjects(["narrow", "locked"]),
 		calls: CALLS,
 		async check({ code, db, binding, run, outputs }) {
 			const signal = () => AbortSignal.timeout(30_000);
@@ -125,7 +126,7 @@ await finish(
 
 			// The run's own tools still read what it may and not what it may not: the model saw both answers.
 			assert.match(outputs[0].text, /narrow/, `the narrower file's text: ${outputs[0].text}`);
-			assert.doesNotMatch(outputs[1].text, /locked/, `the locked file's text: ${outputs[1].text}`);
+			assert.match(outputs[1].text, /"kind":"absent"/, `the locked file's answer: ${outputs[1].text}`);
 			pass("the run's own folder tools read the narrower file and not the locked one");
 
 			// 1. The relay asks for the window before a session starts on the home.
