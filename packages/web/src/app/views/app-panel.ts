@@ -20,12 +20,12 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   in its page, and Close put it away.
  * - A concept of the company's product fills the Concepts viewer's stage (views/concepts.ts; Jonas, 8 November 2026:
  *   "a fullscreen view of the selected concept"). It has no header at all: the concept's own design owns the whole
- *   area, and the viewer's side panel says whose it is, with Reload and Show in Storage.
+ *   area, and the viewer's side panel lists it with who made it; its row's menu has Reload and Show in Storage.
  * Either way:
- * - Beside the chat, the header (and for a concept the viewer's side panel) is drawn outside the frame, and says whose
- *   page it is and that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this
- *   app's own (security review r1, H2). An app's own page says neither since it lost its header: what Qorpera draws
- *   there is the bar of a request and the questions dock.
+ * - Beside the chat, the header is drawn outside the frame, and says whose page it is and that Qorpera never asks for
+ *   a password in it, so a page that draws a sign-in can't pass for this app's own (security review r1, H2). An app's
+ *   own page says neither since it lost its header, and a concept neither since its viewer's strip went (Jonas,
+ *   13 November 2026): what Qorpera draws there is the bar of a request and the questions dock.
  * - When an app's page can't be shown, the line that says why carries the ways on a header had: Reload, the app's
  *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
@@ -55,7 +55,7 @@ export type SidePanelTarget = Extract<AppPanelTarget, { kind: "page" }>;
 
 /** Where it stands: beside the chat, with Close; as a page of its own, with no header (`back` is where a page that
  * can't be shown leads); or as the Concepts viewer's concept, with no header either (the viewer's side panel has the
- * way back and the controls). */
+ * way back, and its rows' menus the controls). */
 export type AppPanelPlacement =
 	| { readonly kind: "beside"; readonly onClose: () => void }
 	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } }

@@ -333,8 +333,8 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
 	Concepts: "Koncepter",
-	"Show the concepts": "Vis koncepterne",
-	"Hide the concepts": "Skjul koncepterne",
+	"Show sidebar": "Vis sidepanelet",
+	"Hide sidebar": "Skjul sidepanelet",
 	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
 	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
 	"Open the newest concept": "Åbn det nyeste koncept",

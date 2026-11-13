@@ -1,3 +1,4 @@
+import { type MenuEntry, menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon, linkHref, replace, setLinkHref } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
@@ -20,11 +21,19 @@ import { QuestionDock } from "./question-dock.ts";
  * - The side panel stands in the company rail's place and is the rail: its width (ui/rail-layout.ts
  *   `expandedRailWidth`, the member's own choice for the expanded rail, never a compact rail's strip), its surface,
  *   its rows, its hover and its selection (Jonas, 13 November 2026: "polish it to match the style and width of the
- *   regular sidepanel"). It has the way back to the company, the concepts (cover or emblem, title, `about`, who made
- *   it) and, for the open one, Reload and Show in Storage.
- * - Whose the open concept is and that Qorpera never asks for passwords in it stand in a strip of the side panel that
- *   never folds away: under the list, along the folded strip, and under the phone's top bar (security review r1, H2,
- *   and #1539 round 1: a page that draws a sign-in can't pass for Qorpera's own).
+ *   regular sidepanel"). It has the way back to the company and the concepts (cover or emblem, title, `about`, who
+ *   made it), and it ends with its list (Jonas, 13 November 2026, on the Reload and Storage buttons and the strip under
+ *   them: "get rid of this at the bottom of the concepts sidepanel").
+ * - A concept's row has a menu of its own, the rail's (ui/context-menu.ts): a right-click, a long press on a touch
+ *   screen, or Shift+F10 or the menu key on the focused row. It has Show in Storage, and for the open concept Reload,
+ *   which also lets a concept that was told "Not now" three times ask again (views/app-ask-bar.ts).
+ * - The strip that said whose the open concept is and that Qorpera never asks for passwords in it (security review r1
+ *   H2, #1539 round 1) is gone on Jonas's word of 13 November 2026, and nothing replaces it: nothing on screen tells a
+ *   member that a sign-in the page draws is not Qorpera's. Who made each concept still stands in its row. What else
+ *   guards a member is as it was (RUNTIME-INTERFACE-APPS.md §6 H2): a change to the company and a note to an agent go
+ *   only through Qorpera's own bar, with the member's yes, and the page has no network of its own and submits no form.
+ *   But a web link the member clicks opens in a new tab at the address the page gave it, which may carry what the
+ *   member typed, and the side channels the contract names stand.
  * - A cover is read by its file's version: a cover made or replaced shows once the folder says it changed, and a read
  *   that failed is tried again then.
  * - An item is a link to its concept's route: pressing it switches the concept in place, the panel as it is.
@@ -89,9 +98,6 @@ export class ConceptsView {
 	readonly #collapse: HTMLButtonElement;
 	readonly #menu: HTMLButtonElement;
 	readonly #list = h("ul", { class: "concepts-list" });
-	readonly #foot = h("div", { class: "concepts-foot" });
-	/** Whose the open concept is, and that Qorpera never asks for passwords in it: never folded away. */
-	readonly #guard = h("p", { class: "concepts-guard" });
 	readonly #stage = h("div", { class: "concepts-stage" });
 	/** The concepts as last read. */
 	#apps: readonly CompanyApp[] = [];
@@ -151,9 +157,7 @@ export class ConceptsView {
 					{ class: "concepts-panel", id: "concepts-panel" },
 					h("h2", { class: "concepts-heading" }, t("Concepts")),
 					h("nav", { "aria-label": t("Concepts") }, this.#list),
-					this.#foot,
 				),
-				this.#guard,
 			),
 			this.#stage,
 		);
@@ -173,6 +177,11 @@ export class ConceptsView {
 		);
 		// A press on an item at phone width shows its concept: the menu closes over it.
 		this.#list.addEventListener("click", () => this.#setMenuOpen(false), { signal: this.#lifetime.signal });
+		// A row's own menu: Reload and Show in Storage, where the panel's foot had them.
+		this.#list.addEventListener("contextmenu", (event) => this.#openRowMenu(event), {
+			signal: this.#lifetime.signal,
+		});
+		pressToOpenMenu(this.#list, this.#lifetime.signal, (event) => this.#openRowMenu(event));
 		// The panel is as wide as the member's own rail, which the window caps: a resize may change it.
 		this.#widen();
 		window.addEventListener("resize", () => this.#widen(), { signal: this.#lifetime.signal });
@@ -252,9 +261,10 @@ export class ConceptsView {
 	}
 
 	/** The panel takes the expanded rail's width, drawn at the app's scale as the rail's own is (ui/rail-layout.ts): a
-	 * compact rail's strip never makes the open panel that narrow, and folding stays the panel's own. */
+	 * compact rail's strip never makes the open panel that narrow, and folding stays the panel's own. A whole number of
+	 * pixels, so the toggle at the panel's edge stands on the pixel grid its glyph was drawn for. */
 	#widen(): void {
-		this.el.style.setProperty("--concepts-width", `${expandedRailWidth() * uiScale()}px`);
+		this.el.style.setProperty("--concepts-width", `${Math.round(expandedRailWidth() * uiScale())}px`);
 	}
 
 	#setCollapsed(collapsed: boolean): void {
@@ -284,7 +294,8 @@ export class ConceptsView {
 		this.#current.textContent = selected?.manifest.name ?? "";
 		this.el.classList.toggle("is-collapsed", this.#collapsed);
 		this.el.classList.toggle("is-menu-open", this.#menuOpen);
-		const collapseLabel = this.#collapsed ? t("Show the concepts") : t("Hide the concepts");
+		// What the toggle does now, as the rail's sidebar toggle says it (Jonas, 13 November 2026).
+		const collapseLabel = this.#collapsed ? t("Show sidebar") : t("Hide sidebar");
 		this.#collapse.setAttribute("aria-label", collapseLabel);
 		this.#collapse.title = collapseLabel;
 		this.#collapse.setAttribute("aria-expanded", String(!this.#collapsed));
@@ -292,8 +303,6 @@ export class ConceptsView {
 		this.#menu.title = t("Concepts");
 		this.#menu.setAttribute("aria-expanded", String(this.#menuOpen));
 		this.#drawList(concepts, selected);
-		this.#drawFoot(selected);
-		this.#drawGuard(selected);
 		this.#drawStage(concepts, selected);
 		this.#drawDock(selected);
 	}
@@ -306,12 +315,6 @@ export class ConceptsView {
 		if (!this.#dock || name === this.#dockConcept) return;
 		this.#dockConcept = name;
 		this.#dock.setMatch((apps) => name !== undefined && apps.has(name));
-	}
-
-	#drawGuard(selected: Concept | undefined): void {
-		this.#guard.hidden = !selected;
-		const text = selected ? `${this.#made(selected)} · ${t("Qorpera never asks for passwords here")}` : "";
-		if (this.#guard.textContent !== text) this.#guard.textContent = text;
 	}
 
 	#drawList(concepts: readonly Concept[], selected: Concept | undefined): void {
@@ -433,29 +436,34 @@ export class ConceptsView {
 			});
 	}
 
-	#drawFoot(selected: Concept | undefined): void {
-		const shown = selected ? `${selected.name}\n${selected.path}` : "";
-		if (this.#foot.dataset.shown === shown) return;
-		this.#foot.dataset.shown = shown;
-		if (!selected) {
-			replace(this.#foot);
-			return;
-		}
-		const control = (name: string, label: string, onclick: () => void) =>
-			h(
-				"button",
-				{ type: "button", class: "concepts-button", title: label, "aria-label": label, onclick },
-				icon(name),
-			);
-		replace(
-			this.#foot,
-			h(
-				"div",
-				{ class: "concepts-actions" },
-				control("reload", t("Reload"), () => this.reload()),
-				control("folder", t("Show in Storage"), () => this.#host.panel.openInStorage(selected.path)),
-			),
-		);
+	/** A concept's row's menu, the rail's (a right-click, a long press, Shift+F10 or the menu key on the focused row):
+	 * Reload for the open concept, and Show in Storage. Shift with a right-click keeps the browser's own menu. */
+	#openRowMenu(event: MouseEvent): void {
+		if (event.shiftKey && (event.clientX || event.clientY)) return;
+		const row = (event.target as Element).closest<HTMLAnchorElement>("a.concepts-item");
+		const concept = row && this.#concepts().find((entry) => entry.name === row.dataset.concept);
+		if (!row || !concept) return;
+		event.preventDefault();
+		const name = concept.name;
+		const items: MenuEntry[] = [
+			// The open concept reads afresh; another opens fresh when it is pressed.
+			...(name === this.#selected()?.name
+				? [{ label: t("Reload"), icon: "reload", select: () => this.reload() }]
+				: []),
+			{ label: t("Show in Storage"), icon: "folder", select: () => this.#host.panel.openInStorage(concept.path) },
+		];
+		const point = menuPoint(event, row);
+		openContextMenu({
+			label: t("{name} actions", { name: concept.manifest.name }),
+			x: point.x,
+			y: point.y,
+			items,
+			opener: row,
+			findOpener: () =>
+				[...this.#list.querySelectorAll<HTMLElement>("a.concepts-item")].find(
+					(item) => item.dataset.concept === name,
+				) ?? null,
+		});
 	}
 
 	#drawStage(concepts: readonly Concept[], selected: Concept | undefined): void {

@@ -1243,16 +1243,26 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
  * the style and width of the regular sidepanel"); its tokens come from the rail's own (styles/app.css). The open
  * concept's frame fills the rest, edge to edge: nothing of Qorpera's frames it — no header, no border, no inset, no
  * band (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). The
- * panel folds to the compact rail's strip; at phone width it is a top bar whose menu drops the list over the concept. */
+ * panel ends with its list: Reload and Show in Storage are in a row's menu, and the strip under them is gone (Jonas,
+ * 13 November 2026: "get rid of this at the bottom of the concepts sidepanel"). It folds to the compact rail's strip;
+ * at phone width it is a top bar whose menu drops the list over the concept. */
 .frame.has-concepts .topbar { display: none; }
 .concepts { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; }
+/* Its edge is the rail's line, drawn inside it (an inset shadow) rather than as a border, so the line takes no width
+ * and the buttons centred in the folded strip land on whole pixels. */
 .concepts-side {
 	display: flex; flex: none; flex-direction: column; width: var(--concepts-width, 406px); min-height: 0;
-	padding: 0 10px 11px; border-right: 1px solid var(--rail-line); background: var(--rail); color: var(--text);
+	padding: 0 10px 11px; box-shadow: inset -1px 0 0 var(--rail-line); background: var(--rail); color: var(--text);
 	transition: width var(--motion-base) var(--ease-spring);
 }
-/* The rail's top row: the way back where the company's name stands there, then the buttons. */
-.concepts-top { display: flex; flex: none; align-items: center; gap: 2px; min-height: var(--titlebar-height); padding-top: 14px; }
+/* The rail's top row: the way back where the company's name stands there, then the buttons. Its top, the buttons and
+ * their icons are rounded to whole pixels at any scale (`round()`, a fallback before it), so the sidebar toggle's
+ * glyph, drawn for a 20 px box (ui/dom.ts ICON_GRIDS), stands on the pixel grid it was drawn for: at the default scale
+ * a 46 px button, a 20 px icon 13 px in, 18 px down (Jonas, 13 November 2026: the toggle read thin and soft). */
+.concepts-top {
+	display: flex; flex: none; align-items: center; gap: 2px; min-height: var(--titlebar-height);
+	padding-top: 14px; padding-top: round(nearest, 14px, 1px);
+}
 .concepts-back {
 	display: flex; flex: 1; align-items: center; gap: 3px; min-width: 0; height: 32px; margin-left: -6px;
 	padding: 0 7px 0 6px; border-radius: 9px; color: var(--text); font-size: 15px; font-weight: 700;
@@ -1262,11 +1272,13 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .concepts-back .icon { flex: none; width: 16px; height: 16px; color: var(--rail-small); }
 .concepts-back-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .concepts-current { display: none; }
+/* The rail's own icon button: its 36 px control (a hit area well over 28 px), its hover and its focus ring. */
 .concepts-button {
-	display: grid; flex: none; place-items: center; width: 36px; height: 36px; padding: 0;
+	display: grid; flex: none; place-items: center; padding: 0;
+	width: 36px; height: 36px; width: round(down, 36px, calc(1px + 1px)); height: round(down, 36px, calc(1px + 1px));
 	border: 0; border-radius: 10px; background: transparent; color: var(--rail-small); cursor: pointer;
 }
-.concepts-button .icon { width: 16px; height: 16px; }
+.concepts-button .icon { width: 16px; height: 16px; width: round(down, 16px, 1px); height: round(down, 16px, 1px); }
 .concepts-button:hover { background: var(--rail-hover); color: var(--text); }
 :is(.concepts-button, .concepts-back, .concepts-item):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .concepts-menu { display: none; }
@@ -1287,33 +1299,22 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .concepts-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
 /* The name and the lines under it are a rail row's, down to its text smoothing (styles/app.css). */
 .concepts-item-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
-.concepts-foot { flex: none; padding-top: 4px; }
-.concepts-foot:empty { display: none; }
-.concepts-actions { display: flex; gap: 2px; }
-/* Whose the open concept is and that Qorpera never asks for passwords in it (security review r1, H2): a strip outside
- * the list, never folded away, in every layout. Only an empty viewer, with no concept open, has none. */
-.concepts-guard {
-	flex: none; margin: 0; padding: 6px 8px 0; color: var(--rail-small); font-size: 11px; line-height: 1.35;
-	overflow-wrap: anywhere;
-}
-.concepts-guard[hidden] { display: none; }
 .concepts-stage { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
 .side-panel.is-concept { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border: 0; box-shadow: none; animation: none; }
 .concepts-status { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: auto; max-width: 36ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
 .concepts-status p { margin: 0; }
 /* Folded: the compact rail's strip, with the way back and the button that unfolds the list. */
 .concepts.is-collapsed .concepts-side { width: 80px; padding-inline: 7px; }
-.concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; padding-top: 14px; }
-.concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 36px; margin: 0; padding: 0; }
-.concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
-/* Along the folded strip, read upward, under the way back. */
-.concepts.is-collapsed .concepts-guard {
-	flex: 1 1 auto; min-height: 0; margin-top: auto; padding: 12px 0;
-	overflow: hidden; writing-mode: vertical-rl; transform: rotate(180deg); align-self: center;
+/* Its way back is a button's size, and the gap under it whole pixels, so the toggle under them stays on the grid. */
+.concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; gap: round(nearest, 6px, 1px); }
+.concepts.is-collapsed .concepts-back {
+	flex: none; justify-content: center; margin: 0; padding: 0;
+	width: 36px; height: 36px; width: round(down, 36px, calc(1px + 1px)); height: round(down, 36px, calc(1px + 1px));
 }
+.concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
 @media (max-width: 760px) {
 	.concepts { flex-direction: column; }
-	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; padding: 0 8px; border-right: 0; border-bottom: 1px solid var(--rail-line); }
+	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; padding: 0 8px; box-shadow: none; border-bottom: 1px solid var(--rail-line); }
 	.concepts-top, .concepts.is-collapsed .concepts-top { flex-direction: row; gap: 4px; min-height: 48px; padding: 6px 0; }
 	.concepts-back, .concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 36px; margin: 0; padding: 0; }
 	.concepts-back-name, .concepts-collapse { display: none; }
@@ -1326,10 +1327,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	.concepts.is-menu-open .concepts-panel { display: flex; }
 	/* The concept stays in the stage, under the menu, not over the page as a side panel is at this width. */
 	.side-panel.is-concept { position: relative; inset: auto; z-index: auto; }
-	/* Under the top bar, across it, folded or not. */
-	.concepts-guard, .concepts.is-collapsed .concepts-guard {
-		flex: none; margin: 0; padding: 0 0 6px; writing-mode: horizontal-tb; transform: none; align-self: stretch;
-	}
 }
 @media (prefers-reduced-motion: reduce) { .concepts-side, .concepts-item { transition: none; } }
 /* An app linked in a message (`app:<name>`): a card that opens the app's own page. It shows the app as the drawer
