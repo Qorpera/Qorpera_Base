@@ -419,6 +419,23 @@ it("tells the agent's next run what the platform stopped on its computer", () =>
 	);
 });
 
+// The import's follow-ups, item 3 (20260930741000): code a member or another agent brought in reaches every other agent
+// once, at its next run, in openWork; an agent's own words to members stay plain.
+it("tells the agent's next run what code was brought in, and to read its first record before working on it", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"Start one again only if the work still needs it, and say so to a member only if they were waiting for it. openWork.codeBroughtIn, when present, lists code that a member or another agent brought into Qorpera since you last ran here, each once: its repository code/<owner>/<name>/, where it came from, how many earlier changes its main branch brought, and how many other branches came with work main lacks. Read its changes/1.md before you work on it or plan around it; tell a member only what they wait for or must decide.\n\n# Skills",
+	);
+	// A worker reports to its parent and is told none of it.
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch" } } as unknown as Parameters<
+			typeof cloudCompanyRuntimeInstructions
+		>[0],
+		false,
+	);
+	expect(worker).not.toContain("openWork.codeBroughtIn");
+});
+
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const startup = {
@@ -1552,14 +1569,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), and for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), and for code on GitHub or
-// in a file brought in with manage_code bring_in (step 6's import, 20260930736000). A change to any is a change to
-// every run's bytes.
+// in a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for code a member or another
+// agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups, 20260930741000; a staff run's words
+// only, so a worker's are as before). A change to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
+			instructions: "e99256e9932ec93ea8c9a3945eb1b50487e053cd766dddb07e14f4204bcac11c",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1575,7 +1593,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
+			instructions: "e99256e9932ec93ea8c9a3945eb1b50487e053cd766dddb07e14f4204bcac11c",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
