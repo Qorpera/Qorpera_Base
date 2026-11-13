@@ -695,8 +695,6 @@ export const WORKSPACE: Record<string, string> = {
 	// The drawer's Icon and colour panel (12 Nov 2026), its icons' names and Generate icon's message.
 	"Icon and colour": "Ikon og farve",
 	"Colour \u00b7 {group}": "Farve · {group}",
-	"Apps in {group} take its colour, so this changes all of them.":
-		"Apps i {group} får dens farve, så dette ændrer dem alle.",
 	"Made for this app": "Lavet til denne app",
 	"None yet.": "Ingen endnu.",
 	"All icons": "Alle ikoner",
