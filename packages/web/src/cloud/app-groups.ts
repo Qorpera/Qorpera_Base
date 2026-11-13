@@ -36,6 +36,8 @@ export interface AppGroupNode {
 	items: AppTreeNode[];
 	/** A group the member made for themselves. */
 	mine?: boolean;
+	/** The company's colour for it, as `apps/groups.md` gives it (its agents choose it). */
+	colour?: AgentColour;
 }
 export type AppTreeNode = AppItemNode | AppGroupNode;
 
@@ -101,7 +103,13 @@ export function parseAppGroups(text: string): AppTreeNode[] {
 			.map((node) =>
 				node.kind === "item"
 					? { kind: "item", key: node.key }
-					: { kind: "group", id: node.id, name: node.name, items: tree(node.items) },
+					: {
+							kind: "group",
+							id: node.id,
+							name: node.name,
+							items: tree(node.items),
+							...(node.colour ? { colour: node.colour } : {}),
+						},
 			);
 	return tree(parseAppGroupsFile(text).items);
 }
@@ -191,7 +199,13 @@ function clone(nodes: readonly AppTreeNode[], present: ReadonlySet<string>, seen
 			}
 		} else if (!seen.has(groupKey(node.id))) {
 			seen.add(groupKey(node.id));
-			out.push({ kind: "group", id: node.id, name: node.name, items: clone(node.items, present, seen) });
+			out.push({
+				kind: "group",
+				id: node.id,
+				name: node.name,
+				items: clone(node.items, present, seen),
+				...(node.colour ? { colour: node.colour } : {}),
+			});
 		}
 	}
 	return out;
@@ -393,8 +407,8 @@ export function appsIn(node: AppTreeNode): string[] {
 }
 
 /** Each app's and group's colour in the drawer (Jonas, 12 Nov 2026: "I would like for all the icons to share the same
- * color as their group"), by key (`group:<id>` for a group): a group's is the member's choice, else the group it stands
- * in's, else its first app's own; everything in a group is drawn in the group's; a loose app's is the member's choice,
+ * color as their group"), by key (`group:<id>` for a group): a group's is the member's choice, else the company's
+ * (`apps/groups.md`), else the group it stands in's, else its first app's own; everything in a group is drawn in the group's; a loose app's is the member's choice,
  * else its own (`own`: the manifest's, or a page's). */
 export function appColours(
 	tree: readonly AppTreeNode[],
@@ -410,7 +424,9 @@ export function appColours(
 				continue;
 			}
 			const first = appsIn(node)[0];
-			const colour = chosen[groupKey(node.id)] ?? (group ? group.colour : first ? own(first) : undefined);
+			// The member's own colour, else the company's (its agents'), else the group it stands in's, else its first app's.
+			const colour =
+				chosen[groupKey(node.id)] ?? node.colour ?? (group ? group.colour : first ? own(first) : undefined);
 			colours.set(groupKey(node.id), colour);
 			walk(node.items, { colour });
 		}
