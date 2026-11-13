@@ -235,8 +235,9 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly (s
 		case "CODE_HOST_NAMES_NOT_NFC":
 			return `${not}: it holds file names that are not plain Unicode text (UTF-8, in its composed form NFC)${named}. Rename them, commit and finish again.`;
 		case "CODE_HOST_NAMES_FOLDER_REFUSES":
-			// git takes such names; the company folder, which holds the repository's files, does not.
-			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes)${named}. Rename them, commit and finish again.`;
+			// git takes such names; the company folder, which holds the repository's files, does not. The landing asks its
+			// rule where any session's worktree would hold a path (CODE_FOLDER_ANY_SESSION), 42 bytes deeper than main/.
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again.`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;

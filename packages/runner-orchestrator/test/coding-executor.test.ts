@@ -623,7 +623,7 @@ describe("the coding executor over a session turn", () => {
 		);
 		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes): "bad.", "x " and 1 more. Rename them, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again.',
 		);
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
 			": 1 path not named here. Rename them, commit and finish again.",
