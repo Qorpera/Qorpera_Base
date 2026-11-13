@@ -1808,6 +1808,9 @@ export class ComputerPanel {
 			lane.moving = new Promise<void>((resolve) => {
 				moved = resolve;
 			});
+			// The company's ledger keeps it by machine too: a hold or sharing made anew for this desktop, or another window,
+			// waits for it as this one does (v242 release review r1 F1).
+			this.#ledger.moveGoing(sender.machineId, lane.moving);
 			try {
 				const answer = await computer.screens.pointer(
 					sender.machineId,
@@ -1823,6 +1826,7 @@ export class ComputerPanel {
 				// No answer: the move may still land. Its pass is not used again, and an action waits until that pass has
 				// ended on every node, so the move can no longer come after it.
 				lane.unsure = Math.max(lane.unsure, pass.endsBy);
+				this.#ledger.moveUnsure(sender.machineId, pass.endsBy);
 				if (lane.pass === pass) lane.pass = null;
 				throw error;
 			} finally {
@@ -1840,8 +1844,10 @@ export class ComputerPanel {
 	}
 
 	/** Whether the hold's or sharing's pointer let its next action go at once: a move on its way is waited for (its answer
-	 * puts it before the action), and a move whose answer never came until its pass has ended everywhere. False when it
-	 * waited (the caller checks again what may have changed meanwhile). */
+	 * puts it before the action), and a move whose answer never came until its pass has ended everywhere; so is any such
+	 * move of this page's on the same desktop under an earlier hold or sharing, or in another window (the company's
+	 * ledger, by machine: v242 release review r1 F1). False when it waited (the caller checks again what may have changed
+	 * meanwhile). */
 	async #pointerSettled(sender: PageHold | SharedInput): Promise<boolean> {
 		const lane = sender.pointer;
 		let settled = true;
@@ -1864,6 +1870,7 @@ export class ComputerPanel {
 				);
 			});
 		}
+		if (!(await this.#ledger.movesSettled(sender.machineId, sender.stop.signal))) settled = false;
 		return settled;
 	}
 
