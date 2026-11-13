@@ -156,8 +156,10 @@ slots: once its tree-wide parts are done and its steps run side by side, it take
 time, only while no other run waits for a slot on that machine (in either lane's queue, a `--front` run included) or is
 being copied there, another of slots 1-4 stays free after it for the next run, and the machine has 2 GiB available. So
 it reaches three slots only on an idle machine, two beside one other run. It never takes the kept slot or an extra one,
-it holds no queue ticket, and one such run per machine at a time widens. It keeps what it took until it ends, so a burst
-of runs that arrives later may wait for those slots as for any run's. `--cores 2` keeps a run to its one slot. The record says how many slots a run
+it holds no queue ticket, and one such run per machine at a time widens. While a run waits there, it gives its extra
+slots back, the last taken first: its steps start nothing past one slot fewer at once, and the slot goes back once the
+steps still running fit in the slots it keeps (`planScript` keeps the cores they need in `.run-on-node-using`), so the
+machine never runs more than its slots give. `--cores 2` keeps a run to its one slot. The record says how many slots a run
 held at most (`slots`) and the cores they gave (`slotCores`).
 
 Past those, the first run in the queue may take one of two extra slots (6 and 7) while the machine has room: at least
