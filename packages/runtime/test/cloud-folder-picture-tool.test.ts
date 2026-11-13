@@ -315,8 +315,12 @@ describe("when no picture comes back", () => {
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it",
 		],
 		[
+			new CloudPictureFailure("free_plan"),
+			"NO_PICTURE_FREE_PLAN: this member's ChatGPT plan is Free, which makes no pictures. Nothing was saved. Go on without a generated picture, and tell the member in one line that their plan makes no pictures.",
+		],
+		[
 			new CloudPictureFailure("no_picture"),
-			"NO_PICTURE: this member's ChatGPT plan gave no picture: the image tool was never called, as on a Free plan, which makes none. Nothing was saved. Go on without a generated picture, and tell the member in one line that their ChatGPT plan made no picture.",
+			"NO_PICTURE: no picture was made: the image tool was not used, and why is not known (the prompt may have been declined, or this sign-in may make no pictures). Nothing was saved. Change the prompt (leave out real people, brands and anything unsafe) and call once more with a new operationKey; if no picture comes again, go on without one and tell the member in one line.",
 		],
 		[new CloudPictureFailure("timeout"), "PICTURE_TIMEOUT: no picture came back within 4 minutes"],
 		[new CloudPictureFailure("invalid"), "PICTURE_UNUSABLE"],
@@ -354,7 +358,103 @@ describe("when no picture comes back", () => {
 	});
 });
 
+it("keeps a revised prompt out of an answer it would not fit, so the answer and its picture reach the model whole", async () => {
+	// The picture model's own prompt argument, 40 KiB of it, as a lane that did not cut it would hand it over.
+	const long = "é".repeat(20 * 1024);
+	const f = await fixture({ folders: ["pictures"] }, {}, async () => ({ png: picture(), revisedPrompt: long }));
+	const boundary = new CloudNativeToolBoundary({
+		companyId: f.identity.companyId,
+		runId: f.identity.runId,
+		identity: f.identity,
+		signal: new AbortController().signal,
+		assertActive: async () => undefined,
+		tools: [f.tool],
+	});
+	const response = await boundary.invoke("call-long", "qorpera", "make_picture", request());
+	boundary.close();
+	// The receipt completed: its stored result is within its 48 KiB.
+	expect([...f.ledger.values()].every((row) => row.result !== null)).toBe(true);
+	// The envelope is whole, and names the picture that follows it, as the context view reads it.
+	const envelope = JSON.parse(response.contentItems[0].text);
+	expect(envelope.content.truncated).toBe(false);
+	const value = JSON.parse(envelope.content.text);
+	expect(value).toMatchObject({ state: "applied", revisedPromptCut: true });
+	expect(value).not.toHaveProperty("revisedPrompt");
+	const shown = (response.contentItems[1] as { imageUrl: string }).imageUrl.slice("data:image/png;base64,".length);
+	expect(createHash("sha256").update(Buffer.from(shown, "base64")).digest("hex")).toBe(value.imageSha256);
+	// One the lane cut is said to be cut too, and one that fits is kept.
+	const cut = await fixture({ folders: ["pictures"] }, {}, async () => ({
+		png: picture(),
+		revisedPrompt: "é".repeat(2048),
+		revisedPromptCut: true,
+	}));
+	expect(answer((await cut.call(request())).content)).toMatchObject({ revisedPromptCut: true });
+	const kept = await fixture({ folders: ["pictures"] }, {}, async () => ({
+		png: picture(),
+		revisedPrompt: "A mug, front",
+	}));
+	const keptAnswer = answer((await kept.call(request())).content);
+	expect(keptAnswer.revisedPrompt).toBe("A mug, front");
+	expect(keptAnswer).not.toHaveProperty("revisedPromptCut");
+});
+
+it("notes a picture among the company's pages again on a repeat, when the first call's note failed", async () => {
+	const f = await fixture({ folders: ["QorperaOS/interfaces/pulse", "pictures"] });
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges").mockRejectedValueOnce(new Error("PRIVATE_NOTE_LOST"));
+	const hero = request({ operationKey: "hero-1", path: "QorperaOS/interfaces/pulse/hero.png" });
+	await expect(f.call(hero)).rejects.toThrow("PRIVATE_NOTE_LOST");
+	const again = await f.call(hero);
+	expect(answer(again.content)).toMatchObject({ state: "applied" });
+	expect(note).toHaveBeenCalledTimes(2);
+	expect(f.notes).toHaveLength(1);
+	expect(f.made).toHaveBeenCalledOnce();
+	// A picture outside the pages is never noted, on a repeat either.
+	await f.call(request());
+	await f.call(request());
+	expect(note).toHaveBeenCalledTimes(2);
+});
+
 describe("a picture in an app", () => {
+	const app = (name: string, owner: string) => `name = "${name}"\nowner = "${owner}"\nposted = false\n`;
+
+	it("is refused before it is made when the app has no room, as save_app counts it", async () => {
+		const MIB = 1024 * 1024;
+		const f = await fixture({ folders: ["apps/full/pictures", "apps/big/pictures", "apps/tight/pictures"] });
+		const own = f.identity.staffAgentId.toLowerCase();
+		for (const name of ["full", "big", "tight"]) f.seed(`apps/${name}/app.toml`, app(name, own));
+		// 64 files already: one more is past save_app's bound.
+		for (let n = 0; n < 64; n++) f.seed(`apps/full/icon-${n}.svg`, "<svg/>");
+		await refuses(f.call(request({ path: "apps/full/pictures/mug.png" })), "APP_TOO_LARGE: nothing was made");
+		// 46 MiB of pictures already: less than a picture's room is left of 48 MiB.
+		f.seed("apps/big/pictures/a.png", new Uint8Array(46 * MIB), "image/png");
+		await refuses(f.call(request({ path: "apps/big/pictures/mug.png" })), "APP_TOO_LARGE: nothing was made");
+		expect(f.made).not.toHaveBeenCalled();
+		// The picture a call replaces does not count: the same path has its room.
+		const replaced = await f.call(
+			request({
+				operationKey: "a-2",
+				path: "apps/big/pictures/a.png",
+				expectedVersion: f.files.get("apps/big/pictures/a.png")?.version as string,
+			}),
+		);
+		expect(answer(replaced.content)).toMatchObject({ state: "applied" });
+		expect(f.made).toHaveBeenCalledOnce();
+		expect(f.commits).toHaveLength(1);
+	});
+
+	it("is refused after it is made, and not saved, when it is larger than the room the app has left", async () => {
+		const MIB = 1024 * 1024;
+		const f = await fixture({ folders: ["apps/tight/pictures"] }, {}, async () => ({ png: Buffer.alloc(6 * MIB) }));
+		f.seed("apps/tight/app.toml", app("tight", f.identity.staffAgentId.toLowerCase()));
+		f.seed("apps/tight/pictures/a.png", new Uint8Array(43 * MIB), "image/png");
+		await refuses(
+			f.call(request({ path: "apps/tight/pictures/mug.png" })),
+			"APP_TOO_LARGE: the picture was made but not saved",
+		);
+		expect(f.made).toHaveBeenCalledOnce();
+		expect(f.commits).toEqual([]);
+	});
+
 	it("goes into its own app as a write does, and into another's app only after the review as delegation", async () => {
 		const f = await fixture({ folders: ["apps/mine/pictures", "apps/theirs/pictures"] });
 		f.seed(

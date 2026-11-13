@@ -58,6 +58,7 @@ import {
 	cloudPictureInput,
 	isCloudPicturePng,
 	MAX_CLOUD_PICTURE_BYTES,
+	MAX_CLOUD_PICTURE_PROMPT_BYTES,
 } from "./cloud-picture-channel.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -261,6 +262,7 @@ interface PictureFound {
 	readonly itemId: string;
 	readonly savedPath: string;
 	readonly revisedPrompt?: string;
+	readonly revisedPromptCut?: true;
 	readonly transparent?: boolean;
 }
 
@@ -785,6 +787,10 @@ class CodexBoundaryRpc {
 	/** The Codex home the run's pictures are saved in, once a call named it: a picture saved after its call ended is
 	 * removed from there too. */
 	#pictureHome?: string;
+	/** The member's ChatGPT plan, as Codex last named it (`account/updated`, `account/rateLimits/updated`): only to word a
+	 * picture call that got no image tool. Codex 0.155.1 sends `account/updated` on a sign-in or sign-out alone, and a
+	 * rate-limit update's plan only when the backend gives one, so it is often not known. */
+	#planType?: string;
 	/** Opens the relay's window that lets a connection wait for a picture (NativeEgressRelay.allowLongWaits); none
 	 * without isolation. */
 	readonly #pictureEgress?: () => () => void;
@@ -1979,6 +1985,7 @@ class CodexBoundaryRpc {
 				return {
 					png: png.subarray(0, read),
 					...(found.revisedPrompt !== undefined ? { revisedPrompt: found.revisedPrompt } : {}),
+					...(found.revisedPromptCut ? { revisedPromptCut: true as const } : {}),
 					...(found.transparent !== undefined ? { transparent: found.transparent } : {}),
 				};
 			} finally {
@@ -1999,6 +2006,14 @@ class CodexBoundaryRpc {
 		await rm(expected, { force: true }).catch(() => undefined);
 		await rmdir(dirname(expected)).catch(() => undefined);
 		await rmdir(folder).catch(() => undefined);
+	}
+
+	/** The plan Codex names in an account notification, kept as a fixed word, never anything else of it. */
+	#notePlan(message: Record<string, unknown>): void {
+		if (message.method !== "account/updated" && message.method !== "account/rateLimits/updated") return;
+		const params = message.params as { planType?: unknown; rateLimits?: { planType?: unknown } } | undefined;
+		const plan = message.method === "account/updated" ? params?.planType : params?.rateLimits?.planType;
+		if (typeof plan === "string" && /^[a-z_]{1,40}$/.test(plan)) this.#planType = plan;
 	}
 
 	/** Removes the file of a picture no call takes (made after its call ended, or a second one of a turn), so the Codex
@@ -2122,7 +2137,15 @@ class CodexBoundaryRpc {
 				(error?.codexErrorInfo !== undefined && nativeRuntimeUsageSignal(error.codexErrorInfo) === "usage_limit");
 			this.#endPicture(
 				picture,
-				new CloudPictureFailure(limited ? "usage_limit" : picture.called ? "refused" : "no_picture"),
+				new CloudPictureFailure(
+					limited
+						? "usage_limit"
+						: picture.called
+							? "refused"
+							: this.#planType === "free"
+								? "free_plan"
+								: "no_picture",
+				),
 			);
 			return;
 		}
@@ -2142,7 +2165,15 @@ class CodexBoundaryRpc {
 			picture.settle.resolve({
 				itemId,
 				savedPath: item.savedPath,
-				...(typeof item.revisedPrompt === "string" ? { revisedPrompt: item.revisedPrompt } : {}),
+				// The picture model's own prompt argument, which nothing bounds: held to a description's bound here.
+				...(typeof item.revisedPrompt === "string"
+					? Buffer.byteLength(item.revisedPrompt) <= MAX_CLOUD_PICTURE_PROMPT_BYTES
+						? { revisedPrompt: item.revisedPrompt }
+						: {
+								revisedPrompt: headBytes(item.revisedPrompt, MAX_CLOUD_PICTURE_PROMPT_BYTES),
+								revisedPromptCut: true as const,
+							}
+					: {}),
 				...(typeof item.transparentBackground === "boolean" ? { transparent: item.transparentBackground } : {}),
 			});
 			// The picture is all the call wants: stop before the turn's next model request, which the fence refuses anyway.
@@ -2535,6 +2566,7 @@ class CodexBoundaryRpc {
 	#message(message: Record<string, unknown>): void {
 		if (this.#failure || this.#closed) return;
 		this.#lastActivityAt = Date.now();
+		this.#notePlan(message);
 		if (
 			message.method !== undefined &&
 			(this.#reviewMessage(message) ||

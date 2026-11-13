@@ -2290,6 +2290,10 @@ describe("a picture call", () => {
 		// The image tool was never called (a Free plan has none), and called but its turn ended without the picture.
 		["picture-silent", "no_picture"],
 		["picture-started", "refused"],
+		// Codex named the member's plan: Free makes none, and another plan says nothing of why.
+		["picture-free", "free_plan"],
+		["picture-free-limits", "free_plan"],
+		["picture-pro", "no_picture"],
 		["picture-usage-limit", "usage_limit"],
 		["picture-not-png", "invalid"],
 		["picture-outside", "invalid"],
@@ -2356,6 +2360,16 @@ describe("a picture call", () => {
 		made.abort();
 		expect(((await failure) as Error).message).toBe("Native picture cancelled");
 		await vi.waitFor(async () => expect((await f.recorded()).interrupts).toHaveLength(1), { timeout: 10_000 });
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("holds the picture model's own prompt to a description's bound, cut at a character's end", async () => {
+		const f = await pictureRun("picture-long-revised");
+		const made = await f.pictures.make(apple, new AbortController().signal);
+		expect(made.revisedPromptCut).toBe(true);
+		expect(made.revisedPrompt).toBe("é".repeat(2048));
+		expect(Buffer.byteLength(made.revisedPrompt ?? "")).toBe(4096);
 		await f.endTurn();
 		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	});

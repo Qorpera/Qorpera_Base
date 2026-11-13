@@ -94,8 +94,19 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 /** Files one save_app call writes, at most. */
 const FILES_PER_CALL = 32;
-/** The app's entries a save lists to check its totals: more than an app may hold. */
-const LIST_LIMIT = 200;
+/** The app's entries a save lists to check its totals: more than an app may hold. make_picture lists the same. */
+export const APP_LIST_LIMIT = 200;
+
+/** An app's files as save_app counts them against its bounds, from its folder's recursive listing: each file of a kind an
+ * app holds, by its path inside the app in lower case, with its bytes. make_picture counts them the same way before a
+ * picture is made. */
+export function appFileSizes(entries: readonly CloudCompanyFolderEntry[], root: string): Map<string, number> {
+	const sizes = new Map<string, number>();
+	for (const item of entries)
+		if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
+			sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
+	return sizes;
+}
 
 /**
  * What save_app's schema says of `reads`: how a page reads the company's live data (the bridge of
@@ -896,7 +907,7 @@ export function cloudAppTools(options: {
 				);
 			// The app's totals, with this call's files in place of the ones they replace.
 			const listed = await folder
-				.list(root, { recursive: true, limit: LIST_LIMIT }, context.signal)
+				.list(root, { recursive: true, limit: APP_LIST_LIMIT }, context.signal)
 				.catch((error) => unavailable(error, "saved"));
 			reads.push(...listed.entries);
 			const byKey = new Map(listed.entries.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
@@ -931,10 +942,7 @@ export function cloudAppTools(options: {
 				}
 			}
 			refuseTooManyIcons(files, new Map([...byKey].filter(([path, item]) => item.kind === "file" && inIcons(path))));
-			const sizes = new Map<string, number>();
-			for (const item of listed.entries)
-				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
-					sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
+			const sizes = appFileSizes(listed.entries, root);
 			for (const file of files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
 			// A picture or video counts as a file, and toward the pictures' and videos' own bound, which the page's reader
 			// holds it to; every file to its own bound, since the page's reader shows no app with one past it (7 November

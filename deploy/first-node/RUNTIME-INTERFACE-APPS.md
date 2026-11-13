@@ -333,6 +333,10 @@ migration `20260930746000`, which only names the tool among a run's observations
   the change for review (the answer's `state` is `proposed`), a missing folder is refused, a stale or present file is a
   conflict. Before the picture is made, the tool refuses a path whose folder is not there and a path that is a folder or
   a link: each picture costs the member's plan. Exists and version are checked at the commit only, as company_write's.
+- **An app's room.** For a path under `apps/<name>/`, before the picture is made the tool lists the app as save_app
+  does (`appFileSizes`, `APP_LIST_LIMIT`) and refuses (`APP_TOO_LARGE`) when one more file would pass 64, or when less
+  than 4 MiB of the 48 MiB of pictures and videos is left (the file the call replaces not counted). A picture that comes
+  back larger than the room left is refused before it is saved (it was made, and is not saved).
 - **A repeat costs no picture within the run.** The tool keeps, for the run's life, what it answered per
   `operationKey` (the newest 256 calls, with the picture itself for the newest 4). A repeat of the same call is answered
   from there before anything is made: the same answer, the picture again when it is kept; a call whose outcome stayed
@@ -341,7 +345,9 @@ migration `20260930746000`, which only names the tool among a run's observations
   A repeat in a later attempt of the run (after it was cut off and resumed, a new process) is not in that memory: it
   makes one picture, which the receipt's replay then throws away and does not show. The ledger has no read of a
   completed operation by key that starts nothing (the begin is the only lookup, and it opens a receipt where none is);
-  closing that gap needs one SQL function (below, "Not done").
+  closing that gap needs one SQL function (below, "Not done"). A repeat of a call whose picture went among the company's
+  pages or tables (under `QorperaOS/interfaces/` or `QorperaOS/tables/`) notes the change in the conversation again, as
+  a repeat of company_write's does, so a note that failed the first time is made.
 - **An app's owner.** Under `apps/<name>/`, a manifest that names another owner makes the call delegation (`prepare`
   adds `foreignOwner`), as for save_app; its own app's, and any other path's, is `internal`. The card: "Put a picture
   into another agent's app" (or "Make a picture"), the path, the prompt quoted.
@@ -352,6 +358,12 @@ migration `20260930746000`, which only names the tool among a run's observations
   config after the command line's; the field is not experimental). The agent's thread is started with none: the
   process's configuration keeps `image_generation` false, and `verifyConfiguration` still holds every disabled feature
   to false. One turn, effort low, whose input is the prompt; its model calls Codex's `image_gen.imagegen` once.
+- **A Codex pin past 0.155 must keep tools direct for this lane.** The pinned patch makes every tool direct
+  (`governed_tool_mode`). On the Mac trial of 13 November 2026 (lane make-picture-20261113, `mac-trial/RESULT.md`),
+  unpatched Codex 0.160.0 with every `DISABLED_FEATURES` entry off made no picture: its image tool call went through
+  code mode, which fails closed while `code_mode_host` is off. With code mode at its default, the per-thread config
+  beat the process's `image_generation=false`, `thread/start` took every parameter above, and the item's keys,
+  `savedPath` and the empty `result` were as described here; the picture (1536×1024, 1.87 MB) took 18.1 s.
 - **The picture's bytes** come from the file Codex saves, never from the notification: with the media switch on,
   `item/completed` of type `imageGeneration` carries `savedPath` and an empty `result` (without it, the base64 picture
   would be one stdout line past the bound that fails the run). The file must be
@@ -373,15 +385,26 @@ migration `20260930746000`, which only names the tool among a run's observations
   executing would stop the run's later changes): the member's picture limit (`usageLimitExceeded`, `limitId`
   `image_gen`: "the member's ChatGPT has no pictures left for now", with when it resets), the member's usage limit,
   the generator refused or failed after the image tool was called (`PICTURE_REFUSED`), the image tool never called
-  (`NO_PICTURE`: "this member's ChatGPT plan gave no picture … as on a Free plan, which makes none", and the agent
-  goes on without a generated picture and tells the member in one line), none within 4 minutes, not a usable PNG,
-  over 12 MiB, the login cannot make pictures. A Free plan is offered the tool (its sign-in's plan is not read here);
-  Codex withholds its image tool there, so its first call ends in `NO_PICTURE`.
+  (`NO_PICTURE`), none within 4 minutes, not a usable PNG, over 12 MiB, the login cannot make pictures.
+- **When the image tool was never called** Codex may have withheld it (a Free plan, a model without image input, a
+  provider or sign-in that does not qualify, a thread config not applied) or the model declined the prompt in words.
+  When Codex named the member's plan as Free (`account/updated` or `account/rateLimits/updated`, `planType: "free"`,
+  read as a fixed word and kept for nothing else), the answer says so (`NO_PICTURE_FREE_PLAN`): the plan makes no
+  pictures, and the agent goes on without one and tells the member in one line. Otherwise why is not known
+  (`NO_PICTURE`): the agent changes the prompt and tries once more, then goes on without one and tells the member.
+  Codex 0.155.1 has both notifications with `planType` (a Free plan is `"free"`), but sends `account/updated` only on a
+  sign-in or sign-out, and a rate-limit update's plan only when the backend gives one: on a node the plan is often not
+  known. Codex 0.160.0 sent `account/updated` about a second after a thread started (the Mac trial). The sign-in's
+  token is never read for it.
 - **The answer** is company_write's (`state`, `version`, `receiptId`, `outcome`, `next`) with `kind: "picture"`,
   `mediaType`, `bytes`, `fileSha256`, the picture's and the shown size, `imageSha256` of the shown PNG, `transparent`
-  when the generator said, and `revisedPrompt` when the model gave the generator other words. The picture follows it,
-  fitted as company_read fits an image (`folderImageView`: at most 1920×1200 and 1 MiB), when it was saved or parked
-  and is the one made now. The context view takes it as machine_screen's screen: this run's own answer, source
+  when the generator said, and `revisedPrompt` when the model gave the generator other words. That is the picture
+  model's own prompt argument, which nothing in Codex bounds: the lane keeps 4096 bytes of it at most, cut at a
+  character's end, and the answer leaves it out, saying `revisedPromptCut`, when it was cut or would keep the answer from
+  reaching the model whole (an envelope past its bound is cut, and its picture's hash with it; a stored result past
+  48 KiB fails its receipt). The picture follows it,
+  fitted as company_read fits an image (`folderImageView`: at most 1920×1200 and 1 MiB), when it was saved or parked,
+  is the one made now, and its answer fits one result whole. The context view takes it as machine_screen's screen: this run's own answer, source
   `runtime`, no read, naming the picture's hash (`kind: "picture"`).
 - **What the agent is told** is the tool's description alone: what pictures are for (what does not exist yet), that a
   real thing is shown by its real picture and a generated one is never passed off as a photo (an app says drawn or

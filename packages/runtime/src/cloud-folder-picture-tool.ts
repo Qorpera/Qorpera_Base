@@ -25,7 +25,11 @@ import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-
 import {
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
+	APP_MAX_FILES,
+	APP_MEDIA_KINDS,
+	APP_VIDEOS_MAX_BYTES,
 	APPS_FOLDER,
+	appFileKind,
 	appPath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
@@ -37,6 +41,7 @@ import {
 	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { APP_LIST_LIMIT, appFileSizes } from "./cloud-folder-app-tools.ts";
 import {
 	cloudFolderRefusal,
 	mutationText,
@@ -68,6 +73,7 @@ import {
 	MAX_CLOUD_PICTURE_PROMPT_BYTES,
 } from "./cloud-picture-channel.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 const MIB = 1024 * 1024;
 /** The calls a run's make_picture remembers, by operationKey, for the run's life: the newest this many, each with its
@@ -76,6 +82,10 @@ const MIB = 1024 * 1024;
  * made, since the ledger has no read of a completed operation by key that starts nothing. */
 const REMEMBERED_CALLS = 256;
 const REMEMBERED_PICTURES = 4;
+/** The room an app's pictures and videos must have left before a picture for it is made: what one picture takes in
+ * practice (gpt-image's 1536x1024 PNG was 1.87 MB on the Mac trial of 13 November 2026), with some to spare. A picture
+ * that comes back larger than the room left is refused before it is saved. */
+const APP_PICTURE_ROOM_BYTES = 4 * MIB;
 
 /** What make_picture tells the agent (at most 4096 bytes, as every tool's description). */
 export const CLOUD_MAKE_PICTURE_DESCRIPTION =
@@ -90,6 +100,9 @@ export const CLOUD_MAKE_PICTURE_DESCRIPTION =
 /** What follows a saved picture's answer. */
 const SAVED_NEXT =
 	"Saved. Look at the picture: if it is not good enough, call again with a better prompt, a new operationKey and this version as expectedVersion.";
+
+/** A path among the company's pages and tables, whose change shows in the run's conversation with Undo (I10). */
+const pagesPath = (path: string): boolean => /^(?:interfaces|tables)\//.test(osRelative(companyPathKey(path)) ?? "");
 
 /** A refusal before anything was saved: the call's own words for each reason no picture came back. */
 function pictureRefusal(error: unknown): never {
@@ -107,8 +120,10 @@ function pictureRefusal(error: unknown): never {
 			"USAGE_LIMIT_REACHED: the member's ChatGPT usage limit stopped the picture; nothing was saved. Try again later, or go on without it.",
 		refused:
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it; nothing was saved. Change the prompt (leave out real people, brands and anything unsafe) and call again with a new operationKey; if it fails again, go on without it.",
+		free_plan:
+			"NO_PICTURE_FREE_PLAN: this member's ChatGPT plan is Free, which makes no pictures. Nothing was saved. Go on without a generated picture, and tell the member in one line that their plan makes no pictures.",
 		no_picture:
-			"NO_PICTURE: this member's ChatGPT plan gave no picture: the image tool was never called, as on a Free plan, which makes none. Nothing was saved. Go on without a generated picture, and tell the member in one line that their ChatGPT plan made no picture.",
+			"NO_PICTURE: no picture was made: the image tool was not used, and why is not known (the prompt may have been declined, or this sign-in may make no pictures). Nothing was saved. Change the prompt (leave out real people, brands and anything unsafe) and call once more with a new operationKey; if no picture comes again, go on without one and tell the member in one line.",
 		timeout: `PICTURE_TIMEOUT: no picture came back within ${minutes} minutes; nothing was saved. Call again once with a new operationKey; if it fails again, go on without it.`,
 		invalid:
 			"PICTURE_UNUSABLE: what the generator gave back is not a usable PNG; nothing was saved. Call again once with a new operationKey.",
@@ -264,6 +279,11 @@ export function cloudPictureTool(options: {
 					);
 				// Its outcome stays as unconfirmed as the receipt would leave it, without another picture.
 				if (earlier.reply === null) throw new Error("An earlier call of this picture has an unconfirmed outcome");
+				// A saved or parked picture among the company's pages is noted again, as a repeat of company_write's change
+				// is: the note of the call before may have failed, and SQL notes each commit once.
+				const state = (earlier.reply.value as Record<string, JsonValue> | null)?.state;
+				if ((state === "applied" || state === "proposed") && pagesPath(request.path))
+					await folder.noteInterfaceChanges(context.signal);
 				return { ...earlier.reply };
 			}
 			// What would refuse the picture anyway is checked before it is made: the member's plan pays for each one.
@@ -277,6 +297,27 @@ export function cloudPictureTool(options: {
 				if (into.kind !== "folder")
 					throw new CloudToolRefusal(
 						"COMPANY_FILE_PARENT_MISSING: nothing was made; what this path goes in is a file or a link, not a folder. Save the picture in a folder.",
+					);
+			}
+			// A picture for an app goes in only while the app has room for it, as save_app counts the app's files: one
+			// more file, and a picture's room among its pictures and videos.
+			let room: number | undefined;
+			const app = appPath(request.path);
+			if (app) {
+				const root = `${APPS_FOLDER}/${app.name}`;
+				const listed = await folder
+					.list(root, { recursive: true, limit: APP_LIST_LIMIT }, context.signal)
+					.catch((error) => unavailable(error, "saved"));
+				const sizes = appFileSizes(listed.entries, root);
+				sizes.delete(app.inner.toLowerCase());
+				const media = [...sizes].reduce(
+					(sum, [inner, bytes]) => (APP_MEDIA_KINDS.has(appFileKind(inner)) ? sum + bytes : sum),
+					0,
+				);
+				room = APP_VIDEOS_MAX_BYTES - media;
+				if (listed.next !== null || sizes.size + 1 > APP_MAX_FILES || room < APP_PICTURE_ROOM_BYTES)
+					throw new CloudToolRefusal(
+						`APP_TOO_LARGE: nothing was made; the app ${app.name} has no room for another picture (an app holds at most ${APP_MAX_FILES} files and ${APP_VIDEOS_MAX_BYTES / MIB} MiB of pictures and videos). Remove pictures it no longer shows with company_delete first, or save this one outside the app.`,
 					);
 			}
 			const at = await read(request.path, context.signal);
@@ -295,6 +336,10 @@ export function cloudPictureTool(options: {
 				return pictureRefusal(error);
 			}
 			if (made.png.byteLength > MAX_CLOUD_PICTURE_BYTES) pictureRefusal(new CloudPictureFailure("too_large"));
+			if (room !== undefined && made.png.byteLength > room)
+				throw new CloudToolRefusal(
+					`APP_TOO_LARGE: the picture was made but not saved; at ${made.png.byteLength} bytes it is more than the ${room} bytes the app ${app?.name} has left for pictures and videos. Remove pictures it no longer shows with company_delete first, or save it outside the app.`,
+				);
 			// The picture decodes as a PNG, or it is not saved; the model sees it fitted as company_read fits an image.
 			let view: FolderImageView;
 			try {
@@ -305,8 +350,14 @@ export function cloudPictureTool(options: {
 			}
 			if (view.format !== "png") pictureRefusal(new CloudPictureFailure("invalid"));
 			const fileSha256 = sha256(made.png);
-			const revisedPrompt =
-				made.revisedPrompt !== undefined && made.revisedPrompt !== request.prompt ? made.revisedPrompt : undefined;
+			// The picture model's own words for the prompt, when they differ: never more than a description's bound (the lane
+			// cuts them there), and left out when the answer would not reach the model whole with them (below).
+			const revised =
+				made.revisedPrompt !== undefined && made.revisedPrompt !== request.prompt
+					? Buffer.byteLength(made.revisedPrompt) <= MAX_CLOUD_PICTURE_PROMPT_BYTES && !made.revisedPromptCut
+						? { revisedPrompt: made.revisedPrompt }
+						: { revisedPromptCut: true as const }
+					: {};
 			let content: CloudToolContent;
 			try {
 				content = await operations.execute({
@@ -356,10 +407,14 @@ export function cloudPictureTool(options: {
 							shownWidth: view.shownWidth,
 							shownHeight: view.shownHeight,
 							imageSha256: view.sha256,
-							...(revisedPrompt === undefined ? {} : { revisedPrompt }),
 							...(made.transparent === undefined ? {} : { transparent: made.transparent }),
 							...(result.outcome === "saved" ? { next: SAVED_NEXT } : {}),
 						};
+						// The answer must reach the model whole, since its picture follows it and the context view reads the picture's
+						// hash from it; the revised prompt goes first when it would not fit (an envelope past the bound is cut, and a
+						// stored result past 48 KiB fails its receipt).
+						if (fitsOneResult(cloudToolJsonText({ ...answer, ...revised }))) Object.assign(answer, revised);
+						else if (Object.keys(revised).length > 0) answer.revisedPromptCut = true;
 						return {
 							content: { kind: "json", value: answer },
 							folderCommitId: committed.commitId,
@@ -383,14 +438,14 @@ export function cloudPictureTool(options: {
 			const shown =
 				(answer.state === "applied" || answer.state === "proposed") &&
 				answer.fileSha256 === fileSha256 &&
-				answer.imageSha256 === view.sha256;
+				answer.imageSha256 === view.sha256 &&
+				fitsOneResult(cloudToolJsonText(answer));
 			const plain: CloudToolContent = { kind: "json", value: answer };
 			const reply = shown ? { ...plain, image: { png: view.png, sha256: view.sha256 } } : plain;
 			remember(request.operationKey, call, reply);
 			// A picture that is part of the company's pages shows in the run's conversation with Undo, as company_write's
 			// change does (Interfaces I10).
-			if (/^(?:interfaces|tables)\//.test(osRelative(companyPathKey(request.path)) ?? ""))
-				await folder.noteInterfaceChanges(context.signal);
+			if (pagesPath(request.path)) await folder.noteInterfaceChanges(context.signal);
 			return reply;
 		},
 	};

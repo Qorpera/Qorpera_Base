@@ -52,8 +52,10 @@ export function cloudPictureInput(input: CloudPictureInput): { prompt: string } 
 export interface CloudPictureMade {
 	/** The PNG as the generator gave it, checked by its signature and its size. */
 	readonly png: Buffer;
-	/** The prompt the generator was given, when the model gave it other words than the call's. */
+	/** The prompt the generator was given, as the picture's model wrote it: at most MAX_CLOUD_PICTURE_PROMPT_BYTES, cut
+	 * at a character's end when it was longer (`revisedPromptCut`). */
 	readonly revisedPrompt?: string;
+	readonly revisedPromptCut?: true;
 	/** Whether the generator made its background transparent, when it said. */
 	readonly transparent?: boolean;
 }
@@ -66,7 +68,10 @@ export type CloudPictureFailureReason =
 	| "usage_limit"
 	/** The image tool was called, and the generator refused the prompt or failed. */
 	| "refused"
-	/** The image tool was never called: the member's plan gave none (a Free plan makes no pictures). */
+	/** The image tool was never called, and Codex said the member's plan is Free, which has none. */
+	| "free_plan"
+	/** The image tool was never called, for a reason not known: the model declined the prompt, or this sign-in, its
+	 * plan, the model or the thread's config gave it no image tool. */
 	| "no_picture"
 	/** No picture within the call's time. */
 	| "timeout"

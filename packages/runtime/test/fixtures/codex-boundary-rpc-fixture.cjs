@@ -230,7 +230,9 @@ const pictureSave = (at, itemId = pictureItemId) => {
 	if (itemId === pictureItemId) pictureEvidence.savedPath = saved;
 	else pictureEvidence.secondPath = saved;
 	pictureWrite();
-	write({ method: "item/completed", params: { ...at, item: pictureItem({ id: itemId, savedPath: saved, transparentBackground: true }), completedAtMs: 1 } });
+	// The picture model's own prompt argument, which nothing in Codex bounds: 40 KiB of it, in characters of two bytes.
+	const revised = mode === "picture-long-revised" ? { revisedPrompt: "é".repeat(20 * 1024) } : {};
+	write({ method: "item/completed", params: { ...at, item: pictureItem({ id: itemId, savedPath: saved, transparentBackground: true, ...revised }), completedAtMs: 1 } });
 };
 
 if (mode === "descendant") {
@@ -466,7 +468,12 @@ async function handle(message) {
 		write({ method: "item/agentMessage/delta", params: { ...at, delta: "PRIVATE_PICTURE_CANARY" } });
 		if (mode === "picture-request")
 			write({ id: "picture_request", method: "item/tool/call", params: { ...at, callId: "picture_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
-		if (mode === "picture-silent") {
+		// What Codex says of the member's plan, without a thread: a sign-in's update, or a rate-limit update's plan.
+		if (mode === "picture-free" || mode === "picture-pro")
+			write({ method: "account/updated", params: { authMode: "chatgpt", planType: mode === "picture-free" ? "free" : "pro" } });
+		if (mode === "picture-free-limits")
+			write({ method: "account/rateLimits/updated", params: { rateLimits: { limitId: "codex", planType: "free", primary: null, secondary: null } } });
+		if (mode === "picture-silent" || mode === "picture-free" || mode === "picture-pro" || mode === "picture-free-limits") {
 			// The model draws nothing: its turn ends with words alone.
 			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "completed", error: null } } });
 			return;
