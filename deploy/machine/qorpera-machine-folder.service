@@ -24,8 +24,8 @@ Slice=qorpera-control.slice
 # account read /company and write nothing. The virtual files therefore belong to that account, as a computer's mount
 # gives them to qorpera-office (RUNTIME-FOLDER-COMPANY-MACHINES.md). It changes nothing for root: root writes through
 # default_permissions either way, so every command that runs as root works as before, and nothing else on the machine
-# gains anything (allow_other was already on). On an image without the account the line is empty and the mount is
-# root's, as it was.
+# gains anything (allow_other was already on). On an image without the account the files show uid 2000 with no name,
+# and root works on them as before.
 # The ids are the image's own (build-machine-image.sh: useradd --uid 2000 --gid 2000 qorpera-agent), as a computer's
 # mount takes qorpera-office's; this unit ships inside that image, so the two never come apart. No Environment line
 # here: the view's pass is only in the view file (the guest test holds this unit to that).

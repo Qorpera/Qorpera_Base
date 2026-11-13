@@ -1,64 +1,87 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { build } from "esbuild";
 import { ENVIRONMENT, finish, pass, proveCompanyRun, repositoryRoot, textObjects } from "./prove-company-run.mjs";
 
-// The agent's home, slice 3 (migration 20260930754000): a folder window per run. End to end, through the real patched
-// Codex and a migrated database (scripts/prove-company-run.mjs says what is real and what stands in):
+// The agent's home in the company folder (slice 3, migration 20260930754000, as reworked after the audit of 13 Nov
+// 2026). End to end, through the real patched Codex and a migrated database (scripts/prove-company-run.mjs says what is
+// real and what stands in):
 //
-//   QORPERA_CODEX_FENCE_BINARY=<patched codex> node scripts/prove-home-folder-window.mjs
+//   QORPERA_CODEX_FENCE_BINARY=<patched codex> node scripts/prove-home-folder.mjs
 //
-// Alice's conversation run has a home machine. The relay asks the folder for a window on it before a session starts
-// there, and the home mounts the window instead of the company folder:
-// - The window belongs to exactly one run: its row names the run, the machine, the placement (its own machine id) and
-//   the boot, and the folder service learns its kind and its machine from the renewal it does by the window's pass.
-// - It shows the run's own folder: a file under a narrower resource that only Alice's agent holds a grant on is read
-//   through the window, and NOT through the company-wide view of another machine, which reads the root and the rules
-//   alone. A path the run may not read is read through neither. The refusal is the folder's, never the home's.
-// - Every read released under the window is recorded as that run's read, as a read through the run's own tools is.
-// - A change the window saves while a native call is open carries the call's id, and the commit is credited to it; the
-//   call's id is its own run operation receipt, begun by the real receipt function, so the change carries that receipt
-//   as a write through machine_run does. With the call ended, a change credits nothing and is the run's own alone.
-// - If a window cannot be made, the session is not started: the ask answers refused and the runtime turns each reason
-//   into plain words for the model (no steps, no commands, no terminal, no ids).
-// - Both orders of a roll: over a kernel that does not list the three calls yet (an old backend), the ask is refused as
-//   an unknown call and the relay says so and starts no session, so the migration goes before the runtime bundle.
-// Real: as the harness says, plus the runtime's own window module (openHomeFolderWindow, its calls and its words), the
-// runtime's folder client, and every kernel function they use: the window's open, the calls' open and end, the folder's
-// read, release and commit, the receipt's begin. Stand-ins: the machine and its placement rows are written as the
-// executor's custody leaves them (SQL test 510 does the same), and the commits a window saves are made here as the
-// folder service makes them (the same core call with the view actor and its credits). Not covered: the folder service's
-// own process and the FUSE mount on the home, a real machine, a real model's own shell.
+// Alice's conversation run, with builder A's switch on for the company, has a home: the agent's own machine, started for
+// the member she works for by an earlier run that has ended, whose boot has the company-wide view as every boot does.
+// - The offer (A's qorpera_company_home_available, narrowed here) gives the run that machine and not the agent's machine
+//   of another member; A's authority writes the session; the executor's ask answers it open, and the executor's own
+//   parser reads the ids its folder command window carries.
+// - Credit: a change made while the session's window is open carries the session's id in its credits; the commit names
+//   the session and acts as Alice's run, and a path her agent may not write is denied in the folder.
+// - Reads: a read the machine was served and the folder service released reaches Alice's run while her session is open
+//   (the view itself acts as the agent alone: its starter's run has ended), and the executor's take-in for her run,
+//   which every batch of the channel's output waits for in the executor's own gate, answers before anything leaves.
+//   Once her session is closed, a release no longer reaches her.
+// - A machine the run may not share is no home: another member's machine is not offered and its session is refused;
+//   a closed session is refused as ended.
+// - The mount gives /company to the image's agent account, and a backend without the migration refuses the executor's
+//   ask by its code, so the executor starts no channel: the migration rolls before the executor.
+// Real: as the harness says, plus the folder core's view open, commit, release and take-in, A's offer and authority,
+// this migration's ask, and the executor's parser and output gate (bundled from packages/runner-orchestrator). Stand-ins:
+// the machine and its placement rows are written as the executor's custody leaves them (SQL test 510 does the same),
+// the boot's view is opened as the executor opens it, and the commit and the release are made as the folder service
+// makes them with the session's window open. Not covered: the executor's own process and the folder service's (their
+// unit tests drive them), a FUSE mount on a real machine, a real model's own shell.
 // Prints one PASS line per check and exits 1 on the first failure; without the binary it prints NOT RUN and exits 0.
 
 const AGENT = "92400000-0000-4000-8000-000000000030";
 const OWNER_USER = "92400000-0000-4000-8000-000000000001";
 const PROFILE = "92400000-0000-4000-8000-000000000010";
 const HOME = "40bb0000-0000-4000-8000-000000000001";
-const OTHER = "40bb0000-0000-4000-8000-000000000002";
+const OTHER_MEMBERS = "40bb0000-0000-4000-8000-000000000002";
 const NODE = "40bb0000-0000-4000-8000-0000000000e2";
-/** What the runtime's own refusal is when the backend does not carry the three functions yet: the class and the code it
- * raises, never its words (a public message is sanitised). 42883 is PostgreSQL's undefined_function. */
-const ROLL_REFUSAL = "CloudCompanyFolderRpcError:42883";
+const EXECUTOR_NODE = "40bb0000-0000-4000-8000-000000000460";
+/** The run that started the machines: an earlier run of Alice's for the same member, whose job was cancelled long ago,
+ * so the boot's view has no live run and acts as the agent alone. */
+const STARTER_RUN = "40bb0000-0000-4000-8000-0000000000a0";
+const STARTER_JOB = "40bb0000-0000-4000-8000-0000000000a1";
 
-/** The company's machines and their disks, as the executor's custody leaves them, plus a narrower folder resource that
- * only Alice's agent may read and one the run may not read at all. The other machine's disk gets the company-wide view
- * a test machine's boot opens, which is what makes it no home for a window. */
+/** The company's two machines of Alice's, as the executor's custody leaves them: one started for the member her run
+ * works for, one for another member. Each has a running, reserved placement on its first boot. */
 const SETUP = `
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'home-ack') \\g /dev/null
 create schema home_proof;
--- A machine of Alice's, with a running, reserved placement on its first boot.
-create function home_proof.machine(p_id uuid, p_name text) returns uuid language plpgsql as $$
+-- The earlier run: Alice's run's own rows, copied under new ids, its job cancelled two hours ago.
+do $$
+declare v_run public.qorpera_execution_runs; v_job public.qorpera_runner_jobs;
+begin
+	select * into v_run from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+	select * into v_job from public.qorpera_runner_jobs where id = v_run.job_id;
+	set local session_replication_role = replica;
+	insert into public.qorpera_runner_jobs select (jsonb_populate_record(null::public.qorpera_runner_jobs,
+		to_jsonb(v_job) || jsonb_build_object('id', '${STARTER_JOB}', 'client_job_id', extensions.gen_random_uuid(),
+			'run_id', '${STARTER_RUN}', 'status', 'cancelled', 'cancelled_at', clock_timestamp() - interval '2 hours',
+			'cancelled_by_user_id', '${OWNER_USER}', 'lease_token_sha256', null, 'lease_expires_at', null, 'client_lease_id', null, 'result', null,
+			'finished_at', null))).*;
+	insert into public.qorpera_execution_runs select (jsonb_populate_record(null::public.qorpera_execution_runs,
+		to_jsonb(v_run) || jsonb_build_object('id', '${STARTER_RUN}', 'job_id', '${STARTER_JOB}',
+			'source_id', extensions.gen_random_uuid()))).*;
+	set local session_replication_role = origin;
+end $$;
+create function home_proof.machine(p_id uuid, p_name text, p_member uuid, p_used timestamptz) returns uuid
+language plpgsql as $$
 declare v_place uuid := extensions.gen_random_uuid(); v_boot uuid := extensions.gen_random_uuid();
 	v_instance text := encode(extensions.digest(v_place::text, 'sha256'), 'hex');
 begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id,
-		started_by_run_id, started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime)
-	select p_id, '${PROFILE}', '${ENVIRONMENT}', p_name, 'The agent''s home.', r.staff_agent_id, r.id,
-		extensions.gen_random_uuid(), r.requested_by_user_id, 2, 4294967296, 21474836480, 'standard', 'task'
-	from public.qorpera_execution_runs r
-	where r.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+		started_by_run_id, started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime,
+		desired_state, last_used_at)
+	values (p_id, '${PROFILE}', '${ENVIRONMENT}', p_name, 'The agent''s home.', '${AGENT}', '${STARTER_RUN}',
+		extensions.gen_random_uuid(), p_member, 2, 4294967296, 21474836480, 'standard', 'task', 'running', p_used);
 	insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding,
 		instance_sha256, running_at, boot_id)
 	values (v_place, p_id, '${PROFILE}', 'node-a', repeat('8', 64), '{}', v_instance, clock_timestamp(), v_boot);
@@ -69,279 +92,270 @@ begin
 	insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256,
 		cpu_millis, memory_bytes, reserved_at)
 	values (v_place, '${NODE}', 'machine', 'lxd', repeat('4', 64), 2000, 4294967296, clock_timestamp());
-	-- A placement made before the folder check counts as used; these are fresh disks.
 	update public.qorpera_company_machine_placements set folder_unchecked_at = null where id = v_place;
 	set local session_replication_role = origin;
 	return v_place;
 end $$;
+-- A node with a machine executor, so the company has machines at all (as SQL tests 1241 and 1246 set it up).
+create function home_proof.observe() returns void language plpgsql as $$
+declare v_context jsonb := public.qorpera_runtime_node_inventory_context('${EXECUTOR_NODE}');
+begin
+	perform public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
+		'nodeId','${EXECUTOR_NODE}','machineIdSha256',repeat('c',64),'observationId',extensions.gen_random_uuid(),
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+		'cpuMillis',16000,'memoryBytes',68719476736,'state','ready'),v_context ->> 'contextSha256',
+		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
+end $$;
 do $$
-declare v_narrow uuid;
+declare v_policy jsonb := jsonb_build_object('providerId','machine-proof','providerPolicySha256',repeat('f',64),
+	'project','machines','imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines',
+	'network','qagent0');
 begin
-	perform home_proof.machine('${HOME}', 'alice-home');
-	perform home_proof.machine('${OTHER}', 'alice-other');
-	-- The narrower folder: only Alice's agent holds a grant on it, and nobody on the locked one.
-	perform public.base_seed_home_paths();
-	v_narrow := public.qorpera_folder_set_resource('${ENVIRONMENT}',
-		'{"kind":"member","userId":"${OWNER_USER}"}'::jsonb, 'home-narrow', 'subtree', 'company_shared', 'normal')
-		->> 'resourceId';
-	perform public.qorpera_folder_grant('${ENVIRONMENT}', '{"kind":"member","userId":"${OWNER_USER}"}'::jsonb, v_narrow,
-		'staff_agent', '${AGENT}', array['read','write']);
-	perform public.qorpera_folder_set_resource('${ENVIRONMENT}',
-		'{"kind":"member","userId":"${OWNER_USER}"}'::jsonb, 'home-locked', 'subtree', 'company_shared', 'normal');
+	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+		'nodeId','${EXECUTOR_NODE}','machineIdSha256',repeat('c',64),'label','machine-proof','cpuMillis',16000,
+		'memoryBytes',68719476736,'headroomCpuMillis',2000,'headroomMemoryBytes',8589934592,'standardCpuMillis',2000,
+		'standardMemoryBytes',4294967296,'enabled',true),0);
+	perform public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-inventory-policy/v1',
+		'nodeId','${EXECUTOR_NODE}','host',jsonb_build_object('machineIdSha256',repeat('c',64),
+		'socketPath','/var/snap/lxd/common/lxd/unix.socket','socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd',
+		'serverVersion','6.9','architecture','x86_64'),'operatingCpuMillis',500,'operatingMemoryBytes',536870912,
+		'infrastructure','[]'::jsonb));
+	perform home_proof.observe();
+	perform public.qorpera_enroll_runtime_node_provider('${EXECUTOR_NODE}', repeat('c',64), 'machine', 'machine-proof',
+		repeat('f',64), 8000, 34359738368);
+	perform public.qorpera_configure_machine_executor('mx-proof', repeat('c',64), true, v_policy, 322122547200);
 end $$;
-`;
-
-/** The two files the checks read: one under the narrower folder, one under the locked one. The platform writes both. */
-const SEED = `
-create function public.base_seed_home_paths() returns void language plpgsql as $$
+do $$
 begin
+	perform home_proof.machine('${HOME}', 'alice-home', '${OWNER_USER}', clock_timestamp() - interval '1 hour');
+	-- Another member's machine of the same agent, used more lately: still no home of this run's.
+	perform home_proof.machine('${OTHER_MEMBERS}', 'alice-other-member', (select user_id from public.qorpera_profile_members
+		where profile_id = '${PROFILE}' and user_id <> '${OWNER_USER}' order by user_id limit 1), clock_timestamp());
 	perform pg_temp.base_commit('{"kind":"platform"}', 'home-seed', jsonb_build_array(
-		jsonb_build_object('op','mkdir','path','home-narrow'),
-		jsonb_build_object('op','write','path','home-narrow/n.txt','file',pg_temp.base_stage('narrow')),
-		jsonb_build_object('op','mkdir','path','home-locked'),
-		jsonb_build_object('op','write','path','home-locked/l.txt','file',pg_temp.base_stage('locked'))));
+		jsonb_build_object('op','mkdir','path','home-proof'),
+		jsonb_build_object('op','write','path','home-proof/plan.txt','file',pg_temp.base_stage('plan'))));
 end $$;
 `;
 
-const CALLS = [
-	() => ({ name: "company_read", arguments: { path: "home-narrow/n.txt" } }),
-	() => ({ name: "company_read", arguments: { path: "home-locked/l.txt" } }),
-];
+/** The executor's parser and output gate, bundled as the executor carries them. */
+async function executorCode(scratch) {
+	const modulePath = join(scratch, "executor.mjs");
+	await build({
+		absWorkingDir: repositoryRoot,
+		stdin: {
+			resolveDir: repositoryRoot,
+			contents:
+				'export {HomeOutputGate, parseHomeFolderAnswer} from "./packages/runner-orchestrator/src/machine-home-folder.ts";',
+		},
+		platform: "node",
+		format: "esm",
+		target: "node22",
+		bundle: true,
+		outfile: modulePath,
+		logLevel: "silent",
+	});
+	return import(pathToFileURL(modulePath).href);
+}
 
 await finish(
 	proveCompanyRun({
-		name: "qorpera_prove_home_folder_window",
-		prompt: "Read the two files you were given, then say what you found.",
-		setup: `${SEED}${SETUP}`,
-		// The bytes of the two files the setup stages, as the gateway holds them.
-		objects: textObjects(["narrow", "locked"]),
-		calls: CALLS,
-		async check({ code, db, binding, run, outputs }) {
-			const signal = () => AbortSignal.timeout(30_000);
-			const runId = binding.runId;
-			// Every folder core function wants the service role, and each psql call is its own session, so each one sets
-			// the claim in a transaction of its own (SQL test 924's base_claims does the same inside the fixture).
-			const service = (text) =>
-				db.json(`begin;
-					set local request.jwt.claims = '{"role":"service_role"}';
-					${text.replace(/;?\s*$/, "")};
-					commit;`);
-			// Each psql call is its own session, so the placements are read from the rows, not from a setting.
-			const placeOf = (machine) =>
-				db.json(`select to_jsonb((select p.id from public.qorpera_company_machine_placements p
-					where p.machine_id = '${machine}' and p.retired_at is null))::text`);
-			const homePlace = placeOf(HOME);
-			const otherPlace = placeOf(OTHER);
-			const actor = (view) => JSON.stringify({ kind: "view", viewId: view.viewId, pass: view.pass });
-			const read = (path, who) =>
-				service(`select public.qorpera_folder_read('${ENVIRONMENT}', '${who}'::jsonb, '${path}')::text`);
+		name: "qorpera_prove_home_folder",
+		prompt: "Read the plan you were given, then say what it says.",
+		setup: SETUP,
+		objects: textObjects(["plan"]),
+		calls: [() => ({ name: "company_read", arguments: { path: "home-proof/plan.txt" } })],
+		async check({ db, binding, outputs }) {
+			const scratch = await mkdtemp(join(tmpdir(), "prove-home-folder-"));
+			try {
+				const executor = await executorCode(scratch);
+				const runId = binding.runId;
+				// The executor's control: the service role's calls, as PostgREST makes them.
+				const control = (method, args) => db.direct(method, args);
+				const service = (text) =>
+					db.json(`begin;
+						set local request.jwt.claims = '{"role":"service_role"}';
+						${text.replace(/;?\s*$/, "")};
+						commit;`);
+				const row = (sql) => db.json(`select coalesce((${sql}), 'null')::text`);
+				const placeOf = (machine) =>
+					row(`select to_jsonb(p) from public.qorpera_company_machine_placements p
+						where p.machine_id = '${machine}' and p.retired_at is null`);
+				const home = placeOf(HOME);
 
-			// The run's own tools still read what it may and not what it may not: the model saw both answers.
-			assert.match(outputs[0].text, /narrow/, `the narrower file's text: ${outputs[0].text}`);
-			assert.match(outputs[1].text, /"kind":"absent"/, `the locked file's answer: ${outputs[1].text}`);
-			pass("the run's own folder tools read the narrower file and not the locked one");
+				assert.match(outputs[0].text, /plan/, `the plan's text: ${outputs[0].text}`);
+				pass("the run's own folder tools work in the run that gets a home");
 
-			// 1. The relay asks for the window before a session starts on the home.
-			const asked = await code.openHomeFolderWindow(run.folder, HOME, signal());
-			assert("window" in asked, `the ask gave no window: ${JSON.stringify(asked)}`);
-			const window = asked.window;
-			const row = db.json(`select coalesce((select to_jsonb(v) from public.qorpera_folder_views v
-				where v.id = '${window.viewId}'), 'null')::text`);
-			assert.equal(row.kind, "home_window");
-			assert.equal(row.state, "open");
-			assert.equal(row.run_id, runId);
-			assert.equal(row.company_machine_id, HOME);
-			assert.equal(row.placement_id, homePlace);
-			assert.equal(row.machine_id, row.placement_id);
-			assert.equal(row.staff_agent_id, AGENT);
-			assert.equal(row.job_id, null);
-			pass("the window belongs to exactly one run, on its home's placement and boot");
+				// The boot's company-wide view, opened as the executor opens it at every boot.
+				const view = service(`select public.qorpera_folder_view_open('${ENVIRONMENT}', '{"kind":"platform"}'::jsonb,
+					'test_machine', jsonb_build_object('companyMachineId','${HOME}','placementId','${home.id}',
+						'bootId','${home.boot_id}'))::text`);
+				const actor = JSON.stringify({ kind: "view", viewId: view.viewId, pass: view.pass });
+				assert.equal(
+					service(`select to_jsonb(public.qorpera_folder_reads_root('${ENVIRONMENT}', '${PROFILE}', '${AGENT}',
+						'${OWNER_USER}'))::text`),
+					true,
+					"Alice and her member read the folder's root",
+				);
 
-			// The folder service learns what it serves from the renewal it does by the window's pass.
-			const renewed = service(`select public.qorpera_folder_view_renew('${window.viewId}',
-				'${window.pass}')::text`);
-			assert.equal(renewed.state, "open");
-			assert.equal(renewed.kind, "home_window");
-			assert.equal(renewed.machineId, homePlace);
-			assert.equal(renewed.companyId, PROFILE);
-			pass("the folder service renews the window by its pass and learns its kind and its machine");
+				// 1. The offer, A's authority, and the executor's ask.
+				service(`insert into public.qorpera_home_settings(singleton, enabled) values (true, true);
+					insert into public.qorpera_home_companies(profile_id) values ('${PROFILE}');
+					select to_jsonb(1)::text`);
+				const offer = control("qorpera_company_home_available", { p_binding: binding });
+				assert.equal(offer.available, true, JSON.stringify(offer));
+				assert.equal(offer.machineId, HOME, "the offer is the agent's machine for this member, not the newer one");
+				const session = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				const authorized = control("qorpera_authorize_home_session", {
+					p_binding: binding,
+					p_scope: { machineId: HOME },
+					p_session_id: session,
+				});
+				assert.equal(authorized.state, "authorized", JSON.stringify(authorized));
+				const asked = executor.parseHomeFolderAnswer(
+					control("qorpera_folder_home_session_window", { p_session_id: session }),
+					{ sessionId: session, placementId: home.id },
+				);
+				assert.equal(asked.state, "open", JSON.stringify(asked));
+				assert.deepEqual(asked.session, {
+					sessionId: session,
+					runId,
+					staffAgentId: AGENT,
+					requestedByUserId: OWNER_USER,
+					machineId: HOME,
+					placementId: home.id,
+					bootId: home.boot_id,
+				});
+				pass("the run is offered its agent's machine for its own member, and the executor's ask opens its session");
 
-			// 2. The window shows the run's own folder, the company-wide view the company's.
-			const wide = service(`select public.qorpera_folder_view_open('${ENVIRONMENT}', '{"kind":"platform"}'::jsonb,
-				'test_machine', jsonb_build_object('companyMachineId','${OTHER}','placementId','${otherPlace}',
-					'bootId',(select boot_id from public.qorpera_company_machine_placements where id = '${otherPlace}')))::text`);
-			assert.equal(read("home-narrow/n.txt", actor(window)).found, true);
-			assert.equal(read("home-narrow/n.txt", actor(wide)).found, false);
-			assert.equal(read("home-locked/l.txt", actor(window)).found, false);
-			assert.equal(read("home-locked/l.txt", actor(wide)).found, false);
-			pass("the window reads the run's own folder; the company-wide view reads the root and the rules alone");
+				// 2. Credit: the folder service saves what the machine changed while the session's window was open, with the
+				// window's id (the session's) in each unit's credits, through the boot's own view.
+				const commit = (key, units) =>
+					service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor}'::jsonb, '${key}',
+						'${JSON.stringify(units)}'::jsonb)::text`);
+				const credited = commit("home-credited", [
+					{ op: "mkdir", path: "home-proof/made", credits: [session] },
+					{ op: "mkdir", path: "QorperaOS/rules/home-made", credits: [session] },
+				]);
+				assert.equal(credited.units[0].outcome, "saved", JSON.stringify(credited));
+				assert.equal(credited.units[1].outcome, "denied", JSON.stringify(credited));
+				const saved = row(`select to_jsonb(c) from public.qorpera_folder_commits c where c.id = '${credited.commitId}'`);
+				assert.deepEqual(saved.credits, [session]);
+				assert.equal(saved.view_kind, "test_machine");
+				assert.equal(saved.view_id, view.viewId);
+				assert.equal(saved.run_id, runId, "the commit acts as the session's run, not the machine's starter");
+				assert.equal(saved.actor_id, AGENT);
+				// A session of another machine is no credit on this one: that unit is refused alone.
+				const stranger = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				const refused = commit("home-stranger", [{ op: "mkdir", path: "home-proof/stranger", credits: [stranger] }]);
+				assert.equal(refused.units[0].outcome, "refused", JSON.stringify(refused));
+				assert.equal(refused.units[0].reason, "command_ended");
+				pass("a change the home makes while its session is open is credited to the session, and acts as its run");
 
-			// 2b. The session the relay opens names the window on its own row (20260930752000), so what arrives from the
-			// session can be read back to the window it was opened for.
-			const session = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
-			service(`set local session_replication_role = replica;
-				insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id,
-					staff_agent_id, requested_by_user_id)
-				select '${session}', '${HOME}', '${homePlace}', p.boot_id, r.id, r.staff_agent_id, r.requested_by_user_id
-				from public.qorpera_company_machine_placements p, public.qorpera_execution_runs r
-				where p.id = '${homePlace}' and r.id = '${runId}';
-				select to_jsonb(1)::text`);
-			await window.bindSession(session, signal());
-			assert.equal(
-				db.json(`select to_jsonb((select folder_window_id from public.qorpera_company_home_sessions
-					where id = '${session}'))::text`),
-				window.viewId,
-			);
-			pass("the home session's row names the run's window");
-
-			// 2c. The model's own file tools run as the machine's agent account, never as root, and the mount is checked
-			// by the kernel: the machine's mount unit therefore gives the virtual files to that account. A real mount
-			// cannot run here, so the unit is read instead.
-			const unit = readFileSync(join(repositoryRoot, "deploy/machine/qorpera-machine-folder.service"), "utf8");
-			const owner = /--allow-other yes --owner-uid (\d+) --owner-gid (\d+)$/m.exec(unit);
-			assert(owner, "the machine's mount names the agent account's ids");
-			// They are the image's own ids, and the unit ships inside that image.
-			const image = readFileSync(join(repositoryRoot, "deploy/machine/build-machine-image.sh"), "utf8");
-			assert.match(image, new RegExp(`useradd --uid ${owner[1]} --gid ${owner[2]} [^\\n]*qorpera-agent`));
-			// The pass is only in the view file: no environment line on this unit (the guest test holds it to that too).
-			assert.doesNotMatch(unit, /^(Environment|EnvironmentFile|PassEnvironment)/m);
-			pass("the home's mount gives the company folder to the agent's own account, not to root");
-
-			// 3. A read released under the window is recorded as that run's read.
-			const release = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
-			const entry = read("home-narrow/n.txt", actor(window)).entry;
-			const released = service(`select public.qorpera_folder_record_release('${ENVIRONMENT}', '${actor(window)}'::jsonb,
-				'${release}', jsonb_build_array(jsonb_build_object('path', ${sqlLiteral(entry.path)},
-					'version', ${sqlLiteral(entry.version)}, 'authority', ${sqlLiteral(JSON.stringify(entry.authority))}::jsonb)),
-				repeat('5', 64))::text`);
-			assert.equal(released.runId, runId);
-			const recorded = db.json(`select to_jsonb(count(*))::text from public.qorpera_folder_run_read_records
-				where run_id = '${runId}' and release_id = '${release}'`);
-			assert.equal(Number(recorded), 1);
-			pass("every read the home makes under the window is recorded as that run's read");
-
-			// 4. A native call on the window: its id is its own receipt, and what the window saves is credited to it.
-			const callId = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
-			const receipt = service(`select public.qorpera_folder_begin_run_receipt('${JSON.stringify(binding)}'::jsonb,
-				'${callId}', 'home_call:one', repeat('7', 64), repeat('8', 64), false)::text`);
-			assert.equal(receipt.state, "executing", JSON.stringify(receipt));
-			await window.startCall(callId, "apply_patch home-narrow/made.txt", signal());
-			const open = db.json(`select coalesce((select to_jsonb(h) from public.qorpera_folder_home_calls h
-				where h.call_id = '${callId}'), 'null')::text`);
-			assert.equal(open.view_id, window.viewId);
-			assert.equal(open.run_id, runId);
-			assert.equal(open.ended_at, null);
-			assert.equal(open.command_head, "apply_patch home-narrow/made.txt");
-			const credited = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
-				'home-credited', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/made',
-					'credits', jsonb_build_array('${callId}'))))::text`);
-			assert.equal(credited.units[0].outcome, "saved", JSON.stringify(credited));
-			const commit = db.json(`select coalesce((select to_jsonb(c) from public.qorpera_folder_commits c
-				where c.id = '${credited.commitId}'), 'null')::text`);
-			assert.deepEqual(commit.credits, [callId]);
-			assert.equal(commit.view_kind, "home_window");
-			assert.equal(commit.run_id, runId);
-			pass("a change the home makes while a call is open is credited to that call and to the call's own receipt");
-
-			// 5. With the call ended, what the window saves credits nothing and is the run's own alone.
-			assert.equal(await run.folder.endHomeCall({ viewId: window.viewId, callId }, signal()), true);
-			assert.equal(await run.folder.endHomeCall({ viewId: window.viewId, callId }, signal()), false);
-			const plain = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
-				'home-plain', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/plain')))::text`);
-			assert.equal(plain.units[0].outcome, "saved", JSON.stringify(plain));
-			const after = db.json(`select coalesce((select to_jsonb(c) from public.qorpera_folder_commits c
-				where c.id = '${plain.commitId}'), 'null')::text`);
-			assert.equal(after.credits, null);
-			assert.equal(after.run_id, runId);
-			// A unit crediting the ended call is refused on its own, and applies nothing.
-			const late = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
-				'home-late', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/late',
-					'credits', jsonb_build_array('${callId}'))))::text`);
-			assert.equal(late.units[0].outcome, "refused");
-			assert.equal(late.units[0].reason, "command_ended");
-			assert.equal(read("home-narrow/late", actor(window)).found, false);
-			pass("a call that ended credits nothing more, and a change naming it is refused on its own");
-
-			// 6. No window, no session: the other machine's disk has held the company-wide view.
-			const refused = await code.openHomeFolderWindow(run.folder, OTHER, signal());
-			assert("refused" in refused, `a window on a disk that held the company-wide folder: ${JSON.stringify(refused)}`);
-			assert.match(refused.refused, /held the whole company folder/);
-			assert.doesNotMatch(refused.refused, /window|view|mount|terminal|[0-9a-f]{8}-/);
-			const none = db.json(`select to_jsonb(count(*))::text from public.qorpera_folder_views
-				where company_machine_id = '${OTHER}' and kind = 'home_window'`);
-			assert.equal(Number(none), 0);
-			pass("a home that cannot give a window gives plain words instead, and no window is made");
-
-			// 7. Both orders of a roll: over a backend without the migration the function is not there, so the ask is
-			// refused and the relay says plain words and starts no session; the migration goes before the bundle.
-			// The path a run's own box takes is the native host's entry point, which admits only the calls the kernel
-			// lists: the proof drives it as the host does, with the job's own lease token.
-			const TOKEN = "home-window-proof-token-0123456789";
-			service(`set local session_replication_role = replica;
-				update public.qorpera_runner_jobs
-				set lease_token_sha256 = encode(extensions.digest(convert_to('${TOKEN}', 'utf8'), 'sha256'), 'hex')
-				where id = '${binding.jobId}';
-				select to_jsonb(1)::text`);
-			// A folder call carries the run's own environment and actor, which the native host supplies and the entry
-			// point checks against the job's run.
-			const runActor = {
-				kind: "run",
-				runId: binding.runId,
-				jobId: binding.jobId,
-				runnerId: binding.runnerId,
-				assignmentId: binding.assignmentId,
-			};
-			const throughHost = (name, request) =>
-				service(`select public.qorpera_native_host_call('${binding.jobId}', '${TOKEN}', '${name}',
-					'${JSON.stringify({ p_environment_id: ENVIRONMENT, p_actor: runActor, p_request: request })}'::jsonb)::text`);
-			assert.equal(throughHost("qorpera_folder_home_window_open", { machineId: HOME }).state, "open");
-			// With the registrations gone (an unmigrated kernel), the host's entry point refuses the call itself.
-			db.query("delete from public.qorpera_native_host_calls where name like 'qorpera_folder_home%'");
-			assert.throws(
-				() => throughHost("qorpera_folder_home_window_open", { machineId: HOME }),
-				/native host call is refused/,
-			);
-			// The runtime turns that refusal, and the one a missing function gives, into plain words: no session either
-			// way. The kernel's own refusal is read by its code, never by words a public message sanitises.
-			for (const refusal of [
-				{ code: "42501", message: "native host call is refused" },
-				{ code: "42883", message: "function does not exist" },
-			]) {
-				const raising = {
-					openHomeWindow: async () => {
-						throw Object.assign(new Error(refusal.message), { code: refusal.code });
+				// 3. Reads: what the machine was served reaches the run while its session is open, and its take-in answers
+				// before the executor's gate lets the channel's output out.
+				const entry = service(`select public.qorpera_folder_read('${ENVIRONMENT}', '${actor}'::jsonb,
+					'home-proof/plan.txt')::text`).entry;
+				const release = (id) =>
+					service(`select public.qorpera_folder_record_release('${ENVIRONMENT}', '${actor}'::jsonb, '${id}',
+						'${JSON.stringify([{ path: entry.path, version: entry.version, authority: entry.authority }])}'::jsonb,
+						repeat('5', 64))::text`);
+				const reached = (id) =>
+					Number(
+						db.json(`select to_jsonb(count(*))::text from public.qorpera_folder_run_read_records
+							where run_id = '${runId}' and release_id = '${id}'`),
+					);
+				const first = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				const released = release(first);
+				assert.equal(released.runId, null, "the view acts as the agent alone: its starter's run has ended");
+				assert.equal(reached(first), 1, "the release reaches the run with a session open on the machine");
+				const order = [];
+				const gate = new executor.HomeOutputGate({
+					release: async () => {
+						const taken = control("qorpera_folder_test_machine_inherit_reads", {
+							p_placement_id: home.id,
+							p_boot_id: home.boot_id,
+							p_run_id: runId,
+							p_inherit_id: db.json("select to_jsonb(extensions.gen_random_uuid())::text"),
+						});
+						assert.equal(taken.schema, "qorpera.folder-inherit/v1", JSON.stringify(taken));
+						assert.equal(taken.viewId, view.viewId);
+						assert(taken.reads >= 1, JSON.stringify(taken));
+						order.push("taken in");
+						return undefined;
 					},
-					openHomeCall: async () => undefined,
-					endHomeCall: async () => true,
-				};
-				const answer = await code.openHomeFolderWindow(raising, HOME, signal());
-				assert("refused" in answer, `a window although the ask was refused with ${refusal.code}`);
-				assert.match(answer.refused, /could not be made ready just now/);
-				assert.doesNotMatch(answer.refused, /window|view|mount|terminal|[\da-f]{8}/i);
+					pass: (chunk) => order.push(`out ${chunk.toString()}`),
+					fail: (why) => order.push(`failed ${why}`),
+					spacingMs: 200,
+					limitBytes: 1024,
+				});
+				gate.push(Buffer.from('{"id":1}'));
+				assert.deepEqual(order, [], "nothing leaves before the release");
+				await gate.drained();
+				assert.deepEqual(order, ["taken in", 'out {"id":1}']);
+				pass("what the machine read reaches the session's run, and its output leaves only after the run's take-in");
+
+				// 4. The run's session closes: a release no longer reaches it, and the executor's ask says it ended.
+				control("qorpera_close_home_session", { p_binding: binding, p_session_id: session, p_reason: "ended" });
+				const later = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				release(later);
+				assert.equal(reached(later), 0, "a closed session's run");
+				assert.deepEqual(
+					executor.parseHomeFolderAnswer(control("qorpera_folder_home_session_window", { p_session_id: session }), {
+						sessionId: session,
+						placementId: home.id,
+					}),
+					{ state: "refused", reason: "HOME_SESSION_ENDED" },
+				);
+				// What it saved while it was open stays credited to it.
+				const kept = row(`select to_jsonb(c.credits) from public.qorpera_folder_commits c where c.id = '${credited.commitId}'`);
+				assert.deepEqual(kept, [session]);
+				pass("a closed session hears it ended, its reads stop, and its credit stays");
+
+				// 5. Another member's machine of the same agent is no home of this run's: A's authority would open a session
+				// there, and the executor's ask refuses it, so no channel starts.
+				const other = placeOf(OTHER_MEMBERS);
+				const strangerSession = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
+				const there = control("qorpera_authorize_home_session", {
+					p_binding: binding,
+					p_scope: { machineId: OTHER_MEMBERS },
+					p_session_id: strangerSession,
+				});
+				assert.equal(there.state, "authorized", JSON.stringify(there));
+				assert.deepEqual(
+					executor.parseHomeFolderAnswer(
+						control("qorpera_folder_home_session_window", { p_session_id: strangerSession }),
+						{ sessionId: strangerSession, placementId: other.id },
+					),
+					{ state: "refused", reason: "HOME_NOT_SHARED" },
+				);
+				pass("a machine the run may not share is not offered, and the executor refuses a session on it");
+
+				// 6. The mount gives /company to the image's agent account, not to root, and carries no environment.
+				const unit = readFileSync(join(repositoryRoot, "deploy/machine/qorpera-machine-folder.service"), "utf8");
+				const owner = /--allow-other yes --owner-uid (\d+) --owner-gid (\d+)$/m.exec(unit);
+				assert(owner, "the machine's mount names the agent account's ids");
+				const image = readFileSync(join(repositoryRoot, "deploy/machine/build-machine-image.sh"), "utf8");
+				assert.match(image, new RegExp(`useradd --uid ${owner[1]} --gid ${owner[2]} [^\\n]*qorpera-agent`));
+				assert.doesNotMatch(unit, /^(Environment|EnvironmentFile|PassEnvironment)/m);
+				pass("the machine's mount gives the company folder to the agent's own account, not to root");
+
+				// 7. The order of a roll: over a backend without the migration the executor's ask is refused by its code (the
+				// function is missing: PostgreSQL's 42883, or PostgREST's PGRST202 once its schema cache reloaded), so the
+				// executor starts no channel and A's relay tells the model the machine is not available.
+				db.query("drop function public.qorpera_folder_home_session_window(uuid)");
+				let missing;
+				assert.throws(
+					() => control("qorpera_folder_home_session_window", { p_session_id: session }),
+					(error) => {
+						missing = error;
+						return true;
+					},
+				);
+				assert(["42883", "PGRST202"].includes(missing?.code) && missing?.status === 404, `the refusal: ${missing?.code}`);
+				pass("without the migration the executor's ask is refused by its code, so the migration rolls first");
+			} finally {
+				await rm(scratch, { recursive: true, force: true });
 			}
-			// And the same through the real client, over a backend whose functions are gone.
-			db.query(`drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
-				drop function public.qorpera_folder_home_call_open(uuid, jsonb, jsonb);
-				drop function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb);`);
-			let thrown;
-			await assert.rejects(
-				() => run.folder.openHomeWindow(HOME, signal()),
-				(error) => {
-					thrown = error;
-					return true;
-				},
-			);
-			const refusalOf = (error) => `${error?.constructor?.name ?? "?"}:${error?.code ?? "?"}`;
-			assert.equal(refusalOf(thrown), ROLL_REFUSAL, `the kernel's refusal: ${refusalOf(thrown)}`);
-			const withoutMigration = await code.openHomeFolderWindow(run.folder, HOME, signal());
-			assert("refused" in withoutMigration, "a window from a backend that has no window calls");
-			assert.match(withoutMigration.refused, /could not be made ready just now/);
-			pass("the native host admits the calls the kernel lists, and without them the relay says plain words and starts no session");
 		},
 	}),
 );
-
-/** A SQL string literal for a value the checks read back from the folder. */
-function sqlLiteral(value) {
-	return `'${String(value).replaceAll("'", "''")}'`;
-}
