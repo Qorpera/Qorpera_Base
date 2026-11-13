@@ -373,16 +373,72 @@ describe("what the model is told when its home is not there", () => {
 
 	it("tells the model its machine was lost mid-command, and that part of it may have happened", async () => {
 		const machine = fakeMachine();
-		await withHome({ channel: { open: async () => machine.stream } }, async (home, slot) => {
-			slot.send({ id: 7, method: "fs/readFile", params: { path: "file:///company/a" } });
-			await until(() => machine.written.length === 1);
-			machine.end();
-			expect(await slot.next()).toEqual({ id: 7, error: { code: -32010, message: CLOUD_HOME_LOST } });
-			expect(home.counts.lost).toBe(1);
-			// Asked again, it is told the home cannot be reached, and nothing is forwarded.
-			slot.send({ id: 8, method: "fs/readFile", params: { path: "file:///company/a" } });
-			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_UNAVAILABLE);
-			expect(machine.written).toHaveLength(1);
+		let opens = 0;
+		await withHome(
+			{
+				channel: {
+					open: async () => {
+						opens++;
+						if (opens === 1) return machine.stream;
+						throw new CloudHomeChannelRefused("MACHINE_NOT_RUNNING");
+					},
+				},
+			},
+			async (home, slot) => {
+				slot.send({
+					id: 7,
+					method: "process/start",
+					params: {
+						processId: "1",
+						argv: ["/bin/bash", "-lc", "make"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-m" },
+					},
+				});
+				await until(() => machine.written.length === 1);
+				machine.end();
+				expect(await slot.next()).toEqual({ id: 7, error: { code: -32010, message: CLOUD_HOME_LOST } });
+				expect(home.counts.lost).toBe(1);
+				// The call's own output is shown the same words first, whatever Codex makes of the error.
+				expect(home.noteFor("call-m")).toBe(CLOUD_HOME_LOST);
+				// Asked again, the home is tried again; a machine that is not running is said as such, and nothing is
+				// forwarded. A call that never reached the machine is told so in its output too.
+				slot.send({ id: 8, method: "fs/readFile", params: { path: "file:///company/a" } });
+				expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_NOT_RUNNING);
+				expect(machine.written).toHaveLength(1);
+				expect(home.noteFor("call-never-reached")).toBe(CLOUD_HOME_NOT_RUNNING);
+				expect(home.noteFor("call-m")).toBeUndefined();
+			},
+		);
+	});
+
+	it("opens the channel again for the next call, and tells the new machine Codex's own handshake", async () => {
+		const first = fakeMachine();
+		const second = fakeMachine();
+		const machines = [first, second];
+		await withHome({ channel: { open: async () => (machines.shift() ?? second).stream } }, async (home, slot) => {
+			slot.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientName: "codex" } });
+			await until(() => first.written.length === 1);
+			first.answer(JSON.stringify({ id: 1, result: { sessionId: "s" } }));
+			expect(await slot.next()).toEqual({ id: 1, result: { sessionId: "s" } });
+			slot.send({ jsonrpc: "2.0", method: "initialized" });
+			slot.send({ id: 2, method: "fs/readFile", params: { path: "file:///company/a" } });
+			await until(() => first.written.length === 3);
+			first.end();
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_LOST);
+			// The next call: a new channel, told the handshake again (its answer is the host's), then the call itself.
+			slot.send({ id: 3, method: "fs/readFile", params: { path: "file:///company/b" } });
+			await until(() => second.written.length === 1);
+			const again = JSON.parse(second.written[0] ?? "{}") as { id: string; method: string; params: unknown };
+			expect(again.method).toBe("initialize");
+			expect(again.params).toEqual({ clientName: "codex" });
+			second.answer(JSON.stringify({ id: again.id, result: { sessionId: "t" } }));
+			await until(() => second.written.length === 3);
+			expect(JSON.parse(second.written[1] ?? "{}").method).toBe("initialized");
+			expect(JSON.parse(second.written[2] ?? "{}").id).toBe(3);
+			second.answer(JSON.stringify({ id: 3, result: { dataBase64: "" } }));
+			expect(await slot.next()).toEqual({ id: 3, result: { dataBase64: "" } });
+			expect(home.noteFor("any-call")).toBeUndefined();
 		});
 	});
 
@@ -396,7 +452,6 @@ describe("what the model is told when its home is not there", () => {
 			machine.end();
 			await new Promise((done) => setTimeout(done, 100));
 			expect(home.counts.lost).toBe(0);
-			expect(home.failure).toBeUndefined();
 		});
 	});
 });

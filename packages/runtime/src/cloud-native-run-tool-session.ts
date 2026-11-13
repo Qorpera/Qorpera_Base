@@ -293,7 +293,7 @@ export async function runCloudNativeRunToolSession(options: {
 			signal: run.signal,
 			...(review ? { review } : {}),
 			...(adapters.runLog ? { runLog: adapters.runLog.log } : {}),
-			...(home?.steps ? { homeSteps: home.steps } : {}),
+			...(home ? { home } : {}),
 		});
 		const runLog = adapters.runLog;
 		result = await runCloudCodexToolSession({

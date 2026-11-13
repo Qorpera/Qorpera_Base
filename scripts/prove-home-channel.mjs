@@ -575,6 +575,7 @@ function standInMachine(machine, logDir, state) {
 		{ stdio: ["pipe", "pipe", "pipe"], env: {} },
 	);
 	child.stderr.on("data", (data) => appendFileSync(join(logDir, "machine-stderr.log"), data));
+	state.machines?.push(child);
 	const note = (direction) => {
 		let rest = "";
 		return (chunk) => {
@@ -662,7 +663,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 	mkdirSync(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
 	chmodSync(identityRoot, 0o700);
 	writeFileSync(join(identityRoot, "codex/auth.json"), JSON.stringify({ OPENAI_API_KEY: CANARY_AUTH }), { mode: 0o600 });
-	const state = { agent: [], calls: [], compactor: [], httpRequests: [], failure: null, items: [], deltas: 0, approvals: [], fence: [], exec: [], reviews: [], logDir, codexHome: join(identityRoot, "codex") };
+	const state = { agent: [], calls: [], compactor: [], httpRequests: [], failure: null, items: [], deltas: 0, approvals: [], fence: [], exec: [], reviews: [], machines: [], logDir, codexHome: join(identityRoot, "codex") };
 	let closeIngress;
 	fenceTrace = state.fence;
 	const server = provider(state, calls);
@@ -686,7 +687,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 			modelCatalog,
 		}),
 	);
-	const record = { name, home: { ...home, onApproval: undefined, onItem: undefined, decide: undefined } };
+	const record = { name, home: { ...home, onApproval: undefined, onItem: undefined, decide: undefined, refuse: home?.refuse } };
 	evidence.scenarios[name] = record;
 	try {
 		const made = db.json(`${readFileSync(join(repositoryRoot, "supabase/tests/924_folder_runtime_base.test.sql"), "utf8").split("-- The checks start here: a test that runs after this file's fixture part stops at this line.")[0]}
@@ -728,6 +729,11 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 					},
 					home: {
 						authorize: async (asked, signal) => {
+							// A scenario may stand in for a machine that is not running: the ingress then refuses as SQL does.
+							if (home.refuse) {
+								record.authority = { state: "refused", reason: home.refuse };
+								return { state: "refused", reason: home.refuse };
+							}
 							const answer = await code.authorizeHomeSession(
 								{ call: async (method, args) => db.direct(method, args) },
 								asked,
@@ -740,6 +746,7 @@ async function scenario(code, built, cluster, name, { home, calls, check, expect
 							try {
 								const side = standInMachine(machine, logDir, state);
 								record.opened = { sessionId: authority.sessionId, machine: authority.machine };
+								record.opens = (record.opens ?? 0) + 1;
 								return side;
 							} catch (error) {
 								record.openFailed = String(error?.message ?? error).slice(0, 300);
@@ -1241,7 +1248,48 @@ async function main() {
 				record.reviewDetail = { writes, allowedReviews, refusedPatch: refusedPatch.slice(0, 2000) };
 			},
 		});
-		// 5. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the
+		// 5. When the home is not there (the lead's question of 13 Nov 2026): what the agent sees and does. First a machine
+		// that is not running when the model first uses its own tools; then a machine that goes away in the middle of a
+		// command and comes back for the next one. Each time the model must be told something it can act on, and its
+		// turn must go on.
+		await run("home-not-running", {
+			home: { refuse: "MACHINE_NOT_RUNNING" },
+			calls: [
+				exec({ cmd: "echo hello from the home" }),
+				() => ({ namespace: "qorpera", name: "company_read", arguments: { path: "docs/readme.md" } }),
+			],
+			check: async ({ state, record }) => {
+				const told = shown(state, state.calls[0].callId);
+				const text = told?.text ?? told?.output ?? "";
+				assert(text.includes("HOME_NOT_RUNNING"), `the model was told its machine is not running: ${text.slice(0, 600)}`);
+				assert.equal(shown(state, state.calls[1].callId)?.envelope?.status, "ok", "and its turn went on with the company's own tools");
+				assert.equal(record.exec.length, 0, "nothing reached a machine");
+				pass(`a home that is not running: the model was shown ${JSON.stringify(text.slice(0, 200))}, and its next call (company_read) answered ok in the same turn`);
+			},
+		});
+		await run("home-lost", {
+			home: {},
+			calls: [
+				(_outputs, state) => ({ name: "exec_command", arguments: { cmd: "echo started; sleep 30; echo late", yield_time_ms: 1500, ...tty(state) } }),
+				(outputs, state) => {
+					// The machine goes away while the command runs (as a stop, a restart or a roll of its node would do it).
+					for (const child of state.machines) child.kill("SIGKILL");
+					return stdin(outputs, "");
+				},
+				exec({ cmd: "echo back again" }),
+			],
+			check: async ({ state, record }) => {
+				const lost = shown(state, state.calls[1].callId);
+				const lostText = lost?.text ?? lost?.output ?? "";
+				assert(lostText.includes("HOME_LOST"), `the model was told its machine went away mid-command: ${lostText.slice(0, 600)}`);
+				const back = shown(state, state.calls[2].callId)?.text ?? "";
+				assert(back.includes("back again") && !back.includes("HOME_"), `the next command ran on a new channel: ${back.slice(0, 400)}`);
+				assert(record.opens >= 2, `the channel was opened again: ${record.opens}`);
+				pass(`a home lost mid-command: the model was shown ${JSON.stringify(lostText.slice(0, 200))}; its next command opened the channel again (${record.opens} opens) and answered ${JSON.stringify(back.slice(0, 80))}`);
+			},
+		});
+
+		// 6. The two identities on a machine (13 Nov 2026): Codex's own shell is the agent's account, and through it the
 		// agent can do everything a `machine_run` command can do there as root — including changing a file root wrote.
 		// It needs the real account and the image's own sudo rule, so this scenario runs only as root.
 		if (!AS_ROOT) {
