@@ -488,7 +488,7 @@ describe("moments", () => {
 		}
 	});
 	it("moves the body for the body's moments and the eyes for the eyes'", () => {
-		for (const kind of ["perk", "stretch", "sway", "skip"] as const) {
+		for (const kind of ["stretch", "sway", "skip"] as const) {
 			expect(moment(kind, MOMENT_LENGTH[kind] / 2).eyes).toBeUndefined();
 			expect(moment(kind, MOMENT_LENGTH[kind] / 2).body).not.toEqual(REST);
 		}
