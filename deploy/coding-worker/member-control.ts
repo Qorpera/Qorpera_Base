@@ -2,6 +2,8 @@ import { readBoundedCloudResponse } from "../../packages/cloud-client/src/cloud-
 import {
 	CloudMemberMachineActRefusal,
 	type CloudMemberMachineActRefusalCode,
+	CloudMemberMachinePointerRefusal,
+	type CloudMemberMachinePointerRefusalCode,
 	CloudMemberMachineScreenRefusal,
 	type CloudMemberMachineScreenRefusalCode,
 	CloudMemberMachineStartRefusal,
@@ -37,6 +39,17 @@ const SHARE_REFUSED = new Set([
 	"DESKTOP_ACTIONS_TOO_FAST",
 	"DESKTOP_HELD_SINCE",
 ]);
+/** What the begin of a pointer pass answers one it refuses (20260930744000): as a shared action's begin (no one types
+ * privately, no one did since the window last knew it) or a private one's (the member's own hold under its epoch and
+ * seat), and the machine's own refusals. */
+const POINTER_REFUSED = new Set([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_HELD_SINCE",
+	"DESKTOP_CONTROL_ENDED",
+]);
 /** What the begin of a start answers one it refuses (20260930714000). */
 const START_REFUSED = new Set([
 	"MACHINE_NOT_RUNNING",
@@ -46,9 +59,10 @@ const START_REFUSED = new Set([
 ]);
 
 /** The member's side of a look at a desktop (20260930712000), of an action on one they hold (20260930713000) or share
- * with the agent (20260930734000) and of a start of one (20260930714000): exactly four calls,
- * qorpera_member_machine_screen_begin, qorpera_member_machine_desktop_act_begin,
- * qorpera_member_machine_desktop_share_begin and qorpera_member_machine_desktop_start_begin, made as the member with
+ * with the agent (20260930734000), of a start of one (20260930714000) and of a pointer pass (20260930744000): exactly
+ * five calls, qorpera_member_machine_screen_begin, qorpera_member_machine_desktop_act_begin,
+ * qorpera_member_machine_desktop_share_begin, qorpera_member_machine_desktop_start_begin and
+ * qorpera_member_machine_desktop_pointer_begin, made as the member with
  * their own bearer token and the project's publishable key, to the executor's fixed project origin. The database checks
  * the token (PostgREST, auth.uid()); this client only passes it on. The token is never logged, stored or put in an
  * error: every failure is a fixed code. A typed text never goes here: the action's begin carries its length alone. */
@@ -182,6 +196,48 @@ export class MemberMachineScreenControl {
 			answer.state === "refused" && typeof answer.reason === "string" && SHARE_REFUSED.has(answer.reason))
 			throw new CloudMemberMachineActRefusal(answer.reason as CloudMemberMachineActRefusalCode);
 		throw new Error("MEMBER_SHARE_BEGIN_INVALID");
+	}
+	/** Begins a pointer pass as the member (qorpera_member_machine_desktop_pointer_begin, 20260930744000): shared at the
+	 * lease generation the window knows, or on the member's own private hold (its epoch and seat). Its id and its length
+	 * in milliseconds (10 s), or the refusal the window acts on. Nothing is recorded but the member's newest pass. Sign-in
+	 * and forbidden as for a look. */
+	async pointer(
+		token: string,
+		begin: {
+			companyId: string;
+			machineId: string;
+			hold: { generation: number } | { epoch: number; seat: number };
+		},
+		signal: AbortSignal,
+	): Promise<string> {
+		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
+		const whole = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+		const hold = begin.hold as { generation?: unknown; epoch?: unknown; seat?: unknown };
+		const shared = Object.keys(hold).sort().join() === "generation" && whole(hold.generation);
+		const owned = Object.keys(hold).sort().join() === "epoch,seat" && whole(hold.epoch) && whole(hold.seat);
+		if (!UUID.test(begin.companyId) || !UUID.test(begin.machineId) || !(shared || owned))
+			throw new Error("MEMBER_POINTER_BEGIN_INVALID");
+		const answer = await this.#call(
+			token,
+			"qorpera_member_machine_desktop_pointer_begin",
+			{
+				p_profile_id: begin.companyId,
+				p_machine_id: begin.machineId,
+				p_generation: shared ? hold.generation : null,
+				p_epoch: owned ? hold.epoch : null,
+				p_seat: owned ? hold.seat : null,
+			},
+			"MEMBER_POINTER_BEGIN",
+			signal,
+		);
+		const keys = Object.keys(answer).sort().join();
+		if (answer.schema === "qorpera.member-machine-desktop-pointer/v1" && keys === "passId,schema,seconds,state" &&
+			answer.state === "ok" && typeof answer.passId === "string" && UUID.test(answer.passId) && answer.seconds === 10)
+			return answer.passId;
+		if (answer.schema === "qorpera.member-machine-desktop-pointer/v1" && keys === "reason,schema,state" &&
+			answer.state === "refused" && typeof answer.reason === "string" && POINTER_REFUSED.has(answer.reason))
+			throw new CloudMemberMachinePointerRefusal(answer.reason as CloudMemberMachinePointerRefusalCode);
+		throw new Error("MEMBER_POINTER_BEGIN_INVALID");
 	}
 	/** Begins a start of the desktop as the member (qorpera_member_machine_desktop_start_begin, 20260930714000): its
 	 * single-use id, or the refusal the window acts on. Sign-in and forbidden as for a look. */

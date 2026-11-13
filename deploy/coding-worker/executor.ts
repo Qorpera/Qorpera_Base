@@ -48,7 +48,7 @@ import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
 	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
-	localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
+	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -469,7 +469,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			generation?: number }, signal: AbortSignal) => memberControl.share(token, share, signal),
 		// A member's start of the desktop (20260930714000) is begun as the member too.
 		memberStartBegin: (token: string, start: { companyId: string; machineId: string }, signal: AbortSignal) =>
-			memberControl.start(token, start, signal) } : {}),
+			memberControl.start(token, start, signal),
+		// A member's pointer pass (20260930744000) is begun as the member too; its moves ask SQL nothing.
+		memberPointerBegin: (token: string, begin: { companyId: string; machineId: string;
+			hold: { generation: number } | { epoch: number; seat: number } }, signal: AbortSignal) =>
+			memberControl.pointer(token, begin, signal) } : {}),
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
@@ -486,6 +490,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			memberScreenLocal: localMemberMachineScreen(machineHost),
 			memberActLocal: localMemberMachineAct(machineHost),
 			memberStartLocal: localMemberMachineStart(machineHost),
+			memberPointerLocal: localMemberMachinePointer(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -533,6 +538,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		act: (act, signal) => machineRouter.memberAct(act, signal),
 		// A member's start of the desktop (20260930714000).
 		start: (start, signal) => machineRouter.memberStart(start, signal),
+		// A member's pointer pass and moves (20260930744000): no move is logged.
+		pointer: (pointer, signal) => machineRouter.memberPointer(pointer, signal),
 		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
 	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
