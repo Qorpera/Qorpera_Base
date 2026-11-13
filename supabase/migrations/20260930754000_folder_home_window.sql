@@ -244,6 +244,15 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 		-- because that run is still working on the machine and its own rights are the mount's. The second run is told so
 		-- and starts no session. This run's own earlier window is superseded: from then on nothing else releases a read
 		-- through it, so what the disk was served is fixed while this open reads it.
+		-- A window whose run is gone, or whose lease ran out, holds nothing: nothing else closes it (a run's completion
+		-- closes only its run box, and a renewal closes it only while a folder service still holds it), so a session that
+		-- never started, a runner that died or a service that restarted would leave the home blocked for good. Under the
+		-- lock this open already holds, such a window is closed here exactly as a renewal closes one.
+		update public.qorpera_folder_views v set state = 'closed', closed_at = clock_timestamp(),
+			close_reason = case when v.lease_until <= clock_timestamp() then 'expired' else 'ended' end
+		where v.state = 'open' and v.kind = 'home_window' and v.company_machine_id = v_home_machine.id
+			and v.run_id is distinct from (p_opener ->> 'runId')::uuid
+			and (v.lease_until <= clock_timestamp() or not public.qorpera_folder_view_valid(v));
 		if exists (select 1 from public.qorpera_folder_views where state = 'open' and kind = 'home_window'
 				and company_machine_id = v_home_machine.id and run_id is distinct from (p_opener ->> 'runId')::uuid) then
 			raise exception 'This machine is busy with other work' using errcode = '42501',

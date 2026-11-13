@@ -218,6 +218,32 @@ begin
 end $$;
 
 
+-- 2b. A window whose run is gone holds the home no longer: the next run's open closes it and takes the machine. Only
+-- a window that still stands refuses one (review r8 F1).
+do $$
+declare x jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	y jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	z jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(x, 'hw-stale');
+	a jsonb := pg_temp.place(m); s jsonb; t jsonb;
+begin
+	s := pg_temp.hw_open(a, x);
+	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', a, y), '42501',
+		'This machine is busy with other work', 'qorpera.home-window/busy');
+	-- x's turn ends without anything closing its window (no session started, or its runner died).
+	perform pg_temp.lapse(x);
+	t := pg_temp.hw_open(a, y);
+	if t ->> 'viewId' is null or (pg_temp.view_row(s)).state is distinct from 'closed'
+		or (pg_temp.view_row(s)).close_reason is distinct from 'ended' then
+		raise exception 'A window whose run is gone still holds the home: %', to_jsonb(pg_temp.view_row(s)); end if;
+	-- And one whose lease simply ran out, with its run still live: a third run takes the home.
+	perform pg_temp.fx(format('update public.qorpera_folder_views set lease_until = clock_timestamp() - interval ''1 second''
+		where id = %L', t ->> 'viewId'));
+	s := pg_temp.hw_open(a, z);
+	if s ->> 'viewId' is null or (pg_temp.view_row(t)).close_reason is distinct from 'expired' then
+		raise exception 'A window whose lease ran out still holds the home'; end if;
+end $$;
+
+
 -- 3. A disk a command used before any view takes no window either: the refusal says so, and the ask answers it.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hw-used-disk');

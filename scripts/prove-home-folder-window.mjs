@@ -198,9 +198,13 @@ await finish(
 			// by the kernel: the machine's mount unit therefore gives the virtual files to that account. A real mount
 			// cannot run here, so the unit is read instead.
 			const unit = readFileSync(join(repositoryRoot, "deploy/machine/qorpera-machine-folder.service"), "utf8");
-			assert.match(unit, /--allow-other yes \$QORPERA_FOLDER_OWNER/);
-			assert.match(unit, /id -u qorpera-agent/);
-			assert.match(unit, /--owner-uid %s --owner-gid %s/);
+			const owner = /--allow-other yes --owner-uid (\d+) --owner-gid (\d+)$/m.exec(unit);
+			assert(owner, "the machine's mount names the agent account's ids");
+			// They are the image's own ids, and the unit ships inside that image.
+			const image = readFileSync(join(repositoryRoot, "deploy/machine/build-machine-image.sh"), "utf8");
+			assert.match(image, new RegExp(`useradd --uid ${owner[1]} --gid ${owner[2]} [^\\n]*qorpera-agent`));
+			// The pass is only in the view file: no environment line on this unit (the guest test holds it to that too).
+			assert.doesNotMatch(unit, /^(Environment|EnvironmentFile|PassEnvironment)/m);
 			pass("the home's mount gives the company folder to the agent's own account, not to root");
 
 			// 3. A read released under the window is recorded as that run's read.

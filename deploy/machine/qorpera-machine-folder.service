@@ -26,9 +26,10 @@ Slice=qorpera-control.slice
 # default_permissions either way, so every command that runs as root works as before, and nothing else on the machine
 # gains anything (allow_other was already on). On an image without the account the line is empty and the mount is
 # root's, as it was.
-ExecStartPre=/bin/sh -c 'if id -u qorpera-agent >/dev/null 2>&1; then printf "QORPERA_FOLDER_OWNER=--owner-uid %s --owner-gid %s\n" "$(id -u qorpera-agent)" "$(id -g qorpera-agent)"; else printf "QORPERA_FOLDER_OWNER=\n"; fi >/run/qorpera-folder/owner.env'
-EnvironmentFile=-/run/qorpera-folder/owner.env
-ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --cache-dir /var/lib/qorpera-folder/cache/machine --allow-other yes $QORPERA_FOLDER_OWNER
+# The ids are the image's own (build-machine-image.sh: useradd --uid 2000 --gid 2000 qorpera-agent), as a computer's
+# mount takes qorpera-office's; this unit ships inside that image, so the two never come apart. No Environment line
+# here: the view's pass is only in the view file (the guest test holds this unit to that).
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --cache-dir /var/lib/qorpera-folder/cache/machine --allow-other yes --owner-uid 2000 --owner-gid 2000
 # A program killed hard leaves its mount behind; take it away.
 ExecStopPost=-/usr/bin/umount -l /company
 # Any exit (a crash, a kill, root's unmount) starts it again, with the version map and read log its state folder
