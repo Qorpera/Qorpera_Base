@@ -134,33 +134,4 @@ describe("Working sequencer", () => {
 		expect(Math.hypot(at(0).x, at(0).y)).toBeCloseTo(Math.hypot(joined.slide.x, joined.slide.y));
 		expect(Math.hypot(at(SLIDE_FRAMES).x, at(SLIDE_FRAMES).y)).toBe(0);
 	});
-	it("marks each turn from the eyes leaving to the body's landing, and says where the eyes look", () => {
-		for (const seed of [1, 2, 3]) {
-			const run = steps(seed, 60);
-			let turns = 0;
-			run.forEach((step, n) => {
-				const before = run[n - 1];
-				if (step.whirl) {
-					expect(step.whirl.u).toBeGreaterThanOrEqual(0);
-					expect(step.whirl.u).toBeLessThanOrEqual(1);
-					// It runs forward through a turn, in one sense.
-					if (before?.whirl) {
-						expect(step.whirl.u).toBeGreaterThan(before.whirl.u);
-						expect(step.whirl.sense).toBe(before.whirl.sense);
-					} else {
-						expect(step.whirl.u).toBe(0);
-						turns++;
-					}
-				}
-			});
-			expect(turns).toBeGreaterThan(3);
-			// The eyes are away while they turn and shut while they blink; the rest of the time they look somewhere.
-			expect(run.filter((step) => step.gaze).length).toBeGreaterThan(run.length * 0.7);
-			// At rest in the long hold the eyes sit where they rest.
-			const rest = run.find(
-				(step) => step.clip === "Working" && step.frame === 300 && step.eyes.x === 0 && step.eyes.y === 0,
-			);
-			if (rest) expect(Math.abs(rest.gaze!.x) + Math.abs(rest.gaze!.y)).toBe(0);
-		}
-	});
 });

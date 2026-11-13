@@ -87,7 +87,7 @@ describe("an agent stopped at the member", () => {
 		const line = f.row().querySelector(".rail-row-copy small")!;
 		expect(line.textContent).toBe(`Stopped: ${question}`);
 		expect(line.classList.contains("is-waiting")).toBe(true);
-		const hand = f.row().querySelector(".rail-row-stand > .rail-hand")!;
+		const hand = f.row().querySelector(".rail-row-stand > .rail-ask")!;
 		expect(hand.getAttribute("aria-hidden")).toBe("true");
 		expect(hand.querySelector("svg")).not.toBeNull();
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Waiting for you: ${question}`);
@@ -104,7 +104,7 @@ describe("an agent stopped at the member", () => {
 		expect(f.company.agentState(staff.id)).toBe("working");
 		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Working");
 		expect(f.row().querySelector(".rail-row-copy small")?.classList.contains("is-waiting")).toBe(false);
-		expect(f.row().querySelector(".rail-hand")).not.toBeNull();
+		expect(f.row().querySelector(".rail-ask")).not.toBeNull();
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Working · Waiting for you: ${question}`);
 		// Answered: the next read lists nothing for the agent.
 		f.work.mockResolvedValue([]);
@@ -112,7 +112,7 @@ describe("an agent stopped at the member", () => {
 		f.company.store.set({ activity: [] });
 		f.draw();
 		expect(f.company.agentState(staff.id)).toBe("idle");
-		expect(f.row().querySelector(".rail-hand")).toBeNull();
+		expect(f.row().querySelector(".rail-ask")).toBeNull();
 		expect(f.row().getAttribute("aria-label")).not.toContain("Waiting for you");
 	});
 
@@ -151,10 +151,10 @@ describe("an agent stopped at the member", () => {
 		await f.company.refreshApprovals();
 		f.draw();
 		const card = f.rail.querySelector<HTMLElement>(".cofounder-home")!;
-		expect(card.querySelector(".cofounder-stand > .rail-hand")).not.toBeNull();
+		expect(card.querySelector(".cofounder-stand > .rail-ask")).not.toBeNull();
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Waiting for you: Send an email");
 		expect(f.company.store.get().approvals).toEqual({ [cofounder.id]: 1 });
-		expect(f.row().querySelector(".rail-hand")).toBeNull();
+		expect(f.row().querySelector(".rail-ask")).toBeNull();
 	});
 
 	it("says what for on the home page's waiting row", async () => {
@@ -225,7 +225,7 @@ describe("a cloud before 20260930723000", () => {
 		// No words to say what for: "Needs you", as before, with the hand.
 		expect(f.row().querySelector(".rail-row-copy small")?.textContent).toBe("Needs you");
 		expect(f.row().getAttribute("aria-label")).toBe(`${staff.displayName} · Needs you`);
-		expect(f.row().querySelector(".rail-hand")).not.toBeNull();
+		expect(f.row().querySelector(".rail-ask")).not.toBeNull();
 		expect(f.company.agentsWaitingOnMe()).toBe(1);
 	});
 

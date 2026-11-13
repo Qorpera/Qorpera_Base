@@ -4,13 +4,6 @@ import { localTime, pose } from "../public/assets/avatars/status-2d-v1/motion.mj
 import { type FigureArtwork, type FigureMotion, loadFigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";
 import { deferred, settle } from "./fixtures.ts";
 
-vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
-	loadRecordedMotion: vi.fn(async () => {}),
-	drawRecordedEyes: vi.fn(),
-	drawWorkingStrokes: vi.fn(),
-	// The eyes cover this box of the 100-unit figure (in 512px: about 154 to 361 across, 205 to 307 down).
-	recordedEyesBox: vi.fn(() => [30, 40, 70, 60]),
-}));
 // The recorded motion is its own chunk; here it arrives when a test says so.
 const motionArrives = vi.hoisted(() => {
 	let arrive = () => {};
@@ -23,8 +16,6 @@ vi.mock("../src/ui/figure-motion-data.ts", async (importOriginal) => {
 	await motionArrives.promise;
 	return importOriginal();
 });
-
-import { loadRecordedMotion } from "../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
 
 const mounted: FigureMotion[] = [];
 let now = 0,
@@ -131,7 +122,7 @@ function advance(milliseconds: number): void {
 function mount(
 	activity: "Idle" | "Working" | "Thinking" | "Waiting" = "Idle",
 	identity = "agent",
-	options: { hand?: HTMLElement; alive?: boolean } = {},
+	options: { mark?: HTMLElement; alive?: boolean } = {},
 ): HTMLElement {
 	const host = document.createElement("span");
 	document.body.append(host);
@@ -166,7 +157,13 @@ describe("before the recorded motion arrives", () => {
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
 		advance(1000);
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
-		expect(still.querySelector("canvas")!.dataset.clip).toBe("Working");
+		// The working figure now taps along: it is off the ground at some frame of its first line.
+		const poses = new Set<string>();
+		for (let frame = 0; frame < 40; frame++) {
+			advance(1000 / 60);
+			poses.add(still.querySelector("canvas")!.style.transform);
+		}
+		expect([...poses].some((pose) => /^translate\(0%, -\d/.test(pose))).toBe(true);
 	});
 });
 
@@ -192,30 +189,28 @@ describe("2D studio playback in the shell", () => {
 		expect(frames.size).toBe(0);
 		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
 	});
-	it("makes a figure that needs the member jump, bring its hand up and keep asking, drawn rather than recorded", async () => {
-		vi.mocked(loadRecordedMotion).mockClear();
-		const hand = document.createElement("span");
-		const host = mount("Waiting", "asks", { hand });
+	it("makes a figure that needs the member jump, bring its mark up and keep asking", async () => {
+		const mark = document.createElement("span");
+		const host = mount("Waiting", "asks", { mark });
 		await settle();
 		show([host]);
 		const canvas = host.querySelector("canvas")!;
-		// The hand is down as the act starts and springs up with the jump.
-		expect(hand.style.transform).toContain("scale(0)");
+		// The mark is down as the act starts and springs up with the jump.
+		expect(mark.style.transform).toContain("scale(0)");
 		advance(350);
 		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d/);
-		expect(hand.style.transform).not.toContain("scale(0)");
-		// Its eyes are drawn (wide pills), and no recording is fetched for them.
+		expect(mark.style.transform).not.toContain("scale(0)");
+		// Its eyes are drawn: wide pills.
 		expect(context.roundRect).toHaveBeenCalled();
-		expect(loadRecordedMotion).not.toHaveBeenCalledWith("Waiting", expect.any(URL));
 		// On the ground again between asks, and still asking: the frames go on.
 		advance(2000);
 		expect(canvas.style.transform).toBe("");
 		expect(frames.size).toBe(1);
-		// A member who wants no motion sees it at rest with the hand up.
+		// A member who wants no motion sees it at rest with the mark up.
 		reduced.matches = true;
 		reduced.dispatchEvent(new Event("change"));
 		expect(canvas.style.transform).toBe("");
-		expect(hand.style.transform).toContain("rotate(0deg) scale(1)");
+		expect(mark.style.transform).toContain("rotate(0deg) scale(1)");
 		advance(1000);
 		expect(frames.size).toBe(0);
 	});
@@ -232,12 +227,12 @@ describe("2D studio playback in the shell", () => {
 		advance(16);
 		advance(300);
 		expect(canvas.style.transform).toMatch(/^translate\(0%, -\d/);
-		// The smile is an arch, not the recorded eyes.
+		// The smile is an arch, not a pill.
 		expect(context.ellipse).toHaveBeenCalled();
-		advance(1300);
+		advance(3400);
 		advance(16);
 		expect(canvas.style.transform).toBe("");
-		// The recorded blink plays after the cheer, then the figure rests.
+		// The opening blink plays after the cheer, then the figure rests.
 		advance(5000);
 		expect(frames.size).toBe(0);
 		expect(canvas.dataset.frame).toBe("221");
@@ -263,21 +258,26 @@ describe("2D studio playback in the shell", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("plays Working past the recording's end without restarting, the same in every view of the agent", async () => {
-		const rail = mount("Working", "loop-boundary"),
-			thread = mount("Working", "loop-boundary");
+	it("keeps a working figure at its work, drawn, the same in every view of the agent", async () => {
+		const rail = mount("Working", "at-work"),
+			thread = mount("Working", "at-work");
 		await settle();
 		show([rail, thread]);
-		advance(1000);
-		expect(rail.querySelector("canvas")!.dataset.frame).toBe("60");
-		expect(rail.querySelector("canvas")!.dataset.clip).toBe("Working");
-		advance((650 / 60) * 1000 - 1000 + 100);
 		const canvas = rail.querySelector("canvas")!;
-		// Past the opening (frames 0–79); the pieces after it are drawn at random.
-		expect(canvas.dataset.clip === "Waiting" || Number(canvas.dataset.frame) > 79).toBe(true);
-		expect(canvas.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
-		expect(canvas.dataset.clip).toBe(thread.querySelector("canvas")!.dataset.clip);
-		expect(loadRecordedMotion).toHaveBeenCalledWith("Waiting", expect.any(URL));
+		const taps = new Set<string>();
+		for (let frame = 0; frame < 120; frame++) {
+			advance(1000 / 60);
+			taps.add(canvas.style.transform);
+			// Two views of one agent show the same pose.
+			expect(canvas.style.transform).toBe(thread.querySelector("canvas")!.style.transform);
+		}
+		// It taps along its line: on the ground and off it.
+		expect(taps.has("")).toBe(true);
+		expect([...taps].some((pose) => /^translate\(0%, -\d/.test(pose))).toBe(true);
+		// Its eyes are drawn pills, and it goes on working past any length of time.
+		expect(context.roundRect).toHaveBeenCalled();
+		advance(60_000);
+		expect(frames.size).toBe(1);
 	});
 	it("advances one shared agent clock once per frame and preserves it when a view refreshes", async () => {
 		const a = mount(),
@@ -394,10 +394,12 @@ describe("2D studio playback in the shell", () => {
 		const [, , , width, height, x, y, toWidth, toHeight] = eyes as number[];
 		const level = Math.min(512, 2 ** Math.ceil(Math.log2(Math.max(32, side))));
 		expect([toWidth! / 100, toHeight! / 100]).toEqual([width! / level, height! / level]);
-		expect(x! / 100).toBeLessThanOrEqual(0.3);
-		expect((x! + toWidth!) / 100).toBeGreaterThanOrEqual(0.7);
-		expect(y! / 100).toBeLessThanOrEqual(0.4);
-		expect((y! + toHeight!) / 100).toBeGreaterThanOrEqual(0.6);
+		// The box holds both drawn eyes (at 55 and 69 across, 55 and 54 down) and little else.
+		expect(x! / 100).toBeLessThanOrEqual(0.52);
+		expect((x! + toWidth!) / 100).toBeGreaterThanOrEqual(0.72);
+		expect(y! / 100).toBeLessThanOrEqual(0.52);
+		expect((y! + toHeight!) / 100).toBeGreaterThanOrEqual(0.57);
+		expect(toWidth! / 100).toBeLessThanOrEqual(0.5);
 		expect(width).toBeLessThanOrEqual(side * 2);
 	});
 	it("cuts the eyes in the layer's own pixels at the 512px level, where nothing is halved", async () => {

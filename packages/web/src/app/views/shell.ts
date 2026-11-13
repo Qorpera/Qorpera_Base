@@ -41,7 +41,7 @@ import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
-import { agentColor, agentFigure, colourNameHex, figureFor, playFigure, raisedHand } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, askMark, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -571,7 +571,7 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
  * a child is out of place, so a child that keeps its place never leaves the page. */
 /** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
  * agent that starts work gets its dot and its line, a failed run folds the figure into a red
- * "!" (and unfolds it when the failure is dealt with), a mention's badge and a raised hand pop, and an agent the
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, finished work makes the figure cheer, and an agent the
  * company never listed before is placed like a card (a new chat drops in). */
 function changedRow(
 	before: string | undefined,
@@ -598,7 +598,8 @@ function changedRow(
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
-	// Its work is done: the figure cheers. (A raised hand comes up by itself: the figure brings it, ui/figure-motion.ts.)
+	// Its work is done: the figure cheers. (The mark of work that waits comes up by itself: the figure brings it,
+	// ui/figure-motion.ts.)
 	if ((was.state === "working" || was.state === "writing") && now.state === "idle")
 		playFigure(element.querySelector(".figure"), "cheer");
 }
@@ -939,7 +940,7 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
  * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
  * which the compact rail needs: it hides the text beside the figure and the disc says
  * nothing aloud. What the agent waits on the member for is said too, while it works as
- * well, since the raised hand says nothing aloud either. */
+ * well, since the mark on the figure says nothing aloud either. */
 function railLabel(
 	agent: Pick<AgentModel, "displayName" | "state" | "waiting"> & { mentioned?: boolean },
 	look: AgentLook,
@@ -961,16 +962,16 @@ function railLabel(
 	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
 }
 
-/** A raised hand on the figure's top-right while the agent's work waits on this member (a card it raised for them,
+/** The mark on the figure's top-right while the agent's work waits on this member (a card it raised for them,
  * or an approval card they answer), also while it works on something else. Its words are in the link's name. */
-function handMark(waiting: AgentModel["waiting"]): HTMLElement | null {
-	return waiting ? raisedHand() : null;
+function waitingMark(waiting: AgentModel["waiting"]): HTMLElement | null {
+	return waiting ? askMark() : null;
 }
 
-/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone), waving the raised hand
+/** An agent's figure on its stand in the rail: alive (it blinks and moves when left alone), shaking its mark
  * when it has one, and perking up when the pointer comes over its row or card. */
-function railFigure(model: AgentModel, size: number, look: AgentLook, hand: HTMLElement | null): HTMLElement {
-	return agentFigure(model, model.displayName, { size, activity: look.figure, alive: true, hand: hand ?? undefined });
+function railFigure(model: AgentModel, size: number, look: AgentLook, mark: HTMLElement | null): HTMLElement {
+	return agentFigure(model, model.displayName, { size, activity: look.figure, alive: true, mark: mark ?? undefined });
 }
 function perksUp(link: HTMLElement): HTMLElement {
 	link.addEventListener("pointerenter", (event) => {
@@ -1009,7 +1010,7 @@ interface SessionModel {
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	const hand = handMark(model.waiting);
+	const mark = waitingMark(model.waiting);
 	return perksUp(
 		h(
 			"a",
@@ -1023,9 +1024,9 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			h(
 				"span",
 				{ class: "cofounder-stand" },
-				railFigure(model, 82, look, hand),
+				railFigure(model, 82, look, mark),
 				statusDisc(look, "cofounder-status"),
-				hand,
+				mark,
 				mentionBadge(model.mentioned),
 			),
 			h("strong", null, model.displayName),
@@ -1059,7 +1060,7 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 /** A pinned agent: a square card with the figure over the name, as in Grok Bot. */
 function pinCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	const hand = handMark(model.waiting);
+	const mark = waitingMark(model.waiting);
 	return perksUp(
 		h(
 			"a",
@@ -1074,9 +1075,9 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 			h(
 				"span",
 				{ class: "rail-pin-stand" },
-				railFigure(model, 52, look, hand),
+				railFigure(model, 52, look, mark),
 				statusDisc(look, "rail-row-status"),
-				hand,
+				mark,
 				mentionBadge(model.mentioned),
 			),
 			h("strong", { class: "rail-pin-name" }, model.displayName),
@@ -1093,7 +1094,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
 	const line = live ?? model.idle?.text;
 	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
-	const hand = handMark(model.waiting);
+	const mark = waitingMark(model.waiting);
 	return perksUp(
 		h(
 			"a",
@@ -1108,9 +1109,9 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			h(
 				"span",
 				{ class: "rail-row-stand" },
-				railFigure(model, 50, look, hand),
+				railFigure(model, 50, look, mark),
 				statusDisc(look, "rail-row-status"),
-				hand,
+				mark,
 				mentionBadge(model.mentioned),
 			),
 			h(

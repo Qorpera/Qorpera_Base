@@ -210,8 +210,8 @@ export interface FigureOptions {
 	activity?: Activity;
 	identity?: string;
 	className?: string;
-	/** The raised hand beside the figure (`raisedHand`), which the figure waves and takes along. */
-	hand?: HTMLElement;
+	/** The mark beside a figure whose work waits on the member (`askMark`), which the figure shakes and takes along. */
+	mark?: HTMLElement;
 	/** Left alone, the figure still blinks, looks around and moves now and then. */
 	alive?: boolean;
 }
@@ -224,43 +224,46 @@ export function playFigure(host: Element | null | undefined, kind: Moment): void
 }
 
 const SVG = "http://www.w3.org/2000/svg";
-/* An open hand as one solid shape, fingers fanned: the palm, four fingers and the thumb, in a 24-unit box
- * whose wrist is at the bottom. Each part: x, y, width, height, corner radius, and its turn about the palm. */
-const HAND_PARTS: readonly [number, number, number, number, number, number][] = [
-	[6.3, 10.4, 11.6, 11.4, 5.2, 0],
-	[6.5, 3.4, 3.3, 11.5, 1.65, -15],
-	[9.7, 1.9, 3.3, 12.5, 1.65, -5],
-	[12.9, 2.5, 3.3, 12, 1.65, 5],
-	[15.9, 4.8, 3.1, 10, 1.55, 15],
-	[2.2, 11.6, 3.5, 8.6, 1.75, -42],
-];
+/** The marks on offer: an exclamation mark in the figures' own shapes (a pill over a dot), or a speech bubble
+ * with a question mark. */
+export type AskMark = "bang" | "bubble";
+const shape = (name: string, attributes: Record<string, string | number>): SVGElement => {
+	const element = document.createElementNS(SVG, name);
+	for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+	return element;
+};
+const MARK_PARTS: Record<AskMark, () => SVGElement[]> = {
+	bang: () => [
+		shape("rect", { x: 8.6, y: 1.5, width: 6.8, height: 13.4, rx: 3.4 }),
+		shape("circle", { cx: 12, cy: 20, r: 3.3 }),
+	],
+	bubble: () => [
+		shape("rect", { x: 1.5, y: 2.5, width: 21, height: 15, rx: 6.5 }),
+		shape("path", { d: "M5.5 14.5 L3.2 22 L11.5 16.5 Z" }),
+	],
+};
 
-/** The raised hand of a figure whose work waits on the member (styles/app.css `.rail-hand`): the same shape
- * twice, a ring in the colour under it and the hand over that, so it reads as cut out of the row. Hand it
- * to the figure (`FigureOptions.hand`) and the figure waves it. */
-export function raisedHand(): HTMLElement {
-	const hand = document.createElement("span");
-	hand.className = "rail-hand";
-	hand.setAttribute("aria-hidden", "true");
-	const art = document.createElementNS(SVG, "svg");
-	art.setAttribute("viewBox", "0 0 24 24");
-	for (const layer of ["hand-ring", "hand-fill"]) {
-		const group = document.createElementNS(SVG, "g");
-		group.setAttribute("class", layer);
-		for (const [x, y, width, height, radius, turn] of HAND_PARTS) {
-			const part = document.createElementNS(SVG, "rect");
-			part.setAttribute("x", String(x));
-			part.setAttribute("y", String(y));
-			part.setAttribute("width", String(width));
-			part.setAttribute("height", String(height));
-			part.setAttribute("rx", String(radius));
-			if (turn) part.setAttribute("transform", `rotate(${turn} 12 17)`);
-			group.append(part);
-		}
+/** The mark of a figure whose work waits on the member (styles/app.css `.rail-ask`): the same shape twice, a
+ * ring in the colour under it and the mark over that, so it reads as cut out of the row. Hand it to the figure
+ * (`FigureOptions.mark`) and the figure shakes it. */
+export function askMark(kind: AskMark = "bang"): HTMLElement {
+	const mark = document.createElement("span");
+	mark.className = "rail-ask";
+	mark.dataset.mark = kind;
+	mark.setAttribute("aria-hidden", "true");
+	const art = shape("svg", { viewBox: "0 0 24 24" });
+	for (const layer of ["ask-ring", "ask-fill"]) {
+		const group = shape("g", { class: layer });
+		group.append(...MARK_PARTS[kind]());
 		art.append(group);
 	}
-	hand.append(art);
-	return hand;
+	if (kind === "bubble") {
+		const letter = shape("text", { x: 12, y: 14.4, "text-anchor": "middle", class: "ask-letter" });
+		letter.textContent = "?";
+		art.append(letter);
+	}
+	mark.append(art);
+	return mark;
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored

@@ -18,20 +18,23 @@ design prototypes; the product no longer loads them.
 The renderer defaults to Idle. Its optional activity is a local presentation
 input, with no runtime subscription, command, or activity-state binding.
 
-## Acting (November 13, 2026)
+## Acting, and drawn eyes (November 13, 2026)
 
-`src/ui/figure-acts.ts` adds what the figures do with their bodies: hops with
-squash and stretch, leans, a raised hand that waves, drawn eyes (wide while a
-figure needs the member, an arch while it cheers) and small effects (dust,
-sparks, sparkles, a ring). It is arithmetic over time, tested on its own;
+`src/ui/figure-acts.ts` is what the figures do: hops with squash and stretch,
+leans, drawn eyes (wide while a figure needs the member, narrowed on its work,
+an arch while it cheers), the mark beside a figure that asks, and small effects
+(dust, bits, stars, rays). It is arithmetic over time, tested on its own;
 `figure-motion.ts` writes the body's pose as a transform on the canvas, about
-the feet, so a jump costs no repaint.
+the feet, so a jump costs no repaint, and repaints the eyes only when they
+change.
 
-- Needs you (`Waiting`) is drawn, no longer the studio's recording: its
-  flattened eyes read as sleepy (Jonas, 13 Nov 2026). The recorded Waiting clip
-  is still loaded for Working, which borrows its sideways glance.
-- Working keeps the recording and jumps through each of its turns.
-- Writing (`Thinking`) keeps the studio's dots, which now hop in turn.
-- Idle keeps the recorded opening; in the rail (`alive`) it plays again now
-  and then, between moves of the body.
-
+Every eye is now drawn. The product no longer reads the studio's recorded eye
+clips or the Working stripes (Jonas, 13 Nov 2026: the recording looked grainy
+and blurry stretched up, and Working was too close to another product's
+animation): Needs you, Working and Idle are acts of our own, and Writing keeps
+the studio's dots, which hop in turn. `status-2d-v1`'s `motion.mjs` is still
+the sampler for the symbolic states (the dots, the "!", the Done flourish).
+The recorded files (`recorded-motion.mjs`, `recorded-clips.mjs`, `eye-clips.mjs`,
+`working-frames.mjs`, `working-palette.mjs`, the `*-reference-*.webp` sheets) and
+`src/ui/working-sequence.ts` are left in place, unread, until the new motion is
+approved.

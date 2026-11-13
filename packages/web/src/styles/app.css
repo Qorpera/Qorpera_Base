@@ -284,7 +284,7 @@ label > input, label > select { font-weight: 400; }
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
-	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px) and the raised hand's disc. */
+	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px) and the mark on the figure. */
 	--rail-waiting: #8f5000; --rail-waiting-mark: var(--warning); --rail-waiting-edge: #d99a06;
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
@@ -537,22 +537,28 @@ label > input, label > select { font-weight: 400; }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
 .rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
-/* A raised hand: the agent's work waits on this member (a card it raised for them, or an approval card they answer;
- * Jonas, 11 Nov 2026: "it's really stopped at you"), also while it works on something else. An open hand as one solid
- * shape at the figure's top-right, ringed in the colour under it; the figure brings it up, waves it and takes it along
- * when it jumps (ui/figure-motion.ts writes its transform; it turns about the wrist). A mention's "@" beside it makes
- * way to the top-left. */
-.rail-hand { --hand-ring: var(--rail); position: absolute; z-index: 2; top: -17%; right: -21%; width: 48%; height: 48%; color: var(--rail-waiting-mark); transform-origin: 46% 88%; pointer-events: none; }
-.rail-hand > svg { display: block; width: 100%; height: 100%; overflow: visible; rotate: 14deg; }
-.rail-hand .hand-ring { fill: var(--hand-ring); stroke: var(--hand-ring); stroke-width: 3.6; stroke-linejoin: round; }
-.rail-hand .hand-fill { fill: currentColor; stroke: var(--rail-waiting-edge); stroke-width: 0.9; stroke-linejoin: round; paint-order: stroke; }
-/* In a row the name stands right beside the figure: the hand keeps over the figure's shoulder. The Co-Founder's
+/* The mark of work that waits on this member (a card the agent raised for them, or an approval card they answer;
+ * Jonas, 11 Nov 2026: "it's really stopped at you"), also while the agent works on something else. One solid shape
+ * at the figure's top-right in the warning colour, ringed in the colour under it: an exclamation mark in the
+ * figures' own shapes (a pill over a dot), or a speech bubble with "?". The figure brings it up, shakes it and takes
+ * it along when it jumps (ui/figure-motion.ts writes its transform; it turns about its foot). A mention's "@" beside
+ * it makes way to the top-left. */
+.rail-ask { --ask-ring: var(--rail); position: absolute; z-index: 2; top: -16%; right: -12%; width: 40%; height: 40%; color: var(--rail-waiting-mark); transform-origin: 50% 84%; pointer-events: none; }
+.rail-ask > svg { display: block; width: 100%; height: 100%; overflow: visible; rotate: 12deg; }
+.rail-ask .ask-ring { fill: var(--ask-ring); stroke: var(--ask-ring); stroke-width: 4; stroke-linejoin: round; }
+.rail-ask .ask-fill { fill: currentColor; stroke: var(--rail-waiting-edge); stroke-width: 0.9; stroke-linejoin: round; paint-order: stroke; }
+.rail-ask .ask-letter { fill: #3b2a00; font: 800 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+.rail-ask[data-mark="bubble"] { top: -20%; right: -22%; width: 46%; height: 46%; transform-origin: 16% 90%; }
+.rail-ask[data-mark="bubble"] > svg { rotate: none; }
+/* In a row the name stands right beside the figure: the mark keeps over the figure's shoulder. The Co-Founder's
  * stands above its card, on the rail itself, whatever the card's colour. */
-.rail-row-stand > .rail-hand { top: -19%; right: -9%; width: 46%; height: 46%; }
-.cofounder-stand > .rail-hand { top: -9%; right: -17%; width: 42%; height: 42%; }
-:is(.rail-row, .rail-pin):hover .rail-hand { --hand-ring: var(--rail-hover); }
-:is(.rail-row, .rail-pin).active .rail-hand { --hand-ring: var(--rail-selection); }
-:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand):has(> .rail-hand) > .rail-mention { right: auto; left: -3px; }
+.rail-row-stand > .rail-ask { right: -5%; }
+.rail-row-stand > .rail-ask[data-mark="bubble"] { right: -10%; }
+.cofounder-stand > .rail-ask { top: -8%; right: -9%; width: 34%; height: 34%; }
+.cofounder-stand > .rail-ask[data-mark="bubble"] { top: -10%; right: -19%; width: 40%; height: 40%; }
+:is(.rail-row, .rail-pin):hover .rail-ask { --ask-ring: var(--rail-hover); }
+:is(.rail-row, .rail-pin).active .rail-ask { --ask-ring: var(--rail-selection); }
+:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand):has(> .rail-ask) > .rail-mention { right: auto; left: -3px; }
 /* "@": someone mentioned this member here and they have not looked yet. */
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
 /* Who is where (Jonas, 9 Nov 2026): the other members in the company now, as small pictures on the agent, group chat,
@@ -668,21 +674,21 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 /* The figure acts (ui/figure-acts.ts): its body's jumps and leans are a transform on the canvas, about the feet, and
- * the small effects around it (dust where it lands, sparks off a working turn, sparkles when its work is done, a ring
- * off the raised hand) fly and fade here, over the figure. */
+ * the small effects around it (dust where it lands, bits off a working figure, a star for its idea, the stars of a
+ * cheer, rays off the mark of one that asks) fly and fade here, over the figure. */
 .figure-canvas { transform-origin: 50% 90%; }
 .figure-fx { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .figure-bit { position: absolute; display: block; pointer-events: none; }
 .figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
 .figure-sparkle { background: var(--bit); clip-path: polygon(50% 0, 63% 37%, 100% 50%, 63% 63%, 50% 100%, 37% 63%, 0 50%, 37% 37%); }
-.figure-spark { border-radius: 999px; background: var(--bit); }
-.figure-ring { box-sizing: border-box; border: 2px solid var(--rail-waiting-mark, var(--warning)); border-radius: 50%; }
+.figure-chip { border-radius: 28%; background: var(--bit); }
+.figure-ray { border-radius: 999px; background: var(--rail-waiting-mark, var(--warning)); }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
 	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
-	/* The raised hand keeps its disc. */
-	:is(.rail, .rail-drag-ghost) .rail-hand { forced-color-adjust: none; color: Mark; }
+	/* The mark of work that waits keeps its colour. */
+	:is(.rail, .rail-drag-ghost) .rail-ask { forced-color-adjust: none; color: Mark; }
 }
 
 .avatar {
