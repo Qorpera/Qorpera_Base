@@ -6477,6 +6477,15 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    tells the member that they pick one under Icon and colour. `save_app` refuses an icon it could not draw, any other
    file under `icons/`, and a save that would leave more than 12: a new icon takes the id of an old one, or an old one
    is deleted first. What a member picks is theirs and changes only their own drawer.
+7. **The company's group colours** (Jonas, 12 November 2026: "have the co-founder pick colours for fjeldtur's
+   groups"; the later change item 4 named; no migration). `apps/groups.md` holds them in one note line after the list,
+   `<!-- group colours: <id>=<colour>, … -->`, each one of the agents' palette colours; a reader from before it keeps
+   the line as a note. The drawer draws a group and everything in it in the company's colour unless a member chose
+   their own, which wins in their drawer. Agents set it with `organize_apps colour_group {group, colour}` (`null`
+   takes it away) or `create_group`'s `colour`; `list` shows each group's colour, every other change keeps it, and
+   `ungroup` takes it away with the group. The tool's rules say to give every group a colour that sets it apart and
+   fits its product or area, and to leave a group inside a group unset, so it takes its parent's. The Co-Founder's
+   tidy pass (`qorpera.hire-overlay/v15`) takes a top-level group without a colour as a sign to sort the drawer.
 
 ## 20. Enforcement matrix
 

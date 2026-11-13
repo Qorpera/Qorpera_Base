@@ -1550,33 +1550,34 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
 // work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
-// a member puts a repository's website live (own code storage step 4, 11 November 2026), and for the changes a restore
-// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), and for code on GitHub or
-// in a file brought in with manage_code bring_in (step 6's import, 20260930736000). A change to any is a change to
-// every run's bytes.
+// a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
+// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
+// a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026). A change
+// to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
-			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
+			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "8f7cb149198766848339cd88842f962a3dd7e9dc553bd6e40b0625497d31c317",
-			prompt: "e9968a08aa5c4b04ee610f7f03014928730e88e9632df941d4d7912331534503",
+			instructions: "7a4324870a2dca042a478c6abad6a1bbbcb56277686a8ba40b1188591bbdc02e",
+			prompt: "de59a35b6dee5f88548a53006c57d72cbb811ace25785453fee81703bd777797",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
-			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
+			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
+			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

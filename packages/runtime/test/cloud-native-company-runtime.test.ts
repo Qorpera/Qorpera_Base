@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v14",
+			schema: "qorpera.hire-overlay/v15",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3243,6 +3243,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured once more.
 	// Master's v237 (#1530: one tool result holds up to 32 KiB) moved them too; with the import on one tree (the merge of
 	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
+	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
+	// and its description says how to choose them, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3289,9 +3291,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"667dd72a922e18c50092cf822bd6f4937c2cd857c2e211560454faba34085932",
+		"691511855979ca3e33f491db46533da241300231b0d7af8304a71ccbb2506a8e",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"ceef1a8c48dc80a0dd576d7389ae2d2b789dc7ad9d0c1b9b2363aae0c6572339",
+		"12b5fae5d4a4fec24ad9dbd397592d895adea0f0aea7bb54808c0e76e2169247",
 	);
 });
