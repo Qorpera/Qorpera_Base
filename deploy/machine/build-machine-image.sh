@@ -395,7 +395,10 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	chmod -R a=rX,u+w /opt/qorpera-assets
 	[[ $(find /opt/qorpera-assets -type f | wc -l) == $(( $(wc -l </opt/qorpera-assets/SOURCES.tsv) + 3 )) ]] ||
 		{ echo "the starter set holds more or less than its list, its guide and its picture" >&2; exit 1; }
-	[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o -perm /022) ]] ||
+	# A link is left out of the mode test: its own mode is always rwxrwxrwx and means nothing (the lib folder of
+	# Blender holds 81 links, which refused the first build on a node). Who may replace a link is decided by the
+	# folder it is in, and every folder is in this search.
+	[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o ! -type l -perm /022) ]] ||
 		{ echo "someone but root could change Blender or the starter set" >&2; exit 1; }
 	# Blender is the pinned build, runs without a screen and renders: one small frame of the starter set, with Cycles
 	# and OpenImageDenoise (render-check.py says what it asks of the frame).

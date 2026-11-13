@@ -256,7 +256,7 @@ test("the image has Blender pinned, a starter set fetched by its pinned list, an
 		'\t\techo "$sha256  /opt/qorpera-assets/$path" | sha256sum -c --quiet - ||\n',
 		"\tdone </opt/qorpera-assets/SOURCES.tsv\n",
 		"\t[[ $(find /opt/qorpera-assets -type f | wc -l) == $(( $(wc -l </opt/qorpera-assets/SOURCES.tsv) + 3 )) ]] ||\n",
-		"\t[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o -perm /022) ]] ||\n",
+		"\t[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o ! -type l -perm /022) ]] ||\n",
 		// Blender is the pinned build and renders one frame of the set, which the picture tools then open.
 		'\t[[ $(HOME=/tmp/render-home blender --version | head -1) == "Blender ${BLENDER_VERSION}" ]] || { echo "blender is not ${BLENDER_VERSION}" >&2; exit 1; }\n',
 		"\tHOME=/tmp/render-home blender -b --factory-startup --python-exit-code 1 -P /opt/qorpera-machine/render-check.py -- /opt/qorpera-assets /tmp/render-check.png\n",
