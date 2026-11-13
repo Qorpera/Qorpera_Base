@@ -340,6 +340,7 @@ function memoryStore(tick: (label: string) => void) {
 									createdAt: facts.createdAt,
 									from: facts.from,
 									defaultBranch: facts.defaultBranch,
+									...(facts.sourceBranch === undefined ? {} : { sourceBranch: facts.sourceBranch }),
 									mainSha: facts.mainSha,
 									refs: facts.refs,
 									refsCount: facts.refs.length,
@@ -1698,6 +1699,64 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(await y.run()).toMatchObject({ state: "done", result: "imported", rawBundle: y.s.rawName });
 		expect([y.b.reads.length, y.fetching.calls]).toEqual([0, 0]);
 		await expectBuilt(y);
+	});
+
+	// Review round 1 of #1725, F1: the source's own default, kept beside a branch brought in as main whatever its age,
+	// goes with the first bundle's manifest, so a fresh request that finishes the half-done snapshot (the first one used
+	// up its claims after the close) looks at it as the first look did, keeps that head, and is not refused half done.
+	it("a half-done snapshot of a branch brought in as main beside an old default: a fresh request finishes it", async () => {
+		/** The fixture's code asked for at master, its source's own default dev beside it: the look keeps dev (as the
+		 * restore-shaped bundle does) only when the first bundle's facts name it, as the refs plan does for a head older
+		 * than 90 days. */
+		const asked = (x: World) => {
+			(x.input.from as Record<string, unknown>).branch = "master";
+			x.b.sourceBranch = "dev";
+			const look = x.b.look;
+			x.b.look = async (value, sink) => {
+				const answer = await look(value, sink);
+				return value.raw.sourceBranch === "dev"
+					? answer
+					: { ...answer, look: codeImportLook(lookFacts(x.s, { branches: { seen: 1, kept: 0 } })) };
+			};
+		};
+		const first = await world({ copy: true });
+		asked(first);
+		const writes = first.fetching.writes;
+		first.fetching.writes = async (options, writer) => ({ ...(await writes(options, writer)), sourceBranch: "dev" });
+		const build = first.restore.build;
+		first.restore.build = async (job, value, source, options) => {
+			const built = await build(job, value, source, options);
+			throw new CodeHostJobFailure("CODE_HOST_PUBLISH_FAILED", String(built.refs));
+		};
+		expect(await first.run()).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(await exists(first.f.mark)).toBe(true);
+		// The first bundle's manifest keeps it.
+		expect((await first.store.readImport(TARGET, first.s.rawName)).manifest).toMatchObject({
+			defaultBranch: "master",
+			sourceBranch: "dev",
+		});
+		// A fresh request for the same project and branch, an hour later: no fetch, the look made alone from the
+		// snapshot's first bundle names dev again, and the import is in.
+		const x = await world({ f: first.f, store: first.store });
+		asked(x);
+		x.input.from = { github: "acme/SHOP", branch: "master" };
+		x.clock.now = NOW + 3_600_000;
+		expect(await x.run()).toEqual({
+			schema: SCHEMA,
+			state: "done",
+			result: "imported",
+			change: 1,
+			mainSha: x.s.mainSha,
+			bundle: x.s.keptName,
+			rawBundle: x.s.rawName,
+			setAside: ASIDE,
+		});
+		expect([x.fetching.calls, x.transports.made.length]).toEqual([0, 0]);
+		expect((x.kernel.steps[1] as { raw: Record<string, unknown> }).raw).toMatchObject({ sourceBranch: "dev" });
+		expect(x.b.looks).toEqual([{ look: true, now: Math.floor(NOW / 1000) * 1000 }]);
+		expect(x.kernel.look).toEqual(first.kernel.look);
+		await expectBuilt(x);
+		expect(x.errors()).toEqual([]);
 	});
 
 	it("a half-done snapshot at a place: another source, another branch, or a snapshot whose bundles are gone or do not bind is refused before anything is fetched or touched", async () => {

@@ -944,6 +944,9 @@ export class CodeImport {
 					createdAt,
 					from: input.from,
 					defaultBranch: fetched.defaultBranch,
+					// Kept with the bundle too, so a later import that goes on from it as a half-done snapshot looks as this one
+					// did (review round 1 of #1725, F1).
+					...(typeof fetched.sourceBranch === "string" ? { sourceBranch: fetched.sourceBranch } : {}),
 					mainSha: fetched.mainSha,
 					refs: fetched.refs.map(({ name, sha }) => ({ name, sha })),
 					leftOut: fetched.leftOut,
@@ -1038,6 +1041,9 @@ export class CodeImport {
 					mainSha: first.mainSha,
 					refs: first.refsCount,
 					leftOut: first.leftOut,
+					// The source's own default the first look kept beside main, when the request named another branch: the look
+					// made again for this snapshot keeps it too, or it would not be the look of that code (F1).
+					...(typeof first.sourceBranch === "string" ? { sourceBranch: first.sourceBranch } : {}),
 				},
 				kept: {
 					name,

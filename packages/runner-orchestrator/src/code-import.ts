@@ -2293,6 +2293,8 @@ export interface CodeImportBundleFacts {
 	readonly createdAt: string;
 	readonly from: CodeImportFrom;
 	readonly defaultBranch: string;
+	/** The source's own default when the request named another branch as main (`CodeImportRaw.sourceBranch`). */
+	readonly sourceBranch?: string;
 	readonly mainSha: string;
 	readonly refs: readonly CodeBundleRef[];
 	readonly leftOut: number;
@@ -2309,6 +2311,10 @@ export interface CodeImportBundleManifest {
 	readonly createdAt: string;
 	readonly from: CodeImportFrom;
 	readonly defaultBranch: string;
+	/** The source's own default when the request named another branch as main, so an import that goes on from this
+	 * bundle (a half-done snapshot's, `#snapshot` in code-import-run.ts) looks at it as the first look did. Absent from a
+	 * manifest made before (review round 1 of #1725, F1). */
+	readonly sourceBranch?: string;
 	readonly mainSha: string;
 	/** The first 2,000 refs in the order they were given (the fetch's header: the default branch first), of
 	 * `refsCount`. */
