@@ -132,9 +132,9 @@ select 9007199254740993::bigint as big, 42::bigint as small, 7::int as whole, 1.
 	"data/shop/queries/many.sql": "select n from generate_series(1, 100) n;\n",
 	"data/shop/queries/wide.sql": "select repeat('x', 200) as text from generate_series(1, 40);\n",
 	"data/shop/queries/wide-letters.sql": "select repeat('æ', 150) as text from generate_series(1, 20);\n",
-	// Rows far past the answer's size: 20 rows of 20 MiB each, and one row of 20 MiB before small ones.
-	"data/shop/queries/huge.sql": "select repeat('x', 20971520) as text from generate_series(1, 20);\n",
-	"data/shop/queries/huge-first.sql": "select repeat('x', 20971520) as text union all select 'small';\n",
+	// Rows far past the answer's size: 8 rows of 1 MiB each, and one row of 1 MiB before a small one.
+	"data/shop/queries/huge.sql": "select repeat('x', 1048576) as text from generate_series(1, 8);\n",
+	"data/shop/queries/huge-first.sql": "select repeat('x', 1048576) as text union all select 'small';\n",
 	"data/shop/queries/none.sql": "select n from generate_series(1, 0) n;\n",
 	"data/shop/queries/slow.sql": "select pg_sleep(5) as waited;\n",
 	"data/shop/queries/writes.sql": "insert into orders (customer, amount) values ('x', 1) returning id;\n",
@@ -474,7 +474,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	it("never takes rows past the answer's size from the store", async () => {
-		const before = process.memoryUsage().rss;
+		const before = gateway.taken.bytes;
 		for (const question of ["huge", "huge-first"]) {
 			const huge = await ask(viewer, "query", { database: "shop", question });
 			assert.equal(huge.status, 200, JSON.stringify(huge.value).slice(0, 200));
@@ -482,8 +482,8 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			assert.equal(huge.value.more, true, question);
 			assert.deepEqual(huge.value.columns, ["text"], question);
 		}
-		// 400 MiB of rows were made in the store; had they come over, the gateway would hold them now.
-		assert.ok(process.memoryUsage().rss - before < 100 * 1024 * 1024, `${Math.round((process.memoryUsage().rss - before) / 1048576)} MiB`);
+		// 9 MiB of rows were made in the store; none of it came over.
+		assert.equal(gateway.taken.bytes - before, 0);
 		const none = await ask(viewer, "query", { database: "shop", question: "none" });
 		assert.deepEqual([none.value.rows, none.value.more, none.value.columns], [[], false, ["n"]]);
 	});

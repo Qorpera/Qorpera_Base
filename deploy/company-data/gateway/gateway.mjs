@@ -199,6 +199,8 @@ export class Gateway {
 	/** Company databases the watcher last found at their size limit. */
 	#full = new Set();
 	#closed = false;
+	/** What questions have taken from the store so far: rows, and the characters of their values. */
+	taken = { rows: 0, bytes: 0 };
 
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
 	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). */
@@ -392,6 +394,8 @@ export class Gateway {
 			});
 			const width = result.fields.length - 2;
 			const fields = result.fields.slice(0, width);
+			for (const row of result.rows) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
+			this.taken.rows += result.rows.length;
 			let more;
 			if (result.rows.length === 0) {
 				// No row came over: the question has none, or its first row alone is past the answer's size.
