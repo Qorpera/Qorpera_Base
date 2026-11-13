@@ -291,6 +291,10 @@ end $$;
 do $$
 declare v jsonb; v_count integer;
 begin
+	-- a-old's deletion is long done (a minute before the reports below): it no longer counts as coming free.
+	update public.qorpera_company_machine_placements set removed_at = removed_at - interval '1 minute',
+		removing_at = removing_at - interval '1 minute', retired_at = retired_at - interval '1 minute'
+	where id = (pg_temp.d_latest('a-old')).id;
 	-- 1000 - 900 - 200 - 80 (n1, n2) = -180 GiB: all sleeping disks together (21 GiB) would not make the room.
 	v := pg_temp.d_report(1000, 900, '{"a-new":1,"b-old":20,"n1":0,"n2":0}');
 	perform pg_temp.base_assert((v ->> 'roomBytes')::bigint = pg_temp.g(-180), '3: -180 GiB: ' || v::text);
@@ -303,6 +307,19 @@ begin
 	v_count := pg_temp.d_admit();
 	perform pg_temp.base_assert(v_count = 0 and pg_temp.d_freed(array['a-new','b-old']) = '',
 		'3: a disk of unknown use is not given away');
+	-- With its use known, but a-old's deletion only 10 s before the report (taken back after): ZFS may not have freed its
+	-- space yet, so it still counts as coming free, and nothing more goes.
+	begin
+		update public.qorpera_company_machine_placements set removed_at = clock_timestamp()
+		where id = (pg_temp.d_latest('a-old')).id;
+		perform pg_temp.d_report(1000, 700, '{"a-new":1,"b-old":20,"n1":0,"n2":0}');
+		update public.qorpera_machine_executor_disks set reported_at = reported_at + interval '10 seconds' where owner = 'mx-1253';
+		v_count := pg_temp.d_admit();
+		v := to_jsonb(pg_temp.d_freed(array['a-new','b-old']));
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	perform pg_temp.base_assert(v = '""'::jsonb, '3: a deletion 10 s before the report still counts as coming free: ' || v::text);
 	-- With its use known: b-old (another company's, unused for 5 days) goes before a-new (Alice's own, used 2 hours ago).
 	perform pg_temp.d_report(1000, 700, '{"a-new":1,"b-old":20,"n1":0,"n2":0}');
 	v_count := pg_temp.d_admit();

@@ -18,10 +18,11 @@
 -- * A sleeping disk is given away only for a machine in line that fits nowhere and that giving away sleeping disks here
 --   makes fit. On real figures a disk frees what it really holds (nothing when that is not known: such a disk is never
 --   given away for room), on paper its whole size as before; when all of them together would not make the room, none
---   goes and the machine waits in line. A disk deleted after the report still counts as coming free, so one shortage
---   never takes a second disk. Which goes: never one used in the last 24 hours while an older one can go (one skipped
+--   goes and the machine waits in line. A disk deleted after the report, or less than 30 s before it (ZFS frees a
+--   deleted disk's space in the background), still counts as coming free, so one shortage never takes a second disk. Which goes: never one used in the last 24 hours while an older one can go (one skipped
 --   because its company was busy holds the newer ones back for this pass); then the asking company's own before
---   another's; then the longest asleep; only as many as needed.
+--   another's; then the longest asleep; only as many as needed. The placement keeps what its give-away was counted to
+--   free (disk_frees_bytes), since a report after the deletion no longer names the disk.
 -- * Nothing is lost silently: the machine's row keeps when its disk was freed (disk_freed_at: a give-away, or a wake
 --   that had to move it to a new disk after it slept on the old one), and its view says so in plain words (`diskFreed`)
 --   while it has no disk and on its first new disk until it sleeps or is woken again; machine_start, status and list
@@ -60,6 +61,11 @@ end $$;
 alter table public.qorpera_company_machines add column disk_freed_at timestamptz;
 comment on column public.qorpera_company_machines.disk_freed_at is
 	'20260930757000: when this machine last lost its disk after it slept on it: given to a machine in line, or moved to a new disk at a wake.';
+
+alter table public.qorpera_company_machine_placements add column disk_frees_bytes bigint
+	check (disk_frees_bytes is null or disk_frees_bytes >= 0);
+comment on column public.qorpera_company_machine_placements.disk_frees_bytes is
+	'20260930757000: what giving this sleeping disk away was counted to free (its own use on the report, or its whole size on paper); counted as coming free until a report shows it freed.';
 
 -- The executor's latest reading of its LXD storage pool: one row per executor, replaced by each report.
 create table public.qorpera_machine_executor_disks (
@@ -197,13 +203,17 @@ do $$ begin execute pg_temp.disk_kept_patched(
 	$old$		select coalesce(sum(machine.disk_bytes), 0) into v_freeing from public.qorpera_company_machine_placements placement
 		join public.qorpera_company_machines machine on machine.id = placement.machine_id
 		where placement.owner = p_owner and placement.retired_at is not null and placement.removed_at is null;$old$,
-	$new$		-- 20260930757000: on real figures a disk frees what it holds of its own, and one deleted after the report still
-		-- counts as coming free (the report's used bytes hold it), so one shortage never takes a second disk.
-		select coalesce(sum(public.qorpera_machine_executor_disk_frees(v_report, placement.id, machine.disk_bytes)), 0) into v_freeing
+	$new$		-- 20260930757000: on real figures a disk frees what it holds of its own, and one deleted after the report, or less
+		-- than 30 s before it (ZFS frees a deleted disk's space in the background, so LXD's figures show it late), still
+		-- counts as coming free, so one shortage never takes a second disk.
+		-- A disk given away is counted as what its give-away counted (a report after its deletion no longer names it).
+		select coalesce(sum(case when v_report.owner is null then machine.disk_bytes else coalesce(placement.disk_frees_bytes,
+				public.qorpera_machine_executor_disk_frees(v_report, placement.id, machine.disk_bytes)) end), 0) into v_freeing
 		from public.qorpera_company_machine_placements placement
 		join public.qorpera_company_machines machine on machine.id = placement.machine_id
 		where placement.owner = p_owner and placement.retired_at is not null
-			and (placement.removed_at is null or (v_report.owner is not null and placement.removed_at > v_report.reported_at));$new$,
+			and (placement.removed_at is null
+				or (v_report.owner is not null and placement.removed_at > v_report.reported_at - interval '30 seconds'));$new$,
 	$old$		select coalesce(sum(machine.disk_bytes), 0) into v_asleep_disk from public.qorpera_company_machine_placements placement$old$,
 	$new$		select coalesce(sum(public.qorpera_machine_executor_disk_frees(v_report, placement.id, machine.disk_bytes)), 0)
 			into v_asleep_disk from public.qorpera_company_machine_placements placement$new$,
@@ -221,9 +231,14 @@ do $$ begin execute pg_temp.disk_kept_patched(
 				exit when v_need <= 0;
 				exit when v_skipped and v_asleep.recent;
 				continue when v_asleep.frees <= 0;$new$,
-	$old$					if found then v_need := v_need - v_asleep.disk_bytes; end if;
+	$old$					update public.qorpera_company_machine_placements set retired_at = clock_timestamp()
+					where id = v_asleep.id and retired_at is null and removed_at is null;
+					if found then v_need := v_need - v_asleep.disk_bytes; end if;
 				exception when lock_not_available or sqlstate 'P0F04' then continue;$old$,
-	$new$					if found then
+	$new$					update public.qorpera_company_machine_placements set retired_at = clock_timestamp(),
+						disk_frees_bytes = v_asleep.frees -- 20260930757000
+					where id = v_asleep.id and retired_at is null and removed_at is null;
+					if found then
 						v_need := v_need - v_asleep.frees;
 						-- 20260930757000: the machine keeps when its disk was freed; its view tells whoever wakes it.
 						update public.qorpera_company_machines set disk_freed_at = clock_timestamp() where id = v_asleep.machine_id;
