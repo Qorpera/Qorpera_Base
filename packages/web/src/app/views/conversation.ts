@@ -219,7 +219,14 @@ function copyShape(target: Node, source: Node, labelsOnly: boolean): void {
 /** How long an answered card settles (styles/motion.css, the longest of its parts). */
 const SETTLING = 1500;
 /** Its parts (not the fold, which restarts from the height it had got to). */
-const SETTLING_PARTS = new Set(["decided-edge", "decided-line", "decided-mark", "draw-stroke", "motion-hold"]);
+const SETTLING_PARTS = new Set([
+	"decided-answer",
+	"decided-edge",
+	"decided-line",
+	"decided-mark",
+	"draw-stroke",
+	"motion-hold",
+]);
 const DECIDED = [
 	".action-review-card.is-folded",
 	".interaction-card:is(.state-answered, .state-declined)",
@@ -2874,6 +2881,8 @@ export class ConversationView {
 								agentName,
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
+								inThread: true,
+								viewerId: this.#company.userId,
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose

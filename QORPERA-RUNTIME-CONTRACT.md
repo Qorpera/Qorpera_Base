@@ -4711,6 +4711,18 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    joins that thread and wakes routines as any received email does. Agents
    read received email only, as before.
 
+   A member's email may answer a message (founder, 12 November 2026: the
+   Mailbox gets "similar answer/reply buttons as in the real gmail/outlook
+   app, not the chatcomposer to tell other agents what to reply"). The
+   member names the message it answers, a received email of the company or
+   one the company sent, an agent's or a member's. The email then joins
+   that message's thread and carries the message's ids (In-Reply-To and
+   References), so the other side's mail program threads it too. It stays
+   the member's own act in every other way: unlike an agent's reply it also
+   answers an email that was sent automatically, since a person replying
+   starts no mail loop, and it never says it is an automatic response.
+   Mail for one of the company's accounts on a site is not answered.
+
 Section 21, item 33, is the event-wake acceptance item.
 
 ### 2026-09-29 amendment: one call before a model request

@@ -4,8 +4,9 @@
 	const model = window.QORPERA_MOTION_MODEL;
 	// Eleven colours, spaced so that no two read alike on a figure (November 10,
 	// 2026: Red, Sky and Slate took the places of Coral, Teal and Gray; Green,
-	// Purple and Pink moved apart). Every figure's own shade but the Planet's,
-	// the Flame's and the Heart's is one of them.
+	// Purple and Pink moved apart). Every figure's own shade is one of them
+	// (November 13, 2026: the Planet became Sky, the Flame Orange and the Heart
+	// Red).
 	const palette = Object.freeze([
 		{ name: "Charcoal", color: "#312f2d" },
 		{ name: "Brown", color: "#87674c" },
@@ -25,6 +26,9 @@
 	const materials = new Map();
 	// White-eye thresholds in each source's least-colored channel.
 	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, star: 41, cloud: 79, bolt: 84, mushroom: 56, moon: 51, puzzle: 32 });
+	// The shade a source was drawn in, where its own shade has since moved to a
+	// palette colour: the eyes are found in the source's least-colored channel.
+	const sourceShades = Object.freeze({ planet: "#5ec0b5", flame: "#fa752e", heart: "#fb672a" });
 	const linearChannels = Array.from({ length: 256 }, (_, index) => {
 		const channel = index / 255;
 		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
@@ -195,7 +199,8 @@
 	// How white each pixel of a body is as part of an eye: the measured eye
 	// shapes, then the source's white in its least-colored channel.
 	function eyeCover(id, pixels, width, height) {
-		const source = [1, 3, 5].map((start) => Number.parseInt(avatar(id).color.slice(start, start + 2), 16));
+		const shade = sourceShades[id] ?? avatar(id).color;
+		const source = [1, 3, 5].map((start) => Number.parseInt(shade.slice(start, start + 2), 16));
 		const eyeChannel = source.indexOf(Math.min(...source));
 		const eyeStart = eyeStarts[id] / 255;
 		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));

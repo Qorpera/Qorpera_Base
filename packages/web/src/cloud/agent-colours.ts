@@ -20,8 +20,8 @@ export const AGENT_COLOUR_HEX: Readonly<Record<AgentColour, string>> = Object.fr
 
 /** An `agent.md` colour for a colour the web holds: a `qorpera-<colour>` token or a palette colour's hex gives its
  * name. The chosen figure's own shade (`native`) is null, which `agent.md` writes as no colour, so the agent follows
- * its figure's shade when the figure changes; nine figures' own shades are palette colours as well (all but the
- * planet's, the flame's and the heart's). Anything else is null too. */
+ * its figure's shade when the figure changes; every figure's own shade is a palette colour as well (since November
+ * 13, 2026, when the planet became Sky, the flame Orange and the heart Red). Anything else is null too. */
 export function agentFileColour(color: string, native?: string): AgentColour | null {
 	const value = color.trim().toLowerCase();
 	if (native !== undefined && value === native.trim().toLowerCase()) return null;

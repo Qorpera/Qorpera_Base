@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { answersInteraction } from "../src/app/company.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
+import { fmtTime } from "../src/ui/dom.ts";
 import { renderInteractionCard } from "../src/ui/interaction-card.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
@@ -203,7 +204,8 @@ describe("interaction cards", () => {
 		expect(readOnly.querySelector("button, input")).toBeNull();
 		const declined = renderInteractionCard(item(request, { outcome: "declined", answer: {} }), context());
 		expect(declined.dataset.state).toBe("declined");
-		expect(declined.querySelector(".interaction-result")?.textContent).toBe("Declined");
+		// Skip was pressed: the card says so, not "Declined".
+		expect(declined.querySelector(".interaction-result")?.textContent).toBe("Skipped");
 		expect(declined.querySelector("button, input")).toBeNull();
 	});
 
@@ -270,6 +272,146 @@ describe("interaction cards", () => {
 			context(),
 		);
 		expect(answered.textContent).not.toContain("stopped");
+	});
+});
+
+describe("a card with its answer, in a thread", () => {
+	const VIEWER = MEMBER;
+	const OTHER = "33333333-3333-4333-8333-333333333333";
+	const thread = (overrides: Partial<Parameters<typeof renderInteractionCard>[1]> = {}) =>
+		context({
+			inThread: true,
+			viewerId: VIEWER,
+			memberName: (userId) => (userId === VIEWER ? "You" : "Sofie"),
+			...overrides,
+		});
+	const answered = {
+		outcome: "answered" as const,
+		answer: { values: ["finance"] },
+		answeredAt: "2026-09-22T20:05:00Z",
+	};
+	const classes = (element: Element | null | undefined) => [...(element?.classList ?? [])];
+
+	it("is the exchange it was: the agent's bubble, then the member's own answer as their bubble", () => {
+		const card = renderInteractionCard(
+			item({ ...question, body: "It goes out every Monday." }, { ...answered, answeredBy: VIEWER }),
+			thread(),
+		);
+		expect(classes(card)).toContain("is-exchange");
+		expect([...card.children].map((part) => classes(part)[0])).toEqual(["interaction-ask", "interaction-result"]);
+		// What the agent asked: one bubble with the title and the body, which tells its time on a hover as a message does.
+		const ask = card.querySelector<HTMLElement>(":scope > .interaction-ask");
+		expect(classes(ask)).toContain("bubble");
+		expect(ask?.dataset.sentAt).toBe("2026-09-22T20:00:00Z");
+		expect(ask?.querySelector(".interaction-title")?.textContent).toBe("Which channel should the digest go to?");
+		expect(ask?.querySelector(".interaction-body")?.textContent).toBe("It goes out every Monday.");
+		// The label row stays for a screen reader only.
+		const heading = ask?.querySelector(".interaction-heading");
+		expect(classes(heading)).toContain("visually-hidden");
+		expect(heading?.textContent).toContain("Answered");
+		// The answer: the member's own bubble on their side, with its own time; who and when stay for a screen reader.
+		const result = card.querySelector<HTMLElement>(":scope > .interaction-result");
+		expect(classes(result)).toEqual(["interaction-result", "is-said", "mine"]);
+		expect(result?.dataset.sentAt).toBe("2026-09-22T20:05:00Z");
+		const chosen = result?.querySelector(".interaction-chosen");
+		expect([chosen?.textContent, classes(chosen).includes("bubble")]).toEqual(["#finance", true]);
+		// Nothing shows beside it; a screen reader still hears who answered and when.
+		const attribution = result?.querySelector(".interaction-attribution");
+		expect(attribution?.querySelector(".interaction-beside")?.textContent).toBe("");
+		expect(attribution?.querySelector(".visually-hidden")?.textContent).toBe(
+			`You · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+		expect(result?.querySelector(".review-mark")).toBeNull();
+		expect(card.querySelector("button, input")).toBeNull();
+	});
+
+	it("says under the answer whose it is when it is another member's, and that it is on its way", () => {
+		const others = renderInteractionCard(item(question, { ...answered, answeredBy: OTHER }), thread());
+		const result = others.querySelector(".interaction-result");
+		expect(classes(result)).toEqual(["interaction-result", "is-said"]);
+		// The eye gets the name; a screen reader hears the name and the time, once (review r1 F1 on #1727).
+		const beside = result?.querySelector(".interaction-attribution > .interaction-beside");
+		expect([beside?.textContent, beside?.getAttribute("aria-hidden")]).toEqual(["Sofie", "true"]);
+		expect(result?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+		// The member's own answer, not yet with the agent: no member is named on it yet, and it is theirs.
+		const { answeredAt: _sent, ...unsent } = answered;
+		const sending = renderInteractionCard(item(question, { ...unsent, pending: true }), thread());
+		const pending = sending.querySelector<HTMLElement>(".interaction-result");
+		expect(classes(pending)).toEqual(["interaction-result", "is-said", "mine"]);
+		expect(pending?.dataset.sentAt).toBeUndefined();
+		expect(pending?.querySelector(".interaction-beside")?.textContent).toBe("Sending");
+		expect(pending?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe("You · Sending");
+		// A line, too: another member's save names them beside it, with its time for a screen reader.
+		const saved = renderInteractionCard(
+			item(
+				{ surface: "secret", title: "Stripe key", payload: {} },
+				{ outcome: "provided", answer: {}, answeredBy: OTHER, answeredAt: answered.answeredAt },
+			),
+			thread(),
+		);
+		expect(saved.querySelector(".is-done .interaction-beside")?.textContent).toBe("Sofie");
+		expect(saved.querySelector(".is-done .interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+	});
+
+	it("says anything else done with the card in one line under the question, marked as a decided approval is", () => {
+		const secret: InteractionRequest = {
+			surface: "secret",
+			title: "Stripe key",
+			payload: { purpose: "I need the Stripe key to set up payments.", label: "Stripe secret key" },
+		};
+		const saved = renderInteractionCard(
+			item(secret, { outcome: "provided", answer: {}, answeredBy: VIEWER, answeredAt: answered.answeredAt }),
+			thread(),
+		);
+		// The purpose is in the agent's bubble, with the title.
+		expect(saved.querySelector(".interaction-ask.bubble .interaction-text")?.textContent).toBe(
+			"I need the Stripe key to set up payments.",
+		);
+		const done = saved.querySelector(".interaction-result");
+		expect(classes(done)).toEqual(["interaction-result", "is-done"]);
+		expect(classes(done?.querySelector(".review-mark"))).toEqual(["review-mark", "is-approved"]);
+		const line = done?.querySelector(".interaction-chosen");
+		expect([line?.textContent, classes(line).includes("bubble")]).toEqual(["Saved to the company vault", false]);
+		// A skipped question: a line, never a bubble of the member's.
+		const skipped = renderInteractionCard(
+			item(question, { outcome: "declined", answer: {}, answeredBy: VIEWER, answeredAt: answered.answeredAt }),
+			thread(),
+		);
+		const passed = skipped.querySelector<HTMLElement>(".interaction-result");
+		expect(classes(passed)).toEqual(["interaction-result", "is-done"]);
+		expect(classes(passed?.querySelector(".review-mark"))).toEqual(["review-mark", "is-declined"]);
+		expect(passed?.textContent).toBe("Skipped");
+		expect(passed?.dataset.sentAt).toBe(answered.answeredAt);
+		expect(skipped.querySelector(".bubble .interaction-title")).not.toBeNull();
+		// Past its time: the line, with no mark.
+		const expired = renderInteractionCard(
+			item({ ...question, expiresAt: "2026-09-22T20:10:00Z" }),
+			thread({ now: Date.parse("2026-09-22T20:11:00Z") }),
+		);
+		expect(classes(expired)).toContain("is-exchange");
+		const late = expired.querySelector(".interaction-result");
+		expect(classes(late)).toEqual(["interaction-result", "is-done"]);
+		expect(late?.querySelector(".review-mark")).toBeNull();
+		expect(late?.textContent).toContain("past its time");
+	});
+
+	it("keeps its frame while it waits, and wherever it is not in a thread", () => {
+		const waiting = renderInteractionCard(item(question), thread());
+		expect(classes(waiting)).not.toContain("is-exchange");
+		expect(waiting.querySelector(".bubble, .visually-hidden, .review-mark, [data-sent-at]")).toBeNull();
+		expect(waiting.querySelectorAll(".interaction-ask .interaction-options .btn")).toHaveLength(2);
+		// The questions dock draws the same card with no thread around it.
+		const docked = renderInteractionCard(item(question, { ...answered, answeredBy: VIEWER }), context());
+		expect(classes(docked)).not.toContain("is-exchange");
+		expect(
+			docked.querySelector(".bubble, .visually-hidden, .interaction-beside, .review-mark, [data-sent-at]"),
+		).toBeNull();
+		expect(classes(docked.querySelector(".interaction-result"))).toEqual(["interaction-result"]);
+		expect(docked.querySelector(".interaction-attribution")?.textContent).toMatch(/^Jonas · /);
 	});
 });
 

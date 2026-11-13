@@ -85,7 +85,7 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { SitesView } from "./views/settings-sites.ts";
-import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
+import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
@@ -320,19 +320,28 @@ export function mountApplication(
 		if (settings && settings !== open) settingsFromConversation = fromConversation;
 	}
 	root.addEventListener("click", onFolderLink);
-	// An app's card in a message names it by its folder; once the company's apps are read it shows the app's own emblem
-	// and line (ui/markdown.ts draws it plain, as it has no company).
+	// An app's card in a message names it by its folder; once the company's apps are read it shows the app as the drawer
+	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
+	// hover (ui/markdown.ts draws the card plain, as it has no company).
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
-		if (!apps) return;
+		if (!company || !apps) return;
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
-			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
-			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.about]) : "";
-			if (!manifest || card.dataset.shown === shown) continue;
+			const app = apps.find((entry) => entry.name === card.dataset.appName);
+			const look = app && appLook(company, app);
+			if (!app?.manifest || !look) continue;
+			const about = app.manifest.about ?? "";
+			const shown = JSON.stringify([look.key, about]);
+			if (card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, 30));
-			const note = card.querySelector(".app-card-note");
-			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
+			card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
+			if (look.colour) card.style.setProperty("--app-colour", look.colour);
+			else card.style.removeProperty("--app-colour");
+			const note = card.querySelector<HTMLElement>(".app-card-note");
+			if (!note) continue;
+			note.textContent = about || t("App");
+			if (about) note.title = about;
+			else note.removeAttribute("title");
 		}
 	};
 	let decorating = false;
@@ -1239,6 +1248,9 @@ export function mountApplication(
 					}),
 				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
+		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
+		// in the messages follow.
+		decorateAppCards();
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the
 			// name is inert under it).
@@ -2082,6 +2094,13 @@ export function mountApplication(
 							environmentId: controller.profile.environmentId,
 						};
 						const keys = createDigitalPostKeys(cloud, environment);
+						const accounts = createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							companyCurrent,
+						);
 						return {
 							hooks: createWebEventHooks(cloud, environment),
 							digitalPost: {
@@ -2089,6 +2108,12 @@ export function mountApplication(
 								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
 								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
 							},
+							// Who answers an address: the agent's routine that starts on its mail, written as the member's own
+							// save, on one of the member's own model accounts.
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+								memberFolder(companyCurrent, t("Company access changed.")),
+							),
+							accounts: (signal) => accounts.listConnections(signal),
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),

@@ -817,6 +817,15 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .computer-panel .machine-screen-control-hand-back[hidden] { display: none; }
 .computer-panel .machine-screen-control-hand-back:hover { background: rgb(255 255 255 / 26%); }
+/* Shared control (20260930734000): who else uses the computer, in a quieter line; Type privately is the secondary control,
+   with a lock, as the hand-back beside it is; typing privately keeps the white Done. */
+.computer-panel .machine-screen-control-who { color: rgb(255 255 255 / 72%); }
+.computer-panel .machine-screen-control-who:empty { display: none; }
+.computer-panel .machine-screen-control-button[hidden] { display: none; }
+.computer-panel .machine-screen-control-button { display: inline-flex; align-items: center; gap: 5px; }
+.computer-panel .machine-screen-control-button .icon { flex: none; width: 13px; height: 13px; }
+.computer-panel .machine-screen-control-button.is-secondary { color: #fff; background: rgb(255 255 255 / 16%); }
+.computer-panel .machine-screen-control-button.is-secondary:hover { background: rgb(255 255 255 / 26%); }
 .computer-panel .machine-screen.is-controlling .machine-screen-mark { display: none; }
 .computer-panel .machine-screen.is-controlling .screen-viewer-stage { box-shadow: inset 0 0 0 2px #34c759; }
 .computer-panel .machine-screen.is-controlling .machine-screen-canvas { cursor: default; outline: none; touch-action: none; }
@@ -1306,19 +1315,43 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	}
 }
 @media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
-/* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */
+/* An app linked in a message (`app:<name>`): a card that opens the app's own page. It shows the app as the drawer
+ * does, its emblem in its colour, here on a tile of that colour, with its name and one line about it (the whole line
+ * on a hover). In a thread the cards stand in a row of their own under the words, on the thread itself and never in a
+ * bubble's grey (Jonas, 13 Nov 2026: a white box in a grey box, with a small icon and three lines of small print, was
+ * no visual). The row's holder stays a bubble, so it arrives, waits and tells its time as the message's other parts
+ * do; it only gives up the bubble's paint. */
+.app-cards { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.message-prose .app-cards { margin: 8px 0; }
+.bubble:has(> .app-cards) { padding: 0; border-radius: 0; background: none; box-shadow: none; }
 .app-card {
-	display: flex; align-items: center; gap: 12px; width: min(100%, 360px); margin: 6px 0; padding: 10px 14px 10px 10px;
-	border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
-	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
+	display: flex; align-items: center; gap: 12px; width: 360px; min-width: 0; max-width: 100%; padding: 11px 12px 11px 13px;
+	border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
-.app-card:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); box-shadow: 0 4px 14px rgb(18 18 17 / 8%); transform: translateY(-1px); }
+/* A card where no row holds it: in a list's item or a table's cell. */
+.message-prose :not(.app-cards) > .app-card { margin: 6px 0; }
+.app-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
 .app-card:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .app-card-emblem { display: grid; flex: none; place-items: center; }
-.app-card-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.app-card-title { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.app-card-note { color: var(--text-muted); font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .app-card { transition: none; } .app-card:hover { transform: none; } }
+.app-card-emblem .interface-emblem {
+	width: 34px; height: 34px; --emblem-ink: var(--app-colour, var(--text));
+	transition: transform var(--motion-base) var(--ease-spring);
+}
+.app-card:hover .app-card-emblem .interface-emblem { transform: scale(1.1); }
+.app-card-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.app-card-title, .app-card-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-card-title { font-size: 14px; font-weight: 600; line-height: 19px; }
+.app-card-note { color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.app-card-go { display: grid; flex: none; place-items: center; color: var(--text-muted); opacity: 0.5; transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring); }
+.app-card-go .icon { width: 15px; height: 15px; }
+.app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
+/* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
+.message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
+	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
+}
 
 /* Two agents' transcript: a sheet that slides in from the right over the thread, which waits dimmed behind it
  * (Jonas, 5 Nov 2026). A press on the dim area closes it, as Close and Escape do. */
@@ -1391,7 +1424,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .interaction-note { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 .interaction-note .icon { width: 13px; height: 13px; flex: none; }
 .interaction-result { margin: 4px 0 6px; font-size: 13px; }
-.interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
+.interaction-card:not(.is-exchange) .interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
 .interaction-attribution { font-size: 11px; color: var(--text-muted); }
 .interaction-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
 .interaction-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
@@ -1424,6 +1457,34 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @media (prefers-reduced-motion: reduce) { .choice-box { transition: none; } .choice-box:hover:not(:disabled) { transform: none; } .choice-picture.is-loading { animation: none; } }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
+/* A card with its answer, in a thread, is the exchange it was (ui/interaction-card.ts; Jonas, 13 Nov 2026): no frame.
+ * What the agent asked is the agent's bubble and a question's answer the member's own (`.bubble`, `.mine .bubble`:
+ * the messages' own rules draw both, in every theme); anything else done with the card is one quiet line under the
+ * question with a decided approval's mark. The widths are a message's. */
+.interaction-card.is-exchange {
+	display: flex; flex-direction: column; align-items: flex-start; gap: 8px; align-self: stretch; width: auto;
+	margin-block: 6px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--text);
+}
+.is-exchange > .interaction-ask { max-width: min(72%, 720px); }
+/* Child by child: the card it was lies in this one for a moment as it folds (ui/motion.ts foldFrom), and keeps its look. */
+.interaction-card.is-exchange > .interaction-ask > .interaction-title { margin: 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > :is(.interaction-body, .interaction-text, .interaction-note, .interaction-draft),
+.is-exchange > .interaction-ask > .card-fold-wrap > .interaction-body { margin: 3px 0 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > .card-fold-wrap { margin: 0; }
+.is-exchange > .interaction-ask > .interaction-draft { padding: 0; border: 0; border-radius: 0; max-height: none; }
+.is-exchange > .interaction-choices { width: min(560px, 100%); margin: 0; }
+.is-exchange > .interaction-result { display: flex; align-items: center; gap: 7px; margin: -2px 0 0; padding: 0 4px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.is-exchange > .interaction-result .interaction-attribution { font-size: inherit; }
+.is-exchange > .is-done .interaction-beside::before { content: "· "; }
+.is-exchange > .interaction-result.is-said { flex-direction: column; align-items: flex-start; gap: 0; max-width: min(72%, 720px); margin: 0; padding: 0; color: inherit; font-size: inherit; line-height: inherit; }
+.is-exchange > .interaction-result.is-said.mine { align-self: flex-end; align-items: flex-end; max-width: min(68%, 720px); }
+/* Under the answer, as a message's caption. */
+.is-exchange > .is-said .interaction-beside { display: block; margin-top: 4px; padding: 0 12px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* Beside the outcome, for the eye: whose it is when it is not the member's own, and "Sending"; nothing when neither. */
+.is-exchange > .interaction-result .interaction-beside:empty { display: none; }
+@media (max-width: 900px) {
+	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
+}
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }
 
