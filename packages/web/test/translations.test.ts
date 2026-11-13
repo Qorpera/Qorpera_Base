@@ -58,6 +58,24 @@ function templateWords(body: string): string {
 }
 
 describe("Danish interface text", () => {
+	// The lead's words for a session whose workspace was refused for its files (the import's follow-ups, part N).
+	it("says a session could not start for its files in the words the lead gave", () => {
+		expect(
+			DANISH[
+				"The session could not start: the code holds file names that Qorpera cannot keep. Trying again will not help. The agent knows what to do next."
+			],
+		).toBe(
+			"Sessionen kunne ikke starte: koden har filnavne, som Qorpera ikke kan gemme. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
+		);
+		expect(
+			DANISH[
+				"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next."
+			],
+		).toBe(
+			"Sessionen kunne ikke starte: koden har en fil, der er for stor til, at Qorpera kan gemme den. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
+		);
+	});
+
 	it("has Danish for every key written in the code", () => {
 		const missing = keySites
 			.filter(({ key }) => !Object.hasOwn(DANISH, key))

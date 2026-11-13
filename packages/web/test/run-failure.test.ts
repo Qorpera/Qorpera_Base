@@ -582,3 +582,78 @@ describe("a change to code kept in Qorpera that did not go in for its checks (ow
 		);
 	});
 });
+
+describe("a session whose workspace was refused for its files (own code storage, the import's follow-ups, part N)", () => {
+	const NAMES =
+		"The session could not start: the code holds file names that Qorpera cannot keep. Trying again will not help. The agent knows what to do next.";
+	const LARGE =
+		"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next.";
+	const INTERNAL =
+		"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.";
+	const BRIDGE =
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.";
+	// The executor's words for the agent as the cloud keeps them (runner-orchestrator code-host-repositories.ts): the
+	// refused paths, the session's branch and git, then the code. A path may be named like anything, a login's or a
+	// limit's words among them.
+	const refused = (paths: string, code: string) =>
+		`The session's workspace could not be made again: its branch holds file or folder names the company folder does not take (${paths}), so a follow-up will not help. Archive this session with manage_worker, action archive, and start a new one on the repository: the work stays on branch qorpera/coding/11111111-1111-4111-8111-111111111111, where the new session reads each file with git show qorpera/coding/11111111-1111-4111-8111-111111111111:<path> and saves it under a name the folder takes. [code=${code}]`;
+	const PATHS = [
+		'"bad."',
+		'"src/signin.tsx."',
+		'"quota.txt "',
+		'"usage limit reached/token expired."',
+		'"lease expired/timed out."',
+		'"deadline expired."',
+	];
+
+	it.each([
+		["CODE_HOST_NAMES_FOLDER_REFUSES", NAMES],
+		["CODE_HOST_NAMES_NOT_UTF8", NAMES],
+		["CODE_HOST_NAMES_NOT_NFC", NAMES],
+		["CODE_HOST_NAMES_DIFFER_BY_CASE", NAMES],
+		["CODE_HOST_FILE_TOO_LARGE", LARGE],
+	] as const)("%s", (code, expected) => {
+		for (const paths of PATHS) {
+			const summary = refused(paths, code);
+			// The failed event's code decides, for the owner and for anyone else; and the summary's own code at its end,
+			// with no code beside it, the same; a path's words never pick another sentence.
+			for (const said of [
+				codingFailureReason(summary, {}, code),
+				codingFailureReason(summary, { mine: true }, code),
+				codingFailureReason(summary, { mine: false }, code),
+				codingFailureReason(INTERNAL, {}, code),
+				codingFailureReason(summary),
+				codingFailureReason(`${summary}\n`),
+			]) {
+				expect(said, `${code} ${paths}`).toBe(expected);
+				// A member never reads a path, a branch, git, a ref, a command or a code.
+				expect(said).not.toMatch(/\[|code=|branch|git|ref|commit|merge|manage_worker|archive|"|\d/i);
+			}
+		}
+	});
+
+	it("leaves a usage limit first, and reads every other failure as before", () => {
+		expect(codingFailureReason(refused('"bad."', "CODE_HOST_NAMES_FOLDER_REFUSES"), { usageLimit: true })).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+		// Only a whole code of these five decides: another code of the code host's is a step refused, as before.
+		for (const code of [
+			"CODE_HOST_NAMES",
+			"CODE_HOST_NAMES_FOLDER_REFUSES_AGAIN",
+			"CODE_HOST_FILE_TOO_LARGE:X",
+			"CODE_HOST_UNEXPECTED_FILE",
+		])
+			expect(codingFailureReason(INTERNAL, {}, code), code).toBe(BRIDGE);
+		expect(codingFailureReason(refused('"bad."', "CODE_HOST_UNEXPECTED_FILE"))).toBe(INTERNAL);
+		// Lower-case reasons name no code.
+		expect(codingFailureReason(INTERNAL, {}, "code_host_names_folder_refuses")).toBe(INTERNAL);
+		// A code inside a summary, not at its end, decides nothing.
+		expect(codingFailureReason(`${refused('"bad."', "CODE_HOST_NAMES_FOLDER_REFUSES")} Then it stopped.`)).toBe(
+			INTERNAL,
+		);
+		// A landing refused for names carries no code of its own (the kernel's is lower case): as before, not these words.
+		const landing =
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.". Rename them, commit and finish again.';
+		expect(codingFailureReason(landing, {}, "ended_without_submission")).toBe(INTERNAL);
+	});
+});

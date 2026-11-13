@@ -306,6 +306,11 @@ export const AGENTS: Record<string, string> = {
 		"Ikke gemt endnu: ændringen bestod ikke sine tests, så koden er, som den var.",
 	"Not saved yet: Qorpera could not test the change just now. Nothing was lost.":
 		"Ikke gemt endnu: Qorpera kunne ikke teste ændringen lige nu. Intet gik tabt.",
+	// A session whose workspace was refused for its files (own code storage, the import's follow-ups, part N).
+	"The session could not start: the code holds file names that Qorpera cannot keep. Trying again will not help. The agent knows what to do next.":
+		"Sessionen kunne ikke starte: koden har filnavne, som Qorpera ikke kan gemme. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
+	"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next.":
+		"Sessionen kunne ikke starte: koden har en fil, der er for stor til, at Qorpera kan gemme den. Det hjælper ikke at prøve igen. Agenten ved, hvad der skal ske nu.",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
 	"{count} artifact": "{count} artefakt",
