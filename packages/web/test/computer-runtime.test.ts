@@ -20,6 +20,7 @@ import {
 	START_AGAIN_MS,
 	WANT_ON_MS,
 } from "../src/app/views/computer.ts";
+import { DesktopHoldLedger } from "../src/app/views/desktop-holds.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
 import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
@@ -231,7 +232,17 @@ function setup(
 			if (!("begin" in body) && state.pointerGate) {
 				const gate = state.pointerGate;
 				state.pointerGate = undefined;
-				await gate;
+				// As a browser's fetch: the page cutting the request off ends the wait (the request may still have arrived).
+				const signal = init?.signal;
+				await Promise.race([
+					gate,
+					new Promise<never>((_, reject) => {
+						if (signal?.aborted) reject(new DOMException("Aborted", "AbortError"));
+						signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+							once: true,
+						});
+					}),
+				]);
 				order.push(`moved ${String(body.x)} ${String(body.y)}`);
 			}
 			const code = state.pointerAnswers.shift();
@@ -4425,6 +4436,71 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		await flush();
 		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
 		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
+		// Again, and then Back to the preview and in again before the click (v242 release review r1 F1): the sharing and
+		// its pointer are made anew, but the move that got no answer may still land, so the click still waits for its pass.
+		hover(p, 70, 70);
+		await advance(40);
+		await flush();
+		expect(s.order.slice(-2)).toEqual(["begin", "move 140 140"]);
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		expect(entered(p)).toBe(false);
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(p)).toBe(true);
+		press(canvas(p), 10, 10, { button: 2 });
+		await advance(5000);
+		await flush();
+		expect(s.acts).toHaveLength(1);
+		await advance(6500);
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click", "click"]);
+	});
+
+	it("keeps that wait for a move on its way when the window is closed and the desktop opened in a new one (v242 release review r1 F1)", async () => {
+		const s = setup();
+		const ledger = new DesktopHoldLedger(s.computer, s.stop.signal);
+		s.state.answers.push({ picture: 1 });
+		const first = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode, ledger });
+		first.attach(document.body, () => first.dispose());
+		await flush();
+		vi.spyOn(canvas(first), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		canvas(first).width = 1600;
+		canvas(first).height = 1000;
+		press(canvas(first), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		hover(first, 50, 50);
+		await advance(40);
+		await flush();
+		// The next move is on its way, unanswered, when the window closes: its request is cut off on the page, and the
+		// executor may still take it.
+		s.state.pointerGate = new Promise<void>(() => {});
+		hover(first, 60, 60);
+		await advance(40);
+		await flush();
+		expect(s.order.at(-1)).toBe("move 120 120");
+		first.dispose();
+		await flush();
+		// The database takes one look of a member's every 400 ms: the new window's first look comes after that.
+		await advance(500);
+		s.state.answers.push({ picture: 1 });
+		const second = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode, ledger });
+		second.attach(document.body, () => second.dispose());
+		cleanup.push(() => second.dispose());
+		await flush();
+		vi.spyOn(canvas(second), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		canvas(second).width = 1600;
+		canvas(second).height = 1000;
+		press(canvas(second), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(second)).toBe(true);
+		press(canvas(second), 10, 10, { button: 2 });
+		await advance(4500);
+		await flush();
+		expect(s.acts).toEqual([]);
+		await advance(6500);
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
 	});
 
 	it("comes back after the desktop went away and came back under the same private hold (review r1 F4 of #1733)", async () => {
