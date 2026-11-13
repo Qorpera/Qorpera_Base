@@ -2094,6 +2094,13 @@ export function mountApplication(
 							environmentId: controller.profile.environmentId,
 						};
 						const keys = createDigitalPostKeys(cloud, environment);
+						const accounts = createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							companyCurrent,
+						);
 						return {
 							hooks: createWebEventHooks(cloud, environment),
 							digitalPost: {
@@ -2101,6 +2108,12 @@ export function mountApplication(
 								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
 								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
 							},
+							// Who answers an address: the agent's routine that starts on its mail, written as the member's own
+							// save, on one of the member's own model accounts.
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+								memberFolder(companyCurrent, t("Company access changed.")),
+							),
+							accounts: (signal) => accounts.listConnections(signal),
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
