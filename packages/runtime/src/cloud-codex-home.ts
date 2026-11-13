@@ -85,12 +85,22 @@ export function cloudHomeRefusalWords(reason: string | undefined): string {
 }
 
 /**
- * The exec-server's requests that only read or wait: forwarded as they are. Every other `fs/` request is a change and
- * is reviewed, so a method this list does not know is never let through unreviewed; `process/start` and a nonempty
- * `process/write` are commands. Anything else (the handshake, a process's reads, terminate) acts on nothing but the
- * model's own processes.
+ * The exec-server's file requests that only read: forwarded as they are. Every other `fs/` request is a change and is
+ * reviewed, so a file method this list does not know is never let through unreviewed; `process/start` and a nonempty
+ * `process/write` are commands.
  */
 const FS_READS = new Set(["fs/readFile", "fs/getMetadata", "fs/readDirectory", "fs/exists", "fs/canonicalize"]);
+/** The other requests that need no review: the handshake, the environment's own questions, and a process's reads,
+ * size and end. Everything not named here or above is either reviewed (`process/start`, `process/write`, any other
+ * `fs/` method) or refused. */
+const UNREVIEWED = new Set([
+	"initialize",
+	"environment/info",
+	"environmentConfig/read",
+	"process/read",
+	"process/resize",
+	"process/terminate",
+]);
 /** An answer from the machine, read from the head of its line: which request of the model's it belongs to. */
 const ANSWER_ID = /^\{(?:"jsonrpc":"[^"]{1,16}",)?"id":(\d{1,20}|"[^"]{1,128}")/;
 /** The machine's word that one of the model's processes is closed, read from the head of its line: the process id,
@@ -515,9 +525,9 @@ interface Connection {
 	 * those is that process's loss, never a question for a machine that does not know it. */
 	readonly live: Set<string>;
 	readonly gone: Set<string>;
-	/** Lines typed into a running shell that name no call, by request id: their steps, finished with the machine's
-	 * own answer to each. */
-	readonly typed: Map<string, string>;
+	/** Admitted actions whose requests name no call of the model's (a typed line, a lone file change), by request id:
+	 * their steps, kept under this host's own ids and finished with the machine's own answer to each. */
+	readonly unnamed: Map<string, string>;
 }
 
 /** The model's call a request names (`metadata.toolCallId`), when it names one. */
@@ -816,7 +826,13 @@ export class CloudCodexHome {
 	 * answered in words, and the model's turn goes on with the company's own tools.
 	 */
 	async #relay(client: Socket): Promise<void> {
-		const connection: Connection = { client, waiting: new Map(), live: new Set(), gone: new Set(), typed: new Map() };
+		const connection: Connection = {
+			client,
+			waiting: new Map(),
+			live: new Set(),
+			gone: new Set(),
+			unnamed: new Map(),
+		};
 		let retryAt = 0;
 		const stop = (): void => {
 			connection.closing = true;
@@ -921,7 +937,7 @@ export class CloudCodexHome {
 					continue;
 				}
 				answered(line, connection.waiting);
-				if (connection.typed.size > 0) this.#typedAnswered(line, connection);
+				if (connection.unnamed.size > 0) this.#unnamedAnswered(line, connection);
 				// A process the machine closed is no longer one a loss could cut short.
 				const closed = PROCESS_CLOSED.exec(line.slice(0, 200))?.[1];
 				if (closed !== undefined) connection.live.delete(closed);
@@ -941,9 +957,9 @@ export class CloudCodexHome {
 				for (const started of connection.live) connection.gone.add(started);
 				connection.live.clear();
 				remember(connection.gone, MAX_REMEMBERED);
-				for (const hostId of connection.typed.values())
+				for (const hostId of connection.unnamed.values())
 					this.#steps?.finish(hostId, JSON.stringify({ error: { code: -32010, message: CLOUD_HOME_LOST } }));
-				connection.typed.clear();
+				connection.unnamed.clear();
 				for (const [id, callId] of connection.waiting) {
 					this.counts.lost++;
 					this.#note(callId, CLOUD_HOME_LOST);
@@ -957,8 +973,8 @@ export class CloudCodexHome {
 		}
 	}
 
-	/** The machine answered a typed line that names no call: that answer is what its step keeps. */
-	#typedAnswered(line: string, connection: Connection): void {
+	/** The machine answered an action that names no call: that answer is what its step keeps. */
+	#unnamedAnswered(line: string, connection: Connection): void {
 		let id = ANSWER_ID.exec(line.slice(0, 200))?.[1];
 		if (id === undefined && line.length <= ANSWER_READ_CHARS) {
 			const message = parseLine(line);
@@ -969,9 +985,9 @@ export class CloudCodexHome {
 			)
 				id = JSON.stringify(message.id);
 		}
-		const hostId = id === undefined ? undefined : connection.typed.get(id);
+		const hostId = id === undefined ? undefined : connection.unnamed.get(id);
 		if (id === undefined || hostId === undefined) return;
-		connection.typed.delete(id);
+		connection.unnamed.delete(id);
 		this.#steps?.finish(hostId, line.length <= ANSWER_READ_CHARS ? line : JSON.stringify({ answered: true }));
 	}
 
@@ -1008,7 +1024,7 @@ export class CloudCodexHome {
 				? JSON.stringify(params.processId)
 				: undefined;
 		let callId: string | undefined;
-		let typed = false;
+		let unnamed = false;
 		if (request) {
 			// A process that went with an earlier channel: the machine that answers now never knew it.
 			if (processId && method !== "process/start" && connection.gone.has(processId)) {
@@ -1018,7 +1034,7 @@ export class CloudCodexHome {
 			}
 			const gated = await this.#gate(method, params);
 			callId = gated.callId;
-			typed = gated.typed === true;
+			unnamed = gated.unnamed === true;
 			if (gated.refusal !== undefined) {
 				this.#note(callId, gated.refusal);
 				return JSON.stringify({ id, error: { code: -32600, message: gated.refusal } });
@@ -1028,7 +1044,7 @@ export class CloudCodexHome {
 		if (request) {
 			connection.waiting.set(JSON.stringify(id), callId);
 			remember(connection.waiting, MAX_REMEMBERED);
-			if (typed && callId) connection.typed.set(JSON.stringify(id), callId);
+			if (unnamed && callId) connection.unnamed.set(JSON.stringify(id), callId);
 		}
 		if (method === "process/start" && processId) connection.live.add(processId);
 		if (callId) {
@@ -1045,13 +1061,28 @@ export class CloudCodexHome {
 	async #gate(
 		method: string,
 		params: Record<string, unknown>,
-	): Promise<{ refusal?: string; callId?: string; typed?: boolean }> {
+	): Promise<{ refusal?: string; callId?: string; unnamed?: boolean }> {
 		const named = parseCallId(params);
 		const callId = named ?? `home:${this.#sessionId}:${++this.#unnamed}`;
 		const processId =
 			typeof params.processId === "string" || typeof params.processId === "number"
 				? JSON.stringify(params.processId)
 				: undefined;
+		/** Reviewed and recorded; an action no call of the model's names keeps its step under this host's own id, finished
+		 * with the machine's answer (or, refused, with the refusal at once): which call made it is never guessed. */
+		const settle = async (
+			action: CloudCodexHomeAction,
+		): Promise<{ refusal?: string; callId: string; unnamed?: boolean }> => {
+			const refusal = await this.#admit(action);
+			if (!action.callId.startsWith("home:")) return { refusal, callId: action.callId };
+			if (refusal !== undefined)
+				try {
+					this.#steps?.finish(action.callId, JSON.stringify({ status: "refused", text: refusal }), action.step);
+				} catch {
+					// A log that cannot take the record now refused the action already; nothing more to keep.
+				}
+			return { refusal, callId: action.callId, unnamed: refusal === undefined };
+		};
 		if (method === "process/start") {
 			const action = cloudHomeCommandAction(this.#machine, params, callId);
 			// A command this host cannot read is not one it can review: it never reaches the machine.
@@ -1065,7 +1096,7 @@ export class CloudCodexHome {
 				});
 				remember(this.#processes, MAX_REMEMBERED);
 			}
-			return { refusal: await this.#admit(action), callId };
+			return await settle(action);
 		}
 		// A request about a running process (a read of its output, a write, its end) belongs to the call that names it,
 		// or else to the command that started it: a machine lost while it waits is that command's loss.
@@ -1074,25 +1105,21 @@ export class CloudCodexHome {
 			if (params.chunk !== undefined && typeof params.chunk !== "string")
 				return { refusal: CLOUD_HOME_REQUEST_INVALID };
 			const action = cloudHomeStdinAction(this.#machine, params, running, callId);
-			if (!action) return { callId: named ?? running?.callId };
-			const refusal = await this.#admit(action);
-			if (named) return { refusal, callId };
-			// The pinned Codex's write names no call of the model's (the proof showed it), so which `write_stdin` typed this
-			// line is not guessed: its step is kept under this host's own id and finished with what the machine answered
-			// (or, refused, with the refusal at once).
-			if (refusal !== undefined)
-				this.#steps?.finish(callId, JSON.stringify({ status: "refused", text: refusal }), action.step);
-			return { refusal, callId, typed: refusal === undefined };
+			// The pinned Codex's write names no call of the model's (the proof showed it): settle keeps it unguessed.
+			return action ? await settle(action) : { callId: named ?? running?.callId };
 		}
-		if (method.startsWith("process/")) return { callId: named ?? running?.callId };
-		if (!method.startsWith("fs/") || FS_READS.has(method)) return { callId: named };
+		// What needs no review is named: the handshake, the environment's own questions, a process's reads and end, and
+		// the file reads. Any other method is refused, so a Codex pinned later with a new acting method can never reach
+		// the machine unreviewed; any other `fs/` method is a change and is reviewed below.
+		if (UNREVIEWED.has(method) || FS_READS.has(method))
+			return { callId: named ?? (method.startsWith("process/") ? running?.callId : undefined) };
+		if (!method.startsWith("fs/")) return { refusal: CLOUD_HOME_REQUEST_INVALID };
 		// A change to files: the patch of the model's it belongs to, by its path, admitted once for the whole call.
 		const touched = [params.path, params.sourcePath, params.source, params.destinationPath, params.destination]
 			.map(machinePath)
 			.filter((path): path is string => path !== undefined);
 		const patch = await this.#patchFor(method, touched);
-		if (!patch)
-			return { refusal: await this.#admit(cloudHomeFileAction(this.#machine, method, params, callId)), callId };
+		if (!patch) return await settle(cloudHomeFileAction(this.#machine, method, params, callId));
 		let admitted = this.#admitted.get(patch.callId);
 		if (!admitted) {
 			admitted = this.#admit(cloudHomePatchAction(this.#machine, patch));

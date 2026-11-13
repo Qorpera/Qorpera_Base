@@ -534,11 +534,54 @@ describe("what never reaches the machine", () => {
 			expect(await slot.next()).toEqual({ id: 4, error: { code: -32600, message: CLOUD_HOME_REQUEST_INVALID } });
 			slot.send({ id: 5, method: "process/write", params: { processId: "1", chunk: 7 } });
 			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
+			// A method nobody named as needing no review is refused, so a later Codex's new acting method never slips by.
+			slot.send({ id: 6, method: "network/fetch", params: { url: "https://example.invalid" } });
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
+			slot.send({ id: 7, method: "process/signal", params: { processId: "1", signal: 9 } });
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
 			slot.send({ jsonrpc: "2.0", method: "initialized" });
-			await until(() => machine.written.length === 1);
-			expect(machine.written.map((line) => JSON.parse(line).method)).toEqual(["initialized"]);
+			slot.send({ id: 8, method: "environmentConfig/read", params: {} });
+			await until(() => machine.written.length === 2);
+			expect(machine.written.map((line) => JSON.parse(line).method)).toEqual([
+				"initialized",
+				"environmentConfig/read",
+			]);
 			expect(home.counts.dropped).toBe(3);
 		});
+	});
+});
+
+describe("a file change no patch accounts for", () => {
+	it("is reviewed on its own with its text, and its step is finished with the machine's answer", async () => {
+		const machine = fakeMachine();
+		const { steps, log } = runLog();
+		const reviewed: CloudCodexHomeAction[] = [];
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				steps: new CloudCodexHomeSteps(log),
+				review: {
+					check: async (action) => {
+						reviewed.push(action);
+						return { run: true };
+					},
+				},
+			},
+			async (_home, slot) => {
+				slot.send({
+					id: 9,
+					method: "fs/writeFile",
+					params: { path: "file:///company/loose.txt", dataBase64: base64("by hand\n") },
+				});
+				await until(() => machine.written.length === 1);
+				expect(reviewed[0]?.contents).toBe("by hand\n");
+				expect(steps[0]?.call.startsWith("home:")).toBe(true);
+				expect(steps[0]?.result).toBeUndefined();
+				machine.answer(JSON.stringify({ id: 9, result: {} }));
+				expect(await slot.next()).toEqual({ id: 9, result: {} });
+				expect(steps[0]?.result).toBe(JSON.stringify({ id: 9, result: {} }));
+			},
+		);
 	});
 });
 
