@@ -968,6 +968,6 @@ export const CODE_CHECKS_DRILL = {
 	cwd: ".",
 } as const;
 
-/** A `site` drill's folder, in the place of the recipe's: one no repository has, so the collect says it is not there
- * (`SITE_FOLDER_MISSING`). */
+/** The folder a `site` drill's refusal names (`SITE_FOLDER_MISSING`). The host refuses the site itself, whatever the
+ * repository holds (a repository may have a folder of this name: the review of #1774, F3); no collect looks for it. */
 export const CODE_SITE_DRILL_FOLDER = "qorpera-drill-missing";

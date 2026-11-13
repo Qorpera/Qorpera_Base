@@ -235,9 +235,10 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	 *
 	 * From step 5 the switch may say that sites have hosts of their own (`rootLinks`): the run then lets a site's links
 	 * from `/` through. And it may hand over an operator's drill, once: a `check` drill runs one more check after the
-	 * repository's own (`CODE_CHECKS_DRILL`), which fails; a `site` drill takes the site from a folder no repository has
-	 * (`CODE_SITE_DRILL_FOLDER`). Either way the turn fails on the platform's own refusal path, with its usual code, and
-	 * its words start with `CODE_DRILL_WORDS`. */
+	 * repository's own (`CODE_CHECKS_DRILL`), which fails; a `site` drill takes no site, and once every check passed the
+	 * host itself refuses the site as not there, naming `CODE_SITE_DRILL_FOLDER`, whatever the repository holds (the
+	 * review of #1774, F3: a repository may hold a folder of that name). Either way the turn fails on the platform's own
+	 * refusal path, with its usual code, and its words start with `CODE_DRILL_WORDS`. */
 	async land(
 		session: CodingFolderRepositorySession,
 		headSha: string,
@@ -278,12 +279,13 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				told("refused", { tries });
 				throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
 			}
-			// The candidate's site is taken only while the switch says sites are on. A site drill puts a folder no repository
-			// has in the recipe's place, so the collect says the site is not there; a check drill runs one more check after
-			// the repository's own, which says it is a drill and fails (step 5, D17). Links from / are let through only
-			// while the switch says sites have hosts of their own (step 5, D15); else the input is as before.
+			// The candidate's site is taken only while the switch says sites are on. A site drill takes none: the host refuses
+			// the site itself once every check passed (below), so nothing the repository holds decides it; a check drill runs
+			// one more check after the repository's own, which says it is a drill and fails (step 5, D17). Links from / are
+			// let through only while the switch says sites have hosts of their own (step 5, D15); else the input is as before.
 			const recipe = switched.site ? gate.site : null;
-			const site = recipe !== null && drill === "site" ? { ...recipe, folder: CODE_SITE_DRILL_FOLDER } : recipe;
+			const siteDrill = recipe !== null && drill === "site";
+			const site = siteDrill ? null : recipe;
 			const checks = drill === "check" ? [...gate.checks, CODE_CHECKS_DRILL] : gate.checks;
 			const input = {
 				commit: found.mainAfter,
@@ -320,19 +322,17 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			// Every check passed, but the site the code left cannot go: nothing goes in, as for a failed check.
 			if (run.state === "site_refused") {
 				if (site === null) throw new Error("CODE_HOST_LANDING_INVALID");
-				// The drill's folder is not there: its words say first that it was a drill.
-				const drilled = drill === "site" && run.problem.code === "SITE_FOLDER_MISSING";
-				told("site-refused", {
-					attempt: runs,
-					problem: run.problem.code,
-					variable: run.problem.variable,
-					...(drilled ? { drill } : {}),
-				});
+				told("site-refused", { attempt: runs, problem: run.problem.code, variable: run.problem.variable });
+				throw new CodingLandRefused("CODING_CHECKS_SITE_REFUSED", codeSiteRefusedSummary(run.problem, site.folder));
+			}
+			// A site drill: every check passed, and the host refuses the site as not there, on the same path and in the same
+			// words as a site the code did not leave, its words first saying it was a drill. Nothing goes in.
+			if (siteDrill) {
+				const problem = { code: "SITE_FOLDER_MISSING", path: null, variable: null } as const;
+				told("site-refused", { attempt: runs, problem: problem.code, variable: problem.variable, drill });
 				throw new CodingLandRefused(
 					"CODING_CHECKS_SITE_REFUSED",
-					drilled
-						? codeSiteRefusedSummary(run.problem, site.folder, `${CODE_DRILL_WORDS} `)
-						: codeSiteRefusedSummary(run.problem, site.folder),
+					codeSiteRefusedSummary(problem, CODE_SITE_DRILL_FOLDER, `${CODE_DRILL_WORDS} `),
 				);
 			}
 			const result = codeChecksPassed({

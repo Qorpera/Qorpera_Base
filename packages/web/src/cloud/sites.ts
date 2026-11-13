@@ -56,10 +56,22 @@ export interface CompanySiteTakedown {
 	readonly reason: string;
 }
 
+/** A site Qorpera took down, by name, as the access read gives it (the review of #1774, F4): Sites draws the row of one the
+ * list leaves out (a project's site that never went live) from this. */
+export interface CompanySiteNamed {
+	readonly slug: string;
+	/** The site's title, or null. */
+	readonly title: string | null;
+	readonly kind: CompanySiteKind;
+	/** The Company File path the site is made from (`code/<owner>/<name>` for a project's site). */
+	readonly source: string;
+}
+
 /** What the company's sites may do beyond the list (`qorpera.company-site-access/v1`, step 5.1): which of them Qorpera
- * took down, by site id. */
+ * took down, by site id, and the name of each of those whose entry gives it whole. */
 export interface CompanySiteAccess {
 	readonly takenDown: ReadonlyMap<string, CompanySiteTakedown>;
+	readonly named: ReadonlyMap<string, CompanySiteNamed>;
 }
 
 /** The longest reason the kernel keeps (migration 20260930756000). */
@@ -221,6 +233,7 @@ export function parseCompanySiteAccess(value: unknown): CompanySiteAccess {
 	if (input?.schema !== "qorpera.company-site-access/v1" || !Array.isArray(input.sites))
 		throw new Error("Invalid site access.");
 	const takenDown = new Map<string, CompanySiteTakedown>();
+	const named = new Map<string, CompanySiteNamed>();
 	for (const entry of input.sites) {
 		const site = object(entry);
 		const down = object(site?.takenDown);
@@ -228,8 +241,15 @@ export function parseCompanySiteAccess(value: unknown): CompanySiteAccess {
 		const reason = typeof down.reason === "string" ? down.reason.trim() : "";
 		if (typeof down.at !== "string" || !Number.isFinite(Date.parse(down.at)) || !reason) continue;
 		takenDown.set(site.siteId, { at: down.at, reason: reason.slice(0, REASON_MAX) });
+		// Its name, when the entry gives it whole (a kernel of step 5.1 does): what a row of its own needs.
+		const slug = typeof site.slug === "string" && SLUG.test(site.slug) ? site.slug : undefined;
+		const kind = site.kind === "files" || site.kind === "app" ? (site.kind as CompanySiteKind) : undefined;
+		const title =
+			site.title === null ? null : typeof site.title === "string" && site.title.trim() ? site.title : undefined;
+		if (slug && kind && title !== undefined && typeof site.source === "string")
+			named.set(site.siteId, { slug, title, kind, source: site.source });
 	}
-	return { takenDown };
+	return { takenDown, named };
 }
 
 export interface WebSites {

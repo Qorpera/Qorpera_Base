@@ -30,10 +30,14 @@
 --    and its next host, gone for a site taken down), qorpera_site_unlock_host (an own host's password) and
 --    qorpera_site_enter (a next host's ticket for a session of 12 hours).
 -- 5. The members' calls: qorpera_open_site_preview (owners and admins: a ticket for the ready version What's new shows)
---    and qorpera_company_site_access (any member: whether hosts are on, and which sites Qorpera took down and why).
+--    and qorpera_company_site_access (any member: whether hosts are on, and each site by its name, whether Qorpera took
+--    it down and why).
 -- 6. The operator's calls (no API role may call them, the service role neither), run as the database owner:
 --      select public.qorpera_site_take_down('<slug>', '<reason, one line>');  select public.qorpera_site_restore('<slug>');
 --      select public.qorpera_code_set_drill('<environment id>', '<owner>', '<name>', 'check' | 'site' | null);
+--    A takedown and a restore enter the site's company first, as every writer for a company does (folder fence, then
+--    company row, KEY SHARE: qorpera_site_enter_company), so a company's deletion either sees a takedown and waits, or
+--    holds the company and the takedown waits for it.
 -- 7. Twenty-four existing functions change, each by anchors on its definition as the migrations before this one leave it (an
 --    anchor that is not found exactly once fails the migration); each changed body carries the marker 20260930756000 and
 --    keeps every marker it had:
@@ -58,7 +62,9 @@
 --      (qorpera_unpublish_company_site) and a company's deletion (qorpera_delete_hosted_profile) refuse while a site is
 --      taken down, a deletion asked before waits (qorpera_finish_company_deletion's holdings: taken_down_sites), and
 --      such a site is never abandoned (qorpera_site_abandoned), so its name is never free. A trigger on
---      qorpera_company_sites refuses deleting or renaming such a row whatever the way but a company's purge.
+--      qorpera_company_sites refuses deleting or renaming such a row whatever the way but a company's purge. Each call
+--      decides on the site's row as it holds it locked (or reads it again after its lock), so a takedown on its way is
+--      waited for, then read.
 --    The operator's takedown and restore write a repository's list file again (its index_version).
 --
 -- Locks, by the first statements and in this order (the order the executor's site calls take rows in), each waiting 3 s
@@ -406,6 +412,16 @@ select pg_temp.site_hosts_patch('public.qorpera_site_publish_begin(jsonb,text,js
 		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;
 	if v_site.kind = 'app' then$new$]);
 select pg_temp.site_hosts_patch('public.qorpera_site_publish_put(jsonb,uuid,jsonb)'::regprocedure, array[
+	$old$	v_run := public.qorpera_site_agent_run(p_binding);
+	select version.* into v_version from public.qorpera_company_site_versions as version$old$,
+	$new$	v_run := public.qorpera_site_agent_run(p_binding);
+	-- 20260930756000: the upload's site first, shared (begin and finish take a site before its version), so a takedown on
+	-- its way is waited for, and read below before any byte is kept (the review of #1774, F2).
+	perform 1 from public.qorpera_company_sites as site
+	join public.qorpera_company_site_versions as version on version.site_id = site.id
+	where version.id = p_version_id and version.run_id = v_run.id and site.profile_id = v_run.profile_id
+	for share of site;
+	select version.* into v_version from public.qorpera_company_site_versions as version$new$,
 	$old$	if v_version.state = 'live' then return public.qorpera_site_publish_receipt(v_site, v_version); end if;$old$,
 	$new$	-- 20260930756000: taken down while the upload was on its way: nothing more of it is kept.
 	if v_site.taken_down_at is not null then
@@ -448,10 +464,11 @@ select pg_temp.site_hosts_patch('public.qorpera_site_unpublish(jsonb,text)'::reg
 	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as every other refusal of a name says it.
 		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;
 	-- 20260930756000: a site of the company that Qorpera took down stays as it is, its name with it, until Qorpera
-	-- restores it: no agent takes it offline.
+	-- restores it: no agent takes it offline. Read locked (the review of #1774, F2): a takedown on its way is waited
+	-- for and then read, and every write below is on the row as it is then.
 	select site.* into v_site from public.qorpera_company_sites as site
-	where site.slug = p_slug and site.profile_id = v_run.profile_id and site.taken_down_at is not null;
-	if found then
+	where site.slug = p_slug and site.profile_id = v_run.profile_id for update;
+	if found and v_site.taken_down_at is not null then
 		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;$new$]);
 -- A takedown sticks until Qorpera restores the site (the lead's call, 13 Nov 2026): no member takes it offline or deletes
 -- its company, and its name is never free for another site (it is never abandoned). The trigger below holds the same for
@@ -467,6 +484,9 @@ select pg_temp.site_hosts_patch('public.qorpera_delete_hosted_profile(uuid)'::re
 	$old$	if exists (select 1 from public.qorpera_profile_members as other
 		where other.profile_id = p_profile_id and other.user_id <> v_actor_id) then$old$,
 	$new$	-- 20260930756000: a company with a site Qorpera took down stays until Qorpera restores the site, its name with it.
+	-- Its sites read locked (the review of #1774, F2): a takedown on its way is waited for, then read; one that comes
+	-- after waits for this request, and the finisher then waits for it.
+	perform 1 from public.qorpera_company_sites as site where site.profile_id = p_profile_id for share;
 	if exists (select 1 from public.qorpera_company_sites as site where site.profile_id = p_profile_id
 		and site.taken_down_at is not null) then
 		raise exception 'Qorpera took one of this company''s sites down, so the company can''t be deleted until Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu.'
@@ -716,7 +736,8 @@ begin
 	if not found then raise exception 'No such repository' using errcode = 'P0002'; end if;
 	if not public.qorpera_site_hosts_on() then return jsonb_build_object('schema', c_schema, 'state', 'off'); end if;
 	v_point := public.qorpera_code_release_point(v_repository, p_change);
-	select site.* into v_site from public.qorpera_company_sites as site where site.id = v_repository.site_id;
+	-- Read shared (the review of #1774, F2): a takedown on its way is waited for, then read, and no ticket outlives it.
+	select site.* into v_site from public.qorpera_company_sites as site where site.id = v_repository.site_id for share;
 	if v_point is null or v_point ->> 'versionId' is null or v_site.id is null then
 		return jsonb_build_object('schema', c_schema, 'state', 'moved'); end if;
 	if v_site.taken_down_at is not null then return jsonb_build_object('schema', c_schema, 'state', 'gone'); end if;
@@ -743,7 +764,10 @@ begin
 	if auth.uid() is null or public.qorpera_member_role(p_profile_id) is null then
 		raise exception 'Only the company''s members see its sites' using errcode = '42501'; end if;
 	return jsonb_build_object('schema', 'qorpera.company-site-access/v1', 'hosts', public.qorpera_site_hosts_on(),
-		'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id,
+		-- Each site by its name too (the review of #1774, F4): a project's site that never went live is in no list, and
+		-- Sites draws a row for it from here while it is taken down.
+		'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id, 'slug', site.slug, 'title', site.title,
+				'kind', site.kind, 'source', site.source_path,
 				'takenDown', case when site.taken_down_at is not null
 					then jsonb_build_object('at', site.taken_down_at, 'reason', site.taken_down_reason) end)
 			order by site.slug collate "C")
@@ -763,22 +787,45 @@ comment on function public.qorpera_company_site_access(uuid) is
 
 -- 5. The operator's calls --------------------------------------------------------------------------------------------
 
+-- The company of the site p_slug, entered as every caller that writes for a company enters it (the review of #1774,
+-- F1): on folder-v2 the folder fence KEY SHARE, then the company row KEY SHARE (rank 0); before folder-v2 the company
+-- row alone. A company's deletion finisher holds the fence (qorpera_folder_deletion_drain) and the company row FOR UPDATE
+-- before it counts the company's sites taken down, and its purge deletes the row: so a takedown either commits before
+-- the finisher counts, which then waits for it, or waits for the finisher's pass, after which a purged company has no
+-- site of this name (P0002). Answers the company's id, or null for no such site.
+create function public.qorpera_site_enter_company(p_slug text) returns uuid
+language plpgsql volatile security definer set search_path = '' as $$
+-- 20260930756000
+declare v_profile uuid;
+begin
+	select site.profile_id into v_profile from public.qorpera_company_sites as site where site.slug = p_slug;
+	if not found then return null; end if;
+	perform 1 from public.qorpera_folder_fences as fence where fence.profile_id = v_profile for key share;
+	perform 1 from public.qorpera_profiles as profile where profile.id = v_profile for key share;
+	return v_profile;
+end $$;
+revoke all on function public.qorpera_site_enter_company(text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- Takes the site of p_slug (any kind) down, for a reason members read (one line, 1 to 300 characters; a second takedown
 -- keeps its time and takes the new reason): its hosts answer gone, an app link answers as off, nothing goes live on it,
 -- and its Look first tickets go. Nothing is deleted. 22023 for a reason that is not one, P0002 for no such site.
 create function public.qorpera_site_take_down(p_slug text, p_reason text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 -- 20260930756000
-declare v_site public.qorpera_company_sites%rowtype; v_reason text := btrim(p_reason);
+declare v_site public.qorpera_company_sites%rowtype; v_reason text := btrim(p_reason); v_profile uuid;
 begin
 	if v_reason is null or char_length(v_reason) not between 1 and 300 or v_reason ~ '[[:cntrl:]]' then
 		raise exception 'A takedown''s reason is one line of 1 to 300 characters' using errcode = '22023'; end if;
-	-- A repository's site: its registry row first (the order the executor's site calls take rows in).
+	-- The company first (qorpera_site_enter_company), then a repository's site's registry row (the order the executor's
+	-- site calls take rows in), then the site.
+	v_profile := public.qorpera_site_enter_company(p_slug);
 	perform 1 from public.qorpera_code_repositories as repository
-	where repository.site_id = (select site.id from public.qorpera_company_sites as site where site.slug = p_slug) for update;
+	where repository.site_id = (select site.id from public.qorpera_company_sites as site
+		where site.slug = p_slug and site.profile_id = v_profile) for update;
 	update public.qorpera_company_sites set taken_down_at = coalesce(taken_down_at, clock_timestamp()),
 		taken_down_reason = v_reason
-	where slug = p_slug returning * into v_site;
+	where slug = p_slug and profile_id = v_profile returning * into v_site;
 	if v_site.id is null then raise exception 'No site has this name' using errcode = 'P0002'; end if;
 	delete from public.qorpera_company_site_tickets where site_id = v_site.id;
 	-- Its list file is written again (changes/index.md says it was taken down, and no link).
@@ -791,12 +838,15 @@ end $$;
 create function public.qorpera_site_restore(p_slug text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 -- 20260930756000
-declare v_site public.qorpera_company_sites%rowtype;
+declare v_site public.qorpera_company_sites%rowtype; v_profile uuid;
 begin
+	-- In the takedown's order: the company, the registry row, the site.
+	v_profile := public.qorpera_site_enter_company(p_slug);
 	perform 1 from public.qorpera_code_repositories as repository
-	where repository.site_id = (select site.id from public.qorpera_company_sites as site where site.slug = p_slug) for update;
+	where repository.site_id = (select site.id from public.qorpera_company_sites as site
+		where site.slug = p_slug and site.profile_id = v_profile) for update;
 	update public.qorpera_company_sites set taken_down_at = null, taken_down_reason = null
-	where slug = p_slug returning * into v_site;
+	where slug = p_slug and profile_id = v_profile returning * into v_site;
 	if v_site.id is null then raise exception 'No site has this name' using errcode = 'P0002'; end if;
 	update public.qorpera_code_repositories as repository set index_version = repository.index_version + 1
 	where repository.site_id = v_site.id;

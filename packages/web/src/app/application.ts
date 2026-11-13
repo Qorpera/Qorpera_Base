@@ -2275,13 +2275,21 @@ export function mountApplication(
 									whatsNew: whatsNewEntry(controller, read),
 									siteVersions: liveVersions(read),
 								}),
-							// The sites Qorpera took down (step 5.1): no link to one. The list is read only when one is.
+							// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
+							// project's site that never went live is one too (the review of #1774, F4); the list is read only
+							// for an entry that names none.
 							takenDown: async (signal) => {
 								const sites = createWebSites(cloud, controller.profile);
 								const access = await sites.access(signal);
-								if (!access.takenDown.size) return new Set<string>();
-								const list = await sites.list(signal);
-								return new Set(list.filter((site) => access.takenDown.has(site.id)).map((site) => site.slug));
+								const slugs = new Set<string>();
+								for (const id of access.takenDown.keys()) {
+									const named = access.named.get(id);
+									if (named) slugs.add(named.slug);
+								}
+								if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
+								for (const site of await sites.list(signal))
+									if (access.takenDown.has(site.id)) slugs.add(site.slug);
+								return slugs;
 							},
 						},
 					);

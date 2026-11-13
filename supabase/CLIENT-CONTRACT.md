@@ -1714,11 +1714,13 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
   the rule (an own host), or such a slug followed by `--next` (its next host). As one regex:
   `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the slug in group 1, its length (3 to 48) and the rule
   checked apart.
-- `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId,
-  takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites" otherwise). `hosts` says
-  whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's operators took down (Sites
-  says why: "Qorpera took this site down: <reason>"), else null. Every site of the company, by slug. Read leniently:
-  later steps add keys (public sites, own addresses).
+- `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
+  title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
+  otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
+  operators took down (Sites says why: "Qorpera took this site down: <reason>"), else null. Every site of the company,
+  by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: Sites draws the
+  row of such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
+  keys (public sites, own addresses).
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
   new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
   sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this

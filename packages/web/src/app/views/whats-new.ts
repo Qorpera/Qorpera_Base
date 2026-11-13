@@ -595,8 +595,9 @@ export class WhatsNewView {
 	 * the password is, and the site's link and Go back as pill buttons. */
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean): HTMLElement {
 		const live = site.live;
-		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it, and no password to share.
-		const down = Boolean(live && site.site && this.#takenDown.has(site.site.slug));
+		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it, and no password to share; it
+		// is said for a site that was never live too, whose Look first answers so (the review of #1774, F4).
+		const down = Boolean(site.site && this.#takenDown.has(site.site.slug));
 		const shown = live && site.site && !down ? site.site : undefined;
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;

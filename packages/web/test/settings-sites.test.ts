@@ -997,6 +997,78 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		expect(client.unpublish).not.toHaveBeenCalled();
 	});
 
+	it("draws a row for a project's site taken down before it ever went live, which no list has (review of #1774, F4)", async () => {
+		// A project's site whose first version still waits in What's new: the list leaves it out; the access read names it.
+		const fresh = {
+			id: id(86),
+			slug: "spring-sale",
+			title: "Spring sale",
+			kind: "files",
+			source: "code/company/spring-sale",
+		};
+		let down = true;
+		const access = () => ({
+			schema: "qorpera.company-site-access/v1",
+			hosts: true,
+			sites: [
+				{
+					siteId: shop.id,
+					slug: shop.slug,
+					title: shop.title,
+					kind: "files",
+					source: shop.source,
+					takenDown: null,
+				},
+				{
+					siteId: fresh.id,
+					slug: fresh.slug,
+					title: fresh.title,
+					kind: fresh.kind,
+					source: fresh.source,
+					takenDown: down ? { at: timestamp, reason: REASON } : null,
+				},
+			],
+		});
+		setup([shop], admin, withAccess(access), { versions: {} });
+		await settle();
+		expect(ids()).toEqual([shop.id, fresh.id]);
+		const row = rowOf(fresh.id)!;
+		expect(row.querySelector(".site-name")?.textContent).toBe("Spring sale");
+		expect(row.querySelector(".site-state")?.textContent).toBe("Taken down");
+		expect(row.querySelector(".site-down")?.textContent).toBe(SAID);
+		// The row and nothing else: no link, no password, no menu; its way to What's new, where its version waits.
+		expect(row.innerHTML).not.toContain("qorpera.com");
+		expect(row.querySelectorAll("a")).toHaveLength(1);
+		expect(row.querySelector(".site-share, .site-link, .site-secret, .site-more")).toBeNull();
+		expect(buttonsIn(row)).toEqual([]);
+		expect(row.querySelector(".site-from")?.textContent).toBe("What's new");
+		// A member who may not manage sites sees the same row.
+		view?.dispose();
+		document.body.replaceChildren();
+		setup([shop], { canManage: () => false }, withAccess(access));
+		await settle();
+		expect(rowOf(fresh.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
+		expect(buttonsIn(rowOf(fresh.id)!)).toEqual([]);
+		// Restored: the row goes with the next read (the list still leaves the site out until it goes live).
+		down = false;
+		view?.dispose();
+		document.body.replaceChildren();
+		setup([shop], admin, withAccess(access));
+		await settle();
+		expect(ids()).toEqual([shop.id]);
+		// An access read whose entry does not name the site (a kernel's answer it cannot read whole) draws no such row.
+		view?.dispose();
+		document.body.replaceChildren();
+		down = true;
+		setup(
+			[shop],
+			admin,
+			withAccess(() => ({ ...access(), sites: access().sites.map(({ slug: _slug, ...entry }) => entry) })),
+		);
+		await settle();
+		expect(ids()).toEqual([shop.id]);
+	});
+
 	it("sends nothing when Qorpera took the site down while its Take offline was on the way, and the focus skips its row", async () => {
 		let answer: unknown = accessOf({});
 		const { client } = setup(
@@ -1444,7 +1516,8 @@ describe("sites client", () => {
 		);
 		for (const written of [
 			"jsonb_build_object('schema', 'qorpera.company-site-access/v1', 'hosts', public.qorpera_site_hosts_on(),",
-			"'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id,",
+			"'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id, 'slug', site.slug, 'title', site.title,",
+			"'kind', site.kind, 'source', site.source_path,",
 			"'takenDown', case when site.taken_down_at is not null",
 			"then jsonb_build_object('at', site.taken_down_at, 'reason', site.taken_down_reason) end)",
 		])
@@ -1459,13 +1532,24 @@ describe("sites client", () => {
 			schema: "qorpera.company-site-access/v1",
 			hosts: true,
 			sites: [
-				{ siteId: shop.id, takenDown: { at, reason: "Spam" } },
-				{ siteId: draft.id, takenDown: null },
+				{
+					siteId: shop.id,
+					slug: shop.slug,
+					title: shop.title,
+					kind: "files",
+					source: shop.source,
+					takenDown: { at, reason: "Spam" },
+				},
+				{ siteId: draft.id, slug: draft.slug, title: null, kind: "files", source: draft.source, takenDown: null },
 			],
 		}));
 		const access = await createWebSites({ rpc } as unknown as Cloud, { profileId: id(10) }).access();
 		expect(rpc.mock.calls).toEqual([["qorpera_company_site_access", { p_profile_id: id(10) }]]);
 		expect([...access.takenDown]).toEqual([[shop.id, { at, reason: "Spam" }]]);
+		// Each site taken down by its name too (the review of #1774, F4); one not taken down is not named.
+		expect([...access.named]).toEqual([
+			[shop.id, { slug: shop.slug, title: shop.title, kind: "files", source: shop.source }],
+		]);
 	});
 
 	it("takes as a website's link exactly the own hosts of the one host list (SQL test 1252), each for its own site", () => {

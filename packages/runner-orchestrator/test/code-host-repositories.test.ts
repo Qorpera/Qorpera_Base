@@ -2385,38 +2385,59 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			}
 		});
 
-		it("takes a site drill's site from a folder no repository has, and fails the turn on the site's path with the drill's words first", async () => {
+		it("refuses a site drill's site itself once every check passed, on the site's path with the drill's words first", async () => {
 			const t = await checked(true, true, { drill: "site" });
 			const head = await t.f.commit(t.f.tree, "cart.js");
 			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
 			gateRuns(RECIPE);
-			const problem = { code: "SITE_FOLDER_MISSING", path: null, variable: null } as const;
-			t.runs({ state: "site_refused", ms: 99_000, checks: PASSED.checks, problem });
+			t.runs({ ...PASSED, site: null });
 			const refused = await t.land(head).catch((e) => e);
 			expect(refused).toBeInstanceOf(CodingLandRefused);
 			expect(refused.message).toBe("CODING_CHECKS_SITE_REFUSED");
+			// The run takes no site: nothing the repository holds is collected for the drill.
 			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
-				{ commit: head, checks: CHECKS, attempt: 1, site: { ...RECIPE, folder: CODE_SITE_DRILL_FOLDER } },
+				{ commit: head, checks: CHECKS, attempt: 1, site: null },
 			]);
+			const problem = { code: "SITE_FOLDER_MISSING", path: null, variable: null } as const;
 			expect(refused.summary).toBe(codeSiteRefusedSummary(problem, CODE_SITE_DRILL_FOLDER, OPENING));
 			expect(refused.summary).toBe(
 				`${CODE_DRILL_WORDS} Nothing went into main: every check passed, but the site in "qorpera-drill-missing" is not there (no folder of that name once the checks ran; a link is not followed). Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`,
 			);
 			expect(t.recordChange).not.toHaveBeenCalled();
+			expect(vi.mocked(landCodeBranch)).toHaveBeenCalledTimes(1);
 			expect(t.logged.filter((event) => event.event === "code-checks")).toEqual([
 				expect.objectContaining({ step: "drill", drill: "site" }),
 				expect.objectContaining({ step: "site-refused", problem: "SITE_FOLDER_MISSING", drill: "site" }),
 			]);
-			// Any other refusal of that site is not the drill's: its words as before.
-			const other = await checked(true, true, { drill: "site" });
-			const next = await other.f.commit(other.f.tree, "cart.js");
-			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(other.baseSha, next) as never);
+		});
+
+		it("refuses a site drill even when the repository holds a folder of the drill's name with a site in it (review of #1774, F3)", async () => {
+			// A repository with a qorpera-drill-missing/index.html of its own: the old drill's collect of that folder made a
+			// site, and the change landed. The run answers so here (every check passed, a site made): the drill is still
+			// refused, and nothing lands.
+			const t = await checked(true, true, { drill: "site" });
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
 			gateRuns(RECIPE);
-			const noIndex = { code: "SITE_NO_INDEX", path: null, variable: null } as const;
-			other.runs({ state: "site_refused", ms: 1, checks: PASSED.checks, problem: noIndex });
-			expect((await other.land(next).catch((e) => e)).summary).toBe(
-				codeSiteRefusedSummary(noIndex, CODE_SITE_DRILL_FOLDER),
-			);
+			t.runs({ ...PASSED, site: MADE });
+			const refused = await t.land(head).catch((e) => e);
+			expect(refused).toBeInstanceOf(CodingLandRefused);
+			expect(refused.message).toBe("CODING_CHECKS_SITE_REFUSED");
+			expect(refused.summary.startsWith(`${CODE_DRILL_WORDS} `)).toBe(true);
+			expect(t.runChecks.mock.calls.map(([input]) => input.site)).toEqual([null]);
+			expect(vi.mocked(codeChecksPassed)).not.toHaveBeenCalled();
+			expect(t.recordChange).not.toHaveBeenCalled();
+			expect(vi.mocked(landCodeBranch)).toHaveBeenCalledTimes(1);
+			expect(t.wake).not.toHaveBeenCalled();
+			// A check that fails under a site drill is the code's own failure, in its own words: the drill acts on none.
+			const failing = await checked(true, true, { drill: "site" });
+			const next = await failing.f.commit(failing.f.tree, "cart.js");
+			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(failing.baseSha, next) as never);
+			gateRuns(RECIPE);
+			failing.runs({ ...DRILL_FAILED, failed: { ...DRILL_FAILED.failed, name: "test", run: "npm test" } });
+			const failed = await failing.land(next).catch((e) => e);
+			expect(failed.message).toBe("CODING_CHECKS_FAILED");
+			expect(failed.summary.startsWith(CODE_DRILL_WORDS)).toBe(false);
 		});
 
 		it("spends a drill that finds nothing to act on, and lands as before: no checks file, no site, sites off", async () => {

@@ -1,5 +1,11 @@
 import { CloudRpcError } from "../../cloud/client.ts";
-import type { CompanySite, CompanySitePassword, CompanySiteTakedown, WebSites } from "../../cloud/sites.ts";
+import type {
+	CompanySite,
+	CompanySiteNamed,
+	CompanySitePassword,
+	CompanySiteTakedown,
+	WebSites,
+} from "../../cloud/sites.ts";
 import { type MenuEntry, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -26,7 +32,9 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  * A site Qorpera took down (step 5.1; the access read, `qorpera_company_site_access`) says so in its row in one plain
  * sentence with the operator's reason, in place of its link and password: every address of it shows a "gone" page, so
  * the row offers no link to one, and no "⋯": until Qorpera restores it the kernel refuses taking it offline, and its
- * password opens nothing. A kernel without the read draws the page as before.
+ * password opens nothing. A project's site taken down before it ever went live is in no list: its row is drawn from
+ * the access read, which names it (the review of #1774, F4), the same row. A kernel without the read draws the page as
+ * before.
  *
  * Every answer that comes back late (a password read, a copy, a change, a take-offline, a read of the list, the version
  * What's new read) acts only on the page it was asked from, by one rule in three parts: it carries the moment it left
@@ -74,6 +82,29 @@ const DOTS = "••••••••••••";
 /** A site as members call it: its title, else its name in the link. */
 function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
+}
+
+/** The row of a site Qorpera took down that the list leaves out (a project's site that never went live), from what the
+ * access read names: the row shows its name, that it was taken down and why, and nothing else (no link, password or
+ * menu). */
+function unlisted(id: string, named: CompanySiteNamed, down: CompanySiteTakedown): CompanySite {
+	return {
+		id,
+		slug: named.slug,
+		title: named.title,
+		kind: named.kind,
+		url: "",
+		state: named.kind === "app" ? "off" : "publishing",
+		source: named.source,
+		files: 0,
+		bytes: 0,
+		publishedAt: null,
+		publishedBy: null,
+		createdAt: down.at,
+		passwordChangedAt: down.at,
+		machine: null,
+		port: null,
+	};
 }
 
 /** A project's site made from its code: only What's new puts a version of it live (the row is the plain one, with the
@@ -201,6 +232,8 @@ export class SitesView {
 	#sites: CompanySite[] | undefined;
 	/** The sites Qorpera took down, by id, as the last access read that answered said (none before one did). */
 	#takenDown: ReadonlyMap<string, CompanySiteTakedown> = new Map();
+	/** Their names, as that read gave them: a row for one the list leaves out. */
+	#named: ReadonlyMap<string, CompanySiteNamed> = new Map();
 	#loading = true;
 	#error: string | undefined;
 	/** The site changing, and how, while it does: the password pills and the menus are off meanwhile. */
@@ -339,11 +372,19 @@ export class SitesView {
 			if (this.#lifetime.signal.aborted) return;
 			if (read) {
 				this.#takenDown = read.takenDown;
+				this.#named = read.named;
 				// A site taken down shows no password: one on screen goes, and stays hidden if the site comes back.
 				for (const id of read.takenDown.keys()) if (this.#passwords.has(id)) this.#forget(id);
 			}
-			this.#sites = sites;
-			this.#listed(sites);
+			// A site Qorpera took down that the list leaves out (a project's site that never went live): a row of its own,
+			// after the listed ones.
+			const listed = new Set(sites.map((site) => site.id));
+			const missing = [...this.#takenDown].flatMap(([id, down]) => {
+				const named = this.#named.get(id);
+				return named && !listed.has(id) ? [unlisted(id, named, down)] : [];
+			});
+			this.#sites = missing.length ? [...sites, ...missing] : sites;
+			this.#listed(this.#sites);
 			this.#error = undefined;
 			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind, and a password changed
 			// since it was shown (elsewhere) leaves the screen.

@@ -58,14 +58,20 @@
   (`qorpera_delete_hosted_profile`) are refused, writing nothing, a deletion asked before waits
   (`qorpera_finish_company_deletion`'s holdings: `taken_down_sites`), the site is never abandoned, so its name is never
   free, and a trigger (`qorpera_site_takedown_sticks`) refuses any other delete or rename of its row but a company's
-  purge; `SITE-HOSTS.md` has the operator's step to remove one for good.
+  purge; `SITE-HOSTS.md` has the operator's step to remove one for good. Each call decides on the site's row as it holds
+  it locked (the review of #1774, F1 and F2): the takedown and the restore enter the company first (folder fence, then
+  company row, KEY SHARE: `qorpera_site_enter_company`), so a company's deletion pass either sees a takedown and waits
+  or holds the company until its purge; an agent's unpublish, a publish's put, a company's deletion and Look first read
+  the site locked (SQL test 1254 runs the races on two connections). The access read names each site (`slug`, `title`,
+  `kind`, `source`).
 - A website's own address on the executor's side (own code storage, step 5, release 5.1, part X1;
   `lanes/own-code-storage/STEP5-BUILD.md`, migration `20260930756000`). While the checks switch says `rootLinks` (only
   while sites have hosts of their own) the collect lets a site's links from `/` through: the host always sets
   `QORPERA_SITE_ROOT_LINKS` for it, `allowed` or `refused`, and only `allowed` skips the scan. An operator's drill
   (`qorpera_code_set_drill`), which the switch hands over once: `check` runs one more check after the repository's own
-  (`qorpera-drill`), which fails; `site` takes the site from a folder no repository has (`qorpera-drill-missing`);
-  either way the turn fails on its usual refusal path and its words start "This was a drill by Qorpera's operator:
+  (`qorpera-drill`), which fails; `site` takes no site, and once every check passed the host refuses the site itself as
+  not there (`SITE_FOLDER_MISSING`, naming `qorpera-drill-missing`), whatever the repository holds (the review of #1774,
+  F3: a repository with a folder of that name made the old drill's collect pass and the change land); either way the turn fails on its usual refusal path and its words start "This was a drill by Qorpera's operator:
   nothing is wrong with your work, and the next try goes through. Finish again." The change record's list says
   "Being prepared for What's new: change N (about a minute)." while the index answers `preparing`, and its Live line
   links a site's own host `https://<slug>.qorpera.com/` (the one host rule) beside today's form. While the index says

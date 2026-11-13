@@ -1559,6 +1559,21 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 		expect(text(block(view))).not.toContain(DOWN);
 	});
 
+	it("says so for a site that was never live too, whose Look first answers so (review of #1774, F4)", async () => {
+		const { view } = await page([releasesOf([shop({ live: null, back: null })])], {
+			takenDown: async () => new Set(["wristband-shop"]),
+		});
+		expect(text(block(view))).toContain("Not live yet");
+		expect(text(block(view))).toContain(DOWN);
+		expect(openLink(view)).toBeUndefined();
+		view.dispose();
+		// Not taken down: nothing said.
+		const { view: up } = await page([releasesOf([shop({ live: null, back: null })])], {
+			takenDown: async () => new Set<string>(),
+		});
+		expect(text(block(up))).not.toContain(DOWN);
+	});
+
 	it("says it in Danish", async () => {
 		setLanguagePreference("da");
 		const { view } = await page([releasesOf([shop()])], { takenDown: async () => new Set(["wristband-shop"]) });

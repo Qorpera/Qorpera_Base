@@ -417,8 +417,10 @@ begin
 			v_case || ': Look first is off');
 		perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_site_tickets), v_case || ': no ticket');
 		perform pg_temp.base_assert(pg_temp.sh_access() = jsonb_build_object('schema', 'qorpera.company-site-access/v1', 'hosts', false,
-			'sites', jsonb_build_array(jsonb_build_object('siteId', (pg_temp.sh_site('look-shop')).id, 'takenDown', null),
-				jsonb_build_object('siteId', (pg_temp.sh_site('wait-shop')).id, 'takenDown', null))), v_case || ': the access read');
+			'sites', (select jsonb_agg(jsonb_build_object('siteId', site.id, 'slug', site.slug, 'title', site.title, 'kind', site.kind,
+				'source', site.source_path, 'takenDown', null) order by site.slug collate "C")
+				from (select (pg_temp.sh_site(slug)).* from unnest(array['look-shop', 'wait-shop']) slug) site)),
+			v_case || ': the access read');
 	end loop;
 	update public.qorpera_site_settings set enabled = true, hosts_domain = null, hosts_enabled = false;
 	-- The members' list says the path, in the row it always had.
@@ -775,9 +777,11 @@ begin
 		and pg_temp.rel_release('h-look', 3) is null, 'refused');
 	-- Members read why, viewers too; the list file and Sites are as they were.
 	v := pg_temp.sh_access(pg_temp.rel_viewer());
-	perform pg_temp.base_assert(v -> 'sites' = jsonb_build_array(jsonb_build_object('siteId', v_site, 'takenDown',
+	perform pg_temp.base_assert(v -> 'sites' = jsonb_build_array(jsonb_build_object('siteId', v_site, 'slug', 'look-shop',
+			'title', null, 'kind', 'files', 'source', 'code/company/h-look', 'takenDown',
 			jsonb_build_object('at', v_at, 'reason', 'Reported as phishing.')),
-			jsonb_build_object('siteId', (pg_temp.sh_site('wait-shop')).id, 'takenDown', null)), 'why: ' || v::text);
+			jsonb_build_object('siteId', (pg_temp.sh_site('wait-shop')).id, 'slug', 'wait-shop', 'title', null, 'kind', 'files',
+				'source', 'code/company/h-wait', 'takenDown', null)), 'why: ' || v::text);
 	perform pg_temp.base_error(format('select pg_temp.sh_access(%L)', pg_temp.rel_outsider()), '42501',
 		'Only the company''s members see its sites');
 	-- Taken down again: its time stays, the new reason is kept.
@@ -976,6 +980,16 @@ begin
 	v_app := to_jsonb(pg_temp.sh_site('link-app'));
 	v_look := to_jsonb(pg_temp.sh_site('look-shop'));
 	q := pg_temp.rec_shop('h-look');
+	-- A project's site that never went live (wait-shop) is in no list; the access read names it, taken down, so Sites
+	-- draws its row (the review of #1774, F4).
+	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(pg_temp.sh_sites()) item
+			where item ->> 'slug' = 'wait-shop')
+		and exists (select 1 from jsonb_array_elements(pg_temp.sh_access() -> 'sites') item
+			where item ->> 'siteId' = (pg_temp.sh_site('wait-shop')).id::text and item ->> 'slug' = 'wait-shop'
+				and item ->> 'kind' = 'files' and item ->> 'source' = (pg_temp.sh_site('wait-shop')).source_path
+				and item -> 'title' = coalesce(to_jsonb((pg_temp.sh_site('wait-shop')).title), 'null')
+				and item #>> '{takenDown,reason}' = 'Reported.'),
+		'a site never live, taken down: named by the access read: ' || pg_temp.sh_access()::text);
 	-- An agent's unpublish_site: refused with the takedown's words, a website and an app link.
 	perform pg_temp.base_error(format('select public.qorpera_site_unpublish(%L, %L)', v_binding, 'agent-shop'), '55000',
 		public.qorpera_site_taken_down_words('Reported as phishing.'));

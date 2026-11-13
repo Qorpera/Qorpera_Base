@@ -170,8 +170,9 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 
 **What members see:** Sites shows the site's row as "Taken down" with the operator's reason, in place of its link and
 password, and how to tell Qorpera it is wrong: Feedback in their menu (no mail address: none is confirmed to reach
-anyone). Its row has no menu (nothing in it would be done while the site is down). What's new offers no link to it and
-says it was taken down. The site does not
+anyone). Its row has no menu (nothing in it would be done while the site is down). A project's site taken down before
+it ever went live, which no list shows, gets the same row (the access read names it). What's new offers no link to it
+and says it was taken down, for a site never live too. The site does not
 go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain
 words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
 
@@ -198,6 +199,14 @@ or frees its name; each refusal writes nothing:
 - a trigger on `qorpera_company_sites` (`qorpera_site_takedown_sticks`) refuses any other delete of its row (a cascade
   included) or change of its name, with the takedown sentence. Only a company's purge passes, as through every delete
   guard, and the waiting deletion keeps a purge from reaching such a company.
+
+Each of these decides on the site's row as it holds it locked, so a takedown on its way is waited for, then read. Your
+takedown and restore enter the site's company first, as every writer for a company does (on folder-v2 the folder fence,
+then the company row, KEY SHARE; `qorpera_site_enter_company`), then the repository's registry row, then the site. A
+company's deletion pass holds the fence and the company row FOR UPDATE before it counts the sites taken down: so either
+your takedown commits first and the pass waits for it, then waits for the restore, or the pass holds the company and
+your takedown waits for it (seconds), then answers P0002 "No site has this name" when the company was purged. SQL test
+1254 runs both orders on two connections.
 
 **Removing a taken-down site for good** (a court order, say): restore it and remove it in one transaction, so no
 visitor reaches it in between, as `postgres` through `newdb_check.py FILE --write`:
