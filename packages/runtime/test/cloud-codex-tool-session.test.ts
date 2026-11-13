@@ -2287,7 +2287,9 @@ describe("a picture call", () => {
 	it.each([
 		["picture-limit", "picture_limit"],
 		["picture-refused", "refused"],
+		// The image tool was never called (a Free plan has none), and called but its turn ended without the picture.
 		["picture-silent", "no_picture"],
+		["picture-started", "refused"],
 		["picture-usage-limit", "usage_limit"],
 		["picture-not-png", "invalid"],
 		["picture-outside", "invalid"],

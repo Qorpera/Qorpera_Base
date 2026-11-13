@@ -275,6 +275,9 @@ interface PictureThread {
 	foundItem?: string;
 	/** Codex said the turn's model request hit the member's usage limit. */
 	usageLimit: boolean;
+	/** The model called Codex's image tool (an `imageGeneration` item started): a turn that ends without its picture
+	 * then failed at the generator, not for want of the tool. */
+	called: boolean;
 	ended: boolean;
 	/** The turn's interrupt was sent. */
 	interrupted: boolean;
@@ -1881,7 +1884,14 @@ class CodexBoundaryRpc {
 				settle = { resolve, reject };
 			});
 			void found.catch(() => undefined);
-			const opened: PictureThread = { threadId, settle, usageLimit: false, ended: false, interrupted: false };
+			const opened: PictureThread = {
+				threadId,
+				settle,
+				usageLimit: false,
+				called: false,
+				ended: false,
+				interrupted: false,
+			};
 			picture = opened;
 			this.#picture = opened;
 			const abort = (): void => this.#endPicture(opened, new Error("Native picture cancelled"));
@@ -2100,7 +2110,8 @@ class CodexBoundaryRpc {
 			return;
 		}
 		if (method === "turn/completed") {
-			// The turn ended without its picture: the model made none, or the member's usage limit stopped it.
+			// The turn ended without its picture: the member's usage limit stopped it, the generator failed after the tool
+			// was called, or the tool was never called (a Free plan has none).
 			const turn = object(params.turn);
 			const error =
 				turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
@@ -2109,12 +2120,17 @@ class CodexBoundaryRpc {
 			const limited =
 				picture.usageLimit ||
 				(error?.codexErrorInfo !== undefined && nativeRuntimeUsageSignal(error.codexErrorInfo) === "usage_limit");
-			this.#endPicture(picture, new CloudPictureFailure(limited ? "usage_limit" : "no_picture"));
+			this.#endPicture(
+				picture,
+				new CloudPictureFailure(limited ? "usage_limit" : picture.called ? "refused" : "no_picture"),
+			);
 			return;
 		}
-		if (method !== "item/completed") return;
+		if (method !== "item/started" && method !== "item/completed") return;
 		const item = object(params.item);
 		if (item.type !== "imageGeneration") return;
+		picture.called = true;
+		if (method === "item/started") return;
 		const itemId = identifier(item.id);
 		// The model made a second picture in the same turn: the call took the first.
 		if (picture.foundItem !== undefined) {

@@ -64,9 +64,9 @@ export type CloudPictureFailureReason =
 	| "picture_limit"
 	/** The member's ChatGPT usage limit stopped the picture's model turn. */
 	| "usage_limit"
-	/** The generator refused the prompt or failed. */
+	/** The image tool was called, and the generator refused the prompt or failed. */
 	| "refused"
-	/** The model made no picture: it refused to, or the login's plan cannot make pictures (a Free plan). */
+	/** The image tool was never called: the member's plan gave none (a Free plan makes no pictures). */
 	| "no_picture"
 	/** No picture within the call's time. */
 	| "timeout"

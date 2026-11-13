@@ -332,8 +332,16 @@ migration `20260930746000`, which only names the tool among a run's observations
 - **Where it may be saved** is company_write's rule, decided by the folder core at the commit: a protected path parks
   the change for review (the answer's `state` is `proposed`), a missing folder is refused, a stale or present file is a
   conflict. Before the picture is made, the tool refuses a path whose folder is not there and a path that is a folder or
-  a link: each picture costs the member's plan. Exists and version are checked at the commit only, so a repeat of a
-  saved call reaches its receipt (it makes a picture it then throws away, and shows none).
+  a link: each picture costs the member's plan. Exists and version are checked at the commit only, as company_write's.
+- **A repeat costs no picture within the run.** The tool keeps, for the run's life, what it answered per
+  `operationKey` (the newest 256 calls, with the picture itself for the newest 4). A repeat of the same call is answered
+  from there before anything is made: the same answer, the picture again when it is kept; a call whose outcome stayed
+  unconfirmed past its receipt stays unconfirmed (`TOOL_OUTCOME_UNCONFIRMED`); the same `operationKey` with other
+  arguments is refused (`OPERATION_KEY_USED`). A refused call (nothing began) is not kept: its repeat may make a picture.
+  A repeat in a later attempt of the run (after it was cut off and resumed, a new process) is not in that memory: it
+  makes one picture, which the receipt's replay then throws away and does not show. The ledger has no read of a
+  completed operation by key that starts nothing (the begin is the only lookup, and it opens a receipt where none is);
+  closing that gap needs one SQL function (below, "Not done").
 - **An app's owner.** Under `apps/<name>/`, a manifest that names another owner makes the call delegation (`prepare`
   adds `foreignOwner`), as for save_app; its own app's, and any other path's, is `internal`. The card: "Put a picture
   into another agent's app" (or "Make a picture"), the path, the prompt quoted.
@@ -364,8 +372,11 @@ migration `20260930746000`, which only names the tool among a run's observations
 - **Failures** are refusals, nothing saved and no receipt taken (the picture is made before the receipt: one left
   executing would stop the run's later changes): the member's picture limit (`usageLimitExceeded`, `limitId`
   `image_gen`: "the member's ChatGPT has no pictures left for now", with when it resets), the member's usage limit,
-  the generator refused or failed, no picture made (the model would not, or a Free plan makes none), none within 4
-  minutes, not a usable PNG, over 12 MiB, the login cannot make pictures.
+  the generator refused or failed after the image tool was called (`PICTURE_REFUSED`), the image tool never called
+  (`NO_PICTURE`: "this member's ChatGPT plan gave no picture … as on a Free plan, which makes none", and the agent
+  goes on without a generated picture and tells the member in one line), none within 4 minutes, not a usable PNG,
+  over 12 MiB, the login cannot make pictures. A Free plan is offered the tool (its sign-in's plan is not read here);
+  Codex withholds its image tool there, so its first call ends in `NO_PICTURE`.
 - **The answer** is company_write's (`state`, `version`, `receiptId`, `outcome`, `next`) with `kind: "picture"`,
   `mediaType`, `bytes`, `fileSha256`, the picture's and the shown size, `imageSha256` of the shown PNG, `transparent`
   when the generator said, and `revisedPrompt` when the model gave the generator other words. The picture follows it,
@@ -376,6 +387,16 @@ migration `20260930746000`, which only names the tool among a run's observations
   real thing is shown by its real picture and a generated one is never passed off as a photo (an app says drawn or
   illustration), one picture per call, how to write the prompt, to look at the picture and try again, and that an
   app's pictures go into its folder before save_app.
+- **The run's log** keeps a call as it keeps company_write's: its arguments, the prompt's text among them (cut at the
+  log's 8 KiB a field, as a file's text is), and the answer's envelope (path, version, sizes and hashes, a revised
+  prompt). The picture itself is never in the log or the context view: only its hash.
+- **Not done: a read of the run's receipt by key.** A repeat in a later attempt would cost nothing with one
+  service-role function, such as `qorpera_read_native_tool_operation(p_binding, p_logical_operation_key,
+  p_input_sha256)`: under the same binding and lease check as `qorpera_begin_native_tool_operation`, it answers the
+  run's own receipt under that key without creating or locking one (`completed` with its stored result and folder
+  commit; `executing`, `ambiguous`, `cancelled` or `outcome_unknown` alone; nothing when there is none; a refusal when
+  the key is bound to another input), with its SQL test, and a `CloudNativeToolOperations` method that asks it with
+  the same envelope digest before the tool makes the picture.
 
 ## 4. Web
 

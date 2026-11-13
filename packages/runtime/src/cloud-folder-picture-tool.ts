@@ -54,6 +54,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
+	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import {
@@ -69,6 +70,12 @@ import {
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const MIB = 1024 * 1024;
+/** The calls a run's make_picture remembers, by operationKey, for the run's life: the newest this many, each with its
+ * answer (or that its outcome is unconfirmed), and the picture itself for the newest few. A repeat of the same call is
+ * answered from here and makes no picture: the receipt would answer it the same way, but only after a picture was
+ * made, since the ledger has no read of a completed operation by key that starts nothing. */
+const REMEMBERED_CALLS = 256;
+const REMEMBERED_PICTURES = 4;
 
 /** What make_picture tells the agent (at most 4096 bytes, as every tool's description). */
 export const CLOUD_MAKE_PICTURE_DESCRIPTION =
@@ -101,7 +108,7 @@ function pictureRefusal(error: unknown): never {
 		refused:
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it; nothing was saved. Change the prompt (leave out real people, brands and anything unsafe) and call again with a new operationKey; if it fails again, go on without it.",
 		no_picture:
-			"NO_PICTURE: no picture was made: the model would not draw this prompt, or the member's ChatGPT plan makes no pictures (a Free plan does not); nothing was saved. Change the prompt and call again once with a new operationKey; if it fails again, tell the member.",
+			"NO_PICTURE: this member's ChatGPT plan gave no picture: the image tool was never called, as on a Free plan, which makes none. Nothing was saved. Go on without a generated picture, and tell the member in one line that their ChatGPT plan made no picture.",
 		timeout: `PICTURE_TIMEOUT: no picture came back within ${minutes} minutes; nothing was saved. Call again once with a new operationKey; if it fails again, go on without it.`,
 		invalid:
 			"PICTURE_UNUSABLE: what the generator gave back is not a usable PNG; nothing was saved. Call again once with a new operationKey.",
@@ -132,6 +139,22 @@ export function cloudPictureTool(options: {
 }): CloudNativeTool {
 	const { folder, operations, identity, pictures } = options;
 	const owner = identity.staffAgentId.toLowerCase();
+	// The calls this run answered past their receipt, by operationKey (REMEMBERED_CALLS): `reply` null for one whose
+	// outcome is unconfirmed. Oldest first.
+	const answered = new Map<string, { readonly call: string; reply: CloudToolContent | null }>();
+	const remember = (key: string, call: string, reply: CloudToolContent | null): void => {
+		answered.delete(key);
+		answered.set(key, { call, reply });
+		while (answered.size > REMEMBERED_CALLS) answered.delete(answered.keys().next().value as string);
+		// Only the newest few keep their picture: up to 1 MiB each.
+		let pictured = 0;
+		for (const entry of [...answered.values()].reverse()) {
+			if (!entry.reply?.image) continue;
+			if (++pictured <= REMEMBERED_PICTURES) continue;
+			const { image: _image, ...answer } = entry.reply;
+			entry.reply = answer;
+		}
+	};
 	const read = async (target: string, signal: AbortSignal): Promise<CloudCompanyFolderEntry | null> => {
 		try {
 			return (await folder.read(target, signal)).entry;
@@ -222,6 +245,27 @@ export function cloudPictureTool(options: {
 			// A commit no one can complete would fence this run's later operations: refuse before anything is spent.
 			if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 			context.observation?.update({ inputBytes: Buffer.byteLength(request.prompt) });
+			// A repeat of a call this run already answered (its answer was lost on the way) costs no second picture.
+			const call = sha256(
+				Buffer.from(
+					cloudToolJsonText({
+						path: request.path,
+						expectedVersion: request.expectedVersion,
+						prompt: request.prompt,
+					}),
+					"utf8",
+				),
+			);
+			const earlier = answered.get(request.operationKey);
+			if (earlier) {
+				if (earlier.call !== call)
+					throw new CloudToolRefusal(
+						"OPERATION_KEY_USED: this operationKey was used for another picture in this run; nothing was made. Use a new operationKey for a new picture.",
+					);
+				// Its outcome stays as unconfirmed as the receipt would leave it, without another picture.
+				if (earlier.reply === null) throw new Error("An earlier call of this picture has an unconfirmed outcome");
+				return { ...earlier.reply };
+			}
 			// What would refuse the picture anyway is checked before it is made: the member's plan pays for each one.
 			const parent = request.path.split("/").slice(0, -1).join("/");
 			if (parent !== "") {
@@ -263,81 +307,91 @@ export function cloudPictureTool(options: {
 			const fileSha256 = sha256(made.png);
 			const revisedPrompt =
 				made.revisedPrompt !== undefined && made.revisedPrompt !== request.prompt ? made.revisedPrompt : undefined;
-			const content = await operations.execute({
-				operation: {
-					tool: "make_picture",
-					toolVersion: TOOL_VERSION,
-					logicalOperationKey: request.operationKey,
-					// The call, not the picture: a repeat of the same call is the same operation, and replays its receipt.
-					arguments: {
-						path: request.path,
-						expectedVersion: request.expectedVersion,
-						promptSha256: sha256(Buffer.from(request.prompt, "utf8")),
+			let content: CloudToolContent;
+			try {
+				content = await operations.execute({
+					operation: {
+						tool: "make_picture",
+						toolVersion: TOOL_VERSION,
+						logicalOperationKey: request.operationKey,
+						// The call, not the picture: a repeat of the same call is the same operation, and replays its receipt.
+						arguments: {
+							path: request.path,
+							expectedVersion: request.expectedVersion,
+							promptSha256: sha256(Buffer.from(request.prompt, "utf8")),
+						},
+						target: { path: request.path },
+						requiresCompanyRevision: true,
 					},
-					target: { path: request.path },
-					requiresCompanyRevision: true,
-				},
-				// The folder core decides at the commit, under this call's receipt.
-				authorize: async () => {},
-				refused: cloudFolderRefusal,
-				perform: async (_operation, { receiptId, signal }) => {
-					// The commit's operation key for the model's: fixed length, and distinct per tool.
-					const key = `make_picture:${sha256(Buffer.from(request.operationKey, "utf8"))}`;
-					const unit: CloudCompanyFolderUnit = {
-						op: "write",
-						path: request.path,
-						content: { bytes: made.png, mediaType: "image/png" },
-						...(request.expectedVersion === null ? {} : { expectedVersion: request.expectedVersion }),
-					};
-					const committed = await folder.commit(key, [unit], { receiptId }, signal);
-					const result = committed.units[0];
-					if (!result) throw new Error("Company folder commit answered no unit");
-					const answer: Record<string, JsonValue> = {
-						...(JSON.parse(
-							mutationText(
-								"company_write",
-								{ operationKey: request.operationKey, path: request.path },
-								receiptId,
-								result,
-							),
-						) as Record<string, JsonValue>),
-						kind: "picture",
-						mediaType: "image/png",
-						bytes: made.png.byteLength,
-						fileSha256,
-						width: view.width,
-						height: view.height,
-						shownWidth: view.shownWidth,
-						shownHeight: view.shownHeight,
-						imageSha256: view.sha256,
-						...(revisedPrompt === undefined ? {} : { revisedPrompt }),
-						...(made.transparent === undefined ? {} : { transparent: made.transparent }),
-						...(result.outcome === "saved" ? { next: SAVED_NEXT } : {}),
-					};
-					return {
-						content: { kind: "json", value: answer },
-						folderCommitId: committed.commitId,
-						...(result.outcome === "waiting_for_review" ? { proposed: true as const } : {}),
-					};
-				},
-				signal: context.signal,
-				...(context.observation ? { observation: context.observation } : {}),
-			});
-			// A picture that is part of the company's pages shows in the run's conversation with Undo, as company_write's
-			// change does (Interfaces I10).
-			if (/^(?:interfaces|tables)\//.test(osRelative(companyPathKey(request.path)) ?? ""))
-				await folder.noteInterfaceChanges(context.signal);
+					// The folder core decides at the commit, under this call's receipt.
+					authorize: async () => {},
+					refused: cloudFolderRefusal,
+					perform: async (_operation, { receiptId, signal }) => {
+						// The commit's operation key for the model's: fixed length, and distinct per tool.
+						const key = `make_picture:${sha256(Buffer.from(request.operationKey, "utf8"))}`;
+						const unit: CloudCompanyFolderUnit = {
+							op: "write",
+							path: request.path,
+							content: { bytes: made.png, mediaType: "image/png" },
+							...(request.expectedVersion === null ? {} : { expectedVersion: request.expectedVersion }),
+						};
+						const committed = await folder.commit(key, [unit], { receiptId }, signal);
+						const result = committed.units[0];
+						if (!result) throw new Error("Company folder commit answered no unit");
+						const answer: Record<string, JsonValue> = {
+							...(JSON.parse(
+								mutationText(
+									"company_write",
+									{ operationKey: request.operationKey, path: request.path },
+									receiptId,
+									result,
+								),
+							) as Record<string, JsonValue>),
+							kind: "picture",
+							mediaType: "image/png",
+							bytes: made.png.byteLength,
+							fileSha256,
+							width: view.width,
+							height: view.height,
+							shownWidth: view.shownWidth,
+							shownHeight: view.shownHeight,
+							imageSha256: view.sha256,
+							...(revisedPrompt === undefined ? {} : { revisedPrompt }),
+							...(made.transparent === undefined ? {} : { transparent: made.transparent }),
+							...(result.outcome === "saved" ? { next: SAVED_NEXT } : {}),
+						};
+						return {
+							content: { kind: "json", value: answer },
+							folderCommitId: committed.commitId,
+							...(result.outcome === "waiting_for_review" ? { proposed: true as const } : {}),
+						};
+					},
+					signal: context.signal,
+					...(context.observation ? { observation: context.observation } : {}),
+				});
+			} catch (error) {
+				// Past its receipt's begin the outcome may be unknown: a repeat stays so, and makes no picture. A refusal began
+				// nothing, and a repeat may be answered otherwise.
+				if (!(error instanceof CloudToolRefusal)) remember(request.operationKey, call, null);
+				throw error;
+			}
 			if (content.kind !== "json" || content.value === null || typeof content.value !== "object")
 				throw new Error("A picture's answer is not its JSON");
 			const answer = content.value as Record<string, JsonValue>;
-			// The picture follows its answer when it was saved or parked for review and is the one made now: a repeat of a
-			// saved call answers from its receipt, which names the picture saved then.
+			// The picture follows its answer when it was saved or parked for review and is the one made now: an answer from
+			// the receipt (the call made in an earlier attempt of the run) names the picture saved then.
 			const shown =
 				(answer.state === "applied" || answer.state === "proposed") &&
 				answer.fileSha256 === fileSha256 &&
 				answer.imageSha256 === view.sha256;
-			const reply: CloudToolContent = { kind: "json", value: answer };
-			return shown ? { ...reply, image: { png: view.png, sha256: view.sha256 } } : reply;
+			const plain: CloudToolContent = { kind: "json", value: answer };
+			const reply = shown ? { ...plain, image: { png: view.png, sha256: view.sha256 } } : plain;
+			remember(request.operationKey, call, reply);
+			// A picture that is part of the company's pages shows in the run's conversation with Undo, as company_write's
+			// change does (Interfaces I10).
+			if (/^(?:interfaces|tables)\//.test(osRelative(companyPathKey(request.path)) ?? ""))
+				await folder.noteInterfaceChanges(context.signal);
+			return reply;
 		},
 	};
 }

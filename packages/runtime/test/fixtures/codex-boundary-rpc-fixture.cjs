@@ -477,6 +477,11 @@ async function handle(message) {
 			return;
 		}
 		write({ method: "item/started", params: { ...at, item: pictureItem({ status: "in_progress", revisedPrompt: null }), startedAtMs: 1 } });
+		if (mode === "picture-started") {
+			// The tool was called, and its turn ends without the picture.
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			return;
+		}
 		// The generation never ends (picture-slow), or ends only after the call gave up on it (picture-late).
 		if (mode === "picture-slow" || mode === "picture-late") return;
 		if (mode === "picture-limit" || mode === "picture-refused") {

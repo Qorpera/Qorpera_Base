@@ -210,16 +210,61 @@ it("replaces a picture only under its version, as company_write does, and shows 
 	expect(f.files.get("pictures/mug.png")?.file.fileSha256).toBe(sha(picture()));
 });
 
-it("answers a repeat of a saved call from its receipt, without the picture it made again", async () => {
-	let red = 255;
-	const f = await fixture({ folders: ["pictures"] }, {}, async () => ({ png: picture(red--) }));
-	const first = await f.call(request());
-	const again = await f.call(request());
-	expect(answer(again.content)).toEqual(answer(first.content));
-	expect(first.content.image).toBeDefined();
-	expect(again.content.image).toBeUndefined();
-	expect(f.commits).toHaveLength(1);
-	expect(f.files.get("pictures/mug.png")?.file.fileSha256).toBe(sha(picture(255)));
+describe("a repeat of a call", () => {
+	it("is answered from the run's memory, its picture again, and makes no second picture", async () => {
+		let red = 255;
+		const f = await fixture({ folders: ["pictures"] }, {}, async () => ({ png: picture(red--) }));
+		const first = await f.call(request());
+		const again = await f.call(request());
+		expect(answer(again.content)).toEqual(answer(first.content));
+		expect(again.content.image).toEqual(first.content.image);
+		expect(f.made).toHaveBeenCalledOnce();
+		expect(f.commits).toHaveLength(1);
+		expect(f.files.get("pictures/mug.png")?.file.fileSha256).toBe(sha(picture(255)));
+		// So is one whose answer said nothing was saved: the receipt would answer it the same way.
+		const staleCall = request({ operationKey: "mug-2", expectedVersion: randomUUID() });
+		const stale = await f.call(staleCall);
+		expect(answer(stale.content)).toMatchObject({ state: "not_applied" });
+		expect(answer((await f.call(staleCall)).content)).toEqual(answer(stale.content));
+		expect(f.made).toHaveBeenCalledTimes(2);
+	});
+
+	it("with the same operationKey and other arguments is refused before any picture", async () => {
+		const f = await fixture({ folders: ["pictures"] });
+		await f.call(request());
+		await refuses(f.call(request({ prompt: "A blue mug." })), "OPERATION_KEY_USED");
+		await refuses(f.call(request({ path: "pictures/cup.png" })), "OPERATION_KEY_USED");
+		expect(f.made).toHaveBeenCalledOnce();
+	});
+
+	it("whose outcome is unconfirmed stays unconfirmed, and makes no second picture", async () => {
+		const f = await fixture({ folders: ["pictures"] });
+		const commit = vi.spyOn(f.folder, "commit").mockRejectedValueOnce(new Error("PRIVATE_COMMIT_LOST"));
+		await expect(f.call(request())).rejects.toThrow("Cloud tool operation outcome unconfirmed");
+		await expect(f.call(request())).rejects.toThrow("An earlier call of this picture has an unconfirmed outcome");
+		expect(f.made).toHaveBeenCalledOnce();
+		expect(commit).toHaveBeenCalledOnce();
+		// A refusal began nothing: a repeat of a refused call may make its picture.
+		const lost = await fixture({ folders: ["pictures"] }, {}, async () => {
+			throw new CloudPictureFailure("timeout");
+		});
+		await refuses(lost.call(request()), "PICTURE_TIMEOUT");
+		await refuses(lost.call(request()), "PICTURE_TIMEOUT");
+		expect(lost.made).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps the picture of the newest four calls only", async () => {
+		const f = await fixture({ folders: ["pictures"] });
+		const calls = ["1", "2", "3", "4", "5"].map((n) =>
+			request({ operationKey: `mug-${n}`, path: `pictures/mug-${n}.png` }),
+		);
+		for (const value of calls) expect((await f.call(value)).content.image).toBeDefined();
+		const oldest = await f.call(calls[0]);
+		expect(answer(oldest.content)).toMatchObject({ state: "applied", path: "pictures/mug-1.png" });
+		expect(oldest.content.image).toBeUndefined();
+		expect((await f.call(calls[4])).content.image).toBeDefined();
+		expect(f.made).toHaveBeenCalledTimes(5);
+	});
 });
 
 it("shows a picture parked for review at a protected path, and notes one among the company's pages", async () => {
@@ -269,7 +314,10 @@ describe("when no picture comes back", () => {
 			new CloudPictureFailure("refused"),
 			"PICTURE_REFUSED: the picture generator refused this prompt or could not draw it",
 		],
-		[new CloudPictureFailure("no_picture"), "NO_PICTURE: no picture was made"],
+		[
+			new CloudPictureFailure("no_picture"),
+			"NO_PICTURE: this member's ChatGPT plan gave no picture: the image tool was never called, as on a Free plan, which makes none. Nothing was saved. Go on without a generated picture, and tell the member in one line that their ChatGPT plan made no picture.",
+		],
 		[new CloudPictureFailure("timeout"), "PICTURE_TIMEOUT: no picture came back within 4 minutes"],
 		[new CloudPictureFailure("invalid"), "PICTURE_UNUSABLE"],
 		[new CloudPictureFailure("too_large"), "PICTURE_TOO_LARGE: the picture is larger than 12 MiB"],
