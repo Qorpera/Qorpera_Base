@@ -274,6 +274,11 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 (() => {
 	"use strict";
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. \`concept\` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const D = document;
 	const NS = "http://www.w3.org/2000/svg";
 	const reduced = () => {
@@ -976,6 +981,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk *,.mk *::before,.mk *::after{box-sizing:border-box}
 :where(.mk) button{font:inherit;color:inherit}
 .mk-head{grid-area:head;min-width:0;padding-bottom:clamp(10px,2vh,20px)}
+.mk--bare{padding:clamp(12px,1vw,16px)}
+.mk--bare .mk-title,.mk--bare .mk-line{display:none}
+.mk--bare .mk-head{padding-bottom:0}
 .mk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .mk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .mk-err{margin:4px 0 0;font-size:13px;color:var(--q-muted)}
@@ -1236,7 +1244,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		injectStyle();
 		NF.clear();
 		const W = M.words;
-		const root = h("main", "mk");
+		const root = h("main", BARE ? "mk mk--bare" : "mk");
 		root.lang = M.lang;
 		ui = { root, rows: [], W, hl: null };
 		// head
@@ -2451,6 +2459,11 @@ export const BOARD_ENGINE_JS = `/* Qorpera interface kit "board": real things as
 
 	const D = document;
 	const KIT = window.QORPERA_KIT || {};
+	/* A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	   who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	   2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	   control, sheet and detail stays as it is. \`concept\` comes from the page (kitPage), never from the data. */
+	const BARE = KIT.concept === true;
 	const RM = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 	const calm = () => !!(RM && RM.matches);
 	const BASE_WORDS = {
@@ -2492,6 +2505,10 @@ body{margin:0}
 .bk :focus-visible{outline:2px solid var(--q-accent);outline-offset:3px;border-radius:12px}
 .bk img,.bk video{max-width:none}
 .bk-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 28px;position:relative;z-index:4}
+.bk--bare{--pad:clamp(12px,1vw,16px)}
+.bk--bare .bk-titles{display:none}
+.bk--bare .bk-head:not(:has(.bk-chips)){display:none}
+.bk--bare.bk-choose{padding-top:0}
 .bk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .bk-line{margin:3px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .bk-empty{margin:auto 0;font-size:15px;color:var(--q-muted)}
@@ -2691,6 +2708,9 @@ body{margin:0}
 .bk-reason::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 @media (max-width:760px){
 .bk-panels{flex-direction:column;min-height:0;flex:0 0 auto}
+/* a concept has nothing but its worlds: on a phone they share the screen instead of leaving a band under them */
+.bk--bare.bk-choose .bk-panels{min-height:100vh;flex:1 1 auto}
+.bk--bare.bk-choose .bk-panel{flex:1 1 auto}
 .bk-panel{flex:0 0 auto;min-height:max(210px,25vh);flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:flex-start;text-align:left;gap:12px 18px;padding:20px var(--pad) 26px}
 .bk-panel+.bk-panel{box-shadow:inset 0 1px 0 var(--faint)}
 .bk-ptop{flex:1 0 100%;min-height:0;order:0}
@@ -4229,7 +4249,7 @@ body{margin:0}
 	function empty() {
 		ensureStyle();
 		if (app.root) return;
-		const root = h("main", "bk");
+		const root = h("main", BARE ? "bk bk--bare" : "bk");
 		root.append(h("p", "bk-empty", null, WORDS.empty));
 		D.body.append(root);
 		app.root = root;
@@ -4245,7 +4265,7 @@ body{margin:0}
 		WORDS = model.words;
 		LANG = model.lang;
 		const first = !app.mounted;
-		const root = h("main", \`bk bk-\${model.mode}\${first ? " is-first" : ""}\`, { lang: model.lang });
+		const root = h("main", \`bk bk-\${model.mode}\${BARE ? " bk--bare" : ""}\${first ? " is-first" : ""}\`, { lang: model.lang });
 		D.body.append(root);
 		app.root = root;
 		app.model = model;
@@ -4319,6 +4339,11 @@ export const PATH_ENGINE_JS = `// The path kit's engine: "How does it go, and wh
 	"use strict";
 
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. \`concept\` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const SVGNS = "http://www.w3.org/2000/svg";
 	const MAX = { title: 40, line: 60, step: 22, lane: 22, note: 90, mark: 40, kind: 14, next: 60, by: 22, figValue: 10, figLabel: 28, word: 28 };
 	const WORDS = {
@@ -4375,6 +4400,10 @@ body{margin:0}
 .pk *,.pk *::before,.pk *::after{box-sizing:border-box}
 .pk-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;column-gap:40px;row-gap:18px}
 .pk-head{min-width:0;max-width:34em}
+.pk--bare{padding:clamp(12px,1vw,16px)}
+.pk--bare .pk-head{display:none}
+.pk--bare .pk-top:not(:has(.pk-figs)){display:none}
+.pk--bare .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
 .pk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .pk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .pk-figs{display:flex;gap:clamp(24px,4vw,56px);align-items:flex-start}
@@ -4905,7 +4934,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	function quiet(msg) {
 		injectStyle();
 		if (!root) {
-			root = el("main", "pk");
+			root = el("main", BARE ? "pk pk--bare" : "pk");
 			document.body.append(root);
 		}
 		root.replaceChildren(el("p", "pk-quiet", null, msg));
@@ -4916,7 +4945,7 @@ a.pk-row:hover .go{color:var(--q-accent)}
 		const m = model;
 		document.documentElement.lang = m.lang;
 		if (!root) {
-			root = el("main", "pk");
+			root = el("main", BARE ? "pk pk--bare" : "pk");
 			document.body.append(root);
 		}
 		const animate = !introDone && !still();
@@ -5875,6 +5904,11 @@ export const OBJECT_ENGINE_JS = `/* Qorpera interface kit: object. "What is the 
 	"use strict";
 
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. \`concept\` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const D = document;
 	const mq = (q) => (window.matchMedia ? matchMedia(q) : { matches: false, addEventListener() {} });
 	const REDUCED = mq("(prefers-reduced-motion: reduce)");
@@ -5927,6 +5961,8 @@ body{margin:0}
 .ok *,.ok *::before,.ok *::after{box-sizing:border-box}
 .ok button{font:inherit;color:inherit}
 .ok-head{position:relative;z-index:2}
+.ok--bare{padding:clamp(12px,1vw,16px)}
+.ok--bare .ok-head{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ok-src{display:inline-flex;align-items:center;justify-content:center;min-width:28px;min-height:28px;margin:-6px 0 -6px 2px;color:var(--q-muted);text-decoration:none;font-size:14px;border-radius:8px;vertical-align:middle}
@@ -6312,7 +6348,7 @@ body{margin:0}
 
 	function build() {
 		const d = S.data;
-		const root = h("main", "ok", { lang: d.lang });
+		const root = h("main", BARE ? "ok ok--bare" : "ok", { lang: d.lang });
 		const title = h("h1", null, null, d.title);
 		const line = h("p");
 		const head = h("header", "ok-head", null, [title, line]);
@@ -7102,7 +7138,7 @@ body{margin:0}
 	}
 	function empty(text) {
 		if (S.built) return;
-		const root = h("main", "ok", null, [h("p", "ok-empty", null, text)]);
+		const root = h("main", BARE ? "ok ok--bare" : "ok", null, [h("p", "ok-empty", null, text)]);
 		shelf = shelf || D.getElementById("kit-media");
 		D.body.replaceChildren(...(shelf ? [shelf] : []), root);
 	}

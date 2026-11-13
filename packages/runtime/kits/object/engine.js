@@ -6,6 +6,11 @@
 	"use strict";
 
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. `concept` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const D = document;
 	const mq = (q) => (window.matchMedia ? matchMedia(q) : { matches: false, addEventListener() {} });
 	const REDUCED = mq("(prefers-reduced-motion: reduce)");
@@ -58,6 +63,8 @@ body{margin:0}
 .ok *,.ok *::before,.ok *::after{box-sizing:border-box}
 .ok button{font:inherit;color:inherit}
 .ok-head{position:relative;z-index:2}
+.ok--bare{padding:clamp(12px,1vw,16px)}
+.ok--bare .ok-head{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ok-src{display:inline-flex;align-items:center;justify-content:center;min-width:28px;min-height:28px;margin:-6px 0 -6px 2px;color:var(--q-muted);text-decoration:none;font-size:14px;border-radius:8px;vertical-align:middle}
@@ -443,7 +450,7 @@ body{margin:0}
 
 	function build() {
 		const d = S.data;
-		const root = h("main", "ok", { lang: d.lang });
+		const root = h("main", BARE ? "ok ok--bare" : "ok", { lang: d.lang });
 		const title = h("h1", null, null, d.title);
 		const line = h("p");
 		const head = h("header", "ok-head", null, [title, line]);
@@ -1233,7 +1240,7 @@ body{margin:0}
 	}
 	function empty(text) {
 		if (S.built) return;
-		const root = h("main", "ok", null, [h("p", "ok-empty", null, text)]);
+		const root = h("main", BARE ? "ok ok--bare" : "ok", null, [h("p", "ok-empty", null, text)]);
 		shelf = shelf || D.getElementById("kit-media");
 		D.body.replaceChildren(...(shelf ? [shelf] : []), root);
 	}
