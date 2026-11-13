@@ -123,7 +123,8 @@ describe("a read that shows a token", () => {
 			for (const [token] of TOKENS) expect(answer.content.text).not.toContain(token);
 		}
 		expect(JSON.parse(answers[0]!.content.text).text).toBe(redactCloudWebhookSecrets(KEYS));
-		expect(JSON.parse(answers[1]!.content.text).entries[0]).toMatchObject({ target: "vault/rk_[REDACTED]" });
+		// A listing's answer is one short line an entry (keyholes S2): the link, a tab and what it names.
+		expect(answers[1]!.content.text.split("\n")).toContain('ops/links/deploy\t-> "vault/rk_[REDACTED]"');
 		expect(JSON.parse(answers[2]!.content.text)).toMatchObject({ kind: "symlink", target: "vault/rk_[REDACTED]" });
 	});
 

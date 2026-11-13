@@ -479,7 +479,12 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 				try {
 					for (;;) {
 						requestSignal.throwIfAborted();
-						const next = await reader.read();
+						// A body cut off after its headers (the connection dropped) is a lost answer, as a fetch that failed
+						// is; a cancel or the call's own deadline stays what it is.
+						const next = await reader.read().catch((error: unknown) => {
+							if (requestSignal.aborted) throw error;
+							throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company folder bytes unavailable");
+						});
 						if (next.done) break;
 						count += next.value.byteLength;
 						if (count > maximum) invalid();
