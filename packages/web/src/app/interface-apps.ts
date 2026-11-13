@@ -48,10 +48,14 @@ import {
 	type AppGate,
 	type AppGateOutcome,
 	type AppQuestionSource,
+	type AppTellSource,
 	appQuestions,
+	noteKept,
 	type PreparedAsk,
 	prepareAnswer,
 	prepareRow,
+	prepareTell,
+	restoreTell,
 } from "./app-actions.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -70,7 +74,8 @@ import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } f
  *   It never hands over who the member is, a token, or anything of this app's own state.
  * - The bridge changes nothing by itself. A page may ask for what the manifest's `writes` names (an answer to such a
  *   question, a row of a named table): the request is checked (app/app-actions.ts), put to the member on the bar outside
- *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there.
+ *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there. Any app may
+ *   ask the same way to send a note to the agent that owns it (`tell`), which the member writes on the bar.
  * - A link the member clicks in the page comes over the bridge too (`open`): checked here (`appLink`), it opens another
  *   app, a file of the company's own work or a web page, and nothing else. The page learns nothing from it.
  * - An app's page starts from Qorpera's base style (app/interface-app-style.ts), put first in its head when it is put
@@ -567,6 +572,8 @@ export interface AppBridgeHost {
 	 * (it throws when it is not). Absent where nothing can be changed. */
 	readonly writer?: () => WebMemberFolder;
 	readonly current?: () => void;
+	/** Who hears a note from an app, and the send (app/tell-agent.ts); absent where no note can be sent. */
+	readonly tell?: AppTellSource;
 }
 
 /** Calls in flight, and calls a minute, for one app in this tab. */
@@ -578,11 +585,11 @@ const MAX_PATH_CHARS = 1024;
 const MAX_PARAMS_CHARS = 4096;
 /** A row's cells may be longer than a read's few short values. */
 const MAX_ROW_PARAMS_CHARS = 16 * 1024;
-/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, and a
- * request for a change reads the table or the questions before anything is shown. */
-const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5 };
+/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, a
+ * request for a change reads the table or the questions before anything is shown, and a note costs as a change. */
+const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5, tell: 5 };
 /** What a page is told when its request did not become a change. */
-const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "failed">, string>> = {
+const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "told" | "failed">, string>> = {
 	declined: "The member said not now",
 	busy: "Another request is waiting for the member's answer",
 	quiet: "The member said not now three times: this page asks again after the member reloads it",
@@ -591,6 +598,10 @@ const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "f
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
+/** After the member sent a note from an app, its next note is refused this long: the bar comes back no sooner. */
+export const TELL_AGAIN_MS = 10_000;
+/** When each app in this tab last had a note sent (by its budget's key), kept across its frames as the budget is. */
+const told = new Map<string, number>();
 
 function budget(key: string): { inFlight: number; minute: number; calls: number } {
 	const now = Math.floor(Date.now() / 60_000);
@@ -770,6 +781,7 @@ export class AppBridge {
 			case "answer":
 			case "setRow":
 			case "addRow":
+			case "tell":
 				return this.#change(call);
 			case "open": {
 				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
@@ -786,13 +798,29 @@ export class AppBridge {
 		}
 	}
 
-	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member. The page is
-	 * answered once the member chose and, when they allowed it, the change is saved or refused. */
+	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member; or a note to the
+	 * app's owner, which any app may ask for, since the page chooses neither who hears it nor the words that go. The page
+	 * is answered once the member chose and, when they allowed it, the change is saved or refused, or the note went
+	 * (`{sent: true}`) or waits in the agent's thread (`{sent: false, waiting: true}`). */
 	async #change(call: AppCall): Promise<AppAnswer> {
 		const writes = this.#app.manifest.writes;
 		const gate = this.#gate;
 		let prepare: () => Promise<PreparedAsk>;
-		if (call.method === "answer") {
+		if (call.method === "tell") {
+			const tell = this.#host.tell;
+			if (!gate || !tell) return refuse("Nothing can be sent from this page");
+			// The app's one note is kept still (on its way, or waiting for the member): the page waits, and a kept note no
+			// bar shows is on the bar again (one the bar shows already stays as it is).
+			const kept = noteKept(tell, this.#app.name);
+			if (kept) {
+				void this.restore();
+				return refuse(kept);
+			}
+			// A sent note leaves the page a pause before its next: no bar on the heels of the last.
+			if (Date.now() - (told.get(this.#key) ?? Number.NEGATIVE_INFINITY) < TELL_AGAIN_MS)
+				return refuse("A note was sent from this app a moment ago: ask again in a few seconds");
+			prepare = async () => prepareTell(tell, this.#app, call.params);
+		} else if (call.method === "answer") {
 			if (!writes.includes(APP_WRITE_ANSWERS))
 				return refuse('Add "answers" to writes in app.toml to answer a question from the page');
 			const questions = this.#host.questions;
@@ -816,9 +844,36 @@ export class AppBridge {
 			if (error instanceof AppActionRefused) return refuse(error.message);
 			throw error;
 		}
-		const result = await gate.ask(prepared.ask, prepared.perform);
+		const result = await gate.ask(
+			prepared.ask,
+			call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
+			prepared.keep,
+		);
 		if ("message" in result) return refuse(result.message);
+		if (result.outcome === "told")
+			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
 		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
+	}
+
+	/** A note's send, with the app's pause after it counted from when the note went or was left waiting in its thread:
+	 * there, not when the bar hears of it, as the bar may be put away (the member left the app) while the note goes. */
+	#told(perform: PreparedAsk["perform"]): PreparedAsk["perform"] {
+		return async (words) => {
+			const went = await perform(words);
+			if (went && !went.held) told.set(this.#key, Date.now());
+			return went;
+		};
+	}
+
+	/** A note held for this app while its thread could not take it (app/app-actions.ts `HeldNote`), on the bar again
+	 * when the app's page is shown: the member's words as they left them, sent as any note is. Nothing when none is
+	 * held, or when the bar has a request already. */
+	async restore(): Promise<void> {
+		const tell = this.#host.tell;
+		const gate = this.#gate;
+		if (!tell || !gate || gate.closed()) return;
+		const prepared = restoreTell(tell, this.#app);
+		if (prepared) await gate.ask(prepared.ask, this.#told(prepared.perform), prepared.keep);
 	}
 
 	/** Each agent's todos, as their files' first heading and status say. */

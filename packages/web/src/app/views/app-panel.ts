@@ -30,9 +30,10 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
- * - An app's page may ask the member to change something (an answer to such a question, a row of a table): Qorpera
- *   puts each request to the member on a bar above the frame (views/app-ask-bar.ts), and nothing changes without their
- *   yes there. The member's Reload lets an app that was told not now three times ask again. What a page may read and
+ * - An app's page may ask the member to change something (an answer to such a question, a row of a table), or to send
+ *   the agent that owns it a note: Qorpera puts each request to the member on a bar above the frame
+ *   (views/app-ask-bar.ts), and nothing changes or goes without their yes there. A note its agent's thread could not
+ *   take is kept for the app, and is on the bar again, with the member's words, whenever the app's page is shown. The member's Reload lets an app that was told not now three times ask again. What a page may read and
  *   ask for is what its manifest says now, also when the manifest changes under a page that stays as it is; a request
  *   made under an earlier manifest, or by a page since put away, is refused before anything is shown.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
@@ -144,6 +145,8 @@ export class AppPanel {
 	 * manifest changed, so the page never reads or asks for more (or less) than the manifest says now (review r1 of
 	 * #1633, F1 and F2). Undefined for a page of the Company File, which reads nothing. */
 	#serving: Serving | undefined;
+	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
+	#unlisten: (() => void) | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -198,7 +201,7 @@ export class AppPanel {
 			// Above the frame and outside it, in every placement: the bar pushes the page down, and is never over it.
 			this.#ask = new AppAskBar({
 				emblem: () => interfaceEmblem(this.#emblemName, 22),
-				agent: (agentId) => host.questions?.agent(agentId),
+				agent: (agentId) => host.tell?.agent(agentId) ?? host.questions?.agent(agentId),
 				open: (open) => {
 					if (this.#frame) this.#frame.holdEscape = open;
 				},
@@ -237,6 +240,8 @@ export class AppPanel {
 		this.#offered = undefined;
 		this.#ask?.dispose();
 		this.#ask = undefined;
+		this.#unlisten?.();
+		this.#unlisten = undefined;
 		this.#serving = undefined;
 		this.el.remove();
 	}
@@ -372,6 +377,8 @@ export class AppPanel {
 	 * shown. One the member already allowed is on its way and is not touched. */
 	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
 		this.#ask?.cancel();
+		this.#unlisten?.();
+		this.#unlisten = undefined;
 		if (!app) {
 			this.#serving = undefined;
 			return;
@@ -387,12 +394,20 @@ export class AppPanel {
 				this.#lifetime.signal,
 				bar && {
 					closed: () => (live() ? bar.closed() : "gone"),
-					ask: (ask, perform) => (live() ? bar.ask(ask, perform) : Promise.resolve({ outcome: "gone" as const })),
+					ask: (ask, perform, keep) =>
+						live() ? bar.ask(ask, perform, keep) : Promise.resolve({ outcome: "gone" as const }),
 				},
 				(link) => this.#follow(link),
 			),
 		};
 		this.#serving = serving;
+		// A note held for the app is on the bar again, with the member's words: when this bridge takes over under a page
+		// that stands (its request was put away with the earlier one; a new page's frame restores it once shown), and
+		// when one that was on its way, sent from any page of the app, is held again.
+		this.#unlisten = this.#host.tell?.listen(app.name, () => {
+			if (this.#serving === serving && this.#frame) void serving.bridge.restore();
+		});
+		if (this.#frame) void serving.bridge.restore();
 	}
 
 	#answer(call: AppCall): Promise<AppAnswer> {
@@ -510,5 +525,7 @@ export class AppPanel {
 			if (++loads === 2) opening.remove();
 		});
 		replace(this.#body, frame.frame, opening);
+		// A note held for the app while its thread could not take it is on the bar again, with the member's words.
+		void this.#serving?.bridge.restore();
 	}
 }
