@@ -176,7 +176,7 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 $old$,
 	$new$	v_had_view boolean := false; -- 20260930420000
 	v_home_machine public.qorpera_company_machines%rowtype; -- 20260930754000
-	v_home_placement public.qorpera_company_machine_placements%rowtype;
+	v_home_placement public.qorpera_company_machine_placements%rowtype; v_home_previous uuid;
 $new$);
 select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
 	$old$	if p_kind not in ('run_box','computer_desktop','computer_shell_command','coding_session','test_machine','code_host') -- 20260930420000, 20260930446000$old$,
@@ -185,10 +185,12 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 
 -- A window of its own, like a run box: the run actor opens it, under the run check (pause, job KEY SHARE, fence,
 -- principals), and it takes its agent, member and worker access from that resolution, so it can never be wider than the
--- run. An advisory lock on the machine and the run serialises this run's opens on this machine, so a second open sees
--- the first one's view; the machine and the placement are read plainly, and every later renew and commit checks the
--- boot again (qorpera_folder_view_valid, the commit's anchor step) under the machine and placement rows. It carries no
--- read set: the run's own read set, which its releases fill, is the one that counts.
+-- run. Locks, in the company-wide open's own order so the two never cross: the SAME advisory lock a test machine's open
+-- takes for this machine (so a company-wide open cannot land between this one's checks and its insert), the machine
+-- fence, then the machine and the placement FOR SHARE, which a new boot, a retirement, a removal and every machine
+-- command (FOR UPDATE on the machine) wait for; the disk's state is read only under those locks. The ranked locks of
+-- the run entry come before them, as the commit's anchor step takes the machine last too. It carries no read set of its
+-- own: the run's own read set, which its releases fill, is the one that counts.
 select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
 	$old$	if p_opener is distinct from '{"kind":"platform"}'::jsonb then
 		raise exception 'Folder view opener is invalid' using errcode = '22023'; end if;$old$,
@@ -203,9 +205,14 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 			or exists (select 1 from unnest(array['companyMachineId','placementId','bootId']) f(name)
 				where coalesce(p_anchor ->> f.name, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
 			raise exception 'Folder view anchor is invalid' using errcode = '22023'; end if;
-		perform pg_advisory_xact_lock(hashtextextended('qorpera.home-window:' || (p_anchor ->> 'companyMachineId')
-			|| ':' || coalesce(p_opener ->> 'runId', ''), 0));
+		-- The company-wide open's own advisory lock for this machine: the two serialise, so neither lands between the
+		-- other's checks and its insert.
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.test-machine-view:' || (p_anchor ->> 'companyMachineId'), 0));
 		v_resolved := public.qorpera_folder_run_enter(p_environment_id, v_file.profile_id, p_opener);
+		perform public.qorpera_folder_machine_fence(v_file.profile_id);
+		perform 1 from public.qorpera_company_machines where id = (p_anchor ->> 'companyMachineId')::uuid for share;
+		perform 1 from public.qorpera_company_machine_placements where id = (p_anchor ->> 'placementId')::uuid
+			and machine_id = (p_anchor ->> 'companyMachineId')::uuid for share;
 		select * into v_home_machine from public.qorpera_company_machines where id = (p_anchor ->> 'companyMachineId')::uuid;
 		select * into v_home_placement from public.qorpera_company_machine_placements
 		where id = (p_anchor ->> 'placementId')::uuid;
@@ -223,6 +230,23 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 				where v.placement_id = v_home_placement.id and v.kind = 'test_machine') then
 			raise exception 'This machine has held the company-wide folder' using errcode = '42501',
 				detail = 'qorpera.home-window/new-disk'; end if;
+		-- The disk also holds what the windows before this one read: a command may have copied a file out of /company,
+		-- and the next run's shell would read the copy. So the read set lives with the disk, as a test machine's does
+		-- (§6): the placement's newest view holds every read the disk was served, this window carries it on, and the
+		-- opening run takes it in under its own authority (qorpera_folder_run_inherit_view_reads, C1b-3 §6, as a test
+		-- machine's output is taken in). A read this run may not make, and a window of another agent or member, refuse
+		-- the open. A fresh disk has none to take in.
+		select v.id into v_home_previous from public.qorpera_folder_views v
+		where v.placement_id = v_home_placement.id order by v.created_at desc, v.id desc limit 1;
+		if v_home_previous is not null then
+			begin
+				perform public.qorpera_folder_run_inherit_view_reads(p_environment_id, p_opener, v_home_previous,
+					extensions.gen_random_uuid());
+			exception when sqlstate '42501' then
+				raise exception 'This machine holds work this run may not read' using errcode = '42501',
+					detail = 'qorpera.home-window/other-work';
+			end;
+		end if;
 		update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
 		where state = 'open' and kind = 'home_window' and company_machine_id = v_home_machine.id
 			and run_id = (p_opener ->> 'runId')::uuid;
@@ -233,6 +257,21 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 			v_home_machine.id, v_home_placement.id, v_home_placement.boot_id, v_home_placement.id,
 			extensions.digest(v_pass, 'sha256'), clock_timestamp() + interval '120 seconds')
 		returning * into v_view;
+		-- The disk's own reads go on with it: the previous view's pairs and its read records, one record per resource
+		-- keyed by this view's id, as a desktop's and a test machine's carry (the shared carry below does the same for
+		-- its kinds). So the newest view of a placement always holds every read the disk was served.
+		if v_home_previous is not null then
+			insert into public.qorpera_folder_view_reads(view_id, environment_id, resource_id, grant_id,
+				resource_revision, grant_revision)
+			select v_view.id, environment_id, resource_id, grant_id, resource_revision, grant_revision
+			from public.qorpera_folder_view_reads where view_id = v_home_previous;
+			insert into public.qorpera_folder_view_read_records(view_id, release_id, environment_id, resource_id, reads,
+				output_sha256)
+			select v_view.id, v_view.id, p_environment_id, rec.resource_id, jsonb_agg(distinct x order by x),
+				repeat('0', 64)
+			from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.view_id = v_home_previous group by rec.resource_id;
+		end if;
 		return jsonb_build_object('schema','qorpera.folder-view/v1','viewId',v_view.id,'pass',v_pass,
 			'leaseUntil',v_view.lease_until);
 	end if;
@@ -336,7 +375,7 @@ select pg_temp.folder_home_window_apply();
 create function public.qorpera_folder_home_window_open(p_environment_id uuid, p_actor jsonb, p_request jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_file public.qorpera_company_files%rowtype; v_machine public.qorpera_company_machines%rowtype;
-	v_placement public.qorpera_company_machine_placements%rowtype; v_view jsonb; -- 20260930754000
+	v_placement public.qorpera_company_machine_placements%rowtype; v_view jsonb; v_detail text; -- 20260930754000
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
@@ -371,9 +410,22 @@ begin
 			where v.placement_id = v_placement.id and v.kind = 'test_machine') then
 		return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','refused',
 			'reason','MACHINE_HELD_COMPANY_FOLDER'); end if;
-	v_view := public.qorpera_folder_view_open(p_environment_id, p_actor, 'home_window',
-		jsonb_build_object('companyMachineId', v_machine.id, 'placementId', v_placement.id,
-			'bootId', v_placement.boot_id));
+	-- The open decides under the machine's locks; its two expected refusals become answers here, so the relay can say
+	-- them in plain words and start no session. Anything else is raised.
+	begin
+		v_view := public.qorpera_folder_view_open(p_environment_id, p_actor, 'home_window',
+			jsonb_build_object('companyMachineId', v_machine.id, 'placementId', v_placement.id,
+				'bootId', v_placement.boot_id));
+	exception when sqlstate '42501' then
+		get stacked diagnostics v_detail = pg_exception_detail;
+		if v_detail = 'qorpera.home-window/new-disk' then
+			return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','refused',
+				'reason','MACHINE_HELD_COMPANY_FOLDER'); end if;
+		if v_detail = 'qorpera.home-window/other-work' then
+			return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','refused',
+				'reason','MACHINE_HOLDS_OTHER_WORK'); end if;
+		raise;
+	end;
 	return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','open',
 		'viewId', v_view -> 'viewId', 'pass', v_view -> 'pass', 'leaseUntil', v_view -> 'leaseUntil',
 		'machineId', v_machine.id, 'placementId', v_placement.id, 'bootId', v_placement.boot_id);
@@ -516,10 +568,15 @@ do $$ declare v_owner name; begin
 		end if;
 	end loop;
 	-- The open takes the run entry and reads the machine rows; the window's row lock needs UPDATE.
+	-- The open takes the run entry, reads the machine rows and takes in the disk's earlier window's reads.
 	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
 		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure)) loop
 		if v_owner is distinct from current_user then
 			execute format('grant select, update on public.qorpera_folder_views to %I', v_owner);
+			execute format('grant execute on function '
+				'public.qorpera_folder_run_inherit_view_reads(uuid, jsonb, uuid, uuid) to %I', v_owner);
+			execute format('grant select, insert on public.qorpera_folder_view_reads, '
+				'public.qorpera_folder_view_read_records to %I', v_owner);
 		end if;
 	end loop;
 end $$;

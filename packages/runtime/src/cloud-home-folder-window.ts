@@ -57,6 +57,8 @@ const NO_WINDOW_WORDS = {
 		"The agent's machine is not running, so it cannot work with its own shell and files. Start or wake the machine and try again.",
 	MACHINE_HELD_COMPANY_FOLDER:
 		"This machine has held the whole company folder before, so it cannot show only what this piece of work may read. A fresh machine is needed for the agent's own shell and files.",
+	MACHINE_HOLDS_OTHER_WORK:
+		"This machine still holds work that this piece of work may not read, so it cannot be used for the agent's own shell and files. A fresh machine is needed.",
 } as const satisfies Record<Extract<CloudCompanyFolderHomeWindow, { state: "refused" }>["reason"], string>;
 
 /** A command head the folder keeps with a call: the first line, at most 300 characters, as a machine command's is. */

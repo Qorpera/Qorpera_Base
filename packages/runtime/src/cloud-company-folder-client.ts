@@ -546,6 +546,7 @@ export const HOME_WINDOW_REFUSALS = [
 	"MACHINE_NOT_FOUND",
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_HELD_COMPANY_FOLDER",
+	"MACHINE_HOLDS_OTHER_WORK",
 ] as const;
 
 /** The run's own window on its home machine (20260930754000, the agent's home slice 3), which the home mounts in place
@@ -1472,7 +1473,22 @@ export class CloudCompanyFolderClient {
 	 * before it starts a session on the home and names it to the home; the folder service renews it by its pass, and the
 	 * run's end closes it. Asking again in the same run closes the earlier window. */
 	async openHomeWindow(machineId: string, signal: AbortSignal): Promise<CloudCompanyFolderHomeWindow> {
-		const input = record(await this.#once("qorpera_folder_home_window_open", { p_request: { machineId } }, signal), [
+		// An open answer carries the window and no reason; a refusal carries the reason and none of the window. Each
+		// state's own keys are checked, never both at once.
+		const answered = await this.#once("qorpera_folder_home_window_open", { p_request: { machineId } }, signal);
+		const state = record(
+			answered,
+			["schema", "state"],
+			["viewId", "pass", "leaseUntil", "machineId", "placementId", "bootId", "reason"],
+		);
+		if (state.schema !== "qorpera.folder-home-window/v1") invalid();
+		if (state.state === "refused") {
+			const refusal = record(answered, ["schema", "state", "reason"]);
+			const reason = HOME_WINDOW_REFUSALS.find((known) => known === refusal.reason);
+			if (reason === undefined) invalid();
+			return { state: "refused", reason };
+		}
+		const input = record(answered, [
 			"schema",
 			"state",
 			"viewId",
@@ -1481,14 +1497,7 @@ export class CloudCompanyFolderClient {
 			"machineId",
 			"placementId",
 			"bootId",
-			"reason",
 		]);
-		if (input.schema !== "qorpera.folder-home-window/v1") invalid();
-		if (input.state === "refused") {
-			const reason = HOME_WINDOW_REFUSALS.find((known) => known === input.reason);
-			if (reason === undefined) invalid();
-			return { state: "refused", reason };
-		}
 		if (
 			input.state !== "open" ||
 			typeof input.viewId !== "string" ||

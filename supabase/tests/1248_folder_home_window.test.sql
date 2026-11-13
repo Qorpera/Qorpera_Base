@@ -359,7 +359,44 @@ begin
 end $$;
 
 
--- 6. A test machine's own credits are untouched: a machine command still credits a unit on the company-wide view, and
+-- 6. The disk holds what the windows before this one read: a command may have copied a file out of the folder, and the
+-- next run's shell would read the copy. So a window on a disk that has had one takes in the newest window's read set
+-- under the opening run's own authority: another agent's window, and a read this run may not make, refuse the open.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	v2 jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002');
+	vb jsonb := pg_temp.agent_b('63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hw-disk-reads');
+	mb uuid := pg_temp.machine(vb, 'hw-disk-b'); a jsonb := pg_temp.place(m); ab jsonb := pg_temp.place(mb);
+	s jsonb; r jsonb; rel uuid := extensions.gen_random_uuid();
+begin
+	-- The first run reads the narrower secret/ through its window, which puts that read on the disk's own read set.
+	s := pg_temp.hw_open(a, v);
+	r := pg_temp.hw_reads(s, rel, 'secret/s.txt');
+	if r ->> 'runId' is distinct from v ->> 'runId' then raise exception 'The first window''s read: %', r; end if;
+	-- A second run of the same agent and member takes those reads in and opens.
+	if pg_temp.hw_open(a, v2) ->> 'viewId' is null then raise exception 'A window of the same agent on the same disk'; end if;
+	if not exists (select 1 from public.qorpera_folder_run_reads where run_id = (v2 ->> 'runId')::uuid) then
+		raise exception 'The second run did not take in the disk''s reads'; end if;
+	-- Another agent's run gets no window on that disk: it would read what this agent's work left there.
+	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', a, vb), '42501',
+		'This machine holds work this run may not read', 'qorpera.home-window/other-work');
+	-- And the ask answers it, so the relay says it in plain words.
+	if public.qorpera_folder_home_window_open('63200000-0000-4000-8000-000000000020', vb,
+			jsonb_build_object('machineId', m)) ->> 'reason' is distinct from 'MACHINE_HOLDS_OTHER_WORK' then
+		raise exception 'The ask on a disk that holds another''s work'; end if;
+	-- The same the other way round: agent B's own disk takes no window of agent A's.
+	perform pg_temp.hw_reads(pg_temp.hw_open(ab, vb), extensions.gen_random_uuid(), 'QorperaOS/rules/tone.txt');
+	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', ab, v), '42501',
+		'This machine holds work this run may not read', 'qorpera.home-window/other-work');
+	-- A read the next run may no longer make refuses it too: agent A loses its grant on the narrower folder.
+	perform pg_temp.a_grants(true);
+	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', a, v2), '42501',
+		'This machine holds work this run may not read', 'qorpera.home-window/other-work');
+	perform pg_temp.a_grants(false);
+end $$;
+
+
+-- 7. A test machine's own credits are untouched: a machine command still credits a unit on the company-wide view, and
 -- the commit still lists it.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'hw-regression');

@@ -34,6 +34,7 @@ const OWNER_USER = "92400000-0000-4000-8000-000000000001";
 const PROFILE = "92400000-0000-4000-8000-000000000010";
 const HOME = "40bb0000-0000-4000-8000-000000000001";
 const OTHER = "40bb0000-0000-4000-8000-000000000002";
+const NODE = "40bb0000-0000-4000-8000-0000000000e2";
 
 /** The company's machines and their disks, as the executor's custody leaves them, plus a narrower folder resource that
  * only Alice's agent may read and one the run may not read at all. The other machine's disk gets the company-wide view
@@ -59,28 +60,20 @@ begin
 	insert into public.qorpera_runtime_machine_allocations(id, profile_id, company_machine_placement_id, provider_adapter,
 		instance_sha256, reserved_at)
 	values (v_place, '${PROFILE}', v_place, 'lxd', v_instance, clock_timestamp());
+	-- The node row and its provider are not reached in replica mode (SQL test 510 places a machine the same way).
 	insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256,
 		cpu_millis, memory_bytes, reserved_at)
-	select v_place, n.id, 'machine', 'lxd', repeat('4', 64), 2000, 4294967296, clock_timestamp()
-	from public.qorpera_runtime_nodes n limit 1;
+	values (v_place, '${NODE}', 'machine', 'lxd', repeat('4', 64), 2000, 4294967296, clock_timestamp());
 	-- A placement made before the folder check counts as used; these are fresh disks.
 	update public.qorpera_company_machine_placements set folder_unchecked_at = null where id = v_place;
 	set local session_replication_role = origin;
 	return v_place;
 end $$;
 do $$
-declare v_place uuid; v_narrow uuid;
+declare v_narrow uuid;
 begin
-	-- One node to hang the demands on, if the base has none.
-	if not exists (select 1 from public.qorpera_runtime_nodes) then
-		set local session_replication_role = replica;
-		insert into public.qorpera_runtime_nodes(id, machine_id_sha256, cpu_millis, memory_bytes, state)
-		values (extensions.gen_random_uuid(), repeat('c', 64), 16000, 68719476736, 'ready');
-		set local session_replication_role = origin;
-	end if;
-	perform set_config('qorpera_test.home_place', home_proof.machine('${HOME}', 'alice-home')::text, false);
-	v_place := home_proof.machine('${OTHER}', 'alice-other');
-	perform set_config('qorpera_test.other_place', v_place::text, false);
+	perform home_proof.machine('${HOME}', 'alice-home');
+	perform home_proof.machine('${OTHER}', 'alice-other');
 	-- The narrower folder: only Alice's agent holds a grant on it, and nobody on the locked one.
 	perform public.base_seed_home_paths();
 	v_narrow := public.qorpera_folder_set_resource('${ENVIRONMENT}',
@@ -120,15 +113,19 @@ await finish(
 		async check({ code, db, binding, run, outputs }) {
 			const signal = () => AbortSignal.timeout(30_000);
 			const runId = binding.runId;
-			const homePlace = db.json("select to_jsonb(current_setting('qorpera_test.home_place'))::text");
-			const otherPlace = db.json("select to_jsonb(current_setting('qorpera_test.other_place'))::text");
+			// Each psql call is its own session, so the placements are read from the rows, not from a setting.
+			const placeOf = (machine) =>
+				db.json(`select to_jsonb((select p.id from public.qorpera_company_machine_placements p
+					where p.machine_id = '${machine}' and p.retired_at is null))::text`);
+			const homePlace = placeOf(HOME);
+			const otherPlace = placeOf(OTHER);
 			const actor = (view) => JSON.stringify({ kind: "view", viewId: view.viewId, pass: view.pass });
 			const read = (path, who) =>
 				db.json(`select public.qorpera_folder_read('${ENVIRONMENT}', '${who}'::jsonb, '${path}')::text`);
 
 			// The run's own tools still read what it may and not what it may not: the model saw both answers.
-			assert.equal(outputs[0].answer?.found, true, "the run reads the narrower file with its own tools");
-			assert.match(String(outputs[1].output), /not found|cannot|no access|denied/i);
+			assert.match(outputs[0].text, /narrow/, `the narrower file's text: ${outputs[0].text}`);
+			assert.doesNotMatch(outputs[1].text, /locked/, `the locked file's text: ${outputs[1].text}`);
 			pass("the run's own folder tools read the narrower file and not the locked one");
 
 			// 1. The relay asks for the window before a session starts on the home.
@@ -231,16 +228,19 @@ await finish(
 			assert.equal(Number(none), 0);
 			pass("a home that cannot give a window gives plain words instead, and no window is made");
 
-			// 7. Both orders of a roll: a kernel that does not list the calls yet refuses them, so the migration goes first.
-			db.query("delete from public.qorpera_native_host_calls where name like 'qorpera_folder_home%'");
+			// 7. Both orders of a roll: over a backend without the migration the function is not there, so the ask is
+			// refused and the relay says plain words and starts no session; the migration goes before the bundle.
+			db.query(`drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
+				drop function public.qorpera_folder_home_call_open(uuid, jsonb, jsonb);
+				drop function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb);`);
 			await assert.rejects(
 				() => code.openHomeFolderWindow(run.folder, HOME, signal()),
 				(error) => {
-					assert.match(String(error), /qorpera_folder_home_window_open|not available|unknown/i);
+					assert.match(String(error), /qorpera_folder_home_window_open|not available|unknown|schema cache/i);
 					return true;
 				},
 			);
-			pass("over a kernel without the migration the ask is refused, so a release runs the migration first");
+			pass("over a backend without the migration the ask is refused, so a release runs the migration first");
 		},
 	}),
 );

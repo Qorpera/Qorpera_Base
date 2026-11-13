@@ -2910,4 +2910,62 @@ describe("the company's code: an import and how it stands (20260930736000)", () 
 			expect(read.look?.branches).toEqual(sent.branches);
 		}
 	});
+	// 20260930754000: the window's two answers have their own keys. An open answer has the window and no reason; a
+	// refusal has the reason and none of the window, exactly as qorpera_folder_home_window_open writes them.
+	it("reads both shapes of the home window's answer", async () => {
+		const window = {
+			schema: "qorpera.folder-home-window/v1",
+			state: "open",
+			viewId: randomUUID(),
+			pass: "homepass_0123456789-abcdefghijklmnopqrstuvw",
+			leaseUntil: "2026-11-13T12:00:00.123456+00:00",
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+		};
+		const opened = await fixture(() => window).client.openHomeWindow(window.machineId, signal());
+		expect(opened).toEqual({
+			state: "open",
+			viewId: window.viewId,
+			pass: window.pass,
+			machineId: window.machineId,
+			placementId: window.placementId,
+			bootId: window.bootId,
+		});
+		for (const reason of [
+			"MACHINE_NOT_FOUND",
+			"MACHINE_NOT_RUNNING",
+			"MACHINE_HELD_COMPANY_FOLDER",
+			"MACHINE_HOLDS_OTHER_WORK",
+		]) {
+			const refused = await fixture(() => ({
+				schema: "qorpera.folder-home-window/v1",
+				state: "refused",
+				reason,
+			})).client.openHomeWindow(window.machineId, signal());
+			expect(refused).toEqual({ state: "refused", reason });
+		}
+		// A reason this runtime does not know, and an answer that is neither state, are refused as invalid.
+		for (const answer of [
+			{ schema: "qorpera.folder-home-window/v1", state: "refused", reason: "WHAT" },
+			{ schema: "qorpera.folder-home-window/v1", state: "open", viewId: window.viewId },
+			{ schema: "qorpera.folder-home-window/v2", state: "refused", reason: "MACHINE_NOT_FOUND" },
+		])
+			await expect(fixture(() => answer).client.openHomeWindow(window.machineId, signal())).rejects.toThrow();
+		// The two calls on a window answer their own schema, and the end says whether it closed the call.
+		const call = { viewId: window.viewId, callId: randomUUID(), commandHead: "ls /company" };
+		await fixture(() => ({
+			schema: "qorpera.folder-home-call/v1",
+			state: "open",
+			callId: call.callId,
+		})).client.openHomeCall(call, signal());
+		expect(
+			await fixture(() => ({
+				schema: "qorpera.folder-home-call/v1",
+				state: "ended",
+				callId: call.callId,
+				closedNow: false,
+			})).client.endHomeCall({ viewId: call.viewId, callId: call.callId }, signal()),
+		).toBe(false);
+	});
 });

@@ -1669,10 +1669,10 @@ export class FolderService {
 				if (view.closedAt !== undefined) {
 					if (now - view.closedAt >= CLOSED_GRACE_MS) {
 						this.#discard(view);
-						this.#views.delete(key);
+						this.#forgetView(key, view);
 					}
 				} else if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) {
-					this.#views.delete(key);
+					this.#forgetView(key, view);
 					this.#forgetReads(view);
 				}
 			}
@@ -1786,11 +1786,15 @@ export class FolderService {
 		if (this.#retained(view)) return;
 		if (view.finalOut) {
 			if (view.connections === 0) view.idleSince ??= this.#now();
-		} else if (this.#views.get(view.key) === view) {
-			this.#views.delete(view.key);
-			// 20260930754000: a home window's call windows are kept under its own key, so they go with it.
-			if (view.access?.homeWindow) this.#windows.clear(view.key);
-		}
+		} else if (this.#views.get(view.key) === view) this.#forgetView(view.key, view);
+	}
+
+	/** Drops a view this service holds no longer. 20260930754000: a home window's call windows are kept under its own
+	 * key, so they go with it, whenever and however it goes (closed and retained for its machine's next boundary, idle,
+	 * or dropped with its last connection). */
+	#forgetView(key: string, view: View): void {
+		this.#views.delete(key);
+		if (view.access?.homeWindow) this.#windows.clear(view.key);
 	}
 
 	/** A final that did not close its view, which closed otherwise (a renewal heard why): the view goes now, as any
@@ -1820,8 +1824,7 @@ export class FolderService {
 	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
 	#drop(view: View): void {
 		if (view.closed || view.moving) return;
-		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
-		if (view.access?.homeWindow) this.#windows.clear(view.key); // 20260930754000
+		if (this.#views.get(view.key) === view) this.#forgetView(view.key, view);
 		view.lease = undefined;
 		view.closed = "No machine holds the view";
 		view.tree = undefined;
