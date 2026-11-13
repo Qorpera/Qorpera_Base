@@ -109,6 +109,24 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	);
 });
 
+// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
+// the three tools, and never a secret in a step.
+it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
+	for (const said of [
+		"When data_query is offered, the company can keep data in databases of its own.",
+		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
+		"A file is the right home for what people read: plans, notes, documents and settings.",
+		'database.toml says what it is: format = "qorpera.database/v1"',
+		"tables/NNN-<name>.sql are its steps",
+		"Never change an applied step; write a new one with a higher number.",
+		"queries/<name>.sql are its questions: one select each",
+		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"is held until a member says yes: tell them what it would destroy.",
+		"Never put a password, key or other secret in a step, a question or a row.",
+	])
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
+});
+
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
 	const f = nativeCompanyContextFixture();
 	f.context.identity = {
@@ -1577,12 +1595,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // 13 November 2026), and for a member's note sent from an app's page (its first line names the app and the thing;
 // Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
 // (13 November 2026) the instructions and prompts were measured once more.
+// With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
+// 13 November 2026) merged with that master, the staff instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "9fbeda69f38564f3cace48f87a7e77c9a4c299d479e39092b67f27a31d8f52a6",
+			instructions: "ddb3f028a768e6031c5596d269060a8742ae9d1b1039030c017a98978ec4c65a",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1598,7 +1618,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "9fbeda69f38564f3cace48f87a7e77c9a4c299d479e39092b67f27a31d8f52a6",
+			instructions: "ddb3f028a768e6031c5596d269060a8742ae9d1b1039030c017a98978ec4c65a",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

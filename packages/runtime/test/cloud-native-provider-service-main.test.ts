@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	nativeCompanyComputerConfiguration,
+	nativeCompanyDataConfiguration,
 	nativeCompanyRuntimeConfiguration,
 	nativeFolderSearchConfiguration,
 	nativeWarmIdleMs,
@@ -109,6 +110,30 @@ describe("native Company Computer service composition", () => {
 			{ QORPERA_COMPANY_COMPUTER_TOKEN: "A".repeat(43) },
 		])
 			expect(() => nativeCompanyComputerConfiguration(environment)).toThrow();
+	});
+});
+
+describe("native company data composition", () => {
+	it("takes the data gateway's run door as an HTTPS origin with its CA file, with the governed runtime, or nothing", () => {
+		expect(nativeCompanyDataConfiguration({ QORPERA_NATIVE_RUNTIME: "company-path-v1" })).toBeUndefined();
+		const environment = {
+			QORPERA_NATIVE_RUNTIME: "company-path-v1",
+			QORPERA_COMPANY_DATA_URL: "https://192.0.2.10:28480",
+			QORPERA_COMPANY_DATA_CA_FILE: "/etc/qorpera/company-data-ca.pem",
+		};
+		expect(nativeCompanyDataConfiguration(environment)).toEqual({
+			url: "https://192.0.2.10:28480",
+			caFile: "/etc/qorpera/company-data-ca.pem",
+		});
+		for (const bad of [
+			{ ...environment, QORPERA_COMPANY_DATA_URL: "http://192.0.2.10:28480" },
+			{ ...environment, QORPERA_COMPANY_DATA_URL: "https://192.0.2.10:28480/v1" },
+			{ ...environment, QORPERA_COMPANY_DATA_URL: "" },
+			{ ...environment, QORPERA_COMPANY_DATA_CA_FILE: undefined },
+			{ ...environment, QORPERA_COMPANY_DATA_CA_FILE: "ca.pem" },
+			{ ...environment, QORPERA_NATIVE_RUNTIME: undefined },
+		])
+			expect(() => nativeCompanyDataConfiguration(bad)).toThrow();
 	});
 });
 

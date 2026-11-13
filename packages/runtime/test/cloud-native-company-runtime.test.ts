@@ -101,6 +101,7 @@ async function fixture(
 	machines = false,
 	folderSearch = false,
 	timeoutMs = 10_000,
+	companyData = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -647,6 +648,16 @@ async function fixture(
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
+		// The data gateway's run door only offers the data tools here; this suite never asks it.
+		...(companyData
+			? {
+					companyData: {
+						call: async () => {
+							throw new Error("No company data call expected");
+						},
+					},
+				}
+			: {}),
 		// Folder bytes read the files seeded; this suite saves no file, and stages bytes only for a work log.
 		folderBytes: () => ({
 			put: async (bytes: Uint8Array, mediaType: string) => {
@@ -3181,7 +3192,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {
-	const f = await fixture();
+	const f = await fixture("company-runtime", false, undefined, false, false, 10_000, true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -3256,6 +3267,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
 	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
+	// On 13 November 2026 a host that names the data gateway's run door offers data_describe, data_apply and data_query
+	// after update_wall (company databases, slice 5, 20260930750000); this run's host names it, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3269,6 +3282,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"save_app",
 		"post_app",
 		"update_wall",
+		"data_describe",
+		"data_apply",
+		"data_query",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3302,9 +3318,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"60e06dc6f01a8bfc7658cc0d6d639cf7a13bf6a48aba46a71e7a4bdfae7c02ab",
+		"215636b5df92ab16beccea3ed3f2d383a50f39d9e1f4615104665cb0617bd410",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"2c604264ac21ef49fd869d4f8b3aad9fabd21eaf41c7a3d7ac93b3ebfd6e12a4",
+		"b274ce03722070697896e07add15ca6ec804e2b12b40e7439518849f26847463",
 	);
 });
