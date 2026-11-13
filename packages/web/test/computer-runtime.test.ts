@@ -154,8 +154,14 @@ function setup(
 		listGenerations: true,
 		/** The pointer route (20260930744000): there, or missing (a bridge or an executor before it, 404); and what its
 		 * requests answer, in turn (a refusal's code; then a pass, or moved). */
-		pointerRoute: "there" as "there" | "missing" | "failing",
+		pointerRoute: "there" as "there" | "missing" | "failing" | "movesFail",
 		pointerAnswers: [] as string[],
+		/** The next pointer move waits for this before it is answered (a move on its way). */
+		pointerGate: undefined as Promise<void> | undefined,
+		/** As the database: a member's looks at a machine at least 400 ms apart (20260930712000), else SCREEN_TOO_SOON;
+		 * when each machine's last look was taken, and how many were refused so. */
+		lookedAt: new Map<string, number>(),
+		tooSoon: 0,
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
 	/** A machine's row as the database lists it to the caller: their epoch, and the lease generation to one who may act. */
@@ -186,6 +192,8 @@ function setup(
 	}[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
 	const pointers: { url: string; body: Record<string, unknown> }[] = [];
+	/** Every action and pointer request as the bridge took it, in turn (the review r1 order of #1733). */
+	const order: string[] = [];
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		expect(init?.redirect).toBe("error");
@@ -209,10 +217,17 @@ function setup(
 			expect(headers.get("content-type")).toBe("application/json");
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			pointers.push({ url: url.slice(bridge.length), body });
+			order.push("begin" in body ? "begin" : `move ${String(body.x)} ${String(body.y)}`);
 			if (state.pointerRoute === "missing")
 				return Response.json({ error: "Member route is not available" }, { status: 404 });
-			if (state.pointerRoute === "failing")
+			if (state.pointerRoute === "failing" || (state.pointerRoute === "movesFail" && !("begin" in body)))
 				return Response.json({ error: "The computer is unavailable just now." }, { status: 502 });
+			if (!("begin" in body) && state.pointerGate) {
+				const gate = state.pointerGate;
+				state.pointerGate = undefined;
+				await gate;
+				order.push(`moved ${String(body.x)} ${String(body.y)}`);
+			}
 			const code = state.pointerAnswers.shift();
 			if (code) return Response.json({ code }, { status: 409 });
 			if ("begin" in body)
@@ -247,6 +262,7 @@ function setup(
 				signal: init?.signal ?? undefined,
 			};
 			acts.push(sent);
+			order.push(`act ${String(body.action.type)}`);
 			const answer = state.actAnswers.shift() ?? { exitCode: 0 };
 			if ("hold" in answer) await answer.hold;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
@@ -281,6 +297,14 @@ function setup(
 			expect(init?.cache).toBe("no-store");
 			const asked = headers.get("if-none-match");
 			looks.push({ url: url.slice(bridge.length), etag: asked ? asked.slice(1, -1) : null });
+			// As the database: a look within 400 ms of the member's last one taken is refused, and not taken.
+			const lookedMachine = url.slice(bridge.length).split("/")[4] as string;
+			const lookedLast = state.lookedAt.get(lookedMachine);
+			if (lookedLast !== undefined && Date.now() - lookedLast < 400) {
+				state.tooSoon++;
+				return Response.json({ code: "SCREEN_TOO_SOON" }, { status: 409 });
+			}
+			state.lookedAt.set(lookedMachine, Date.now());
 			if (state.lookGate) {
 				const gate = state.lookGate;
 				state.lookGate = undefined;
@@ -481,6 +505,7 @@ function setup(
 		starts,
 		rpcs,
 		pointers,
+		order,
 		hints,
 		decode,
 		hint: (resource: RealtimeResource) => hint?.(resource),
@@ -4036,7 +4061,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		expect(bodies(s)[1]).toMatchObject({ x: 200, y: 200 });
 	});
 
-	it("looks at least every 250 ms while the pointer moves, so a hover shows soon, and backs off once it stops", async () => {
+	it("does not back off while the pointer moves, never looks sooner than the database takes, and backs off once it stops", async () => {
 		const s = setup();
 		const { p } = await inside(s);
 		// Unchanged pictures: the window has backed off to a look every 2 to 3 s.
@@ -4044,18 +4069,137 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		let before = s.looks.length;
 		await advance(1000);
 		expect(s.looks.length - before).toBeLessThanOrEqual(1);
-		// The pointer moves for a second: a look at least every 250 ms (one in flight).
+		// The pointer moves for two seconds: a look every 450 ms (review r1 F5 of #1733), and none refused as too soon.
 		before = s.looks.length;
-		for (let n = 0; n < 25; n++) {
+		for (let n = 0; n < 50; n++) {
 			hover(p, 100 + n, 100);
 			await advance(40);
 		}
 		expect(s.looks.length - before).toBeGreaterThanOrEqual(4);
+		expect(s.looks.length - before).toBeLessThanOrEqual(5);
+		expect(s.state.tooSoon).toBe(0);
 		// It stopped: the window backs off again as before (450 ms, then 1 s, 2 s, 3 s).
 		await advance(5000);
 		before = s.looks.length;
 		await advance(2000);
 		expect(s.looks.length - before).toBeLessThanOrEqual(1);
+		expect(s.state.tooSoon).toBe(0);
+	});
+
+	it("sends a move made while a click, a wheel turn or text waits in the picture only after that action (review r1 F3 of #1733)", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		hover(p, 50, 50);
+		await advance(40);
+		await flush();
+		// A click on a hover menu's item, then the pointer moves away at once: the click waits for its second (250 ms).
+		press(canvas(p), 100, 100);
+		hover(p, 300, 300);
+		hover(p, 310, 310);
+		await advance(100);
+		await flush();
+		expect(s.order.filter((one) => one.startsWith("move ")).at(-1)).toBe("move 100 100");
+		await advance(DOUBLE_CLICK_MS);
+		await flush();
+		await advance(40);
+		await flush();
+		// The click went first, then the newest position.
+		expect(s.order.slice(-2)).toEqual(["act click", "move 620 620"]);
+		// A wheel burst, then a move.
+		canvas(p).dispatchEvent(new WheelEvent("wheel", { deltaY: 200, clientX: 200, clientY: 200, bubbles: true }));
+		hover(p, 50, 60);
+		await flush();
+		expect(s.order.at(-1)).toBe("move 620 620");
+		await advance(1000);
+		await flush();
+		await advance(40);
+		await flush();
+		expect(s.order.slice(-2)).toEqual(["act scroll", "move 100 120"]);
+		// Text being typed, then a move.
+		canvas(p).dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+		hover(p, 70, 80);
+		await flush();
+		expect(s.order.at(-1)).toBe("move 100 120");
+		await advance(2000);
+		await flush();
+		await advance(40);
+		await flush();
+		expect(s.order.slice(-2)).toEqual(["act type", "move 140 160"]);
+	});
+
+	it("sends an action only once the move on its way was answered (review r1 F1 of #1733)", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		hover(p, 50, 50);
+		await advance(40);
+		await flush();
+		let open = () => {};
+		s.state.pointerGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		hover(p, 60, 60);
+		await advance(40);
+		await flush();
+		// A right click (it goes at once) while that move is on its way: it waits for the move's answer.
+		press(canvas(p), 10, 10, { button: 2 });
+		await advance(200);
+		await flush();
+		expect(s.acts).toEqual([]);
+		open();
+		await flush();
+		await advance(10);
+		await flush();
+		expect(s.order.slice(-3)).toEqual(["move 120 120", "moved 120 120", "act click"]);
+	});
+
+	it("after a move whose answer never came, sends no action until that move's pass has ended everywhere", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		s.state.pointerRoute = "movesFail";
+		hover(p, 50, 50);
+		await advance(40);
+		await flush();
+		expect(s.order).toEqual(["begin", "move 100 100"]);
+		// A right click right after: the move may still land, so the click waits for its pass (10 s and a second).
+		press(canvas(p), 10, 10, { button: 2 });
+		await advance(5000);
+		await flush();
+		expect(s.acts).toEqual([]);
+		await advance(6500);
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
+		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
+	});
+
+	it("comes back after the desktop went away and came back under the same private hold (review r1 F4 of #1733)", async () => {
+		const { s, p } = await inside();
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(true);
+		hover(p, 100, 100);
+		await flush();
+		await advance(40);
+		// The desktop is off for a moment: the move says so.
+		s.state.pointerAnswers.push("DESKTOP_NOT_RUNNING");
+		hover(p, 110, 110);
+		await flush();
+		await advance(40);
+		const asked = s.pointers.length;
+		// Moves during the pause send nothing.
+		hover(p, 120, 120);
+		await advance(1000);
+		await flush();
+		expect(s.pointers).toHaveLength(asked);
+		// It is back: the next move after the pause begins a pass at the same hold, and goes.
+		await advance(2500);
+		hover(p, 130, 130);
+		await flush();
+		await advance(40);
+		await flush();
+		expect(bodies(s).slice(asked)).toEqual([
+			{ begin: { epoch: 0, seat: 1 } },
+			{ pass: bodies(s)[asked + 1]?.pass, x: 260, y: 260 },
+		]);
 	});
 });
 

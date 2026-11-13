@@ -25,6 +25,7 @@ import {
 	COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
 	COMPANY_MACHINE_MEMBER_START,
 	COMPANY_MACHINE_MEMBER_TYPE,
+	COMPANY_MACHINE_POINTER_FENCE,
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
@@ -4396,40 +4397,73 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		y: 443,
 		...change,
 	});
-	/** A mover's run as the machine sees it: the lines its stdin gave, and how the test ends it (its exit). */
+	/** A mover's run as the machine sees it: the lines its stdin gave, and how the test ends it (its exit). While `held`,
+	 * it reads no further line (the line it read last sits in its stdin, and the host's next waits in the pipe). */
 	interface Run {
 		request: LxdExecPipeRequest;
 		signal: AbortSignal;
 		lines: string[];
 		end(exitCode: number): void;
+		held: boolean;
+		read(): void;
 	}
-	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; a look answers a picture; an agent's action
-	 * holds until released. */
+	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; the pointer fence answers `fenceExit`; a
+	 * look answers a picture; an agent's action holds until released. `order` is every exec's kind, in turn. */
 	async function piped() {
 		const f = await fixture();
 		const runs: Run[] = [];
 		const looks: LxdExecPipeRequest[] = [];
+		const fences: string[] = [];
+		const order: string[] = [];
+		const config = { fenceExit: 0 };
 		let releaseAction = () => {};
 		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
 			if (given.command[2] === COMPANY_MACHINE_MEMBER_POINTER) {
+				order.push("mover");
 				let finish: (exitCode: number) => void = () => {};
 				const ended = new Promise<number>((resolve) => {
 					finish = resolve;
 				});
-				const run: Run = { request: given, signal, lines: [], end: (exitCode) => finish(exitCode) };
+				let reading: () => void = () => {};
+				const run: Run = {
+					request: given,
+					signal,
+					lines: [],
+					end: (exitCode) => finish(exitCode),
+					held: false,
+					read: () => {
+						run.held = false;
+						reading();
+					},
+				};
 				runs.push(run);
 				void (async () => {
-					for await (const chunk of given.stdin as AsyncIterable<Uint8Array>)
-						run.lines.push(Buffer.from(chunk).toString("ascii"));
+					const lines = (given.stdin as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+					for (;;) {
+						if (run.held)
+							await new Promise<void>((resolve) => {
+								reading = resolve;
+							});
+						const next = await lines.next();
+						if (next.done) break;
+						run.lines.push(Buffer.from(next.value).toString("ascii"));
+					}
 					finish(0);
 				})();
 				signal.addEventListener("abort", () => finish(137), { once: true });
 				return { exitCode: await ended, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 			}
+			if (given.command[2] === COMPANY_MACHINE_POINTER_FENCE) {
+				order.push(`fence ${given.command[4]}`);
+				fences.push(given.command[4] as string);
+				return { exitCode: config.fenceExit, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
 			if (given.command[2] === COMPANY_MACHINE_MEMBER_LOOK) {
+				order.push("look");
 				looks.push(given);
 				return { exitCode: 0, stdout: png(), stderrTail: Buffer.alloc(0) };
 			}
+			order.push("action");
 			await new Promise<void>((resolve) => {
 				releaseAction = resolve;
 			});
@@ -4437,8 +4471,31 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			return { exitCode: 97, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 		});
 		Object.assign(f.client, { execInstancePipe: pipe });
-		return { f, pipe, runs, looks, release: () => releaseAction() };
+		return { f, pipe, runs, looks, fences, order, config, release: () => releaseAction() };
 	}
+	/** A line the mover read: its position and the fence it carries. */
+	const line = (text: string) => {
+		const [x, y, fence] = text.trimEnd().split(" ");
+		expect(text).toMatch(/^\d{1,4} \d{1,4} [0-9a-f]{16}:\d+\n$/);
+		return { at: `${x} ${y}`, fence: fence as string };
+	};
+	const agentClick = (f: Awaited<ReturnType<typeof piped>>["f"], generation = 4) =>
+		f.host.screen(
+			{
+				placementId: id(6),
+				bootId: id(7),
+				runId: id(9),
+				desktopGeneration: generation,
+				request: {
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: id(8),
+					action: { type: "click", x: 1, y: 1 },
+					settleMs: 0,
+					look: false,
+				},
+			},
+			f.signal,
+		);
 	const settle = async () => {
 		for (let n = 0; n < 5; n++) await new Promise((resolve) => setImmediate(resolve));
 	};
@@ -4450,11 +4507,14 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		expect(f.host.memberPointer(move({ x: 12, y: 22 }))).toEqual({ moved: true });
 		await settle();
 		expect(runs).toHaveLength(1);
-		// The three came before the mover read: the newest alone went.
-		expect(runs[0]!.lines).toEqual(["12 22\n"]);
+		// The three came before the mover read: the newest alone went, with the host's fence of now.
+		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["12 22"]);
 		expect(f.host.memberPointer(move({ x: 13, y: 23 }))).toEqual({ moved: true });
 		await settle();
-		expect(runs[0]!.lines).toEqual(["12 22\n", "13 23\n"]);
+		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["12 22", "13 23"]);
+		// One fence for both, the mover's own (its start's).
+		const fence = line(runs[0]!.lines[0]!).fence;
+		expect(runs[0]!.lines.map((text) => line(text).fence)).toEqual([fence, fence]);
 		expect(pipe).toHaveBeenCalledTimes(1);
 		expect(f.methods()).toEqual([]);
 		// As root on SQL's boot, the fixed script and its program, nothing else; nothing comes back but its exit.
@@ -4467,6 +4527,7 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			COMPANY_MACHINE_MEMBER_POINTER,
 			id(7),
 			COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
+			fence,
 		]);
 		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 64, stderrTailBytes: 0 });
 		for (const part of [
@@ -4474,51 +4535,185 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			"command -v python3 >/dev/null 2>&1 || exit 98",
 			"systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo",
 			"|| exit 95",
-			'exec python3 -c "$1"',
+			'exec python3 -c "$1" "$2"',
 		])
 			expect(COMPANY_MACHINE_MEMBER_POINTER).toContain(part);
-		// It moves the pointer and touches the idle clock; it reads nothing but two short numbers, starts nothing.
+		// It moves the pointer only for a line whose fence is the desktop's, holding the lock, and waits for the X server
+		// to have done it; it touches the idle clock; it reads nothing but two short numbers and a fence, starts nothing.
 		for (const part of [
+			"fcntl.flock(lock, fcntl.LOCK_EX)",
+			"if words[2].decode('ascii', 'replace') == fence():",
 			"XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
-			"word.isdigit() and len(word) <= 4",
+			"x11.XSync(display, 0)",
+			"fcntl.flock(lock, fcntl.LOCK_UN)",
+			"word.isdigit() and len(word) <= 4 for word in words[:2]",
+			"if newer(start, fence()):",
 			"os.utime('/run/qorpera-desktop/last-use')",
 			"if now - touched >= 30:",
 		])
 			expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).toContain(part);
-		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|open\(/);
+		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|XFlush/);
+		// It opens only its lock and its fence.
+		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM.match(/open\('[^']*'/g)).toEqual([
+			"open('/run/qorpera-desktop/pointer.lock'",
+			"open('/run/qorpera-desktop/pointer-fence'",
+			"open('/run/qorpera-desktop/pointer-fence'",
+		]);
 		runs[0]!.end(0);
 	});
 
 	it("drops a move, never queues it, while an action holds the desktop, and moves again after it", async () => {
-		const { f, runs, release } = await piped();
-		const acting = f.host.screen(
-			{
-				placementId: id(6),
-				bootId: id(7),
-				runId: id(9),
-				desktopGeneration: 4,
-				request: {
-					schema: "qorpera.machine-screen-request/v1",
-					receiptId: id(8),
-					action: { type: "click", x: 1, y: 1 },
-					settleMs: 0,
-					look: false,
-				},
-			},
-			f.signal,
-		);
+		const { f, runs, fences, release } = await piped();
+		const acting = agentClick(f);
 		await settle();
 		expect(f.host.memberPointer(move({ x: 30, y: 40 }))).toEqual({ moved: false });
 		await settle();
 		expect(runs).toHaveLength(0);
 		release();
 		await acting.catch(() => undefined);
+		// No mover ran before it: no fence was written for it.
+		expect(fences).toEqual([]);
 		// The action ended: the desktop is free again.
 		expect(f.host.memberPointer(move({ x: 31, y: 41 }))).toEqual({ moved: true });
 		await settle();
-		expect(runs[0]!.lines).toEqual(["31 41\n"]);
+		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["31 41"]);
 		runs[0]!.end(0);
 	});
+
+	it("never lets a move taken before an action move the pointer once the action runs, wherever it waits (review r1 F1 of #1733)", async () => {
+		const { f, runs, fences, order, release } = await piped();
+		f.host.memberPointer(move({ x: 10, y: 10 }));
+		await settle();
+		const before = line(runs[0]!.lines[0]!).fence;
+		// The mover reads one more and then no further: that one sits in its stdin (read, not yet done), and the next waits
+		// in the host's pipe.
+		runs[0]!.held = true;
+		f.host.memberPointer(move({ x: 20, y: 20 }));
+		await settle();
+		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["10 10", "20 20"]);
+		f.host.memberPointer(move({ x: 30, y: 30 }));
+		await settle();
+		expect(runs[0]!.lines).toHaveLength(2);
+		// An agent's click: the desktop gets a newer fence, and only then does the click run.
+		const acting = agentClick(f);
+		await settle();
+		expect(order).toEqual(["mover", `fence ${fences[0]}`, "action"]);
+		expect(fences).toHaveLength(1);
+		expect(fences[0]).not.toBe(before);
+		expect(fences[0]!.split(":")[0]).toBe(before.split(":")[0]);
+		expect(Number(fences[0]!.split(":")[1])).toBeGreaterThan(Number(before.split(":")[1]));
+		// The action ran and ended before the mover read on. What waited reaches it only with the old fence (the desktop
+		// drops it), or not at all (the host drops it: its fence moved).
+		release();
+		await acting.catch(() => undefined);
+		runs[0]!.read();
+		await settle();
+		for (const text of runs[0]!.lines) expect(line(text).fence).toBe(before);
+		expect(runs[0]!.lines.map((text) => line(text).at)).not.toContain("30 30");
+		// After the action, a move goes with the fence the desktop has now.
+		f.host.memberPointer(move({ x: 40, y: 40 }));
+		await settle();
+		expect(line(runs[0]!.lines.at(-1)!)).toEqual({ at: "40 40", fence: fences[0] });
+		// A member's action fences the same way, before it runs.
+		const member = f.host.memberAct(
+			{
+				seat: 4,
+				shared: true,
+				userId: id(21),
+				placementId: id(6),
+				bootId: id(7),
+				actionId: id(31),
+				action: { type: "click", x: 5, y: 5 },
+			},
+			f.signal,
+		);
+		await settle();
+		expect(order.slice(-2)).toEqual([`fence ${fences[1]}`, "action"]);
+		expect(Number(fences[1]!.split(":")[1])).toBeGreaterThan(Number(fences[0]!.split(":")[1]));
+		release();
+		await member.catch(() => undefined);
+		runs[0]!.end(0);
+	});
+
+	it("never lets a move taken before a newer generation's look move the pointer after it (review r1 F2 of #1733)", async () => {
+		const { f, runs, fences, order } = await piped();
+		f.host.memberPointer(move({ x: 10, y: 10, generation: 4 }));
+		await settle();
+		const before = line(runs[0]!.lines[0]!).fence;
+		runs[0]!.held = true;
+		f.host.memberPointer(move({ x: 20, y: 20, generation: 4 }));
+		await settle();
+		f.host.memberPointer(move({ x: 30, y: 30, generation: 4 }));
+		await settle();
+		// The private holder's window looks (generation 5): the fence is on the desktop before its picture is taken.
+		await f.host.memberLook(
+			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 5 },
+			f.signal,
+		);
+		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look"]);
+		expect(Number(fences[0]!.split(":")[1])).toBeGreaterThan(Number(before.split(":")[1]));
+		runs[0]!.read();
+		await settle();
+		// The queued shared move of generation 4 never went; what went before carries the old fence only.
+		for (const text of runs[0]!.lines) expect(line(text).fence).toBe(before);
+		expect(runs[0]!.lines.map((text) => line(text).at)).not.toContain("30 30");
+		// The same look again (no newer generation): no fence.
+		await f.host.memberLook(
+			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 5 },
+			f.signal,
+		);
+		expect(fences).toHaveLength(1);
+		runs[0]!.end(0);
+	});
+
+	it("runs no action when the fence could not be written, and frees the desktop at once", async () => {
+		const { f, runs, config, order, release } = await piped();
+		f.host.memberPointer(move());
+		await settle();
+		config.fenceExit = 1;
+		await expect(agentClick(f)).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		expect(order).not.toContain("action");
+		// Nothing ran: no grace, the next action is not refused DESKTOP_BUSY.
+		config.fenceExit = 0;
+		const next = agentClick(f);
+		await settle();
+		expect(order.at(-1)).toBe("action");
+		release();
+		await next.catch(() => undefined);
+		runs[0]!.end(0);
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"writes a fence on the desktop only when it is newer: a higher count, or another host process's",
+		async () => {
+			const dir = await mkdtemp(join(tmpdir(), "pointer-fence-"));
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const script = COMPANY_MACHINE_POINTER_FENCE.replaceAll("/run/qorpera-desktop", dir);
+			const write = (fence: string, onBoot = boot) =>
+				spawnSync("/bin/sh", ["-c", script, onBoot, fence], { encoding: "utf8" }).status;
+			const kept = () => readFileSync(join(dir, "pointer-fence"), "utf8");
+			const a = "0123456789abcdef";
+			const b = "fedcba9876543210";
+			expect(write(`${a}:3`)).toBe(0);
+			expect(kept()).toBe(`${a}:3`);
+			// An older count of the same process never goes back.
+			expect(write(`${a}:2`)).toBe(0);
+			expect(kept()).toBe(`${a}:3`);
+			expect(write(`${a}:3`)).toBe(0);
+			expect(write(`${a}:12`)).toBe(0);
+			expect(kept()).toBe(`${a}:12`);
+			// Another host process (its NONCE): its fence, whatever its count.
+			expect(write(`${b}:0`)).toBe(0);
+			expect(kept()).toBe(`${b}:0`);
+			// Not a fence, or another boot: nothing written.
+			expect(write("12; rm -rf /")).toBe(1);
+			expect(write(`${a}:99`, "00000000-0000-0000-0000-000000000000")).toBe(97);
+			expect(kept()).toBe(`${b}:0`);
+			// No desktop (no folder): nothing to fence.
+			await rm(dir, { recursive: true });
+			expect(write(`${a}:100`)).toBe(0);
+		},
+	);
 
 	it("refuses a pass of an older lease generation once the host saw a newer one, a shared and a private one", async () => {
 		const { f, runs } = await piped();

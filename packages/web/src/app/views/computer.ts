@@ -56,10 +56,21 @@ const POINTER_RENEW_MS = 2500;
 /** At most one pass's begin this often on a hold or a sharing: a begin is SQL's (two calls and the pass's row), so one that
  * failed (no answer, a pass gone again at once) is asked again after this, never at the pointer's pace or in a loop. */
 const POINTER_BEGIN_EVERY_MS = 1000;
-/** While the member's pointer moved in the last POINTER_MOVING_MS, the window looks every POINTER_LOOK_MS (one in
- * flight), so a hover shows soon: at the last move's end the next look is at most this far off. */
-const POINTER_LOOK_MS = 250;
+/** While the member's pointer moved in the last POINTER_MOVING_MS, the window does not back off: it looks every
+ * LOOK_EVERY_MS, the database's own least time between a member's looks (400 ms) and a margin, so a hover shows within
+ * one look and none is refused SCREEN_TOO_SOON (review r1 F5 of #1733). */
 const POINTER_MOVING_MS = 1000;
+/** A pass the executor may still hold ends, on every node, by its answer's time plus its milliseconds and this. */
+const POINTER_PASS_MARGIN_MS = 1000;
+/** After a refusal that a desktop coming back ends (the screen off, a restart, the machine asleep), no new pass for this
+ * long; the member's next move after it begins one (review r1 F4 of #1733). Never a loop: only a move asks again. */
+const POINTER_PAUSE_MS = 3000;
+/** The refusals POINTER_PAUSE_MS waits out; every other one ends that hold's or sharing's pointer. */
+const POINTER_PASSING: ReadonlySet<string> = new Set([
+	"DESKTOP_NOT_RUNNING",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_NOT_RUNNING",
+]);
 /** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
  * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
  * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
@@ -204,13 +215,20 @@ interface SharedInput {
 	readonly pointer: PointerLane;
 }
 
-/** The member's pointer under a hold or a sharing (20260930744000): the pass it moves on (from the executor, for 10 s), the
- * newest position not sent yet (a newer one replaces it: never a queue), whether a request is on its way, when the last
- * move went, and whether this hold's or sharing's pointer is done for (a refusal that a new pass would only repeat). */
+/** The member's pointer under a hold or a sharing (20260930744000): the pass it moves on (from the executor, for 10 s:
+ * when to begin another, and by when no node holds it any more), the newest position not sent yet (a newer one replaces
+ * it: never a queue), whether a request is on its way, the move on its way (`moving`: an action waits for its answer),
+ * until when an action waits for a move whose answer never came (`unsure`: its pass has ended everywhere by then, so it
+ * can no longer land after the action), until when a desktop that went away is waited out (`paused`), when the last move
+ * and the last begin went, and whether this hold's or sharing's pointer is done for (a refusal that a new pass would only
+ * repeat). */
 interface PointerLane {
-	pass: { readonly id: string; readonly until: number } | null;
+	pass: { readonly id: string; readonly until: number; readonly endsBy: number } | null;
 	pending: { readonly x: number; readonly y: number } | null;
 	inFlight: boolean;
+	moving: Promise<void> | null;
+	unsure: number;
+	paused: number;
 	sentAt: number;
 	begunAt: number;
 	done: boolean;
@@ -221,6 +239,9 @@ function pointerLane(): PointerLane {
 		pass: null,
 		pending: null,
 		inFlight: false,
+		moving: null,
+		unsure: Number.NEGATIVE_INFINITY,
+		paused: Number.NEGATIVE_INFINITY,
 		sentAt: Number.NEGATIVE_INFINITY,
 		begunAt: Number.NEGATIVE_INFINITY,
 		done: false,
@@ -874,9 +895,9 @@ export class ComputerPanel {
 				continue;
 			}
 			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
-			// While the member's pointer moves, the window looks more often, so a hover shows (20260930744000).
+			// While the member's pointer moves, the window does not back off, so a hover shows within a look (20260930744000).
 			const delay =
-				Date.now() - this.#movedAt < POINTER_MOVING_MS ? Math.min(this.#delay, POINTER_LOOK_MS) : this.#delay;
+				Date.now() - this.#movedAt < POINTER_MOVING_MS ? Math.min(this.#delay, LOOK_EVERY_MS) : this.#delay;
 			const due = this.#lastLook + delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
@@ -1435,6 +1456,9 @@ export class ComputerPanel {
 					continue;
 				}
 				observed = undefined;
+				// A move of this hold's or sharing's on its way goes first (review r1 F1 of #1733); after a wait, everything above
+				// is checked again.
+				if (!(await this.#pointerSettled(sender))) continue;
 				let answer: MachineActAnswer | undefined;
 				try {
 					answer = await computer.screens.act(
@@ -1552,6 +1576,11 @@ export class ComputerPanel {
 		const computer = this.#computer;
 		if (!computer || lane.inFlight || !lane.pending || lane.done || this.#pointerOff) return;
 		if (sender.queue.length > 0 || sender.sending || !this.#pointerCurrent(sender)) return;
+		// A desktop that went away is waited out: the position goes nowhere, and a move after the pause asks again.
+		if (Date.now() < lane.paused) {
+			lane.pending = null;
+			return;
+		}
 		const hold = "seat" in sender ? sender : undefined;
 		const begins = !lane.pass || lane.pass.until - Date.now() < POINTER_RENEW_MS;
 		const wait = begins
@@ -1581,7 +1610,12 @@ export class ComputerPanel {
 				const began = Date.now();
 				lane.begunAt = began;
 				const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
-				if (answer.kind === "pass") lane.pass = { id: answer.pass, until: began + answer.milliseconds };
+				if (answer.kind === "pass")
+					lane.pass = {
+						id: answer.pass,
+						until: began + answer.milliseconds,
+						endsBy: Date.now() + answer.milliseconds + POINTER_PASS_MARGIN_MS,
+					};
 				else {
 					// No pass: the position waits for none; the member's next move brings the next one.
 					lane.pending = null;
@@ -1590,18 +1624,36 @@ export class ComputerPanel {
 				return;
 			}
 			const at = lane.pending;
+			const pass = lane.pass;
 			lane.pending = null;
 			lane.sentAt = Date.now();
-			const answer = await computer.screens.pointer(
-				sender.machineId,
-				{ pass: lane.pass.id, x: at.x, y: at.y },
-				sender.stop.signal,
-			);
-			if (answer.kind === "moved") {
-				// The window looks sooner while the pointer moves, so a hover shows.
-				this.#movedAt = Date.now();
-				if (this.#delay > POINTER_LOOK_MS) this.#quicken();
-			} else this.#pointerRefused(sender, answer);
+			// An action of this hold or sharing waits for this move's answer (review r1 F1 of #1733): what the executor
+			// answered it took in that order, so the action comes after it.
+			let moved: () => void = () => {};
+			lane.moving = new Promise<void>((resolve) => {
+				moved = resolve;
+			});
+			try {
+				const answer = await computer.screens.pointer(
+					sender.machineId,
+					{ pass: pass.id, x: at.x, y: at.y },
+					sender.stop.signal,
+				);
+				if (answer.kind === "moved") {
+					// The window does not back off while the pointer moves, so a hover shows within a look.
+					this.#movedAt = Date.now();
+					if (this.#delay > LOOK_EVERY_MS) this.#quicken();
+				} else this.#pointerRefused(sender, answer);
+			} catch (error) {
+				// No answer: the move may still land. Its pass is not used again, and an action waits until that pass has
+				// ended on every node, so the move can no longer come after it.
+				lane.unsure = Math.max(lane.unsure, pass.endsBy);
+				if (lane.pass === pass) lane.pass = null;
+				throw error;
+			} finally {
+				lane.moving = null;
+				moved();
+			}
 		} catch {
 			// No answer (the network, a slow bridge): the newest position goes with the next move. After a begin that got
 			// none, nothing is asked again until the member's next move (and then at most once a second): never in a loop.
@@ -1610,6 +1662,34 @@ export class ComputerPanel {
 			lane.inFlight = false;
 			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
 		}
+	}
+
+	/** Whether the hold's or sharing's pointer let its next action go at once: a move on its way is waited for (its answer
+	 * puts it before the action), and a move whose answer never came until its pass has ended everywhere. False when it
+	 * waited (the caller checks again what may have changed meanwhile). */
+	async #pointerSettled(sender: PageHold | SharedInput): Promise<boolean> {
+		const lane = sender.pointer;
+		let settled = true;
+		while (lane.moving) {
+			settled = false;
+			await lane.moving;
+		}
+		const unsure = lane.unsure - Date.now();
+		if (unsure > 0) {
+			settled = false;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, unsure);
+				sender.stop.signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+		}
+		return settled;
 	}
 
 	/** A pointer request that did not move the pointer. */
@@ -1624,6 +1704,12 @@ export class ComputerPanel {
 		}
 		if (answer.kind !== "refused" || answer.code === "POINTER_PASS_ENDED") return;
 		lane.pending = null;
+		// The desktop went away for now (off, restarting, asleep): its pointer comes back with it, after a pause.
+		if (POINTER_PASSING.has(answer.code)) {
+			lane.paused = Date.now() + POINTER_PAUSE_MS;
+			this.#quicken();
+			return;
+		}
 		lane.done = true;
 		// Someone took the desktop since this sharing's generation, unseen: as an action's refusal, no sharing until a list
 		// read begun now names the generation that stands (20260930738000).

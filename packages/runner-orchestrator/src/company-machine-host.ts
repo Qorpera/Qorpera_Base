@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -167,21 +167,34 @@ export const COMPANY_MACHINE_MEMBER_LOOK = [
 ].join("\n");
 /** The pointer's mover (20260930744000): one held-open X connection per desktop while a member's pointer moves, run as
  * root on exactly the boot SQL named (`$0`, else 97), with what the image has (python3, libX11, libXtst; else 98) and the
- * desktop's display answering (else 95). It reads `X Y` lines on stdin and moves the pointer there (XTest), flushing
- * each; nothing else is ever read or done: a line that is not two whole numbers of at most four digits is skipped. It
- * touches the desktop's idle clock at most every 30 s (a member at the desktop). It answers nothing and prints nothing.
- * Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, 0.004 of a core for the mover at 60
- * moves a second, no process per move. It ends when its stdin ends (the host closes it after MEMBER_POINTER_IDLE_MS
- * without a move) or LXD kills it. */
+ * desktop's display answering (else 95). Its program (`$1`) gets the host's pointer fence as it was when the mover was
+ * started (`$2`, below). It reads `X Y FENCE` lines on stdin and moves the pointer to X, Y only while the desktop's fence
+ * is still FENCE; nothing else is ever read or done: a line that is not two whole numbers of at most four digits and a
+ * fence is skipped. It touches the desktop's idle clock at most every 30 s (a member at the desktop). It answers nothing
+ * and prints nothing. It ends when its stdin ends (the host closes it after MEMBER_POINTER_IDLE_MS without a move) or LXD
+ * kills it.
+ *
+ * The fence (review r1 F1 and F2 of #1733): a move the host gave the mover can wait in the host's pipe, LXD's websocket,
+ * the program's stdin and its read buffer. Whatever the host learned since it gave it (an action took the desktop, a
+ * newer lease generation) must stop it there. The host keeps a fence per desktop, `NONCE:COUNT` (NONCE its own, random
+ * per host process; COUNT moved at every action and every newer generation it sees) and stamps each move with the fence
+ * of the moment it took it. The desktop keeps the newest fence in /run/qorpera-desktop/pointer-fence: before an action
+ * runs, and before a look that showed a newer generation, the host writes its new fence there
+ * (COMPANY_MACHINE_POINTER_FENCE) and waits for it, and the mover writes its own at its start (only ever newer: same
+ * NONCE and a higher COUNT, or another NONCE, a new host process). The mover moves the pointer only while holding
+ * pointer.lock, only for a line whose fence is the file's, and waits for the X server to have done it (XSync) before it
+ * lets the lock go. So a move either took effect before the fence moved (before the action, before the newer holder's
+ * look) or never does. Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, no process per
+ * move. */
 export const COMPANY_MACHINE_MEMBER_POINTER = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"command -v python3 >/dev/null 2>&1 || exit 98",
 	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
-	'exec python3 -c "$1"',
+	'exec python3 -c "$1" "$2"',
 ].join("\n");
-/** The mover's program (COMPANY_MACHINE_MEMBER_POINTER's `$1`). */
+/** The mover's program (COMPANY_MACHINE_MEMBER_POINTER's `$1`; its fence at its start is `sys.argv[1]`). */
 export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
-	"import ctypes, os, sys, time",
+	"import ctypes, fcntl, os, re, sys, time",
 	"try:",
 	"    x11 = ctypes.CDLL('libX11.so.6')",
 	"    xtest = ctypes.CDLL('libXtst.so.6')",
@@ -189,18 +202,43 @@ export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
 	"    sys.exit(98)",
 	"x11.XOpenDisplay.restype = ctypes.c_void_p",
 	"x11.XOpenDisplay.argtypes = [ctypes.c_char_p]",
-	"x11.XFlush.argtypes = [ctypes.c_void_p]",
+	"x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]",
 	"xtest.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]",
+	"FENCE = re.compile(r'[0-9a-f]{16}:[0-9]{1,15}')",
+	"start = sys.argv[1] if len(sys.argv) > 1 else ''",
+	"if not FENCE.fullmatch(start):",
+	"    sys.exit(1)",
 	"display = x11.XOpenDisplay(b':1')",
 	"if not display:",
 	"    sys.exit(95)",
+	"lock = os.open('/run/qorpera-desktop/pointer.lock', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)",
+	"def fence():",
+	"    try:",
+	"        with open('/run/qorpera-desktop/pointer-fence') as f:",
+	"            return f.read().strip()",
+	"    except OSError:",
+	"        return ''",
+	"def newer(new, old):",
+	"    if not FENCE.fullmatch(old):",
+	"        return True",
+	"    return new[:16] != old[:16] or int(new[17:]) > int(old[17:])",
+	"fcntl.flock(lock, fcntl.LOCK_EX)",
+	"if newer(start, fence()):",
+	"    with open('/run/qorpera-desktop/pointer-fence', 'w') as f:",
+	"        f.write(start)",
+	"fcntl.flock(lock, fcntl.LOCK_UN)",
 	"touched = 0.0",
 	"for line in sys.stdin.buffer:",
 	"    words = line.split()",
-	"    if len(words) != 2 or not all(word.isdigit() and len(word) <= 4 for word in words):",
+	"    if len(words) != 3 or not all(word.isdigit() and len(word) <= 4 for word in words[:2]):",
 	"        continue",
-	"    xtest.XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
-	"    x11.XFlush(display)",
+	"    fcntl.flock(lock, fcntl.LOCK_EX)",
+	"    try:",
+	"        if words[2].decode('ascii', 'replace') == fence():",
+	"            xtest.XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
+	"            x11.XSync(display, 0)",
+	"    finally:",
+	"        fcntl.flock(lock, fcntl.LOCK_UN)",
 	"    now = time.monotonic()",
 	"    if now - touched >= 30:",
 	"        touched = now",
@@ -209,6 +247,29 @@ export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
 	"        except OSError:",
 	"            pass",
 ].join("\n");
+/** The host writes its pointer fence on the desktop (COMPANY_MACHINE_MEMBER_POINTER, the fence): as root on exactly
+ * the boot SQL named (`$0`, else 97), the fence `$1` (`NONCE:COUNT`, else 1) into /run/qorpera-desktop/pointer-fence,
+ * holding pointer.lock (flock, at most 2 s, else 1), and only when it is newer than the file's (same NONCE and a higher
+ * COUNT, or another NONCE). With the desktop off there is no such folder and no mover (0). Plain sh, with flock and cat.
+ * Once it answered 0, no move the host gave a mover before it can move the pointer. */
+export const COMPANY_MACHINE_POINTER_FENCE = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	'printf %s "$1" | grep -qxE "[0-9a-f]{16}:[0-9]{1,15}" || exit 1',
+	"[ -d /run/qorpera-desktop ] || exit 0",
+	"exec 9>>/run/qorpera-desktop/pointer.lock || exit 1",
+	"flock -w 2 9 || exit 1",
+	"old=$(cat /run/qorpera-desktop/pointer-fence 2>/dev/null) || old=",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	'if printf %s "$old" | grep -qxE "[0-9a-f]{16}:[0-9]{1,15}" && [ "${old%%:*}" = "${1%%:*}" ]; then',
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	'\t[ "${1##*:}" -gt "${old##*:}" ] || exit 0',
+	"fi",
+	'printf %s "$1" > /run/qorpera-desktop/pointer-fence || exit 1',
+].join("\n");
+/** The fence's own deadline: a healthy desktop writes it in a few milliseconds. */
+const POINTER_FENCE_MS = 3000;
+/** A mover that ended within this long may still have had moves on their way when it did: the fence is written then too. */
+const POINTER_FENCE_AFTER_MOVER_MS = 5000;
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
 /** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
@@ -224,7 +285,8 @@ const MEMBER_POINTER_EXITS: Readonly<
 interface PointerMover {
 	readonly bootId: string;
 	readonly stop: AbortController;
-	pending: { x: number; y: number } | null;
+	/** The newest move not given yet, with the host's fence and the pass's lease generation of the moment it was taken. */
+	pending: { x: number; y: number; fence: string; generation: number } | null;
 	wake: () => void;
 }
 /** A member's look takes 42 ms on the machine; this bounds a busy one, inside the member's request of 30 s. */
@@ -1110,6 +1172,11 @@ export class LxdCompanyMachineHost {
 		}
 	>();
 	readonly #pointerUsers = new Map<string, Map<string, number>>();
+	/** The pointer fence (COMPANY_MACHINE_MEMBER_POINTER, review r1 F1 and F2 of #1733): this process's own NONCE, each
+	 * placement's COUNT, and when its last mover ended (a fence is written while one runs and for a while after). */
+	readonly #fenceNonce = randomBytes(8).toString("hex");
+	readonly #fenceCounts = new Map<string, number>();
+	readonly #moverEnded = new Map<string, number>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
@@ -2091,6 +2158,8 @@ export class LxdCompanyMachineHost {
 		// Its pointer (20260930744000): the mover ends with the instance anyway; what was known of it goes.
 		this.#movers.get(e.placementId)?.stop.abort();
 		this.#movers.delete(e.placementId);
+		this.#moverEnded.delete(e.placementId);
+		this.#fenceCounts.delete(e.placementId);
 		this.#moverFailed.delete(e.placementId);
 		this.#pointerUsers.delete(e.placementId);
 		this.#generations.delete(e.placementId);
@@ -2728,12 +2797,24 @@ export class LxdCompanyMachineHost {
 			run.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
-		this.#seeGeneration(run.placementId, run.desktopGeneration);
+		const newer = this.#seeGeneration(run.placementId, run.desktopGeneration);
 		const acting = run.request.action !== null && run.request.action !== undefined;
 		if (acting && !this.#holdDesktop(run.placementId)) return { refused: "DESKTOP_BUSY" };
+		// An action moves the pointer fence (20260930744000, review r1 F1 of #1733): no move a member made before it moves
+		// the pointer once it runs.
+		if (acting) this.#moveFence(run.placementId);
 		let ended = false;
 		let result: Awaited<ReturnType<typeof pipe>>;
 		try {
+			// Before the action, and before a look that showed a newer generation: the desktop has the fence. Nothing ran
+			// if that failed: the desktop is free again at once.
+			if (acting || newer)
+				try {
+					await this.#writeFence(pipe, run.placementId, run.bootId, signal);
+				} catch (error) {
+					ended = true;
+					throw error;
+				}
 			// A member held the desktop since its clipboard was last confirmed clear: cleared and recorded first (F35). If the
 			// fence or the record says a member holds the desktop now, an action does not run (round 24 N1: no receipt
 			// marker is made yet); a look goes on, and its fence after the capture refuses the picture.
@@ -2923,6 +3004,8 @@ export class LxdCompanyMachineHost {
 		this.#seeGeneration(act.placementId, act.seat);
 		const pasted = typeof text === "string" && PASTED.test(text);
 		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
+		// The action moves the pointer fence (20260930744000, review r1 F1 of #1733).
+		this.#moveFence(act.placementId);
 		// Holding the desktop, the action's seat is asked again (round 23 of #1661): an action authorized before a hand-back
 		// never runs after it, nor after a clear of the clipboard recorded since. A shared one (20260930734000) is asked as
 		// an agent's action is, with no member: the generation it was begun at must stand and no one may hold the desktop
@@ -2937,6 +3020,14 @@ export class LxdCompanyMachineHost {
 		if (!seated) {
 			this.#releaseDesktop(act.placementId, true);
 			return { refused: shared ? "DESKTOP_MEMBER_IN_CONTROL" : "DESKTOP_CONTROL_ENDED" };
+		}
+		// No move a member made before it may move the pointer once it runs: the desktop has the fence first. Nothing ran
+		// if that failed: the desktop is free again.
+		try {
+			await this.#writeFence(pipe, act.placementId, act.bootId, signal);
+		} catch (error) {
+			this.#releaseDesktop(act.placementId, true);
+			throw error;
 		}
 		let ended = false;
 		try {
@@ -3007,9 +3098,13 @@ export class LxdCompanyMachineHost {
 	 *
 	 * Refused once this host saw a newer lease generation than the pass's (a take-over since, which every look, action and
 	 * pass it serves tells it: the private holder's own window looks before it can type). Dropped, never queued, while an
-	 * action holds the desktop (#screenBusy: an agent's or a member's, and the grace after one that did not end cleanly), so
-	 * no move ever lands between an action's own move and its click. A move is never an action: it holds nothing, so it
-	 * delays no action and is never refused DESKTOP_BUSY.
+	 * action holds the desktop (#screenBusy: an agent's or a member's, and the grace after one that did not end cleanly). A
+	 * move taken before an action or a newer generation and still waiting anywhere on its way (here, in the pipe, in the
+	 * program's stdin) never moves the pointer after either: it carries the fence of the moment it was taken, and the
+	 * desktop's fence has moved before the action runs and before the newer holder's look (COMPANY_MACHINE_MEMBER_POINTER,
+	 * review r1 F1 and F2 of #1733). A move is never an action: it holds nothing, so it delays no action and is never
+	 * refused DESKTOP_BUSY. Its answer (moved) means it was taken in that order: an action the member sends after it comes
+	 * after it.
 	 */
 	memberPointer(move: CompanyMachineMemberPointer): CompanyMachineMemberPointerOutcome {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
@@ -3024,7 +3119,8 @@ export class LxdCompanyMachineHost {
 			move.y > SCREEN_MAX_HEIGHT - 1
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_POINTER_INVALID");
-		this.#seeGeneration(move.placementId, move.generation);
+		// A pass that shows a newer generation: the mover of the older one is stopped, and the next starts with the new fence.
+		if (this.#seeGeneration(move.placementId, move.generation)) this.#movers.get(move.placementId)?.stop.abort();
 		if ((this.#generations.get(move.placementId) ?? 0) > move.generation)
 			return { refused: move.private ? "DESKTOP_CONTROL_ENDED" : "DESKTOP_HELD_SINCE" };
 		const now = this.#options.now ?? Date.now;
@@ -3040,13 +3136,14 @@ export class LxdCompanyMachineHost {
 		users.set(move.userId, now());
 		if (this.#acting(move.placementId)) return { moved: false };
 		let mover = this.#movers.get(move.placementId);
-		if (mover && mover.bootId !== move.bootId) {
+		if (mover && (mover.bootId !== move.bootId || mover.stop.signal.aborted)) {
 			mover.stop.abort();
 			this.#movers.delete(move.placementId);
 			mover = undefined;
 		}
 		mover ??= this.#startMover(pipe, move.placementId, move.bootId);
-		mover.pending = { x: move.x, y: move.y };
+		// Stamped with the fence and the generation of now: an action or a newer generation since drops it, wherever it waits.
+		mover.pending = { x: move.x, y: move.y, fence: this.#fence(move.placementId), generation: move.generation };
 		mover.wake();
 		return { moved: true };
 	}
@@ -3056,9 +3153,50 @@ export class LxdCompanyMachineHost {
 		const busy = this.#screenBusy.get(placementId);
 		return busy === "acting" || (typeof busy === "number" && busy > now());
 	}
-	/** The newest lease generation of a placement this host saw. */
-	#seeGeneration(placementId: string, generation: number): void {
-		if (generation > (this.#generations.get(placementId) ?? -1)) this.#generations.set(placementId, generation);
+	/** The newest lease generation of a placement this host saw; true when this one is newer than any before (the pointer
+	 * fence moves then). */
+	#seeGeneration(placementId: string, generation: number): boolean {
+		const seen = this.#generations.get(placementId);
+		if (seen !== undefined && generation <= seen) return false;
+		this.#generations.set(placementId, generation);
+		if (seen === undefined) return false;
+		this.#moveFence(placementId);
+		return true;
+	}
+	/** The placement's pointer fence now (`NONCE:COUNT`). */
+	#fence(placementId: string): string {
+		return `${this.#fenceNonce}:${this.#fenceCounts.get(placementId) ?? 0}`;
+	}
+	/** The pointer fence moves: every move taken before now is stale. */
+	#moveFence(placementId: string): void {
+		this.#fenceCounts.set(placementId, (this.#fenceCounts.get(placementId) ?? 0) + 1);
+	}
+	/** Writes the placement's fence of now on the desktop (COMPANY_MACHINE_POINTER_FENCE) while a mover runs there, or
+	 * ended within POINTER_FENCE_AFTER_MOVER_MS, and waits for it: once it answered, no stale move moves the pointer.
+	 * Another boot (97) has no mover of this one. Any other end throws: nothing runs after a fence that may not hold. */
+	async #writeFence(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		placementId: string,
+		bootId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const now = this.#options.now ?? Date.now;
+		const ended = this.#moverEnded.get(placementId);
+		if (!this.#movers.has(placementId) && (ended === undefined || now() - ended > POINTER_FENCE_AFTER_MOVER_MS))
+			return;
+		const written = await pipe(
+			this.#policy.project,
+			lxdCompanyMachineName(placementId),
+			{
+				command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, this.#fence(placementId)],
+				environment: {},
+				cwd: "/",
+				maxStdoutBytes: 64,
+				stderrTailBytes: 0,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(POINTER_FENCE_MS)]),
+		);
+		if (written.exitCode !== 0 && written.exitCode !== 97) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
 	}
 	/** Whether this member's own pointer moved the desktop lately (their looks are plain). */
 	#movesPointer(placementId: string, userId: string): boolean {
@@ -3075,14 +3213,18 @@ export class LxdCompanyMachineHost {
 	): PointerMover {
 		const mover: PointerMover = { bootId, stop: new AbortController(), pending: null, wake: () => {} };
 		this.#movers.set(placementId, mover);
-		const acting = () => this.#acting(placementId);
+		// A move goes only while it is current: no action holds the desktop, the fence has not moved since it was taken (an
+		// action, a newer generation) and no newer generation was seen; else it is dropped, never kept for after.
+		const current = (next: NonNullable<PointerMover["pending"]>) =>
+			!this.#acting(placementId) &&
+			next.fence === this.#fence(placementId) &&
+			next.generation >= (this.#generations.get(placementId) ?? 0);
 		async function* positions(): AsyncGenerator<Uint8Array> {
 			while (!mover.stop.signal.aborted) {
 				const next = mover.pending;
 				if (next) {
 					mover.pending = null;
-					// Never while an action holds the desktop: the position is dropped, not kept for after.
-					if (!acting()) yield Buffer.from(`${next.x} ${next.y}\n`, "ascii");
+					if (current(next)) yield Buffer.from(`${next.x} ${next.y} ${next.fence}\n`, "ascii");
 					continue;
 				}
 				const idle = await new Promise<boolean>((resolve) => {
@@ -3108,7 +3250,14 @@ export class LxdCompanyMachineHost {
 			this.#policy.project,
 			lxdCompanyMachineName(placementId),
 			{
-				command: ["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_POINTER, bootId, COMPANY_MACHINE_MEMBER_POINTER_PROGRAM],
+				command: [
+					"/bin/sh",
+					"-c",
+					COMPANY_MACHINE_MEMBER_POINTER,
+					bootId,
+					COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
+					this.#fence(placementId),
+				],
 				environment: {},
 				cwd: "/",
 				stdin: positions(),
@@ -3124,6 +3273,7 @@ export class LxdCompanyMachineHost {
 			.catch(() => undefined)
 			.finally(() => {
 				mover.stop.abort();
+				this.#moverEnded.set(placementId, now());
 				if (this.#movers.get(placementId) === mover) this.#movers.delete(placementId);
 			});
 		return mover;
@@ -3159,7 +3309,10 @@ export class LxdCompanyMachineHost {
 			look.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
-		this.#seeGeneration(look.placementId, look.desktopGeneration);
+		// A look that shows a newer generation (a member took the desktop since: the private holder's own window looks before
+		// it can type) puts the fence on the desktop before its picture (review r1 F2 of #1733).
+		if (this.#seeGeneration(look.placementId, look.desktopGeneration))
+			await this.#writeFence(pipe, look.placementId, look.bootId, signal);
 		const result = await pipe(
 			this.#policy.project,
 			lxdCompanyMachineName(look.placementId),
