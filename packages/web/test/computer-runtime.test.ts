@@ -154,7 +154,7 @@ function setup(
 		listGenerations: true,
 		/** The pointer route (20260930744000): there, or missing (a bridge or an executor before it, 404); and what its
 		 * requests answer, in turn (a refusal's code; then a pass, or moved). */
-		pointerRoute: "there" as "there" | "missing",
+		pointerRoute: "there" as "there" | "missing" | "failing",
 		pointerAnswers: [] as string[],
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
@@ -211,6 +211,8 @@ function setup(
 			pointers.push({ url: url.slice(bridge.length), body });
 			if (state.pointerRoute === "missing")
 				return Response.json({ error: "Member route is not available" }, { status: 404 });
+			if (state.pointerRoute === "failing")
+				return Response.json({ error: "The computer is unavailable just now." }, { status: 502 });
 			const code = state.pointerAnswers.shift();
 			if (code) return Response.json({ code }, { status: 409 });
 			if ("begin" in body)
@@ -3941,12 +3943,47 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		await advance(100);
 		hover(p, 130, 130);
 		await advance(100);
+		// Three seconds more of moves.
+		for (let i = 0; i < 30; i++) {
+			hover(p, 140 + i, 140);
+			await advance(100);
+		}
 		// One begin, answered 404: no more requests for the page, nothing said, and actions go as before.
 		expect(s.pointers).toHaveLength(1);
 		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
 		press(canvas(p), 10, 10, { button: 2 });
 		await flush();
 		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
+	});
+
+	it("asks a begin that failed again at most once a second, never at the pointer's pace or in a loop", async () => {
+		const s = setup();
+		const { p } = await inside(s);
+		s.state.pointerRoute = "failing";
+		// Two seconds of moves, a begin failing each time it is asked: at most one begin a second, nothing else.
+		for (let i = 0; i < 60; i++) {
+			hover(p, 100 + i, 100);
+			await advance(34);
+		}
+		// The pointer stopped: the last position gets one more begin, a second after the one before.
+		await advance(1000);
+		expect(bodies(s).every((body) => "begin" in body)).toBe(true);
+		expect(bodies(s).length).toBeGreaterThanOrEqual(3);
+		expect(bodies(s).length).toBeLessThanOrEqual(4);
+		// And then no begin goes by itself.
+		const asked = bodies(s).length;
+		await advance(5000);
+		expect(bodies(s)).toHaveLength(asked);
+		// The route answers again: the next move begins a pass within a second and goes on it, nothing said.
+		s.state.pointerRoute = "there";
+		hover(p, 300, 300);
+		await advance(1000);
+		await flush();
+		expect(bodies(s).slice(asked)).toEqual([
+			{ begin: { generation: 0 } },
+			{ pass: bodies(s)[asked + 1]?.pass, x: 600, y: 600 },
+		]);
+		expect(s.acts).toEqual([]);
 	});
 
 	it("begins another pass when the executor no longer holds one, and stops on a refusal another would repeat", async () => {
@@ -3960,6 +3997,10 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		await flush();
 		await advance(40);
 		hover(p, 120, 120);
+		await flush();
+		// The next begin goes a second after the last one (POINTER_BEGIN_EVERY_MS), the newest position after it.
+		expect(bodies(s)).toHaveLength(3);
+		await advance(1000);
 		await flush();
 		expect(bodies(s).map((body) => ("begin" in body ? "begin" : "move"))).toEqual([
 			"begin",

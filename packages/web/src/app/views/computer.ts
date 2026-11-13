@@ -53,6 +53,9 @@ const BUSY_RETRY_MS = 1000;
 const POINTER_EVERY_MS = 34;
 /** A pointer pass is begun again when less than this is left of it (it lasts 10 s). */
 const POINTER_RENEW_MS = 2500;
+/** At most one pass's begin this often on a hold or a sharing: a begin is SQL's (two calls and the pass's row), so one that
+ * failed (no answer, a pass gone again at once) is asked again after this, never at the pointer's pace or in a loop. */
+const POINTER_BEGIN_EVERY_MS = 1000;
 /** While the member's pointer moved in the last POINTER_MOVING_MS, the window looks every POINTER_LOOK_MS (one in
  * flight), so a hover shows soon: at the last move's end the next look is at most this far off. */
 const POINTER_LOOK_MS = 250;
@@ -209,11 +212,19 @@ interface PointerLane {
 	pending: { readonly x: number; readonly y: number } | null;
 	inFlight: boolean;
 	sentAt: number;
+	begunAt: number;
 	done: boolean;
 }
 
 function pointerLane(): PointerLane {
-	return { pass: null, pending: null, inFlight: false, sentAt: Number.NEGATIVE_INFINITY, done: false };
+	return {
+		pass: null,
+		pending: null,
+		inFlight: false,
+		sentAt: Number.NEGATIVE_INFINITY,
+		begunAt: Number.NEGATIVE_INFINITY,
+		done: false,
+	};
 }
 
 /** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
@@ -1542,7 +1553,10 @@ export class ComputerPanel {
 		if (!computer || lane.inFlight || !lane.pending || lane.done || this.#pointerOff) return;
 		if (sender.queue.length > 0 || sender.sending || !this.#pointerCurrent(sender)) return;
 		const hold = "seat" in sender ? sender : undefined;
-		const wait = lane.sentAt + POINTER_EVERY_MS - Date.now();
+		const begins = !lane.pass || lane.pass.until - Date.now() < POINTER_RENEW_MS;
+		const wait = begins
+			? lane.begunAt + POINTER_BEGIN_EVERY_MS - Date.now()
+			: lane.sentAt + POINTER_EVERY_MS - Date.now();
 		if (wait > 0) {
 			lane.inFlight = true;
 			await new Promise((resolve) => setTimeout(resolve, wait));
@@ -1552,7 +1566,7 @@ export class ComputerPanel {
 		}
 		lane.inFlight = true;
 		try {
-			if (!lane.pass || lane.pass.until - Date.now() < POINTER_RENEW_MS) {
+			if (begins || !lane.pass) {
 				const shared = hold ? undefined : (sender as SharedInput);
 				const begin = hold
 					? { epoch: hold.epoch, seat: hold.seat }
@@ -1565,9 +1579,14 @@ export class ComputerPanel {
 					return;
 				}
 				const began = Date.now();
+				lane.begunAt = began;
 				const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
 				if (answer.kind === "pass") lane.pass = { id: answer.pass, until: began + answer.milliseconds };
-				else this.#pointerRefused(sender, answer);
+				else {
+					// No pass: the position waits for none; the member's next move brings the next one.
+					lane.pending = null;
+					this.#pointerRefused(sender, answer);
+				}
 				return;
 			}
 			const at = lane.pending;
@@ -1584,7 +1603,9 @@ export class ComputerPanel {
 				if (this.#delay > POINTER_LOOK_MS) this.#quicken();
 			} else this.#pointerRefused(sender, answer);
 		} catch {
-			// No answer (the network, a slow bridge): the newest position goes with the next move.
+			// No answer (the network, a slow bridge): the newest position goes with the next move. After a begin that got
+			// none, nothing is asked again until the member's next move (and then at most once a second): never in a loop.
+			if (begins) lane.pending = null;
 		} finally {
 			lane.inFlight = false;
 			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
