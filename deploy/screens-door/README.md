@@ -7,18 +7,24 @@ the executor's live-picture listener on node 1's loopback (`memberStreams`, `127
 `deploy/coding-worker/README.md`). This folder is that door and nothing else:
 
 - `qorpera-screens-tunnel.service`: the tunnel's connector (cloudflared 2026.10.5, `/usr/local/bin/cloudflared`), a
-  `DynamicUser` with no capabilities, reaching only the loopback and Cloudflare's tunnel edge. Its token is a systemd
-  credential (`LoadCredentialEncrypted`), sealed with the host's own key: it is never an argument, never in the
-  environment, never on disk in the clear (the decrypted copy exists only in the unit's own credentials while it runs,
-  readable by it alone). It does not start while no token is sealed. Installed off. Node 1 has no TPM in use, so the
-  seal is the host's own key (`/var/lib/systemd/credential.secret`): a copy of the sealed file alone opens nothing; root
-  on node 1 can.
+  `DynamicUser` with no capabilities, reaching only the loopback and Cloudflare's tunnel edge (region1 and region2 as
+  Cloudflare publishes them; the source is beside the addresses in the unit). Its token is a systemd credential
+  (`LoadCredentialEncrypted`), sealed with the host's own key, and with its TPM too when it has one: it is never an
+  argument, never in the environment, never on disk in the clear (the decrypted copy exists only in the unit's own
+  credentials while it runs, readable by it alone). It does not start while no token is sealed. Installed off.
+- **What "sealed" is worth.** With the host key alone (`/var/lib/systemd/credential.secret`, on the same unencrypted
+  disk), the seal keeps the token from being read in passing, from a backup or copy of that one file, and from other
+  hosts; it does not keep it from whoever holds the whole disk or root on the host. With the TPM as well, a copy of the
+  whole disk opens nothing, but root on the running host still can. `status` says which it is: `token sealed (host
+  key)` or `token sealed (host key + tpm)`.
 - `qorpera-screens-door`: the one place the token passes, and the switch. `token` reads it once (a hidden prompt, or
   one line of stdin; the whole install command Cloudflare shows may be pasted) and seals it to
   `/etc/credstore.encrypted/qorpera-screens-tunnel`; `on` enables and starts the connector and says `on` once it
   reached Cloudflare (within 30 s, else why not); `off` stops, disables and
   masks it (the kill switch); `status` says the connector's state, whether it reached Cloudflare and whether a token is
-  sealed, never the token.
+  sealed and with which key, never the token. Each verb answers with its own word or line only: systemd's own messages
+  (systemd-creds' note that the host key is not on encrypted media, systemctl's "Created symlink") are not shown unless
+  the step failed.
 - `qorpera-screens-door.sudoers`: the operator may run exactly those four verbs as root.
 - `install-screens-door.sh`: verifies every file against its pins, and the connector against the sha-256 of the
   cloudflared our own database stack already runs (service `tunnel` in `/opt/dbhome` on db-primary, image
@@ -44,7 +50,8 @@ serves; it never sees a member's bearer token (the ticket is all the stream carr
 1. In Cloudflare Zero Trust, Networks, Tunnels: create a tunnel `qorpera-node01-screens` (cloudflared), with one public
    hostname `screens.qorpera.com` to `http://127.0.0.1:8793`. Copy the install command it shows; do not run it.
 2. On node 1: `sudo -n qorpera-screens-door token`, paste the command (nothing shows), Enter. It says `written`.
-3. `sudo -n qorpera-screens-door on`, then `sudo -n qorpera-screens-door status` until it says `connector ready`.
+3. `sudo -n qorpera-screens-door on`. It says `on`. `sudo -n qorpera-screens-door status` then says `connector ready`
+   and which key sealed the token.
 4. The web's `machineStreamUrl` is `wss://screens.qorpera.com`.
 
 ## Turning it off, and back

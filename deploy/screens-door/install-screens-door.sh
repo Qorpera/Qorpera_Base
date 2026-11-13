@@ -6,8 +6,8 @@
 set -euo pipefail
 umask 022
 
-EXPECTED_DOOR_SHA256="b96b484a13ae86d43526c62f8a98fae7ec91a6a15f3b7c80c7f9e41ca1b48375"
-EXPECTED_UNIT_SHA256="e074286471c87a0109e93ab4f5327b33d8ba55b0b693349e807e65a8243b16cb"
+EXPECTED_DOOR_SHA256="8d58c1610feeaa92ca47e4fff485d403ac8772fa642c219da8d4bde32b198156"
+EXPECTED_UNIT_SHA256="587cc47c71691513996adb255c48016547194c46a0be53f428a61757146f70e0"
 EXPECTED_SUDOERS_SHA256="cefc3111c28a7875f8acb47650764b2d8e88ac54dca833a2ad58bcfdf00bc3bf"
 # The connector is the one we already run: cloudflared 2026.10.5 as the database stack's own tunnel connector on
 # db-primary (`/opt/dbhome`, service `tunnel`, image cloudflare/cloudflared:2026.10.5 pinned at digest

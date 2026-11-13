@@ -9,7 +9,13 @@
 #           else it says why not (exit 3) and stays enabled until `off`.
 #   off     stops, disables and masks it: within seconds the hostname answers only Cloudflare's own error, and every
 #           window falls back to its pictures through the member bridge. The kill switch.
-#   status  the connector's state, whether it reached Cloudflare, and whether a token is sealed; never the token.
+#   status  the connector's state, whether it reached Cloudflare, and whether a token is sealed and with which key
+#           (`host key`, or `host key + tpm`); never the token.
+# What "sealed" is worth: with the host key alone, the key is a file on this same unencrypted disk, so the seal keeps the
+# token from being read in passing, from a backup or copy of that one file, and from other hosts — not from whoever holds
+# the whole disk or root here. With the TPM as well, a copy of the whole disk opens nothing; root on the running host
+# still can.
+# Each verb answers in one word or one line of its own: systemd's own messages are not shown unless something failed.
 # Run as root (its sudoers line names exactly these four). It never traces itself, and keeps the token in one shell
 # variable, emptied as soon as it is sealed.
 set -euo pipefail
@@ -19,6 +25,8 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 UNIT=qorpera-screens-tunnel.service
 STORE=/etc/credstore.encrypted
 SEALED=$STORE/qorpera-screens-tunnel
+# Which key sealed it (`host` or `host+tpm2`), for `status`: not a secret, kept apart from the credential store.
+SEALED_WITH=/var/lib/qorpera-screens-door/sealed-with
 if [[ ${EUID} -ne 0 ]]; then
 	echo "run it as root (sudo -n)" >&2
 	exit 1
@@ -42,28 +50,38 @@ token:1)
 		echo "that is not a tunnel token; nothing written" >&2
 		exit 2
 	fi
-	install -d -o root -g root -m 0700 "${STORE}"
+	install -d -o root -g root -m 0700 "${STORE}" "${SEALED_WITH%/*}"
 	rm -f -- "${SEALED}.new"
-	# printf is bash's own: the token goes down the pipe, never into an argument or a file.
-	if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then
-		token=""
-		rm -f -- "${SEALED}.new"
-		echo "the token could not be sealed; nothing written" >&2
-		exit 1
+	# The key: this host's own, and its TPM as well when it has a working one (then a copy of the disk is not enough).
+	key=host
+	if systemd-creds has-tpm2 >/dev/null 2>&1; then key=host+tpm2; fi
+	# printf is bash's own: the token goes down the pipe, never into an argument or a file. What systemd-creds says (a
+	# warning that the host key is not on encrypted media, for one) is kept, and shown only if sealing fails.
+	if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then
+		if [[ ${key} == host+tpm2 ]] &&
+			said=$(printf %s "${token}" | systemd-creds encrypt --with-key=host --name=token - "${SEALED}.new" 2>&1); then
+			key=host
+		else
+			token=""
+			rm -f -- "${SEALED}.new"
+			echo "the token could not be sealed; nothing written (systemd-creds said: ${said})" >&2
+			exit 1
+		fi
 	fi
 	token=""
 	chmod 0600 "${SEALED}.new"
 	mv -f -- "${SEALED}.new" "${SEALED}"
+	printf '%s\n' "${key}" >"${SEALED_WITH}"
 	echo "written"
-	if systemctl is-active --quiet "${UNIT}"; then systemctl restart "${UNIT}"; fi
+	if systemctl is-active --quiet "${UNIT}"; then systemctl --quiet restart "${UNIT}"; fi
 	;;
 on:1)
 	if [[ ! -s ${SEALED} ]]; then
 		echo "no token sealed (qorpera-screens-door token first)" >&2
 		exit 2
 	fi
-	systemctl unmask "${UNIT}" >/dev/null 2>&1 || true
-	systemctl enable --now "${UNIT}" >/dev/null
+	systemctl --quiet unmask "${UNIT}" >/dev/null 2>&1 || true
+	systemctl --quiet enable --now "${UNIT}"
 	# "on" only once the connector reached Cloudflare (its own readiness), not once it was started: a connector that
 	# cannot run or connect says so, and stays enabled until `off`.
 	for _ in $(seq 1 30); do
@@ -77,14 +95,21 @@ on:1)
 	exit 3
 	;;
 off:1)
-	systemctl disable --now "${UNIT}" >/dev/null 2>&1 || true
-	systemctl mask "${UNIT}" >/dev/null
+	systemctl --quiet disable --now "${UNIT}" >/dev/null 2>&1 || true
+	systemctl --quiet mask "${UNIT}"
 	echo "off"
 	;;
 status:1)
 	state=$(systemctl is-active "${UNIT}" 2>/dev/null || true)
 	if curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:20242/ready 2>/dev/null; then ready=ready; else ready=not-ready; fi
-	if [[ -s ${SEALED} ]]; then sealed=sealed; else sealed=none; fi
+	sealed=none
+	if [[ -s ${SEALED} ]]; then
+		case $(cat -- "${SEALED_WITH}" 2>/dev/null || true) in
+		host) sealed="sealed (host key)" ;;
+		host+tpm2) sealed="sealed (host key + tpm)" ;;
+		*) sealed="sealed (key not recorded)" ;;
+		esac
+	fi
 	echo "${UNIT} ${state:-unknown}, connector ${ready}, token ${sealed}"
 	;;
 *)

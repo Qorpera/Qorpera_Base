@@ -57,7 +57,20 @@ test("the unit runs the connector with the sealed token as its own credential, o
 		"WantedBy=multi-user.target",
 	])
 		assert.match(unit, new RegExp(`^${line.replace(/[.$]/g, "\\$&")}$`, "m"), line);
-	assert.match(unit, /^IPAddressAllow=localhost 198\.41\.192\.0\/24 198\.41\.200\.0\/24 /m);
+	// The loopback and Cloudflare's tunnel edge as Cloudflare publishes it ("Tunnel with firewall", region1 and region2):
+	// the two IPv4 /24s, and the twenty published IPv6 addresses each by itself — no /44 that swallows both regions and
+	// more (the door proof of 13 Nov showed systemd folding the old two /44s into one).
+	const allow = unit
+		.split("\n")
+		.filter((line) => line.startsWith("IPAddressAllow="))
+		.flatMap((line) => line.slice("IPAddressAllow=".length).split(" "));
+	const published = ["a0", "a8"].flatMap((region) =>
+		["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"].map((n) => `2606:4700:${region}::${n}`),
+	);
+	assert.deepEqual(allow, ["localhost", "198.41.192.0/24", "198.41.200.0/24", ...published]);
+	assert.match(unit, /developers\.cloudflare\.com, Cloudflare One,\n# "Tunnel with firewall", read 13 Nov 2026/);
+	// What "sealed" is worth, said where the credential is loaded.
+	assert.match(unit, /With the host\n# key alone, that key is a file on this same unencrypted disk/);
 });
 
 test("the door: root only, four verbs, the token in one variable that only bash and the sealing pipe see", () => {
@@ -77,19 +90,48 @@ test("the door: root only, four verbs, the token in one variable that only bash 
 		'token=""',
 		"if [[ ${line} =~ (eyJ[A-Za-z0-9+/=_-]{40,4096}) ]]; then token=${BASH_REMATCH[1]}; fi",
 		"if [[ -z ${token} ]]; then",
-		'if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then',
+		'if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then',
+		'said=$(printf %s "${token}" | systemd-creds encrypt --with-key=host --name=token - "${SEALED}.new" 2>&1); then',
 	]);
 	const naming = door
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => !line.startsWith("#") && /\$\{?(token|line)\b|\b(token|line)=|read .*\bline\b/.test(line));
 	for (const line of naming) assert.ok(allowed.has(line), line);
-	assert.ok(naming.includes('if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then'));
+	assert.ok(
+		naming.includes(
+			'if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then',
+		),
+	);
 	// Sealed beside, then moved over: never half written; a failure leaves nothing.
 	assert.match(door, /chmod 0600 "\$\{SEALED\}\.new"\n\tmv -f -- "\$\{SEALED\}\.new" "\$\{SEALED\}"/);
 	// The kill switch: stopped, disabled and masked.
-	assert.match(door, /^off:1\)\n\tsystemctl disable --now "\$\{UNIT\}" >\/dev\/null 2>&1 \|\| true\n\tsystemctl mask "\$\{UNIT\}" >\/dev\/null$/m);
+	assert.match(
+		door,
+		/^off:1\)\n\tsystemctl --quiet disable --now "\$\{UNIT\}" >\/dev\/null 2>&1 \|\| true\n\tsystemctl --quiet mask "\$\{UNIT\}"$/m,
+	);
 	assert.match(door, /^on:1\)\n\tif \[\[ ! -s \$\{SEALED\} \]\]; then/m);
+});
+
+test("the door answers in its own words only, and says which key sealed the token (the lead, 13 Nov)", () => {
+	// Every systemctl call that changes something is quiet: no "Created symlink" before `on` or `off`.
+	for (const line of door.split("\n").filter((one) => /^\s*(if )?systemctl (?!is-active)/.test(one)))
+		assert.match(line, /systemctl --quiet /, line);
+	// systemd-creds' own words are kept and shown only when sealing failed.
+	assert.match(door, /echo "the token could not be sealed; nothing written \(systemd-creds said: \$\{said\}\)" >&2/);
+	const sealing = door.split("\n").filter((line) => line.includes("systemd-creds encrypt"));
+	assert.equal(sealing.length, 2);
+	for (const line of sealing) assert.match(line, /said=\$\(printf %s "\$\{token\}" \| systemd-creds encrypt .* 2>&1\)/, line);
+	// The key: the host's, and the TPM's too when systemd says it has a working one; recorded for status.
+	assert.match(door, /^\tkey=host\n\tif systemd-creds has-tpm2 >\/dev\/null 2>&1; then key=host\+tpm2; fi$/m);
+	assert.match(door, /^SEALED_WITH=\/var\/lib\/qorpera-screens-door\/sealed-with$/m);
+	assert.match(door, /printf '%s\\n' "\$\{key\}" >"\$\{SEALED_WITH\}"/);
+	for (const said of ['host) sealed="sealed (host key)"', 'host+tpm2) sealed="sealed (host key + tpm)"'])
+		assert.ok(door.includes(said), said);
+	// And the README says what each is worth, in plain words.
+	const readme = read("README.md");
+	assert.match(readme, /from a backup or copy of that one file, and from other\n {2}hosts; it does not keep it from whoever holds the whole disk or root on the host/);
+	assert.match(readme, /`token sealed \(host\n {2}key\)` or `token sealed \(host key \+ tpm\)`/);
 });
 
 test("the door takes the token out of what Cloudflare shows, and nothing else", () => {
