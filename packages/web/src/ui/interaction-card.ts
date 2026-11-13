@@ -23,7 +23,14 @@ import { phrase, t } from "./preferences.ts";
  * title, a state badge; the body per surface; pills at the foot, primary on
  * the left, Skip on the right, as the failed-run line does it. Once answered a
  * card stays in the thread, inert, showing what was chosen. Secret inputs go
- * directly to the vault broker through provideSecret, never into an answer. */
+ * directly to the vault broker through provideSecret, never into an answer.
+ *
+ * In a thread (`inThread`) a card that has its answer, or is past its time, is drawn as the exchange it was (Jonas,
+ * 13 November 2026, on an answered question: "could we improve that visually too?"): what the agent asked as the
+ * agent's bubble, a question's answer as the member's own bubble on their side, and anything else done with the card
+ * (saved, handed back, declined, past its time) as one quiet line under the question, marked as a decided approval is.
+ * It has no frame, and its label row is kept for a screen reader only: each part tells its time on a hover, as a
+ * message does (ui/sent-time-hover.ts). */
 
 /** A body longer than this many lines, or than this many characters as shown, folds behind Show more (ui/card-fold.ts):
  * past what a card the agent may write holds (5 short lines), so a readable card shows whole. */
@@ -54,6 +61,10 @@ export interface InteractionCardContext {
 	memberName: (userId: string | undefined) => string;
 	/** Whether this member may answer (the thread's own member, with write access). */
 	canAnswer: boolean;
+	/** The card stands in a thread: once it has its answer it is drawn as the exchange it was (see above). */
+	inThread?: boolean;
+	/** The member looking, whose own answer stands on their side of the thread. */
+	viewerId?: string;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** Opens the agent's computer for a takeover; absent when the thread has none. */
@@ -213,8 +224,11 @@ const OUTCOME_LABEL: Record<InteractionOutcome, string> = {
 };
 
 /** The answer as the card shows it: a question's chosen options in the agent's own
- * words, otherwise what the member did. */
+ * words, otherwise what the member did. A question or a form the member passed with Skip says so: "Declined" under a
+ * question would read as its answer being no. */
 function answerText(request: InteractionRequest, answer: InteractionAnswer): string {
+	if (answer.outcome === "declined" && (request.surface === "question" || request.surface === "form"))
+		return t(OUTCOME_LABEL.dismissed);
 	if (answer.outcome !== "answered" || request.surface !== "question") return t(OUTCOME_LABEL[answer.outcome]);
 	const values = Array.isArray(answer.answer.values)
 		? answer.answer.values.filter((value): value is string => typeof value === "string")
@@ -265,29 +279,69 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	const body: (HTMLElement | null)[] = [];
 	const actions: (HTMLElement | null)[] = [];
 	const result: (HTMLElement | null)[] = [];
+	// In a thread a card with its answer is the exchange it was: the bubbles' own classes draw it (styles/conversation.css).
+	const exchange = context.inThread === true && state !== "waiting";
+	const mark = (name: "check" | "close") =>
+		exchange
+			? h(
+					"span",
+					{ class: `review-mark is-${name === "check" ? "approved" : "declined"}`, "aria-hidden": "true" },
+					icon(name),
+				)
+			: null;
 	if (state === "answered" && item.answer) {
+		const { answeredBy, answeredAt, pending } = item.answer;
+		const own = !answeredBy || answeredBy === context.viewerId;
+		// A question's answer is what the member said: their bubble. Anything else is what they did: a line.
+		const said = request.surface === "question" && item.answer.outcome === "answered";
+		const who = answeredBy ? context.memberName(answeredBy) : t("You");
+		// Beside the answer: whose it is when it is not the member's own, and that it is on its way.
+		const beside = [own ? null : who, pending ? t("Sending") : null].filter(Boolean).join(" · ");
+		const whole = `${who}${answeredAt ? ` · ${fmtTime(answeredAt)}` : ""}${pending ? ` · ${t("Sending")}` : ""}`;
 		result.push(
 			h(
 				"p",
-				{ class: "interaction-result" },
-				h("span", { class: "interaction-chosen" }, answerText(request, item.answer)),
-				" ",
+				{
+					class: `interaction-result${exchange ? (said ? ` is-said${own ? " mine" : ""}` : " is-done") : ""}`,
+					...(exchange && answeredAt ? { dataset: { sentAt: answeredAt } } : {}),
+				},
+				said ? null : mark("check"),
 				h(
 					"span",
-					{ class: "interaction-attribution" },
-					`${item.answer.answeredBy ? context.memberName(item.answer.answeredBy) : t("You")}${
-						item.answer.answeredAt ? ` · ${fmtTime(item.answer.answeredAt)}` : ""
-					}${item.answer.pending ? ` · ${t("Sending")}` : ""}`,
+					{ class: `interaction-chosen${exchange && said ? " bubble" : ""}` },
+					answerText(request, item.answer),
 				),
+				" ",
+				// Who answered, when, and that it is on its way. In a thread the eye gets only `beside` (the time is on a
+				// hover) and a screen reader gets the whole line; both parts are always there, so an answer that is sent
+				// changes words only and its card is kept (views/conversation.ts sameShape).
+				exchange
+					? h(
+							"span",
+							{ class: "interaction-attribution" },
+							h("span", { class: "interaction-beside", "aria-hidden": "true" }, document.createTextNode(beside)),
+							h("span", { class: "visually-hidden" }, whole),
+						)
+					: h("span", { class: "interaction-attribution" }, whole),
 			),
 		);
 	} else if (state === "declined" && item.answer) {
-		result.push(h("p", { class: "interaction-result" }, answerText(request, item.answer)));
+		result.push(
+			h(
+				"p",
+				{
+					class: `interaction-result${exchange ? " is-done" : ""}`,
+					...(exchange && item.answer.answeredAt ? { dataset: { sentAt: item.answer.answeredAt } } : {}),
+				},
+				mark("close"),
+				answerText(request, item.answer),
+			),
+		);
 	} else if (state === "expired") {
 		result.push(
 			h(
 				"p",
-				{ class: "interaction-result" },
+				{ class: `interaction-result${exchange ? " is-done" : ""}` },
 				t("This card is past its time. The agent will ask again if it still needs it."),
 			),
 		);
@@ -501,10 +555,12 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		);
 	}
 
+	// What the agent asked stands together; a visual choice's pictures stand under it, as wide as the card.
+	const pictures = body.filter((part) => part?.classList.contains("interaction-choices"));
 	card = h(
 		"article",
 		{
-			class: `interaction-card surface-${request.surface} state-${state}`,
+			class: `interaction-card surface-${request.surface} state-${state}${exchange ? " is-exchange" : ""}`,
 			dataset: { interactionId: item.id, surface: request.surface, state },
 			"aria-label": t("{kind} from {name}: {title}", {
 				kind: t(SURFACE_LABEL[request.surface]),
@@ -513,15 +569,23 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			}),
 		},
 		h(
-			"header",
-			{ class: "interaction-heading" },
-			h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
-			h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
-			badge(t(STATE_LABEL[state]), stateTone),
+			"div",
+			{
+				class: `interaction-ask${exchange ? " bubble" : ""}`,
+				...(exchange ? { dataset: { sentAt: item.createdAt } } : {}),
+			},
+			h(
+				"header",
+				{ class: `interaction-heading${exchange ? " visually-hidden" : ""}` },
+				h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
+				h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
+				badge(t(STATE_LABEL[state]), stateTone),
+			),
+			h("h3", { class: "interaction-title" }, request.title),
+			request.body ? cardBody(request.body, item.id) : null,
+			...body.filter((part) => !pictures.includes(part)),
 		),
-		h("h3", { class: "interaction-title" }, request.title),
-		request.body ? cardBody(request.body, item.id) : null,
-		...body,
+		...pictures,
 		...result,
 		actions.some(Boolean) ? h("div", { class: "interaction-actions" }, ...actions) : null,
 	);

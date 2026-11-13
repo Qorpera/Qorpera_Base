@@ -1424,7 +1424,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .interaction-note { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 .interaction-note .icon { width: 13px; height: 13px; flex: none; }
 .interaction-result { margin: 4px 0 6px; font-size: 13px; }
-.interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
+.interaction-card:not(.is-exchange) .interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
 .interaction-attribution { font-size: 11px; color: var(--text-muted); }
 .interaction-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
 .interaction-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
@@ -1457,6 +1457,34 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @media (prefers-reduced-motion: reduce) { .choice-box { transition: none; } .choice-box:hover:not(:disabled) { transform: none; } .choice-picture.is-loading { animation: none; } }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
+/* A card with its answer, in a thread, is the exchange it was (ui/interaction-card.ts; Jonas, 13 Nov 2026): no frame.
+ * What the agent asked is the agent's bubble and a question's answer the member's own (`.bubble`, `.mine .bubble`:
+ * the messages' own rules draw both, in every theme); anything else done with the card is one quiet line under the
+ * question with a decided approval's mark. The widths are a message's. */
+.interaction-card.is-exchange {
+	display: flex; flex-direction: column; align-items: flex-start; gap: 8px; align-self: stretch; width: auto;
+	margin-block: 6px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--text);
+}
+.is-exchange > .interaction-ask { max-width: min(72%, 720px); }
+/* Child by child: the card it was lies in this one for a moment as it folds (ui/motion.ts foldFrom), and keeps its look. */
+.interaction-card.is-exchange > .interaction-ask > .interaction-title { margin: 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > :is(.interaction-body, .interaction-text, .interaction-note, .interaction-draft),
+.is-exchange > .interaction-ask > .card-fold-wrap > .interaction-body { margin: 3px 0 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > .card-fold-wrap { margin: 0; }
+.is-exchange > .interaction-ask > .interaction-draft { padding: 0; border: 0; border-radius: 0; max-height: none; }
+.is-exchange > .interaction-choices { width: min(560px, 100%); margin: 0; }
+.is-exchange > .interaction-result { display: flex; align-items: center; gap: 7px; margin: -2px 0 0; padding: 0 4px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.is-exchange > .interaction-result .interaction-attribution { font-size: inherit; }
+.is-exchange > .is-done .interaction-beside::before { content: "· "; }
+.is-exchange > .interaction-result.is-said { flex-direction: column; align-items: flex-start; gap: 0; max-width: min(72%, 720px); margin: 0; padding: 0; color: inherit; font-size: inherit; line-height: inherit; }
+.is-exchange > .interaction-result.is-said.mine { align-self: flex-end; align-items: flex-end; max-width: min(68%, 720px); }
+/* Under the answer, as a message's caption. */
+.is-exchange > .is-said .interaction-beside { display: block; margin-top: 4px; padding: 0 12px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* Beside the outcome, for the eye: whose it is when it is not the member's own, and "Sending"; nothing when neither. */
+.is-exchange > .interaction-result .interaction-beside:empty { display: none; }
+@media (max-width: 900px) {
+	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
+}
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }
 
