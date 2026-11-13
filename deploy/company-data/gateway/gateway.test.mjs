@@ -558,6 +558,17 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			["delete from t where id = 1;\ndelete from qorpera_data.step_effects;\n", /permission denied/],
 			// A deferred foreign key is checked before the step is judged: one that fails, fails the step.
 			["create table d (id int primary key, p int references parent (id) deferrable initially deferred);\ninsert into d values (1, 999);\n", /violates foreign key constraint/],
+			// Two stages: the first deferred trigger, run before the check, defers again and queues a second that would
+			// delete at commit, after the check. The seal makes the commit fail.
+			[
+				"create table q (id int);\n" +
+					"create function stage_two() returns trigger language plpgsql as $f$ begin delete from t where id <= 5; return null; end $f$;\n" +
+					"create constraint trigger two after insert on q deferrable initially deferred for each row execute function stage_two();\n" +
+					"create function stage_one() returns trigger language plpgsql as $f$ begin set constraints all deferred; insert into q values (1); return null; end $f$;\n" +
+					"create constraint trigger one after insert on t deferrable initially deferred for each row execute function stage_one();\n" +
+					"insert into t values (100, 'late');\n",
+				/A step may not destroy data after it was checked: rows of guard\.t were deleted/,
+			],
 		];
 		for (const [text, problem] of refused) {
 			put(ENV_A, { "data/guard/tables/002-try.sql": text });
@@ -586,6 +597,22 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.equal(await rows(), before);
 		const triggers = await asAdmin(database, "select tgrelid::regclass::text || ' ' || tgname || ' ' || tgenabled::text as t from pg_trigger where tgrelid in ('guard.t'::regclass, 'guard.child'::regclass) and not tgisinternal and tgname like 'qorpera%' order by 1");
 		assert.deepEqual(triggers.map((row) => row.t), ["guard.t qorpera_changed O", "guard.t qorpera_emptied O", "guard.t qorpera_rows_gone O", "guard.child qorpera_changed O", "guard.child qorpera_emptied O", "guard.child qorpera_rows_gone O"].sort());
+		const recorded = await asAdmin(database, "select name from qorpera_data.steps where database = 'guard' order by name");
+		assert.deepEqual(recorded.map((row) => row.name), ["001-base"]);
+		// Honest deferred work that only adds rows, also at commit, lands.
+		put(ENV_A, {
+			"data/guard/tables/002-try.sql":
+				"create table e (id int primary key, p int references parent (id) deferrable initially deferred);\n" +
+				"create table e_log (n int);\n" +
+				"create function log_e() returns trigger language plpgsql as $f$ begin insert into e_log values (1); return null; end $f$;\n" +
+				"create constraint trigger logged after insert on e deferrable initially deferred for each row execute function log_e();\n" +
+				"insert into e values (1, 1), (2, 2);\n",
+		});
+		const honest = await ask(contributor, "apply", { database: "guard" });
+		assert.deepEqual(states(honest), ["001-base already", "002-try applied"], JSON.stringify(honest.value));
+		const logged = await asAdmin(database, "select (select count(*) from guard.e) || '/' || (select count(*) from guard.e_log) as n");
+		assert.equal(logged[0].n, "2/2");
+		assert.equal(await rows(), before);
 	});
 
 	it("stops applying when an applied step was changed or is gone, and refuses a new step numbered at or below an applied one", async () => {
@@ -957,6 +984,33 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			assert.equal(answer.status, 200, JSON.stringify(answer.value).slice(0, 300));
 			assert.ok(took < 1_400, `${took} ms`);
 			assert.ok(answer.value.changed.length > 0 && answer.value.changed.length < 24, `${answer.value.changed.length} answered`);
+			assert.equal(answer.value.partial, true);
+			// The page now holds every answer but the last: repeated calls never fit all 24, so each goes on from where
+			// the last stopped, and the change in the last question comes back within a few calls.
+			const etags = new Map(answer.value.changed.map((one) => [one.index, one.answer.etag]));
+			const known = naps(24).map((watched, index) => ({ ...watched, etag: etags.get(index) ?? null }));
+			for (let index = 0; index < 23; index += 3) {
+				const some = await Promise.all(
+					known.slice(index, Math.min(index + 3, 23)).map((watched) => call(viewer, "query", { database: "shop", question: "nap", params: watched.params })),
+				);
+				some.forEach((one, offset) => {
+					known[index + offset].etag = one.value.etag;
+				});
+			}
+			known[23].etag = "old";
+			let calls = 0;
+			let found = null;
+			while (calls < 4 && !found) {
+				calls++;
+				const again = await call(viewer, "watch", { watches: known, wait: 20 });
+				assert.equal(again.status, 200, JSON.stringify(again.value).slice(0, 300));
+				const indexes = (again.value.changed ?? []).map((one) => one.index);
+				if (indexes.includes(23)) found = again.value;
+				// Never a plain "the same" while questions were left unasked.
+				else assert.equal(again.value.partial, true, JSON.stringify(again.value).slice(0, 300));
+				assert.deepEqual(indexes.filter((one) => one !== 23), [], "only the last answer changed");
+			}
+			assert.ok(found, `the last question's change came back within ${calls} calls`);
 		});
 		const [{ n }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
 		const active = await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1 and state = 'active'", [`${companyDatabase(ENV_A)}_r${n}`]);
@@ -982,6 +1036,57 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		request.destroy();
 		assert.equal(await until(active, 0, 2_000), 0);
 		assert.ok(Date.now() - gone < 400, `${Date.now() - gone} ms: cancelled, not left to finish`);
+		assert.equal(await until(listening, 0), 0);
+	});
+
+	it("never sends a late cancel to a connection another call has taken", async () => {
+		const [{ n }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
+		const reader = `${companyDatabase(ENV_A)}_r${n}`;
+		const connections = async () => (await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1", [reader]))[0].n;
+		const active = async () => (await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1 and state = 'active'", [reader]))[0].n;
+		assert.equal(await until(connections, 0, 7_000), 0);
+		let letCancelGo = () => undefined;
+		const held = new Promise((resolve) => {
+			letCancelGo = resolve;
+		});
+		await withGateway({ beforeCancel: () => held }, async () => {
+			// A watch whose caller goes away while its one question runs: its cancel waits.
+			const text = JSON.stringify({ watches: naps(1), wait: 3 });
+			const request = http.request({
+				host: "127.0.0.1",
+				port,
+				path: `/v1/company-data/${ENV_A}/watch`,
+				method: "POST",
+				headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+			});
+			request.on("error", () => undefined);
+			request.end(text);
+			assert.equal(await until(active, 1), 1);
+			request.destroy();
+			// The question ends by itself and its connection is let go; the next call takes a connection.
+			assert.equal(await until(active, 0), 0);
+			const next = call(viewer, "query", { database: "shop", question: "nap", params: { k: 99 } });
+			assert.equal(await until(active, 1), 1);
+			letCancelGo();
+			const answer = await next;
+			assert.equal(answer.status, 200, JSON.stringify(answer.value));
+			assert.deepEqual(answer.value.rows[0], ["", 99]);
+		});
+	});
+
+	it("stops a watch's other questions when one of them fails", async () => {
+		const [{ n }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
+		const reader = `${companyDatabase(ENV_A)}_r${n}`;
+		const active = async () => (await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1 and state = 'active'", [reader]))[0].n;
+		const watches = [{ database: "shop", question: "writes", etag: "old" }, ...naps(12)];
+		const began = Date.now();
+		const failed = await call(viewer, "watch", { watches, wait: 3 });
+		assert.equal(failed.status, 400, JSON.stringify(failed.value).slice(0, 300));
+		assert.ok(Date.now() - began < 400, `${Date.now() - began} ms`);
+		const ended = Date.now();
+		assert.equal(await until(active, 0, 2_000), 0);
+		// Left running, the other 12 would take 0.8 s three at a time.
+		assert.ok(Date.now() - ended < 300, `${Date.now() - ended} ms`);
 		assert.equal(await until(listening, 0), 0);
 	});
 });

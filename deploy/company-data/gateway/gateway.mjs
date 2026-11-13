@@ -207,16 +207,25 @@ export class Gateway {
 	#cancelled = [];
 	/** For tests only: called at each stage of making a company's database. */
 	#onProvision;
+	/** For tests only: awaited before the gateway sends a cancel for a caller that went away. */
+	#beforeCancel;
+	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
+	 * cancel that arrives late would stop whatever runs on it then. */
+	#signalled = new Map();
+	/** Where a watch call that ran out of time stopped, so the next one goes on from there: by member, company and the
+	 * questions asked. Only a help: nothing breaks when it is lost. */
+	#resume = new Map();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
 
 	/** `store`: { host, port, logins: { admin, keeper, watch, folderKey } }: the three logins' passwords, and the key
 	 * each database folder's own logins' passwords are derived from (32 random bytes as hex). */
-	constructor({ store, platform, limits = LIMITS, onProvision = () => undefined }) {
+	constructor({ store, platform, limits = LIMITS, onProvision = () => undefined, beforeCancel = async () => undefined }) {
 		this.#store = store;
 		this.#platform = platform;
 		this.#limits = limits;
 		this.#onProvision = onProvision;
+		this.#beforeCancel = beforeCancel;
 	}
 
 	/** Where a login's password comes from: the gateway's three logins have their own, a folder's login has a derived one. */
@@ -258,10 +267,39 @@ export class Gateway {
 					}
 				}
 			};
-			door = { pool, query: (...args) => roomy(() => pool.query(...args)), connect: () => roomy(() => pool.connect()) };
+			// A connection whose backend was sent a cancel is let go, never handed out.
+			const connect = async () => {
+				for (;;) {
+					const client = await roomy(() => pool.connect());
+					if (!this.#signalled.has(client.processID)) return client;
+					this.#letGo(client);
+				}
+			};
+			door = { pool, query: (...args) => roomy(() => pool.query(...args)), connect };
 			this.#pools.set(key, door);
 		}
 		return door;
+	}
+
+	/** Marks a backend as sent a cancel. `sending`: the cancel on its way, if the gateway sends it. */
+	#signal(pid, sending = Promise.resolve()) {
+		const now = Date.now();
+		if (this.#signalled.size > 1_000) for (const [old, mark] of this.#signalled) if (now - mark.at > 600_000) this.#signalled.delete(old);
+		this.#signalled.set(pid, { at: now, sending });
+	}
+
+	/** Gives a connection back: one whose backend was sent a cancel, or that broke, is closed instead. */
+	#release(client, broken) {
+		if (broken || this.#signalled.has(client.processID)) this.#letGo(client, broken);
+		else client.release();
+	}
+
+	/** Closes a connection; its pid is forgotten once a cancel on its way to it has arrived. */
+	#letGo(client, broken) {
+		const pid = client.processID;
+		client.release(broken ?? true);
+		const mark = this.#signalled.get(pid);
+		if (mark) mark.sending.finally(() => this.#signalled.get(pid) === mark && this.#signalled.delete(pid));
 	}
 
 	/** Gives back every connection of a database that only waits, but the asking login's own. */
@@ -385,9 +423,11 @@ export class Gateway {
 		// A connection its backend left (the watcher ended it) is not given back to the pool.
 		let lost;
 		const cancel = () => {
-			this.#pool("postgres", "qorpera_data_watch")
-				.query("select pg_catalog.pg_cancel_backend($1)", [client.processID])
+			const pid = client.processID;
+			const sending = this.#beforeCancel()
+				.then(() => this.#pool("postgres", "qorpera_data_watch").query("select pg_catalog.pg_cancel_backend($1)", [pid]))
 				.catch(() => undefined);
+			this.#signal(pid, sending);
 		};
 		gone?.addEventListener("abort", cancel, { once: true });
 		try {
@@ -397,50 +437,44 @@ export class Gateway {
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
 			);
-			// As a subquery, so only something that gives rows runs. No more rows than the answer may hold are made, and
-			// the store itself stops handing rows over once they pass the answer's size: a question whose rows are huge
-			// cannot fill the gateway's memory. Each row carries the bytes so far and how many rows were made.
+			// As a subquery, so only something that gives rows runs, and once: one statement whatever the answer. No more
+			// rows than the answer may hold are made, and the store itself stops handing rows over once they pass the
+			// answer's size: a question whose rows are huge cannot fill the gateway's memory. There is always one row at
+			// least, carrying how many rows the question made: with no answer row in it (all its answer columns null)
+			// when the question made none, or when its first row alone is past the answer's size.
 			const result = await client.query({
 				text:
-					`select * from (select qorpera_answer.*, ` +
-					`sum(octet_length(qorpera_answer::text)) over (rows between unbounded preceding and current row) as qorpera_bytes_so_far, ` +
-					`count(*) over () as qorpera_rows_made ` +
-					`from (select * from (\n${ready.sql}\n) qorpera_asked limit ${this.#limits.questionRows + 1}) qorpera_answer) qorpera_sized ` +
-					`where qorpera_bytes_so_far <= ${this.#limits.questionBytes}`,
+					`with qorpera_asked as (select * from (\n${ready.sql}\n) qorpera_inner limit ${this.#limits.questionRows + 1}), ` +
+					`qorpera_sized as (select qorpera_asked.*, row_number() over () as qorpera_at, ` +
+					`sum(octet_length(qorpera_asked::text)) over (rows between unbounded preceding and current row) as qorpera_bytes_so_far ` +
+					`from qorpera_asked) ` +
+					`select qorpera_sized.*, qorpera_made.qorpera_rows_made from (select count(*) as qorpera_rows_made from qorpera_asked) qorpera_made ` +
+					`left join qorpera_sized on qorpera_sized.qorpera_bytes_so_far <= ${this.#limits.questionBytes} order by qorpera_sized.qorpera_at`,
 				values: ready.values,
 				rowMode: "array",
 				queryMode: "extended",
 				types: TEXT_TYPES,
 			});
-			const width = result.fields.length - 2;
+			const width = result.fields.length - 3;
 			const fields = result.fields.slice(0, width);
-			for (const row of result.rows) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
-			this.taken.rows += result.rows.length;
-			let more;
-			if (result.rows.length === 0) {
-				// No row came over: the question has none, or its first row alone is past the answer's size.
-				const any = await client.query({
-					text: `select exists (select 1 from (\n${ready.sql}\n) qorpera_asked) as any`,
-					values: ready.values,
-					queryMode: "extended",
-				});
-				more = any.rows[0].any === true;
-			} else {
-				const made = Number(result.rows[0][width + 1]);
-				more = made > this.#limits.questionRows || result.rows.length < Math.min(made, this.#limits.questionRows);
-			}
+			const made = Number(result.rows[0][width + 2]);
+			// The row with no answer in it has no running size.
+			const given = result.rows[0][width + 1] === null ? [] : result.rows;
+			for (const row of given) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
+			this.taken.rows += given.length;
+			let more = made > this.#limits.questionRows || given.length < Math.min(made, this.#limits.questionRows);
 			await client.query("rollback");
 			const columns = fields.map((field) => field.name);
 			const rows = [];
 			let bytes = 0;
-			for (const row of result.rows.slice(0, this.#limits.questionRows)) {
-				const made = row.slice(0, width).map((value, index) => shaped(value, fields[index].dataTypeID));
-				bytes += Buffer.byteLength(JSON.stringify(made)) + 1;
+			for (const row of given.slice(0, this.#limits.questionRows)) {
+				const shapedRow = row.slice(0, width).map((value, index) => shaped(value, fields[index].dataTypeID));
+				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
 				if (bytes > this.#limits.questionBytes) {
 					more = true;
 					break;
 				}
-				rows.push(made);
+				rows.push(shapedRow);
 			}
 			const answer = { columns, rows, more };
 			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
@@ -451,7 +485,7 @@ export class Gateway {
 			throw storeProblem(error);
 		} finally {
 			gone?.removeEventListener("abort", cancel);
-			client.release(lost);
+			this.#release(client, lost);
 		}
 	}
 
@@ -508,30 +542,39 @@ export class Gateway {
 	/** Held until a watched answer differs from the etag the page holds, or the wait ends. One deadline covers the
 	 * whole call from when it arrives: reading the folder, asking the questions and waiting all fit inside `watchMs`.
 	 * When it passes, the call answers with what it has and starts no other question; a question running then is
-	 * bounded by the time left. Questions are asked a few at a time, and stop when the caller goes away. */
+	 * bounded by the time left. Questions are asked a few at a time, and stop when the caller goes away. A call that
+	 * could not ask every question says `partial: true`, and the next call for the same questions goes on from the
+	 * first one it did not reach. Every way out of the call stops all of its work. */
 	async watch(caller, environmentId, body, gone) {
 		const deadline = Date.now() + this.#limits.watchMs;
 		const watches = body.watches;
 		if (!Array.isArray(watches) || watches.length === 0 || watches.length > this.#limits.watches)
 			refuse(400, `A watch holds 1 to ${this.#limits.watches} questions`);
 		const holdUntil = Math.min(deadline, Date.now() + (Number.isFinite(body.wait) && body.wait >= 0 ? body.wait * 1000 : this.#limits.watchMs));
-		// The work stops when the caller goes away or the deadline passes; the answer never waits past the deadline.
 		const stop = new AbortController();
 		const stopped = () => stop.abort();
 		gone.addEventListener("abort", stopped, { once: true });
 		const timer = setTimeout(stopped, Math.max(0, deadline - Date.now()));
-		let best = { same: true };
+		let best = { changed: [] };
 		const work = this.#watching(caller, environmentId, body, stop.signal, deadline, holdUntil, (found) => {
 			best = found;
 		});
 		try {
 			return await Promise.race([
 				work,
-				new Promise((resolve) => stop.signal.addEventListener("abort", () => setTimeout(() => resolve(best), 50), { once: true })),
+				// The answer never waits past the deadline: what was found by then, and that not every question was asked.
+				new Promise((resolve) =>
+					stop.signal.addEventListener(
+						"abort",
+						() => setTimeout(() => resolve(best.changed.length > 0 ? { changed: best.changed, partial: true } : { same: true, partial: true }), 50),
+						{ once: true },
+					),
+				),
 			]);
 		} finally {
 			clearTimeout(timer);
 			gone.removeEventListener("abort", stopped);
+			stop.abort();
 			work.catch(() => undefined);
 		}
 	}
@@ -546,36 +589,53 @@ export class Gateway {
 		const ready = [];
 		const need = [];
 		for (const watched of watches) {
-			if (stop.aborted) return { same: true };
+			if (stop.aborted) return { same: true, partial: true };
 			const one = await this.#question(caller, environmentId, watched, body.texts, proofs);
 			if (one.need) need.push(one.need);
 			ready.push(one);
 		}
 		if (need.length > 0) return { need };
-		// A few at a time, as many as a folder's read login holds; none started once the deadline has passed.
+		// Where the last call for these questions stopped, if it ran out of time.
+		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question, watched.params ?? {}])]));
+		const now = Date.now();
+		for (const [key, kept] of this.#resume) if (now - kept.at > 300_000) this.#resume.delete(key);
+		let start = this.#resume.get(place)?.start ?? 0;
+		if (start >= ready.length) start = 0;
+		// A few at a time, as many as a folder's read login holds, from where the last call stopped; none started once
+		// the deadline has passed or the call has ended.
 		const differing = async () => {
+			const order = ready.map((_, step) => (start + step) % ready.length);
+			const asked = new Set();
 			const changed = [];
 			let next = 0;
 			const worker = async () => {
-				while (next < ready.length && !stop.aborted) {
-					const index = next++;
+				while (next < order.length && !stop.aborted) {
+					const index = order[next++];
 					const left = deadline - Date.now();
 					if (left <= 0) return;
 					try {
 						const answer = await this.#ask(ready[index], { ms: left, gone: stop });
+						asked.add(index);
 						if (answer.etag !== watches[index].etag) {
 							changed.push({ index, answer: { ...answer, asOf: new Date().toISOString() } });
 							found({ changed: [...changed].sort((a, b) => a.index - b.index) });
 						}
 					} catch (error) {
-						// A question cut short by the deadline or a caller that went away is not an answer.
+						// A question cut short by the deadline or a call that ended is not an answer.
 						if (stop.aborted || Date.now() >= deadline || (error.status === 408 && left < this.#limits.questionMs)) return;
 						throw error;
 					}
 				}
 			};
 			await Promise.all(Array.from({ length: Math.min(POOL_SIZE.r, ready.length) }, worker));
-			return changed.sort((a, b) => a.index - b.index);
+			const missed = order.find((index) => !asked.has(index));
+			if (missed === undefined) this.#resume.delete(place);
+			else {
+				if (this.#resume.size > 10_000) this.#resume.clear();
+				this.#resume.set(place, { start: missed, at: Date.now() });
+				start = missed;
+			}
+			return { changed: changed.sort((a, b) => a.index - b.index), partial: missed !== undefined };
 		};
 		const database = companyDatabase(environmentId);
 		let wake = () => undefined;
@@ -589,8 +649,8 @@ export class Gateway {
 				throw storeProblem(error);
 			});
 			// Asked after the listening began, so no change between the two is missed.
-			let changed = await differing();
-			while (changed.length === 0 && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
+			let scan = await differing();
+			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
 				if (!dirty)
 					await new Promise((resolve) => {
 						const timer = setTimeout(resolve, holdUntil - Date.now());
@@ -605,11 +665,12 @@ export class Gateway {
 				wake = () => undefined;
 				if (!dirty || stop.aborted) break;
 				dirty = false;
-				changed = await differing();
+				scan = await differing();
 				// A database that changes all the time is asked at most twice a second for one page.
-				if (changed.length === 0) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
+				if (scan.changed.length === 0 && !scan.partial) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
 			}
-			return changed.length > 0 ? { changed } : { same: true };
+			const partial = scan.partial ? { partial: true } : {};
+			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
 		} finally {
 			listening.stop();
 		}
@@ -783,15 +844,17 @@ export class Gateway {
 				};
 			}
 			// Deferred triggers and constraints would run at commit, after what the step destroyed was read: they run now,
-			// and an error there fails the step as any other. Nothing else in PostgreSQL runs a company's code at commit
-			// (a temporary table's ON COMMIT action needs TEMP, which no folder's login has).
+			// and an error there fails the step as any other. One of them may defer more work again, so then the
+			// transaction is sealed, one way, in the same call that reads what it destroyed: from there on anything that
+			// destroys data, also at commit, aborts the transaction. Nothing else in PostgreSQL runs a company's code at
+			// commit (a temporary table's ON COMMIT action needs TEMP, which no folder's login has).
 			try {
 				await client.query("set constraints all immediate");
 			} catch (error) {
 				await client.query("rollback").catch(() => undefined);
 				return { name: step.name, state: "failed", detail: storeProblem(error).message, ...storeProblem(error).extra };
 			}
-			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
+			const effects = (await client.query("select kind, object, rows from qorpera_data.seal()")).rows;
 			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [name])).rows;
 			if (unwatched.length > 0) {
 				await client.query("rollback");
@@ -811,13 +874,21 @@ export class Gateway {
 				};
 			}
 			await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
-			await client.query("commit");
+			try {
+				await client.query("commit");
+			} catch (error) {
+				// The seal stopped something that destroys at commit (or commit failed otherwise): the step and its record
+				// are rolled back, and the data is as it was.
+				await client.query("rollback").catch(() => undefined);
+				const told = storeProblem(error);
+				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
+			}
 			return { name: step.name, state: "applied" };
 		} catch (error) {
 			await client.query("rollback").catch(() => undefined);
 			throw storeProblem(error);
 		} finally {
-			client.release();
+			this.#release(client);
 		}
 	}
 
@@ -876,6 +947,7 @@ export class Gateway {
 				[this.#limits.questionMs, this.#limits.changeMs, this.#limits.stepMs, OVERRUN_MS, this.#cancelled],
 			);
 			this.#cancelled = ended.rows.filter((row) => row.ended && !row.terminated).map((row) => row.statement);
+			for (const row of ended.rows) if (row.ended) this.#signal(row.pid);
 			const sizes = await watch.query(
 				"select datname::text as database, pg_catalog.pg_database_size(oid) as bytes from pg_catalog.pg_database where datname ~ '^c_[0-9a-f]{32}$'",
 			);
