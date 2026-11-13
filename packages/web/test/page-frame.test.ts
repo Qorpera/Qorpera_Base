@@ -433,6 +433,47 @@ describe("an HTML page's frame", () => {
 		// No listener, no watch.
 		page.watch!("shop/sales", {});
 		expect(sent).toHaveLength(7);
+
+		// A watch the app refuses to start: `failed` is called once with the app's words, and its stop does nothing.
+		const refuse = (id: unknown, error: unknown) =>
+			hear({ data: { type: "qorpera-app-answer", id, ok: false, error } });
+		const failures: unknown[] = [];
+		const refused = page.watch!(
+			"shop/missing",
+			{},
+			() => failures.push("listener"),
+			(error: unknown) => failures.push(error),
+		) as () => void;
+		refuse(8, "No question shop/missing that you may read");
+		refuse(8, "again");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toBeInstanceOf(Error);
+		expect((failures[0] as Error).message).toBe("No question shop/missing that you may read");
+		refused();
+		expect(sent).toHaveLength(8);
+		// A watch that started never calls it, also when it stops; one that throws is passed by.
+		const unfailed: unknown[] = [];
+		const fine = page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			(error: unknown) => unfailed.push(error),
+		) as () => void;
+		answer(9, { watch: 11, answer: "first" });
+		fine();
+		expect(unfailed).toEqual([]);
+		page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			() => {
+				throw new Error("the page's own");
+			},
+		);
+		expect(() => refuse(11, 'Add "data" to reads in app.toml to ask the company\'s databases')).not.toThrow();
+		// Without `failed`, a refusal is as before: nothing.
+		page.watch!("shop/sales", {}, () => {});
+		expect(() => refuse(12, "refused")).not.toThrow();
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {

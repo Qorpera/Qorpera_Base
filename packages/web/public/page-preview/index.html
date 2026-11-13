@@ -294,7 +294,9 @@
 	// A question of the company's databases the page watches (`watch`) is asked once and its listener called with the
 	// answer; the app then sends each new answer with the watch's id, and only that watch's listener hears it. Its
 	// answers are handled here with plain callbacks, never a promise, so nothing the page changes on Promise or Object
-	// stands between an answer and its listener.
+	// stands between an answer and its listener. A watch the app refuses to start calls the page's `failed`, when it
+	// gave one, once with the app's words; what goes wrong after a watch started is not shown (the page keeps what it
+	// shows).
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
 	// through it the port.
@@ -302,6 +304,7 @@
 	const startPort = MessagePort.prototype.start;
 	const freeze = Object.freeze;
 	const PromiseOf = Promise;
+	const ErrorOf = Error;
 	const bridge = (port) => {
 		const pending = new Map();
 		const changes = [];
@@ -336,7 +339,7 @@
 				if (!waiting) return;
 				apply(drop, pending, [data.id]);
 				if (data.ok === true) waiting[0](data.value);
-				else waiting[1](new Error(typeof data.error === "string" ? data.error : "The app could not read that"));
+				else waiting[1](new ErrorOf(typeof data.error === "string" ? data.error : "The app could not read that"));
 			},
 		]);
 		apply(startPort, port, []);
@@ -354,11 +357,11 @@
 				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
 			} catch {
 				apply(drop, pending, [id]);
-				failed();
+				failed(new ErrorOf("The app could not read that"));
 			}
 		};
 		const nothing = () => {};
-		const watchQuestion = (name, params, listener) => {
+		const watchQuestion = (name, params, listener, failed) => {
 			let stopped = false;
 			let id = null;
 			if (typeof listener === "function")
@@ -378,7 +381,14 @@
 							listener(started.answer);
 						} catch {}
 					},
-					nothing,
+					(error) => {
+						if (stopped) return;
+						stopped = true;
+						if (typeof failed === "function")
+							try {
+								failed(error);
+							} catch {}
+					},
 				);
 			return freeze(() => {
 				if (stopped) return;

@@ -1033,6 +1033,30 @@ describe("the company's databases on an app's page", () => {
 		expect(other.calls).toHaveLength(0);
 	});
 
+	it("answers a watch that can't start with the refusal's own words, for the page's `failed`", async () => {
+		const { bridge } = setup({
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const on = page();
+		const start = async (name: string, reads = ["data"], withData = true) => {
+			const answer = bridge(on, reads, undefined, withData).answer(watch(name));
+			await vi.advanceTimersByTimeAsync(0);
+			return answer;
+		};
+		expect(await start("shop/sales", [])).toEqual({
+			ok: false,
+			error: 'Add "data" to reads in app.toml to ask the company\'s databases',
+		});
+		expect(await start("shop")).toEqual({ ok: false, error: "Name a question as <database>/<question>" });
+		expect(await start("shop/missing")).toEqual({ ok: false, error: "No question shop/missing that you may read" });
+		expect(await start("shop/sales", ["data"], false)).toEqual({
+			ok: false,
+			error: "This company's databases can't be asked from here",
+		});
+		for (let index = 0; index < 8; index++) expect(await start(`shop/q${index}`)).toMatchObject({ ok: true });
+		expect(await start("shop/q8")).toEqual({ ok: false, error: "A page watches at most 8 questions at once" });
+	});
+
 	it("waits 2 s, 5 s, then 10 s after a call that failed, and tells no page", async () => {
 		const { bridge, calls } = setup();
 		const a = page();
