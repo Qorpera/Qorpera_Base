@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Duplex } from "node:stream";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RFB_VERSION, STREAM_RECTS, STREAM_SIZE } from "../src/company-machine-stream.ts";
@@ -56,6 +57,7 @@ async function instances(program: string) {
 		rmSync(dir, { recursive: true, force: true });
 	});
 	return {
+		path,
 		started,
 		watched: (name: string, options: Partial<ConstructorParameters<typeof InstanceDesktop>[3]> = {}) => {
 			let endings = 0;
@@ -179,6 +181,14 @@ async function mainLoopWhile(work: () => Promise<void>): Promise<{ longest: numb
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** One frame as an instance writes it: a 9-byte header (length, type, member) and the payload. */
+const frameOf = (type: number, member: number, payload: Buffer = Buffer.alloc(0)) => {
+	const head = Buffer.alloc(9);
+	head.writeUInt32BE(payload.byteLength, 0);
+	head[4] = type;
+	head.writeUInt32BE(member, 5);
+	return Buffer.concat([head, payload]);
+};
 
 describe("a desktop watched in a process of its own (the lead's decision after review r11 of #1746)", () => {
 	it("lets go to a member only what changed before that member's cycle began, through the instance", async () => {
@@ -278,18 +288,191 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		expect(desktop.cause).toBe("no answer to its pings");
 	});
 
-	it("holds back, never ends, an instance that floods it with frames it may send: read a turn's budget at a time, the main loop free", async () => {
+	it("ends an instance that sends pongs nobody asked for: no frame is free", async () => {
 		const { watched } = await instances(fixture("-hostile"));
 		const { desktop } = watched("chatter", { pingEveryMs: 100, pongWithinMs: 1500 });
 		const result = await mainLoopWhile(async () => {
-			void desktop.watch(async () => "ok", sinkOf(), new AbortController().signal);
-			await sleep(3000);
+			expect(await desktop.watch(async () => "ok", sinkOf(), new AbortController().signal)).toBe(
+				"STREAM_UNAVAILABLE",
+			);
 		});
-		// A hundred thousand pongs, read 32 a turn: the instance lives (it answers the pings behind them), and main's
-		// loop was never held.
-		expect(desktop.ended).toBeNull();
+		expect(desktop.cause).toBe("a pong it was not asked for");
 		expect(result.longest).toBeLessThan(50);
 	});
+
+	for (const [mode, messages] of [
+		["overcycle", 160],
+		["overbytes", 35],
+	] as const)
+		it(`lets one ok through for one cycle only, by count and by bytes, and ends an instance that sends on (${mode})`, async () => {
+			const { watched } = await instances(fixture("-hostile"));
+			const { desktop } = watched(mode);
+			const sink = sinkOf();
+			const result = await mainLoopWhile(async () => {
+				expect(await desktop.watch(async () => "ok", sink, new AbortController().signal)).toBe(
+					"STREAM_UNAVAILABLE",
+				);
+			});
+			// What one cycle can send at most went through (CYCLE_MESSAGES, CYCLE_BYTES); the next ended it.
+			expect(sink.send).toHaveBeenCalledTimes(messages);
+			expect(desktop.cause).toBe("more for one ok than one cycle can send");
+			expect(result.longest).toBeLessThan(50);
+		}, 30_000);
+
+	it("lets a member go on main's side with what a correct instance can still have on its way, and nothing more", async () => {
+		const desktop = await tcpDesktop();
+		const { watched } = await instances(fixture(""));
+		const { desktop: watching } = watched(`tcp:${desktop.port}`);
+		const stays = sinkOf();
+		const leaving = new AbortController();
+		const kept = gate();
+		void watching.watch(async () => "ok", stays, new AbortController().signal);
+		// The leaving member's cycle is under way when it leaves: its verdict never comes, its DONE does.
+		const left = watching.watch(kept.release, sinkOf(), leaving.signal);
+		await vi.waitFor(() => expect(kept.asked).toHaveLength(1));
+		leaving.abort();
+		expect(await left).toBe("closed");
+		await desktop.send(update(rawRect(0, 0, 64, 40, [1, 2, 3])));
+		await vi.waitFor(() => expect(stays.areas().length).toBeGreaterThan(0));
+		expect(watching.ended).toBeNull();
+	});
+
+	for (const [mode, cause] of [
+		["lingerer", "more of a member than could be on its way after it left"],
+		["doubledone", "a frame for a member already done"],
+	] as const)
+		it(`ends an instance that goes on with a member it was told to let go of (${mode})`, async () => {
+			const { watched } = await instances(fixture("-hostile"));
+			const { desktop } = watched(mode);
+			const stays = desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
+			const leaving = new AbortController();
+			const asked = gate();
+			const left = desktop.watch(asked.release, sinkOf(), leaving.signal);
+			await vi.waitFor(() => expect(asked.asked).toHaveLength(1));
+			leaving.abort();
+			expect(await left).toBe("closed");
+			expect(await stays).toBe("STREAM_UNAVAILABLE");
+			expect(desktop.cause).toBe(cause);
+		});
+
+	it("ends an instance that never lets go of members it was told to let go of, past the few a correct one has on its way", async () => {
+		const { watched } = await instances(fixture("-hostile"));
+		const { desktop } = watched("nodone");
+		const stays = desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
+		for (let n = 0; n < 17 && desktop.ended === null; n++) {
+			const leaving = new AbortController();
+			void desktop.watch(async () => "pending", sinkOf(), leaving.signal);
+			await sleep(10);
+			leaving.abort();
+		}
+		expect(await stays).toBe("STREAM_UNAVAILABLE");
+		expect(desktop.cause).toBe("members it was told to let go of and did not");
+	});
+
+	it("ends an instance that does not read what it is sent, past MAX_UNREAD_BYTES waiting in main", async () => {
+		// A connection whose far end takes nothing: whatever main writes waits in it.
+		const connection = new Duplex({ read() {}, write() {} });
+		const desktop = new InstanceDesktop(connection, spec("deaf"), () => {}, {
+			version: "test-version",
+			maxUnreadBytes: 1024,
+			releaseGapMs: 0,
+		});
+		const ending = desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
+		connection.push(frameOf(16, 0));
+		// It asks and asks, never reading the verdicts: each is written, and waits.
+		for (let n = 0; n < 200 && desktop.ended === null; n++) {
+			connection.push(frameOf(17, 1));
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		expect(await ending).toBe("STREAM_UNAVAILABLE");
+		expect(desktop.cause).toBe("it does not read what it is sent");
+		expect(connection.writableLength).toBeLessThan(2048);
+	});
+
+	it("never ends an instance for main's own lateness: a pong already in the socket is read first", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			let clock = 0;
+			const ticks = (ms: number) => {
+				clock += ms;
+				vi.advanceTimersByTime(ms);
+			};
+			const late = new Duplex({
+				read() {},
+				write(_chunk, _encoding, done) {
+					done();
+				},
+			});
+			const desktop = new InstanceDesktop(late, spec("late"), () => {}, {
+				version: "test-version",
+				now: () => clock,
+			});
+			void desktop.watch(async () => "pending", sinkOf(), new AbortController().signal);
+			late.push(frameOf(16, 0));
+			// The first ping at 5 s; then main's own loop is held 20 s, and its next tick comes 15 s late, with the pong
+			// waiting in the socket.
+			ticks(5000);
+			clock += 15_000;
+			ticks(5000);
+			expect(desktop.ended).toBeNull();
+			late.push(frameOf(21, 0));
+			await new Promise((resolve) => setImmediate(resolve));
+			ticks(5000);
+			expect(desktop.ended).toBeNull();
+			// And one that does not answer while main reads on time is ended at 15 s.
+			const silent = new Duplex({
+				read() {},
+				write(_chunk, _encoding, done) {
+					done();
+				},
+			});
+			const quiet = new InstanceDesktop(silent, spec("quiet"), () => {}, {
+				version: "test-version",
+				now: () => clock,
+			});
+			void quiet.watch(async () => "pending", sinkOf(), new AbortController().signal);
+			silent.push(frameOf(16, 0));
+			for (let n = 0; n < 4; n++) ticks(5000);
+			expect(quiet.ended).toBeNull();
+			ticks(5000);
+			expect(quiet.cause).toBe("no answer to its pings");
+			desktop.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("smokes the units as the release does: another version refused, its own taken and ended by its relay; a unit of another file named", async () => {
+		const smoke = new URL("../../../deploy/coding-worker/desktop-stream-smoke.mjs", import.meta.url).pathname;
+		const { path } = await instances(fixture("-versioned"));
+		// Run as a child of its own, this process's loop free to start the instances it connects to (as systemd does).
+		const run = (program: string, socket = path) =>
+			new Promise<{ stdout: string; status: number | null }>((resolve) => {
+				const child = spawn(process.execPath, [smoke, socket, program], { stdio: ["ignore", "pipe", "inherit"] });
+				let stdout = "";
+				child.stdout.on("data", (piece: Buffer) => {
+					stdout += piece.toString("utf8");
+				});
+				child.on("close", (status) => resolve({ stdout, status }));
+			});
+		const ok = await run(fixture("-versioned"));
+		expect(ok.stdout.trim().split("\n")).toEqual([
+			"step 1: another version refused: ENDED STREAM_UNAVAILABLE (another program version), closed",
+			"step 2: its own version taken: READY",
+			"step 2: its relay to a machine that is not there ended it: ENDED STREAM_UNAVAILABLE (Instance not found), closed",
+			"STREAM UNITS SMOKE OK",
+		]);
+		expect(ok.status).toBe(0);
+		// The units run another file than the one named: a clear line, and 1.
+		const other = await run(fixture(""));
+		expect(other.stdout.trim().split("\n").at(-1)).toBe(
+			`STREAM UNITS SMOKE FAILED: step 2: the instance runs another program than ${fixture("")}: the stream unit's ExecStart and the executor's must name one file`,
+		);
+		expect(other.status).toBe(1);
+		const nowhere = await run(fixture("-versioned"), `${path}.missing`);
+		expect(nowhere.stdout.trim()).toBe(`STREAM UNITS SMOKE FAILED: cannot reach ${path}.missing: ENOENT`);
+		expect(nowhere.status).toBe(1);
+	}, 60_000);
 
 	it("holds back, never ends, an instance whose releases come early (two clocks): each is asked no sooner than 25 ms after the last", async () => {
 		const { watched } = await instances(fixture("-hostile"));

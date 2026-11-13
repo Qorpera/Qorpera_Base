@@ -11,8 +11,10 @@ SocketMode=0660
 RemoveOnStop=yes
 # One instance of qorpera-desktop-stream@.service for each connection, the connection its standard input.
 Accept=yes
-# The executor watches at most 8 desktops (MAX_WATCHED_DESKTOPS); a ninth connection is closed by systemd at once.
-MaxConnections=8
+# The executor watches at most 8 desktops (MAX_WATCHED_DESKTOPS). Four more for instances still stopping (or stuck,
+# until their guard ends them within 10 s), which systemd still counts, so a start the executor allows is not refused
+# for one that is going; the slice holds the total whatever the count. A connection past these is closed at once.
+MaxConnections=12
 # Past this many connections in 2 s systemd fails this socket and it stays failed until an operator resets it. The
 # executor starts at most one instance every 500 ms (one desktop's at most every 2 s): at most 5 in any 2 s, a tenth
 # of this.

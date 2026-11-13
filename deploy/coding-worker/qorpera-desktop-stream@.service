@@ -7,13 +7,19 @@ CollectMode=inactive-or-failed
 [Service]
 # One desktop's relay, reader and pictures (20260930745000; the lead's decision after review r11 of #1746): the
 # executor's own program file, in the role decided before anything else in it; it reads no configuration and no
-# credential. The connection systemd accepted is its standard input; its output goes to the journal, never to that
+# credential. It must run the SAME file the executor's loaded ExecStart names: on a node whose executor runs another
+# path (a fleet drop-in), a drop-in for this unit names that file, written from
+# `systemctl show qorpera-coding-executor.service -p ExecStart`, never typed (README). A miss is harmless: the instance
+# refuses the executor's HELLO as another program version, and members keep their pictures. The connection systemd accepted is its standard input; its output goes to the journal, never to that
 # connection.
 Type=simple
 ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs --qorpera-desktop-stream
 StandardInput=socket
 StandardOutput=journal
 StandardError=journal
+# An instance writes nothing of its own; a wrong one cannot fill the journal either.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
 Restart=no
 Slice=qorpera_desktop_streams.slice
 # Its own limits, held by the kernel: past its memory it is killed, never the executor.

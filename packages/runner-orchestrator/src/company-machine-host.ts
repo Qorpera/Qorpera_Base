@@ -335,10 +335,10 @@ const POINTER_FENCE_ROUNDS = 4;
 /** The largest of LXD's messages a desktop's live picture takes from its relay (20260930745000). */
 const MEMBER_STREAM_MESSAGE_BYTES = 4 * 1024 * 1024;
 /** At most this many desktops watched at once on this node, each in a process of its own that systemd starts in its own
- * cgroup (`qorpera-desktop-stream@.service`, deploy/coding-worker/): the socket's MaxConnections is the same 8, and the
- * kernel holds each instance to 512 MiB and one core, all of them to 3 GiB and four (`qorpera_desktop_streams.slice`),
- * apart from the executor's own 2 GiB and two. A member asking for a further desktop is refused STREAM_BUSY: the window
- * keeps its pictures and its sharing as they were, and asks again 30 s later. */
+ * cgroup (`qorpera-desktop-stream@.service`, deploy/coding-worker/): the socket's MaxConnections is 12, four more for
+ * instances still stopping, and the kernel holds each instance to 512 MiB and one core, all of them to 3 GiB and four
+ * (`qorpera_desktop_streams.slice`), apart from the executor's own 2 GiB and two. A member asking for a further desktop
+ * is refused STREAM_BUSY: the window keeps its pictures and its sharing as they were, and asks again 30 s later. */
 export const MAX_WATCHED_DESKTOPS = 8;
 /** Starts are paced here, far under the socket's trigger limit (TriggerLimitBurst=50 in 2 s; past it systemd fails the
  * socket unit and it stays failed): one desktop's instance at most once every DESKTOP_START_GAP_MS, the node's at most

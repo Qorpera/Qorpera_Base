@@ -11,4 +11,5 @@ TasksAccounting=yes
 MemoryMax=3G
 MemorySwapMax=0
 CPUQuota=400%
-TasksMax=256
+# Twelve instances of at most 32 tasks each (MaxConnections, TasksMax of an instance).
+TasksMax=384

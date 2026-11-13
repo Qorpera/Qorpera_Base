@@ -23,8 +23,15 @@ import {
 // stream message (SEND, at most DESKTOP_STREAM_MESSAGE_BYTES) it reads the first byte, the kind, and hands the bytes on
 // as the pieces they came in; every other payload is at most CONTROL_BYTES. Main's bounds are held by NOT READING: the
 // connection is paused after every piece and read again only when main is ready for the next frame (a turn's budget,
-// a member's next release not yet due), so the kernel's socket buffer holds the instance back. The instance is ended
-// only for what a correct one never does.
+// a member's next release not yet due), so the kernel's socket buffer holds the instance back. Every frame main reads
+// belongs to a step main asked for or allowed, or it ends the instance; main is bounded in both directions (what it
+// reads, and what it has written that the instance has not read). The instance is ended only for what a correct one
+// never does.
+//
+// What main holds for its instances at the worst: each member's sink one message it was handed (8 desktops x 8 members
+// x DESKTOP_STREAM_MESSAGE_BYTES = 128 MiB, the listener's to send), each connection the frame being read and the
+// pieces of one read (8 x (2 MiB + 1 KiB + 64 KiB), 17 MiB), and what waits to be written to an instance that does not
+// read (8 x MAX_UNREAD_BYTES, 8 MiB): about 153 MiB, in the executor's 2 GiB.
 //
 //   main -> instance  HELLO {protocol, version, spec}   first, once: a program of another version is refused
 //                     WATCH m, UNWATCH m
@@ -73,6 +80,26 @@ export const DESKTOP_STREAM_TURN_FRAMES = 32;
 const TURN_BYTES = 4 * 1024 * 1024;
 /** At most this many members watch one desktop (the live-picture listener's own cap is 8 a machine). */
 export const DESKTOP_STREAM_MEMBERS = 8;
+/** What main may have written to an instance that it has not read, past the kernel's socket buffer (about 200 KB on
+ * Linux): past it, the instance is ended. A correct instance reads its connection on every turn of its loop, and its
+ * loop is held at most tens of milliseconds (a band's PNG is about 11 ms; its guard ends it after 5 s); main writes it
+ * at most about 50 KB a second (each member's verdicts no more often than every 25 ms, a SENT for each of its sends,
+ * a ping every 5 s), so 1 MiB waiting is far past any correct instance, and still small in the executor's 2 GiB. */
+const MAX_UNREAD_BYTES = 1024 * 1024;
+/** Members that left on main's side and whose DONE has not come yet: a correct instance answers an UNWATCH at once,
+ * so at most the members that left within one hold of its loop (8 at a time, and as many joining and leaving again). */
+const MAX_LEAVING = 2 * DESKTOP_STREAM_MEMBERS;
+/** What ONE ok lets through to a member: one cycle's messages, which DesktopStream's #send makes from the member's
+ * window of the ring. The window's raw pixels are at most the ring's bound, 64 MiB, or one update when that is larger
+ * (2 x 3840 x 2160 x 4 + 1 MiB = 67,403,776 bytes), in at most 2,048 areas (the ring's own cap; one update makes at
+ * most about 1,100 bands). An area's PNG is at most its raw bytes (RGB is 3/4, a filter byte a row is at most 1/4 more
+ * when the area is one pixel wide) plus 1 % of stored-deflate framing and 64 bytes of PNG chunks, and 12 bytes of its
+ * head in the batch: at most 67.4 MB x 1.01 + 2,048 x 76 bytes, about 68.2 MB; with the size (5 bytes), a pointer
+ * shape (128 x 128 RGBA, about 66 KB) and 3 bytes a batch, under 68.5 MB. CYCLE_BYTES, 72 MiB, is past it. A batch
+ * goes out once the next area would pass 1 MiB, so two batches in a row are more than 1 MiB together: at most
+ * 2 x 66 + 1 = 133 batches, and the size and the pointer shape: 135 messages. CYCLE_MESSAGES, 160, is past it. */
+const CYCLE_MESSAGES = 160;
+const CYCLE_BYTES = 72 * 1024 * 1024;
 /** A member's release check is asked no sooner than this after its last (its cycles begin 34 ms apart on the
  * instance's clock): an early one is held, unread, until it is due, never refused. */
 const RELEASE_GAP_MS = 25;
@@ -200,6 +227,8 @@ interface Member {
 	released: boolean;
 	sending: boolean;
 	lastAsked: number;
+	/** What the last ok still lets through: one cycle's messages and bytes (CYCLE_MESSAGES, CYCLE_BYTES). */
+	cycle: { messages: number; bytes: number };
 }
 
 /** What main does with one frame: nothing more to do, wait (a release not yet due: the frame is held), or why the
@@ -222,6 +251,11 @@ export class InstanceDesktop implements WatchedDesktop {
 		return -1;
 	});
 	readonly #pinger: ReturnType<typeof setInterval>;
+	readonly #pingEveryMs: number;
+	/** Members that left on this side, whose DONE has not come yet, each with how many frames it may still send before
+	 * it: at most one RELEASE or one SEND a correct instance can have on its way when it reads the UNWATCH. */
+	readonly #leaving = new Map<number, { frames: number }>();
+	readonly #maxUnreadBytes: number;
 	#reason: string | null = null;
 	#cause: string | null = null;
 	#ready = false;
@@ -233,6 +267,8 @@ export class InstanceDesktop implements WatchedDesktop {
 	/** The ping waiting for its pong, and how long main itself was not reading since it was sent. */
 	#ping: { sentAt: number; notReading: number } | null = null;
 	#stalledSince: number | null = null;
+	/** When the last ping tick ran: a tick that comes late says main's own loop was held, which is not the instance's. */
+	#lastTick: number;
 
 	constructor(
 		connection: Duplex,
@@ -244,6 +280,8 @@ export class InstanceDesktop implements WatchedDesktop {
 			readonly pingEveryMs?: number;
 			readonly pongWithinMs?: number;
 			readonly releaseGapMs?: number;
+			/** MAX_UNREAD_BYTES, for the tests. */
+			readonly maxUnreadBytes?: number;
 			readonly now?: () => number;
 		},
 	) {
@@ -253,6 +291,9 @@ export class InstanceDesktop implements WatchedDesktop {
 		this.#pongWithinMs = options.pongWithinMs ?? 15_000;
 		this.#maxMembers = options.maxMembers ?? DESKTOP_STREAM_MEMBERS;
 		this.#releaseGapMs = options.releaseGapMs ?? RELEASE_GAP_MS;
+		this.#maxUnreadBytes = options.maxUnreadBytes ?? MAX_UNREAD_BYTES;
+		this.#pingEveryMs = options.pingEveryMs ?? 5000;
+		this.#lastTick = this.#now();
 		connection.on("data", (piece: Buffer) => {
 			// Every piece pauses the connection: it is read again only when main is ready for the next frame.
 			connection.pause();
@@ -273,7 +314,7 @@ export class InstanceDesktop implements WatchedDesktop {
 			0,
 			Buffer.from(JSON.stringify({ protocol: DESKTOP_STREAM_PROTOCOL, version: options.version, spec })),
 		);
-		this.#pinger = setInterval(() => this.#tick(), options.pingEveryMs ?? 5000);
+		this.#pinger = setInterval(() => this.#tick(), this.#pingEveryMs);
 		this.#pinger.unref();
 	}
 
@@ -298,7 +339,12 @@ export class InstanceDesktop implements WatchedDesktop {
 		const id = this.#nextId++;
 		return new Promise<string>((resolve) => {
 			const onAbort = () => {
-				this.#leave(id, "closed");
+				// Left on this side: the instance may still have one frame of it on the way, then its DONE.
+				if (this.#leave(id, "closed")) this.#leaving.set(id, { frames: 1 });
+				if (this.#leaving.size > MAX_LEAVING) {
+					this.#fail("members it was told to let go of and did not");
+					return;
+				}
 				this.#write(F.unwatch, id);
 			};
 			this.#members.set(id, {
@@ -311,6 +357,7 @@ export class InstanceDesktop implements WatchedDesktop {
 				released: false,
 				sending: false,
 				lastAsked: Number.NEGATIVE_INFINITY,
+				cycle: { messages: 0, bytes: 0 },
 			});
 			signal.addEventListener("abort", onAbort, { once: true });
 			this.#write(F.watch, id);
@@ -318,14 +365,22 @@ export class InstanceDesktop implements WatchedDesktop {
 	}
 
 	#write(type: number, member: number, payload?: Buffer): void {
-		if (!this.#reason) writeFrame(this.#connection, type, member, payload);
+		if (this.#reason) return;
+		writeFrame(this.#connection, type, member, payload);
+		// What waits to be written past the kernel's buffer: an instance that does not read is ended (MAX_UNREAD_BYTES).
+		if (this.#connection.writableLength > this.#maxUnreadBytes) this.#fail("it does not read what it is sent");
 	}
 
-	/** The pings, and the pong's deadline counted only while main itself was reading. */
+	/** The pings, and the pong's deadline counted only while main itself was reading: a tick that comes late (main's own
+	 * loop held) counts its lateness as time main was not reading, so a pong waiting in the socket is read before any
+	 * deadline can pass for it. */
 	#tick(): void {
 		if (this.#reason) return;
 		const now = this.#now();
+		const late = Math.max(0, now - this.#lastTick - this.#pingEveryMs);
+		this.#lastTick = now;
 		if (this.#ping) {
+			this.#ping.notReading += late;
 			const stalled = this.#stalledSince === null ? 0 : now - this.#stalledSince;
 			if (now - this.#ping.sentAt - this.#ping.notReading - stalled > this.#pongWithinMs)
 				this.#fail("no answer to its pings");
@@ -395,6 +450,8 @@ export class InstanceDesktop implements WatchedDesktop {
 		if (!memberScoped) {
 			if (frame.member !== 0) return "a frame for a member it is not about";
 			if (frame.type === F.pong) {
+				// A pong answers a ping; one nobody asked for is not free.
+				if (!this.#ping) return "a pong it was not asked for";
 				this.#ping = null;
 				return null;
 			}
@@ -413,13 +470,24 @@ export class InstanceDesktop implements WatchedDesktop {
 		const id = frame.member;
 		if (id < 1 || id >= this.#nextId) return "a frame for no member it was given";
 		const member = this.#members.get(id);
+		if (!member) {
+			// A member that left on this side: what may still be on its way (one release or one send), then its DONE;
+			// after its DONE, nothing.
+			const leaving = this.#leaving.get(id);
+			if (!leaving) return "a frame for a member already done";
+			if (frame.type === F.done) {
+				this.#leaving.delete(id);
+				return null;
+			}
+			if (leaving.frames <= 0) return "more of a member than could be on its way after it left";
+			leaving.frames--;
+			return null;
+		}
 		if (frame.type === F.done) {
-			if (member) this.#leave(id, reasonOf(joined(frame).toString("latin1")));
+			this.#leave(id, reasonOf(joined(frame).toString("latin1")));
 			return null;
 		}
 		if (frame.type === F.release) {
-			// A member that left on this side: nothing more of it is asked or sent.
-			if (!member) return null;
 			if (member.releasing) return "a release asked while one was under way";
 			if (member.sending) return "a release asked while a send was under way";
 			if (now - member.lastAsked < this.#releaseGapMs) return HOLD;
@@ -431,6 +499,8 @@ export class InstanceDesktop implements WatchedDesktop {
 					member.releasing = false;
 					if (this.#members.get(id) !== member) return;
 					member.released = verdict === "ok";
+					// One ok is one cycle: what it lets through is counted from here.
+					member.cycle = { messages: CYCLE_MESSAGES, bytes: CYCLE_BYTES };
 					this.#write(F.verdict, id, verdictBytes(verdict));
 				},
 				() => {
@@ -444,9 +514,11 @@ export class InstanceDesktop implements WatchedDesktop {
 		if (frame.length < 1) return "a send that is no message";
 		const kind = (frame.pieces[0] as Buffer)[0] as number;
 		if (kind < 1 || kind > 3) return "a message of no known kind";
-		if (!member) return null;
 		if (!member.released || member.releasing) return "a send without a released cycle";
 		if (member.sending) return "a send while one was under way";
+		member.cycle.messages--;
+		member.cycle.bytes -= frame.length;
+		if (member.cycle.messages < 0 || member.cycle.bytes < 0) return "more for one ok than one cycle can send";
 		member.sending = true;
 		member.sink.send(frame.pieces.length === 1 ? (frame.pieces[0] as Buffer) : frame.pieces).then(
 			() => {
@@ -461,14 +533,15 @@ export class InstanceDesktop implements WatchedDesktop {
 		return null;
 	}
 
-	/** A member is through (on either side); the last one takes the instance with it. */
-	#leave(id: number, reason: string): void {
+	/** A member is through (on either side); the last one takes the instance with it. Whether it was one still here. */
+	#leave(id: number, reason: string): boolean {
 		const member = this.#members.get(id);
-		if (!member) return;
+		if (!member) return false;
 		this.#members.delete(id);
 		member.signal.removeEventListener("abort", member.onAbort);
 		member.resolve(reason);
 		if (this.#members.size === 0) this.#finish("idle", "its last member left");
+		return true;
 	}
 
 	/** The instance broke the protocol, stopped answering, or its connection or process ended. */

@@ -11,6 +11,11 @@ import { DESKTOP_STREAM_FRAME as F } from "../../src/company-machine-stream-proc
 //   stranger   a release for a member it was never given
 //   die        exits soon after its first member
 //   silent     reads everything and answers nothing
+//   overcycle  after one ok, sends on and on (each after its SENT): more than one cycle can hold
+//   overbytes  the same, each message as large as a message may be
+//   lingerer   after its member is let go, sends two more releases for it
+//   doubledone after its member is let go, says DONE twice
+//   nodone     never says DONE for a member it is told to let go
 const connection = new Socket({ fd: 0, readable: true, writable: true });
 const frame = (type: number, member: number, payload: Buffer = Buffer.alloc(0)) => {
 	const head = Buffer.alloc(9);
@@ -56,4 +61,15 @@ function take(type: number, member: number, payload: Buffer): void {
 		if (mode === "die") setTimeout(() => process.exit(3), 50);
 	}
 	if (type === F.verdict && mode === "eager") connection.write(frame(F.release, member));
+	if (mode === "overcycle" || mode === "overbytes") {
+		const message = mode === "overcycle" ? Buffer.from([2, 0, 0]) : Buffer.alloc(2 * 1024 * 1024 + 1024, 2);
+		if (type === F.watch) connection.write(frame(F.release, member));
+		if (type === F.verdict || type === F.sent) connection.write(frame(F.send, member, message));
+	}
+	if (type === F.watch && (mode === "lingerer" || mode === "doubledone" || mode === "nodone"))
+		connection.write(frame(F.release, member));
+	if (type === F.unwatch) {
+		if (mode === "lingerer") connection.write(Buffer.concat([frame(F.release, member), frame(F.release, member)]));
+		if (mode === "doubledone") connection.write(Buffer.concat([frame(F.done, member), frame(F.done, member)]));
+	}
 }
