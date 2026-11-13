@@ -3,8 +3,9 @@ import { appLinkName } from "@qorpera/cloud-client/interface-apps";
 /* An answer to a question on the agent's wall: the message opens with the question, quoted, so the agent reads what is
  * being answered and the thread shows it. It is plain text, so everything that carries a message carries this too.
  * A note from an interface app (`qorpera.tell`, RUNTIME-INTERFACE-APPS.md §5) opens the same way, with the app and the
- * thing in it the note is about as its quoted line: `> app:<name>#<at> · <about>`. The thread draws that line as the
- * app's card (views/conversation.ts). */
+ * thing in it the note is about as its quoted line: `> app:<name>#<at> · <about>`. Until it is sent, that line is what
+ * the draft answers (`answering`, as a wall question is), shown above the composer and never in it; the send puts it
+ * first. The thread draws it as the app's card (views/conversation.ts). */
 
 /** The longest question a message repeats. */
 const QUESTION_MAX = 240;
@@ -43,10 +44,14 @@ export function appNoteAbout(words: string): string {
 		.trim();
 }
 
-/** A note from an app as the message it goes as: the app, the thing and what it is about on the first line, then the
- * member's own words. */
+/** What a note from an app answers, as a draft carries it until it is sent: the app, the thing and what it is about. */
+export function appNoteLine(app: string, at: string | null, about: string): string {
+	return `app:${app}${at === null ? "" : `#${at}`} · ${about}`;
+}
+
+/** A note from an app as the message it goes as: that line first, then the member's own words. */
 export function appNoteText(app: string, at: string | null, about: string, words: string): string {
-	return `> app:${app}${at === null ? "" : `#${at}`} · ${about}\n\n${words}`;
+	return withReply(appNoteLine(app, at, about), words, 0);
 }
 
 /** The app, the thing and what it is about, from a message's quoted first line, or undefined when it names no app. */

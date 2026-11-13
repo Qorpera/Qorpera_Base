@@ -707,8 +707,9 @@ export function mountApplication(
 								!(
 									(route.section === "chat" && route.id === target) ||
 									(route.section === "new" && startingSession?.sessionId === target) ||
-									// A note the member sent from elsewhere in the company (an app's page, the Mailbox), on its way:
-									// their press on the bar that named the agent stands for the thread on screen (app/tell-agent.ts).
+									// A note the member sent from elsewhere in the company (an app's page, the Mailbox, Generate icon
+									// in the apps drawer), on its way: their press, which named the agent, stands for the thread on
+									// screen (CompanyController.sendNote).
 									controller.noteOnItsWay(target)
 								)
 							)
@@ -1128,7 +1129,7 @@ export function mountApplication(
 					return "agent" in found ? { agentId: found.agent.id } : found;
 				},
 				agent: (agentId) => controller.staffById(agentId),
-				send: (agentId, text) => {
+				send: (agentId, note) => {
 					accounts ??= createWebNativeSubscription(
 						cloud,
 						controller.profile.profileId,
@@ -1136,7 +1137,7 @@ export function mountApplication(
 						controller.signal,
 						companyCurrent,
 					);
-					return tellAgent(controller, accounts, agentId, { text, quotes: [] });
+					return tellAgent(controller, accounts, agentId, { text: note.text, quotes: [], header: note.header });
 				},
 			};
 		};

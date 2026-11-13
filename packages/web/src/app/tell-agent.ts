@@ -9,19 +9,29 @@ import type { QuotedText } from "./quotes.ts";
  * - the Mailbox, when an agent is asked to answer or write an email, or to take an address (views/mailbox.ts, through
  *   CompanyMail.tell), its outside words as quotes;
  * - an interface app's page, through the bar outside its frame (`qorpera.tell`, app/app-actions.ts;
- *   deploy/first-node/RUNTIME-INTERFACE-APPS.md §5), to the agent that owns the app.
+ *   deploy/first-node/RUNTIME-INTERFACE-APPS.md §5), to the agent that owns the app. Its first line, the app and what
+ *   it is about (`header`), is never part of the draft: the draft answers it as a draft answers a wall question
+ *   (`answering`), the composer shows it above the field, and the send puts it first (cloud/wall-reply.ts).
  * A note goes from here only into a thread with nothing drafted in it and no answer to a wall question under way, on
  * the model account the cloud chooses for that thread, as the thread itself chooses it. Otherwise, or when the send
  * doesn't go (no model account, the cloud refused it), the note waits in that thread's composer for the member to
- * send. */
+ * send: after what is drafted there, an app's under its line. An app's note that finds the thread's draft answering
+ * something already (a wall question, another app's note) is not added at all (`held`): one message answers one line. */
 
 /** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
 export type TellAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
 
-/** How a note went: sent, or waiting in the agent's thread (`href`, where it waits). */
+/** A note: its words and their quotes, and for an app's note the line it answers (cloud/wall-reply.ts `appNoteLine`). */
+export interface TellNote extends QuotedText {
+	readonly header?: string;
+}
+
+/** How a note went: sent, or waiting in the agent's thread (`href`, where it waits), or `held`: nothing was added, as
+ * the thread's draft answers something else already. */
 export interface TellResult {
 	readonly sent: boolean;
 	readonly href: string;
+	readonly held?: true;
 }
 
 /** Sends `note` to the agent as the member's own message. `closed` says the company or its reader went away meanwhile:
@@ -31,7 +41,7 @@ export async function tellAgent(
 	company: CompanyController,
 	accounts: TellAccounts,
 	agentId: string,
-	note: QuotedText,
+	note: TellNote,
 	closed: () => boolean = () => company.signal.aborted,
 ): Promise<TellResult> {
 	const profileId = company.profile.profileId;
@@ -56,6 +66,11 @@ export async function tellAgent(
 	const conversation = () => company.conversation(sessionId, false).get();
 	const shared = () => room?.draft(company.userId)?.body ?? "";
 	const before = conversation();
+	const header = note.header;
+	// One message answers one line: a draft that answers something already, or a message on its way (whose send
+	// clears what its draft answers) or waiting to be tried again (with what it answered), takes no app's note.
+	if (header !== undefined && (before.answering !== undefined || before.sending || before.retrySend))
+		return { sent: false, href, held: true };
 	const empty =
 		(!room || room.usable()) &&
 		!shared().trim() &&
@@ -65,6 +80,7 @@ export async function tellAgent(
 		!before.sending &&
 		!before.retrySend;
 	company.addToDraft(sessionId, note);
+	if (header !== undefined) company.conversation(sessionId, false).set({ answering: header });
 	// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
 	// merged shared draft, an attachment, a wall question picked) leaves it in the composer for the member to send.
 	const intended = conversation().draft ?? "";
@@ -75,7 +91,7 @@ export async function tellAgent(
 		closed() ||
 		now.draft !== intended ||
 		now.attachments?.length ||
-		now.answering !== undefined ||
+		now.answering !== header ||
 		now.sending ||
 		now.retrySend ||
 		![intended, ""].includes(shared())

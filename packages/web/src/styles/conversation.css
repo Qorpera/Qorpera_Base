@@ -265,6 +265,13 @@
 .composer-answer-question { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-answer-stop { flex: none; width: 26px; height: 26px; color: var(--text-muted); }
 .composer-answer-stop svg { width: 14px; height: 14px; }
+/* A note from an app's page that waits here (app/tell-agent.ts): the app's emblem and name, and what the note is about,
+ * in place of a question. The message opens with them once it is sent, where the thread draws them as the app's card. */
+.composer-answer-emblem { display: grid; flex: none; place-items: center; }
+.composer-answer-emblem[hidden] { display: none; }
+.composer-answer-emblem .interface-emblem { width: 26px; height: 26px; --emblem-ink: var(--app-colour, var(--text)); }
+.composer-answer.is-note .composer-answer-words { padding-left: 0; border-left: 0; }
+.composer-answer.is-note .composer-answer-label { color: var(--text); }
 .message-reply { display: block; margin-bottom: 6px; padding-left: 8px; border-left: 2px solid currentColor; font-size: 13px; line-height: 17px; opacity: .78; }
 .composer-quote-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-quote-note[hidden] { display: none; }
@@ -1628,6 +1635,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	line-height: 1.4; overflow-y: auto; overflow-wrap: anywhere;
 }
 .app-ask-field::placeholder { color: var(--text-soft); }
+/* Why a note stays on the bar (its thread's draft answers something else), with the way there. */
+.app-ask-held { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.app-ask-held[hidden] { display: none; }
+.app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .app-ask-field:read-only { color: var(--text-muted); }
 .app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .app-ask-button {

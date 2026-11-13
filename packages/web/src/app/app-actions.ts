@@ -22,7 +22,7 @@ import {
 import { questionOptions } from "../cloud/interactions.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { APP_NOTE_ABOUT_MAX, APP_NOTE_AT, appNoteAbout, appNoteText } from "../cloud/wall-reply.ts";
+import { APP_NOTE_ABOUT_MAX, APP_NOTE_AT, appNoteAbout, appNoteLine } from "../cloud/wall-reply.ts";
 import { t } from "../ui/preferences.ts";
 import { rowsLocator, withCell } from "./interface-claims.ts";
 import { type OpenQuestions, questionApps } from "./open-questions.ts";
@@ -86,10 +86,13 @@ export type AppAsk =
 			readonly draft: string;
 	  };
 
-/** How a note went: sent as the member's message, or waiting in the agent's thread (`href`) for the member to send. */
+/** How a note went: sent as the member's message, or waiting in the agent's thread (`href`) for the member to send, or
+ * `held`: not added there, as that thread's draft answers something else already (app/tell-agent.ts), so the note
+ * stays on the bar. */
 export interface AppNoteSent {
 	readonly sent: boolean;
 	readonly href: string;
+	readonly held?: true;
 }
 
 /** A request that passed its checks: what to show, and the change to make once the member allowed it. A note sends
@@ -447,8 +450,9 @@ export interface AppTellSource {
 	readonly receiver: (owner: string | null) => { readonly agentId: string } | { readonly refused: string };
 	/** An agent by its id, for its name and figure on the bar. */
 	readonly agent: (agentId: string) => HostedStaffAgent | undefined;
-	/** Sends `text` to the agent as the member's own message, or leaves it waiting in the agent's thread. */
-	readonly send: (agentId: string, text: string) => Promise<AppNoteSent>;
+	/** Sends the member's words to the agent as their own message, under the line the note answers (`header`, the app
+	 * and what it is about), or leaves them waiting in the agent's thread. */
+	readonly send: (agentId: string, note: { readonly header: string; readonly text: string }) => Promise<AppNoteSent>;
 }
 
 /** A draft of the member's words a page may give, at most, in characters. */
@@ -487,7 +491,7 @@ export function prepareTell(
 			// The bar's Send is off while its field is empty.
 			if (!own) throw new AppActionRefused(t("Write your note first."));
 			try {
-				return await source.send(receiver.agentId, appNoteText(app.name, thing, said, own));
+				return await source.send(receiver.agentId, { header: appNoteLine(app.name, thing, said), text: own });
 			} catch (error) {
 				throw new AppActionRefused(
 					error instanceof Error ? error.message : t("Your note could not be sent. Try again."),

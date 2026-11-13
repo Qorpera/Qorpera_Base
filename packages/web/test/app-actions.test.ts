@@ -546,7 +546,7 @@ describe("the bridge's requests for a change", () => {
 		const source = {
 			receiver: vi.fn((_owner: string | null) => receiver),
 			agent: () => undefined,
-			send: vi.fn(async (_agentId: string, _text: string) => {
+			send: vi.fn(async (_agentId: string, _note: { header: string; text: string }) => {
 				if (went instanceof Error) throw went;
 				return went;
 			}),
@@ -570,11 +570,12 @@ describe("the bridge's requests for a change", () => {
 		expect(asked).toEqual([
 			{ kind: "tell", agentId: AGENT, app: "Orders", about: "Lund, A", draft: "Get a quote from this one." },
 		]);
-		// What goes is what the field held: the app, the thing and what it is about first, then the member's words.
-		expect(source.send).toHaveBeenCalledExactlyOnceWith(
-			AGENT,
-			"> app:orders-board#1043 · Lund, A\n\nGet two quotes, please.",
-		);
+		// What goes is what the field held, under the line it answers: the app, the thing and what it is about, which the
+		// message opens with once sent (app/tell-agent.ts).
+		expect(source.send).toHaveBeenCalledExactlyOnceWith(AGENT, {
+			header: "app:orders-board#1043 · Lund, A",
+			text: "Get two quotes, please.",
+		});
 		// With no thing named, the first line names the app alone; an app with no owner is the receiver's to place.
 		const other = notes();
 		const words = gateThat("allow", undefined, "Why so many?");
@@ -582,7 +583,7 @@ describe("the bridge's requests for a change", () => {
 			ok: true,
 		});
 		expect(other.receiver).toHaveBeenCalledWith(null);
-		expect(other.send).toHaveBeenCalledWith(AGENT, "> app:orders-board · Returns\n\nWhy so many?");
+		expect(other.send).toHaveBeenCalledWith(AGENT, { header: "app:orders-board · Returns", text: "Why so many?" });
 		// Nothing goes where no note can be sent (a Company File page, a test harness).
 		expect(await bridge("", { tell: notes() }).answer(tell(lund))).toEqual({
 			ok: false,
@@ -633,7 +634,10 @@ describe("the bridge's requests for a change", () => {
 		expect(asked).toEqual([
 			{ kind: "tell", agentId: AGENT, app: "Orders", about: "Ask Bea about this now", draft: "Hi @Bea «quoted»" },
 		]);
-		expect(source.send).toHaveBeenCalledWith(AGENT, "> app:orders-board · Ask Bea about this now\n\nYes");
+		expect(source.send).toHaveBeenCalledWith(AGENT, {
+			header: "app:orders-board · Ask Bea about this now",
+			text: "Yes",
+		});
 	});
 
 	it("tells the page whether the note went or waits in the agent's thread, and why one did not go", async () => {
@@ -1042,6 +1046,35 @@ describe("the bar a request is put to the member on", () => {
 			// A new request may take its place, as after any settled request; Close puts it away.
 			button(bar, "Close").click();
 			expect(bar.el.hidden).toBe(true);
+		});
+
+		it("keeps a note its thread cannot take now on the bar, with its words, a line why and the way there", async () => {
+			const bar = make(ada);
+			const perform = vi
+				.fn(async (_words: string): Promise<AppNoteSent> => ({ sent: false, href: "#/c/p/staff/a", held: true }))
+				.mockResolvedValueOnce({ sent: false, href: "#/c/p/staff/a", held: true });
+			const outcome = bar.ask(note(), perform);
+			await vi.advanceTimersByTimeAsync(ASK_ALLOW_AFTER_MS);
+			type(bar, "Two quotes, please.");
+			press(button(bar, "Send note"));
+			await vi.advanceTimersByTimeAsync(0);
+			// Still asking: the words as the member left them, both buttons back, and why, with Open.
+			expect(bar.el.querySelector(".app-ask-title")?.textContent).toBe("This app wants to send your note to Ada");
+			expect([field(bar).value, field(bar).readOnly]).toEqual(["Two quotes, please.", false]);
+			expect([button(bar, "Not now").disabled, button(bar, "Send note").disabled]).toEqual([false, false]);
+			const held = bar.el.querySelector<HTMLElement>(".app-ask-held")!;
+			expect(held.hidden).toBe(false);
+			expect(held.textContent).toBe(
+				"Ada's thread has a message started. Send or clear it there, then send this note. Open",
+			);
+			expect(held.querySelector("a")?.getAttribute("data-href")).toBe("#/c/p/staff/a");
+			expect(document.activeElement).toBe(field(bar));
+			expect(bar.closed()).toBe("busy");
+			// Once the thread is free, the next press sends it.
+			perform.mockResolvedValueOnce({ sent: true, href: "#/c/p/staff/a" });
+			press(button(bar, "Send note"));
+			expect(await outcome).toEqual({ outcome: "told", sent: true });
+			expect(perform.mock.calls.map((call) => call[0])).toEqual(["Two quotes, please.", "Two quotes, please."]);
 		});
 
 		it("says why a note did not go, in the member's words", async () => {

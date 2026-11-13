@@ -248,14 +248,14 @@ describe("a note an app's page asks the member to send its owner", () => {
 	const OWNER = "22222222-2222-4222-8222-222222222222";
 	/** The company's side of a note (app/tell-agent.ts): the owner hears it, and each send is kept. */
 	function withNotes(host: AppPanelHost) {
-		const sent: [agentId: string, text: string][] = [];
+		const sent: [agentId: string, note: { header: string; text: string }][] = [];
 		const told = {
 			...host,
 			tell: {
 				receiver: (owner: string | null) => (owner === OWNER ? { agentId: OWNER } : { refused: "Nobody" }),
 				agent: (agentId: string) => (agentId === OWNER ? { ...staff, id: OWNER, displayName: "Ada" } : undefined),
-				send: async (agentId: string, text: string) => {
-					sent.push([agentId, text]);
+				send: async (agentId: string, note: { header: string; text: string }) => {
+					sent.push([agentId, note]);
 					return { sent: true, href: `#/c/x/staff/${agentId}` };
 				},
 			},
@@ -285,7 +285,7 @@ describe("a note an app's page asks the member to send its owner", () => {
 		send.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
 		send.click();
 		expect(await note).toMatchObject({ ok: true, value: { sent: true } });
-		expect(sent).toEqual([[OWNER, "> app:shop#1043 · Lund, A\n\nGet two quotes, please."]]);
+		expect(sent).toEqual([[OWNER, { header: "app:shop#1043 · Lund, A", text: "Get two quotes, please." }]]);
 		// The same app asks again at once: refused for a few seconds, with no bar.
 		await vi.waitFor(() => expect(app.bar().querySelector("textarea")).toBeNull());
 		expect(await app.call("tell", { about: "Lund, A" })).toMatchObject({

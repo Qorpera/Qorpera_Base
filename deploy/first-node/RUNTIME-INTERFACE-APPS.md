@@ -568,22 +568,29 @@ chooses it), so the agent's run starts as for any message:
 without `#<at>` when the page named no thing. The web sends a member's message only while its thread is on screen
 (the input writer's check of the route, `app/application.ts`); for a note on its way the member's press on the bar,
 which named the agent, stands for that (`CompanyController.sendNote`), and every other check of a send holds. The
-Mailbox's notes met the same check before and so never went from the Mailbox: they waited in the thread with "Company
-access is unavailable." They go now too. The line is plain text, as a wall answer's quoted question is
+Mailbox's notes, and Generate icon in the apps drawer (`requestAppIcons`), met the same check before and so never
+went from where the member pressed: they failed with "Company access is unavailable." They go now too. The line is
+plain text, as a wall answer's quoted question is
 (`cloud/wall-reply.ts`), so nothing in the cloud changes. The thread draws it as the app's card, standing above the
 member's words as an agent's message has its cards, with what the note is about as the card's line; once the
 company's apps are read the card has the app's own name, emblem and colour, and a press on it opens the app.
 
 **When it waits.** A note goes from the bar only into a thread with nothing drafted in it (the member's draft in this
-browser, and the room's shared draft as it is now). When something is drafted there, when the member is answering a
-question from the agent's wall there (a send would put that question in front of the note), or when the send does
-not go (no model account for the member, or the cloud refused it), the note waits in that thread's composer, after
-what is there. The bar then says "Your note waits in <agent>'s thread" with Open, which goes there, and stays until
-the member opens or closes it. The Mailbox's notes to agents go the same way: `CompanyMail.tell` is lifted into
-`app/tell-agent.ts`, and the wall-answer check is new for both.
+browser, and the room's shared draft as it is now). When something is drafted there, or when the send does not go (no
+model account for the member, or the cloud refused it), the note waits in that thread's composer. Its first line is
+never part of the draft: the draft answers it, as a draft answers a wall question (`answering`), and the composer
+shows it above the field as the app (its emblem and name) and what the note is about, with a way to leave it out. The
+note's words go after what is drafted there, so the member's earlier draft and the note are one message under one
+card, which the send opens with the line (`withReply`). The bar then says "Your note waits in <agent>'s thread" with
+Open, which goes there, and stays until the member opens or closes it. A thread whose draft answers something already
+(a wall question, another app's note), or whose message is on its way or waits to be tried again, takes no note at
+all, since one message answers one line: the note stays on the bar with its words, a line says "<agent>'s thread has
+a message started. Send or clear it there, then send this note." with Open, and Send tries again. The Mailbox's notes
+to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`); they have no line of their
+own, so they wait after a wall answer under way rather than be sent under its question.
 
 **The page's answer.** `{sent: true}` when the note went, `{sent: false, waiting: true}` when it waits in the
-agent's thread. The promise rejects with a plain reason when the member says not now, when another request waits,
+agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the member says not now, when another request waits,
 when the app was told not now three times, when the page or its manifest went away first, and when the note cannot be
 sent (the thread cannot be opened, or its agent left meanwhile). The page learns nothing of the thread.
 
@@ -682,7 +689,7 @@ changing a value, and the first that any app may make. What a page can and canno
 | a page sending over and over | five calls of the budget each, and after a note went, the same app's next note is refused for ten seconds |
 | a page learning about the thread | the answer is `{sent}` and `waiting` only: no message id, no text, nothing of the thread or the agent beyond the name the bar showed the member |
 | a page changing something | nothing in the company changes: the note is a message in a thread the member could write in anyway, under the same send (write right, open conversation, the member's own model account) |
-| a send from a page that is not the thread | the input writer's check that the thread is on screen lets a note through only for its own conversation and only while that note is on its way (`sendNote`, started by the bar's press); the company still open, the same member, the write right, the open conversation and its room are checked as for any send |
+| a send from a page that is not the thread | the input writer's check that the thread is on screen lets a note (or Generate icon's ask) through only for its own conversation and only while it is on its way (`sendNote`, started by the member's press); the company still open, the same member, the write right, the open conversation and its room are checked as for any send |
 | a page faking quoted outside content | `«` and `»` are taken out of `about`, and a note carries no quote records, so nothing of it is ever drawn or sent as a quote (`cloud/quotes.ts`) |
 
 **The focus exception.** H3 (4) put the focus on "Not now", so that no key could fall on the yes button. A note's bar
@@ -735,9 +742,9 @@ thread's "Quoted from an email" title).
    the frame document, `prepareTell` and the request kind `tell` (`app/app-actions.ts`), the bridge's `tell` with its
    cost and its ten seconds (`app/interface-apps.ts`), the bar's field (`app/views/app-ask-bar.ts`), who hears it and
    the send, lifted with the Mailbox's from `CompanyMail.tell` into `app/tell-agent.ts` with the wall-answer check,
-   `CompanyController.sendNote` so that a note goes from where the member sent it, and the note's first line drawn as
-   the app's card in the thread (`views/conversation.ts`). No migration and no node
-   change. Next, in a change of its own that rides a runtime cut: the prompt line that tells an agent what the first
+   `CompanyController.sendNote` so that a note (and Generate icon's ask) goes from where the member sent it, a waiting
+   note's first line as what its draft answers, shown above the composer as the app, and that line drawn as the app's
+   card in the thread (`views/conversation.ts`). No migration and no node change. Next, in a change of its own that rides a runtime cut: the prompt line that tells an agent what the first
    line means (sent from that app's page, about that thing), and the kits' buttons and guides that ask for a note.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page

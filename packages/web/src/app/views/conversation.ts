@@ -49,6 +49,7 @@ import {
 	interfaceChangeText,
 	renderInterfaceChangeLine,
 } from "../../ui/interface-change-line.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { appCard, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
@@ -93,6 +94,7 @@ import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
+import { type AppLook, appLook } from "./shell.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */
@@ -310,9 +312,15 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
-	/** The wall's question being answered, in the composer. */
+	/** The wall's question being answered, in the composer; or the app a note from it is about (RUNTIME-INTERFACE-APPS.md
+	 * §5 "tell"), which the message opens with once it is sent. */
 	readonly #answerStrip: HTMLElement;
+	readonly #answerEmblem = h("span", { class: "composer-answer-emblem", "aria-hidden": "true", hidden: true });
+	readonly #answerLabel = h("span", { class: "composer-answer-label" }, t("Answering"));
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
+	readonly #answerStop: HTMLButtonElement;
+	/** What the strip shows now: the line answered, and for an app's note the app as the company's apps say it. */
+	#answerDrawn = "";
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
@@ -722,29 +730,26 @@ export class ConversationView {
 				this.#setMenu(false, false);
 			}
 		});
+		this.#answerStop = h(
+			"button",
+			{
+				type: "button",
+				class: "composer-answer-stop icon-button",
+				"aria-label": t("Stop answering"),
+				title: t("Stop answering"),
+				onclick: () => {
+					company.conversation(sessionId).set({ answering: undefined });
+					this.#composer.focus();
+				},
+			},
+			icon("close"),
+		);
 		this.#answerStrip = h(
 			"div",
 			{ class: "composer-answer", hidden: true },
-			h(
-				"div",
-				{ class: "composer-answer-words" },
-				h("span", { class: "composer-answer-label" }, t("Answering")),
-				this.#answerQuestion,
-			),
-			h(
-				"button",
-				{
-					type: "button",
-					class: "composer-answer-stop icon-button",
-					"aria-label": t("Stop answering"),
-					title: t("Stop answering"),
-					onclick: () => {
-						company.conversation(sessionId).set({ answering: undefined });
-						this.#composer.focus();
-					},
-				},
-				icon("close"),
-			),
+			this.#answerEmblem,
+			h("div", { class: "composer-answer-words" }, this.#answerLabel, this.#answerQuestion),
+			this.#answerStop,
 		);
 		this.#composerShell = h(
 			"div",
@@ -1864,6 +1869,40 @@ export class ConversationView {
 		];
 	}
 
+	/** What the draft answers, above the field: the wall's question, or, for a note sent from an app's page and left
+	 * waiting here (app/tell-agent.ts), the app (its own name and emblem once the company's apps are read) and what the
+	 * note is about. Never the line as written: the send puts it first (cloud/wall-reply.ts `withReply`). */
+	#showAnswering(answering: string | undefined): void {
+		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		const app = this.#answerApp(answering);
+		this.#answerStrip.hidden = !answering;
+		this.#answerStrip.classList.toggle("is-note", note !== undefined);
+		this.#answerEmblem.hidden = note === undefined;
+		replace(this.#answerEmblem, note ? (app?.look?.emblem() ?? interfaceEmblem("page", 34)) : "");
+		if (app?.look?.colour) this.#answerEmblem.style.setProperty("--app-colour", app.look.colour);
+		else this.#answerEmblem.style.removeProperty("--app-colour");
+		this.#answerLabel.textContent = note ? (app?.name ?? note.app) : t("Answering");
+		this.#answerQuestion.textContent = note ? note.about : (answering ?? "");
+		const stop = note ? t("Leave the app out") : t("Stop answering");
+		this.#answerStop.setAttribute("aria-label", stop);
+		this.#answerStop.title = stop;
+		this.#composer.placeholder = answering && !note ? t("Your answer…") : t("Message…");
+	}
+
+	/** The app a waiting note answers, as the company's apps say it now (its name, and its emblem and colour as the
+	 * drawer draws them), with a key that changes when any of it does. */
+	#answerApp(answering: string | undefined): { name: string; look?: AppLook; key: string } | undefined {
+		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		const app = note && this.#company.store.get().apps?.find((entry) => entry.name === note.app);
+		if (!app?.manifest) return undefined;
+		const look = appLook(this.#company, app);
+		return {
+			name: app.manifest.name,
+			...(look ? { look } : {}),
+			key: `${app.manifest.name}\u0000${look?.key ?? ""}`,
+		};
+	}
+
 	/** A member's message; one that answers a question from the wall shows the question above the member's words. A note
 	 * sent from an app's page (RUNTIME-INTERFACE-APPS.md §5 "tell") opens with the app's card instead, with what the note
 	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
@@ -1955,7 +1994,8 @@ export class ConversationView {
 		const state = this.#company.conversation(this.#sessionId).get();
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
-		const answered = state.answering ? this.#answeringItem : undefined;
+		// A note from an app answers no item of the wall.
+		const answered = state.answering && !appNoteHeader(state.answering) ? this.#answeringItem : undefined;
 		this.#dictation.cancel();
 		this.#submitting = true;
 		this.#syncSend();
@@ -2118,11 +2158,14 @@ export class ConversationView {
 		this.#dictation.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && this.#menuOpen) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
-		if (conversation.answering !== this.#answerShown) {
+		const drawn = JSON.stringify([
+			conversation.answering ?? null,
+			this.#answerApp(conversation.answering)?.key ?? null,
+		]);
+		if (conversation.answering !== this.#answerShown || drawn !== this.#answerDrawn) {
 			this.#answerShown = conversation.answering;
-			this.#answerStrip.hidden = !conversation.answering;
-			this.#answerQuestion.textContent = conversation.answering ?? "";
-			this.#composer.placeholder = conversation.answering ? t("Your answer…") : t("Message…");
+			this.#answerDrawn = drawn;
+			this.#showAnswering(conversation.answering);
 			this.#autosize();
 		}
 		// Until the company says who may write here, the composer's place holds a placeholder.

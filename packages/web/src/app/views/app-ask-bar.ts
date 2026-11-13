@@ -23,7 +23,9 @@ import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome, type 
  *   no more until the member reloads it.
  * - However much a request holds, the bar stays within the screen: its lines scroll inside it and both buttons stay
  *   within reach.
- * - The member sees how it went: saved, sent, waiting in the agent's thread (with the way there), or why not. */
+ * - The member sees how it went: saved, sent, waiting in the agent's thread (with the way there), or why not. A note
+ *   that thread cannot take now (its draft answers something else already, app/tell-agent.ts) stays on the bar with its
+ *   words, and a line says why, with the way there. */
 
 export interface AppAskBarHost {
 	/** The app's emblem, drawn afresh. */
@@ -294,6 +296,24 @@ export class AppAskBar implements AppGate {
 			void perform(words).then(
 				(note) => {
 					this.#declines = 0;
+					if (ask.kind === "tell" && note?.held) {
+						// Not added to the thread, whose draft answers something else already: the note stays here with its words,
+						// and Send tries again once that is sent or cleared there.
+						pending.working = false;
+						later.disabled = false;
+						if (field) field.readOnly = false;
+						yes.textContent = t("Send note");
+						replace(
+							held,
+							t("{name}'s thread has a message started. Send or clear it there, then send this note.", { name }),
+							" ",
+							h("a", { class: "app-ask-link", href: note.href }, t("Open")),
+						);
+						held.hidden = false;
+						ready();
+						field?.focus({ preventScroll: true });
+						return;
+					}
 					if (ask.kind === "tell" && note && !note.sent) {
 						// It waits in the agent's thread, for the member to send from there: the bar stays until they go there
 						// or close it.
@@ -330,6 +350,7 @@ export class AppAskBar implements AppGate {
 			);
 		});
 		const lines = this.#lines(ask, field);
+		const held = h("p", { class: "app-ask-held", role: "status", hidden: true });
 		replace(
 			this.el,
 			h(
@@ -341,7 +362,7 @@ export class AppAskBar implements AppGate {
 						? agentFigure(agent, name, { size: 30 })
 						: this.#host.emblem(),
 			),
-			h("div", { class: "app-ask-copy" }, title, lines),
+			h("div", { class: "app-ask-copy" }, title, lines, held),
 			h("div", { class: "app-ask-buttons" }, later, yes),
 		);
 		// Escape on the bar is Not now, as anywhere it closes what asks (once: a held Escape says it once).

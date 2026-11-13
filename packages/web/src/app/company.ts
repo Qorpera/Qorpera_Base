@@ -1410,7 +1410,8 @@ export class CompanyController {
 		if (busy()) return { ok: false, reason: started };
 		// What the icons were before the ask, by id and version: a new one, or one drawn again, ends the drawing.
 		const known = (this.store.get().appIcons?.[app.name] ?? []).map(iconVersion);
-		if (!(await this.sendPrompt(sessionId, text)))
+		// Pressed in the apps drawer, over whatever page is open: the member's press stands for the thread on screen.
+		if (!(await this.sendNote(sessionId, text)))
 			return {
 				ok: false,
 				reason: this.conversation(sessionId, false).get().sendError ?? t("The message could not be sent."),
@@ -3198,7 +3199,8 @@ export class CompanyController {
 	readonly #notes = new Map<string, number>();
 
 	/** Sends a note the member wrote and sent somewhere other than the conversation's own thread (a note from an app's
-	 * page or from the Mailbox, app/tell-agent.ts), as `sendPrompt` sends the thread's own message. A send goes only
+	 * page or from the Mailbox, app/tell-agent.ts; Generate icon in the apps drawer, `requestAppIcons`), as `sendPrompt`
+	 * sends the thread's own message. A send goes only
 	 * while the conversation is on screen (the app's input writer checks the route, app/application.ts); for a note
 	 * the member's own press, on the bar that named the agent, stands for that, for as long as the note is on its way
 	 * (`noteOnItsWay`). Every other check of a send holds. */
