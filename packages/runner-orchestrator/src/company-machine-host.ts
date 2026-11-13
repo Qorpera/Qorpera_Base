@@ -3674,9 +3674,10 @@ export class LxdCompanyMachineHost {
 			} catch (error) {
 				// The service may have taken the open although it did not answer in time: no channel starts, so the
 				// window is closed again, at best, as a window whose channel ended (review r11 F1).
-				await folder
+				const answered = await folder
 					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
 					.catch(() => undefined);
+				noted(boot, answered);
 				throw error;
 			}
 			boot.homes.set(session.sessionId, window);
