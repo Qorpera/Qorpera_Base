@@ -484,7 +484,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
-			// The agent's home (slice 1): `codex exec-server` inside this node's machine, as the agent's user.
+			// The agent's home (slice 1): `codex exec-server` inside this node's machine, as the agent's account
+			// (qorpera-agent, which reaches root without a password, as a coding session's user does).
 			execServerLocal: (authority, signal) => machineHost.execServer(authority, signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),

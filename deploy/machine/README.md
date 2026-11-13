@@ -112,6 +112,20 @@ Run inside node 2's operator test VM with nested LXD 6.9 (`deploy/test-machine/R
 
 Nested KVM also works inside a machine (`/dev/kvm`, `svm` on every CPU). Docker's default AppArmor profile blocks remounting `/sys/fs/cgroup` read-write, so a container that runs systemd needs `--security-opt apparmor=unconfined` (the test machine's note).
 
+### The agent's home (13 Nov 2026)
+
+The run's own Codex reaches this machine through `codex exec-server` and runs its own shell, stdin and `apply_patch` here (`lanes/agent-box-20261113/HOME-PLAN.md`, slice 1; the host is `packages/runtime/src/cloud-codex-home.ts`). The sign-in never leaves the run's slot; what arrives here is one JSON-RPC line per action, every command and file change reviewed before the machine sees it.
+
+**Two identities write on a machine.** A `machine_run` command is root, as it has always been. Codex's own shell is `qorpera-agent` (uid 2000, `/var/lib/qorpera-agent`), which reaches root without a password (`/etc/sudoers.d/qorpera-agent`, the rule every coding session's user already has in `deploy/coding-machine/qorpera-coding.sudoers`). So the agent can do through its own shell everything it can do with `machine_run`: install packages, change files under `/etc`, start services, use Docker. The default is not root so that what the model writes is owned by the agent and tools that refuse to run as root keep working.
+
+Where the two identities meet, the file's owner decides:
+
+- A file a `machine_run` command wrote is root's. Codex's shell reads it (the modes are the usual `0644`/`0755`), but a plain write to it is refused: the model must use `sudo` (`sudo tee`, `sudo install`), and `apply_patch` on such a file fails with "permission denied" until it does. The image build proves both: the account installs under `/etc` with `sudo`, and changes a root-owned file in `/company` through `sudo`.
+- A file Codex's shell wrote is `qorpera-agent`'s, and a later `machine_run` command (root) changes it with nothing special.
+- The smallest way out of the confusion, when it is worth doing (a later slice, not slice 1): run a machine's commands as the same account, so one machine has one writer. Until then the plain words are "use sudo for a file root made".
+
+The desktop's account gets none of this: it stays unprivileged, so Chromium keeps its sandbox and the root helpers' hardening against that account holds. The security rule for a home is that **the agent may be root there**: nothing on the machine may be worth more than what that agent's run already may do. No sign-in is there, and the company folder's rights on the machine are the run's own, enforced in the folder service, never on the machine.
+
 ### A coding session's work
 
 A coding session's work is in the company folder, at `/company/code/<owner>/<name>/worktrees/<workerId>`, which a machine whose starter may read all of the folder sees (deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md). A machine has no repository disk and is tied to no node: until migration `20260930506000` (F3 6e-1), `machine_start` with `repositoryWorker` attached the session's repository folder read-only at `/mnt/repository` and placed the machine on the node whose NAS held that session.

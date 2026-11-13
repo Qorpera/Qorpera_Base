@@ -71,6 +71,9 @@ const files = [
 		installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
 		mode: "0644",
 	},
+	// The agent's home (13 Nov 2026): the account Codex's own shell runs as reaches root without a password, as every
+	// coding session's user does, so that shell can do on the machine everything `machine_run` does there as root.
+	{ file: "qorpera-agent.sudoers", installedPath: "/etc/sudoers.d/qorpera-agent", mode: "0440" },
 ];
 await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // The desktop's pictures (the dock icons and the backdrop sets), one archive the image build unpacks at

@@ -92,7 +92,8 @@ for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine
 	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	machine-memory lxd-agent-memory.conf qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service \
-	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder manifest.json; do
+	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder \
+	qorpera-agent.sudoers manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -139,7 +140,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
-	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
+	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config sudo \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
@@ -186,9 +187,11 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	rm -rf /tmp/chromium.zip /tmp/chromium
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
-	# The home of an agent (slice 1) runs the exec-server of Codex as this account, never as root: the shell and file
-	# tools of the model go through it. The uid and gid are fixed (CLOUD_MACHINE_HOME), so the executor names them to
-	# LXD without reading anything of the guest.
+	# The home of an agent (slice 1) runs the exec-server of Codex as this account: the shell and file tools of the
+	# model go through it. A non-root default, so what it writes is owned by the agent and tools that refuse root work;
+	# with a way to root of its own (qorpera-agent.sudoers, pushed below), because that shell must be able to do on the
+	# machine everything `machine_run` does there as root. The uid and gid are fixed (CLOUD_MACHINE_HOME), so the
+	# executor names them to LXD without reading anything of the guest.
 	groupadd --gid 2000 qorpera-agent
 	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
@@ -237,6 +240,9 @@ lx file push "$PACKAGE/desktop-look" "$BUILDER/opt/qorpera-machine/desktop-look"
 lx file push "$PACKAGE/desktop-dock-open" "$BUILDER/opt/qorpera-machine/desktop-dock-open" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-files" "$BUILDER/opt/qorpera-machine/desktop-files" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-desktop.tmpfiles" "$BUILDER/etc/tmpfiles.d/qorpera-machine-desktop.conf" --uid 0 --gid 0 --mode 0644
+# The agent's home (slice 1): the account Codex's own shell runs as reaches root without a password, so that shell can
+# do on the machine everything `machine_run` does there as root. The desktop's account gets none of it.
+lx file push "$PACKAGE/qorpera-agent.sudoers" "$BUILDER/etc/sudoers.d/qorpera-agent" --uid 0 --gid 0 --mode 0440
 # The desktop pictures, unpacked by the checks below.
 lx file push "$PACKAGE/desktop-art.tar" "$BUILDER/tmp/desktop-art.tar" --uid 0 --gid 0 --mode 0644
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
@@ -289,6 +295,25 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		{ echo "the unit that hears a press on the dock is not enabled, or its service starts by itself" >&2; exit 1; }
 	[[ -d /etc/qorpera-machine && -z $(ls -A /etc/qorpera-machine) ]] ||
 		{ echo "the image names a figure of its own" >&2; exit 1; }
+	# The agent'"'"'s home (13 Nov 2026): Codex'"'"'s own shell runs as qorpera-agent and must be able to do everything
+	# machine_run does on this machine as root, so the account reaches root without a password, as a coding session'"'"'s
+	# user does. The desktop'"'"'s account must not: Chromium keeps its sandbox there, and the root helpers are hardened
+	# against it.
+	visudo -cf /etc/sudoers.d/qorpera-agent
+	[[ $(runuser -u qorpera-agent -- sudo -n id -u) == 0 ]] ||
+		{ echo "the agent'"'"'s account cannot reach root: Codex'"'"'s own shell would be weaker than machine_run" >&2; exit 1; }
+	runuser -u qorpera-agent -- sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-agent-root-check ||
+		{ echo "the agent'"'"'s account cannot write under /etc" >&2; exit 1; }
+	rm -f /etc/qorpera-agent-root-check
+	# A file root wrote (as a machine_run command does) is changed from that shell through its way to root.
+	install -o root -g root -m 0644 /dev/null /company/root-owned-check
+	runuser -u qorpera-agent -- bash -lc '"'"'echo changed | sudo -n tee -a /company/root-owned-check >/dev/null'"'"' ||
+		{ echo "the agent'"'"'s account cannot change a file root wrote" >&2; exit 1; }
+	rm -f /company/root-owned-check
+	! runuser -u desktop -- sudo -n true 2>/dev/null ||
+		{ echo "the desktop'"'"'s account can reach root" >&2; exit 1; }
+	[[ $(stat -c "%U:%G %a" /etc/sudoers.d/qorpera-agent) == "root:root 440" ]] ||
+		{ echo "the agent'"'"'s sudo rule is not root'"'"'s own file" >&2; exit 1; }
 	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
 	# every machine without compressed memory, with only a line in each journal to say so.
 	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }

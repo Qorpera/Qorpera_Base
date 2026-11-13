@@ -1,0 +1,11 @@
+# /etc/sudoers.d/qorpera-agent: the agent's home (lanes/agent-box-20261113, slice 1).
+# Codex's own shell on a company machine runs as this account, and it must be able to
+# do there everything `machine_run` can do as root: install packages, change system
+# files, start services, use Docker. A non-root default keeps the files it writes owned
+# by the agent and keeps tools that refuse to run as root working; this is its way to
+# root, the one every coding session's user already has
+# (deploy/coding-machine/qorpera-coding.sudoers).
+#
+# The desktop's account gets none of this: Chromium keeps its sandbox there and the root
+# helpers' hardening against that account holds.
+qorpera-agent ALL=(ALL:ALL) NOPASSWD: ALL
