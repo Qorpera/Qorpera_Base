@@ -1115,6 +1115,25 @@ describe("sites client", () => {
 		);
 	});
 
+	it("reads one host rule with SQL and site-serve: `--next` ends a name's look before going live, `-next` is a name", () => {
+		const site = (slug: string, url: string) => parseCompanySite(row({ slug, url }));
+		// The shortest name a site may have, and the longest, each at its own host.
+		expect(site("abc", "https://abc.qorpera.com/").url).toBe("https://abc.qorpera.com/");
+		const long = "x".repeat(48);
+		expect(site(long, `https://${long}.qorpera.com/`).url).toBe(`https://${long}.qorpera.com/`);
+		expect(() => site(long, `https://${long}--next.qorpera.com/`)).toThrow("Invalid site.");
+		// shop--next.qorpera.com is site shop's next host: neither site shop's address nor a site's of its own.
+		expect(site("shop", "https://shop.qorpera.com/").url).toBe("https://shop.qorpera.com/");
+		expect(() => site("shop", "https://shop--next.qorpera.com/")).toThrow("Invalid site.");
+		expect(() => site("shop--next", "https://shop--next.qorpera.com/")).toThrow("Invalid site.");
+		// A label ending in a single `-next` is a plain name: its own site's address, and no other's.
+		expect(site("shop-next", "https://shop-next.qorpera.com/").url).toBe("https://shop-next.qorpera.com/");
+		expect(() => site("shop", "https://shop-next.qorpera.com/")).toThrow("Invalid site.");
+		// Upper case anywhere in the host is not the link the kernel writes.
+		for (const url of ["https://SHOP.qorpera.com/", "https://Shop.qorpera.com/", "https://shop.QORPERA.com/"])
+			expect(() => site("shop", url), url).toThrow("Invalid site.");
+	});
+
 	it("reads and draws today's answers exactly as before: websites on the sites host, app links at their own", async () => {
 		const today = [
 			row(),
@@ -1192,7 +1211,7 @@ describe("sites client", () => {
 	it("keeps the marker step 5.1's hosts-on gate reads in the live web bundle: the own-host regex's text", () => {
 		// The gate fetches the deployed bundle and looks for this text; the regex is what puts it there.
 		expect(readFileSync(resolve("src/cloud/sites.ts"), "utf8")).toContain(
-			String.raw`const SITE_HOST = /^([a-z0-9][a-z0-9-]{1,46}[a-z0-9])(--next)?\.qorpera\.com$/;`,
+			String.raw`const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;`,
 		);
 	});
 
