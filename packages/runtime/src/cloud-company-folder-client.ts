@@ -540,6 +540,13 @@ export interface CloudCompanyFolderRunView {
 	readonly pass: string;
 }
 
+/** A run's data pass (`qorpera_run_data_pass`, 20260930750000), or why it has none: the database named is not there or
+ * the run may not read it (the same answer), more than 1,000 files would be kept, or (with no name) data/ holds more
+ * than 5,000 folders to look through. */
+export type CloudCompanyDataPass =
+	| { readonly state: "pass"; readonly pass: string; readonly files: number }
+	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" };
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -1443,6 +1450,42 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return { viewId: input.viewId, pass: input.pass };
+	}
+
+	/** A data pass for the company data gateway's run door (company databases, slice 5; `qorpera_run_data_pass`,
+	 * 20260930750000): the platform keeps, as the run, each file the run may read under data/<database>/ (or under
+	 * every database's folder, for null) with its hash, and answers 32 random bytes that the gateway redeems once
+	 * within 60 s. */
+	async dataPass(database: string | null, signal: AbortSignal): Promise<CloudCompanyDataPass> {
+		if (database !== null && !/^[a-z][a-z0-9_]{0,39}$/.test(database))
+			throw new Error("Invalid company database name");
+		let value: unknown;
+		try {
+			value = await this.#once("qorpera_run_data_pass", { p_database: database }, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyFolderRpcError) {
+				if (error.code === "P0002" && error.detail === "Data pass has no such database")
+					return { state: "no_database" };
+				if (error.code === "54000" && error.detail === "Data pass would keep more than 1,000 files")
+					return { state: "too_many_files" };
+				if (
+					error.code === "54000" &&
+					error.detail === "Data pass would look through more than 5,000 folders under data/"
+				)
+					return { state: "too_many_folders" };
+			}
+			throw error;
+		}
+		const input = record(value, ["schema", "pass", "expiresAt", "files"]);
+		if (
+			input.schema !== "qorpera.data-pass/v1" ||
+			typeof input.pass !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(input.pass) ||
+			typeof input.expiresAt !== "string" ||
+			counter(input.files) > 1000
+		)
+			invalid();
+		return { state: "pass", pass: input.pass, files: input.files as number };
 	}
 
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers

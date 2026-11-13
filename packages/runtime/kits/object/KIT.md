@@ -35,7 +35,7 @@ its name beside it. Big facts sit under it. You write only `object.json` and ren
   "parts"?, "facts"?}`. Render them with the same camera and frame size. Leave out `parts`/`facts` to keep the main
   ones (their tracks must then fit the variant's frames).
 - `words`: the page's own words in your language: `assumed`, `unknown`, `drag` ("Drag to turn"), `close`,
-  `source`, `turn` (the turntable's name for screen readers), `empty`.
+  `source`, `turn` (the turntable's name for screen readers), `empty`, `tell`, `told`.
 
 The page turns slowly by itself until touched. Tapping a part or its name turns the thing the short way to where that
 part faces the viewer best, and shows its note. Never invent a value: a figure the documents do not give is

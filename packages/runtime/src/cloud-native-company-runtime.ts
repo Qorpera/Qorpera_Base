@@ -33,6 +33,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
@@ -184,6 +185,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
+	readonly #companyData: CloudCompanyDataDoor | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
@@ -221,6 +223,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
+		/** The data gateway's run door (company databases, slice 5): with it a run is offered data_describe, data_query
+		 * and, unless it is a worker, data_apply; without it none of them. */
+		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -241,6 +246,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#codingValues = options.codingValues;
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
+		this.#companyData = options.companyData;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -984,6 +990,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												runId: identity.runId,
 											}),
 										]
+									: []),
+								// The company's databases (slice 5), on a host that names the data gateway's run door: every
+								// run describes and asks them; a worker does not apply steps.
+								...(this.#companyData
+									? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),

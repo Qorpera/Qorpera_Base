@@ -10,7 +10,7 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 - `lang`: language code, such as `"da"`.
 - `title`: up to 40 characters. `line`: one quiet line, up to 60.
 - `words`: the page's own words in your language: `known`, `assumed`, `unknown`, `total` ("in all"), `noMarks`,
-  `close`, `next`, `empty`.
+  `close`, `next`, `empty`, `tell`, `told`.
 - `markWord`: what a mark is called, `{"one": "source", "many": "sources"}`.
 - `steps`: 1 to 6 steps in order, `{"id", "name"}`. `name` up to 22 characters.
 - `lanes`: 1 to 3 groups, each:

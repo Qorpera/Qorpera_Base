@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 /* The data kits' engines (packages/runtime/kits/{model,board,path,object}/engine.js; RUNTIME-INTERFACE-APPS.md §3b),
  * run in a DOM. save_app writes an engine into an app's folder and the web hands it to the app's frame knowing nothing
@@ -60,12 +60,18 @@ function standIn(file: string | Error) {
 /** Lets what is due run: the page's reads, and its timers up to `ms` from now. */
 const settle = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
 
-/** An app of the kit opened on a stand-in, as the frame opens it: the page's QORPERA_KIT, then the engine. */
-async function open(kit: Kit, file: string | Error, before?: (now: ReturnType<typeof standIn>["now"]) => void) {
+/** An app of the kit opened on a stand-in, as the frame opens it: the page's QORPERA_KIT, then the engine. A web with
+ * a note to the app's owner gives the page's `qorpera` a `tell`; an older one has none. */
+async function open(
+	kit: Kit,
+	file: string | Error,
+	before?: (now: ReturnType<typeof standIn>["now"]) => void,
+	tell?: Mock,
+) {
 	const bridge = standIn(file);
 	before?.(bridge.now);
 	page.QORPERA_KIT = { app: "demo", kit, data: `${kit}.json` };
-	page.qorpera = bridge.qorpera;
+	page.qorpera = tell ? { ...bridge.qorpera, tell } : bridge.qorpera;
 	new Function(kitFile(kit, "engine.js"))();
 	await settle();
 	return bridge;
@@ -393,5 +399,318 @@ describe("the object kit's engine", () => {
 		change();
 		await settle(10000);
 		expect(document.querySelector(".ok-head h1")?.textContent).toBe("The new box");
+	});
+});
+
+describe("each data kit's note to the app's owner", () => {
+	interface Thing {
+		readonly id: string;
+		readonly name: string;
+		readonly ask?: unknown;
+	}
+	/** Each kit's data with the given things in it, how a member opens a thing's detail, what then shows and how it
+	 * closes, what the note is about and which thing it names, and an id the kit keeps that the call's pattern does
+	 * not take (two of them, so two such things can be told apart). */
+	const KIT_THING: Readonly<
+		Record<
+			Kit,
+			{
+				readonly data: (things: readonly Thing[], words: unknown) => string;
+				readonly open: (thing: Thing, index: number) => void;
+				readonly shown: string;
+				readonly close: () => void;
+				readonly about: (thing: Thing) => string;
+				readonly at: (thing: Thing) => string;
+				readonly odd: readonly [string, string];
+			}
+		>
+	> = {
+		model: {
+			data: (things, words) =>
+				JSON.stringify({
+					lang: "en",
+					title: "Prices",
+					words,
+					groups: [
+						{
+							label: "Numbers",
+							inputs: things.map((thing) => ({
+								id: thing.id,
+								label: thing.name,
+								unit: "kr",
+								min: 0,
+								max: 100,
+								value: 40,
+								state: "known",
+								note: "From the supplier's list",
+								ask: thing.ask,
+							})),
+						},
+					],
+				}),
+			open: (_thing, index) => pressNth(".mk-label", index),
+			shown: ".mk-tip.mk-on",
+			// a second tap on the label closes its note
+			close: () => press(".mk-label"),
+			about: (thing) => `${thing.name} · 40 kr`,
+			at: (thing) => thing.id,
+			// a model's own ids may start with an underscore, which the call's pattern does not take
+			odd: ["_price_one", "_price_two"],
+		},
+		board: {
+			data: (things, words) =>
+				JSON.stringify({
+					lang: "en",
+					mode: "scale",
+					title: "Prices",
+					words,
+					items: things.map((thing) => ({ id: thing.id, name: thing.name, value: 10, ask: thing.ask })),
+				}),
+			open: (thing) => press(`.bk-item[data-id="${thing.id}"]`),
+			shown: ".bk-sheet.is-open",
+			close: () => press(".bk-sheet .bk-x"),
+			about: (thing) => thing.name,
+			at: (thing) => thing.id,
+			odd: ["supplier 1", "supplier 2"],
+		},
+		path: {
+			data: (things, words) =>
+				JSON.stringify({
+					lang: "en",
+					title: "Customers",
+					words,
+					steps: [{ id: "look", name: "Look" }],
+					lanes: things.map((thing) => ({
+						id: thing.id,
+						name: thing.name,
+						steps: { look: { state: "known", ask: thing.ask } },
+					})),
+				}),
+			open: (thing) => press(`.pk-node[data-key="n:${thing.id}:look"]`),
+			shown: ".pk-sheet",
+			close: () => press(".pk-sheet .pk-x"),
+			about: (thing) => `Look · ${thing.name}`,
+			at: (thing) => `${thing.id}:look`,
+			odd: ["lane one", "lane two"],
+		},
+		object: {
+			data: (things, words) =>
+				JSON.stringify({
+					lang: "en",
+					title: "Box",
+					picture: "pictures/box.webp",
+					words,
+					parts: things.map((thing) => ({
+						id: thing.id,
+						name: thing.name,
+						track: [[0.5, 0.5, 1]],
+						ask: thing.ask,
+					})),
+				}),
+			open: (thing) => press(`.ok-strip button[data-id="${thing.id}"]`),
+			shown: ".ok-note.open",
+			close: () => press(".ok-close"),
+			about: (thing) => thing.name,
+			at: (thing) => thing.id,
+			odd: ["part one", "part two"],
+		},
+	};
+	const BUTTON = ".bk-tell-b, .pk-tell-b, .ok-tell-b, .mk-tell-b";
+	const WHY = ".bk-tell-why, .pk-tell-why, .ok-tell-why, .mk-tell-why";
+	const WORDS = { tell: "Ask Ida", told: "Sent to Ida" };
+	const LYS: Thing = { id: "lys", name: "Lys", ask: "Get a quote from them" };
+	const press = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
+	const pressNth = (selector: string, index: number) =>
+		document.querySelectorAll<HTMLElement>(selector)[index]?.click();
+	const button = () => document.querySelector<HTMLButtonElement>(BUTTON);
+
+	it.each(KITS)("of %s draws no button for a note where the page's bridge has no tell", async (kit) => {
+		const thing = KIT_THING[kit];
+		await open(kit, thing.data([LYS], WORDS));
+		thing.open(LYS, 0);
+		expect(document.querySelector(thing.shown)).not.toBeNull();
+		expect(button()).toBeNull();
+	});
+
+	it.each(KITS)(
+		"of %s asks for a note once, from a press on the button at the foot of what a member opened",
+		async (kit) => {
+			const thing = KIT_THING[kit];
+			const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+			await open(kit, thing.data([LYS], WORDS), undefined, tell);
+			thing.open(LYS, 0);
+			// Nothing asks by itself: not when the page opens, not when a thing opens, not on a timer.
+			await settle(60000);
+			expect(tell).not.toHaveBeenCalled();
+			expect(document.querySelector(thing.shown)?.contains(button())).toBe(true);
+			expect(button()?.textContent).toBe("Ask Ida");
+			// One request a press: a second press while the member decides asks nothing more.
+			button()?.click();
+			button()?.click();
+			await settle();
+			expect(tell).toHaveBeenCalledTimes(1);
+			expect(tell).toHaveBeenCalledWith({
+				about: thing.about(LYS),
+				at: thing.at(LYS),
+				text: "Get a quote from them",
+			});
+			// The note went: the button says so, and asks nothing more.
+			expect(button()?.textContent).toBe("Sent to Ida");
+			expect(button()?.getAttribute("aria-disabled")).toBe("true");
+			button()?.click();
+			await settle();
+			expect(tell).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each(KITS)("of %s says for a few seconds why a note did not go, and keeps its button", async (kit) => {
+		const thing = KIT_THING[kit];
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
+			throw new Error("The member said not now.");
+		});
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
+		const why = document.querySelector(WHY);
+		expect(why?.textContent).toBe("");
+		expect(why?.getAttribute("aria-live")).toBe("polite");
+		button()?.click();
+		await settle();
+		// The bridge's sentence, read out, in the line that was there empty: nothing moves for it.
+		expect(document.querySelector(WHY)).toBe(why);
+		expect(why?.textContent).toBe("The member said not now.");
+		expect(button()?.textContent).toBe("Ask Ida");
+		expect(button()?.hasAttribute("aria-disabled")).toBe(false);
+		// Most often it is the member's own "not now" of a moment ago: it goes by itself after six seconds.
+		await settle(5900);
+		expect(why?.textContent).toBe("The member said not now.");
+		await settle(100);
+		expect(why?.textContent).toBe("");
+		// Refused again and pressed again, it goes at once; the note then waits in the agent's thread, as done as one
+		// that went.
+		button()?.click();
+		await settle();
+		expect(why?.textContent).toBe("The member said not now.");
+		tell.mockResolvedValueOnce({ sent: false, waiting: true });
+		button()?.click();
+		expect(why?.textContent).toBe("");
+		await settle();
+		expect(tell).toHaveBeenCalledTimes(3);
+		expect(button()?.textContent).toBe("Sent to Ida");
+		expect(why?.textContent).toBe("");
+	});
+
+	it.each(KITS)("of %s keeps each thing's note its own, also where the call takes neither thing's id", async (kit) => {
+		// Two things of the same name whose ids the call cannot take: both send no `at`, and the note of one said
+		// nothing about the other (their state was once kept under what went out, which was empty for both).
+		const thing = KIT_THING[kit];
+		const one: Thing = { id: thing.odd[0], name: "Lys", ask: "Get a quote from them" };
+		const two: Thing = { id: thing.odd[1], name: "Lys", ask: "Get a quote from them" };
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+		await open(kit, thing.data([one, two], WORDS), undefined, tell);
+		thing.open(one, 0);
+		button()?.click();
+		await settle();
+		expect(tell).toHaveBeenCalledWith({ about: thing.about(one), text: "Get a quote from them" });
+		expect(button()?.textContent).toBe("Sent to Ida");
+		thing.close();
+		// The other thing offers its own button, and sends its own note.
+		thing.open(two, 1);
+		expect(button()?.textContent).toBe("Ask Ida");
+		button()?.click();
+		await settle();
+		expect(tell).toHaveBeenCalledTimes(2);
+		expect(button()?.textContent).toBe("Sent to Ida");
+		// And the first one is still sent: each thing keeps its own.
+		thing.close();
+		thing.open(one, 0);
+		expect(button()?.textContent).toBe("Sent to Ida");
+	});
+
+	it.each(KITS)("of %s takes nothing of a closed detail into the member's way", async (kit) => {
+		// A detail faded out but left in the page kept its note's button in the tab order, so Shift+Tab reached it and
+		// asked about a thing no longer open.
+		const thing = KIT_THING[kit];
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
+		const opened = button() as HTMLButtonElement;
+		opened.focus();
+		expect(document.activeElement).toBe(opened);
+		thing.close();
+		// What the member can reach: the detail is gone, or hidden and inert, and the focus is back in the page.
+		const detail = document.querySelector(thing.shown);
+		expect(detail).toBeNull();
+		for (const node of document.querySelectorAll(BUTTON)) {
+			const hidden = node.closest("[inert]") !== null || getComputedStyle(node).visibility === "hidden";
+			expect(hidden || node.isConnected === false, `${kit}: a closed detail's button is still in the page`).toBe(
+				true,
+			);
+		}
+		// And the focus went back to what opened the detail, never left on a button nobody can see.
+		expect(document.activeElement).not.toBe(opened);
+		expect(document.activeElement?.closest("[inert]") ?? null).toBeNull();
+		expect(tell).not.toHaveBeenCalled();
+	});
+
+	it.each(KITS)("of %s takes the reason a note did not go away at once when the detail closes", async (kit) => {
+		const thing = KIT_THING[kit];
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
+			throw new Error("The member said not now.");
+		});
+		await open(kit, thing.data([LYS], WORDS), undefined, tell);
+		thing.open(LYS, 0);
+		button()?.click();
+		await settle();
+		expect(document.querySelector(WHY)?.textContent).toBe("The member said not now.");
+		thing.close();
+		expect(document.querySelector(thing.shown)).toBeNull();
+		for (const line of document.querySelectorAll(WHY)) expect(line.textContent).toBe("");
+		// Opened again before the six seconds are up, the thing shows its button and no reason.
+		thing.open(LYS, 0);
+		expect(document.querySelector(WHY)?.textContent).toBe("");
+		expect(button()?.textContent).toBe("Ask Ida");
+	});
+
+	it.each(KITS)(
+		"of %s names no thing the call cannot take, sends no draft past 40 characters, and draws a mark without words",
+		async (kit) => {
+			const thing = KIT_THING[kit];
+			const odd: Thing = { id: thing.odd[0], name: "Lys", ask: "x".repeat(41) };
+			const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+			// Words that are no text are left out, as a kit's other words are.
+			await open(kit, thing.data([odd], { tell: ["Ask Ida"], told: { text: "Sent" } }), undefined, tell);
+			thing.open(odd, 0);
+			expect(button()?.textContent).toBe("");
+			expect(button()?.getAttribute("aria-label")).toBe("Send a note");
+			expect(button()?.querySelector("svg")).not.toBeNull();
+			button()?.click();
+			await settle();
+			expect(tell).toHaveBeenCalledWith({ about: thing.about(odd) });
+			expect(button()?.getAttribute("aria-label")).toBe("Sent");
+		},
+	);
+
+	it("cuts what a model's note is about at a word, to the call's 60 characters", async () => {
+		// A model's label is at most 28 characters, but the value as shown has no such bound.
+		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+		const world = {
+			id: "people",
+			label: "Customers in the whole world",
+			min: 0,
+			max: 1e30,
+			value: 1e30,
+			state: "known",
+		};
+		await open(
+			"model",
+			JSON.stringify({ lang: "en", title: "World", groups: [{ label: "Numbers", inputs: [world] }] }),
+			undefined,
+			tell,
+		);
+		press(".mk-label");
+		button()?.click();
+		await settle();
+		// The whole line would end in a number cut short: the number goes, and the line stops at a word.
+		expect(tell).toHaveBeenCalledWith({ about: "Customers in the whole world…", at: "people" });
 	});
 });

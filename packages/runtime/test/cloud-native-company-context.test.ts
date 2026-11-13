@@ -141,6 +141,24 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	);
 });
 
+// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
+// the three tools, and never a secret in a step.
+it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
+	for (const said of [
+		"When data_query is offered, the company can keep data in databases of its own.",
+		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
+		"A file is the right home for what people read: plans, notes, documents and settings.",
+		'database.toml says what it is: format = "qorpera.database/v1"',
+		"tables/NNN-<name>.sql are its steps",
+		"Never change an applied step; write a new one with a higher number.",
+		"queries/<name>.sql are its questions: one select each",
+		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"is held until a member says yes: tell them what it would destroy.",
+		"Never put a password, key or other secret in a step, a question or a row.",
+	])
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
+});
+
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
 	const f = nativeCompanyContextFixture();
 	f.context.identity = {
@@ -1604,17 +1622,21 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
 // tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), for
 // code a member or another agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups,
-// 20260930741000; a staff run's words only), and for what an interface app is (an object, a model, an app or a video,
+// 20260930741000; a staff run's words only), for what an interface app is (an object, a model, an app or a video,
 // one app a thing, drawn by a kit of save_app, never a document or the state of someone's work; overlay v16; Jonas,
-// 13 November 2026). A change to any is a change to every run's bytes. They were measured once more with master's v15
-// merged into the import's follow-ups, again with master's v241 merged into the kits, and again where those meet the
-// answer first (the run's bookkeeping after its final send; the contract's 2026-11-13 amendment, proposed).
+// 13 November 2026), and for a member's note sent from an app's page (its first line names the app and the thing;
+// Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
+// (13 November 2026) the instructions and prompts were measured once more.
+// With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
+// 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
+// where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
+// amendment, proposed).
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "98f9b591d2fe041a409068a1e2058d112354530d2235f8b9c25f806b846f4df7",
+			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1622,7 +1644,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "08792e5a5d55175619cb10b925c76ddf44724f9be82706041849865b00813321",
+			instructions: "dd088ab0f9eb254db43d49db65e1409290b110a61d3554c7ed82441101711132",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1630,7 +1652,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "98f9b591d2fe041a409068a1e2058d112354530d2235f8b9c25f806b846f4df7",
+			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -2028,6 +2050,11 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Link an app in your message as [Title](app:<name>) instead of pasting long text.",
+	);
+	// A note a member sent from an app's page (qorpera.tell; Jonas, 13 November 2026: "you can't act very much inside
+	// of the interfaces"): the web puts the app and the thing on the message's first line.
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"A member's message whose first line is \"> app:<name>#<id> · <about>\" was sent from that app's page about that thing: act on it as on any message from that member, and show what came of it in the app.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",

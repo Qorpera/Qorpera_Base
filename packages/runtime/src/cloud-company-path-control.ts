@@ -48,6 +48,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
+	"qorpera_run_data_pass",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -163,6 +164,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
 			"qorpera_folder_request_code_import",
 			"qorpera_folder_code_import",
+			// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
+			"qorpera_run_data_pass",
 			// An agent's page and table changes in its conversation, with Undo (I10).
 			"qorpera_folder_note_interface_changes",
 			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).

@@ -73,6 +73,10 @@ Native host entry points (G2-1, migration 20260928409985): the publishable key's
 runner guest and work only with that runner job's current lease token. Clients never call them; without the token
 they answer 42501 "native host call is refused".
 
+Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
+for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
+bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 113 functions, grouped for navigation. Signatures: see the migration that defines each.
@@ -1934,6 +1938,14 @@ only after durable storage.
   of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
   401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
   looks again at once.
+- `POST /v1/company-data/<environmentId>/query`, `/watch`, `/apply` and `/describe` (not the object gateway's: the
+  node's mux sends them to the data gateway, `deploy/company-data/`; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`
+  §3 and §5) — a member's question to the company's databases, a held watch of questions, steps to apply, or what a
+  database holds, with the member's token, `content-type: application/json` and a JSON body: at most 1 MiB for
+  `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
+  are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
+  gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
+  gateway, which reads a body only for a signed-in member.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

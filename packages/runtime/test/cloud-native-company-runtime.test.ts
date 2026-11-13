@@ -101,6 +101,7 @@ async function fixture(
 	machines = false,
 	folderSearch = false,
 	timeoutMs = 10_000,
+	companyData = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -647,6 +648,16 @@ async function fixture(
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
+		// The data gateway's run door only offers the data tools here; this suite never asks it.
+		...(companyData
+			? {
+					companyData: {
+						call: async () => {
+							throw new Error("No company data call expected");
+						},
+					},
+				}
+			: {}),
 		// Folder bytes read the files seeded; this suite saves no file, and stages bytes only for a work log.
 		folderBytes: () => ({
 			put: async (bytes: Uint8Array, mediaType: string) => {
@@ -2526,7 +2537,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2536,9 +2547,12 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
-		"waitSeconds",
-	);
+	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
+		type: "integer",
+		minimum: 1,
+		maximum: 60,
+	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
@@ -3203,7 +3217,7 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 });
 
 it("pins a company run's tool catalog byte for byte", async () => {
-	const f = await fixture();
+	const f = await fixture("company-runtime", false, undefined, false, false, 10_000, true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -3278,9 +3292,12 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
 	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
+	// On 13 November 2026 a host that names the data gateway's run door offers data_describe, data_apply and data_query
+	// after update_wall (company databases, slice 5, 20260930750000); this run's host names it, so they moved again.
 	// The same day send_message, ask_member and update_wall no longer say the final send is the last act (the answer
 	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on each tree where that
-	// change meets master's own: agent names by work, then the kits that draw an interface app (13 November 2026).
+	// change meets master's own: agent names by work, the kits that draw an interface app, and company databases
+	// (13 November 2026).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3294,6 +3311,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"save_app",
 		"post_app",
 		"update_wall",
+		"data_describe",
+		"data_apply",
+		"data_query",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3327,9 +3347,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"3716b8e865376622c605bca5eaf49e622468ad20ae105c178a95e772aa3482d5",
+		"9244a52762ea861f2dba40b2798ec4a8e7d7ba1bde514c028dd1e778c7ce4170",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"97e25056651fae8203e24a844e35fb07d20f5c482e55746d9ca8c1250439d867",
+		"1a42f7f3d50b45aa7c4d7f888d83cbdfa8b93f85b99b83e584f27af6ae1f490f",
 	);
 });
