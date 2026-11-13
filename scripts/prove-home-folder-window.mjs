@@ -35,6 +35,9 @@ const PROFILE = "92400000-0000-4000-8000-000000000010";
 const HOME = "40bb0000-0000-4000-8000-000000000001";
 const OTHER = "40bb0000-0000-4000-8000-000000000002";
 const NODE = "40bb0000-0000-4000-8000-0000000000e2";
+/** What the runtime's own refusal is when the backend does not carry the three functions yet: the class and the code it
+ * raises, never its words (a public message is sanitised). 42883 is PostgreSQL's undefined_function. */
+const ROLL_REFUSAL = "CloudCompanyFolderRpcError:42883";
 
 /** The company's machines and their disks, as the executor's custody leaves them, plus a narrower folder resource that
  * only Alice's agent may read and one the run may not read at all. The other machine's disk gets the company-wide view
@@ -114,6 +117,13 @@ await finish(
 		async check({ code, db, binding, run, outputs }) {
 			const signal = () => AbortSignal.timeout(30_000);
 			const runId = binding.runId;
+			// Every folder core function wants the service role, and each psql call is its own session, so each one sets
+			// the claim in a transaction of its own (SQL test 924's base_claims does the same inside the fixture).
+			const service = (text) =>
+				db.json(`begin;
+					set local request.jwt.claims = '{"role":"service_role"}';
+					${text.replace(/;?\s*$/, "")};
+					commit;`);
 			// Each psql call is its own session, so the placements are read from the rows, not from a setting.
 			const placeOf = (machine) =>
 				db.json(`select to_jsonb((select p.id from public.qorpera_company_machine_placements p
@@ -122,7 +132,7 @@ await finish(
 			const otherPlace = placeOf(OTHER);
 			const actor = (view) => JSON.stringify({ kind: "view", viewId: view.viewId, pass: view.pass });
 			const read = (path, who) =>
-				db.json(`select public.qorpera_folder_read('${ENVIRONMENT}', '${who}'::jsonb, '${path}')::text`);
+				service(`select public.qorpera_folder_read('${ENVIRONMENT}', '${who}'::jsonb, '${path}')::text`);
 
 			// The run's own tools still read what it may and not what it may not: the model saw both answers.
 			assert.match(outputs[0].text, /narrow/, `the narrower file's text: ${outputs[0].text}`);
@@ -146,7 +156,7 @@ await finish(
 			pass("the window belongs to exactly one run, on its home's placement and boot");
 
 			// The folder service learns what it serves from the renewal it does by the window's pass.
-			const renewed = db.json(`select public.qorpera_folder_view_renew('${window.viewId}',
+			const renewed = service(`select public.qorpera_folder_view_renew('${window.viewId}',
 				'${window.pass}')::text`);
 			assert.equal(renewed.state, "open");
 			assert.equal(renewed.kind, "home_window");
@@ -155,7 +165,7 @@ await finish(
 			pass("the folder service renews the window by its pass and learns its kind and its machine");
 
 			// 2. The window shows the run's own folder, the company-wide view the company's.
-			const wide = db.json(`select public.qorpera_folder_view_open('${ENVIRONMENT}', '{"kind":"platform"}'::jsonb,
+			const wide = service(`select public.qorpera_folder_view_open('${ENVIRONMENT}', '{"kind":"platform"}'::jsonb,
 				'test_machine', jsonb_build_object('companyMachineId','${OTHER}','placementId','${otherPlace}',
 					'bootId',(select boot_id from public.qorpera_company_machine_placements where id = '${otherPlace}')))::text`);
 			assert.equal(read("home-narrow/n.txt", actor(window)).found, true);
@@ -167,7 +177,7 @@ await finish(
 			// 3. A read released under the window is recorded as that run's read.
 			const release = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
 			const entry = read("home-narrow/n.txt", actor(window)).entry;
-			const released = db.json(`select public.qorpera_folder_record_release('${ENVIRONMENT}', '${actor(window)}'::jsonb,
+			const released = service(`select public.qorpera_folder_record_release('${ENVIRONMENT}', '${actor(window)}'::jsonb,
 				'${release}', jsonb_build_array(jsonb_build_object('path', ${sqlLiteral(entry.path)},
 					'version', ${sqlLiteral(entry.version)}, 'authority', ${sqlLiteral(JSON.stringify(entry.authority))}::jsonb)),
 				repeat('5', 64))::text`);
@@ -179,9 +189,9 @@ await finish(
 
 			// 4. A native call on the window: its id is its own receipt, and what the window saves is credited to it.
 			const callId = db.json("select to_jsonb(extensions.gen_random_uuid())::text");
-			const receipt = db.json(`select public.qorpera_folder_begin_run_receipt('${JSON.stringify(binding)}'::jsonb,
+			const receipt = service(`select public.qorpera_folder_begin_run_receipt('${JSON.stringify(binding)}'::jsonb,
 				'${callId}', 'home_call:one', repeat('7', 64), repeat('8', 64), false)::text`);
-			assert.equal(receipt.state, "begun");
+			assert.equal(receipt.state, "executing", JSON.stringify(receipt));
 			await window.startCall(callId, "apply_patch home-narrow/made.txt", signal());
 			const open = db.json(`select coalesce((select to_jsonb(h) from public.qorpera_folder_home_calls h
 				where h.call_id = '${callId}'), 'null')::text`);
@@ -189,7 +199,7 @@ await finish(
 			assert.equal(open.run_id, runId);
 			assert.equal(open.ended_at, null);
 			assert.equal(open.command_head, "apply_patch home-narrow/made.txt");
-			const credited = db.json(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
+			const credited = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
 				'home-credited', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/made',
 					'credits', jsonb_build_array('${callId}'))))::text`);
 			assert.equal(credited.units[0].outcome, "saved", JSON.stringify(credited));
@@ -203,7 +213,7 @@ await finish(
 			// 5. With the call ended, what the window saves credits nothing and is the run's own alone.
 			assert.equal(await run.folder.endHomeCall({ viewId: window.viewId, callId }, signal()), true);
 			assert.equal(await run.folder.endHomeCall({ viewId: window.viewId, callId }, signal()), false);
-			const plain = db.json(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
+			const plain = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
 				'home-plain', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/plain')))::text`);
 			assert.equal(plain.units[0].outcome, "saved", JSON.stringify(plain));
 			const after = db.json(`select coalesce((select to_jsonb(c) from public.qorpera_folder_commits c
@@ -211,7 +221,7 @@ await finish(
 			assert.equal(after.credits, null);
 			assert.equal(after.run_id, runId);
 			// A unit crediting the ended call is refused on its own, and applies nothing.
-			const late = db.json(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
+			const late = service(`select public.qorpera_folder_commit('${ENVIRONMENT}', '${actor(window)}'::jsonb,
 				'home-late', jsonb_build_array(jsonb_build_object('op','mkdir','path','home-narrow/late',
 					'credits', jsonb_build_array('${callId}'))))::text`);
 			assert.equal(late.units[0].outcome, "refused");
@@ -234,13 +244,17 @@ await finish(
 			db.query(`drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb);`);
+			let thrown;
 			await assert.rejects(
 				() => code.openHomeFolderWindow(run.folder, HOME, signal()),
 				(error) => {
-					assert.match(String(error), /qorpera_folder_home_window_open|not available|unknown|schema cache/i);
+					thrown = error;
 					return true;
 				},
 			);
+			// The refusal is read by its own code, not by the words it prints (a public message is sanitised).
+			const refusalOf = (error) => `${error?.constructor?.name ?? "?"}:${error?.code ?? "?"}`;
+			assert.equal(refusalOf(thrown), ROLL_REFUSAL, `the refusal without the migration: ${refusalOf(thrown)}`);
 			pass("over a backend without the migration the ask is refused, so a release runs the migration first");
 		},
 	}),

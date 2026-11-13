@@ -190,10 +190,15 @@ begin
 		raise exception 'The ask: %', s2; end if;
 	if (pg_temp.view_row(s)).state is distinct from 'closed' or (pg_temp.view_row(s)).close_reason is distinct from 'superseded' then
 		raise exception 'A second window of the run does not supersede the first'; end if;
+	-- One open window per machine, whichever run: another run's open supersedes this one's, so the disk's read history
+	-- stays one chain (review r2 F1).
 	t := pg_temp.hw_open(a, v2);
 	if (select count(*) from public.qorpera_folder_views where company_machine_id = m and state = 'open'
-			and kind = 'home_window') <> 2 then
-		raise exception 'Two runs do not each have a window on one home'; end if;
+			and kind = 'home_window') <> 1
+		or (select id from public.qorpera_folder_views where company_machine_id = m and state = 'open'
+			and kind = 'home_window') is distinct from (t ->> 'viewId')::uuid
+		or (pg_temp.view_row(s2)).close_reason is distinct from 'superseded' then
+		raise exception 'A home holds one open window at a time'; end if;
 	-- The company-wide view of the same machine closes every window of it, and no window opens on that disk again.
 	perform pg_temp.open('test_machine', a);
 	if (select count(*) from public.qorpera_folder_views where company_machine_id = m and state = 'open'

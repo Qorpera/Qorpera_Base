@@ -89,7 +89,9 @@ alter table public.qorpera_folder_views drop constraint qorpera_folder_views_kin
 drop index qorpera_folder_views_open_test_machine;
 create unique index qorpera_folder_views_open_test_machine on public.qorpera_folder_views (company_machine_id)
 	where state = 'open' and kind = 'test_machine';
-create unique index qorpera_folder_views_open_home_window on public.qorpera_folder_views (company_machine_id, run_id)
+-- One open window per machine, whichever run holds it: two runs with windows on one home at once would each record
+-- only their own reads, and the disk's history would no longer be one chain. A second open supersedes the first.
+create unique index qorpera_folder_views_open_home_window on public.qorpera_folder_views (company_machine_id)
 	where state = 'open' and kind = 'home_window';
 
 -- A commit may name a window, and a window's commit may credit its calls.
@@ -208,6 +210,13 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 		-- The company-wide open's own advisory lock for this machine: the two serialise, so neither lands between the
 		-- other's checks and its insert.
 		perform pg_advisory_xact_lock(hashtextextended('qorpera.test-machine-view:' || (p_anchor ->> 'companyMachineId'), 0));
+		-- Then the machine's older views (the open one, and the placement's newest, whose read set this window carries)
+		-- FOR UPDATE, as the company-wide open takes them: a release in flight through one of them holds its view row,
+		-- so this open waits it out and carries what it read.
+		perform 1 from public.qorpera_folder_views where company_machine_id = (p_anchor ->> 'companyMachineId')::uuid
+			and (state = 'open' or id = (select v.id from public.qorpera_folder_views v
+				where v.placement_id = (p_anchor ->> 'placementId')::uuid order by v.created_at desc, v.id desc limit 1))
+		for update;
 		v_resolved := public.qorpera_folder_run_enter(p_environment_id, v_file.profile_id, p_opener);
 		perform public.qorpera_folder_machine_fence(v_file.profile_id);
 		perform 1 from public.qorpera_company_machines where id = (p_anchor ->> 'companyMachineId')::uuid for share;
@@ -230,6 +239,10 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 				where v.placement_id = v_home_placement.id and v.kind = 'test_machine') then
 			raise exception 'This machine has held the company-wide folder' using errcode = '42501',
 				detail = 'qorpera.home-window/new-disk'; end if;
+		-- The machine's open window goes first, whichever run held it: from then on nothing else releases a read through
+		-- it, so what the disk was served is fixed while this open reads it.
+		update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
+		where state = 'open' and kind = 'home_window' and company_machine_id = v_home_machine.id;
 		-- The disk also holds what the windows before this one read: a command may have copied a file out of /company,
 		-- and the next run's shell would read the copy. So the read set lives with the disk, as a test machine's does
 		-- (§6): the placement's newest view holds every read the disk was served, this window carries it on, and the
@@ -248,9 +261,6 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 					detail = 'qorpera.home-window/other-work';
 			end;
 		end if;
-		update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
-		where state = 'open' and kind = 'home_window' and company_machine_id = v_home_machine.id
-			and run_id = (p_opener ->> 'runId')::uuid;
 		insert into public.qorpera_folder_views(environment_id, profile_id, kind, staff_agent_id, member_user_id,
 			worker_access, run_id, company_machine_id, placement_id, boot_id, machine_id, pass_sha256, lease_until)
 		values (p_environment_id, v_file.profile_id, 'home_window', (v_resolved ->> 'staffAgentId')::uuid,

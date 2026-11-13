@@ -12,11 +12,11 @@ create function pg_temp.hwr_run() returns jsonb language sql as $$
 	select '{"kind":"run","runId":"64800000-0000-4000-8000-0000000000f1","jobId":"64800000-0000-4000-8000-0000000000f2",
 		"runnerId":"64800000-0000-4000-8000-0000000000f4","assignmentId":"64800000-0000-4000-8000-0000000000f5"}'::jsonb
 $$;
-create function pg_temp.hwr_open_sql() returns text language sql as $$
+create function pg_temp.hwr_open_sql(p_placement text default '51300000-0000-4000-8000-000000000102',
+	p_boot text default '51300000-0000-4000-8000-000000000103') returns text language sql as $$
 	select format('select public.qorpera_folder_view_open(%L, %L, %L, %L)', '64800000-0000-4000-8000-000000000020',
-		pg_temp.hwr_run(), 'home_window',
-		'{"companyMachineId":"51300000-0000-4000-8000-000000000101","placementId":"51300000-0000-4000-8000-000000000102",'
-			'"bootId":"51300000-0000-4000-8000-000000000103"}')
+		pg_temp.hwr_run(), 'home_window', jsonb_build_object('companyMachineId','51300000-0000-4000-8000-000000000101',
+			'placementId', p_placement, 'bootId', p_boot))
 $$;
 create function pg_temp.hwr_ask_sql() returns text language sql as $$
 	select format('select public.qorpera_folder_home_window_open(%L, %L, %L)', '64800000-0000-4000-8000-000000000020',
@@ -97,6 +97,65 @@ begin
 	perform public.qorpera_folder_view_close((v_wide ->> 'viewId')::uuid, v_wide ->> 'pass');
 end $$;
 
+-- A third disk for section C, as a new boot leaves it, committed before the connections run.
+set session_replication_role = replica;
+update public.qorpera_company_machine_placements set retired_at = clock_timestamp()
+where id = '51300000-0000-4000-8000-000000000112';
+insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding,
+	instance_sha256, running_at, boot_id)
+values ('51300000-0000-4000-8000-000000000122', '51300000-0000-4000-8000-000000000101',
+	'64800000-0000-4000-8000-000000000010', 'node-a', repeat('8', 64), '{}',
+	encode(extensions.digest('51300000-0000-4000-8000-000000000122', 'sha256'), 'hex'), clock_timestamp(),
+	'51300000-0000-4000-8000-000000000123');
+insert into public.qorpera_runtime_machine_allocations(id, profile_id, company_machine_placement_id, provider_adapter,
+	instance_sha256, reserved_at)
+values ('51300000-0000-4000-8000-000000000122', '64800000-0000-4000-8000-000000000010',
+	'51300000-0000-4000-8000-000000000122', 'lxd',
+	encode(extensions.digest('51300000-0000-4000-8000-000000000122', 'sha256'), 'hex'), clock_timestamp());
+insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256,
+	cpu_millis, memory_bytes, reserved_at)
+select '51300000-0000-4000-8000-000000000122', node_id, provider_kind, provider_id, policy_sha256, cpu_millis,
+	memory_bytes, clock_timestamp()
+from public.qorpera_runtime_node_demands where allocation_id = '51300000-0000-4000-8000-000000000112';
+set session_replication_role = origin;
+
+-- C. A release in flight through the window a new open supersedes is waited out, and the new window carries what it
+-- read: the open takes the machine's views FOR UPDATE before it reads the disk's read set (review r2 F1). The disk is
+-- the one section B left, which is now a company-wide one, so this runs on a third disk of its own.
+do $$
+declare v1 jsonb; v2 jsonb; e jsonb; v_state text; v_blocked boolean;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	select r into v1 from dblink('fence_one', pg_temp.hwr_open_sql('51300000-0000-4000-8000-000000000122',
+		'51300000-0000-4000-8000-000000000123')) as t(r jsonb);
+	perform dblink_exec('fence_one', 'commit');
+	-- One read lands first, so the window has a read set at all; then the release of a second read is held at that read
+	-- set by another connection.
+	select r -> 'entry' into e from dblink('fence_four', pg_temp.read_sql(v1, 'tm/k.txt')) as t(r jsonb);
+	perform * from dblink('fence_four', pg_temp.release_sql(v1, e, repeat('7', 64))) as t(r jsonb);
+	select r -> 'entry' into e from dblink('fence_four', pg_temp.read_sql(v1, 'tm/r.txt')) as t(r jsonb);
+	perform dblink_exec('fence_four', 'begin');
+	perform * from dblink('fence_four', format('select 1 from public.qorpera_folder_view_reads where view_id = %L for update',
+		v1 ->> 'viewId')) as t(x integer);
+	perform dblink_send_query('fence_five', pg_temp.release_sql(v1, e, repeat('9', 64)));
+	if not pg_temp.waits_for('fence_five', 'fence_four') then
+		raise exception 'The release did not stop at the window''s read set'; end if;
+	-- A second run's open of the same machine waits for that release before it reads the disk's read set.
+	perform dblink_send_query('fence_two', pg_temp.hwr_open_sql('51300000-0000-4000-8000-000000000122',
+		'51300000-0000-4000-8000-000000000123'));
+	v_blocked := pg_temp.waits_for('fence_two', 'fence_five');
+	perform dblink_exec('fence_four', 'rollback');
+	v_state := pg_temp.outcome('fence_five');
+	v2 := pg_temp.result('fence_two');
+	if not v_blocked then raise exception 'The open did not wait for the release in flight'; end if;
+	if v_state <> 'ok' then raise exception 'The release in flight: %', v_state; end if;
+	if (pg_temp.view_row(v1)).close_reason is distinct from 'superseded'
+		or (pg_temp.view_row(v2)).state is distinct from 'open' or not pg_temp.carries(v2, 'tm/k.txt')
+		or not pg_temp.carries(v2, 'tm/r.txt') then
+		raise exception 'The new window did not carry the release that was in flight: %', v2; end if;
+	perform public.qorpera_folder_view_close((v2 ->> 'viewId')::uuid, v2 ->> 'pass');
+end $$;
+
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four','fence_five']) name;
 
 -- Remove the fixture, exactly as 513 removes it: this test runs 513's fixture part, whose node demand would
@@ -112,6 +171,8 @@ begin
 	delete from public.qorpera_folder_view_releases where view_id = any (v_views);
 	delete from public.qorpera_folder_views where id = any (v_views);
 	delete from public.qorpera_runtime_node_demands where node_id = '51300000-0000-4000-8000-000000000410';
+	delete from public.qorpera_runtime_machine_allocations where id in ('51300000-0000-4000-8000-000000000112',
+		'51300000-0000-4000-8000-000000000122');
 	delete from public.qorpera_runtime_machine_allocations where id = '51300000-0000-4000-8000-000000000102';
 	delete from public.qorpera_company_machine_placements where machine_id = '51300000-0000-4000-8000-000000000101';
 	delete from public.qorpera_company_machines where id = '51300000-0000-4000-8000-000000000101';
