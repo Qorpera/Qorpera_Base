@@ -63,6 +63,30 @@ describe("the run's window on its home", () => {
 		}
 	});
 
+	it("tells the model in plain words when the ask itself does not get through, and raises a pause", async () => {
+		// A backend without the migration refuses the call (the function is not there, or the native host does not list
+		// it); the session is not started and the words name no window, view or id.
+		const refusing = (error: Error): CloudHomeWindowFolder => ({
+			openHomeWindow: async () => {
+				throw error;
+			},
+			openHomeCall: async () => undefined,
+			endHomeCall: async () => true,
+		});
+		for (const code of ["42883", "42501", "PGRST202"]) {
+			const error = Object.assign(new Error("refused"), { code });
+			const answer = await openHomeFolderWindow(refusing(error), MACHINE, AbortSignal.timeout(5_000));
+			if (!("refused" in answer)) throw new Error("a window where the ask was refused");
+			expect(answer.refused).toMatch(/could not be made ready just now/);
+			expect(answer.refused).not.toMatch(/window|view|mount|terminal|[\da-f]{8}/i);
+		}
+		// A paused company is the run's own refusal, not a missing window.
+		const paused = Object.assign(new Error("Company execution is paused"), { code: "55000" });
+		await expect(openHomeFolderWindow(refusing(paused), MACHINE, AbortSignal.timeout(5_000))).rejects.toThrow(
+			/paused/,
+		);
+	});
+
 	it("keeps a command head to one line and 300 characters", () => {
 		expect(homeCallHead("  ls /company  \nrm -rf x")).toBe("ls /company");
 		expect(homeCallHead("")).toBe("a command");

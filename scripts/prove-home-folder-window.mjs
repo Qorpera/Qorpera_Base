@@ -241,21 +241,28 @@ await finish(
 
 			// 7. Both orders of a roll: over a backend without the migration the function is not there, so the ask is
 			// refused and the relay says plain words and starts no session; the migration goes before the bundle.
-			db.query(`drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
+			db.query(`delete from public.qorpera_native_host_calls where name like 'qorpera_folder_home%';
+				drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb);`);
+			// Whichever way an unmigrated backend refuses the ask — the function is not there (42883 here), or the native
+			// host does not list the call (42501, the path a run's own box takes) — the relay gets plain words and starts
+			// no session. The kernel's refusal is checked by its code, never by words a public message sanitises.
 			let thrown;
 			await assert.rejects(
-				() => code.openHomeFolderWindow(run.folder, HOME, signal()),
+				() => run.folder.openHomeWindow(HOME, signal()),
 				(error) => {
 					thrown = error;
 					return true;
 				},
 			);
-			// The refusal is read by its own code, not by the words it prints (a public message is sanitised).
 			const refusalOf = (error) => `${error?.constructor?.name ?? "?"}:${error?.code ?? "?"}`;
-			assert.equal(refusalOf(thrown), ROLL_REFUSAL, `the refusal without the migration: ${refusalOf(thrown)}`);
-			pass("over a backend without the migration the ask is refused, so a release runs the migration first");
+			assert.equal(refusalOf(thrown), ROLL_REFUSAL, `the kernel's refusal: ${refusalOf(thrown)}`);
+			const withoutMigration = await code.openHomeFolderWindow(run.folder, HOME, signal());
+			assert("refused" in withoutMigration, "a window from a backend that has no window calls");
+			assert.match(withoutMigration.refused, /could not be made ready just now/);
+			assert.doesNotMatch(withoutMigration.refused, /window|view|mount|terminal|[\da-f]{8}/i);
+			pass("over a backend without the migration the ask gives plain words and no session, so a release runs the migration first");
 		},
 	}),
 );

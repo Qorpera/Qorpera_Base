@@ -61,6 +61,16 @@ const NO_WINDOW_WORDS = {
 		"This machine still holds work that this piece of work may not read, so it cannot be used for the agent's own shell and files. A fresh machine is needed.",
 } as const satisfies Record<Extract<CloudCompanyFolderHomeWindow, { state: "refused" }>["reason"], string>;
 
+/** What the model is told when the ask itself did not get through: the backend does not carry the window's calls yet
+ * (a release rolls the migration before the runtime), the run's turn ended, or the folder could not answer. The
+ * session is not started either way, which is what matters to the work. */
+const NO_ASK_WORDS =
+	"The agent's own shell and files could not be made ready just now, so this work goes on without them.";
+
+/** A paused company is the run's own refusal, not a missing window: it is raised, so the run's pause handling sees it
+ * as it does everywhere else. */
+const PAUSED = "55000";
+
 /** A command head the folder keeps with a call: the first line, at most 300 characters, as a machine command's is. */
 export function homeCallHead(command: string): string {
 	const line = command.split("\n", 1)[0]?.trim() ?? "";
@@ -74,7 +84,15 @@ export async function openHomeFolderWindow(
 	machineId: string,
 	signal: AbortSignal,
 ): Promise<{ window: CloudHomeFolderWindow } | { refused: string }> {
-	const answer = await folder.openHomeWindow(machineId, signal);
+	let answer: CloudCompanyFolderHomeWindow;
+	try {
+		answer = await folder.openHomeWindow(machineId, signal);
+	} catch (error) {
+		// A backend without the migration refuses the call itself (the function is not there, or the native host does
+		// not list it); so does a run whose turn ended. None of them is a reason to start a session.
+		if (signal.aborted || (error as { code?: string })?.code === PAUSED) throw error;
+		return { refused: NO_ASK_WORDS };
+	}
 	if (answer.state === "refused") return { refused: NO_WINDOW_WORDS[answer.reason] };
 	return { window: new CloudHomeFolderWindow(folder, answer) };
 }

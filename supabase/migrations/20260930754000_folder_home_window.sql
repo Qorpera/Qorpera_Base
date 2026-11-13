@@ -375,6 +375,25 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_commit(uuid,jsonb
 		if v_final then$old$,
 	$new$	if v_view.kind in ('computer_shell_command','test_machine','home_window') then -- 20260930420000, 20260930754000
 		if v_final then$new$);
+-- 4. A home takes no ordinary machine command --------------------------------------------------------------------------
+
+-- A window bounds what the home's shell sees of the company folder, but not what a command leaves elsewhere on the
+-- disk. So once a placement has had a window, no machine command (start, read, cancel) runs there: reading the root is
+-- not enough, because the window's run may have read a narrower folder that the caller may not. The home's own work
+-- goes through the window and its calls. A placement that never had one keeps today's access (20260930420000).
+select pg_temp.folder_home_window_patch(
+	'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure,
+	$old$	-- 20260930420000: what the disk's views read may be on it, on any boot.
+	if exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id)$old$,
+	$new$	-- 20260930754000: a home's disk holds what its windows' runs read, which the caller may not read; the home's
+	-- own work goes through the window and its calls, never through a machine command.
+	if exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id
+			and v.kind = 'home_window') then
+		raise exception 'This machine is an agent''s home' using errcode = '42501',
+			detail = 'qorpera.home-window/home-machine'; end if;
+	-- 20260930420000: what the disk's views read may be on it, on any boot.
+	if exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id)$new$);
+
 select pg_temp.folder_home_window_apply();
 
 -- 1. The run asks for its window -----------------------------------------------------------------------------------------
@@ -536,6 +555,7 @@ do $$ declare v_owner name; begin
 		'public.qorpera_folder_view_resolve(uuid,uuid,jsonb)'::regprocedure,
 		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
 		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure,
 		'public.qorpera_folder_home_window_open(uuid,jsonb,jsonb)'::regprocedure,
 		'public.qorpera_folder_home_call_open(uuid,jsonb,jsonb)'::regprocedure,
 		'public.qorpera_folder_home_call_end(uuid,jsonb,jsonb)'::regprocedure)) loop
