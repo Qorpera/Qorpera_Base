@@ -22,13 +22,13 @@
 		puzzle: [[50.25, 49.71, 5.47, 13.4, -12], [61.75, 48.29, 5.47, 13.4, -12]],
 	}).map(([id, eyes]) => [id, Object.freeze(eyes.map(([x, y, width, height, rotation]) => Object.freeze({ x, y, width, height, rotation })))])));
 	const avatars = [
-		{ id: "planet", name: "Planet", color: "#5ec0b5", origin: "50% 50%", rhythm: "The eyes lead a glance. The body follows, then holds.", duration: 8400, poses: [
+		{ id: "planet", name: "Planet", color: "#3faff3", origin: "50% 50%", rhythm: "The eyes lead a glance. The body follows, then holds.", duration: 8400, poses: [
 			[0, 0, -.4, -.6, 1, 1], [.09, 0, -.4, -.6, 1, 1], [.16, -.6, -1.1, -2.4, 1.006, .996], [.36, -.6, -1.1, -2.4, 1.006, .996], [.45, .7, -1.4, 1.9, .997, 1.009], [.54, .2, -.4, .3, 1, 1], [.91, .2, -.4, .3, 1, 1], [1, 0, -.4, -.6, 1, 1],
 		] },
 		{ id: "acorn", name: "Acorn", color: "#87674c", origin: "50% 88%", rhythm: "A grounded, deliberate rock.", duration: 3600, poses: [
 			[0, 0, 0, 0, 1, 1], [.24, -.4, .4, -3, 1.018, .985], [.54, .5, -.6, 2.4, .993, 1.012], [.76, 0, .2, -.7, 1.006, .997], [1, 0, 0, 0, 1, 1],
 		] },
-		{ id: "flame", name: "Flame", color: "#fa752e", origin: "50% 86%", rhythm: "A soft, irregular flicker.", duration: 2600, poses: [
+		{ id: "flame", name: "Flame", color: "#f96e2d", origin: "50% 86%", rhythm: "A soft, irregular flicker.", duration: 2600, poses: [
 			[0, 0, 0, 0, 1, 1], [.22, .4, -1.3, 3.5, .98, 1.025], [.47, -.6, .5, -2.6, 1.02, .985], [.73, .2, -.7, 1.3, .992, 1.012], [1, 0, 0, 0, 1, 1],
 		] },
 		{ id: "rocket", name: "Rocket", color: "#f96e2d", origin: "50% 65%", rhythm: "A light lift with a steady hover.", duration: 3200, poses: [
@@ -37,7 +37,7 @@
 		{ id: "crown", name: "Crown", color: "#fcb51b", origin: "50% 85%", rhythm: "A small, measured nod.", duration: 4400, poses: [
 			[0, 0, 0, 0, 1, 1], [.2, .3, .6, 1.7, 1.012, .985], [.4, 0, -.8, -.8, .995, 1.009], [.6, 0, 0, .25, 1, 1], [1, 0, 0, 0, 1, 1],
 		] },
-		{ id: "heart", name: "Heart", color: "#fb672a", origin: "50% 55%", rhythm: "A quiet double heartbeat.", duration: 3000, poses: [
+		{ id: "heart", name: "Heart", color: "#e22538", origin: "50% 55%", rhythm: "A quiet double heartbeat.", duration: 3000, poses: [
 			[0, 0, 0, 0, 1, 1], [.08, 0, -.3, 0, 1.052, 1.045], [.16, 0, 0, 0, .997, .997], [.26, 0, -.2, .3, 1.036, 1.03], [.38, 0, 0, 0, 1, 1], [1, 0, 0, 0, 1, 1],
 		] },
 		{ id: "star", name: "Star", color: "#fcb51b", origin: "50% 55%", rhythm: "A small, bright twinkle.", duration: 4200, poses: [
