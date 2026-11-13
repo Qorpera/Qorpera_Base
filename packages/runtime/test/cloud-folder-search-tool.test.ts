@@ -962,4 +962,102 @@ describe("company_search", () => {
 			"big.md:9: plan three\n\n1 file searched. Nothing more.",
 		);
 	});
+
+	// Release review r2 of #1731: a cursor inside a file is no proof an answer showed any of it. A search tool whose clock
+	// the test moves (20 s at each look while `slow`, so one page a call; none after), and a file's changed version.
+	const CHANGED = "81100000-0000-4000-8000-0000000000b2";
+	const changed = (path: string) =>
+		found({
+			hits: [{ ...hit(path, 1, "plan, new"), version: CHANGED }],
+			searched: 1,
+			reads: [{ path, kind: "file", version: CHANGED, authority: RECEIPT }],
+		});
+	const inBig = (offset: number) => ({ path: "big.md", version: VERSION, offset, line: offset / 10 });
+	const cursorOf = (text: string) => /cursor (\S+)$/.exec(text)![1]!;
+	const searching = (n: Awaited<ReturnType<typeof node>>) => {
+		let t = 0;
+		const clock = { slow: true };
+		const f = folder();
+		const search = new CloudFolderSearch({
+			socketPath: n.path,
+			folder: f.client,
+			environmentId: ENV,
+			now: () => {
+				if (clock.slow) t += 20_000;
+				return t;
+			},
+		});
+		const s = cloudFolderSearchTool({ search, folder: f.client, runId: RUN });
+		const call = async (cursor: string | null, id: string) =>
+			(await s.execute(s.parseArguments({ query: "plan", ...(cursor ? { cursor } : {}) }), context(id)))
+				.value as string;
+		return { call, clock };
+	};
+
+	it("says nothing of a changed file whose first hit the fitting left out, though the cursor was inside it (release review r2 of #1731)", async () => {
+		// The answer shows a.md's hit; b.md's first hit (line 5) does not fit with it, so the cursor is inside b.md.
+		const n = await node(
+			(search) =>
+				search.after === null
+					? found({
+							hits: [hit("a.md", 1, "<".repeat(4096)), hit("b.md", 5, `plan ${"<".repeat(4090)}`, 400)],
+							searched: 2,
+							reads: [read("a.md"), read("b.md")],
+						})
+					: changed("b.md"),
+			{ version: 2, regex: true },
+		);
+		const s = searching(n);
+		const first = await s.call(null, "call-1");
+		expect(first).toMatch(/^a\.md:1: <+\n\nPart of the answer\. More: call again with cursor \S+$/);
+		expect(first).not.toContain("b.md");
+		const next = await s.call(cursorOf(first), "call-2");
+		expect(n.searches[1]!.after).toEqual({ path: "b.md", version: VERSION, offset: 400, line: 4 });
+		expect(next).toBe("b.md:1: plan, new\n\n1 file searched. Nothing more.");
+	});
+
+	it("says nothing of a changed file the search ran out of time inside before a hit, at a call's start or between its pages (release review r2 of #1731)", async () => {
+		for (const between of [false, true]) {
+			const n = await node(
+				(search) =>
+					search.after === null
+						? found({ hits: [hit("a.md", 2, "plan a")], searched: 1, reads: [read("a.md")], next: inBig(900) })
+						: between && (search.after as { offset: number }).offset === 900
+							? // The next call goes on in big.md at that version, still without a hit, and then it changes.
+								found({ reads: [read("big.md")], next: inBig(1800) })
+							: changed("big.md"),
+				{ version: 2, regex: true },
+			);
+			const s = searching(n);
+			const first = await s.call(null, "call-1");
+			expect(first).toMatch(/^a\.md:2: plan a\n\n1 file searched\. More: call again with cursor \S+$/);
+			s.clock.slow = false;
+			expect(await s.call(cursorOf(first), "call-2")).toBe("big.md:1: plan, new\n\n1 file searched. Nothing more.");
+			expect(n.searches.map((x) => (x.after as { offset: number } | null)?.offset ?? null)).toEqual(
+				between ? [null, 900, 1800] : [null, 900],
+			);
+		}
+	});
+
+	it("says so of a changed file while the cursor stays in the version an answer showed part of, through a call that shows nothing more of it", async () => {
+		let pages = 0;
+		const n = await node(
+			() => {
+				pages++;
+				return pages === 1
+					? found({ hits: [hit("big.md", 3, "plan one")], reads: [read("big.md")], next: inBig(900) })
+					: pages === 2
+						? found({ reads: [read("big.md")], next: inBig(1800) })
+						: changed("big.md");
+			},
+			{ version: 2, regex: true },
+		);
+		const s = searching(n);
+		const one = await s.call(null, "call-1");
+		const two = await s.call(cursorOf(one), "call-2");
+		expect(two).toMatch(/^No matches here\.\n\n0 files searched\. More: call again with cursor \S+$/);
+		expect(await s.call(cursorOf(two), "call-3")).toBe(
+			"big.md:1: plan, new\n\nbig.md changed since the last answer: it is searched again from its start.\n\n1 file searched. Nothing more.",
+		);
+	});
 });

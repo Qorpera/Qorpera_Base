@@ -6,6 +6,11 @@
 	"use strict";
 
 	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	// who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	// 2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	// control, sheet and detail stays as it is. `concept` comes from the page (kitPage), never from the data.
+	const BARE = KIT.concept === true;
 	const D = document;
 	const mq = (q) => (window.matchMedia ? matchMedia(q) : { matches: false, addEventListener() {} });
 	const REDUCED = mq("(prefers-reduced-motion: reduce)");
@@ -18,6 +23,9 @@
 		source: "Source",
 		turn: "Turn the object",
 		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
 	};
 	const STATES = { known: 1, assumed: 1, unknown: 1 };
 	const SVGNS = "http://www.w3.org/2000/svg";
@@ -55,6 +63,8 @@ body{margin:0}
 .ok *,.ok *::before,.ok *::after{box-sizing:border-box}
 .ok button{font:inherit;color:inherit}
 .ok-head{position:relative;z-index:2}
+.ok--bare{padding:clamp(12px,1vw,16px)}
+.ok--bare .ok-head{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ok-src{display:inline-flex;align-items:center;justify-content:center;min-width:28px;min-height:28px;margin:-6px 0 -6px 2px;color:var(--q-muted);text-decoration:none;font-size:14px;border-radius:8px;vertical-align:middle}
@@ -99,13 +109,28 @@ body{margin:0}
 .ok-tag{font-size:11px;line-height:1;padding:3px 6px;border-radius:999px;border:1px dashed color-mix(in srgb,var(--q-text) 40%,var(--q-bg));color:var(--q-muted)}
 .ok-unk{display:inline-grid;place-items:center;min-width:2.1em;padding:0 .45em;border-radius:.45em;border:1px dashed color-mix(in srgb,var(--q-text) 32%,var(--q-bg));color:var(--q-muted);font-weight:650;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--q-text) 13%,transparent) 0 1.5px,transparent 1.5px 6px)}
 .ok-val .ok-unk{font-size:11px;line-height:16px;min-width:22px}
-.ok-note{position:absolute;z-index:3;left:50%;bottom:6px;width:min(440px,calc(100% - 8px));transform:translate(-50%,8px);opacity:0;pointer-events:none;background:var(--q-surface);border-radius:16px;padding:13px 46px 14px 16px;box-shadow:0 0 0 1px var(--q-line),0 18px 40px -22px color-mix(in srgb,var(--q-text) 55%,transparent);transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1)}
-.ok-note.open{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.ok-note{position:absolute;z-index:3;left:50%;bottom:6px;width:min(440px,calc(100% - 8px));transform:translate(-50%,8px);opacity:0;visibility:hidden;pointer-events:none;background:var(--q-surface);border-radius:16px;padding:13px 46px 14px 16px;box-shadow:0 0 0 1px var(--q-line),0 18px 40px -22px color-mix(in srgb,var(--q-text) 55%,transparent);transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1),visibility 0s linear .25s}
+.ok-note.open{opacity:1;visibility:visible;transform:translate(-50%,0);pointer-events:auto;transition:opacity .25s ease,transform .35s cubic-bezier(.2,.7,.2,1)}
 .ok-note-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px;font-weight:650;line-height:1.3}
 .ok-note-h .ok-val{font-size:14px;font-weight:500}
 .ok-note p{margin:5px 0 0;font-size:15px;line-height:1.45;color:var(--q-text)}
 .ok-close{position:absolute;right:6px;top:6px;width:40px;height:40px;border:0;background:none;border-radius:12px;color:var(--q-muted);cursor:pointer;display:grid;place-items:center}
 .ok-close:hover{color:var(--q-text);background:color-mix(in srgb,var(--q-text) 6%,transparent)}
+/* a note to the app's owner, at the foot of a part's note: the reason a note did not go stands quietly beside the
+   button, over a cell that holds no height of its own, so the note (anchored by its foot on a wide screen) keeps its
+   height when it comes and goes */
+.ok-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:14px;margin-top:10px}
+.ok-tell-c{position:relative;align-self:stretch}
+.ok .ok-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.ok .ok-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.ok .ok-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.ok .ok-tell-b.ok-bare{padding:0}
+.ok .ok-tell-b svg{flex:none;width:17px;height:17px}
+.ok .ok-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.ok .ok-tell-b.ok-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
+.ok .ok-tell-b.ok-told.ok-bare{padding:0}
+.ok .ok-tell-b.ok-told svg{color:var(--q-good)}
+.ok-note .ok-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--q-muted)}
 .ok-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;font-size:13px;color:var(--q-muted);white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .6s ease}
 .ok.in .ok-hint.show{opacity:1}
 .ok-below{display:flex;flex-direction:column;align-items:center;gap:clamp(10px,1.8vh,20px)}
@@ -140,6 +165,97 @@ body{margin:0}
 @media (prefers-reduced-motion:reduce){.ok *,.ok *::before,.ok *::after{transition:none!important;animation:none!important}}
 `;
 
+	// ------------------------------------------------------------------ a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of a part's note, drawn only
+	// where the bridge has `tell` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	// each thing's note so far, by what it is about: { busy }, { done } or { why } (the reason it did not go)
+	const TOLD = new Map();
+	// the timer that takes a thing's reason away again
+	const QUIET = new Map();
+	// a closed detail keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell) x.__tell.paint();
+	}
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	// what a note is about, as one line of at most 60 characters, cut at a word
+	function noteAbout(...parts) {
+		const chars = Array.from(parts.filter(Boolean).join(" · "));
+		if (chars.length <= 60) return chars.join("");
+		let end = 59;
+		while (end > 0 && chars[end] !== " ") end--;
+		return `${(end > 0 ? chars.slice(0, end) : chars.slice(0, 59)).join("").replace(/[\s·]+$/, "")}…`;
+	}
+	// a draft for the note, as a thing's `ask` gives it: one line of at most 40 characters, or none
+	function askOf(v) {
+		const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+		return Array.from(t).length <= 40 ? t : "";
+	}
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		// `at` is only what goes out: the state is the thing's own, so two ids the call cannot take stay two things
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = `${id}\n${about}`;
+		// a new view of the thing starts without the reason an earlier one showed
+		if ((TOLD.get(key) || {}).why) {
+			clearTimeout(QUIET.get(key));
+			TOLD.delete(key);
+		}
+		const b = h("button", "ok-tell-b", { type: "button" });
+		const why = h("p", "ok-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			const mark = s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" });
+			mark.innerHTML = st.done ? TELL_ICON.tick : TELL_ICON.note;
+			b.replaceChildren(mark);
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("ok-bare", !label);
+			b.classList.toggle("ok-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of D.querySelectorAll(".ok-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "ok-tell", null, [b, h("div", "ok-tell-c", null, why)]);
+	}
+
 	// ------------------------------------------------------------------ data
 	function picOf(tt, still) {
 		if (tt && typeof tt === "object" && typeof tt.picture === "string") {
@@ -169,6 +285,7 @@ body{margin:0}
 					id,
 					name: cut(p.name, 22) || "—",
 					note: cut(p.note, 90),
+					ask: askOf(p.ask),
 					state,
 					value: state === "unknown" ? "" : cut(p.value, 16),
 					source: link(p.source),
@@ -302,6 +419,7 @@ body{margin:0}
 		data: null,
 		vi: 0,
 		sel: null,
+		was: null, // the part whose note was open, so the focus can go back to what opened it
 		hot: null,
 		ang: 0,
 		vel: 0,
@@ -332,7 +450,7 @@ body{margin:0}
 
 	function build() {
 		const d = S.data;
-		const root = h("main", "ok", { lang: d.lang });
+		const root = h("main", BARE ? "ok ok--bare" : "ok", { lang: d.lang });
 		const title = h("h1", null, null, d.title);
 		const line = h("p");
 		const head = h("header", "ok-head", null, [title, line]);
@@ -345,7 +463,9 @@ body{margin:0}
 		const hint = h("div", "ok-hint", { "aria-hidden": "true" });
 		hint.innerHTML = `<svg width="22" height="10" viewBox="0 0 22 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h20M5 1 1 5l4 4M17 1l4 4-4 4"/></svg>`;
 		hint.append(h("span", null, null, d.words.drag));
-		const note = h("div", "ok-note", { role: "status", "aria-live": "polite" });
+		// closed, it is inert as well as unseen: nothing in it takes the focus or is read out (a note faded out but
+		// still in the page was reachable by Shift+Tab, and its button asked about a part no longer open)
+		const note = h("div", "ok-note", { role: "status", "aria-live": "polite", inert: true });
 		view.append(shadow, object, lines, hint, note);
 		const strip = h("div", "ok-strip", { role: "group" });
 		const chips = h("div", "ok-chips", { role: "group" });
@@ -954,9 +1074,17 @@ body{margin:0}
 		const d = S.data;
 		const part = S.sel ? V().parts.find((p) => p.id === S.sel) : null;
 		if (!part) {
+			const inside = R.note.contains(D.activeElement);
 			R.note.classList.remove("open");
+			R.note.setAttribute("inert", "");
+			hushTold();
+			// the focus goes back to what opened the note, never onto a part that is no longer shown
+			if (inside) openerOf(S.was)?.focus({ preventScroll: true });
+			S.was = null;
 			return;
 		}
+		S.was = part.id;
+		R.note.removeAttribute("inert");
 		const head = h("div", "ok-note-h", null, [markOf(part.state), h("span", null, null, part.name)]);
 		const v = valueOf(part, d.words);
 		if (v.childNodes.length) head.append(v);
@@ -964,8 +1092,16 @@ body{margin:0}
 		const close = h("button", "ok-close", { type: "button", "aria-label": d.words.close, title: d.words.close });
 		close.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 2l10 10M12 2 2 12"/></svg>`;
 		close.addEventListener("click", () => select(null));
-		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), close);
+		// with variants to choose from, the note names the one shown
+		const tell = tellFoot(d.words, noteAbout(part.name, d.variants.length > 1 ? V().name : ""), part.id, part.ask);
+		R.note.replaceChildren(head, ...(part.note ? [h("p", null, null, part.note)] : []), ...(tell ? [tell] : []), close);
 		R.note.classList.add("open");
+	}
+	/** What opens a part's note: its name beside the object, or its button in the strip on a phone. */
+	function openerOf(id) {
+		if (!id || !R) return null;
+		if (S.box?.phone) return R.strip.querySelector(`[data-id="${CSS.escape(id)}"]`);
+		return (R.labels.find((it) => it.part.id === id) || {}).el ?? null;
 	}
 	function chooseVariant(i) {
 		if (i === S.vi) return;
@@ -1104,7 +1240,7 @@ body{margin:0}
 	}
 	function empty(text) {
 		if (S.built) return;
-		const root = h("main", "ok", null, [h("p", "ok-empty", null, text)]);
+		const root = h("main", BARE ? "ok ok--bare" : "ok", null, [h("p", "ok-empty", null, text)]);
 		shelf = shelf || D.getElementById("kit-media");
 		D.body.replaceChildren(...(shelf ? [shelf] : []), root);
 	}

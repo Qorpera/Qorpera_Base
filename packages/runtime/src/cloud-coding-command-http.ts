@@ -20,9 +20,11 @@ import {
 	type CloudMachineCommandServiceOptions,
 	CloudMachineScreenRefusal,
 	CloudMemberMachineActRefusal,
+	CloudMemberMachinePointerRefusal,
 	CloudMemberMachineScreenRefusal,
 	CloudMemberMachineStartRefusal,
 	cloudMemberMachineActAnswer,
+	cloudMemberMachinePointerAnswer,
 	cloudMemberMachineScreenAnswer,
 	cloudMemberMachineStartAnswer,
 	parseCloudMachineCodingValueAnswer,
@@ -31,6 +33,7 @@ import {
 	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
 	parseCloudMemberMachineActPeerRequest,
+	parseCloudMemberMachinePointerPeerRequest,
 	parseCloudMemberMachineScreenPeerRequest,
 	parseCloudMemberMachineStartPeerRequest,
 	serveCloudMachineCommand,
@@ -452,6 +455,11 @@ export class HttpCloudCodingCommandService {
 				this.#options.proveBinding === null &&
 				this.#options.machines?.memberStart &&
 				request.url === "/v1/machine-commands/member-start";
+			// A member's pointer move (20260930744000): on the peer listener only, from another executor, as the look.
+			const memberPointerRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberPointer &&
+				request.url === "/v1/machine-commands/member-pointer";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
@@ -462,7 +470,8 @@ export class HttpCloudCodingCommandService {
 					!screenRoute &&
 					!memberScreenRoute &&
 					!memberActRoute &&
-					!memberStartRoute) ||
+					!memberStartRoute &&
+					!memberPointerRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -555,6 +564,24 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the member's window acts on is told apart, by its fixed code.
 					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberPointerRoute && this.#options.machines?.memberPointer) {
+				const admitted = parseCloudMemberMachinePointerPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachinePointerAnswer(
+							admitted,
+							await this.#options.machines.memberPointer(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachinePointerRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

@@ -235,6 +235,12 @@ end $$;
 -- The answers (codeImportLookedAnswer, codeImportRecordedAnswer): {"schema":"qorpera.code-import-looked/v1",
 --   "state":"recorded"} or {…,"state":"lost"}; {"schema":"qorpera.code-import-recorded/v1","state":"recorded","change":1}
 --   or {"schema":"qorpera.code-import-recorded/v1","state":"lost"}. The claim's item: section 4.
+-- Since 20260930741000 (tested in 1235): a look may carry lines (the other lines of work it keeps), as codeImportLook
+-- writes them: "lines":{"count":2,"changes":3,"shown":[{"name":"feature/a","ahead":3,"behind":1,
+--   "lastAt":"2026-11-01T10:00:00Z","fits":true},{"name":null,"ahead":1,"behind":0,"lastAt":null,"fits":null}]};
+-- the registry's imported_from keeps them when count is at least 1 (entries of shown dropped from the end to keep 2,048
+-- bytes); the agent's read has a twelfth key, "file": null or {"path":"code/_incoming/<folder>/<name>.bundle",
+-- "version":"<the folder entry's version>"|null}.
 do $$
 begin
 	perform pg_temp.base_assert(public.qorpera_code_import_look_valid(('{"schema":"qorpera.code-import-look/v1",'
@@ -245,6 +251,9 @@ begin
 		'"secrets":{"found":3,"shown":[{"kind":"env-file","path":".env","inMain":true},'
 		'{"kind":"aws","path":null,"inMain":false}],"scan":{"blobs":40000,"bytes":900000000,"all":false}},'
 		'"fits":false,"why":"IMPORT_USES_LFS"}')::jsonb), 'C1''s look');
+	perform pg_temp.base_assert(public.qorpera_code_import_look_valid(pg_temp.imp_look(('{"lines":{"count":2,"changes":3,'
+		'"shown":[{"name":"feature/a","ahead":3,"behind":1,"lastAt":"2026-11-01T10:00:00Z","fits":true},'
+		'{"name":null,"ahead":1,"behind":0,"lastAt":null,"fits":null}]}}')::jsonb)), 'B''s look with lines');
 	perform pg_temp.base_assert(public.qorpera_code_import_from_valid('{"github":"Acme/Base"}')
 		and public.qorpera_code_import_from_valid('{"file":"code/_incoming/f1/shop.bundle","branch":"trunk"}')
 		and public.qorpera_code_import_from_valid(jsonb_build_object('file', 'code/_incoming/f/' || repeat('n', 93) || '.bundle')),
@@ -786,7 +795,8 @@ begin
 		and (select r from jsonb_array_elements(v -> 'repositories') r where r ->> 'name' = 'base')
 			- 'downloads' = jsonb_build_object('owner', 'company', 'name', 'base', 'changes', 1,
 				'importedFrom', '{"kind":"github","repository":"Qorpera/Qorpera_Base"}'::jsonb,
-				'importedAt', (select imported_at from public.qorpera_code_repositories where name = 'base'), 'earlierChanges', 5210)
+				'importedAt', (select imported_at from public.qorpera_code_repositories where name = 'base'), 'earlierChanges', 5210,
+				'otherWork', null)
 		and (select r -> 'importedFrom' from jsonb_array_elements(v -> 'repositories') r where r ->> 'name' = 'shop') = 'null',
 		'the list: ' || v::text);
 	update public.qorpera_code_requests set finished_at = clock_timestamp() where id = v_life;
@@ -865,7 +875,8 @@ begin
 	-- The agent's read, and the request read refuses an import.
 	perform pg_temp.base_assert(pg_temp.imp_read(v_life) = jsonb_build_object('schema', 'qorpera.code-import/v1',
 		'requestId', v_life, 'owner', 'company', 'name', 'base', 'state', 'done', 'step', 'build', 'waiting', null,
-		'look', pg_temp.imp_look(), 'result', 'imported', 'change', 1, 'code', null), 'the agent''s read: ' || pg_temp.imp_read(v_life)::text);
+		'look', pg_temp.imp_look(), 'result', 'imported', 'change', 1, 'code', null, 'file', null),
+		'the agent''s read: ' || pg_temp.imp_read(v_life)::text);
 	perform pg_temp.imp_error('the read of another company''s', format('select pg_temp.imp_read(%L)',
 		(select id from public.qorpera_code_requests where owner = 'other' and name = 'thing')), 'P0002', 'No such code import');
 	perform pg_temp.imp_error('the read of an undo', format('select pg_temp.imp_read(%L)',

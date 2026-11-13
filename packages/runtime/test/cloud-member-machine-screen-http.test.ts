@@ -3,11 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemberMachineScreenControl } from "../../../deploy/coding-worker/member-control.ts";
 import {
 	CloudMemberMachineActRefusal,
+	CloudMemberMachinePointerRefusal,
 	CloudMemberMachineScreenRefusal,
 	CloudMemberMachineStartRefusal,
 } from "../src/cloud-machine-command-http.ts";
 import {
 	type CloudMemberMachineActRequest,
+	type CloudMemberMachinePointerAnswer,
+	type CloudMemberMachinePointerRequest,
 	CloudMemberMachineScreenForbidden,
 	type CloudMemberMachineScreenLook,
 	CloudMemberMachineScreenSignIn,
@@ -27,23 +30,26 @@ async function service(
 	look: (request: CloudMemberMachineScreenLook) => Promise<{ etag: string; png: Buffer | null }>,
 	act?: (request: CloudMemberMachineActRequest) => Promise<{ exitCode: number | null }>,
 	start?: (request: CloudMemberMachineStartRequest) => Promise<{ outcome: "started" | "running" }>,
+	pointer?: (request: CloudMemberMachinePointerRequest) => Promise<CloudMemberMachinePointerAnswer>,
 ) {
 	const failed = vi.fn();
 	const looked = vi.fn(look);
 	const acted = vi.fn(act ?? (async () => ({ exitCode: 0 })));
 	const started = vi.fn(start ?? (async () => ({ outcome: "started" as const })));
+	const pointed = vi.fn(pointer ?? (async () => ({ moved: true })));
 	const http = new HttpCloudMemberMachineScreenService({
 		look: looked,
 		failed,
 		...(act ? { act: acted } : {}),
 		...(start ? { start: started } : {}),
+		...(pointer ? { pointer: pointed } : {}),
 	});
 	const port = await http.start();
 	cleanups.push(() => http.close());
 	const companyId = randomUUID();
 	const machineId = randomUUID();
 	const url = (suffix = "") => `http://127.0.0.1:${port}/v1/member-machine-screens/${companyId}/${machineId}${suffix}`;
-	return { looked, acted, started, failed, url, companyId, machineId, port };
+	return { looked, acted, started, pointed, failed, url, companyId, machineId, port };
 }
 
 describe("a member's look through the executor's member listener (20260930712000)", () => {
@@ -356,6 +362,103 @@ describe("a member's action through the executor's member listener (202609307130
 		expect(failed.body).not.toContain("hunter2");
 		expect(s.failed).toHaveBeenLastCalledWith("UNCLASSIFIED");
 		expect(JSON.stringify(s.failed.mock.calls)).not.toContain("hunter2");
+	});
+});
+
+describe("a member's pointer through the executor's member listener (20260930744000)", () => {
+	const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+		fetch(url, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers },
+			body: typeof body === "string" ? body : JSON.stringify(body),
+		});
+	const pass = "0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a00";
+
+	it("passes a pass's begin (shared or private) and a move on, with the member's token, and answers only the pass or whether it moved", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			undefined,
+			async (request) => ("begin" in request ? { pass, milliseconds: 10000 } : { moved: true }),
+		);
+		const begun = await post(s.url("/pointer"), { begin: { generation: 7 } });
+		expect(begun.status).toBe(200);
+		expect(await begun.json()).toEqual({ schema: "qorpera.member-machine-pointer/v1", pass, milliseconds: 10000 });
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			{ companyId: s.companyId, machineId: s.machineId, token, begin: { generation: 7 } },
+			expect.any(AbortSignal),
+		);
+		await post(s.url("/pointer"), { begin: { seat: 3, epoch: 0 } });
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			expect.objectContaining({ begin: { epoch: 0, seat: 3 } }),
+			expect.any(AbortSignal),
+		);
+		const moved = await post(s.url("/pointer"), { pass, x: 3839, y: 0 });
+		expect(moved.status).toBe(200);
+		expect(await moved.json()).toEqual({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			{ companyId: s.companyId, machineId: s.machineId, token, pass, x: 3839, y: 0 },
+			expect.any(AbortSignal),
+		);
+		expect(s.looked).not.toHaveBeenCalled();
+	});
+
+	it("refuses a body that is not a begin or a move as 400, and without the route it is 404", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			undefined,
+			async () => ({ moved: true }),
+		);
+		for (const body of [
+			{ begin: {} },
+			{ begin: { generation: -1 } },
+			{ begin: { generation: 1, epoch: 1, seat: 1 } },
+			{ begin: { epoch: 1 } },
+			{ begin: { epoch: 1, seat: 1.5 } },
+			{ begin: { generation: "1" } },
+			{ pass, x: 3840, y: 1 },
+			{ pass, x: 1, y: 2160 },
+			{ pass, x: -1, y: 1 },
+			{ pass, x: 1.5, y: 1 },
+			{ pass: "pass", x: 1, y: 1 },
+			{ pass, x: 1, y: 1, text: "hunter2" },
+			{ pass, x: 1 },
+			[1, 2],
+			"not json",
+			JSON.stringify({ pass, x: 1, y: 1, pad: "z".repeat(300) }),
+		])
+			expect((await post(s.url("/pointer"), body)).status, JSON.stringify(body).slice(0, 80)).toBe(400);
+		expect((await post(s.url("/pointer"), { pass, x: 1, y: 1 }, { "content-type": "text/plain" })).status).toBe(400);
+		expect((await fetch(s.url("/pointer"), { headers: { authorization: `Bearer ${token}` } })).status).toBe(405);
+		expect(s.pointed).not.toHaveBeenCalled();
+		const without = await service(async () => ({ etag, png: picture }));
+		expect((await post(without.url("/pointer"), { pass, x: 1, y: 1 })).status).toBe(404);
+	});
+
+	it("tells refusals by code and logs nothing of a move, not even its failure", async () => {
+		let next: unknown;
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			undefined,
+			async () => {
+				throw next;
+			},
+		);
+		const ask = async () => {
+			const response = await post(s.url("/pointer"), { pass, x: 1, y: 2 });
+			return { status: response.status, body: await response.text() };
+		};
+		next = new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code: "POINTER_PASS_ENDED" }) });
+		next = new CloudMemberMachinePointerRefusal("DESKTOP_HELD_SINCE");
+		expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code: "DESKTOP_HELD_SINCE" }) });
+		next = new CloudMemberMachineScreenSignIn();
+		expect((await ask()).status).toBe(401);
+		next = new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		expect((await ask()).status).toBe(503);
+		expect(s.failed).not.toHaveBeenCalled();
 	});
 });
 
@@ -731,6 +834,98 @@ describe("a member's shared action begun as the member (deploy/coding-worker/mem
 			"MEMBER_SHARE_BEGIN_INVALID",
 		);
 		await expect(opened.control.share("a b", share, signal)).rejects.toBeInstanceOf(CloudMemberMachineScreenSignIn);
+		expect(opened.fetcher).not.toHaveBeenCalled();
+	});
+});
+
+describe("a member's pointer pass begun as the member (deploy/coding-worker/member-control.ts, 20260930744000)", () => {
+	function control(status: number, body: unknown) {
+		const fetcher = vi.fn<typeof fetch>(
+			async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status }),
+		);
+		return {
+			fetcher,
+			control: new MemberMachineScreenControl({
+				supabaseUrl: "https://project.supabase.co",
+				publishableKey: "sb_publishable_xn-Yy0QJ5iGEFmsiJGmw7w_JMsDTo8N",
+				fetch: fetcher,
+			}),
+		};
+	}
+	const where = { companyId: randomUUID(), machineId: randomUUID() };
+	const signal = new AbortController().signal;
+
+	it("calls the pass's begin as the member, shared at a generation or private at an epoch and seat, and answers its id", async () => {
+		for (const [hold, args] of [
+			[{ generation: 7 }, { p_generation: 7, p_epoch: null, p_seat: null }],
+			[
+				{ epoch: 0, seat: 3 },
+				{ p_generation: null, p_epoch: 0, p_seat: 3 },
+			],
+		] as const) {
+			const passId = randomUUID();
+			const c = control(200, {
+				schema: "qorpera.member-machine-desktop-pointer/v1",
+				state: "ok",
+				passId,
+				seconds: 10,
+			});
+			expect(await c.control.pointer(token, { ...where, hold }, signal)).toBe(passId);
+			const [url, init] = c.fetcher.mock.calls[0]!;
+			expect(url).toBe("https://project.supabase.co/rest/v1/rpc/qorpera_member_machine_desktop_pointer_begin");
+			expect(init).toMatchObject({
+				method: "POST",
+				redirect: "error",
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(JSON.parse(String(init?.body))).toEqual({
+				p_profile_id: where.companyId,
+				p_machine_id: where.machineId,
+				...args,
+			});
+		}
+	});
+
+	it("turns the begin's refusals into the member's, and fails closed on anything else", async () => {
+		for (const reason of [
+			"MACHINE_NOT_RUNNING",
+			"MACHINE_NEEDS_COMPANY_VIEW",
+			"DESKTOP_MACHINE_TOO_SMALL",
+			"DESKTOP_MEMBER_IN_CONTROL",
+			"DESKTOP_HELD_SINCE",
+			"DESKTOP_CONTROL_ENDED",
+		]) {
+			const c = control(200, { schema: "qorpera.member-machine-desktop-pointer/v1", state: "refused", reason });
+			const error = await c.control
+				.pointer(token, { ...where, hold: { generation: 1 } }, signal)
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMemberMachinePointerRefusal);
+			expect(error).toMatchObject({ code: reason });
+		}
+		for (const body of [
+			{ schema: "qorpera.member-machine-desktop-pointer/v1", state: "refused", reason: "DESKTOP_BUSY" },
+			{ schema: "qorpera.member-machine-desktop-pointer/v1", state: "ok", passId: "pass", seconds: 10 },
+			{ schema: "qorpera.member-machine-desktop-pointer/v1", state: "ok", passId: randomUUID(), seconds: 60 },
+			{ schema: "qorpera.member-machine-desktop-act/v1", state: "ok", passId: randomUUID(), seconds: 10 },
+		])
+			await expect(
+				control(200, body).control.pointer(token, { ...where, hold: { generation: 1 } }, signal),
+				JSON.stringify(body),
+			).rejects.toThrow("MEMBER_POINTER_BEGIN_INVALID");
+		const opened = control(200, {});
+		for (const hold of [
+			{ generation: -1 },
+			{ epoch: 1 },
+			{ generation: 1, epoch: 1, seat: 1 },
+			{ epoch: 1, seat: 1.5 },
+		])
+			await expect(
+				opened.control.pointer(token, { ...where, hold } as never, signal),
+				JSON.stringify(hold),
+			).rejects.toThrow("MEMBER_POINTER_BEGIN_INVALID");
+		await expect(opened.control.pointer("a b", { ...where, hold: { generation: 1 } }, signal)).rejects.toBeInstanceOf(
+			CloudMemberMachineScreenSignIn,
+		);
 		expect(opened.fetcher).not.toHaveBeenCalled();
 	});
 });

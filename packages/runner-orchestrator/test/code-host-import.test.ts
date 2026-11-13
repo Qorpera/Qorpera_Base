@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codeBundleName } from "../src/code-bundle-store.ts";
 import {
 	CODE_HOST_IMPORT_JOBS,
+	CODE_HOST_IMPORT_MEASURE,
 	codeImportBelow,
 	lookCodeImport,
 	readIncomingCodeBundle,
@@ -380,6 +381,12 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 			authors30d: 2,
 			tags: { seen: 3, kept: 2 },
 			branches: { seen: 2, kept: 1 },
+			// The one branch kept, a change main lacks and one of main's it lacks.
+			lines: {
+				count: 1,
+				changes: 1,
+				shown: [{ name: "feature", ahead: 1, behind: 1, lastAt: codeImportTime(NOW_S - 3 * DAY), fits: true }],
+			},
 			// The fetch's 3, the tree's tag and the old branch.
 			leftOut: 5,
 			files: 6,
@@ -462,6 +469,14 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 			() =>
 				lookCodeImport(f.job, { repository: kept, raw: b.raw, look: true, now: NOW }, pieces(b.bytes), sink, {
 					scanBytes: 2 * 1024 ** 3 + 1,
+				}),
+			() =>
+				lookCodeImport(f.job, { repository: kept, raw: b.raw, look: true, now: NOW }, pieces(b.bytes), sink, {
+					linesSeconds: 0,
+				}),
+			() =>
+				lookCodeImport(f.job, { repository: kept, raw: b.raw, look: true, now: NOW }, pieces(b.bytes), sink, {
+					lineTreeBytes: 32 * 1024 ** 2 + 1,
 				}),
 		])
 			await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
@@ -553,6 +568,234 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		expect(result.bundle.refs.find((ref) => ref.name === "refs/qorpera/kept-here")?.sha).toBe(main);
 		expect(result.bundle.gitVersion).toMatch(/^\d+\.\d+/);
 		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	// The lead's call 6a of the import's follow-ups: another branch brought in as main, and the source's own default 400
+	// days old, kept beside it whatever its age, measured as a line, and in the restore-shaped bundle.
+	it("keeps the source's own default whatever its age when another branch came in as main", async () => {
+		const f = await fixture(),
+			h = new History();
+		const root = h.commit("refs/heads/master", { time: NOW_S - 500 * DAY, files: { "a.txt": "a\n" } });
+		h.commit("refs/heads/master", { time: NOW_S - 400 * DAY, from: root, files: { "m.txt": "m\n" } });
+		h.commit("refs/heads/feature", { time: NOW_S - DAY, from: root, files: { "f.txt": "f\n" } });
+		h.commit("refs/heads/stale", { time: NOW_S - 400 * DAY, from: root, files: { "s.txt": "s\n" } });
+		const b = await bundled(f, await made(f, h), "feature");
+		// As today without it: the old default is older than 90 days, left out, and no line.
+		const today = lookOf((await looking(f, b)).result);
+		expect(today.defaultBranch).toBe("feature");
+		expect(today.branches).toEqual({ seen: 2, kept: 0 });
+		expect(today.lines).toEqual({ count: 0, changes: 0, shown: [] });
+		const named = { bytes: b.bytes, raw: { ...b.raw, sourceBranch: "master" } };
+		const look = lookOf((await looking(f, named)).result);
+		expect(look.branches).toEqual({ seen: 2, kept: 1 });
+		expect(look.leftOut).toBe(today.leftOut - 1);
+		expect(look.lines).toEqual({
+			count: 1,
+			changes: 1,
+			shown: [{ name: "master", ahead: 1, behind: 1, lastAt: codeImportTime(NOW_S - 400 * DAY), fits: true }],
+		});
+		const { result } = await looking(f, named, { look: false });
+		if (result.state !== "kept") throw new Error(`not kept: ${JSON.stringify(result.look)}`);
+		expect(result.bundle.refs.map((ref) => ref.name)).toEqual([
+			"refs/heads/main",
+			"refs/qorpera/imported/heads/master",
+			"refs/qorpera/kept-here",
+		]);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	it("measures the other lines of work: the changes main lacks, each counted once, at most 10 shown, and whether the folder takes their names", async () => {
+		const f = await fixture(),
+			h = new History();
+		/** Each file's bytes hold a mark of their own: none may come out of the code host. */
+		const marks: string[] = [];
+		const files = (...names: string[]) =>
+			Object.fromEntries(
+				names.map((name) => {
+					const mark = `LINE-${randomUUID()}`;
+					marks.push(mark);
+					return [name, `${mark}\n`];
+				}),
+			);
+		h.commit("refs/heads/master", { time: NOW_S - 100 * DAY, files: files("README.md") });
+		const m2 = h.commit("refs/heads/master", { time: NOW_S - 50 * DAY, files: files("src/a.js") });
+		const m3 = h.commit("refs/heads/master", { time: NOW_S - 10 * DAY, files: files("src/b.js") });
+		// Two lines that share two changes: three changes main lacks between them, not five.
+		h.commit("refs/heads/two", { time: NOW_S - 20 * DAY, from: m2, files: files("two/1.txt") });
+		const s2 = h.commit("refs/heads/two", { time: NOW_S - 15 * DAY, files: files("two/2.txt") });
+		h.commit("refs/heads/two-more", { time: NOW_S - 5 * DAY, from: s2, files: files("two/3.txt") });
+		// Behind main alone: kept, and no line of work.
+		h.reset("refs/heads/behind", m2);
+		// A name the company folder refuses (a part ending in a dot); two names one to the folder by case.
+		h.commit("refs/heads/bad", { time: NOW_S - 2 * DAY, from: m3, files: files("bad.") });
+		h.commit("refs/heads/clash", { time: NOW_S - 4 * DAY, from: m3, files: files("Notes.txt", "notes.txt") });
+		// A name like a key: counted and shown, its name not.
+		const keyLike = "feature/AKIAGHJKLMNPRSTUVWXY";
+		h.commit(`refs/heads/${keyLike}`, { time: NOW_S - DAY, from: m3, files: files("k.txt") });
+		h.commit("refs/heads/wide", {
+			time: NOW_S - 3 * DAY,
+			from: m3,
+			files: files(...Array.from({ length: 40 }, (_, i) => `wide/${i}.txt`)),
+		});
+		for (let i = 1; i <= 6; i += 1)
+			h.commit(`refs/heads/t0${i}`, { time: NOW_S - (30 + i) * DAY, from: m3, files: files(`t${i}.txt`) });
+		const source = await made(f, h),
+			b = await bundled(f, source);
+		const sha = (name: string) => source.text(["rev-parse", `refs/heads/${name}`]);
+		const at = (days: number) => codeImportTime(NOW_S - days * DAY);
+		const { result } = await looking(f, b);
+		expect(result.state).toBe("looked");
+		const look = lookOf(result);
+		expect(look.branches).toEqual({ seen: 13, kept: 13 });
+		// Twelve lines hold changes main lacks (behind holds none); thirteen such changes, the two that two and
+		// two-more share counted once; ten shown, by changes, then the newest; t05 and t06 not shown.
+		expect(look.lines).toEqual({
+			count: 12,
+			changes: 13,
+			shown: [
+				{ name: "two-more", ahead: 3, behind: 1, lastAt: at(5), fits: true },
+				{ name: "two", ahead: 2, behind: 1, lastAt: at(15), fits: true },
+				{ name: null, ahead: 1, behind: 0, lastAt: at(1), fits: true },
+				{ name: "bad", ahead: 1, behind: 0, lastAt: at(2), fits: false },
+				{ name: "wide", ahead: 1, behind: 0, lastAt: at(3), fits: true },
+				{ name: "clash", ahead: 1, behind: 0, lastAt: at(4), fits: false },
+				{ name: "t01", ahead: 1, behind: 0, lastAt: at(31), fits: true },
+				{ name: "t02", ahead: 1, behind: 0, lastAt: at(32), fits: true },
+				{ name: "t03", ahead: 1, behind: 0, lastAt: at(33), fits: true },
+				{ name: "t04", ahead: 1, behind: 0, lastAt: at(34), fits: true },
+			],
+		});
+		expect(JSON.stringify(look)).not.toContain("AKIA");
+		// Each command of the measure ran under its bounds in the code host: one walk of each kind, and the trees of the
+		// ten lines shown alone, never t05's or t06's.
+		const measured = f.log.filter((command) => command.argv[2] === CODE_HOST_IMPORT_MEASURE);
+		const args = (command: CodeHostCommand) => command.argv.slice(8).join(" ");
+		expect(measured.filter((command) => args(command).includes(" for-each-ref --stdin "))).toHaveLength(1);
+		expect(measured.filter((command) => args(command).includes(" rev-list --count --stdin"))).toHaveLength(1);
+		const listed = measured.filter((command) => args(command).includes(" ls-tree "));
+		expect(listed.map((command) => command.argv.at(-1)).sort()).toEqual(
+			(
+				await Promise.all(
+					["two-more", "two", keyLike, "bad", "wide", "clash", "t01", "t02", "t03", "t04"].map((name) =>
+						sha(name),
+					),
+				)
+			).sort(),
+		);
+		expect(measured).toHaveLength(12);
+		// Each within 300 seconds; the walk's answer within 1 MiB, the count's 64 bytes, a tree's 32 MiB.
+		expect(
+			measured.map((command) => [
+				command.argv[4],
+				command.argv[5],
+				command.maximumOutputBytes - Number(command.argv[5]),
+			]),
+		).toEqual([
+			["300", String(1024 ** 2), 5],
+			["300", "64", 5],
+			...listed.map(() => ["300", String(32 * 1024 ** 2), 5]),
+		]);
+		// Not one byte of a file came out of the code host, in what any command of the look handed out or said.
+		expect(marks.length).toBe(56);
+		for (const { result: out } of f.seen)
+			for (const mark of marks) {
+				expect(out.stdout.includes(mark)).toBe(false);
+				expect(out.stderr.includes(mark)).toBe(false);
+			}
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+		// Brought in, the same: the lines are measured before the plan moves the heads.
+		const brought = await looking(f, b, { look: false });
+		expect(brought.result.state).toBe("kept");
+		expect(brought.result.look.lines).toEqual(look.lines);
+		// A line's tree over its bound is not read: whether it fits is not known. The rest is as before.
+		const narrow = lookOf((await looking(f, b, { options: { lineTreeBytes: 2000 } })).result);
+		expect(narrow.lines).toEqual({
+			...look.lines,
+			shown: look.lines?.shown.map((shown) => (shown.name === "wide" ? { ...shown, fits: null } : shown)),
+		});
+		// One line, no line, and no head beside main.
+		const one = new History();
+		const base = one.commit("refs/heads/master", { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
+		one.commit("refs/heads/topic", { time: NOW_S - DAY, from: base, files: { "b.txt": "b\n" } });
+		const alone = new History();
+		alone.commit("refs/heads/master", { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
+		const same = new History();
+		const tip = same.commit("refs/heads/master", { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
+		same.reset("refs/heads/copy", tip);
+		/** The lines of a history's look, and how many commands of the measure it ran. */
+		const lines = async (history: History) => {
+			const before = f.log.length,
+				found = lookOf((await looking(f, await bundled(f, await made(f, history)))).result).lines;
+			return {
+				found,
+				ran: f.log.slice(before).filter((command) => command.argv[2] === CODE_HOST_IMPORT_MEASURE).length,
+			};
+		};
+		expect(await lines(one)).toEqual({
+			found: { count: 1, changes: 1, shown: [{ name: "topic", ahead: 1, behind: 0, lastAt: at(1), fits: true }] },
+			ran: 3,
+		});
+		// No head kept beside main: nothing to measure. One that holds nothing main lacks: one walk, no more.
+		expect(await lines(alone)).toEqual({ found: { count: 0, changes: 0, shown: [] }, ran: 0 });
+		expect(await lines(same)).toEqual({ found: { count: 0, changes: 0, shown: [] }, ran: 1 });
+	});
+
+	it("leaves the lines out when their measure does not end well, and the look goes on; the job's own stop goes on up", async () => {
+		const f = await fixture(),
+			{ h } = shop(),
+			source = await made(f, h),
+			b = await bundled(f, source);
+		const feature = await source.text(["rev-parse", "refs/heads/feature"]);
+		const { lines, ...rest } = lookOf((await looking(f, b)).result);
+		expect(lines?.count).toBe(1);
+		for (const [what, script, options] of [
+			["the ahead-behind walk fails", 'case "$*" in *ahead-behind*) exit 3;; esac', {}],
+			["the distinct count fails", 'case "$*" in *"rev-list --count --stdin"*) exit 3;; esac', {}],
+			["a line's listing fails", `case "$*" in *"ls-tree -r -t -l -z --full-tree ${feature}"*) exit 3;; esac`, {}],
+			[
+				"the walk answers what is no git's",
+				'case "$*" in *ahead-behind*) echo refs/heads/feature; exit 0;; esac',
+				{},
+			],
+			[
+				"the walk answers a head twice",
+				String.raw`case "$*" in *ahead-behind*) printf 'refs/heads/feature\0001 1\nrefs/heads/feature\0000 1\n'; exit 0;; esac`,
+				{},
+			],
+			[
+				"the walk's answer is cut within a line",
+				String.raw`case "$*" in *ahead-behind*) printf 'refs/heads/feature\0001 1'; exit 0;; esac`,
+				{},
+			],
+			["the walk leaves a head out", 'case "$*" in *ahead-behind*) cat >/dev/null; exit 0;; esac', {}],
+			["the count is below a line's own", 'case "$*" in *"rev-list --count --stdin"*) echo 0; exit 0;; esac', {}],
+			[
+				"the walk answers more than its bound",
+				'case "$*" in *ahead-behind*) head -c 2000000 /dev/zero; exit 0;; esac',
+				{},
+			],
+			["the walk does not end", 'case "$*" in *ahead-behind*) exec sleep 60;; esac', { linesSeconds: 1 }],
+		] as [string, string, { linesSeconds?: number }][]) {
+			const started = Date.now();
+			const { result } = await looking(f, b, { job: await wrapped(f, script), look: false, options });
+			expect(result.state, what).toBe("kept");
+			expect("lines" in result.look, what).toBe(false);
+			expect(result.look, what).toEqual(rest);
+			expect(Date.now() - started, what).toBeLessThan(30_000);
+		}
+		// The job's own stop, while the measure runs, is the job's: not a measure that did not end well.
+		const controller = new AbortController(),
+			started = join(f.root, "started");
+		const job = {
+			...(await wrapped(f, `case "$*" in *ahead-behind*) : >"${started}"; exec sleep 20;; esac`)),
+			signal: controller.signal,
+		};
+		const looked = looking(f, b, { job });
+		looked.catch(() => {});
+		for (let tries = 0; !(await exists(started)) && tries < 600; tries += 1)
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		controller.abort();
+		await expect(looked).rejects.toMatchObject({ name: "AbortError" });
 	});
 
 	it("leaves out a case clash, an NFD name, an a./b name, other refs and a name that is not UTF-8; restore's own jobs build it with proven", async () => {
@@ -744,15 +987,16 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		await refusedFor({ "tab\there.txt": "t\n" }, [null]);
 		// An NFD name is `checkNames`'s own refusal, before the folder's rule.
 		await refusedFor({ "café.txt": "nfd\n" }, ["café.txt"], "CODE_HOST_NAMES_NOT_NFC");
-		// The folder program's bound on one name (255 bytes), and the folder's on the whole path where main stands:
-		// code/acme/shop/main/ is 20 bytes, so 4,076 bytes of path fit and 4,077 do not. Paths over 200 bytes show null.
+		// The folder program's bound on one name (255 bytes), and the folder's on the whole path where every session's
+		// worktree would hold it (CODE_FOLDER_ANY_SESSION): code/acme/shop/worktrees/<a 36-character id>/ is 62 bytes, so
+		// 4,034 bytes of path fit and 4,035 do not (under main/ alone, 20 bytes, 4,076 would). Paths over 200 bytes show null.
 		const deep = Array.from({ length: 20 }, () => "p".repeat(200)).join("/");
 		await refusedFor({ [`${"n".repeat(252)}.txt`]: "n\n" }, [null]);
-		await refusedFor({ [`${deep}/${"q".repeat(57)}`]: "q\n" }, [null]);
+		await refusedFor({ [`${deep}/${"q".repeat(15)}`]: "q\n" }, [null]);
 		const fits = await looked(
 			{
 				[`${"n".repeat(251)}.txt`]: "n\n",
-				[`${deep}/${"q".repeat(56)}`]: "q\n",
+				[`${deep}/${"q".repeat(14)}`]: "q\n",
 				// What the folder takes under code/ alone: a device name, a colon, a percent sign.
 				"con.txt": "c\n",
 				"a:b.txt": "a\n",
@@ -1203,6 +1447,15 @@ describe("code host: an import's file source, read (own code storage, step 6, pa
 		expect((await choose(["a", "b"], "b", null, ["b"])).answer.defaultBranch).toBe("b");
 		await refused(choose(["a", "b", "c"], "b", null, ["b", "c"]), "IMPORT_BRANCH_UNKNOWN");
 		await refused(choose(["dev", "main"], "dev", "gone"), "IMPORT_BRANCH_UNKNOWN");
+		// The file's own default by the same rule, beside a branch the request named (the lead's call 6a): only then,
+		// only when it is another, and only when the file has a clear one.
+		expect((await choose(["dev", "main"], "dev", "dev")).answer).toMatchObject({
+			defaultBranch: "dev",
+			sourceBranch: "main",
+		});
+		expect((await choose(["dev", "main"], "dev")).answer).not.toHaveProperty("sourceBranch");
+		expect((await choose(["dev", "main"], "dev", "main")).answer).not.toHaveProperty("sourceBranch");
+		expect((await choose(["a", "b", "c"], "b", "a", ["b", "c"])).answer).not.toHaveProperty("sourceBranch");
 		await refused(
 			choose(["ghp_0123456789abcdefghijABCDEFGHIJ012345"], "ghp_0123456789abcdefghijABCDEFGHIJ012345"),
 			"IMPORT_BRANCH_NAME",
@@ -1320,6 +1573,47 @@ describe("code host: the import's shell, as the image runs it", () => {
 	it("the code host image's proof runs C1's scan as it is", async () => {
 		const proof = await readFile(join(HERE, "../../../deploy/code-host/test/prove-in-code-host.sh"), "utf8");
 		expect(proof).toContain(`<<'SCAN'\n${CODE_IMPORT_SCAN}\nSCAN\n`);
+	});
+
+	it("runs a command of the measure within its time, and hands out what it said only within its bound", async () => {
+		const dir = await realpath(await mkdtemp(join(tmpdir(), "code-host-measure-")));
+		roots.push(dir);
+		const measure = (seconds: number, bound: number, argv: string[], input = "") =>
+			new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
+				const child = spawn(
+					"/bin/sh",
+					[
+						"-c",
+						CODE_HOST_IMPORT_MEASURE,
+						"sh",
+						String(seconds),
+						String(bound),
+						`${dir}/out`,
+						`${dir}/status`,
+						...argv,
+					],
+					{ env: { PATH: "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C" }, stdio: ["pipe", "pipe", "ignore"] },
+				);
+				const out: Buffer[] = [];
+				child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
+				child.on("error", reject);
+				child.on("close", (status) => resolve({ status, stdout: Buffer.concat(out).toString("latin1") }));
+				child.stdin.end(input);
+			});
+		expect(await measure(300, 5, ["printf", "abcde"])).toEqual({ status: 0, stdout: "ok\nabcde" });
+		expect(await measure(300, 4, ["printf", "abcde"])).toEqual({ status: 0, stdout: "over\n" });
+		expect(await measure(300, 0, ["printf", ""])).toEqual({ status: 0, stdout: "ok\n" });
+		expect(await measure(300, 64, ["cat"], "x\0y\n")).toEqual({ status: 0, stdout: "ok\nx\0y\n" });
+		// A command that did not end well: its status, and nothing it said.
+		expect(await measure(300, 64, ["/bin/sh", "-c", "printf ab; exit 7"])).toEqual({ status: 7, stdout: "" });
+		const started = Date.now();
+		expect(await measure(1, 64, ["sleep", "30"])).toEqual({ status: 124, stdout: "" });
+		expect(Date.now() - started).toBeLessThan(15_000);
+	});
+
+	it("the code host image's proof runs the measure's script as it is", async () => {
+		const proof = await readFile(join(HERE, "../../../deploy/code-host/test/prove-in-code-host.sh"), "utf8");
+		expect(proof).toContain(`<<'MEASURE'\n${CODE_HOST_IMPORT_MEASURE}\nMEASURE\n`);
 	});
 
 	it("the import's steps end at the open: no step of the import removes a file source", () => {

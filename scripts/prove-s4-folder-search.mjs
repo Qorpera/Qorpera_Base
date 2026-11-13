@@ -86,6 +86,22 @@ function noteText(f, n) {
 	return `${lines.join("\n")}\n`;
 }
 
+/** The files of the cut answers: path, filler lines before the first block, blocks (each 5 filler lines, a hit, 5
+ * filler lines); and what each is replaced with before the next call. */
+const CUT_FILES = [
+	["docs/cut-before/a.html", 0, 2],
+	["docs/cut-before/b.html", 1, 2],
+	["docs/cut-inside/c.html", 0, 4],
+];
+const CUT_NEW = "cutword new 1\nplain words\ncutword new 3\n";
+
+function cutText(lead, hits) {
+	const filler = "<".repeat(200);
+	const lines = Array.from({ length: lead }, () => filler);
+	for (let n = 0; n < hits; n++) lines.push(...Array(5).fill(filler), `cutword ${"<".repeat(190)}`, ...Array(5).fill(filler));
+	return `${lines.join("\n")}\n`;
+}
+
 /** Every file, with its bytes, its media type and whether Alice's run may read it (docs/restricted is Bob's only). */
 function corpus() {
 	const files = [];
@@ -116,6 +132,12 @@ function corpus() {
 	add("docs/swap/big.md", Array.from({ length: 200 }, (_, i) => `line ${i + 1}: swap the old text of the file\n`).join(""));
 	add("docs/gone/a.md", Array.from({ length: 200 }, (_, i) => `line ${i + 1}: remove me, then\n`).join(""));
 	add("docs/gone/b.md", "b 1: remove me too\nb 2: kept\nb 3: remove me as well\n");
+	// Answers the fitting cuts (release review r2 of #1731): searched with 5 lines of context, each hit and the lines
+	// around it (200 "<" a line, escaped to 1,200 bytes) take about 13.5 KiB of one result, so an answer shows two. In
+	// docs/cut-before it stops at b.html's first hit, which is not on b.html's first line, so the cursor is inside b.html
+	// though the answer shows none of it; in docs/cut-inside it stops at c.html's third hit. Each file is replaced
+	// before the next call.
+	for (const [path, lead, hits] of CUT_FILES) add(path, cutText(lead, hits), "text/html");
 	add("hostile/aaaa.txt", `${"a".repeat(200_000)}\n${"a".repeat(5_000)}!\n`, "text/plain");
 	add("notes/deploy.md", "Runbook.\nThe deploy token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123 for the runner.\n");
 	for (const file of files) file.readable = !file.path.startsWith("docs/restricted/");
@@ -733,6 +755,10 @@ function* searches(old) {
 	yield { label: "names", args: { query: "plan", names_only: true, path: "docs" } };
 	yield { label: "zebra", args: { query: "zebra", path: "docs" } };
 	yield { label: "off-pattern", args: { query: "invoice \\d", regex: true, path: "docs/f00" } };
+	// Answers the fitting cuts, each file the cursor is inside replaced before the next call (release review r2 of
+	// #1731): b.html, of which the first answer showed nothing, and c.html, of which it showed two hits.
+	yield* paged("cut-before", { query: "cutword", path: "docs/cut-before", context: 5 });
+	yield* paged("cut-inside", { query: "cutword", path: "docs/cut-inside", context: 5 });
 	// The same service with the flag added to its unit's line: the one change that turns patterns on.
 	yield { restart: "on" };
 	yield* paged("pattern", { query: "invoice 1-\\d+-(4|8) ", regex: true, path: "docs/f01" });
@@ -1062,7 +1088,7 @@ async function main() {
 		// Between two pages of one call: the platform replaces docs/swap/big.md (or deletes docs/gone/a.md) while the
 		// relay holds the call's next page, which is passed on once the service serving the run's view has the change.
 		const SWAP = { path: "docs/swap/big.md", text: "swap new 1\nnot this one\nswap new 3\n" };
-		const changes = { swapped: 0, removed: 0 };
+		const changes = { swapped: 0, removed: 0, cutBefore: 0, cutInside: 0 };
 		const change = async (unit, hello, target) => {
 			const seq = Number(
 				db
@@ -1086,18 +1112,31 @@ async function main() {
 			}
 			trace(`node: change ${seq} applied on ${target}`);
 		};
+		/** The platform replaces a file's text: its bytes on the share, then the commit, applied by the service. */
+		const replace = async (path, text, mediaType, hello, target) => {
+			const file = { path, bytes: Buffer.from(text), mediaType };
+			const manifest = manifestOf(file);
+			await writeFile(join(share, setup.profileId, sha256(file.bytes)), file.bytes);
+			await writeFile(join(share, setup.profileId, sha256(manifest)), manifest);
+			await change(
+				`jsonb_build_object('op','write','path','${path}','file',(pg_temp.base_seal('{"kind":"platform"}', $${tag}$${manifest}$${tag}$) -> 'file'),'expectedVersion',pg_temp.base_version('${path}'))`,
+				hello,
+				target,
+			);
+		};
 		state.bridge.hold = async (search, hello, target) => {
 			if (!changes.swapped && search.query === "swap" && search.after?.path === SWAP.path) {
 				changes.swapped++;
-				const file = { path: SWAP.path, bytes: Buffer.from(SWAP.text), mediaType: "text/markdown" };
-				const manifest = manifestOf(file);
-				await writeFile(join(share, setup.profileId, sha256(file.bytes)), file.bytes);
-				await writeFile(join(share, setup.profileId, sha256(manifest)), manifest);
-				await change(
-					`jsonb_build_object('op','write','path','${SWAP.path}','file',(pg_temp.base_seal('{"kind":"platform"}', $${tag}$${manifest}$${tag}$) -> 'file'),'expectedVersion',pg_temp.base_version('${SWAP.path}'))`,
-					hello,
-					target,
-				);
+				await replace(SWAP.path, SWAP.text, "text/markdown", hello, target);
+			}
+			// Between two calls: the next call's first page, which goes on inside the file, finds it replaced.
+			if (!changes.cutBefore && search.query === "cutword" && search.after?.path === "docs/cut-before/b.html") {
+				changes.cutBefore++;
+				await replace("docs/cut-before/b.html", CUT_NEW, "text/html", hello, target);
+			}
+			if (!changes.cutInside && search.query === "cutword" && search.after?.path === "docs/cut-inside/c.html") {
+				changes.cutInside++;
+				await replace("docs/cut-inside/c.html", CUT_NEW, "text/html", hello, target);
 			}
 			if (!changes.removed && search.query === "remove me" && search.after?.path === "docs/gone/a.md") {
 				changes.removed++;
@@ -1273,8 +1312,38 @@ async function main() {
 		assert.deepEqual(zebra, ["docs/zebra.md:1: A zebra crossing."]);
 		pass("a find by glob alone lists docs/data's two CSV files; names and text find only what the run may read (no docs/restricted/hidden.csv, plan.md or zebra line)");
 
+		// Answers the fitting cut, each file the cursor was inside replaced before the next call (release review r2 of
+		// #1731): a word of it only when an answer had shown part of it.
+		assert.deepEqual({ before: changes.cutBefore, inside: changes.cutInside }, { before: 1, inside: 1 }, "each file was replaced between the two calls");
+		const cutPaths = CUT_FILES.map(([path]) => path);
+		const NOTICE = / changed since the last answer: | is not as the last answer saw it /;
+		const cutHits = (call) => answerLines(ok(call), cutPaths).lines.filter((l) => l.kind === "hit").map((l) => `${l.path}:${l.n}`);
+		const newHits = (path) => [`${path}:1`, `${path}:3`];
+		const [beforeFirst, beforeNext, ...beforeMore] = label("cut-before");
+		assert.equal(beforeMore.length, 0, "the cut-before search is two calls");
+		assert.match(ok(beforeFirst), /\n\nPart of the answer\. More: call again with cursor [A-Za-z0-9_-]{16}$/);
+		assert.deepEqual(cutHits(beforeFirst), ["docs/cut-before/a.html:6", "docs/cut-before/a.html:17"]);
+		assert(!ok(beforeFirst).includes("b.html"), "the first answer shows nothing of b.html");
+		assert.deepEqual(cutHits(beforeNext), newHits("docs/cut-before/b.html"));
+		assert(!NOTICE.test(ok(beforeNext)), `no word of a file no answer showed: ${ok(beforeNext)}`);
+		assert(ok(beforeNext).endsWith("\n\n1 file searched. Nothing more."), ok(beforeNext).slice(-200));
+		const [insideFirst, insideNext, ...insideMore] = label("cut-inside");
+		assert.equal(insideMore.length, 0, "the cut-inside search is two calls");
+		assert.match(ok(insideFirst), /\n\nPart of the answer\. More: call again with cursor [A-Za-z0-9_-]{16}$/);
+		assert.deepEqual(cutHits(insideFirst), ["docs/cut-inside/c.html:6", "docs/cut-inside/c.html:17"]);
+		assert.deepEqual(cutHits(insideNext), newHits("docs/cut-inside/c.html"));
+		assert(
+			ok(insideNext).endsWith(
+				"\n\ndocs/cut-inside/c.html changed since the last answer: it is searched again from its start.\n\n1 file searched. Nothing more.",
+			),
+			ok(insideNext).slice(-300),
+		);
+		pass(
+			`a cursor inside a file the answer showed nothing of: the fitting cut docs/cut-before's answer (${Buffer.byteLength(beforeFirst.envelope)}-byte envelope) before b.html's first hit, at its line 7; b.html was replaced before the next call, which showed its new version from its start with no word of a change. The same with c.html, of which the cut answer showed two hits: the next call says "docs/cut-inside/c.html changed since the last answer"`,
+		);
+
 		// Patterns off, as the unit ships: everything above ran on it, and a pattern is refused in words.
-		const offLabels = ["invoice", "web", "context", "files", "find", "names", "zebra", "off-pattern"];
+		const offLabels = ["invoice", "web", "context", "files", "find", "names", "zebra", "off-pattern", "cut-before", "cut-inside"];
 		assert(offLabels.every((name) => label(name).every((call) => call.phase === "off")));
 		const offPattern = refused(label("off-pattern")[0], "REGEX_OFF");
 		pass(
@@ -1319,7 +1388,11 @@ async function main() {
 
 			// A file replaced, and one deleted, between two pages of one call (release review r1 of #1731): one version
 			// only, the one there now, and nothing of a file gone.
-			assert.deepEqual(changes, { swapped: 1, removed: 1 }, "the relay changed the files between two pages of a call");
+			assert.deepEqual(
+				{ swapped: changes.swapped, removed: changes.removed },
+				{ swapped: 1, removed: 1 },
+				"the relay changed the files between two pages of a call",
+			);
 			const swap = label("old-swap");
 			const gone = label("old-gone");
 			assert.equal(swap.length, 1, "the replaced file's search is one call: the change came between its pages");

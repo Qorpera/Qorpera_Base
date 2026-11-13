@@ -8,7 +8,8 @@ app folder and are named by their path, such as `pictures/a.webp`. Text over its
 - `lang`: language code, such as `"da"`. `mode`: `"scale"`, `"choose"` or `"wall"`.
 - `title` (40) and `line` (60): the page's name and one quiet line. No other text on the page.
 - `words`: the page's own words in your language. Keys: `assumed`, `unknown`, `notKnown`, `all`, `close`, `source`,
-  `choose`, `recommended`, `chosen`, `saving`, `back`, `colours`, `type`, `film`, `previous`, `next`, `keep`, `drop`, `empty`.
+  `choose`, `recommended`, `chosen`, `saving`, `back`, `colours`, `type`, `film`, `previous`, `next`, `keep`, `drop`, `empty`,
+  `tell`, `told`.
 - `items`: the things. Every item has `id` and `name` (28).
 
 ## scale: things on one true scale (a shelf)

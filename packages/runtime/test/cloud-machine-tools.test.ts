@@ -17,6 +17,7 @@ import {
 	CLOUD_MACHINE_SCREEN_DESCRIPTION,
 	CLOUD_MACHINE_START_ANSWER_MS,
 	CLOUD_MACHINE_START_DESCRIPTION,
+	CLOUD_MACHINE_START_WORKER_DESCRIPTION,
 	type CloudMachineCodingValues,
 	cloudMachineTools,
 } from "../src/cloud-machine-tools.ts";
@@ -63,12 +64,21 @@ function fixture(
 	/** What the kernel answers to a waiting worker's next status looks (then: the first machine, command running). */
 	const statuses: (Record<string, unknown> | Error)[] = [];
 	/** The state a start answers with. */
-	const started = { state: "waiting", queuePosition: 2 as number | null };
+	const started: { state: string; queuePosition: number | null; waitingFor?: string } = {
+		state: "waiting",
+		queuePosition: 2,
+	};
+	/** A kernel without the report of a wait (before 20260930755000) refuses it. */
+	const kernel = { refusesReports: false };
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 			if (method === "qorpera_native_machine_manage") {
 				const request = args.p_request as { action: string; machine?: string };
 				if (request.action === "list") return { schema: "qorpera.machine-list/v1", machines: listed };
+				if (request.action === "waited") {
+					if (kernel.refusesReports) throw new Error("Invalid machine request");
+					return { schema: "qorpera.machine-wait/v1", recorded: true };
+				}
 				if (request.action === "status") {
 					const next = statuses.shift();
 					if (next instanceof Error) throw next;
@@ -181,6 +191,14 @@ function fixture(
 			([method, args]) =>
 				method === "qorpera_native_machine_manage" && (args.p_request as { action: string }).action === "status",
 		);
+	/** The waits machine_start reported to the kernel (20260930755000). */
+	const reports = () =>
+		control.call.mock.calls
+			.filter(
+				([method, args]) =>
+					method === "qorpera_native_machine_manage" && (args.p_request as { action: string }).action === "waited",
+			)
+			.map(([, args]) => args.p_request as { machine: string; machineId: string; wait: Record<string, unknown> });
 	return {
 		identity,
 		binding,
@@ -196,8 +214,10 @@ function fixture(
 		run,
 		statuses,
 		started,
+		kernel,
 		status,
 		looks,
+		reports,
 		screen,
 	};
 }
@@ -274,23 +294,55 @@ describe("machine tools", () => {
 		}
 	});
 
-	it("offers waiting to workers only: an agent is woken instead", () => {
+	it("has machine_start wait for its machine by default, a minute in a conversation's run; only a worker waits for commands", () => {
 		const agent = fixture();
 		const helper = fixture(undefined, true);
 		try {
-			for (const tool of ["machine_start", "machine_read"]) {
-				const agentTool = agent.tools.find((entry) => entry.name === tool)!;
-				expect(agentTool.inputSchema.properties).not.toHaveProperty("waitSeconds");
-				expect(agentTool.description).not.toContain("waitSeconds");
-				expect(helper.tools.find((entry) => entry.name === tool)!.inputSchema.properties).toHaveProperty(
-					"waitSeconds",
-				);
-			}
-			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
-			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
+			// agent-box B1: machine_start waits in place by default; waitSeconds asks for less, 0 for none.
 			const start = agent.tools.find((tool) => tool.name === "machine_start")!;
-			expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 5 })).toThrow();
+			expect(start.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 0,
+				maximum: 60,
+			});
+			expect(start.description).toContain(
+				"The call waits up to 60 s while it starts, with no model turn spent (waitSeconds: less, 0 for none); if it is not running yet, finish this run normally: you are woken when it runs.",
+			);
+			expect(start.description).toContain("To wake a stopped machine, pass only machine with its name. ");
+			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 60 })).toEqual({
+				operationKey: "k",
+				machine: "build-a",
+				waitSeconds: 60,
+			});
+			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 0 })).toEqual({
+				operationKey: "k",
+				machine: "build-a",
+				waitSeconds: 0,
+			});
+			for (const waitSeconds of [-1, 61, 1.5, "5"])
+				expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds })).toThrow();
+			const helperStart = helper.tools.find((tool) => tool.name === "machine_start")!;
+			expect(helperStart.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 0,
+				maximum: 300,
+			});
+			expect(helperStart.description).toContain(
+				"You are a worker: nothing wakes you. The call waits up to 60 s while it starts, with no model turn spent (waitSeconds: 0 to 300); to wait longer, call machine_start again with the same operationKey and arguments. If it still waits in line for room, use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
+			);
+			expect(helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 300 })).toMatchObject({
+				waitSeconds: 300,
+			});
+			expect(() =>
+				helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 301 }),
+			).toThrow();
+			// Its commands still wake it (notify): only a worker waits for a command in machine_read.
+			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
+			expect(read.inputSchema.properties).not.toHaveProperty("waitSeconds");
+			expect(read.description).not.toContain("waitSeconds");
+			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
 			const helperRead = helper.tools.find((tool) => tool.name === "machine_read")!;
+			expect(helperRead.inputSchema.properties).toHaveProperty("waitSeconds");
 			for (const waitSeconds of [0, 301, 1.5, "5"])
 				expect(() =>
 					helperRead.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds }),
@@ -298,6 +350,55 @@ describe("machine tools", () => {
 		} finally {
 			agent.boundary.close();
 			helper.boundary.close();
+		}
+	});
+
+	it("says in one sentence that a new task machine is the agent's own free one again, to agents and workers", () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			for (const tools of [agent.tools, helper.tools])
+				expect(tools.find((tool) => tool.name === "machine_start")!.description).toContain(
+					"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name.",
+				);
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
+	it("answers a start that got the agent's own machine again as the kernel says it, reused and its name", async () => {
+		const f = fixture([{ name: "web-tests", state: "stopped" }]);
+		try {
+			f.started.state = "starting";
+			f.started.queuePosition = null;
+			const reused =
+				"your own free machine web-tests of this size was given to you again instead of a new one: use the name web-tests";
+			f.control.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+				if (method !== "qorpera_native_machine_start") throw new Error(`unexpected ${method}`);
+				return args.p_action === "authorize"
+					? { state: "authorized" }
+					: { schema: "qorpera.machine-start/v1", machine: { ...f.listed[0], state: "starting" }, reused };
+			});
+			const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+				operationKey: "market",
+				name: "market-research",
+				purpose: "Read the market reports",
+				// Not waited on here: the waits are tested below.
+				waitSeconds: 0,
+			});
+			expect(result.success).toBe(true);
+			expect(f.content(result as never)).toMatchObject({
+				machine: { name: "web-tests", state: "starting" },
+				reused,
+			});
+			// The model asked for a new machine: the arguments are the ask's, the kernel chose.
+			expect(f.execute.mock.calls[0][0].operation.arguments).toMatchObject({
+				name: "market-research",
+				lifetime: "task",
+			});
+		} finally {
+			f.boundary.close();
 		}
 	});
 
@@ -806,17 +907,44 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("a machine in line, or one already running, is not waited on", async () => {
+		it("waits for a machine in line until it runs; one waiting for computer hours, or already running, is not waited on", async () => {
 			const f = fixture(undefined, true);
 			try {
 				f.started.state = "waiting";
-				const lined = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const lined = f.boundary.invoke("s1", "qorpera", "machine_start", {
 					operationKey: "lined",
 					machine: f.listed[0].name,
 					waitSeconds: 120,
 				});
-				expect(f.content(lined as never).machine.state).toBe("waiting");
+				await vi.advanceTimersByTimeAsync(10_000);
+				expect(f.content((await lined) as never).machine.state).toBe("running");
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports().map((report) => report.wait.outcome)).toEqual(["running"]);
+				// Only a member adds computer hours: that line is not waited on.
+				f.gateway.wake.mockClear();
+				f.started.waitingFor = "COMPUTER_HOURS_EXHAUSTED";
+				const hours = await f.boundary.invoke("s2", "qorpera", "machine_start", {
+					operationKey: "hours",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.content(hours as never).machine).toMatchObject({
+					state: "waiting",
+					waitingFor: "COMPUTER_HOURS_EXHAUSTED",
+				});
 				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports().at(-1)!.wait).toMatchObject({
+					outcome: "hours",
+					waitedMs: 0,
+					waitingFor: "COMPUTER_HOURS_EXHAUSTED",
+				});
+				delete f.started.waitingFor;
 				f.gateway.wake.mockClear();
 				f.started.state = "running";
 				await f.boundary.invoke("s2", "qorpera", "machine_start", {
@@ -825,7 +953,8 @@ describe("machine tools", () => {
 					waitSeconds: 120,
 				});
 				expect(f.gateway.wake).not.toHaveBeenCalled();
-				expect(f.looks()).toEqual([]);
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports()).toHaveLength(2);
 			} finally {
 				f.boundary.close();
 			}
@@ -1008,17 +1137,197 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("answers at once when its machine waits in line for room", async () => {
+		it("waits for its machine in line for room as for one starting, by default too", async () => {
 			const f = fixture(undefined, true);
 			try {
+				// The first look finds it running (the kernel's answer after the executor's pass placed and booted it).
 				const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
 					operationKey: "wake",
 					machine: "build-a",
-					waitSeconds: 120,
 				});
-				expect(f.content(result as never).machine).toMatchObject({ state: "waiting", queuePosition: 2 });
-				expect(f.looks()).toHaveLength(0);
+				expect(f.content(result as never).machine).toMatchObject({ state: "running" });
+				expect(f.looks()).toHaveLength(1);
 				expect(f.execute.mock.calls[0][0].operation.arguments).toEqual({ machine: "build-a" });
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: false,
+					limitSeconds: 60,
+					stateBefore: "waiting",
+					outcome: "running",
+					stateAfter: "running",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+	});
+
+	describe("a conversation's run waiting for its machine (agent-box B1)", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("waits in place while its machine starts, told at once by the executor's word, outside the receipt", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				let say = (_told: boolean) => {};
+				f.gateway.wake.mockImplementationOnce(
+					() =>
+						new Promise<boolean>((settle) => {
+							say = settle;
+						}),
+				);
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "report",
+					name: "report-1",
+					purpose: "Build the report",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				say(true);
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await start;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("running");
+				// Its last look saw it running: that look is what keeps the kernel's word for this run from waking it later.
+				expect(f.looks()).toHaveLength(2);
+				expect(f.execute.mock.calls[0][0].operation.arguments).not.toHaveProperty("waitSeconds");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers starting at the minute's end, so the run ends and is woken when it runs, and reports the limit", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push(...Array.from({ length: 20 }, () => f.status({ ...f.listed[0], state: "starting" })));
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "slow",
+					machine: "build-a",
+				});
+				await vi.advanceTimersByTimeAsync(60_000);
+				expect(f.content((await start) as never).machine.state).toBe("starting");
+				// Looks at 0, 5, ... 55 and at the deadline.
+				expect(f.looks()).toHaveLength(13);
+				expect(f.reports()).toEqual([
+					{
+						action: "waited",
+						machine: "build-a",
+						machineId: f.listed[0].machineId,
+						wait: {
+							asked: false,
+							limitSeconds: 60,
+							stateBefore: "starting",
+							waitingFor: null,
+							waitedMs: 60_000,
+							outcome: "limit",
+							stateAfter: "starting",
+						},
+					},
+				]);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("waits by default through a short line (placed, then booted), each step told by the executor's word", async () => {
+			// As on node 2 on 13 Nov: a new machine is first in line (NODE_CAPACITY_EXHAUSTED) until the executor's pass
+			// frees a sleeping machine's disk, about 2 s; then it boots.
+			const f = fixture();
+			try {
+				f.started.state = "waiting";
+				f.started.queuePosition = 1;
+				f.started.waitingFor = "NODE_CAPACITY_EXHAUSTED";
+				const word = (ms: number) => () => new Promise<boolean>((settle) => setTimeout(() => settle(true), ms));
+				f.gateway.wake.mockImplementationOnce(word(2_000)).mockImplementationOnce(word(8_000));
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "waiting" }),
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "count",
+					name: "research-word-count",
+					purpose: "Count the words",
+				});
+				await vi.advanceTimersByTimeAsync(9_000);
+				expect(f.looks()).toHaveLength(3);
+				await vi.advanceTimersByTimeAsync(1_100);
+				const result = await start;
+				expect(f.content(result as never).machine.state).toBe("running");
+				// Looks at 0 (in line), 2 (the first word: placed), 7 (its own time) and 10 (the second word: running).
+				expect(f.looks()).toHaveLength(4);
+				expect(f.gateway.wake.mock.calls.map(([, wait]) => wait)).toEqual([true, true, true]);
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: false,
+					limitSeconds: 60,
+					stateBefore: "waiting",
+					waitingFor: "NODE_CAPACITY_EXHAUSTED",
+					waitedMs: 10_000,
+					outcome: "running",
+					stateAfter: "running",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("does not wait when waitSeconds is 0, and says so; a kernel without the report changes no answer", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.kernel.refusesReports = true;
+				const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "now",
+					machine: "build-a",
+					waitSeconds: 0,
+				});
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("starting");
+				expect(f.looks()).toHaveLength(0);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: true,
+					limitSeconds: 0,
+					waitedMs: 0,
+					outcome: "not_asked",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("tells a run a member stopped that its work stopped, beside the machine it started", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push({ schema: "qorpera.machine-status/v1", workStopped: true });
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "stopped",
+					machine: "build-a",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				const answer = f.content((await start) as never);
+				expect(answer.machine.state).toBe("starting");
+				expect(answer.workStopped).toBe(
+					"your work was stopped (a member stopped it, or the company paused work); end your run",
+				);
+				expect(f.reports()[0].wait).toMatchObject({ outcome: "work_stopped", stateAfter: "starting" });
 			} finally {
 				f.boundary.close();
 			}
@@ -1135,6 +1444,14 @@ describe("machine tools", () => {
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
 			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program on it");
+			// The size is chosen for the job (Jonas, 13 Nov 2026: custom machines are "built, just not used well
+			// enough"): what uses every cpu, what a larger machine costs, and that it is stopped after. Workers read it too.
+			for (const description of [CLOUD_MACHINE_START_DESCRIPTION, CLOUD_MACHINE_START_WORKER_DESCRIPTION]) {
+				expect(description).toContain(
+					"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8. Hours count size times time awake, so that costs the same: for such work start a machine of 8 cpus and 8 GiB, tell the program to use them all, and stop it with machine_stop when done. ",
+				);
+				expect(Buffer.byteLength(description)).toBeLessThanOrEqual(4096);
+			}
 		} finally {
 			f.boundary.close();
 		}

@@ -10,7 +10,7 @@ Write `model.json`. Every number comes from the company's files. What is not kno
   `https:` link (↗).
 - `words`: optional, the page's words in the company's language: `example`, `hint` ("{n}" = count), `hintLast`,
   `assumed`, `unknown`, `known`, `yours`, `provisional`, `reset`, `resetOne`, `breakEven`, `never`, `below`, `save`,
-  `saving`, `saved`, `error`, `empty`.
+  `saving`, `saved`, `error`, `empty`, `tell`, `told`.
 - `groups`: up to 6 `{label (≤28), inputs: [...]}`, 16 inputs in all. An input:
   - `id` (letters, digits, `_`), `label` (≤28), `unit` (≤10), `min`, `max`, `step`.
   - `state`: `"known"` (a fact), `"assumed"` (someone's assumption), `"unknown"` (not known yet).

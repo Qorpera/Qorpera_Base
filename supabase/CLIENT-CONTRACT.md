@@ -73,6 +73,10 @@ Native host entry points (G2-1, migration 20260928409985): the publishable key's
 runner guest and work only with that runner job's current lease token. Clients never call them; without the token
 they answer 42501 "native host call is refused".
 
+Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
+for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
+bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 113 functions, grouped for navigation. Signatures: see the migration that defines each.
@@ -1300,6 +1304,13 @@ request of another shape.
   when its input was made; the begin refuses it `DESKTOP_HELD_SINCE` once that is not the current one (someone held the
   desktop privately since), and the page then reads the list again and goes on under the new one. A begin without a
   generation (a page before 20260930738000) is served as before.
+- The member's pointer (20260930744000): `others` names at most 50 members, the most recent first. Through the executor, a
+  member who may act begins a 10 s pointer pass (`qorpera_member_machine_desktop_pointer_begin(profile, machine,
+  generation, epoch, seat)`: shared at the generation the page knows, or on the caller's own private hold at its epoch
+  and seat; `{schema: "qorpera.member-machine-desktop-pointer/v1", state: "ok", passId, seconds: 10}` or a refusal:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_MEMBER_IN_CONTROL`,
+  `DESKTOP_HELD_SINCE`, `DESKTOP_CONTROL_ENDED`); the moves on it ask SQL nothing. A pass records no action and renews no
+  lease; the executor's read of it moves the machine's last use at most every 30 seconds.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes
@@ -1753,7 +1764,11 @@ with the member folder client. Storage → the repository's folder → "Download
   (`{kind: "github", repository: "Owner/Name"}`, `{kind: "file", name}`, or null for code begun in Qorpera),
   `importedAt` and `earlierChanges` (how many earlier changes came with it, or null). No commit, path or byte count.
   A repository whose import has not ended yet (recorded, but its folder not open yet) is in `bringing` (at step
-  `open`), not in `repositories`, until its import's end puts it there.
+  `open`), not in `repositories`, until its import's end puts it there. Since
+  `20260930741000_code_import_follow_ups` each repository also has `otherWork`: `{lines, changes}` when other lines of
+  work came with it that held changes its main version did not have (`lines` how many such lines, `changes` how many
+  such changes, each at least 1), else null (none came, the code began in Qorpera, or it came in before the key). A
+  client from before the key ignores it; a cloud from before it has no such key (read it as null). No line's name.
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
@@ -1923,6 +1938,14 @@ only after durable storage.
   of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
   401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
   looks again at once.
+- `POST /v1/company-data/<environmentId>/query`, `/watch`, `/apply` and `/describe` (not the object gateway's: the
+  node's mux sends them to the data gateway, `deploy/company-data/`; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`
+  §3 and §5) — a member's question to the company's databases, a held watch of questions, steps to apply, or what a
+  database holds, with the member's token, `content-type: application/json` and a JSON body: at most 1 MiB for
+  `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
+  are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
+  gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
+  gateway, which reads a body only for a signed-in member.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

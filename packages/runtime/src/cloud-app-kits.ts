@@ -117,7 +117,7 @@ const KIT_LIVE_VALUES = [
 	'K.live=[];K.changed=[];K.onLive=(f)=>{if(typeof f==="function")fns.push(f)};',
 	'const num=(v)=>{const n=typeof v==="number"?v:typeof v==="string"&&v.trim()?Number(v):NaN;return Number.isFinite(n)?n:null};',
 	'const bound=(v)=>v&&typeof v==="object"&&!Array.isArray(v)&&typeof v.query==="string"&&Object.keys(v).every((k)=>["query","params","column","example"].includes(k));',
-	"const tell=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
+	"const ping=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
 	"if(window.requestAnimationFrame)window.requestAnimationFrame(go);else setTimeout(go,16)};",
 	// One watch for each question with its params. A failed answer is no answer: the last good one stays. A watch that
 	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again
@@ -128,7 +128,7 @@ const KIT_LIVE_VALUES = [
 	"const ask=(b,key)=>{const p=prm(b);let w=asks.get(key);",
 	"if(!w){w={dead:1};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}const dead=()=>{w.dead=1;w.ready()};",
 	"if(w.dead&&!w.used){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
-	"w.a=a;w.ready();if(s!==w.s){w.s=s;tell()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
+	"w.a=a;w.ready();if(s!==w.s){w.s=s;ping()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
 	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
 	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
 	'for(const n of Object.keys(v))walk(v[n],v,n,path+"/"+n.replace(/~/g,"~0").replace(/\\//g,"~1"),out,d+1)};',
@@ -267,10 +267,14 @@ export function kitPage(
 	title: string,
 	data: Readonly<Record<string, unknown>>,
 	holds: (path: string) => boolean,
+	concept = false,
 ): string {
 	const lang = typeof data.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(data.lang) ? data.lang : "en";
 	// In a script: no `<`, so nothing in a name ends the script or opens a comment.
-	const kitJson = JSON.stringify({ app, kit, data: kitDataFile(kit) }).replace(/</g, "\\u003c");
+	const kitJson = JSON.stringify({ app, kit, data: kitDataFile(kit), ...(concept ? { concept: true } : {}) }).replace(
+		/</g,
+		"\\u003c",
+	);
 	return [
 		"<!doctype html>",
 		`<html lang="${lang}">`,

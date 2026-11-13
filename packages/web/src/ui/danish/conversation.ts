@@ -140,6 +140,7 @@ export const CONVERSATION: Record<string, string> = {
 	// Agent states (ui/agent-activity.ts)
 	Working: "Arbejder",
 	Writing: "Skriver",
+	"Using its computer": "Bruger sin computer",
 	"Needs you": "Venter på dig",
 	// The rail when an agent's work waits on the member (app/views/shell.ts)
 	"Stopped: {what}": "Stoppet: {what}",
@@ -147,6 +148,7 @@ export const CONVERSATION: Record<string, string> = {
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
+	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
 	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
@@ -290,7 +292,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} asks you": "{name} spørger dig",
 	"Sending to {name}…": "Sender til {name}…",
 	"Sent to {name}": "Sendt til {name}",
-	"Open the chat": "Åbn chatten",
 	"Previous question": "Forrige spørgsmål",
 	"Next question": "Næste spørgsmål",
 	"Hide the question": "Skjul spørgsmålet",
@@ -301,6 +302,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
 	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
 	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	// A web page a link in the app leads to, shown before it opens (Jonas, 13 November 2026: "Show the address first").
+	"This app wants to open a web page": "Appen vil åbne en webside",
+	Site: "Websted",
 	"Your answer": "Dit svar",
 	Table: "Tabel",
 	Row: "Række",
@@ -317,12 +321,23 @@ export const CONVERSATION: Record<string, string> = {
 	"The row changed while you were deciding. Nothing was saved.":
 		"Rækken blev ændret, mens du tog stilling. Intet blev gemt.",
 	"You may not change this table. Nothing was saved.": "Du må ikke ændre denne tabel. Intet blev gemt.",
+	// A note to the app's owner, written on the same bar (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your note to {name}": "Appen vil sende din besked til {name}",
+	"Your note": "Din besked",
+	"Write your note": "Skriv din besked",
+	"Send note": "Send besked",
+	"Your note waits in {name}'s thread": "Din besked venter i tråden med {name}",
+	"Write your note first.": "Skriv din besked først.",
+	"Leave the app out": "Udelad appen",
+	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
+	"{name}'s thread has a message started. Send or clear it there, then send this note.":
+		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",
 	App: "App",
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
 	Concepts: "Koncepter",
-	"Show the concepts": "Vis koncepterne",
-	"Hide the concepts": "Skjul koncepterne",
+	"Show sidebar": "Vis sidepanelet",
+	"Hide sidebar": "Skjul sidepanelet",
 	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
 	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
 	"Open the newest concept": "Åbn det nyeste koncept",

@@ -23,14 +23,14 @@
 :root[data-theme="dark"] .rail-drag-ghost { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
-:root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
+:root[data-theme="dark"] :is(.rail, .concepts-side) { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
 :root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
 :root[data-theme="dark"] .rail-add, :root[data-theme="dark"] .rail-apps { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-toolbar.is-searching .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
 :root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
-:root[data-theme="dark"] .rail-row-copy small { color: #adaca7; }
-:root[data-theme="dark"] .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+:root[data-theme="dark"] :is(.rail-row-copy, .concepts-item-copy) small { color: #adaca7; }
+:root[data-theme="dark"] :is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: rgba(255, 255, 255, 0.92); }
 :root[data-theme="dark"] .rail-row:not(.active) .rail-row-copy small.is-failed { color: #ff6961; }
 
 /* ---- hub ------------------------------------------------------------------- */
@@ -101,6 +101,8 @@
 :root[data-theme="dark"] .bubble:has(> .app-cards) { background: none; }
 :root[data-theme="dark"] .app-card:hover { background: color-mix(in srgb, var(--text) 6%, var(--bg)); }
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
+/* A member's note from an app opens with the app's card, on the thread as an agent's cards are (views/conversation.ts). */
+:root[data-theme="dark"] .mine .bubble:has(> .app-cards) { background: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
 /* The thread foot's glass, on the dark surface (conversation.css). */

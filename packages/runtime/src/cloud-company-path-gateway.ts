@@ -72,6 +72,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
+	// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
+	| "qorpera_run_data_pass"
 	// Staging a folder-v2 file's bytes (core C1d).
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"
@@ -189,8 +191,8 @@ function closed(value: unknown, keys: readonly string[], optional: readonly stri
 }
 
 /** The hash of the image an answer showed, as its text names it: company_read's `kind: "image"`, machine_screen's
- * `kind: "screen"` (20260930708000); or undefined. */
-function shownImageSha256(text: unknown, shownKind: "image" | "screen"): string | undefined {
+ * `kind: "screen"` (20260930708000), make_picture's `kind: "picture"` (20260930746000); or undefined. */
+function shownImageSha256(text: unknown, shownKind: "image" | "screen" | "picture"): string | undefined {
 	if (typeof text !== "string") return undefined;
 	let answer: unknown;
 	try {
@@ -386,7 +388,14 @@ export class CloudCompanyPathGateway {
 				};
 				const capture = output.capture ? parseCompanyComputerScreenshotAsset(output.capture) : undefined;
 				// A folder image company_read showed is bound to its read: the released text names the image's hash. A screen
-				// machine_screen showed (20260930708000) is bound to this run's own answer, which names its hash the same way.
+				// machine_screen showed (20260930708000), and a picture make_picture made (20260930746000), are bound to this
+				// run's own answer, which names its hash the same way.
+				const ownKind =
+					envelope.provenance?.tool === "machine_screen"
+						? "screen"
+						: envelope.provenance?.tool === "make_picture"
+							? "picture"
+							: undefined;
 				const shown =
 					!capture &&
 					output.imageSha256 !== undefined &&
@@ -394,12 +403,12 @@ export class CloudCompanyPathGateway {
 					((envelope.provenance?.tool === "company_read" &&
 						typeof envelope.provenance.companyReadId === "string" &&
 						shownImageSha256(envelope.content?.text, "image") === output.imageSha256) ||
-						(envelope.provenance?.tool === "machine_screen" &&
-							envelope.provenance.source === "runtime" &&
+						(ownKind !== undefined &&
+							envelope.provenance?.source === "runtime" &&
 							envelope.provenance.companyReadId === undefined &&
 							envelope.provenance.companyId === this.#identity.companyId &&
 							envelope.provenance.runId === this.#identity.runId &&
-							shownImageSha256(envelope.content?.text, "screen") === output.imageSha256));
+							shownImageSha256(envelope.content?.text, ownKind) === output.imageSha256));
 				if (
 					(output.imageSha256 !== capture?.sha256 && !shown) ||
 					(capture &&

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -33,6 +35,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
@@ -42,6 +45,7 @@ import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
 import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
+import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
@@ -71,11 +75,12 @@ import {
 } from "./cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
-import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
+	type NativeProviderUsageSignal,
 	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -98,6 +103,7 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { CloudRunLogGone } from "./cloud-run-log.ts";
@@ -162,6 +168,17 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 		throw new Error("Native execution admission was not confirmed");
 }
 
+/** Whether an identity root is a ChatGPT plan run's: its host wrote the plan's token directory there. Anything but a
+ * clear absence counts as one, so a run is never offered pictures it cannot make. */
+async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
+	try {
+		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ENOENT";
+	}
+}
+
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
  * receives a service key, raw object capability, recipient or canonical mount.
@@ -183,6 +200,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
+	readonly #companyData: CloudCompanyDataDoor | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
@@ -220,6 +238,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
+		/** The data gateway's run door (company databases, slice 5): with it a run is offered data_describe, data_query
+		 * and, unless it is a worker, data_apply; without it none of them. */
+		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -240,6 +261,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#codingValues = options.codingValues;
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
+		this.#companyData = options.companyData;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -720,7 +742,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					// Contract 7.1: the final send is the member's answer. Nothing after it reaches them; only the run's
+					// bookkeeping still runs (the tool boundary, the 2026-11-13 amendment).
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
@@ -794,6 +817,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const offlineShells = new Set<string>();
 				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
+				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
+				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
+				// the session reads it.
+				const pictures = (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -833,6 +860,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					opening,
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
+					...(pictures ? { pictures } : {}),
 					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -962,6 +990,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 									// Interface apps: pages the agent makes to show members its work (5 November 2026).
 									...cloudAppTools({ folder: folder.client, operations, identity }),
+									// A picture the agent makes, saved in the folder as a write is (20260930746000).
+									...(pictures
+										? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
+										: []),
 									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
 									// run of the agent; a worker reports to its agent instead.
 									...(identity.audienceKind === "company" && !work.isWorker
@@ -982,6 +1014,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 												runId: identity.runId,
 											}),
 										]
+									: []),
+								// The company's databases (slice 5), on a host that names the data gateway's run door: every
+								// run describes and asks them; a worker does not apply steps.
+								...(this.#companyData
+									? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
@@ -1221,6 +1258,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							);
 						});
 				});
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
+				// after it can lose it.
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
@@ -1246,7 +1287,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
-		if (!kind) return;
+		if (kind) await this.#recordUsageSignalKind(binding, kind);
+	}
+
+	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(

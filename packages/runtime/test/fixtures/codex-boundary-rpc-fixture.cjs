@@ -1,6 +1,6 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, truncateSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -57,6 +57,8 @@ const companyCalls = mode === "company-office"
 			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
 		]
+	: mode === "company-limit-after-answer"
+	? [{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } }]
 	: mode === "company-cards-unavailable"
 	? [
 			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
@@ -204,6 +206,41 @@ const voiceSay = (method, params = {}) => write({ method, params: { threadId: vo
 const voiceReopen = mode === "voice-reopen" || mode === "voice-reopen-refused";
 let voiceLateSent;
 const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
+
+// A picture call (cloud-picture-channel.ts): a side thread with Codex's image tool on, whose one turn makes one picture,
+// saved where Codex 0.155.1 keeps it. The agent's turn waits meanwhile, until the test lets it end.
+const pictureMode = mode.startsWith("picture");
+const pictureThreadId = "thread_picture";
+const pictureTurnId = "turn_picture";
+const pictureItemId = "ig_1";
+// followUp: the host's answer to the turn's request after a failed generation, whose text output reaches the fence.
+const pictureEvidence = { threads: [], prewarm: null, turn: null, composed: null, followUp: null, interrupts: [], refused: null, savedPath: null };
+// Written whole and renamed into place: a test reads it while later messages are still being recorded, and must never
+// read half a line.
+const pictureWrite = () => {
+	writeFileSync(`${evidencePath}.writing`, JSON.stringify({ ...pictureEvidence, mainThread: threadParameters, configuration }));
+	renameSync(`${evidencePath}.writing`, evidencePath);
+};
+// The one-pixel PNG of Codex's own image tests.
+const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
+const pictureItem = (patch) => ({ type: "imageGeneration", id: pictureItemId, status: "completed", revisedPrompt: "a red apple", result: "", failure: null, ...patch });
+/** Saves the picture as Codex does (under its canonical home), or elsewhere, and says it is done. */
+const pictureSave = (at, itemId = pictureItemId) => {
+	const home = realpathSync(process.env.CODEX_HOME);
+	const folder = join(home, "generated_images", at.threadId);
+	mkdirSync(folder, { recursive: true });
+	let saved = join(folder, `${itemId}.png`);
+	if (mode === "picture-outside") saved = join(home, "outside.png");
+	writeFileSync(saved, mode === "picture-not-png" ? "PRIVATE_NOT_A_PNG" : tinyPng);
+	// Past the bound: the file says so by its size alone.
+	if (mode === "picture-large") truncateSync(saved, 12 * 1024 * 1024 + 1);
+	if (itemId === pictureItemId) pictureEvidence.savedPath = saved;
+	else pictureEvidence.secondPath = saved;
+	pictureWrite();
+	// The picture model's own prompt argument, which nothing in Codex bounds: 40 KiB of it, in characters of two bytes.
+	const revised = mode === "picture-long-revised" ? { revisedPrompt: "é".repeat(20 * 1024) } : {};
+	write({ method: "item/completed", params: { ...at, item: pictureItem({ id: itemId, savedPath: saved, transparentBackground: true, ...revised }), completedAtMs: 1 } });
+};
 
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
@@ -410,6 +447,79 @@ async function handle(message) {
 	} else if (message.id === "voice_request") {
 		voiceEvidence.refused = message;
 		voiceWrite();
+	} else if (message.method === "thread/start" && pictureMode && threadParameters) {
+		pictureEvidence.threads.push(message.params);
+		if (mode === "picture-thread-refused") {
+			pictureWrite();
+			write({ id: message.id, error: { code: -32600, message: "PRIVATE_CONFIG_ERROR" } });
+			return;
+		}
+		const id = pictureEvidence.threads.length === 1 ? pictureThreadId : `${pictureThreadId}_${pictureEvidence.threads.length}`;
+		// Codex prewarms a new thread in the background: the picture thread's lands on the fence while it starts.
+		pictureEvidence.prewarm = await fence([], { threadId: id, turnId: "", purpose: "prewarm" });
+		pictureWrite();
+		write({ id: message.id, result: { thread: { id } } });
+	} else if (message.method === "turn/start" && pictureMode && message.params.threadId.startsWith(pictureThreadId)) {
+		const at = { threadId: message.params.threadId, turnId: pictureTurnId };
+		pictureEvidence.turn = message.params;
+		pictureWrite();
+		if (mode === "picture-turn-refused") {
+			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_ERROR" } });
+			return;
+		}
+		write({ id: message.id, result: { turn: { id: pictureTurnId } } });
+		write({ method: "turn/started", params: { threadId: at.threadId, turn: { id: pictureTurnId } } });
+		pictureEvidence.composed = await compose(at);
+		await fence([], at);
+		// The model's words on the picture's thread reach no one.
+		write({ method: "item/agentMessage/delta", params: { ...at, delta: "PRIVATE_PICTURE_CANARY" } });
+		if (mode === "picture-request")
+			write({ id: "picture_request", method: "item/tool/call", params: { ...at, callId: "picture_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
+		// What Codex says of the member's plan, without a thread: a sign-in's update, or a rate-limit update's plan.
+		if (mode === "picture-free" || mode === "picture-pro")
+			write({ method: "account/updated", params: { authMode: "chatgpt", planType: mode === "picture-free" ? "free" : "pro" } });
+		if (mode === "picture-free-limits")
+			write({ method: "account/rateLimits/updated", params: { rateLimits: { limitId: "codex", planType: "free", primary: null, secondary: null } } });
+		if (mode === "picture-silent" || mode === "picture-free" || mode === "picture-pro" || mode === "picture-free-limits") {
+			// The model draws nothing: its turn ends with words alone.
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "completed", error: null } } });
+			return;
+		}
+		if (mode === "picture-usage-limit") {
+			nativeError("usageLimitExceeded", false, at);
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			return;
+		}
+		write({ method: "item/started", params: { ...at, item: pictureItem({ status: "in_progress", revisedPrompt: null }), startedAtMs: 1 } });
+		if (mode === "picture-started") {
+			// The tool was called, and its turn ends without the picture.
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			return;
+		}
+		// The generation never ends (picture-slow), or ends only after the call gave up on it (picture-late).
+		if (mode === "picture-slow" || mode === "picture-late") return;
+		if (mode === "picture-limit" || mode === "picture-refused") {
+			write({ method: "item/completed", params: { ...at, item: pictureItem({ status: "failed", failure: mode === "picture-limit" ? { type: "usageLimitExceeded", limitId: "image_gen", resetsAt: 1763049600 } : null }), completedAtMs: 1 } });
+			// The tool's failure goes back to the model as text, which reaches the fence and gets nothing; the pinned fence
+			// then fails the turn inside Codex.
+			pictureEvidence.followUp = await fence([{ kind: "function_call_output", callId: "imagegen_call", output: "image generation failed: PRIVATE_IMAGES_ERROR" }], at);
+			pictureWrite();
+			write({ method: "turn/completed", params: { threadId: at.threadId, turn: { id: pictureTurnId, status: "failed", error: { message: "Cloud result boundary unavailable" } } } });
+			return;
+		}
+		pictureSave(at);
+		// The model draws a second picture in the same turn: the call took the first.
+		if (mode === "picture-twice") pictureSave(at, "ig_2");
+	} else if (message.method === "turn/interrupt" && pictureMode && message.params.threadId.startsWith(pictureThreadId)) {
+		pictureEvidence.interrupts.push(message.params);
+		pictureWrite();
+		write({ id: message.id, result: {} });
+		// A picture finished after its call ended: Codex saves it all the same.
+		if (mode === "picture-late") pictureSave({ threadId: message.params.threadId, turnId: message.params.turnId });
+		write({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId, status: "interrupted", error: null } } });
+	} else if (message.id === "picture_request") {
+		pictureEvidence.refused = message;
+		pictureWrite();
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -603,9 +713,9 @@ async function handle(message) {
 			if (mode === "pending-tool") done();
 		} else if (mode === "approval") {
 			write({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId, turnId, command: "PRIVATE_APPROVAL_COMMAND" } });
-		} else if (mode === "final-send-ends-turn" || mode === "final-send-natural" || mode === "progress-send-no-end") {
+		} else if (mode === "final-send-natural" || mode === "progress-send-no-end") {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "send_message", arguments: { idempotencyKey: "k1", text: "Done.", phase: mode === "progress-send-no-end" ? "progress" : "final" } } });
-		} else if (mode === "report-then-note" || mode === "final-send-then-note") {
+		} else if (mode === "report-then-note" || mode.startsWith("final-send-then-") || mode === "final-send-replay") {
 			// One response's two calls, the second made once the first is answered, as Codex may run them.
 			write(call("first_1", mode === "report-then-note" ? "report_work" : "send_message", mode === "report-then-note" ? { operationKey: "k1", outcome: "succeeded", summary: "Done." } : { idempotencyKey: "k1", text: "Done.", phase: "final" }));
 		} else if (mode === "report-after-note") {
@@ -634,6 +744,12 @@ async function handle(message) {
 				writeFileSync(`${evidencePath}.voice-ready`, "");
 				while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
 			}
+			if (pictureMode) {
+				// So is a picture call.
+				pictureWrite();
+				writeFileSync(`${evidencePath}.picture-ready`, "");
+				while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
+			}
 			// Just under the 1 MiB wire limit: one line over many pipe reads, split inside 3-byte characters.
 			if (mode === "large-line") write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "\u20ac".repeat(349_000) } });
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
@@ -649,7 +765,9 @@ async function handle(message) {
 			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, context: contextEvidence, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
-			done();
+			// The answer is out, then the login's usage limit fails the turn (the 2026-11-13 amendment).
+			if (mode === "company-limit-after-answer") failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: "usageLimitExceeded" });
+			else done();
 		}
 	} else if (message.id === "capture_request" && mode === "capture-image") {
 		const [envelope, image] = message.result.contentItems;
@@ -659,11 +777,32 @@ async function handle(message) {
 		const fenced = await fence([{ kind: "function_call_output", callId: "capture_1", output: [{ type: "input_text", text: envelope.text }, { type: "input_image", sha256 }] }]);
 		writeFileSync(evidencePath, JSON.stringify({ imageBytes: pixels.length, sha256, fenced }));
 		done();
+	} else if (message.id === "first_1" && (mode === "final-send-then-failed" || mode === "final-send-then-limit")) {
+		// The answer is out; the provider fails the turn's next request (2026-11-13 amendment).
+		outputOf(message);
+		sendEvidence.fenced = await fence(answered);
+		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));
+		failed({
+			message: "PRIVATE_PROVIDER_ERROR",
+			codexErrorInfo: mode === "final-send-then-limit" ? "usageLimitExceeded" : { httpConnectionFailed: { httpStatusCode: 503 } },
+		});
 	} else if (message.id === "first_1") {
 		outputOf(message);
-		write(call("note_1", "read_note", {}));
+		// After the answer: bookkeeping, the answer again exactly, or anything else.
+		if (mode === "final-send-then-tail") write(call("tail_1", "update_wall", {}));
+		else if (mode === "final-send-replay") write(call("first_2", "send_message", { idempotencyKey: "k1", text: "Done.", phase: "final" }));
+		else write(call("note_1", "read_note", {}));
+	} else if (message.id === "tail_1" || message.id === "first_2") {
+		// The turn goes on after the answer: no interrupt comes, and the model ends the turn itself.
+		outputOf(message);
+		sendEvidence.fenced = await fence(answered);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined, outputs: answered }));
+		if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+		done();
 	} else if (message.id === "note_1" && mode === "final-send-then-note") {
 		outputOf(message);
+		sendEvidence.outputs = answered;
 		sendEvidence.pending = fence(answered);
 		sendEvidence.fenced = await sendEvidence.pending;
 	} else if (message.id === "note_1" && mode === "report-then-note") {
@@ -704,11 +843,11 @@ async function handle(message) {
 		sendEvidence.reply = message;
 		sendEvidence.pending = fence([{ kind: "function_call_output", callId: "send_1", output: message.result.contentItems[0].text }]);
 		sendEvidence.fenced = await sendEvidence.pending;
-		if (mode !== "final-send-ends-turn" && mode !== "report-ends-turn") {
+		if (mode !== "report-ends-turn") {
 			// Give a (wrong) interrupt time to arrive before completing naturally.
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			writeFileSync(evidencePath, JSON.stringify(sendEvidence));
-			if ((mode === "progress-send-no-end" || mode === "report-goes-on") && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
+			if (sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
 	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
@@ -749,8 +888,14 @@ async function handle(message) {
 		correction.reply = message;
 		correction.pending = fence(outputs, { turnId: correctionTurnId });
 		await correction.pending;
+		// The final send leaves the added turn open for the run's bookkeeping, as any turn (the 2026-11-13 amendment): with
+		// nothing more to do, the model ends it.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		if (correction.interrupt) return;
+		writeFileSync(`${evidencePath}.correction`, JSON.stringify({ ...correction, pending: undefined, turns: mainTurns }));
+		write({ method: "turn/completed", params: { threadId, turn: { id: correctionTurnId, status: "completed", error: null } } });
 	} else if (message.method === "turn/interrupt" && message.params.turnId === correctionTurnId) {
-		// The final send of the added turn ends it, as it ends any turn.
+		// An interrupt of the added turn (none is asked for after its final send) ends it.
 		correction.interrupt = message.params;
 		write({ id: message.id, result: {} });
 		await correction.pending;
@@ -759,7 +904,7 @@ async function handle(message) {
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });
-		if (["final-send-ends-turn", "report-ends-turn", "report-after-note", "final-send-then-note"].includes(mode)) {
+		if (["report-ends-turn", "report-after-note", "final-send-then-note"].includes(mode)) {
 			// The interrupt arrives while the fence reply is still pending, as it does live.
 			sendEvidence.fenced = await sendEvidence.pending;
 			writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));

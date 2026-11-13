@@ -108,6 +108,8 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 		expect(Buffer.byteLength(KIT_ENGINE_JS[kit]), kit).toBeLessThan(128 * 1024);
 		// A guide is written for an agent, and small enough that the four sit in one schema with room to spare.
 		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThan(4608);
+		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once.
+		expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
 		// Each guide's example is data its own kit reads.
 		const example = /```json\n([\s\S]*?)\n```/.exec(KIT_GUIDE[kit])?.[1] ?? "";
 		expect(parseKitData(kit, example), kit).toHaveProperty("data");
@@ -142,6 +144,10 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 		"object: a physical thing a member turns in the hand.",
 		"save_app writes engine.js and index.html: never write or edit those two",
 		"what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it",
+		// A note to the app's owner (qorpera.tell), said once for the four kits.
+		'Every kit\'s words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went;',
+		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters).",
+		"Such a note reaches you as the member's message, under a first line that names the app and the thing.",
 	])
 		expect(kit.description).toContain(said);
 	// Each kit's own guide is there whole, as its file has it.
@@ -183,6 +189,15 @@ it("writes a kit's page that names its pictures, reads its data, and opens outsi
 	);
 	// Which app and data file the engine reads, then the engine.
 	expect(page).toContain('window.QORPERA_KIT = {"app":"marked","kit":"board","data":"board.json"};');
+	// A concept's page says so, and its engine then draws no title block and keeps almost nothing around the stage
+	// (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). Any
+	// other page is as it was, byte for byte.
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true, true)).toContain(
+		'window.QORPERA_KIT = {"app":"marked","kit":"board","data":"board.json","concept":true};',
+	);
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true, false)).toBe(
+		kitPage("marked", "board", "Marked", BOARD, () => true),
+	);
 	expect(page.trimEnd().endsWith('<script src="engine.js"></script>\n</body>\n</html>')).toBe(true);
 	// The data as it was saved, for an agent that opens the page on a machine to look at it: nothing in it ends the
 	// script, and outside Qorpera a read of the data file answers it.
@@ -191,6 +206,8 @@ it("writes a kit's page that names its pictures, reads its data, and opens outsi
 	const packed = /<script type="application\/json" id="kit-data">(.*)<\/script>/.exec(tricky)?.[1] ?? "";
 	expect(JSON.parse(packed)).toEqual({ ...MODEL, line: "</script><script>alert(1)</script>" });
 	expect(tricky).toContain("if(!window.qorpera){");
+	// Outside Qorpera the page's own `qorpera` has no `tell`, so a kit draws no button for a note to the app's owner.
+	expect(page).not.toContain("tell");
 	// A language the data does not give as a code leaves the page in English.
 	expect(kitPage("m", "model", "M", { ...MODEL, lang: "dansk<" }, () => true)).toContain('<html lang="en">');
 });
@@ -637,6 +654,27 @@ it("makes an app from a data kit: the agent's data, Qorpera's engine and page", 
 	expect(f.text("apps/forretningsmodel/index.html")).toBe(
 		kitPage("forretningsmodel", "model", "Forretningsmodel", next, () => false),
 	);
+});
+
+it("tells a kit's page that its app is a concept, when it is made and when it changes", async () => {
+	const f = await fixture();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("udtryk", "make-1", { title: "Udtryk", kit: "board", concept: true, cover: "pictures/arc-one.webp" }, [
+				{ path: "board.json", text: JSON.stringify(BOARD) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", BOARD, () => false, true));
+	// New data, and the manifest is not touched: the page is written again, still as a concept.
+	const next = { ...BOARD, title: "Udtryk" };
+	await f.call("save_app", save("udtryk", "change-1", null, [{ path: "board.json", text: JSON.stringify(next) }]));
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", next, () => false, true));
+	// And no longer a concept: the page says nothing, so its engine draws the title block again.
+	await f.call("save_app", save("udtryk", "change-2", { title: "Udtryk", concept: false }, []));
+	expect(f.text("apps/udtryk/index.html")).toBe(kitPage("udtryk", "board", "Udtryk", next, () => false));
 });
 
 it("refuses a data kit's app with no data, or with data its engine cannot read", async () => {

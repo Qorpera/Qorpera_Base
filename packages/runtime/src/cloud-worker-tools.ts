@@ -561,6 +561,18 @@ export interface CloudAgentOpenWork {
 		| { machine: string; work: "command"; command: string; startedAt: string; endedAt: string; reason: string }
 		| { machine: string; work: "containers"; endedAt: string; reason: string }
 	)[];
+	/** Code a member or another agent brought into Qorpera (the import's follow-ups, 20260930741000), told once to each
+	 * agent but the one that asked: the repository's place, where it came from as a member reads it, who asked, when it
+	 * came in, how many earlier changes its main branch brought, and the other lines of work with changes main lacks. */
+	codeBroughtIn?: {
+		owner: string;
+		name: string;
+		from: { github: string } | { file: string };
+		by: "member" | "agent";
+		at: string;
+		earlierChanges: number | null;
+		otherWork: { lines: number; changes: number } | null;
+	}[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -641,11 +653,56 @@ export async function describeCloudAgentOpenWork(
 				: { ...shared, work };
 		});
 	}
+	let codeBroughtIn: CloudAgentOpenWork["codeBroughtIn"];
+	if (result.codeBroughtIn !== undefined) {
+		if (!Array.isArray(result.codeBroughtIn) || result.codeBroughtIn.length < 1 || result.codeBroughtIn.length > 8)
+			throw new Error("Open work differs");
+		const keys = ["owner", "name", "from", "by", "at", "earlierChanges", "otherWork"];
+		codeBroughtIn = result.codeBroughtIn.map((item) => {
+			const brought = object(item, keys, keys);
+			// Where it came from as a member reads it (`qorpera_code_import_member_source`): a GitHub project or a file's name.
+			const from = object(brought.from, ["github", "file"], []);
+			const source = Object.keys(from);
+			const other =
+				brought.otherWork === null ? null : object(brought.otherWork, ["lines", "changes"], ["lines", "changes"]);
+			try {
+				// The place the code came in at, code/<owner>/<name>/, by the rule its coding sessions are started under.
+				parseCloudCodingRepository({
+					host: "qorpera",
+					owner: brought.owner,
+					name: brought.name,
+					baseBranch: "main",
+				});
+			} catch {
+				throw new Error("Open work differs");
+			}
+			const earlierChanges = brought.earlierChanges === null ? null : count(brought.earlierChanges);
+			const otherWork = other === null ? null : { lines: count(other.lines), changes: count(other.changes) };
+			if (
+				source.length !== 1 ||
+				typeof from[source[0]] !== "string" ||
+				(brought.by !== "member" && brought.by !== "agent") ||
+				typeof brought.at !== "string" ||
+				(otherWork !== null && (otherWork.lines < 1 || otherWork.changes < 1))
+			)
+				throw new Error("Open work differs");
+			return {
+				owner: brought.owner as string,
+				name: brought.name as string,
+				from: "github" in from ? { github: from.github as string } : { file: from.file as string },
+				by: brought.by as "member" | "agent",
+				at: brought.at as string,
+				earlierChanges,
+				otherWork,
+			};
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
 		...(computerStopped ? { computerStopped } : {}),
 		...(machineStopped ? { machineStopped } : {}),
+		...(codeBroughtIn ? { codeBroughtIn } : {}),
 	};
 }
 
@@ -673,6 +730,7 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 				"table_write",
 				"save_app",
 				"post_app",
+				"make_picture",
 			].includes(tool.name),
 	};
 }

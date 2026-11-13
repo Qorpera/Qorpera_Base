@@ -837,6 +837,12 @@ On a human-authored wake, the agent MUST:
 “On it” is acknowledgement, not delivery. A long job MUST NOT disappear, and
 raw command-by-command narration MUST NOT become the substitute.
 
+2026-11-13 amendment (proposed, not approved): the closing message is the last
+message, not the last act. After it a run may still keep its own bookkeeping
+(its wall, to-do list, apps layout and sidebar) and nothing else, so the member
+gets the answer without waiting for it. See the
+[2026-11-13 amendment](#2026-11-13-amendment-the-answer-first-then-the-bookkeeping).
+
 ### 7.2 Other wakes
 
 The wake envelope determines whether an initial or terminal send is required,
@@ -6553,7 +6559,12 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
      stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
      the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
-   - `asOfSeq` is the folder clock of the call's first page, as `company_move` takes it.
+   - One answer is one moment of the folder (13 November 2026, owed from v240: a rename between two of a call's
+     pages showed a path twice or not at all). A look whose pages answered at different folder clocks is taken
+     again, at most three looks a call, all within about 4 s; the answer is a look whose pages answered at one clock
+     (each page is one statement, so that look is the folder at that moment). If no look was, the answer says so in
+     one line and to call again the same way for a clean listing.
+   - `asOfSeq` is the folder clock of the first page of the look the call answers with, as `company_move` takes it.
 2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
    `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
    - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
@@ -6613,8 +6624,10 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    such lines it left, to search as text or read. A file that changes while a search is inside it shows in one
    version only, the one there now: what the same call had shown of the old version is left out and not released,
    and when an earlier answer showed part of it, the answer says it changed (searched again from its start) or is no
-   longer as that answer saw it (gone, emptied or no longer the run's to read). A search whose own path is gone by a
-   later page answers that there is no such path, and shows and releases nothing.
+   longer as that answer saw it (gone, emptied or no longer the run's to read). A cursor inside a file does not tell
+   that: the run keeps, with each cursor, whether an answer showed part of that file at that version (13 November
+   2026, the v240 release review's finding), and says nothing of a file no answer showed. A search whose own path
+   is gone by a later page answers that there is no such path, and shows and releases nothing.
 4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
    searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
    (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,
@@ -6630,6 +6643,107 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
    hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
    what it takes and says so for the rest.
+
+### 2026-11-13 amendment: company databases
+
+Ratified 13 November 2026 (Jonas). To "Put a second Postgres on your nodes for companies' data?" he answered "Yes,
+go". The three points the design then left open were put to him with a recommendation each: the store as a small
+machine pair of its own (item 2), agents making and changing databases themselves with only what destroys data
+waiting for a member (item 5), and named questions and changes as the only road for interfaces (item 6). He
+answered: "Yes, all three".
+
+Jonas, 13 November 2026: "you can't act very much inside of the interfaces and [...] the numbers are never live. since
+we now host our own database, I think it's obvious that as long as we build the tools needed for companies to build
+their own databases on our servers too, we should absolutely be able to provide live numbers. if a company
+folder/file could contain databases that lived on our servers, and the interfaces could then project those
+numbers/values we would have it. that's a top priority item too. [...] I just like having the entire company inside
+the company folder/files, aiming for full centralization of data."
+
+This is the amendment the 2026-10-02 amendment "interfaces project company state from the company folder", item 4,
+left open: "A table that outgrows a file waits for the company's table store. The store has its own amendment, which
+says where it runs." It puts the store back in scope (the 2026-10-17 scope amendment had taken it out) and grows it
+from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`.
+
+1. **A company database is a folder of the company folder**, `data/<name>/`. Its files say everything it is:
+   - `database.toml`: its name, what it holds, who reads it and who changes it;
+   - `tables/NNN-<name>.sql`: numbered steps that make and change its tables, each applied once, in order;
+   - `queries/<name>.sql`: named questions, each one read with named parameters;
+   - `actions/<name>.sql`: named changes, each one write, with the words a member is shown;
+   - `snapshot/`: its rows, written by the platform at least daily (item 8).
+
+   `data/` joins the top of the folder (5.6) as the company's own work: agents and members write it, and the platform
+   writes `snapshot/`. They are plain files, and the folder stays their one truth: the platform uses a file's text
+   only when its hash is the live file's, read with the caller's own rights. A step that was applied is never applied
+   again; when one was changed afterwards, applying stops and says so.
+2. **The rows live in the company data store**: a PostgreSQL on Qorpera's own nodes that holds companies' rows and
+   nothing else, with a standby on the other node and backups on Qorpera's own storage. It is not the platform's
+   database and shares no server process with it. Each company has one database there, each `data/<name>/` one schema
+   in it. "It holds all company state" keeps the one exception the 2026-10-02 amendment gave it, now for these rows.
+3. **The rows belong to the company like the folder.** They never go to the platform's database. Deleting a
+   database's folder removes its rows; deleting or erasing the company removes all of them, and the store's backups
+   hold them no longer than those backups are kept.
+4. **One gateway is the only door.** No member, agent, machine or service holds a login to the store; the data
+   gateway does, and every caller goes through it with their own proven identity. A company is bounded there in
+   connections, time per statement, memory, temporary files and size, so no company's work reaches another's or the
+   platform's.
+5. **Agents make and change databases without a member.** They write the files as they write any of the company's
+   work. What destroys data waits for a member: a step that drops or empties a table, drops a column or deletes rows,
+   and deleting a database's folder. Until that approval is built these are refused with their reason. The rule that
+   agents do not define the earlier tables and pages (`QorperaOS/tables`, `QorperaOS/interfaces`) is unchanged.
+6. **Interfaces reach rows only through the named questions and changes.** A page never sends SQL of its own. A
+   question runs with the rights of the member looking: the folder's path authority for the question's file. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
+   amendment: the platform draws every confirmation), with the file's own words. Agents may also ask any read, because they analyse. Nothing is
+   public unless a file marks it public, and that road has its own design first.
+7. **Interfaces show the values live.** When rows change, a notice that carries no rows reaches the open page, and
+   the page shows the new answers within about a second of the change. Notices do not pass through the platform's
+   database.
+8. **The folder gets a snapshot of each database that changed, at least daily**: its shape as SQL and its rows as
+   text files, enough to make the database again from the folder alone. The platform writes it. Path versions are
+   kept for good (the 2026-09-27 amendment "every machine works in the company folder", item 6) with one exception
+   so far, git's objects (the same amendment, item 9); the old versions of files under `data/<name>/snapshot/` are
+   the second: they are pruned after 7 days. The newest snapshot is always whole.
+9. **The earlier tables stay.** `QorperaOS/tables/<table>/` (the 2026-10-02 amendment, item 4) is unchanged: rows in
+   a file, `rows = "store"` still refused. A table moves into a database by a step and a copy, when a company wants it.
+10. **Order.** Live reads first (the store, the files, the gateway, the agents' tools, the bridge and the kits, the
+    snapshot); then named changes from interfaces and routines that wake on a change; then the product's doors (a
+    server's own connection, public questions and changes, hooks into tables), each after its own design; then what
+    Qorpera holds about a company (bank, mail, todos, agents, usage) as read-only tables in its database.
+
+### 2026-11-13 amendment: the answer first, then the bookkeeping
+
+> **Proposed, not approved.** The agent's home program, build B2 (lanes/agent-box-20261113/B2-ANSWER-FIRST.md): the
+> lead's recommendation "let the agent answer before its bookkeeping", which Jonas agreed to with the program on 13
+> November 2026 ("I agree on almost all of this"). It amends 7.1 item 4 and the kernel's reading of it ("No governed
+> effect … after the final report"). It goes live with migration `20260930748000`, then the runtime bundle.
+
+1. **The closing message is the last message, not the last act.** A run's final send (a card's sentence counts as one)
+   still carries the result, a concrete blocker or the decision it needs, and everything it names is done before it.
+   After it the run may still change only its own bookkeeping: its wall (`update_wall`), its to-do list
+   (`manage_todo`), the apps drawer's layout (`organize_apps`) and the sidebar (`organize_sidebar`). Why: a chat turn
+   spent 5.7 s on average on these before its answer (8.5 s in the 30 of 45 measured turns that did any), and the
+   member waited through it.
+2. **Nothing else.** After the final the runtime runs no other call: one ends the turn without running, as the final
+   used to (the answer's own call again only replays it). The kernel admits only those four tools' folder receipts
+   after the final (each keyed with the tool's own name) and still refuses a second send, so nothing after the answer
+   speaks. The acknowledgement rule, a paused company, a cancelled worker and the wake's authority apply as before.
+3. **The turn ends when the model stops**, or at a call outside the four. No count or time caps it (the 24 September
+   2026 rule: no caps on a run's calls). A second message waits for the rest of it, as it waited for the same
+   bookkeeping before the answer.
+4. **A failure after the answer is not the run's failure.** When the model provider fails a turn after its final send,
+   the run ends as delivered; the turn's own record says it failed, and a usage limit, rate limit or outage it met is
+   recorded against the run's login as a failed run's is (section 17). A tool left unconfirmed, or a run cut off, ends
+   as before (a run cut off after its final is never resumed, 20260930547000).
+5. **A delivered answer carries no failure for the member.** A run that has sent its final message is no longer part of
+   its agent's activity for a member once it fails: the thread shows the answer alone, and the Try again that would
+   answer the same message twice is not offered. A failure with no answer still stands, and so does a delivered run
+   whose work left a proposal to decide, which is shown as that decision. The failure itself stays in the run's record,
+   its job's error and the operator views (migration 20260930751000). Why here: 7.1's tail widens that window from
+   0.13 s to a few seconds, and a duplicate answer to a member is worse than the seconds the tail saves.
+6. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
+   about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
+7. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
+   final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
+   `update_wall`. Nothing else; no tool's schema changes.
 
 ## 20. Enforcement matrix
 

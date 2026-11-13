@@ -48,10 +48,14 @@ import {
 	type AppGate,
 	type AppGateOutcome,
 	type AppQuestionSource,
+	type AppTellSource,
 	appQuestions,
+	noteKept,
 	type PreparedAsk,
 	prepareAnswer,
 	prepareRow,
+	prepareTell,
+	restoreTell,
 } from "./app-actions.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -70,9 +74,12 @@ import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } f
  *   It never hands over who the member is, a token, or anything of this app's own state.
  * - The bridge changes nothing by itself. A page may ask for what the manifest's `writes` names (an answer to such a
  *   question, a row of a named table): the request is checked (app/app-actions.ts), put to the member on the bar outside
- *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there.
+ *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there. Any app may
+ *   ask the same way to send a note to the agent that owns it (`tell`), which the member writes on the bar.
  * - A link the member clicks in the page comes over the bridge too (`open`): checked here (`appLink`), it opens another
- *   app, a file of the company's own work or a web page, and nothing else. The page learns nothing from it.
+ *   app, a file of the company's own work or a web page, and nothing else. A web page is a request like the others: it
+ *   opens only once the member has seen its whole address on the bar and pressed Open (Jonas, 13 November 2026: "Show
+ *   the address first"), since a page can put what the member typed into an address. The page learns nothing from it.
  * - An app's page starts from Qorpera's base style (app/interface-app-style.ts), put first in its head when it is put
  *   together: the company's colours, the scheme, the system font and plain defaults, all of which the page's own
  *   styles override. */
@@ -567,6 +574,8 @@ export interface AppBridgeHost {
 	 * (it throws when it is not). Absent where nothing can be changed. */
 	readonly writer?: () => WebMemberFolder;
 	readonly current?: () => void;
+	/** Who hears a note from an app, and the send (app/tell-agent.ts); absent where no note can be sent. */
+	readonly tell?: AppTellSource;
 }
 
 /** Calls in flight, and calls a minute, for one app in this tab. */
@@ -578,19 +587,33 @@ const MAX_PATH_CHARS = 1024;
 const MAX_PARAMS_CHARS = 4096;
 /** A row's cells may be longer than a read's few short values. */
 const MAX_ROW_PARAMS_CHARS = 16 * 1024;
-/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, and a
- * request for a change reads the table or the questions before anything is shown. */
-const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5 };
-/** What a page is told when its request did not become a change. */
-const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "failed">, string>> = {
-	declined: "The member said not now",
-	busy: "Another request is waiting for the member's answer",
-	quiet: "The member said not now three times: this page asks again after the member reloads it",
-	gone: "The page was put away, or what it may ask for changed, before the member answered",
+/** What a request put to the member on the bar spends of the minute's budget: a change, a note, or a web page to open. */
+const REQUEST_COST = 5;
+/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, a
+ * request for a change reads the table or the questions before anything is shown, and a note costs as a change. A link
+ * (`open`) costs one, and a link to a web page, which is put on the bar, what a request costs (`answer`). */
+const CALL_COST: Readonly<Record<string, number>> = {
+	todos: 10,
+	answer: REQUEST_COST,
+	setRow: REQUEST_COST,
+	addRow: REQUEST_COST,
+	tell: REQUEST_COST,
 };
+/** What a page is told when its request did not become a change. */
+const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "opened" | "told" | "failed">, string>> =
+	{
+		declined: "The member said not now",
+		busy: "Another request is waiting for the member's answer",
+		quiet: "The member said not now three times: this page asks again after the member reloads it",
+		gone: "The page was put away, or what it may ask for changed, before the member answered",
+	};
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
+/** After the member sent a note from an app, its next note is refused this long: the bar comes back no sooner. */
+export const TELL_AGAIN_MS = 10_000;
+/** When each app in this tab last had a note sent (by its budget's key), kept across its frames as the budget is. */
+const told = new Map<string, number>();
 
 function budget(key: string): { inFlight: number; minute: number; calls: number } {
 	const now = Math.floor(Date.now() / 60_000);
@@ -680,10 +703,17 @@ export class AppBridge {
 			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
 		)
 			return refuse("Not a call the app answers");
+		// The call's whole cost is known before anything is spent, and checked and charged in one step: a call that does
+		// not fit in the minute is refused and spends nothing (a note at 117 calls was let through to 122, and a web
+		// link refused there kept its first call; review r1 of #1770, F2).
 		const spent = budget(this.#key);
-		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
+		const cost =
+			call.method === "open" && appLink(call.params.href)?.kind === "web"
+				? REQUEST_COST
+				: (CALL_COST[call.method] ?? 1);
+		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls + cost > MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		spent.calls += CALL_COST[call.method] ?? 1;
+		spent.calls += cost;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -770,6 +800,7 @@ export class AppBridge {
 			case "answer":
 			case "setRow":
 			case "addRow":
+			case "tell":
 				return this.#change(call);
 			case "open": {
 				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
@@ -778,6 +809,7 @@ export class AppBridge {
 				const link = appLink(call.params.href);
 				if (link === null || !this.#follow)
 					return refuse("A link opens an app (app:name), a company file (folder:path) or a web page (https://…)");
+				if (link.kind === "web") return this.#web(link, this.#follow);
 				this.#follow(link);
 				return { ok: true, value: null };
 			}
@@ -786,13 +818,29 @@ export class AppBridge {
 		}
 	}
 
-	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member. The page is
-	 * answered once the member chose and, when they allowed it, the change is saved or refused. */
+	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member; or a note to the
+	 * app's owner, which any app may ask for, since the page chooses neither who hears it nor the words that go. The page
+	 * is answered once the member chose and, when they allowed it, the change is saved or refused, or the note went
+	 * (`{sent: true}`) or waits in the agent's thread (`{sent: false, waiting: true}`). */
 	async #change(call: AppCall): Promise<AppAnswer> {
 		const writes = this.#app.manifest.writes;
 		const gate = this.#gate;
 		let prepare: () => Promise<PreparedAsk>;
-		if (call.method === "answer") {
+		if (call.method === "tell") {
+			const tell = this.#host.tell;
+			if (!gate || !tell) return refuse("Nothing can be sent from this page");
+			// The app's one note is kept still (on its way, or waiting for the member): the page waits, and a kept note no
+			// bar shows is on the bar again (one the bar shows already stays as it is).
+			const kept = noteKept(tell, this.#app.name);
+			if (kept) {
+				void this.restore();
+				return refuse(kept);
+			}
+			// A sent note leaves the page a pause before its next: no bar on the heels of the last.
+			if (Date.now() - (told.get(this.#key) ?? Number.NEGATIVE_INFINITY) < TELL_AGAIN_MS)
+				return refuse("A note was sent from this app a moment ago: ask again in a few seconds");
+			prepare = async () => prepareTell(tell, this.#app, call.params);
+		} else if (call.method === "answer") {
 			if (!writes.includes(APP_WRITE_ANSWERS))
 				return refuse('Add "answers" to writes in app.toml to answer a question from the page');
 			const questions = this.#host.questions;
@@ -816,9 +864,63 @@ export class AppBridge {
 			if (error instanceof AppActionRefused) return refuse(error.message);
 			throw error;
 		}
-		const result = await gate.ask(prepared.ask, prepared.perform);
+		const result = await gate.ask(
+			prepared.ask,
+			call.method === "tell" ? this.#told(prepared.perform) : prepared.perform,
+			prepared.keep,
+		);
 		if ("message" in result) return refuse(result.message);
-		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
+		if (result.outcome === "told")
+			return { ok: true, value: result.sent ? { sent: true } : { sent: false, waiting: true } };
+		if (result.outcome === "saved") return { ok: true, value: { saved: true } };
+		// Only a web page's request is opened; a change never is.
+		return refuse(result.outcome === "opened" ? "Not a change" : GATE_SAYS[result.outcome]);
+	}
+
+	/** A web page the member clicked a link to (Jonas, 13 November 2026: "Show the address first"): put on the bar, its
+	 * whole address shown, and opened in a new tab only by the member's press on Open there, which also lets the browser
+	 * open the tab. Like any request it costs a request's share of the budget, waits alone (a second while one waits is
+	 * refused) and is quiet after three Not now in a row. */
+	async #web(link: Extract<AppLink, { kind: "web" }>, follow: (link: AppLink) => void): Promise<AppAnswer> {
+		const gate = this.#gate;
+		if (!gate) return refuse("No web page opens from this page");
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		// The tab opens in the press itself: `follow` runs before the first await of the bar's perform.
+		const result = await gate.ask({ kind: "link", href: link.href }, async () => {
+			follow(link);
+			return undefined;
+		});
+		if (result.outcome === "opened") return { ok: true, value: null };
+		if (
+			result.outcome === "declined" ||
+			result.outcome === "busy" ||
+			result.outcome === "quiet" ||
+			result.outcome === "gone"
+		)
+			return refuse(GATE_SAYS[result.outcome]);
+		return refuse("message" in result ? result.message : "No web page opened");
+	}
+
+	/** A note's send, with the app's pause after it counted from when the note went or was left waiting in its thread:
+	 * there, not when the bar hears of it, as the bar may be put away (the member left the app) while the note goes. */
+	#told(perform: PreparedAsk["perform"]): PreparedAsk["perform"] {
+		return async (words) => {
+			const went = await perform(words);
+			if (went && !went.held) told.set(this.#key, Date.now());
+			return went;
+		};
+	}
+
+	/** A note held for this app while its thread could not take it (app/app-actions.ts `HeldNote`), on the bar again
+	 * when the app's page is shown: the member's words as they left them, sent as any note is. Nothing when none is
+	 * held, or when the bar has a request already. */
+	async restore(): Promise<void> {
+		const tell = this.#host.tell;
+		const gate = this.#gate;
+		if (!tell || !gate || gate.closed()) return;
+		const prepared = restoreTell(tell, this.#app);
+		if (prepared) await gate.ask(prepared.ask, this.#told(prepared.perform), prepared.keep);
 	}
 
 	/** Each agent's todos, as their files' first heading and status say. */

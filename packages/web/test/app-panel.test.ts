@@ -107,15 +107,70 @@ describe("a link in an app's page", () => {
 		expect(await app.call("read", { path: "apps/sales/index.html" })).toMatchObject({ ok: true });
 	});
 
-	it("opens a web page in a new tab that has no way back to the app", async () => {
+	/** The bar above the page once a request is on it. */
+	const shownBar = (panel: AppPanel) =>
+		vi.waitFor(() => {
+			const bar = panel.el.querySelector<HTMLElement>(".app-ask");
+			if (!bar || bar.hidden || !bar.querySelector(".app-ask-address")) throw new Error("no link on the bar yet");
+			return bar;
+		});
+	/** Open on the bar, pressed once it woke (a second after the bar came in). */
+	const pressOpen = async (bar: HTMLElement) => {
+		const yes = [...bar.querySelectorAll("button")].find((each) => each.textContent === "Open")!;
+		await vi.waitFor(() => expect(yes.disabled).toBe(false), { timeout: 3000 });
+		yes.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+		yes.click();
+	};
+	/** A web link clicked in the page, shown on the bar, and opened there. */
+	const through = async (app: Awaited<ReturnType<typeof opened>>, href: string) => {
+		const answer = app.clicked(href);
+		await pressOpen(await shownBar(app.panel));
+		return answer;
+	};
+
+	it("opens a web page only from the bar's Open, once the member saw its whole address, with no way back", async () => {
 		const { host } = company();
 		const app = await opened(host);
 		const tab = { opener: window as Window | null };
 		const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
-		expect(await app.clicked("https://example.com/pricing?plan=team")).toMatchObject({ ok: true });
-		expect(open).toHaveBeenCalledExactlyOnceWith("https://example.com/pricing?plan=team", "_blank");
+		const href = "https://example.com/pricing?plan=team&email=ada%40lund.dk#faq";
+		const answer = app.clicked(href);
+		const bar = await shownBar(app.panel);
+		// Nothing opens at once (Jonas, 13 November 2026: "Show the address first"): the site, then the address in full.
+		expect(open).not.toHaveBeenCalled();
+		expect(bar.querySelector(".app-ask-title")?.textContent).toBe("This app wants to open a web page");
+		expect(bar.querySelector(".app-ask-site")?.textContent).toBe("example.com");
+		expect(bar.querySelector(".app-ask-address")?.textContent).toBe(href);
+		// Above the page, drawn by Qorpera in the panel itself, not in the frame.
+		expect(bar.parentElement).toBe(app.panel.el);
+		await pressOpen(bar);
+		expect(open).toHaveBeenCalledExactlyOnceWith(href, "_blank");
 		expect(tab.opener).toBeNull();
+		expect(await answer).toMatchObject({ ok: true });
 		expect(app.panel.el.querySelector(".side-panel-link")).toBeNull();
+		await vi.waitFor(() => expect(app.panel.el.querySelector<HTMLElement>(".app-ask")?.hidden).toBe(true));
+	});
+
+	it("opens no web page when the member says not now on the bar, or presses Escape there", async () => {
+		const { host } = company();
+		const app = await opened(host);
+		const open = vi.spyOn(window, "open").mockReturnValue(null);
+		const first = app.clicked("https://example.com/a");
+		[...(await shownBar(app.panel)).querySelectorAll("button")]
+			.find((each) => each.textContent === "Not now")!
+			.click();
+		expect(await first).toEqual({
+			type: "qorpera-app-answer",
+			id: expect.any(Number),
+			ok: false,
+			error: "The member said not now",
+		});
+		const second = app.clicked("https://example.com/b");
+		(await shownBar(app.panel)).dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+		);
+		expect(await second).toMatchObject({ ok: false, error: "The member said not now" });
+		expect(open).not.toHaveBeenCalled();
 	});
 
 	it("offers a web page the browser would not open by itself as a link of Qorpera's own, above the frame", async () => {
@@ -123,7 +178,7 @@ describe("a link in an app's page", () => {
 		const app = await opened(host);
 		vi.spyOn(window, "open").mockReturnValue(null);
 		const offered = () => app.panel.el.querySelector<HTMLElement>(".side-panel-link");
-		expect(await app.clicked("https://example.com/pricing?plan=team")).toMatchObject({ ok: true });
+		expect(await through(app, "https://example.com/pricing?plan=team")).toMatchObject({ ok: true });
 		const link = offered()?.querySelector("a");
 		// Named by where it really leads, and opened as a link in a message opens.
 		expect(link?.textContent).toBe("Open example.com/pricing");
@@ -132,19 +187,19 @@ describe("a link in an app's page", () => {
 		expect([link?.target, link?.rel]).toEqual(["_blank", "noopener noreferrer"]);
 		expect(document.activeElement).toBe(link);
 		// Above the page, drawn by Qorpera in the panel itself, not in the frame. An app's own page has no header, so
-		// the line is the first thing of Qorpera's there.
+		// the line and the bar are the only things of Qorpera's there.
 		expect(offered()?.parentElement).toBe(app.panel.el);
 		expect(offered()?.nextElementSibling?.classList.contains("side-panel-body")).toBe(true);
 		expect(app.panel.el.querySelector(".side-panel-header")).toBeNull();
 		// One at a time: the next one takes its place.
-		expect(await app.clicked("https://example.org/")).toMatchObject({ ok: true });
+		expect(await through(app, "https://example.org/")).toMatchObject({ ok: true });
 		expect(app.panel.el.querySelectorAll(".side-panel-link")).toHaveLength(1);
 		expect(offered()?.querySelector("a")?.textContent).toBe("Open example.org");
 		// Closed, it goes.
 		offered()?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')?.click();
 		expect(offered()).toBeNull();
 		// Followed, it goes once the click has opened the tab; shown afresh, the page starts without one.
-		expect(await app.clicked("https://example.org/a")).toMatchObject({ ok: true });
+		expect(await through(app, "https://example.org/a")).toMatchObject({ ok: true });
 		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
 		offered()
 			?.querySelector("a")
@@ -152,7 +207,7 @@ describe("a link in an app's page", () => {
 		offered()?.querySelector("a")?.dispatchEvent(followed);
 		expect(offered()).not.toBeNull();
 		await vi.waitFor(() => expect(offered()).toBeNull());
-		expect(await app.clicked("https://example.org/b")).toMatchObject({ ok: true });
+		expect(await through(app, "https://example.org/b")).toMatchObject({ ok: true });
 		expect(offered()).not.toBeNull();
 		void app.panel.reload(true);
 		await app.handed();

@@ -5,8 +5,9 @@ import {
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
-import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
@@ -24,8 +25,13 @@ import {
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_AFTER_ANSWER_TOOLS,
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	CloudNativeToolBoundary,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -57,6 +63,32 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
+});
+
+// The answer first (the contract's 2026-11-13 amendment, proposed): the words say once, with the reason, that only the
+// run's bookkeeping follows its final send, and name exactly the tools the boundary still runs then. Nothing says the
+// final send is the turn's last act any more.
+it("tells every run once that only its bookkeeping follows its final send, naming exactly the tools that still run", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const rule =
+		/After it only ([a-z_, ]+) run: keep that bookkeeping for after the final send, so the member gets the answer without waiting for it\./.exec(
+			instructions,
+		);
+	expect(rule).not.toBeNull();
+	expect(rule![1].split(/, | and /).sort()).toEqual([...CLOUD_AFTER_ANSWER_TOOLS].sort());
+	expect(instructions.split("keep that bookkeeping for after the final send")).toHaveLength(2);
+	expect(instructions).toContain(
+		"It is your last message, so make every file change, check and coworker message first.",
+	);
+	for (const text of [
+		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		CLOUD_WALL_TOOL_DESCRIPTION,
+	])
+		expect(text).not.toMatch(
+			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
+		);
 });
 
 // Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
@@ -107,6 +139,24 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
 		"When that folder is where the file belongs (its area, such as sales/, or a place a member or your assignment named), create it with company_mkdir and repeat the call; otherwise write the file in the folder where it belongs.",
 	);
+});
+
+// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
+// the three tools, and never a secret in a step.
+it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
+	for (const said of [
+		"When data_query is offered, the company can keep data in databases of its own.",
+		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
+		"A file is the right home for what people read: plans, notes, documents and settings.",
+		'database.toml says what it is: format = "qorpera.database/v1"',
+		"tables/NNN-<name>.sql are its steps",
+		"Never change an applied step; write a new one with a higher number.",
+		"queries/<name>.sql are its questions: one select each",
+		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"is held until a member says yes: tell them what it would destroy.",
+		"Never put a password, key or other secret in a step, a question or a row.",
+	])
+		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
 
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
@@ -417,6 +467,23 @@ it("tells the agent's next run what the platform stopped on its computer", () =>
 	expect(instructions).toContain(
 		"reason slept (the task machine went to sleep after an hour with nothing busy keeping it awake)",
 	);
+});
+
+// The import's follow-ups, item 3 (20260930741000): code a member or another agent brought in reaches every other agent
+// once, at its next run, in openWork; an agent's own words to members stay plain.
+it("tells the agent's next run what code was brought in, and to read its first record before working on it", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"Start one again only if the work still needs it, and say so to a member only if they were waiting for it. openWork.codeBroughtIn, when present, lists code that a member or another agent brought into Qorpera since you last ran here, each once: its repository code/<owner>/<name>/, where it came from, how many earlier changes its main branch brought, and how many other branches came with work main lacks. Read its changes/1.md before you work on it or plan around it; tell a member only what they wait for or must decide.\n\n# Skills",
+	);
+	// A worker reports to its parent and is told none of it.
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch" } } as unknown as Parameters<
+			typeof cloudCompanyRuntimeInstructions
+		>[0],
+		false,
+	);
+	expect(worker).not.toContain("openWork.codeBroughtIn");
 });
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
@@ -1552,17 +1619,26 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
 // took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
-// a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), and for
-// what an interface app is (an object, a model, an app or a video, one app a thing, drawn by a kit of save_app, never
-// a document or the state of someone's work; overlay v16; Jonas, 13 November 2026). A change to any is a change to
-// every run's bytes.
+// a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), for
+// code a member or another agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups,
+// 20260930741000; a staff run's words only), for what an interface app is (an object, a model, an app or a video,
+// one app a thing, drawn by a kit of save_app, never a document or the state of someone's work; overlay v16; Jonas,
+// 13 November 2026), and for a member's note sent from an app's page (its first line names the app and the thing;
+// Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
+// (13 November 2026) the instructions and prompts were measured once more.
+// With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
+// 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
+// where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
+// amendment, proposed).
+// With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
+// processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "22be8a2d8609356ff68781f6ab9f13556457c50f76c7b2482d4e14598b06a5c0",
+			instructions: "c00a24a04da63fef14e4b6e122cbf7ad02516bfb47e15faa8d62591d74e1da52",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1570,7 +1646,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "915afe73b91cb6362d491a84881d7db27d23b48e62cecad4b62050e0270e1979",
+			instructions: "e102952e71bddea9df3a45a85a4c0128ea34efe0176083b2af174f7d2c7de7cf",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1578,7 +1654,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "22be8a2d8609356ff68781f6ab9f13556457c50f76c7b2482d4e14598b06a5c0",
+			instructions: "c00a24a04da63fef14e4b6e122cbf7ad02516bfb47e15faa8d62591d74e1da52",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1706,6 +1782,37 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
+});
+
+// Jonas, 13 November 2026, on a company whose pictures came out of Blender and still looked drawn: "how come we seem
+// to not get very realistic animations for anything, even the things we want to make realistic?" Its agent had lit
+// boxes and spheres with one emitter against a black world, at 32 samples on a default machine's two processors, and
+// had written "illustrative" over the result. The same scene measured both ways (deploy/machine/README.md, "Sizing a
+// machine for the job"): the light and the materials make the frame; the processors only make it quicker.
+it("has a render lit and looked at like a photograph, on a machine sized for it (13 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	// A worker renders too: how a render is lit and looked at is in what every run reads.
+	for (const instructions of [staff, worker])
+		for (const rule of [
+			"A render meant to look real is lit and looked at like a photograph: light it with a real environment (an HDRI) and give its surfaces textured materials, such as Poly Haven's free ones (CC0), never plain colours in a dark, empty world.",
+			"Before anyone sees it, render one small frame into the company folder, open it with company_read and name what gives it away as computer-made, such as flat light, an empty background, surfaces that are too clean, edges that are too sharp or things that float",
+			"fix the weakest thing and render again, and render the final frames only when the small one holds up, on a machine sized for it (machine_start with cpus 8 or more), because a render uses every processor it is given.",
+		])
+			expect(instructions).toContain(rule);
+	// Choosing the machine is the staff agent's judgement: what it costs, and what to do when it is refused or waits for
+	// room. A machine left waiting would start by itself when room comes, unused and counted (review r1 of #1764, F1).
+	const sized =
+		"- Work that keeps processors busy for minutes, such as a render, encoding a film or a large build: a machine sized for it (machine_start with cpus 8 and memoryGiB 8), with the program told to use every processor, stopped when the work is done. Computer hours count a machine's size times the time it is awake, so a larger machine for a shorter time costs the same, and the work is done in a quarter of the time; when it is refused as too large, start a smaller one; when it has to wait in line for room, delete it with machine_delete (it has not run, so nothing is lost) and start a smaller one instead of waiting.";
+	expect(staff).toContain(sized);
+	expect(worker).not.toContain("Work that keeps processors busy for minutes");
+	// It follows the page's own look step, which stays as it was.
+	expect(staff.indexOf("Checking how a page looks, taking pictures of it or filming it")).toBeLessThan(
+		staff.indexOf(sized),
+	);
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {
@@ -1976,6 +2083,11 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Link an app in your message as [Title](app:<name>) instead of pasting long text.",
+	);
+	// A note a member sent from an app's page (qorpera.tell; Jonas, 13 November 2026: "you can't act very much inside
+	// of the interfaces"): the web puts the app and the thing on the message's first line.
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"A member's message whose first line is \"> app:<name>#<id> · <about>\" was sent from that app's page about that thing: act on it as on any message from that member, and show what came of it in the app.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",

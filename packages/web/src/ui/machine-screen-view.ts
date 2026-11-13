@@ -101,6 +101,10 @@ export function joinInputs(a: InputSpan, b: InputSpan): InputSpan {
 export interface MachineScreenInput {
 	act(action: MachineDesktopAction, made: InputSpan): void;
 	lost?(): void;
+	/** Where the member's own pointer is over the picture, in the screen's own pixels, while no button is pressed
+	 * (20260930744000: the desktop's pointer follows it, so hover works); null once it leaves the picture. Nothing of a
+	 * key or a text is ever in it. */
+	point?(at: { readonly x: number; readonly y: number } | null): void;
 }
 
 /** A decoded picture: what a canvas draws. */
@@ -188,6 +192,10 @@ export class MachineScreenView {
 	} | null = null;
 	/** A wheel burst: its turns so far, and when they were made. */
 	#wheel: { delta: number; x: number; y: number; made: InputSpan; timer: ReturnType<typeof setTimeout> } | null = null;
+	/** Where the member's pointer went (null: it left the picture) while an action was still gathered here (a click
+	 * waiting for its second, a wheel burst, text): it goes right after that action, never before it (review r1 F3 of
+	 * #1733: a hover move must not close the menu a click waiting here is for). Undefined: none waits. */
+	#heldPoint: { readonly x: number; readonly y: number } | null | undefined = undefined;
 	#entered = false;
 	#shown = false;
 	/** Each picture's turn: one decoded after a newer one began is dropped. */
@@ -284,6 +292,8 @@ export class MachineScreenView {
 		// A press not let go yet cannot be finished for the input it began under: it is dropped, and that input hears so.
 		const unfinished = this.#press !== null;
 		this.#flush();
+		// A position that waited goes nowhere else: the next input gets its pointer from the next move.
+		this.#heldPoint = undefined;
 		if (unfinished) this.#input?.lost?.();
 		this.#inputStop?.abort();
 		this.#inputStop = null;
@@ -318,6 +328,7 @@ export class MachineScreenView {
 			},
 			{ signal },
 		);
+		canvas.addEventListener("pointerleave", () => this.#point(null), { signal });
 		canvas.addEventListener("contextmenu", (event) => event.preventDefault(), { signal });
 		canvas.addEventListener("wheel", (event) => this.#wheelTurn(event), { signal, passive: false });
 		canvas.addEventListener("keydown", (event) => this.#key(event), { signal });
@@ -371,6 +382,28 @@ export class MachineScreenView {
 		const press = this.#press;
 		if (press && Math.hypot(event.clientX - press.clientX, event.clientY - press.clientY) > DRAG_PX)
 			press.moved = true;
+		// The member's own pointer is the desktop's (20260930744000): where it is goes to the input while no button is
+		// pressed (a press's moves are its drag's, sent as one action); outside the picture drawn there, nowhere.
+		if (!press && event.buttons === 0) this.#point(this.#at(event.clientX, event.clientY));
+	}
+
+	/** Where the member's pointer is goes to the input, after any action still gathered here (#heldPoint). */
+	#point(at: { readonly x: number; readonly y: number } | null): void {
+		if (!this.#input?.point) return;
+		if (this.#click || this.#wheel || this.#textAt) {
+			this.#heldPoint = at;
+			return;
+		}
+		this.#heldPoint = undefined;
+		this.#input.point(at);
+	}
+
+	/** An action gathered here went: the position that waited behind it goes now, once nothing else is gathered. */
+	#pointAfter(): void {
+		if (this.#heldPoint === undefined || this.#click || this.#wheel || this.#textAt) return;
+		const at = this.#heldPoint;
+		this.#heldPoint = undefined;
+		this.#input?.point?.(at);
 	}
 
 	#pointerUp(event: PointerEvent): void {
@@ -405,6 +438,7 @@ export class MachineScreenView {
 			this.#click = null;
 			// A double click is both clicks.
 			this.#act({ type: "double", x: click.x, y: click.y }, joinInputs(click.made, made));
+			this.#pointAfter();
 			return;
 		}
 		this.#flush();
@@ -427,6 +461,7 @@ export class MachineScreenView {
 		clearTimeout(click.timer);
 		this.#click = null;
 		this.#act({ type: "click", x: click.x, y: click.y }, click.made);
+		this.#pointAfter();
 	}
 
 	#wheelTurn(event: WheelEvent): void {
@@ -452,12 +487,16 @@ export class MachineScreenView {
 		if (!wheel) return;
 		clearTimeout(wheel.timer);
 		this.#wheel = null;
-		if (wheel.delta === 0) return;
+		if (wheel.delta === 0) {
+			this.#pointAfter();
+			return;
+		}
 		const steps = Math.min(30, Math.max(1, Math.round(Math.abs(wheel.delta) / 100)));
 		this.#act(
 			{ type: "scroll", direction: wheel.delta > 0 ? "down" : "up", steps, x: wheel.x, y: wheel.y },
 			wheel.made,
 		);
+		this.#pointAfter();
 	}
 
 	#key(event: KeyboardEvent): void {
@@ -526,8 +565,8 @@ export class MachineScreenView {
 		const made = this.#textAt;
 		this.#text = "";
 		this.#textAt = undefined;
-		if (!made) return;
-		for (const part of machineTexts(text)) this.#act({ type: "type", text: part }, made);
+		if (made) for (const part of machineTexts(text)) this.#act({ type: "type", text: part }, made);
+		this.#pointAfter();
 	}
 
 	#paste(event: ClipboardEvent): void {
