@@ -20,9 +20,12 @@ the executor's live-picture listener on node 1's loopback (`memberStreams`, `127
   masks it (the kill switch); `status` says the connector's state, whether it reached Cloudflare and whether a token is
   sealed, never the token.
 - `qorpera-screens-door.sudoers`: the operator may run exactly those four verbs as root.
-- `install-screens-door.sh`: verifies every file against its pins, and the connector against the sha-256 GitHub states for
-  `cloudflared-linux-amd64` 2026.10.5 (fetched for node 1 at the release; any other file installs nothing), installs
-  them, and leaves the unit off.
+- `install-screens-door.sh`: verifies every file against its pins, and the connector against the sha-256 of the
+  cloudflared our own database stack already runs (service `tunnel` in `/opt/dbhome` on db-primary, image
+  `cloudflare/cloudflared:2026.10.5` at digest `sha256:1b1d34d0…`; its `/usr/local/bin/cloudflared`, 40,187,067 bytes,
+  sha-256 `5bec754a…`). Nothing is downloaded: the binary for node 1 is taken from that image. Cloudflare's standalone
+  release asset of the same version is a different build and the installer refuses it. It installs, and leaves the
+  unit off.
 
 ## What the door lets in
 

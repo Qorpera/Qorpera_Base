@@ -9,11 +9,14 @@ umask 022
 EXPECTED_DOOR_SHA256="b96b484a13ae86d43526c62f8a98fae7ec91a6a15f3b7c80c7f9e41ca1b48375"
 EXPECTED_UNIT_SHA256="e074286471c87a0109e93ab4f5327b33d8ba55b0b693349e807e65a8243b16cb"
 EXPECTED_SUDOERS_SHA256="cefc3111c28a7875f8acb47650764b2d8e88ac54dca833a2ad58bcfdf00bc3bf"
-# cloudflared-linux-amd64 2026.10.5 (40,263,303 bytes) from
-# https://github.com/cloudflare/cloudflared/releases/download/2026.10.5/cloudflared-linux-amd64: the sha-256 GitHub states
-# for that asset (read 13 Nov 2026). The file fetched for node 1 at the release must be exactly it, or nothing installs.
+# The connector is the one we already run: cloudflared 2026.10.5 as the database stack's own tunnel connector on
+# db-primary (`/opt/dbhome`, service `tunnel`, image cloudflare/cloudflared:2026.10.5 pinned at digest
+# sha256:1b1d34d0a9c0bfca9de72db8460d328db3f19edd2b96169114e3e893a97bbe53). Its `/usr/local/bin/cloudflared` is
+# 40,187,067 bytes with the sha-256 below (taken from that image 13 Nov 2026; nothing downloaded). Cloudflare's own
+# standalone release asset of the same version is a different build (40,263,303 bytes, sha-256 e1bc0cf0…) and this
+# installer refuses it: the binary node 1 runs is the binary production already runs.
 CLOUDFLARED_VERSION="2026.10.5"
-EXPECTED_CLOUDFLARED_SHA256="e1bc0cf084fd9e590554fe769a86b1db46701c3f847a43d902f7b974a4e16298"
+EXPECTED_CLOUDFLARED_SHA256="5bec754ab74f88a35ba4b0edc2e0c4555da1f526a8ca866c9a8383ea84d286db"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 UNIT_PATH=/usr/local/lib/systemd/system/qorpera-screens-tunnel.service
 

@@ -18,12 +18,14 @@ const installer = read("install-screens-door.sh");
 const SEALED = "/etc/credstore.encrypted/qorpera-screens-tunnel";
 const sha256 = (name) => createHash("sha256").update(readFileSync(join(here, name))).digest("hex");
 
-test("the installer pins every file it installs, and the connector to the release asset GitHub states", () => {
+test("the installer pins every file it installs, and the connector to the binary our database stack already runs", () => {
 	assert.match(installer, new RegExp(`EXPECTED_DOOR_SHA256="${sha256("qorpera-screens-door")}"`));
 	assert.match(installer, new RegExp(`EXPECTED_UNIT_SHA256="${sha256("qorpera-screens-tunnel.service")}"`));
 	assert.match(installer, new RegExp(`EXPECTED_SUDOERS_SHA256="${sha256("qorpera-screens-door.sudoers")}"`));
 	assert.match(installer, /CLOUDFLARED_VERSION="2026\.10\.5"/);
-	assert.match(installer, /EXPECTED_CLOUDFLARED_SHA256="e1bc0cf084fd9e590554fe769a86b1db46701c3f847a43d902f7b974a4e16298"/);
+	// The connector we already run (the database stack's own tunnel, cloudflare/cloudflared:2026.10.5), not a download.
+	assert.match(installer, /EXPECTED_CLOUDFLARED_SHA256="5bec754ab74f88a35ba4b0edc2e0c4555da1f526a8ca866c9a8383ea84d286db"/);
+	assert.match(installer, /image cloudflare\/cloudflared:2026\.10\.5 pinned at digest\n# sha256:1b1d34d0a9c0bfca9de72db8460d328db3f19edd2b96169114e3e893a97bbe53/);
 	assert.match(installer, /if \[\[ ! \$\{expected\} =~ \^\[0-9a-f\]\{64\}\$ \]\]; then/);
 	assert.match(installer, /verify_sha256 "\$\{cloudflared\}" "\$\{EXPECTED_CLOUDFLARED_SHA256\}"/);
 	// Installed, never enabled or started; no token asked for.
