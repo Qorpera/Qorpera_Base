@@ -471,6 +471,118 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		expect(await readdir(f.scratchRoot)).toEqual([]);
 	});
 
+	it("close and build with proven (an import's bundle): the proof leaves out its fsck, and nothing else", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			b = await bundled(f);
+		// A git whose fsck finds damage in every repository.
+		const damaged = join(f.root, "damaged-git");
+		await writeFile(
+			damaged,
+			`#!/bin/sh\nfor a do [ "$a" = fsck ] && { echo "error: object is damaged"; exit 4; }; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(damaged, 0o755);
+		const broken: CodeHostJob = { ...f.job, layout: { ...f.job.layout, git: damaged } };
+		const requestId = randomUUID();
+		const closing = (job: CodeHostJob, options?: { proven?: boolean }, bundle = b.bundle, bytes = b.bytes) =>
+			closeCodeArea(job, { repository: kept, requestId, bundle, at: AT, fresh: false }, pieces(bytes), options);
+		await expect(closing(broken)).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_DAMAGED" });
+		await expect(closing(broken, { proven: false })).rejects.toMatchObject({
+			code: "CODE_HOST_RESTORE_BUNDLE_DAMAGED",
+		});
+		expect(await exists(f.mark)).toBe(false);
+		for (const bad of [{ proven: "yes" }, { proven: 1 }] as never[])
+			await expect(closing(f.job, bad)).rejects.toThrow("INVALID_CODE_HOST_JOB");
+
+		// The same close with and without it: the same commands, the fsck alone left out.
+		const scratch = new RegExp(`${f.scratchRoot}/[0-9a-f-]{36}`, "g");
+		const commandsFrom = (from: number) =>
+			f.log.slice(from).map((command) => [command.cwd, ...command.argv].join("\0").replace(scratch, "<scratch>"));
+		let from = f.log.length;
+		expect(await closing(f.job)).toMatchObject({ state: "closed" });
+		const plain = commandsFrom(from);
+		expect(await reopenCodeArea(f.job, { repository: kept, bundle: b.bundle.name })).toEqual({ state: "reopened" });
+		from = f.log.length;
+		expect(await closing(f.job, { proven: true })).toMatchObject({ state: "closed" });
+		const proven = commandsFrom(from);
+		const fsck = plain.filter((command) => command.includes("\0fsck\0--full\0"));
+		expect(fsck).toHaveLength(1);
+		expect(plain.filter((command) => !fsck.includes(command))).toEqual(proven);
+		// So a damage only fsck would find does not stop it.
+		expect(await reopenCodeArea(f.job, { repository: kept, bundle: b.bundle.name })).toEqual({ state: "reopened" });
+		expect(await closing(broken, { proven: true })).toMatchObject({ state: "closed" });
+
+		// Every other check of the proof stays.
+		const changed = Buffer.from(b.bytes);
+		changed[changed.length - 1] ^= 1;
+		await expect(closing(f.job, { proven: true }, b.bundle, changed)).rejects.toMatchObject({
+			code: "CODE_HOST_RESTORE_BUNDLE_DIFFERS",
+		});
+		await expect(closing(f.job, { proven: true }, { ...b.bundle, refsSha256: "0".repeat(64) })).rejects.toMatchObject(
+			{
+				code: "CODE_HOST_RESTORE_BUNDLE_REFS_DIFFER",
+			},
+		);
+		await expect(
+			closing(
+				f.job,
+				{ proven: true },
+				{ ...b.bundle, mainSha: s.one.mainSha, name: codeBundleName(b.createdAt, s.one.mainSha) },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_MAIN_DIFFERS" });
+		await expect(closing(f.job, { proven: true }, { ...b.bundle, bytes: 2 ** 45 })).rejects.toMatchObject({
+			code: "CODE_HOST_RESTORE_NO_SPACE",
+		});
+
+		// The build too: refused by fsck without it, built with it, and no fsck ran.
+		expect((await setAside(f, b)).state).toBe("moved");
+		expect((await setAside(f, b)).state).toBe("set-aside");
+		await expect(
+			restoreCodeArea(broken, { repository: kept, bundle: b.bundle }, pieces(b.bytes)),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_DAMAGED" });
+		await expect(
+			restoreCodeArea(f.job, { repository: kept, bundle: b.bundle }, pieces(changed), { proven: true }),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_DIFFERS" });
+		await expect(
+			restoreCodeArea(f.job, { repository: kept, bundle: b.bundle }, pieces(b.bytes), { proven: "yes" } as never),
+		).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		from = f.log.length;
+		expect(
+			await restoreCodeArea(broken, { repository: kept, bundle: b.bundle }, pieces(b.bytes), { proven: true }),
+		).toEqual({ mainSha: b.bundle.mainSha, refsSha256: b.bundle.refsSha256, refs: b.refs.length });
+		expect(commandsFrom(from).filter((command) => command.includes("\0fsck\0"))).toEqual([]);
+		await open(f, b);
+		await expectBuilt(f, b);
+
+		// A bundle the folder could not hold is refused with it as without it: names on main, refs by case.
+		const g = await fixture(),
+			t = await shop(g);
+		const names = await t.first.commit({ "A.txt": "upper\n", "a.txt": "lower\n" }, "two names, one to the folder");
+		await g.inRepo("update-ref", "refs/heads/main", names);
+		const named = await bundled(g);
+		await expect(
+			closeCodeArea(
+				g.job,
+				{ repository: kept, requestId, bundle: named.bundle, at: AT, fresh: false },
+				pieces(named.bytes),
+				{ proven: true },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_NAMES_DIFFER_BY_CASE" });
+		await g.inRepo("update-ref", "refs/heads/main", t.two.mainSha);
+		await g.inRepo("update-ref", "refs/heads/Fix", t.one.mainSha);
+		await g.inRepo("update-ref", "refs/heads/fix", t.one.mainSha);
+		const cased = await bundled(g);
+		await expect(
+			closeCodeArea(
+				g.job,
+				{ repository: kept, requestId, bundle: cased.bundle, at: AT, fresh: false },
+				pieces(cased.bytes),
+				{ proven: true },
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_REFS_DIFFER_BY_CASE" });
+		expect(await exists(g.mark)).toBe(false);
+	});
+
 	it("close: the bundle is proven first, then the place is marked, and every other job is refused there", async () => {
 		const f = await fixture(),
 			s = await shop(f),

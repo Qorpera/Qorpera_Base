@@ -87,6 +87,7 @@ What a restore brings back, and what not:
    `ls <executor storage>/control/code-bundles/<company id>/<owner>/<name>/`.
    Each bundle is `<UTC time>-<main, 12 hex>.bundle` with its manifest `.json` beside it. A bundle's **name** is the
    file's name without `.bundle`. The newest is last.
+   Names that begin `import-` (code brought in from elsewhere, as it came, `qorpera.code-import-bundle/v1`) sort after every dated one and are never a restore's source: take the last dated name.
 3. See which sessions are open on it:
    ```sql
    select worker_id, phase, attached_machine_id from public.qorpera_coding_sessions
@@ -211,6 +212,44 @@ place, before the mark goes. What happens when something stops there:
 A request never ends `done` before the job that opened its place has saved, and the request's finish records
 nothing: a restore is recorded only while its place is closed. A finish for a restore that was never recorded is
 refused by the database (`Code restore is not recorded`), and the request is claimed again.
+
+**An import that recorded its repository and can never open (not drilled).** Code brought in (a request of kind
+`import`) closes, builds and opens its place with a restore's jobs, and records its repository (the registry row and
+change 1) inside its open job, before the mark goes. From that record on the database never ends it: only the
+executor's finish `done/imported` does, once the place is open, and a claim hands it out again each time its
+15-minute lease ran out, however often. While it runs, no other request of that company is claimed. So an import
+whose open fails every time (`progress` has `recorded`, `attempts` keeps growing, and the executor's log has
+`code-import-error`, step `open`, with the same code on each claim) holds back the company's undos, downloads and
+restores until you end it:
+
+1. Find it, and read the bundle its mark names:
+   ```sql
+   select id, state, attempts, lease_until, progress -> 'recorded' ->> 'bundle' as bundle
+   from public.qorpera_code_requests
+   where kind = 'import' and profile_id = '<company id>' and state in ('queued', 'running');
+   ```
+2. End it as the database ends a request past its claims. The statement changes nothing while an executor holds a
+   live lease: it must say `UPDATE 1`; if it says `UPDATE 0`, run it again after `lease_until`.
+   ```sql
+   update public.qorpera_code_requests set state = 'failed', lease_token = null, lease_owner = null,
+     lease_until = null, finished_at = now(), updated_at = now(),
+     outcome = '{"schema":"qorpera.code-request-outcome/v1","state":"failed","code":"DID_NOT_FINISH"}'
+   where id = '<request id>' and kind = 'import' and progress ? 'recorded'
+     and (state = 'queued' or (state = 'running' and lease_until <= now()));
+   ```
+   A finish the executor sends for it later is `lost`, and no claim hands it out again.
+3. The place is still closed: `restoring.json` names that bundle, and turns on the repository fail with the restore's
+   words. Ask a restore as the `PLACE_CLOSED` row says: mode `restore`, with that bundle's name and `keep`. Its close
+   finds the mark for the same bundle and goes on from it (the mark's request id is not compared); it opens the
+   place and records a restore, change 2, at main as it was brought in.
+   **One thing is not as in that row: this restore waits for quiet sessions.** `held` passes on from a failed
+   restore to the next restore of the place, never from an import, so the restore you ask starts without it and
+   stays queued while the company's sessions are working (`waiting`: `SESSIONS_BUSY`) or one of this repository's
+   sessions is attached to a machine (`waiting`: `SESSIONS_ATTACHED`), with the place closed all the while. Before
+   you ask, wait until their machines sleep (ten quiet minutes) or archive those sessions, as "Before you start"
+   says; then ask, and read `progress` until it has `held: true`.
+4. If that restore fails at its open too, leave the place closed: nothing is lost (the source the import came from
+   and both its bundles are kept). It needs a developer, as in "By hand".
 
 **The first part is the step**: `FRESH_BUNDLE_FAILED`, `VERIFY_FAILED`, `CLOSE_FAILED`, `SET_ASIDE_FAILED`,
 `BUILD_FAILED`, `OPEN_FAILED`, `DISCARD_FAILED`.
