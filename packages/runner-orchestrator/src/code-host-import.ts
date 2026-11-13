@@ -780,7 +780,9 @@ function measuring(run: Run, seconds: number, bound: number): Run {
  * when its listing is over the measure's bound; a listing that fails is the measure's failure. */
 async function lineFits(measure: Run, proof: string, sha: string): Promise<boolean | null> {
 	try {
-		return codeFolderRefuses(measure.area, await measure.checkNames(proof, sha), CODE_FOLDER_ANY_SESSION).length === 0;
+		return (
+			codeFolderRefuses(measure.area, await measure.checkNames(proof, sha), CODE_FOLDER_ANY_SESSION).length === 0
+		);
 	} catch (error) {
 		if (error instanceof CodeHostRefusal) return false;
 		if (error instanceof Over) return null;
