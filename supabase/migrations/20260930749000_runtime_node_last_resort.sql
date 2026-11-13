@@ -26,17 +26,27 @@
 --      node only when no other enabled executor serves the harness.
 --    Sticky choices are untouched: a warm conversation's node, a machine that wakes on its own node, a member's coding
 --    machine, storage or turn, a sign-in routed to its node.
---    AGENT RUNS ARE A PREFERENCE, NOT A GUARANTEE. The choosers above rank a last-resort node last for a run, but a run
---    reaches a node through its orchestrator's claim, and the claim turn is not gated on the flag: it answers yes at once
---    for an orchestrator with no dispatch role (how both nodes run today), after 1.5 seconds for a fast host and after 10
---    seconds for an overflow host, and a run claimed with a dispatch role records the claim turn's node instead of asking
---    the chooser. A last-resort node's orchestrator can therefore still pick up a waiting run. For a hard rule on runs,
---    give that node's orchestrator dispatch_role = 'overflow' (qorpera_set_runner_orchestrator_dispatch_role, which
---    exists today and is in production): it then waits for the fast hosts. A guard in front of the claim turn was carried
---    in this migration through three review rounds and is deliberately not here (review r4): each round closed one gate
---    and found the next one downstream -- the claim turn's three answers, then the reservation, which asks the chooser
---    again and answers NODE_NOT_PREFERRED. Making the flag itself binding for runs needs one design pass over the claim
---    turn and the reservation together, not another guard in front of them.
+--    AGENT RUNS HAVE NO STRICT CAPACITY GUARANTEE TODAY, BY EITHER ROUTE. For runs this flag claims one thing only: the
+--    choosers below rank a last-resort node last. A run reaches a node through its orchestrator's claim, and the claim
+--    turn is not gated on the flag: it answers yes at once for an orchestrator with no dispatch role (how both nodes run
+--    today), after 1.5 seconds for a fast host and after 10 seconds for an overflow host, and a run claimed with a
+--    dispatch role records the claim turn's node instead of asking the chooser.
+--    dispatch_role = 'overflow' on the last-resort node's orchestrator is a brake, not a guarantee, and it is a brake
+--    only while the regular nodes' orchestrators are declared 'fast' and alive. Set it on the spare alone, with their
+--    roles unset as they are today, and it has the REVERSE effect: qorpera_runtime_run_placement finds no fast host and
+--    answers NO_FAST_HOST, which the overflow branch takes as permission to claim, so the spare takes runs at once while
+--    the regular nodes have room. The same reversal returns whenever the declared fast hosts stop qualifying -- a
+--    heartbeat older than 30 seconds, runs switched off on their node, another runtime bundle -- because the fast list
+--    is then empty again. Even with them 'fast' and alive the brake is bounded: the overflow branch returns true
+--    unconditionally once a run has waited 10 seconds, and also once every fast host has just refused the run. So the
+--    honest ceiling for runs is "the last-resort node takes runs the fleet has left waiting ten seconds", never "only
+--    when the fleet is full".
+--    A guard in front of the claim turn was carried in this migration through three review rounds and is deliberately
+--    not here (review r4): each round closed one gate and found the next one downstream -- the claim turn's three
+--    answers, then the reservation, which asks the chooser again and answers NODE_NOT_PREFERRED. A strict rule for runs
+--    needs one design pass over the claim turn and the reservation together, not another guard in front of them, and the
+--    reservation is the better home for it: the claim turn's role semantics are exactly what makes the brake above
+--    fragile (review r5).
 --    For every other kind of work the flag IS a guarantee, because those paths choose the node themselves through the
 --    functions below: Company Computers, agents' machines (both the push and the pull path), member coding machines and
 --    the executor a company's coding is enrolled with, sign-ins and account refreshes.
@@ -85,10 +95,13 @@ set search_path = ''
 set lock_timeout = '5s'
 as $$
 -- What this promises: a node marked last resort takes a new Company Computer, a new or moving agent's machine, a
--- member's new coding machine or a sign-in only when no other node has room. For AGENT RUNS it is a preference, not a
--- guarantee: the choosers rank this node last, but the claim turn is not gated on the flag, so this node's orchestrator
--- can still pick up a waiting run. Give that orchestrator dispatch_role = 'overflow' when runs must wait too
--- (20260930749000).
+-- member's new coding machine or a sign-in only when no other node has room. For AGENT RUNS there is no such guarantee
+-- today: the choosers rank this node last and that is all, because the claim turn is not gated on the flag, so this
+-- node's orchestrator can still pick up a waiting run. dispatch_role = 'overflow' on it is a brake only while the
+-- regular nodes' orchestrators are declared 'fast' and alive; on the spare alone, with their roles unset as they are
+-- today, it makes the spare claim at once instead (NO_FAST_HOST), and even with them 'fast' a run that has waited 10
+-- seconds goes to the spare whatever room the fleet has. A strict rule for runs needs a design pass over the claim turn
+-- and the reservation together (20260930749000).
 declare v_node public.qorpera_runtime_nodes%rowtype;
 begin
 	if auth.role() is distinct from 'service_role' or p_node_id is null or p_last_resort is null

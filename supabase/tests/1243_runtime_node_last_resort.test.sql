@@ -307,15 +307,19 @@ set local session_replication_role = origin;
 select pg_temp.base_assert(pg_temp.lr_run_node() = pg_temp.lr_id('c'), '(iv) The run''s start failed on node A: node C, not A again');
 rollback to savepoint fast_failed;
 
--- 4b. What the flag does NOT promise for agent runs (review r4). The choosers above rank a last-resort node last, and
---     for a run with no dispatch role -- how both nodes run today -- the reservation asks the chooser, so the spare is
---     refused and a regular node is preferred, which is what this case pins. The claim path is deliberately NOT guarded
---     here: qorpera_runtime_claim_turn answers yes at once with no dispatch role, after 1.5 s for a fast host and after
---     10 s for an overflow host, so a last-resort node's orchestrator can still pick up a waiting run and a run claimed
---     with a dispatch role records the claim turn's node. A guard in front of the claim turn was carried through three
---     review rounds and taken out again: each round closed one gate and the next appeared downstream. For a hard rule on
---     runs, the node's orchestrator gets dispatch_role = 'overflow', which exists today and makes it wait for the fast
---     hosts; making the flag itself binding needs a design pass over the claim turn and the reservation together.
+-- 4b. What the flag does NOT promise for agent runs (review r4, corrected in r5). The choosers above rank a last-resort
+--     node last, and for a run with no dispatch role -- how both nodes run today -- the reservation asks the chooser, so
+--     the spare is refused and a regular node is preferred, which is what this case pins. That ranking is all the flag
+--     claims for runs. The claim path is deliberately NOT guarded here: qorpera_runtime_claim_turn answers yes at once
+--     with no dispatch role, after 1.5 s for a fast host and after 10 s for an overflow host, so a last-resort node's
+--     orchestrator can still pick up a waiting run, and a run claimed with a dispatch role records the claim turn's node.
+--     There is no strict capacity guarantee for runs today by either route. dispatch_role = 'overflow' on the spare is a
+--     brake only while the regular orchestrators are declared 'fast' and alive: on the spare alone, with their roles
+--     unset, qorpera_runtime_run_placement answers NO_FAST_HOST and the overflow branch claims at once -- the reverse of
+--     the intent -- and even with them 'fast' a run that has waited 10 s goes to the spare whatever room the fleet has.
+--     A guard in front of the claim turn was carried through three review rounds and taken out again: each round closed
+--     one gate and the next appeared downstream. A strict rule needs a design pass over the claim turn and the
+--     reservation together, with the reservation the better home for it.
 select pg_temp.lr_roles_cleared();
 select pg_temp.lr_observe_all();
 select pg_temp.base_assert(pg_temp.lr_decide('native', 'run-c') ->> 'decision' = 'refused'
