@@ -6658,13 +6658,14 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    2026 rule: no caps on a run's calls). A second message waits for the rest of it, as it waited for the same
    bookkeeping before the answer.
 4. **A failure after the answer is not the run's failure.** When the model provider fails a turn after its final send,
-   the run ends as delivered; the turn's own record says it failed. A tool left unconfirmed, or a run cut off, ends as
-   before (a run cut off after its final is never resumed, 20260930547000).
+   the run ends as delivered; the turn's own record says it failed, and a usage limit, rate limit or outage it met is
+   recorded against the run's login as a failed run's is (section 17). A tool left unconfirmed, or a run cut off, ends
+   as before (a run cut off after its final is never resumed, 20260930547000).
 5. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
    about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
 6. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
-   final send", the closing reminder, "Writing to people") and the descriptions of `send_message` and `update_wall`.
-   Nothing else; no tool's schema changes.
+   final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
+   `update_wall`. Nothing else; no tool's schema changes.
 
 ## 20. Enforcement matrix
 

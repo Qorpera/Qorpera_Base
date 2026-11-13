@@ -4,6 +4,7 @@ import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
 	type CloudCodexOpening,
+	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -124,7 +125,7 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
 	try {

@@ -31,6 +31,7 @@ import {
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -79,9 +80,14 @@ it("tells every run once that only its bookkeeping follows its final send, namin
 	expect(instructions).toContain(
 		"It is your last message, so make every file change, check and coworker message first.",
 	);
-	for (const text of [CLOUD_COMPANY_RUNTIME_INSTRUCTIONS, CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_WALL_TOOL_DESCRIPTION])
+	for (const text of [
+		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		CLOUD_WALL_TOOL_DESCRIPTION,
+	])
 		expect(text).not.toMatch(
-			/ends the turn at once|nothing (you do )?after it runs|before you send the message|before you write to them/,
+			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
 		);
 });
 

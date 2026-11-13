@@ -76,6 +76,7 @@ import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
+	type NativeProviderUsageSignal,
 	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -1224,6 +1225,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				});
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment).
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
@@ -1247,7 +1251,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
-		if (!kind) return;
+		if (kind) await this.#recordUsageSignalKind(binding, kind);
+	}
+
+	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(

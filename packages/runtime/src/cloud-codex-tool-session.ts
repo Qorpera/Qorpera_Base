@@ -722,6 +722,8 @@ class CodexBoundaryRpc {
 	#turnEndRequested = false;
 	/** The run made its final send (or a card's): the member has the answer, and the turn goes on for bookkeeping. */
 	#answered = false;
+	/** The usage signal of a provider failure after the answer, which did not fail the run: its caller records it. */
+	#afterAnswerUsageSignal: NativeRuntimeUsageSignal | null = null;
 	#finished = false;
 	#closed = false;
 
@@ -790,6 +792,11 @@ class CodexBoundaryRpc {
 	 * stops the work (2026-10-01), never a rate limit. A Codex pinned with the usage-limit codes reports that
 	 * code itself as `usageLimitExceeded`; an older pin reported a 429 it gave up on, which this still reads. */
 	chatGptPlan = false;
+
+	/** The usage signal of a provider failure after the run's answer, which ended the run as delivered. */
+	get afterAnswerUsageSignal(): NativeRuntimeUsageSignal | null {
+		return this.#afterAnswerUsageSignal;
+	}
 
 	get usageSignal(): NativeRuntimeUsageSignal | null {
 		return this.chatGptPlan && this.#providerUsageSignal === "rate_limited"
@@ -2200,7 +2207,11 @@ class CodexBoundaryRpc {
 			) {
 				// The member has the answer: the provider failed only the bookkeeping after it, which the agent's next run
 				// finds as it was left. The run stands as delivered, never as failed under its answer; the turn's own record
-				// says it failed (the 2026-11-13 amendment).
+				// says it failed, and a usage limit or rate limit it met is still the login's (contract 17), for the caller
+				// to record (the 2026-11-13 amendment).
+				if (error?.codexErrorInfo !== undefined)
+					this.#providerUsageSignal = nativeRuntimeUsageSignal(error.codexErrorInfo);
+				this.#afterAnswerUsageSignal = this.usageSignal;
 				try {
 					this.#turnObservation?.finish("failed", {
 						errorCategory:
@@ -2746,6 +2757,17 @@ async function pruneCodexHome(codexHome: string): Promise<void> {
  * No Company File directory is passed to Codex. The caller supplies the cloud tools.
  * Requires the pinned native result-fence and direct-tools capabilities; older binaries fail before thread creation.
  */
+/** What a run's Codex session gives back. `usageSignal`: the provider failed the turn after the run's answer (which left
+ * the run delivered) with a usage limit, rate limit or outage, which the caller records against the run's login as it
+ * records a failed run's (the 2026-11-13 amendment). */
+export interface CloudCodexToolSessionResult {
+	providerSessionId: string;
+	toolCalls: number;
+	codexVersion: string;
+	fencedRequests: number;
+	usageSignal?: NativeRuntimeUsageSignal;
+}
+
 export async function runCloudCodexToolSession(options: {
 	command: readonly [string, ...string[]];
 	/** Independently provisioned artifact digest, never supplied by the model or inferred from its version string. */
@@ -2810,7 +2832,7 @@ export async function runCloudCodexToolSession(options: {
 	signal: AbortSignal;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	// A run has no wall-clock or silence cap (founder, 2026-09-22 and 2026-09-24);
 	// either timeout is a test or operator choice, never a default. A lapsed job
 	// lease still ends a run whose host is gone.
@@ -3013,11 +3035,13 @@ export async function runCloudCodexToolSession(options: {
 		} catch {
 			// The verified turn stands: what closing left unbuilt stays missing (§5.4).
 		}
+		const afterAnswer = rpc.afterAnswerUsageSignal;
 		return {
 			providerSessionId: threadId,
 			toolCalls: rpc.toolCalls,
 			codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
 			fencedRequests: rpc.fencedRequests,
+			...(afterAnswer ? { usageSignal: afterAnswer } : {}),
 		};
 	} catch (error) {
 		rpc.finishObservations(false, signal);

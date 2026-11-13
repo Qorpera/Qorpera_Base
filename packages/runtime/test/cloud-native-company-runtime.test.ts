@@ -2801,6 +2801,31 @@ it.each([
 	},
 );
 
+// The answer first (the contract's 2026-11-13 amendment, proposed): a usage limit the provider meets after the run's
+// answer leaves the run delivered, and the limit is still recorded against the run's login, once, as for a failed run.
+it("delivers a run whose provider met its usage limit after the answer, and records the limit against its login", async () => {
+	const f = await fixture("company-limit-after-answer");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_record_provider_usage_signal") {
+			expect(args).toEqual({ p_binding: f.binding, p_signal_kind: "usage_limit" });
+			return {
+				schema: "qorpera.provider-usage-signal-receipt/v1",
+				runId: f.binding.runId,
+				signalKind: "usage_limit",
+			};
+		}
+		return original(method, args, signal);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("final")?.messageId });
+	expect(
+		f.pathCall.mock.calls
+			.filter(([method]) => method === "qorpera_record_provider_usage_signal")
+			.map(([, , , timeoutMs]) => timeoutMs),
+	).toEqual([10_000]);
+});
+
 it("neither masks the failure nor retries when the usage signal cannot be recorded, and stays silent for other failures", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
@@ -3253,8 +3278,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
 	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
 	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
-	// The same day send_message and update_wall no longer say the final send is the last act (the answer first, the
-	// contract's 2026-11-13 amendment, proposed), so both moved again.
+	// The same day send_message, ask_member and update_wall no longer say the final send is the last act (the answer
+	// first, the contract's 2026-11-13 amendment, proposed), so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3301,9 +3326,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"88a143aabe64c0b088e2a683aa317499463903c0394d346db9cbcff2dc309806",
+		"ab3f2e869783a488a70ee35f7436d757a1dba0b518b9fb961627854c1d80e4ad",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"dd7f1b20c013167f832ff04c323dd9930f2e9c4980ac63e323fecb123fa558cf",
+		"b9b471e49b415d84cb7a5f11debcc194874fac637806c6da24e485e3674dbea0",
 	);
 });

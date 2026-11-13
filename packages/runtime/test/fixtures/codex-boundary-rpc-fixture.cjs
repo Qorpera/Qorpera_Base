@@ -57,6 +57,8 @@ const companyCalls = mode === "company-office"
 			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
 		]
+	: mode === "company-limit-after-answer"
+	? [{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } }]
 	: mode === "company-cards-unavailable"
 	? [
 			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
@@ -649,7 +651,9 @@ async function handle(message) {
 			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, context: contextEvidence, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
-			done();
+			// The answer is out, then the login's usage limit fails the turn (the 2026-11-13 amendment).
+			if (mode === "company-limit-after-answer") failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: "usageLimitExceeded" });
+			else done();
 		}
 	} else if (message.id === "capture_request" && mode === "capture-image") {
 		const [envelope, image] = message.result.contentItems;
@@ -659,12 +663,15 @@ async function handle(message) {
 		const fenced = await fence([{ kind: "function_call_output", callId: "capture_1", output: [{ type: "input_text", text: envelope.text }, { type: "input_image", sha256 }] }]);
 		writeFileSync(evidencePath, JSON.stringify({ imageBytes: pixels.length, sha256, fenced }));
 		done();
-	} else if (message.id === "first_1" && mode === "final-send-then-failed") {
+	} else if (message.id === "first_1" && (mode === "final-send-then-failed" || mode === "final-send-then-limit")) {
 		// The answer is out; the provider fails the turn's next request (2026-11-13 amendment).
 		outputOf(message);
 		sendEvidence.fenced = await fence(answered);
 		writeFileSync(evidencePath, JSON.stringify({ ...sendEvidence, pending: undefined }));
-		failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } });
+		failed({
+			message: "PRIVATE_PROVIDER_ERROR",
+			codexErrorInfo: mode === "final-send-then-limit" ? "usageLimitExceeded" : { httpConnectionFailed: { httpStatusCode: 503 } },
+		});
 	} else if (message.id === "first_1") {
 		outputOf(message);
 		// After the answer: bookkeeping, the answer again exactly, or anything else.

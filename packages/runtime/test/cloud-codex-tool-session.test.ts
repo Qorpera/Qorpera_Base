@@ -1055,6 +1055,18 @@ it("keeps the run delivered when the provider fails after its answer, and record
 	});
 	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
 });
+it("gives its caller the usage limit a provider failure after the answer met; a delivered run has none", async () => {
+	const limited = run("final-send-then-limit", { tools: [publicSendTool()] });
+	await expect(limited.result).resolves.toEqual({
+		providerSessionId: "thread_fixture",
+		toolCalls: 1,
+		codexVersion: "0.155.1",
+		fencedRequests: 2,
+		usageSignal: "usage_limit",
+	});
+	const delivered = await run("final-send-natural", { tools: [publicSendTool()] }).result;
+	expect(delivered).not.toHaveProperty("usageSignal");
+});
 it("does not end the turn after a progress send", async () => {
 	const { result, evidence } = run("progress-send-no-end", { tools: [publicSendTool()] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
