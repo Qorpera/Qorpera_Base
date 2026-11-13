@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
 import { ObjectIntegrityError, ObjectMissingError } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind, parseSearch, type SearchRequest } from "../src/folder-service/protocol.ts";
-import { compilePattern, linearRegexAvailable, SearchPatternError, translate } from "../src/folder-service/regex.ts";
+import {
+	compilePattern,
+	foldText,
+	linearRegexAvailable,
+	SearchPatternError,
+	translate,
+} from "../src/folder-service/regex.ts";
 import {
 	compileGlob,
 	globMatches,
@@ -660,6 +666,13 @@ describe("folder search, version 2 (keyholes S4)", () => {
 			expect(
 				text(await searchView(source, request2("^pl[a-z]n( b)?$", { regex: true, caseSensitive: true }))),
 			).toEqual([]);
+			// A final sigma is a sigma to a search that is not case-sensitive, in the text as in the pattern or query
+			// (review r9 of #1698: the text lowercased whole gave ς at a word's end, the pattern letter by letter σ).
+			const greek = stage({ "g.md": "ΟΣ\nΟΣΟ\nκόσμος\nάλλο\n" });
+			const sigma = ["g.md:1:ΟΣ", "g.md:2:ΟΣΟ", "g.md:3:κόσμος"];
+			expect(text(await searchView(greek.source, request2("ΟΣ", { regex: true })))).toEqual(sigma);
+			expect(text(await searchView(greek.source, request2("ΟΣ")))).toEqual(sigma);
+			expect(text(await searchView(greek.source, request2("ος", { regex: true })))).toEqual(sigma);
 			expect(
 				(await searchView(source, request2("^plans?(-x)?(\\.md)?$", { regex: true, namesOnly: true }))).hits.map(
 					(h) => h.path,
@@ -780,9 +793,14 @@ describe("folder search, version 2 (keyholes S4)", () => {
 			["(?:ab|cd){2}", "ABCD"],
 			["ß", "ẞ"],
 			["a.c", "A\nC"],
+			// A final sigma (review r9 of #1698): JavaScript's /iu folds ς, σ and Σ alike, and so does foldText.
+			["ΟΣ", "ΟΣ"],
+			["ος", "ΚΟΣΜΟΣ"],
+			["[ς]", "Σ"],
+			["κόσμος", "ΚΌΣΜΟΣ"],
 		];
 		for (const [pattern, subject] of cases) {
-			const ours = compilePattern(pattern, false).test(subject.toLowerCase());
+			const ours = compilePattern(pattern, false).test(foldText(subject));
 			const js = new RegExp(pattern.replace("\\x{E9}", "\\u00e9"), "imu").test(subject);
 			expect(ours, `${pattern} on ${subject}`).toBe(js);
 		}

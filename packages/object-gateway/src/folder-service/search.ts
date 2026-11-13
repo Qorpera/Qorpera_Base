@@ -2,7 +2,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import type { CoreReceipt } from "./core.ts";
 import { ObjectIntegrityError, ObjectMissingError } from "./objects.ts";
 import type { SearchCursor, SearchRequest } from "./protocol.ts";
-import { compilePattern } from "./regex.ts";
+import { compilePattern, foldText } from "./regex.ts";
 import { byteOrder, type TreeEntry, type ViewTree } from "./view-tree.ts";
 
 /**
@@ -255,7 +255,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		source.serving?.();
 	};
 	const glob = request.glob === null ? undefined : compileGlob(request.glob);
-	const fold = (text: string): string => (request.caseSensitive ? text : text.toLowerCase());
+	const fold = (text: string): string => (request.caseSensitive ? text : foldText(text));
 	/** Where the first match in folded text starts, or -1; a find (no query) matches every name. */
 	const query = request.query;
 	let find: (folded: string) => number = () => 0;

@@ -6524,7 +6524,8 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    such lines it left, to search as text or read. A file that changes while a search is inside it shows in one
    version only, the one there now: what the same call had shown of the old version is left out and not released,
    and when an earlier answer showed part of it, the answer says it changed (searched again from its start) or is no
-   longer as that answer saw it (gone, emptied or no longer the run's to read).
+   longer as that answer saw it (gone, emptied or no longer the run's to read). A search whose own path is gone by a
+   later page answers that there is no such path, and shows and releases nothing.
 4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
    searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
    (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,

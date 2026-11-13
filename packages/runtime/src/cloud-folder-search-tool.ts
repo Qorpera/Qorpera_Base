@@ -388,6 +388,10 @@ export class CloudFolderSearch {
 			} catch (error) {
 				if (signal.aborted || !(error instanceof FolderLinkError || error instanceof CloudCompanyFolderError))
 					throw error;
+				// The search's own path is gone (deleted, or no longer the run's to read) since the call's first page:
+				// everything the answer had is from under it, so none of it is shown or released, and the call answers as
+				// its first page would have (review r9 of #1698).
+				if (error instanceof FolderLinkError && error.code === "NOT_FOUND") throw error;
 				break;
 			}
 			// The file this answer ended inside changed or went away before the next page: what the answer showed of its

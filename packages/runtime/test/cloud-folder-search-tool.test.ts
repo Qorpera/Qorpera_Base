@@ -886,6 +886,36 @@ describe("company_search", () => {
 		expect(g.releases.flatMap((r) => r.reads).map((r) => r.path)).toEqual(["a.md", "c.md"]);
 	});
 
+	it("shows and releases nothing when the search's own path went away between two pages of a call (review r9 of #1698)", async () => {
+		const V2 = { version: 2, regex: true };
+		// The path searched is the file itself, or a folder holding it; it is deleted (or no longer the run's to read)
+		// after the first page, so the node finds no such path for the next one.
+		for (const [path, first] of [
+			["big.md", [hit("big.md", 3, "plan one"), hit("big.md", 7, "plan two")]],
+			["docs", [hit("docs/a.md", 2, "plan a"), hit("docs/big.md", 3, "plan one")]],
+		] as const) {
+			const n = await node(
+				(search) =>
+					search.after === null
+						? found({
+								hits: [...first],
+								searched: 1,
+								reads: first.map((h) => read(h.path)),
+								next: { path: first.at(-1)!.path, version: VERSION, offset: 400, line: 3 },
+							})
+						: refused("NOT_FOUND"),
+				V2,
+			);
+			const f = folder();
+			const t = tool(n.path, f.client);
+			await expect(t.execute(t.parseArguments({ query: "plan", path }), context())).rejects.toThrow(
+				/^NOT_FOUND: no such path in the folder you may read$/,
+			);
+			expect(n.searches).toHaveLength(2);
+			expect(f.releases).toEqual([]);
+		}
+	});
+
 	it("says so when the file the last answer ended inside changed or went away before the next call", async () => {
 		const V2 = { version: 2, regex: true };
 		const NEW = "81100000-0000-4000-8000-0000000000b2";
