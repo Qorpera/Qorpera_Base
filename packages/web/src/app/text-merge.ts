@@ -179,3 +179,48 @@ export function mergeText(
 	const [own, other] = transform(diffText(base, mine, caret), diffText(base, theirs));
 	return { text: applyEdit(theirs, own), edit: other };
 }
+
+/** `edit` as the edit of what follows the first `from` units of its text, which it turns into the first `to` units of
+ * what it makes (a part a field does not show, such as an app note's line before a draft): the same steps after that
+ * part, so a change kept whole (a quote, app/quotes.ts `mergeQuoted`) stays whole. Undefined when a kept unit stands
+ * in that part on one side and after it on the other, where no cut matches both. */
+export function editAfter(edit: TextEdit, from: number, to: number): TextEdit | undefined {
+	const out: (number | string)[] = [];
+	const push = (step: number | string) => {
+		const last = out[out.length - 1];
+		if (typeof step === "string" && typeof last === "string") out[out.length - 1] = last + step;
+		else if (typeof step === "number" && typeof last === "number" && Math.sign(step) === Math.sign(last))
+			out[out.length - 1] = last + step;
+		else out.push(step);
+	};
+	let skipIn = from;
+	let skipOut = to;
+	// Inserted after the part on the made side while the old part is still being removed: the same place.
+	let pending = "";
+	for (const step of edit) {
+		if (typeof step === "string") {
+			const cut = Math.min(skipOut, step.length);
+			skipOut -= cut;
+			const rest = step.slice(cut);
+			if (rest && skipIn > 0) pending += rest;
+			else if (rest) push(rest);
+		} else if (step < 0) {
+			const cut = Math.min(skipIn, -step);
+			skipIn -= cut;
+			if (skipIn === 0 && pending) {
+				push(pending);
+				pending = "";
+			}
+			if (cut < -step) push(step + cut);
+		} else {
+			const cut = Math.min(skipIn, skipOut, step);
+			skipIn -= cut;
+			skipOut -= cut;
+			if (step > cut) {
+				if (skipIn > 0 || skipOut > 0 || pending) return undefined;
+				push(step - cut);
+			}
+		}
+	}
+	return skipIn === 0 && skipOut === 0 && !pending ? out : undefined;
+}

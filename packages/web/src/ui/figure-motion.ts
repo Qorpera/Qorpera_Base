@@ -66,7 +66,7 @@ export interface MotionOptions {
 }
 export interface FigureMotion {
 	dispose(): void;
-	/** A short act over whatever the figure is doing: a cheer when its work is done, a perk under the pointer. */
+	/** A short act over whatever the figure is doing: a cheer when its work is done. */
 	play(kind: Moment): void;
 }
 
@@ -350,6 +350,10 @@ const signature = (poses: EyePose[]) =>
 const round = (value: number, places = 2) => Number(value.toFixed(places));
 /** The longest stretch of an activity's clock whose effects a figure still shows: past it, it missed them. */
 const EFFECTS_GAP = 0.5;
+/** How fast the acts of a figure that needs the member and of one that works are played: a little under the pace
+ * they were written at (Jonas, 13 Nov 2026: "slightly too fast"). The acts keep their own time (figure-acts.ts);
+ * the figure's clock is turned into it here. The cheer, the writing dots and an idle figure's moves play as written. */
+const PACE = 0.85;
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
@@ -371,15 +375,15 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	// agent kept the clock going, or a frame that came late, has a gap: nothing in it goes off now.
 	const since = elapsed - entry.cued > EFFECTS_GAP || elapsed < entry.cued ? elapsed : entry.cued;
 	if (activity === "Waiting") {
-		act = asking(elapsed, entry.ask ?? "bang", clock.seed);
-		for (const cue of askingCues(since, elapsed, clock.seed)) effects.push(cue.effect);
+		act = asking(elapsed * PACE, entry.ask ?? "bang", clock.seed);
+		for (const cue of askingCues(since * PACE, elapsed * PACE, clock.seed)) effects.push(cue.effect);
 	} else if (activity === "Working") {
-		act = working(elapsed, clock.seed, entry.ask);
-		for (const cue of workingCues(since, elapsed, clock.seed, entry.ask)) effects.push(cue.effect);
+		act = working(elapsed * PACE, clock.seed, entry.ask);
+		for (const cue of workingCues(since * PACE, elapsed * PACE, clock.seed, entry.ask)) effects.push(cue.effect);
 	} else if (activity === "Thinking" && entry.ask) {
-		// The dots write on; every few seconds they become what waits on the member.
-		act = writingAsk(elapsed, entry.ask);
-		for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
+		// The dots write on; every few seconds they become what waits on the member, at the pace of one that asks.
+		act = writingAsk(elapsed * PACE, entry.ask);
+		for (const cue of writingAskCues(since * PACE, elapsed * PACE)) effects.push(cue.effect);
 	} else if (activity === "AtComputer") {
 		// At its computer; with something waiting on the member it becomes that symbol now and then, as a writing
 		// figure does, so the ask is never out of sight for long.
@@ -1171,7 +1175,7 @@ export function mountFigureMotion(
 			}
 		},
 		play(kind) {
-			// A cheer takes over from a perk; nothing takes over from a cheer.
+			// A cheer takes over from a smaller act; nothing takes over from a cheer.
 			if (
 				!live.has(entry) ||
 				entry.still ||

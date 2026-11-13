@@ -55,6 +55,7 @@ export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER =
 export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER =
 	`Hire a new coworker for this company. The hire is saved as the agent's own folder: ${osPath("agents")}/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the result's outcome is saved, the platform starts the agent on its first assignment by itself, usually within a minute: tell the member who you hired and why; send a coworker message only if it has not begun after a few minutes. If your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card. ` +
 	`Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's agent.md under ${osPath("agents")}/ says what it does. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment (at most 4000 bytes) as the first concrete piece of work it should start on. figure picks its avatar. ` +
+	"name is how everyone finds the agent in the app, so name it by its work, never like a person: one to three plain words for what it owns, in the language the founders write in, such as Customer research, Market, Strategy, Brand, Product, Engineering or Bookkeeping, so a founder looking for whoever owns something sees it at a glance. Never a person's name such as Freja or Mikkel, and never the name of a coworker already hired. " +
 	"Keep operationKey stable for one intended hire and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again, never a new key. A conflict or a refusal needs a new key.";
 /** The todo a folder-v2 hire's first assignment becomes holds at most this much (§2 "todo"). */
 const FOLDER_ASSIGNMENT_BYTES = 4000;
@@ -110,7 +111,13 @@ export function cloudHiringTools(
 			required: ["operationKey", "name", "role", "jobDescription", "firstAssignment"],
 			properties: {
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				name: { type: "string", minLength: 1, maxLength: 160 },
+				name: {
+					type: "string",
+					minLength: 1,
+					maxLength: 160,
+					description:
+						"What it owns, in one to three plain words (such as Brand or Customer research), never a person's name.",
+				},
 				role: { type: "string", minLength: 1, maxLength: 320 },
 				jobDescription: { type: "string", minLength: 1, maxLength: 16384 },
 				firstAssignment: { type: "string", minLength: 1, maxLength: FOLDER_ASSIGNMENT_BYTES },

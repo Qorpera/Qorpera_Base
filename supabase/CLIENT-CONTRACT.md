@@ -1300,6 +1300,13 @@ request of another shape.
   when its input was made; the begin refuses it `DESKTOP_HELD_SINCE` once that is not the current one (someone held the
   desktop privately since), and the page then reads the list again and goes on under the new one. A begin without a
   generation (a page before 20260930738000) is served as before.
+- The member's pointer (20260930744000): `others` names at most 50 members, the most recent first. Through the executor, a
+  member who may act begins a 10 s pointer pass (`qorpera_member_machine_desktop_pointer_begin(profile, machine,
+  generation, epoch, seat)`: shared at the generation the page knows, or on the caller's own private hold at its epoch
+  and seat; `{schema: "qorpera.member-machine-desktop-pointer/v1", state: "ok", passId, seconds: 10}` or a refusal:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_MEMBER_IN_CONTROL`,
+  `DESKTOP_HELD_SINCE`, `DESKTOP_CONTROL_ENDED`); the moves on it ask SQL nothing. A pass records no action and renews no
+  lease; the executor's read of it moves the machine's last use at most every 30 seconds.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes

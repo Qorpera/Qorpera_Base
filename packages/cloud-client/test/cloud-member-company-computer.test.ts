@@ -256,7 +256,6 @@ describe("member Company Computer transport", () => {
 			[[{ ...machine, others: "Ada" }], {}],
 			[[{ ...machine, others: [""] }], {}],
 			[[{ ...machine, others: [7] }], {}],
-			[[{ ...machine, others: Array.from({ length: 51 }, () => "Ada") }], {}],
 			// The desktop's lease generation (20260930738000): a safe whole number from 0.
 			[[{ ...machine, generation: -1 }], {}],
 			[[{ ...machine, generation: 1.5 }], {}],
@@ -346,6 +345,22 @@ describe("member Company Computer transport", () => {
 			}),
 		);
 		expect((await f.client.agentMachines(id(5), signal)).machines[0]?.others).toEqual(["Ada Lovelace", "Bo"]);
+		// More than 50 (a list from before 20260930744000 has no limit): its first 50 are taken, never a failed read; what
+		// follows them is not looked at (#1723 r1 F1).
+		const many = Array.from({ length: 51 }, (_, n) => `Member ${n + 1}`);
+		for (const others of [many, [...many.slice(0, 50), 7]]) {
+			f.fetch.mockResolvedValueOnce(
+				Response.json({
+					schema: "qorpera.agent-machines/v1",
+					profileId: id(1),
+					staffAgentId: id(5),
+					canWake: true,
+					canTakeOver: true,
+					machines: [{ ...machine, others }],
+				}),
+			);
+			expect((await f.client.agentMachines(id(5), signal)).machines[0]?.others).toEqual(many.slice(0, 50));
+		}
 		// The desktop's lease generation (20260930738000), 0 too; absent (a viewer, an older database) is none.
 		for (const generation of [12, 0]) {
 			f.fetch.mockResolvedValueOnce(

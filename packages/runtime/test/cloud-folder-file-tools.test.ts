@@ -983,6 +983,138 @@ it("stops at its bound with where it got to, which it shows and releases, when a
 	}
 });
 
+// One listing answer is one moment of the folder (owed from v240). 450 files under w/: the folder core's pages of 200
+// make three pages a look. Over the fixture (one change set for every entry, and a clock that moves on commits only),
+// the test keeps the folder's clock and the change set that wrote each entry, and makes a change before the page it
+// names (by list call, from 0).
+const W_FILES = Array.from({ length: 450 }, (_, index) => `w/${String(index).padStart(4, "0")}.md`);
+async function changingFolder() {
+	const f = await fixture({ files: Object.fromEntries(W_FILES.map((name) => [name, "x"])) });
+	const original = f.folder.list.bind(f.folder);
+	let clock = 7;
+	let calls = 0;
+	const wrote = new Map<string, number>();
+	const before = new Map<number, () => void>();
+	vi.spyOn(f.folder, "list").mockImplementation(async (...value: Parameters<typeof original>) => {
+		before.get(calls++)?.();
+		const page = await original(...value);
+		return {
+			...page,
+			asOfSeq: clock,
+			entries: page.entries.map((entry) => ({ ...entry, seq: wrote.get(entry.path) ?? 1 })),
+		};
+	});
+	const rename = (from: string, to: string) => () => {
+		const stored = f.files.get(from);
+		if (!stored) throw new Error(`no ${from}`);
+		f.files.delete(from);
+		f.files.set(to, { ...stored, version: randomUUID() });
+		wrote.set(to, ++clock);
+	};
+	const add = (path: string) => () => {
+		f.seed(path, "new");
+		wrote.set(path, ++clock);
+	};
+	const now = () => [...f.files.keys()].filter((path) => path.startsWith("w/")).sort();
+	return { f, before, calls: () => calls, rename, add, elsewhere: () => clock++, now };
+}
+
+it("shows a file once when it is renamed between two of a call's pages from a page read to one not read yet (owed from v240)", async () => {
+	const c = await changingFolder();
+	c.before.set(1, c.rename("w/0050.md", "w/0300-renamed.md"));
+	const answer = listing(await c.f.call("company_list", { path: "w" }));
+	// Today's call showed it twice, under both names.
+	expect(c.now()).toContain("w/0300-renamed.md");
+	expect(paths(answer.entries)).toEqual(c.now());
+	expect(answer.ending).toBe("450 entries. Nothing more.");
+	// The look the rename met (three pages), then one whose pages answered at one clock: the answer, its asOfSeq and
+	// its release.
+	expect(c.calls()).toBe(6);
+	expect(answer.asOfSeq).toBe(8);
+	expect(released(c.f.releases[0])).toEqual(["w", ...c.now()]);
+});
+
+it("shows a file when it is renamed between two of a call's pages from a page not read yet to one read (owed from v240)", async () => {
+	const c = await changingFolder();
+	c.before.set(1, c.rename("w/0300.md", "w/0050-renamed.md"));
+	const answer = listing(await c.f.call("company_list", { path: "w" }));
+	// Today's call showed it under neither name.
+	expect(paths(answer.entries)).toContain("w/0050-renamed.md");
+	expect(paths(answer.entries)).toEqual(c.now());
+	expect(c.calls()).toBe(6);
+});
+
+it("answers with the next look at one clock when only the rest of the company changed meanwhile", async () => {
+	const c = await changingFolder();
+	c.before.set(1, c.elsewhere);
+	const answer = listing(await c.f.call("company_list", { path: "w" }));
+	expect(paths(answer.entries)).toEqual(W_FILES);
+	// As of the second look's first page.
+	expect(answer.asOfSeq).toBe(8);
+	expect(c.calls()).toBe(6);
+});
+
+it("never takes two looks that read the same for one moment: a file renamed back and forth in step with the pages (review r1 of #1748)", async () => {
+	// Renamed from a page not read yet to one read during the first look, back before the second look's first page,
+	// and forth again before its second: both looks miss it alike, though the folder always holds it.
+	const c = await changingFolder();
+	c.before.set(1, c.rename("w/0300.md", "w/0050-renamed.md"));
+	c.before.set(3, c.rename("w/0050-renamed.md", "w/0300.md"));
+	c.before.set(4, c.rename("w/0300.md", "w/0050-renamed.md"));
+	const answer = listing(await c.f.call("company_list", { path: "w" }));
+	expect(c.calls()).toBe(9);
+	expect(paths(answer.entries)).toEqual(c.now());
+	expect(paths(answer.entries)).toContain("w/0050-renamed.md");
+	expect(answer.asOfSeq).toBe(10);
+});
+
+it("takes again a look that took its whole 2 s, within the call's 4 s", async () => {
+	// Each page takes 1.1 s: the first look stops after two pages (400 entries), a change elsewhere between them; the
+	// second begins past 2 s, at one clock, and stops at the call's 4 s, after two pages too.
+	const c = await changingFolder();
+	let clock = 0;
+	const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+	try {
+		for (const call of [0, 1, 2, 3])
+			c.before.set(call, () => {
+				clock += 1100;
+				if (call === 1) c.elsewhere();
+			});
+		const answer = listing(await c.f.call("company_list", { path: "w" }));
+		expect(c.calls()).toBe(4);
+		expect(paths(answer.entries)).toEqual(W_FILES.slice(0, 400));
+		expect(answer.ending).toBe(
+			'400 entries shown, 400 looked through. More may follow: call again with after "w/0399.md".',
+		);
+		expect(answer.asOfSeq).toBe(8);
+	} finally {
+		now.mockRestore();
+	}
+});
+
+it("says in one line that the folder changed while it was listed when it changes under every look (owed from v240)", async () => {
+	const c = await changingFolder();
+	for (const [call, n] of [
+		[1, 1],
+		[4, 2],
+		[7, 3],
+	] as const)
+		c.before.set(call, c.add(`w/0001-${n}.md`));
+	const lines = String((await c.f.call("company_list", { path: "w" })).value).split("\n");
+	// Three looks, the last of which is the answer, as of its first page.
+	expect(c.calls()).toBe(9);
+	expect(lines[0]).toContain("asOfSeq 9,");
+	expect(lines.slice(-3)).toEqual([
+		"",
+		"The folder changed while it was listed, so a path may show twice here or not at all; call again the same way for a clean listing.",
+		"452 entries. Nothing more.",
+	]);
+	// Called again the same way, with the folder still, it is clean.
+	const again = listing(await c.f.call("company_list", { path: "w" }));
+	expect(paths(again.entries)).toEqual(c.now());
+	expect(c.calls()).toBe(12);
+});
+
 it("takes depth, glob, after and limit within their bounds, and nothing else", async () => {
 	const f = await fixture();
 	const tool = f.tool("company_list");
