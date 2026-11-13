@@ -218,7 +218,7 @@ site host.
 | 2 | **The migration** `20260930756000_site_hosts.sql` (inert: hosts stay off; the name rule holds at once) | `hosts_domain` null, `hosts_enabled` false; A1.md's reads | hosts stay off; the name rule needs a new migration to change |
 | 3 | **The coding executor**, node 2 then node 1, no session publishing | X1's report | the previous executor |
 | 4 | **The runtime bundle** (D1a) | the train's | the train's |
-| 5 | **site-serve**: the kit's `functions/src/site-serve/` and `SOURCE`, `functions.sh install`, no turns in flight | `curl -sS -o /dev/null -w '%{http_code}\n' https://sites.qorpera.com/robots.txt` → 200 (`functions.sh check` cannot see site-serve) | the previous function files |
+| 5 | **site-serve**, below: the kit's `functions/src/site-serve/` and `SOURCE`, `functions.sh install`, no turns in flight | `robots.txt` 200 and an old link's 401, both with `no-transform` (`functions.sh check` cannot see site-serve) | the previous function files, below |
 | 6 | **The relay (P1)**, below | a forged cross-origin POST answers 403 | the previous `relay.mjs`, below |
 | 7 | **The front (R1)**, below; the API stops for seconds: no run and no coding turn in flight | a site host answers site-serve's 401 page | the previous `envoy-front.yaml`, below (hosts off first) |
 | 8 | **The web** (E1b, Look first; in the release's pull request, live on merge, hidden until `preview` is true) | the web's | revert |
@@ -228,6 +228,31 @@ site host.
 Gaps if the order slips: the function before the migration answers as today (PGRST202 reads as `legacy`); the front
 before the function sends site hosts to the old site-serve, which answers its 404 page (as `others` did); hosts on
 before E1a, before P1 or before the front: never.
+
+### Step 5: site-serve
+
+Files: `supabase/functions/site-serve/site-serve.ts` from the release ref into the DB primary's
+`/opt/dbhome/functions/src/site-serve/site-serve.ts`, and its sum line in `functions/SOURCE`; `index.ts` does not change
+in 5.1. No new environment variable, Vault key, secret or cron job. Run as root in `/opt/dbhome` (`dbp.sh`). The Mac's
+copy of the kit (`/Users/jonas/work/dbhome/functions/`, 3 Nov) is older than sites: read production's files, never it.
+
+1. **Pre-check (read only).** `site-serve` is in `functions/DEPLOYED`; `sha256sum functions/src/site-serve/site-serve.ts`
+   is master's before 5.1 (`fe3d83dceea558ebfe9a77085ac133a75c76ad8f0db1db6c5f287eaa3425d1d1`) and `functions/SOURCE`
+   says so; `functions.sh check` passes; the migration is in (step 2: `newdb_check.py` shows `hosts_enabled` false); no
+   run and no coding turn in flight.
+2. **Apply.** Copy the live file to `functions/backup/site-serve.ts.pre-5.1-<sha12>-<UTC>`, write the new file and its
+   SOURCE line, then `functions.sh install` (it puts every deployed function back from `functions/src`; only
+   site-serve's file differs). Whether the edge runtime takes new files without a restart is not known: the probe says.
+3. **Probe** (on the DB primary, through the front's sites host, no cookie, no password):
+   ```
+   curl -sS -D - -H 'Host: sites.qorpera.com' http://127.0.0.1:8080/robots.txt
+   # 200, "User-agent: *" / "Disallow: /", cache-control: no-store, no-transform
+   curl -sS -D - -H 'Host: sites.qorpera.com' http://127.0.0.1:8080/saml-gift-message/
+   # 401, the body holds action="/saml-gift-message/.qorpera/unlock", cache-control: no-store, no-transform
+   ```
+   `no-transform` is the new code's (the old function answered `no-store`); a 503 on the second means the new first
+   call fails for another reason than a missing migration: way back.
+4. **Way back.** The backup and its SOURCE line back, `functions.sh install`; the probe answers `no-store` again.
 
 ### Step 6: the relay (P1)
 
