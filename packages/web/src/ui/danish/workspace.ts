@@ -674,7 +674,6 @@ export const WORKSPACE: Record<string, string> = {
 	"1 app or group arranged": "1 app eller gruppe arrangeret",
 	"{count} apps or groups arranged": "{count} apps eller grupper arrangeret",
 	"Group {name}": "Gruppen {name}",
-	"New group": "Ny gruppe",
 	"Group name": "Gruppens navn",
 	Group: "Gruppe",
 	"Move to": "Flyt til",

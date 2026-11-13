@@ -67,7 +67,8 @@ export type CodeChangePicture =
 export interface CodeChangeFile {
 	n: number;
 	version: number;
-	kind: "landing" | "undo" | "restore" | "found";
+	/** `import`: change 1 of a repository brought in with its history (step 6, migration `20260930736000`). */
+	kind: "landing" | "undo" | "restore" | "found" | "import";
 	state: "landed" | "reverted" | "conflict" | "refused" | "lost";
 	how: "fast-forward" | "merged" | null;
 	createdAt: string;
@@ -99,6 +100,10 @@ export interface CodeChangeFile {
 	/** The row's `checks` as the kernel sends it, never checked on the way in: a value of a shape its file cannot show
 	 * reads as unknown there, and stops nothing. */
 	checks: unknown;
+	/** For an import's row, where the repository came from as the kernel sends it (the registry's `imported_from`:
+	 * `branch`, the default branch it had there, and `commits`, the earlier changes on it), never checked on the way
+	 * in: a value its file cannot show is left out of its sentence, and stops nothing. */
+	importedFrom?: unknown;
 }
 /** One line of the list. `line` is what a customer will notice, or else the change's title. */
 export interface CodeChangeLine {
@@ -113,7 +118,7 @@ const CALL_MS = 10_000;
 const SHA = /^[0-9a-f]{40}$/;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
-const KINDS = ["landing", "undo", "restore", "found"];
+const KINDS = ["landing", "undo", "restore", "found", "import"];
 const STATES = ["landed", "reverted", "conflict", "refused", "lost"];
 const CHANGES = ["added", "changed", "removed"];
 const CHECKS_STATES = ["passed", "none", "off", "inherited", "not_run"];
@@ -322,9 +327,25 @@ function kindWords(change: CodeChangeFile): string {
 				? `a restore from the copy of ${at[1]}-${at[2]}-${at[3]} ${at[4]}:${at[5]} UTC`
 				: "a restore from a copy";
 		}
+		case "import":
+			return "code brought into Qorpera";
 		default:
 			return "a change whose record was lost";
 	}
+}
+
+/** What came with a repository brought in, as its change 1 says it: the earlier changes on the default branch it had
+ * (a name, as code), and its files. What the kernel did not send is left out of the sentence. */
+function broughtInWords(change: CodeChangeFile): string {
+	const from = isRecord(change.importedFrom) ? change.importedFrom : {};
+	const { commits, branch } = from;
+	const earlier = whole(commits, 1)
+		? `${commits} earlier ${commits === 1 ? "change" : "changes"}`
+		: "Its earlier changes";
+	const on = typeof branch === "string" && branch !== "" ? ` on ${code(branch, 200)}` : "";
+	const files = change.filesChanged;
+	const and = files === null ? "" : ` and ${files} ${files === 1 ? "file" : "files"}`;
+	return `${earlier}${on}${and} came with it. Qorpera does not check code brought in.`;
 }
 
 const PICTURE_PROBLEMS: Readonly<Record<string, string>> = {
@@ -457,6 +478,8 @@ function checksWords(change: CodeChangeFile): { head: string; section: string[] 
 					"not run",
 					"Not run: Qorpera does not check an undo. The next change that goes in is checked with these files.",
 				);
+			// Code brought in: its record's own sentence under the head says so, and it has no section of checks.
+			if (change.kind === "import") return { head: "not run", section: [] };
 			return change.kind === "restore" ? said("not run", "Not run: Qorpera does not check a restore.") : UNKNOWN;
 		default:
 			return UNKNOWN;
@@ -469,6 +492,7 @@ const SAID: Readonly<Record<CodeChangeFile["kind"], string>> = {
 	undo: "Why it was undone",
 	restore: "Why it was restored",
 	found: "What was said",
+	import: "What was said",
 };
 
 /** The record's text for one change of `qorpera.code-change-files/v1`: Markdown, UTF-8, at most 24 KiB. Pure. With
@@ -517,6 +541,7 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 		: [];
 	const sections = [
 		...head,
+		...(change.kind === "import" ? ["", broughtInWords(change)] : []),
 		"",
 		"## What a customer will notice",
 		"",
@@ -525,7 +550,7 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 		"## Picture",
 		"",
 		picture,
-		...(checks ? ["", ...checks.section] : []),
+		...(checks?.section.length ? ["", ...checks.section] : []),
 		...(said === null ? [] : ["", `## ${SAID[change.kind]}`, "", said]),
 		...(why.length ? ["", "## Why it did not go in", "", ...why] : []),
 	];
@@ -808,6 +833,8 @@ function changeOf(value: unknown, target: CodeChangeTarget): CodeChangeFile {
 			? (row.checksState as CodeChangeFile["checksState"])
 			: null,
 		checks: row.checks ?? null,
+		// Read leniently too (only an import's row has it, and a kernel from before step 6 sends none).
+		importedFrom: row.importedFrom ?? null,
 	};
 }
 
@@ -884,9 +911,10 @@ export interface CodeChangeRecordsOptions {
 
 /** Whether the job that writes a change's file is to find what differs between its two ends of main first. Never for a
  * row a restore went back past, nor for a restore's own row: the repository may no longer hold one of its ends, and
- * the job leaves a record unwritten whose commits are gone. (The kernel says the same; this holds without it.) */
+ * the job leaves a record unwritten whose commits are gone. Nor for an import's: no main was there before it. (The
+ * kernel says the same; this holds without it.) */
 function diffDue(change: CodeChangeFile): boolean {
-	return change.needsDiff && change.state !== "lost" && change.kind !== "restore";
+	return change.needsDiff && change.state !== "lost" && change.kind !== "restore" && change.kind !== "import";
 }
 
 /** What one job wrote, for the kernel to be told once the job has saved. `leftOut`: a record the job was handed and

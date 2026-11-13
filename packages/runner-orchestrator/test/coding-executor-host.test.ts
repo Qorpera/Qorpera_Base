@@ -2957,7 +2957,7 @@ describe("a coding session on the folder model", () => {
 		expect(until).toBeGreaterThan(Date.now() + 50000);
 		expect(until).toBeLessThanOrEqual(Date.now() + 59000);
 		expect(f.onMount.mock.calls).toEqual([
-			[{ workerId: f.claim.workerId, machineId: f.machine.machineId, viewId: f.viewId }],
+			[{ workerId: f.claim.workerId, machineId: f.machine.machineId, viewId: f.viewId, packageCaches: true }],
 		]);
 		// The session's repositories made ready first, then attached in SQL, then mounted: the new view lists the worktree.
 		const attached = f.call.mock.calls.findIndex((call) => call[0] === "qorpera_attach_coding_session");
@@ -3043,6 +3043,14 @@ describe("a coding session on the folder model", () => {
 		expect(f.calls("qorpera_attach_coding_session")).toEqual([]);
 		expect(f.views.attach).not.toHaveBeenCalled();
 		expect(f.onMount).not.toHaveBeenCalled();
+	});
+	it("says at each mount whether the machine's agent said its package caches are ready (the log line a proof reads)", async () => {
+		const f = await folderFixture();
+		f.agent.packageCaches = false;
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.onMount.mock.calls).toEqual([
+			[{ workerId: f.claim.workerId, machineId: f.machine.machineId, viewId: f.viewId, packageCaches: false }],
+		]);
 	});
 	it("keeps the attachment's generation for a later turn on the same boot, and takes a new one after a restart", async () => {
 		const f = await folderFixture();

@@ -33,6 +33,8 @@
 	display: grid; justify-items: center; gap: 5px; min-width: 0; padding: 6px 2px 5px; border-radius: 12px;
 	color: var(--text); text-decoration: none; opacity: 0; transform: translateY(-6px) scale(0.4);
 	transition: transform var(--motion-base) var(--ease-spring), opacity var(--motion-fast) ease, background-color var(--motion-fast) ease;
+	/* A press that drags never selects the names it passes over (Jonas, 12 Nov 2026: "dragging is not fully working"). */
+	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rail-apps-drawer.is-open .rail-app {
 	opacity: 1; transform: none;
@@ -77,14 +79,49 @@
 @keyframes rail-app-enter { from { opacity: 0; transform: scale(0.82); } }
 .rail-app.is-leaving { position: absolute; pointer-events: none; animation: rail-app-leave 220ms ease-in both; }
 @keyframes rail-app-leave { to { opacity: 0; transform: scale(0.82); } }
-/* Held over another icon long enough, the dragged one goes into it on release. */
-.rail-app.is-merge-target { background: var(--rail-hover); }
-.rail-app.is-merge-target .rail-app-stand { transform: scale(1.12); transition: transform var(--motion-base) var(--ease-spring); }
+/* A group forming (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"): held over another icon's
+ * middle, a plate in that icon's colour springs up behind it and breathes, the icon steps back onto it as a group's
+ * front card would, and the dragged icon shrinks to go in. Over a group, its cards part a little to take it. Moving
+ * off, all of it springs back. */
+.rail-app-stand { isolation: isolate; }
+.rail-app-stand::before {
+	content: ""; position: absolute; inset: -7px; z-index: -1; border-radius: 14px; pointer-events: none;
+	background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent);
+	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--app-colour, var(--text)) 34%, transparent);
+	opacity: 0; transform: scale(0.55);
+	transition: opacity 140ms ease, transform 200ms var(--ease-out);
+}
+.rail-app.is-merge-target .rail-app-stand::before {
+	opacity: 1; transform: scale(1);
+	transition: opacity 120ms ease, transform 380ms var(--ease-spring);
+	animation: rail-group-forming 1.1s ease-in-out 380ms infinite alternate;
+}
+@keyframes rail-group-forming { to { transform: scale(1.07); } }
+.rail-app.is-merge-target:not(.rail-app-group) .interface-emblem { transform: translate(-3px, -3px) scale(0.8); }
+.rail-app.is-merge-target:not(.rail-app-group) .rail-app-stand::after {
+	content: ""; position: absolute; inset: 6px -1px -1px 6px; z-index: -1; border-radius: 7px; pointer-events: none;
+	border: 2px solid var(--app-colour, var(--text)); opacity: 0.45;
+	animation: rail-group-card 320ms var(--ease-spring) both;
+}
+@keyframes rail-group-card { from { opacity: 0; transform: translate(-4px, -4px) scale(0.7); } }
+.rail-app-group.is-merge-target:not(.is-open) .group-card-front { transform: translate(-1.4px, -1.6px) rotate(-8deg); }
+.rail-app-group.is-merge-target:not(.is-open) .group-card-back { transform: translate(1.4px, 1.6px) rotate(8deg); }
+.rail-app.is-lifted.is-merging .interface-emblem {
+	transform: scale(0.78); transition: transform 260ms var(--ease-spring); filter: drop-shadow(0 3px 6px rgb(0 0 0 / 18%));
+}
+/* Its name would lie across the other's: only the group's icon shows a name while it forms. */
+.rail-app.is-lifted .rail-app-name { transition: opacity 120ms ease; }
+.rail-app.is-lifted.is-merging .rail-app-name { opacity: 0; }
 .rail-compact .rail-apps-grid { grid-template-columns: minmax(0, 1fr); }
 .rail-compact .rail-app-name { display: none; }
 @media (prefers-reduced-motion: reduce) {
 	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot, .group-emblem rect { transition: none; }
 	.rail-apps-drawer.is-open .rail-app.is-entering, .rail-app.is-leaving { animation: none; }
+	.rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::before, .rail-app .interface-emblem,
+	.rail-app.is-lifted.is-merging .interface-emblem, .rail-app.is-lifted .rail-app-name { transition: none; }
+	.rail-app.is-merge-target .rail-app-stand::before, .rail-app.is-merge-target:not(.rail-app-group) .rail-app-stand::after {
+		animation: none;
+	}
 }
 
 /* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour. Its
