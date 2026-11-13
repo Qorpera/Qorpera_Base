@@ -3347,9 +3347,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"9244a52762ea861f2dba40b2798ec4a8e7d7ba1bde514c028dd1e778c7ce4170",
+		"700640c2cc32578c5eec7c87463623df96d00468f480d083acff6ff62e641e6e",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"1a42f7f3d50b45aa7c4d7f888d83cbdfa8b93f85b99b83e584f27af6ae1f490f",
+		"49a82824f7c686687678525a3d59444e8a132adb0d39fe1c25d4802461cd32ea",
 	);
 });
