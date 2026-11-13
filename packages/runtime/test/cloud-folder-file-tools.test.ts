@@ -1055,6 +1055,30 @@ it("answers with a second look that saw what the first saw, when only the rest o
 	expect(c.calls()).toBe(6);
 });
 
+it("looks again at a listing that took its whole 2 s, as far as it went and no further", async () => {
+	// Each page takes 1.1 s: the first look stops after two pages (400 entries), and a change elsewhere came between
+	// them; the second look begins past 2 s, stops at the same entry, saw the same, and is the answer.
+	const c = await changingFolder();
+	let clock = 0;
+	const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+	try {
+		for (const call of [0, 1, 2, 3])
+			c.before.set(call, () => {
+				clock += 1100;
+				if (call === 1 || call === 3) c.elsewhere();
+			});
+		const answer = listing(await c.f.call("company_list", { path: "w" }));
+		expect(c.calls()).toBe(4);
+		expect(paths(answer.entries)).toEqual(W_FILES.slice(0, 400));
+		expect(answer.ending).toBe(
+			'400 entries shown, 400 looked through. More may follow: call again with after "w/0399.md".',
+		);
+		expect(answer.asOfSeq).toBe(8);
+	} finally {
+		now.mockRestore();
+	}
+});
+
 it("says in one line that the folder changed while it was listed when it changes under every look (owed from v240)", async () => {
 	const c = await changingFolder();
 	for (const [call, n] of [

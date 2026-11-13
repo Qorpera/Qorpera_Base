@@ -100,9 +100,10 @@ const MAX_DEPTH = 8;
 const LIST_SCAN_ENTRIES = 5000;
 const LIST_SCAN_MS = 2000;
 /** One listing answer is one moment of the folder: a look whose pages answered at different folder clocks is taken
- * again, up to this many looks a call in all, each started within the call's first LIST_SCAN_MS (so a call takes at
- * most about twice that). */
+ * again, no further than the look before it went, up to this many looks a call in all, all within LIST_CALL_MS (so
+ * a look that took its whole LIST_SCAN_MS is still looked at again once). */
 const LIST_LOOKS = 3;
+const LIST_CALL_MS = 2 * LIST_SCAN_MS;
 /** The line a listing answer carries when the folder kept changing through every look. */
 const CHANGED_WHILE_LISTED =
 	"The folder changed while it was listed, so a path may show twice here or not at all; call again the same way for a clean listing.";
@@ -253,7 +254,10 @@ function sawTheSame(again: ListLook, before: ListLook): boolean {
 	return again.looked.every((entry, index) => {
 		const seen = before.looked[index] as CloudCompanyFolderEntry;
 		return (
-			entry.path === seen.path && entry.kind === seen.kind && entry.version === seen.version && entry.seq === seen.seq
+			entry.path === seen.path &&
+			entry.kind === seen.kind &&
+			entry.version === seen.version &&
+			entry.seq === seen.seq
 		);
 	});
 }
@@ -1193,10 +1197,13 @@ export function cloudFolderFileTools(options: {
 				// stops with the last entry it looked at.
 				const levels = input.path === "" ? 0 : input.path.split("/").length;
 				const glob = input.glob === null ? null : compileGlob(input.glob);
-				const look = async (): Promise<ListLook> => {
+				const begun = performance.now();
+				// `stopAfter`: a look again goes no further than the last entry the look before it looked at (when that one
+				// stopped short of the folder's end), so what it shows was read by both.
+				const look = async (stopAfter?: string): Promise<ListLook> => {
 					const looked: CloudCompanyFolderEntry[] = [];
 					const matched: CloudCompanyFolderEntry[] = [];
-					let asOfSeq: number | undefined;
+					let asOfSeq = -1;
 					let steady = true;
 					let after = input.after;
 					const started = performance.now();
@@ -1213,19 +1220,33 @@ export function cloudFolderFileTools(options: {
 						}
 						// The folder clock of the look's first page: a change after it stops a folder's move, even one a
 						// later page shows (listAll's rule). A later page at another clock may have met a change.
-						asOfSeq ??= page.asOfSeq;
-						if (page.asOfSeq !== asOfSeq) steady = false;
-						for (const entry of page.entries) {
+						if (asOfSeq < 0) asOfSeq = page.asOfSeq;
+						else if (page.asOfSeq !== asOfSeq) steady = false;
+						for (const [index, entry] of page.entries.entries()) {
 							looked.push(entry);
 							const names = entry.path.split("/");
-							if (names.length - levels > input.depth) continue;
-							if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) continue;
-							matched.push(entry);
-							if (matched.length > input.limit) break scan;
+							if (
+								names.length - levels <= input.depth &&
+								(!glob || globMatches(glob, folderKey(names.slice(levels).join("/"))))
+							) {
+								matched.push(entry);
+								if (matched.length > input.limit) break scan;
+							}
+							if (entry.path === stopAfter) {
+								if (page.next === null && index === page.entries.length - 1)
+									return { looked, matched, asOfSeq, steady, ended: true };
+								break scan;
+							}
 						}
 						if (page.next === null) return { looked, matched, asOfSeq, steady, ended: true };
 						after = page.next;
-						if (looked.length >= LIST_SCAN_ENTRIES || performance.now() - started >= LIST_SCAN_MS) break;
+						const now = performance.now();
+						if (
+							looked.length >= LIST_SCAN_ENTRIES ||
+							now - started >= LIST_SCAN_MS ||
+							now - begun >= LIST_CALL_MS
+						)
+							break;
 					}
 					return { looked, matched, asOfSeq, steady, ended: false };
 				};
@@ -1233,11 +1254,10 @@ export function cloudFolderFileTools(options: {
 				// change between two of them (a rename then shows a path twice, or not at all), so the call looks again,
 				// and answers with a look whose pages answered at one clock, or one that saw what the look before it saw.
 				// If the folder kept changing, the answer says so (owed from v240, 13 November 2026).
-				const begun = performance.now();
 				let listed = await look();
 				let settled = listed.steady;
-				for (let looks = 1; !settled && looks < LIST_LOOKS && performance.now() - begun < LIST_SCAN_MS; looks++) {
-					const again = await look();
+				for (let looks = 1; !settled && looks < LIST_LOOKS && performance.now() - begun < LIST_CALL_MS; looks++) {
+					const again = await look(listed.ended ? undefined : listed.looked.at(-1)?.path);
 					settled = again.steady || sawTheSame(again, listed);
 					listed = again;
 				}
