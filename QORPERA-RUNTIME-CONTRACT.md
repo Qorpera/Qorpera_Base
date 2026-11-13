@@ -6501,11 +6501,11 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
 
 ### 2026-11-13 amendment: company databases
 
-> **Proposed, not ratified.** Jonas named the goal on 13 November 2026 (below) and answered "Yes, go" to a second
-> PostgreSQL on the nodes for companies' data (item 2). Still open (`deploy/first-node/RUNTIME-COMPANY-DATABASES.md`
-> §13): the store's shape as a machine pair of its own, agents making databases themselves (item 5), and named
-> questions and changes as the only road for interfaces (item 6). No slice past the documents merges before he
-> answers those.
+Ratified 13 November 2026 (Jonas). To "Put a second Postgres on your nodes for companies' data?" he answered "Yes,
+go". The three points the design then left open were put to him with a recommendation each: the store as a small
+machine pair of its own (item 2), agents making and changing databases themselves with only what destroys data
+waiting for a member (item 5), and named questions and changes as the only road for interfaces (item 6). He
+answered: "Yes, all three".
 
 Jonas, 13 November 2026: "you can't act very much inside of the interfaces and [...] the numbers are never live. since
 we now host our own database, I think it's obvious that as long as we build the tools needed for companies to build

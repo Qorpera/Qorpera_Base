@@ -13,9 +13,8 @@ Contract: the 2026-11-13 amendment "company databases" (section 19). It is the a
 "interfaces project company state from the company folder", item 4, left open for the table store ("The store has its
 own amendment, which says where it runs"). This file is the technical design.
 
-**Status: proposed. Nothing is built or live.** Jonas said yes to a second PostgreSQL on the nodes (13 November);
-two decisions and the store's shape are open (§13), and no slice past the documents merges before them. The open
-points of the first draft are settled by proofs on a test machine (§11).
+**Status: decided, not live.** Jonas answered all three decisions on 13 November 2026 (§13). Nothing is on production
+or a node yet; the slices are built and proven on test machines (§11, §12).
 
 ## Words
 
@@ -432,17 +431,17 @@ Slices 2 to 5 together are "live reads": a fresh company's agents make a databas
 live. Slice 6 follows at once, since the contract asks for the snapshot. Before slice 3 is cut, the whole path runs
 on a test machine first. Live reads change nothing in the platform's database but slice 5's one migration.
 
-## 13. Decisions (Jonas)
+## 13. Decisions (Jonas, 13 November 2026)
 
-1. **A second PostgreSQL on the nodes for companies' rows. Decided, 13 November 2026**: to "Put a second Postgres on
-   your nodes for companies' data?" Jonas answered "Yes, go".
-   - **Open: its shape.** Recommended: a small machine pair of its own (§2). Cost: no money; node 1's last free
-     infrastructure room and 2 CPUs of each node's machine budget. The other way, a second server inside the platform
-     database's machine, costs no budget and shares that machine's disk and failover.
-2. **Open: agents create and change databases themselves; only what destroys data waits for a member** (§4).
-   Recommended.
-3. **Open: interfaces and the public reach rows only through named questions and changes kept as files; agents may
-   ask any read** (§4). Recommended.
+1. **A second PostgreSQL on the nodes for companies' rows.** To "Put a second Postgres on your nodes for companies'
+   data?" he answered "Yes, go". Its shape, put to him with its cost (no money; node 1's last free infrastructure
+   room and 2 CPUs of each node's machine budget): **a small machine pair of its own** (§2), not a second server
+   inside the platform database's machine.
+2. **Agents create and change databases themselves; only what destroys data waits for a member** (§4).
+3. **Interfaces and the public reach rows only through named questions and changes kept as files; agents may ask any
+   read** (§4).
+
+To 2, 3 and the shape in 1, each put with a recommendation of yes, he answered: "Yes, all three".
 
 ## 14. Not in this design
 
