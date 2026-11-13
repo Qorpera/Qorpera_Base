@@ -1468,6 +1468,30 @@ stops and deletes it as one it started.
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
 
+### The company's time zone (20260930739000_company_time_zone)
+
+A company has one time zone, an IANA name (`qorpera_profiles.time_zone`, null while it is not known), taken once from
+a member's browser (Jonas, 12 Nov 2026: "Yes, from the browser"). There is no setting. An agent's desktop computer
+shows its clock in it: the executor's list of machines names it with each placement, and the executor writes it into
+the machine. A routine's own time zone is not touched and does not take it as a default.
+
+- `qorpera_profile_team_info(profile)` answers `time_zone` beside its other keys: the name, or null. A cloud before
+  this migration answers no such key.
+- `qorpera_ensure_company_time_zone(profile, zone)` (authenticated): owners, admins and contributors
+  (`qorpera_can_write_profile`; a viewer and an outsider get 42501, whatever they hand in). The zone is taken only
+  while the company has none, in one statement (of two members at once the first is taken); a later call changes
+  nothing. Answers `{schema: "qorpera.company-time-zone/v1", timeZone, taken}`: the company's zone either way, and
+  whether this call's was taken. Refused with 22023 "Time zone is unknown": no name, a name that is not exactly one of
+  `pg_timezone_names` (read from `qorpera_runtime_time_zone_names`, as a routine's zone is), or one of another shape
+  than letters, digits, `_`, `+`, `-` in at most three parts with `/` between, 64 characters at most.
+- The client calls it when a company opens whose team read says `time_zone` null and the member may write: once, with
+  the zone it shows times in (the member's saved choice, else the device's as the browser reports it; nothing when
+  the browser reports none). It never calls for a viewer, for a company that has a zone, or on a cloud whose team
+  read has no `time_zone`; a refused zone is not handed in again by that browser.
+- Nothing else changes the zone in this version. A later change is one more function (a setting, or an agent's tool)
+  that updates the column: the executor writes a changed zone into the machine on its next pass, and a desktop shows
+  it from its next start.
+
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,

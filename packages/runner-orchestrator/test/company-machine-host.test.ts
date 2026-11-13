@@ -110,6 +110,7 @@ async function fixture(
 		screenClearTimeoutMs?: number;
 		memberLookTimeoutMs?: number;
 		memberTypeTimeoutMs?: number;
+		desktopWordTimeoutMs?: number;
 		now?: () => number;
 	} = {},
 ) {
@@ -5528,4 +5529,300 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			expect(run()).toBe(1);
 		},
 	);
+});
+
+describe("company machine host: the desktop's figure (20260930737000)", () => {
+	const FIGURE = "/etc/qorpera-machine/desktop-figure";
+	type F = Awaited<ReturnType<typeof fixture>>;
+	const starter = (figure: string | null, templateId: string | null = null, staffAgentId = id(9)) => ({
+		staffAgentId,
+		figure,
+		templateId,
+	});
+	/** The writes of the figure's word, as the host asked them of LXD (without their signal). */
+	const written = (f: F) =>
+		(f.client.pushInstanceFile.mock.calls as unknown[][])
+			.filter((call) => call[2] === FIGURE)
+			.map((call) => call.slice(0, 5));
+	const quiet = { at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] };
+	const name = lxdCompanyMachinePlan(binding()).request.name;
+
+	it("writes the starter's figure into a new boot before SQL is told it runs: one word, root's, for all to read", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(written(f)).toEqual([["machines", name, FIGURE, "star\n", 0o644]]);
+		expect(f.order.indexOf("push")).toBeGreaterThan(-1);
+		expect(f.order.indexOf("push")).toBeLessThan(f.order.indexOf("sql:qorpera_mark_company_machine_running"));
+		// The same boot and the same figure: nothing more is written, pass after pass.
+		f.running();
+		f.observe(quiet);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.pass(f.signal);
+		expect(written(f)).toHaveLength(1);
+	});
+
+	it("draws the figure as every client does, and writes nothing for a machine SQL names no starter of", async () => {
+		for (const [listed, word] of [
+			[starter("ghost"), "moon"],
+			[starter(null, "co-founder"), "crown"],
+			[starter("dragon", "co-founder"), "crown"],
+			[starter("bolt", "co-founder"), "bolt"],
+		] as const) {
+			const f = await fixture();
+			f.entry.starter = listed;
+			await f.host.pass(f.signal);
+			expect(written(f)).toEqual([["machines", name, FIGURE, `${word}\n`, 0o644]]);
+		}
+		// An SQL from before the migration, an agent whose row is gone, an answer that is no starter's: no word, and the
+		// machine starts as ever.
+		for (const listed of [undefined, null, {}, { staffAgentId: "ada", figure: "star" }, "star"]) {
+			const f = await fixture();
+			if (listed !== undefined) f.entry.starter = listed;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+			expect(written(f)).toEqual([]);
+			expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		}
+	});
+
+	it("writes it again when the figure changes while the machine runs, and once after the executor restarted", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		await f.host.pass(f.signal);
+		f.running();
+		f.observe(quiet);
+		// A member gave the agent another figure: the next pass writes the new word, once.
+		f.entry.starter = starter("bolt");
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n"]);
+		// A new process knows nothing of what the one before wrote: it writes the word once, then leaves it.
+		f.restart();
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n", "bolt\n"]);
+		// The machine's next boot gets it again (its disk may be a new one).
+		f.reboot();
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n", "bolt\n", "bolt\n"]);
+	});
+
+	it("never fails or holds a start on a write that fails: the machine runs, and the write is tried three times a boot", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		// An image from before the desktop's look has no folder for the word: LXD refuses every write of it.
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] === FIGURE) throw new Error("LXD instance file unavailable");
+			return push?.(...(args as []));
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		// No fault is recorded on the machine (a step that went well records none).
+		expect(failures(f)).toEqual([]);
+		f.running();
+		f.observe(quiet);
+		for (let pass = 0; pass < 5; pass++)
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(written(f)).toHaveLength(3);
+		expect(failures(f)).toEqual([]);
+		// Another figure, or another boot, is tried anew.
+		f.entry.starter = starter("moon");
+		for (let pass = 0; pass < 5; pass++) await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "star\n", "star\n", "moon\n", "moon\n", "moon\n"]);
+	});
+
+	it("cuts off a write that does not answer after its time, and tells SQL the boot runs all the same", async () => {
+		const f = await fixture({ desktopWordTimeoutMs: 40 });
+		f.entry.starter = starter("star");
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		const cut: unknown[] = [];
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] !== FIGURE) return push?.(...(args as []));
+			const signal = args[5] as AbortSignal;
+			await new Promise((_resolve, reject) => {
+				signal.addEventListener("abort", () => {
+					cut.push(signal.reason);
+					reject(signal.reason);
+				});
+			});
+		});
+		const started = Date.now();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(Date.now() - started).toBeLessThan(1500);
+		expect(cut).toHaveLength(1);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		expect(failures(f)).toEqual([]);
+	});
+});
+
+describe("company machine host: the desktop's time zone (20260930739000)", () => {
+	const FIGURE = "/etc/qorpera-machine/desktop-figure";
+	const ZONE = "/etc/qorpera-machine/desktop-timezone";
+	type F = Awaited<ReturnType<typeof fixture>>;
+	/** The writes of a word for the desktop, as the host asked them of LXD (without their signal). */
+	const written = (f: F, path = ZONE) =>
+		(f.client.pushInstanceFile.mock.calls as unknown[][])
+			.filter((call) => call[2] === path)
+			.map((call) => call.slice(0, 5));
+	const quiet = { at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] };
+	const name = lxdCompanyMachinePlan(binding()).request.name;
+
+	it("writes the company's time zone into a new boot before SQL is told it runs: one word, root's, for all to read", async () => {
+		const f = await fixture();
+		f.entry.timeZone = "Europe/Copenhagen";
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(written(f)).toEqual([["machines", name, ZONE, "Europe/Copenhagen\n", 0o644]]);
+		expect(f.order.indexOf("push")).toBeGreaterThan(-1);
+		expect(f.order.indexOf("push")).toBeLessThan(f.order.indexOf("sql:qorpera_mark_company_machine_running"));
+		// No starter listed: the figure's word is not written, the zone's is.
+		expect(written(f, FIGURE)).toEqual([]);
+		// The same boot and the same zone: nothing more is written, pass after pass.
+		f.running();
+		f.observe(quiet);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.pass(f.signal);
+		expect(written(f)).toHaveLength(1);
+	});
+
+	it("writes the zone beside the figure, each word to its own file, each once", async () => {
+		const f = await fixture();
+		f.entry.starter = { staffAgentId: id(9), figure: "star", templateId: null };
+		f.entry.timeZone = "America/Argentina/Buenos_Aires";
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(written(f)).toEqual([["machines", name, ZONE, "America/Argentina/Buenos_Aires\n", 0o644]]);
+		expect(written(f, FIGURE)).toEqual([["machines", name, FIGURE, "star\n", 0o644]]);
+		f.running();
+		f.observe(quiet);
+		await f.host.pass(f.signal);
+		// The figure changes: its word is written again, the zone's is left.
+		f.entry.starter = { staffAgentId: id(9), figure: "bolt", templateId: null };
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f, FIGURE).map((call) => call[3])).toEqual(["star\n", "bolt\n"]);
+		expect(written(f)).toHaveLength(1);
+	});
+
+	it("writes nothing for a company whose zone is not known, an SQL without the key, or a word that is no zone's name", async () => {
+		for (const listed of [
+			undefined,
+			null,
+			"",
+			7,
+			{},
+			["Europe/Copenhagen"],
+			"Europe/Copenhagen\n",
+			" Europe/Copenhagen",
+			"Europe/Copenhagen ",
+			"../etc/passwd",
+			"Europe/../Copenhagen",
+			"/Europe/Copenhagen",
+			"Europe/Copenhagen/",
+			"Europe//Copenhagen",
+			"a/b/c/d",
+			"Europe/Copenhagen;reboot",
+			"Europe/København",
+			"A".repeat(65),
+		]) {
+			const f = await fixture();
+			if (listed !== undefined) f.entry.timeZone = listed;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+			expect(written(f)).toEqual([]);
+			expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		}
+	});
+
+	it("writes it when a member's browser hands the zone in while the machine runs, and once after the executor restarted", async () => {
+		const f = await fixture();
+		// The company has no zone yet: the boot is marked running with nothing written.
+		f.entry.timeZone = null;
+		await f.host.pass(f.signal);
+		f.running();
+		f.observe(quiet);
+		await f.host.pass(f.signal);
+		expect(written(f)).toEqual([]);
+		// A member opens the app: the company's zone is known, and the next pass writes the word, once.
+		f.entry.timeZone = "Europe/Copenhagen";
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["Europe/Copenhagen\n"]);
+		// Were it ever changed, the new word is written, once.
+		f.entry.timeZone = "Etc/GMT+2";
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["Europe/Copenhagen\n", "Etc/GMT+2\n"]);
+		// A new process knows nothing of what the one before wrote: it writes the word once, then leaves it.
+		f.restart();
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["Europe/Copenhagen\n", "Etc/GMT+2\n", "Etc/GMT+2\n"]);
+		// The machine's next boot gets it again (its disk may be a new one).
+		f.reboot();
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual([
+			"Europe/Copenhagen\n",
+			"Etc/GMT+2\n",
+			"Etc/GMT+2\n",
+			"Etc/GMT+2\n",
+		]);
+	});
+
+	it("never fails or holds a start on a write that fails: the machine runs, the figure is written, and the zone is tried three times a boot", async () => {
+		const f = await fixture();
+		f.entry.starter = { staffAgentId: id(9), figure: "star", templateId: null };
+		f.entry.timeZone = "Europe/Copenhagen";
+		// LXD refuses every write of the zone's word; the figure's goes through.
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] === ZONE) throw new Error("LXD instance file unavailable");
+			return push?.(...(args as []));
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		// No fault is recorded on the machine (a step that went well records none).
+		expect(failures(f)).toEqual([]);
+		f.running();
+		f.observe(quiet);
+		for (let pass = 0; pass < 5; pass++)
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(written(f)).toHaveLength(3);
+		expect(written(f, FIGURE)).toHaveLength(1);
+		expect(failures(f)).toEqual([]);
+		// Another boot is tried anew.
+		f.reboot();
+		for (let pass = 0; pass < 5; pass++) await f.host.pass(f.signal);
+		expect(written(f)).toHaveLength(6);
+	});
+
+	it("cuts off both writes after one write's time when neither answers, and tells SQL the boot runs all the same", async () => {
+		const f = await fixture({ desktopWordTimeoutMs: 40 });
+		f.entry.starter = { staffAgentId: id(9), figure: "star", templateId: null };
+		f.entry.timeZone = "Europe/Copenhagen";
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		/** The writes on their way, and how many were when the first was cut off. */
+		const waiting = new Set<unknown>();
+		const cut: unknown[] = [];
+		let together = 0;
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] !== ZONE && args[2] !== FIGURE) return push?.(...(args as []));
+			const signal = args[5] as AbortSignal;
+			waiting.add(args[2]);
+			await new Promise((_resolve, reject) => {
+				signal.addEventListener("abort", () => {
+					if (cut.length === 0) together = waiting.size;
+					cut.push(args[2]);
+					waiting.delete(args[2]);
+					reject(signal.reason);
+				});
+			});
+		});
+		const started = Date.now();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(Date.now() - started).toBeLessThan(1500);
+		// Side by side: both were on their way when the first was cut off, so a start waits one write's time for both.
+		expect(together).toBe(2);
+		expect([...cut].sort()).toEqual([FIGURE, ZONE]);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		expect(failures(f)).toEqual([]);
+	});
 });

@@ -122,6 +122,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_drain_node_update(uuid,bigint,text,text,bigint,text)', true, true, 'internal: node capability secret (sha256 match)'),
 	('public.qorpera_enqueue_execution_run(uuid,uuid,uuid,text,uuid,uuid,uuid,bigint,uuid,bigint,text,text,jsonb,text,text,uuid[],uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_enqueue_runner_job(uuid,uuid,uuid,uuid,text,text,jsonb)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_ensure_company_time_zone(uuid,text)', false, true, 'member: auth.uid() + qorpera_can_write_profile (owners, admins, contributors); the caller hands in the time zone their browser shows, taken only while the company has none and only a name the database knows; answers the company''s zone (20260930739000)'),
 	('public.qorpera_ensure_staff_session(uuid,text,uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_find_account_by_email(text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_folder_hint_member(text)', false, true, 'member: whether auth.uid() is a member of the topic''s folder-v2 company, for the Realtime receive policy (C4 P30)'),
