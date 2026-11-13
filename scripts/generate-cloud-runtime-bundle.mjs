@@ -7,17 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024099_runtime_bundle_activation_v240.sql";
-const activationVersion = 240;
-const previousActivationVersion = 239;
-const previousActivationSha256 = "0c3013cd760d3e5fd6afd31c3403b15ef2a9f42d90241c850d44a8992fe9a296";
-// This release's own migrations, which its activation requires before it registers the bundle (v240: none): one entry per
+const activation = "supabase/migrations/20260929024199_runtime_bundle_activation_v241.sql";
+const activationVersion = 241;
+const previousActivationVersion = 240;
+const previousActivationSha256 = "729f0efe44ca88d3695316488e897e60c69626d5ce619970c0259b82c68504c9";
+// This release's own migrations, which its activation requires before it registers the bundle (v241): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v241 replaces these entries with the migrations v241 brings (or an empty list). v240's
-// entries are not repeated there: v241's activation already requires v240 active with its exact digest, which on a
-// database past 20260930534000 only this activation sets, after these guards. An entry sorting before the activation file
-// is checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
-// order reaches it only after the activation (as with the guards in the activation's text below).
+// version lines, when it sets them: v242 replaces these entries with the migrations v242 brings (or an empty list).
+// v242's activation already requires v241 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v241's list is EMPTY on purpose: its release switches the bundle BEFORE its migrations (20260930741000, 20260930743000;
+// the import's follow-ups, #1725): the runtime reads every new key optionally and needs nothing new from SQL, while the
+// runtime before it reads the import's read answer closed, so these migrations come after the switch and the activation
+// must not require them. An entry sorting before the activation file is checked on every database; one sorting after it
+// only on a database past 20260930534000, since a fresh chain in file order reaches it only after the activation (as with
+// the guards in the activation's text below).
 const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {

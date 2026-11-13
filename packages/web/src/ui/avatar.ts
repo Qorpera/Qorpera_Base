@@ -218,8 +218,8 @@ export interface FigureOptions {
 	alive?: boolean;
 }
 
-/** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done, "perk" under
- * the pointer. Nothing happens on any other element, or for a member who wants no motion. */
+/** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done. Nothing happens on
+ * any other element, or for a member who wants no motion. */
 export function playFigure(host: Element | null | undefined, kind: Moment): void {
 	if (!host) return;
 	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
