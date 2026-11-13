@@ -348,6 +348,11 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		}
 	}
-	if (cleanupError) throw cleanupError;
+	// A usage limit the provider met after the run's answer stays the login's to record, also when cleanup failed after
+	// it (the 2026-11-13 amendment).
+	if (cleanupError)
+		throw result?.usageSignal
+			? tagNativeRuntimeFailure(cleanupError, "native-tools", "unknown", result.usageSignal)
+			: cleanupError;
 	return result;
 }
