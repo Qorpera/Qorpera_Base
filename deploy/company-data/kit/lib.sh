@@ -14,11 +14,12 @@ export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME (th
 L=${DATA_LOCAL:?set DATA_LOCAL (the own folder of this machine)}
 B=${DATA_BACKUP:?set DATA_BACKUP (the backup folder)}
 
-# The gateway's secrets, one file each in $L/secrets/gateway (gateway-main.mjs reads them by name). PASSWORDS are
-# the store's logins: cluster.sql takes each as -v <name>_password. KEYS are the gateway's own keys, 32 random bytes
-# as hex. Both must be the same on the standby's machine (standby.sh pack carries them).
-GATEWAY_PASSWORDS="admin owner write read watch"
-GATEWAY_KEYS=""
+# The gateway's secrets, one file each in $L/secrets/gateway (gateway-main.mjs reads them by name, folder-key as
+# folderKey). PASSWORDS are the store's three logins: cluster.sql takes each as -v <name>_password. KEYS are 32 random
+# bytes as hex: folder-key derives every database folder's own login password. All must be the same on the standby's
+# machine, or a promoted standby's gateway cannot log in (standby.sh pack carries them).
+GATEWAY_PASSWORDS="admin keeper watch"
+GATEWAY_KEYS="folder-key"
 
 # uid and gid of postgres in the pinned PostgreSQL image (docker-compose.yml data-db), and of nobody, the gateway's.
 PG_UID=999

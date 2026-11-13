@@ -38,9 +38,10 @@ The scripts run as root and take every name and path from the environment (or a 
 | `postgres/tls/` | the server's key (root, group postgres, 0640) and cert, and the CA's cert | yes (or a new one from `ca/`) |
 | `postgres/hba-standby.conf`, `standby.conf`, `replication.pgpass`, `restore.conf` | written by `standby.sh` and `restore.sh` | no |
 
-When the gateway's change to per-folder logins lands (the lead's note of 13 November), `secrets/gateway/` holds
-`admin`, `keeper`, `watch` and `folder-key`. The folder key derives every database folder's login password: it must be
-the same on both gateways, and a store whose folder key is lost needs every folder's password set again.
+`secrets/gateway/` holds `admin`, `keeper` and `watch` (the store's three logins) and `folder-key` (32 random bytes as
+hex). The folder key derives every database folder's own login password: it must be the same on the primary's and the
+standby's gateway (`standby.sh pack` carries it), and a store whose folder key is lost needs every folder's password
+set again.
 
 ## Running it on a machine
 
@@ -116,9 +117,10 @@ rows up to it (count and hash); (d) a standby seeded over TLS with a slot, strea
 refused, the primary stopped, the standby promoted, and its gateway answering with every committed row; (f) nothing
 left.
 
-Last result: 13 November 2026, node02's test machine, against the gateway and SQL files of commit 3eaac5135: 31 of
-31 checks passed in 89 s. Init 13.5 s, apply 0.2 s, base backup 1.0 s, restore 2.8 s (to the time, promoted), standby
-seed over TLS 2.9 s (streaming 3 s after the start, replay lag 18 ms), promote and the gateway answering 7.0 s.
+Last result: 13 November 2026, node02's test machine, against the gateway and SQL files with per-folder logins (merge
+of `claude/company-data-gateway` at de8517dde): 31 of 31 checks passed in 92 s. Init 14.5 s, apply 0.2 s, base backup
+1.2 s, restore 2.8 s (to the time, promoted), standby seed over TLS 3.6 s, promote and the gateway answering 7.4 s.
+The promoted store's gateway logs in as the database folder's own logins, so the folder key crossed with `pack`.
 
 ## Not done here
 
