@@ -106,7 +106,7 @@ const KIT_OUTSIDE_QORPERA =
  * reads the data file, puts each such value's current number in its place and gives the engine the text it parses: a
  * value with no answer yet is null, and a `state` beside it says `"unknown"` (an answered one says `"known"`). Each
  * question with its params is watched once, however many values share it; a later answer that fails keeps the last good
- * one. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
+ * one. Loads run one after another. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
  * `QORPERA_KIT.live` lists the places of the data that are bound and `QORPERA_KIT.changed` the ones that moved at the
  * last load, each as a JSON pointer. Where `qorpera.watch` is missing (outside Qorpera, or an older web app), a value is
  * its `example`, with `"assumed"` beside it, or not known when it has none.
@@ -126,7 +126,7 @@ const KIT_LIVE_VALUES = [
 	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
 	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
 	'for(const n of Object.keys(v))walk(v[n],v,n,path+"/"+n.replace(/~/g,"~0").replace(/\\//g,"~1"),out,d+1)};',
-	'K.load=async()=>{const raw=await q.read("apps/"+K.app+"/"+K.data);',
+	'const run=async()=>{const raw=await q.read("apps/"+K.app+"/"+K.data);',
 	'const text=typeof raw==="string"?raw:raw&&(raw.text??(raw.content&&raw.content.text)??raw.content);',
 	'const found=[],ws=[],on=typeof q.watch==="function";let data=null;',
 	'try{if(typeof text==="string"&&text.includes("query")){data=JSON.parse(text);walk(data,null,null,"",found,0)}}catch(e){}',
@@ -139,7 +139,9 @@ const KIT_LIVE_VALUES = [
 	'if(r&&typeof r==="object")v=num(r[typeof f.b.column==="string"?f.b.column:Array.isArray(a.columns)&&a.columns.length?a.columns[0]:Object.keys(r)[0]]);',
 	'else if(!on)v=num(f.b.example);f.h[f.k]=v;if(f.s)f.h.state=v===null?"unknown":on?"known":"assumed";',
 	"now.set(f.p,v);if(seen.has(f.p)&&seen.get(f.p)!==v)moved.push(f.p)});",
-	"seen=now;K.live=found.map((f)=>f.p);K.changed=moved;return found.length?JSON.stringify(data):text}})();",
+	"seen=now;K.live=found.map((f)=>f.p);K.changed=moved;return found.length?JSON.stringify(data):text};",
+	// One load at a time: a load asked for while one runs starts after it, so the newest answers land last.
+	"let chain=Promise.resolve();K.load=()=>{const p=chain.then(run);chain=p.catch(()=>{});return p}})();",
 ].join("");
 
 /** A data file's text as the object an engine draws from, or what is wrong with it, in words for its maker. */

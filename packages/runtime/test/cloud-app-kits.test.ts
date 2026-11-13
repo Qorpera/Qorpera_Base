@@ -312,13 +312,13 @@ it("writes the live values' script into every kit's page, small and before the e
 	const page = kitPage("orders", "model", "Orders", ORDERS, () => true);
 	const script = pageScript(page);
 	expect(script).toContain("if(!window.qorpera){");
-	expect(script).toContain("K.load=async()=>");
+	expect(script).toContain("K.load=()=>");
 	expect(script).toContain("K.onLive=");
 	expect(page.indexOf(script)).toBeLessThan(page.indexOf('<script src="engine.js"></script>'));
 	expect(() => new Script(script)).not.toThrow();
 	// Every app of a kit carries it.
 	expect(Buffer.byteLength(script)).toBeLessThan(3584);
-	expect(pageScript(kitPage("marked", "board", "Marked", BOARD, () => true))).toContain("K.load=async()=>");
+	expect(pageScript(kitPage("marked", "board", "Marked", BOARD, () => true))).toContain("K.load=()=>");
 });
 
 it("puts each live value's number in its place and asks each question once", async () => {
@@ -409,6 +409,37 @@ it("keeps the last good answer when a later ask fails", async () => {
 		[null, "unknown"],
 		[null, "unknown"],
 	]);
+});
+
+it("loads one at a time, so a load asked for while one waits on its read ends in the newer answer", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const reads: ((text: string) => void)[] = [];
+	const read = vi.fn(() => new Promise<string>((done) => reads.push(done)));
+	const { kit, drawFrames } = openPage(ORDERS, { read, watch: db.watch, onChange() {} });
+	const live = vi.fn();
+	kit.onLive(live);
+	const turn = () => new Promise((done) => setTimeout(done, 0));
+	const first = kit.load();
+	await turn();
+	reads.shift()?.(JSON.stringify(ORDERS));
+	await first;
+	// A load waits on its read when the answer moves, and the engine asks for another load.
+	const older = kit.load();
+	await turn();
+	db.set("shop/month", { orders: 350, revenue: 51000 });
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	const newer = kit.load();
+	await turn();
+	// The newer load reads only once the older one is done.
+	expect(read).toHaveBeenCalledTimes(2);
+	reads.shift()?.(JSON.stringify(ORDERS));
+	expect(inputs(await older)[0]).toEqual({ id: "orders", value: 350, state: "known" });
+	await turn();
+	expect(read).toHaveBeenCalledTimes(3);
+	reads.shift()?.(JSON.stringify(ORDERS));
+	expect(inputs(await newer)[0]).toEqual({ id: "orders", value: 350, state: "known" });
+	expect(kit.changed).toEqual([]);
 });
 
 it("waits a few seconds at most for the first answers, and a later one comes through onLive", async () => {

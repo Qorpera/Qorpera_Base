@@ -746,7 +746,8 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 	// ---------- state
 	let M = null;
 	let ui = null;
-	const S = { values: dict(), touched: new Set(), hand: new Set() };
+	// touched: the member's values; hand: those they set themselves; example: those set only by "Try an example"
+	const S = { values: dict(), touched: new Set(), hand: new Set(), example: new Set() };
 
 	function evaluator(over) {
 		const memo = new Map();
@@ -1207,8 +1208,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		const W = M.words;
 		const row = h("div", "mk-row");
 		row.style.setProperty("--i", i);
-		const r = { inp, row };
 		const lab = h("span", inp.note ? "mk-label mk-noted" : "mk-label", inp.label);
+		const r = { inp, row, lab };
 		if (inp.note) {
 			lab.setAttribute("role", "button");
 			lab.tabIndex = 0;
@@ -1232,6 +1233,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		r.mine.addEventListener("click", () => {
 			S.touched.delete(inp.id);
 			S.hand.delete(inp.id);
+			S.example.delete(inp.id);
 			S.values[inp.id] = inp.value;
 			glide();
 			update();
@@ -2107,6 +2109,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		for (const k of Object.keys(sc.values)) {
 			S.values[k] = sc.values[k];
 			S.touched.add(k);
+			S.example.delete(k);
 		}
 		glide();
 		update();
@@ -2117,6 +2120,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			if (stOf(inp.id) === "unknown") {
 				S.values[inp.id] = inp.value;
 				S.touched.add(inp.id);
+				S.example.add(inp.id);
 				any = true;
 			}
 		if (!any) return;
@@ -2153,6 +2157,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	function resetAll() {
 		S.touched.clear();
 		S.hand.clear();
+		S.example.clear();
 		for (const inp of M.inputs) S.values[inp.id] = inp.value;
 		glide();
 		update();
@@ -2202,6 +2207,7 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	async function load() {
 		lastLoad = Date.now();
 		if (ui && ui.dragging) {
+			clearTimeout(pending);
 			pending = setTimeout(load, 1500);
 			return;
 		}
@@ -2237,10 +2243,16 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		if (!next.inputs.length) return quiet(next.words.empty);
 		lastText = text;
 		// keep what the member chose: every input they touched stays where they put it (clamped to the new range), whatever
-		// its new value or state, until they reset it
+		// its new value or state, until they reset it. An example gives way once the data knows the input: a guess never
+		// sits on a fact the member did not choose against.
 		const keep = new Map();
-		for (const id of S.touched) if (next.inp[id]) keep.set(id, S.values[id]);
+		for (const id of S.touched) {
+			const n = next.inp[id];
+			if (n && !(S.example.has(id) && !S.hand.has(id) && n.state !== "unknown")) keep.set(id, S.values[id]);
+		}
 		const hand = new Set([...S.hand].filter((id) => keep.has(id)));
+		S.example = new Set([...S.example].filter((id) => keep.has(id)));
+		const noted = ui && ui.noteFor ? ui.rows.find((r) => r.lab === ui.noteFor) : null;
 		const focused = D.activeElement && ui && ui.rows.find((r) => r.range === D.activeElement);
 		S.touched = new Set();
 		S.hand = hand;
@@ -2267,6 +2279,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			const r = ui.rows.find((x) => x.inp.id === focused.inp.id);
 			if (r) r.range.focus({ preventScroll: true });
 		}
+		// a note the member opened stays open
+		const note = noted && ui.rows.find((x) => x.inp.id === noted.inp.id && x.inp.note);
+		if (note) toggleNote(note.lab, note.inp.note);
 	}
 	function changed() {
 		clearTimeout(pending);

@@ -435,6 +435,79 @@ describe("the model kit's engine with live values", () => {
 		expect(shown("Orders")).toEqual(["340", "known"]);
 	});
 
+	it("lets an example give way when the number arrives, and keeps what the member chose", async () => {
+		// "Try an example" on a value with no answer yet: the answer, when it comes, replaces the guess.
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		await openLive("model", orders, db);
+		await settle(3000);
+		document.querySelector<HTMLButtonElement>(".mk-gobtn")?.click();
+		expect(shown("Orders")).toEqual(["100", "yours"]);
+		await moved(db, "shop/month", { orders: 340 });
+		expect(shown("Orders")).toEqual(["340", "known"]);
+		// Dragged before the answer came: the member's value stays.
+		const dragged = databases({ "shop/visits": { visits: 4200 } });
+		await openLive("model", orders, dragged);
+		await settle(3000);
+		slide("Orders", 500);
+		await moved(dragged, "shop/month", { orders: 340 });
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		// A scenario chip's value stays through a live tick.
+		const chosen = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		await openLive("model", orders, chosen);
+		[...document.querySelectorAll<HTMLButtonElement>(".mk-chip")]
+			.find((chip) => chip.textContent === "Busy")
+			?.click();
+		await moved(chosen, "shop/month", { orders: 360 });
+		expect(shown("Orders")).toEqual(["800", "yours"]);
+	});
+
+	it("leaves alone a slider whose scenario value has no answer yet", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const goal = { query: "shop/goal", column: "visits" };
+		await openLive("model", { ...orders, scenarios: [{ label: "Goal", values: { orders: 800, visits: goal } }] }, db);
+		await settle(3000);
+		[...document.querySelectorAll<HTMLButtonElement>(".mk-chip")]
+			.find((chip) => chip.textContent === "Goal")
+			?.click();
+		expect(shown("Orders")).toEqual(["800", "yours"]);
+		expect(shown("Visits")).toEqual(["4200", "known"]);
+	});
+
+	it("neither stops nor moves a slider being dragged when a value moves, and keeps an open note open", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const noted = {
+			...orders,
+			groups: [
+				{
+					...orders.groups[0],
+					inputs: [{ ...orders.groups[0].inputs[0], note: "Paid orders" }, orders.groups[0].inputs[1]],
+				},
+			],
+		};
+		const { qorpera } = await openLive("model", noted, db);
+		const range = document.querySelector<HTMLInputElement>('.mk-range[aria-label="Orders"]') as HTMLInputElement;
+		range.dispatchEvent(new Event("pointerdown"));
+		slide("Orders", 500);
+		await moved(db, "shop/month", { orders: 360 });
+		await moved(db, "shop/visits", { visits: 4300 });
+		// The page waits for the hand: the same slider, where the member holds it.
+		expect(range.isConnected).toBe(true);
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		expect(qorpera.read).toHaveBeenCalledTimes(1);
+		range.dispatchEvent(new Event("pointerup"));
+		await settle(1500);
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		expect(shown("Visits")).toEqual(["4300", "known"]);
+		// A note the member opened stays open through a redraw.
+		document.querySelector<HTMLElement>(".mk-noted")?.click();
+		expect(document.querySelector(".mk-tip.mk-on")?.textContent).toBe("Paid orders");
+		await moved(db, "shop/visits", { visits: 4400 });
+		expect(shown("Visits")).toEqual(["4400", "known"]);
+		expect(document.querySelector(".mk-tip.mk-on")?.textContent).toBe("Paid orders");
+		expect(document.querySelector(".mk-noted")?.getAttribute("aria-expanded")).toBe("true");
+	});
+
 	it.each(WITHOUT_WATCH)("draws a live value's example %s, and else not known", async (_where, db) => {
 		await openLive("model", orders, db);
 		expect(shown("Orders")).toEqual(["120", "assumed"]);
@@ -496,6 +569,25 @@ describe("the path kit's engine with live values", () => {
 		change();
 		await settle(10000);
 		expect(step("visit")?.textContent).toBe("1,200");
+		expect(revenue()?.querySelector(".pk-fig-n")?.textContent).toBe("48,000");
+	});
+
+	it("keeps an open step's sheet open through a live value, and plays its entrance once", async () => {
+		const db = databases({ "shop/funnel": { visits: 1200, orders: 30 }, "shop/revenue": { revenue: 48000 } });
+		await openLive("path", funnel, db);
+		expect(document.querySelector(".pk")?.classList.contains("pk-intro")).toBe(true);
+		document.querySelector<HTMLButtonElement>('.pk-node[data-key="n:web:visit"]')?.click();
+		expect(document.querySelectorAll(".pk-sheet")).toHaveLength(1);
+		db.set("shop/funnel", { visits: 1300, orders: 31 });
+		drawFrames();
+		await settle();
+		expect(document.querySelectorAll(".pk-sheet")).toHaveLength(1);
+		expect(document.querySelector('.pk-node[data-key="n:web:visit"]')?.getAttribute("aria-expanded")).toBe("true");
+		// The open step's number is the new one, marked as the open step's.
+		expect(step("visit")?.textContent).toBe("1,300");
+		expect(step("visit")?.classList.contains("mine")).toBe(true);
+		// No entrance again: the figures stand at their numbers at once.
+		expect(document.querySelector(".pk")?.classList.contains("pk-intro")).toBe(false);
 		expect(revenue()?.querySelector(".pk-fig-n")?.textContent).toBe("48,000");
 	});
 
