@@ -171,6 +171,14 @@ const SERVED_RELEASED_KEPT = 100_000;
  * reads on through every round has its boundary answered as having no answer yet. */
 const MACHINE_RELEASE_ROUNDS = 8;
 const STOPPING = "The folder service is stopping; try again";
+/** 20260930754000: what the relay hears when the view it names is no window this service holds open. */
+const NO_WINDOW = "This service holds no open home window by that id";
+
+/** Views whose last boundary is a final the core closes them with, and whose changes carry credits: a test machine's
+ * (F3 6b) and a home window's (20260930754000). */
+function closedByFinal(view: View): boolean {
+	return view.access?.testMachine === true || view.access?.homeWindow === true;
+}
 /** Search pages (keyholes S4, search for every run): at most this many run at once on the node's one event loop, each
  * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
  * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
@@ -803,8 +811,11 @@ export class FolderService {
 		const lost = this.#machineLost(machine);
 		const unreleased = views.some((view) => view.unreleased);
 		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
-		// A test machine's commands ended with it (F3 6b).
+		// A test machine's commands ended with it (F3 6b), and so did the native calls open on its home windows
+		// (20260930754000), whose windows are kept under the view's own key.
 		this.#windows.clear(machine);
+		for (const view of this.#views.values())
+			if (view.access?.homeWindow && view.access.machine === machine) this.#windows.clear(view.key);
 		// A view of the boot before that the core closed is listed closed no more (#close): an executor that restarted
 		// itself meanwhile would take it for the next boot's own (company-machine-host.ts #settle), and restart again.
 		for (const view of this.#views.values())
@@ -812,8 +823,8 @@ export class FolderService {
 				view.closed &&
 				view.closedAt !== undefined &&
 				!view.movedTo &&
-				view.access?.testMachine &&
-				view.access.machine === machine
+				closedByFinal(view) &&
+				view.access?.machine === machine
 			) {
 				view.closedAt = undefined;
 				this.#forgetClosed(view);
@@ -871,6 +882,34 @@ export class FolderService {
 		return this.#machineBoundary(machine, []);
 	}
 
+	/** A native call started on a home window (20260930754000), which the relay says over the control socket before it
+	 * sends the call to the home: what the window saves from now until the call closes is credited to the call, and so
+	 * carries the call's own receipt. Said again, it changes nothing. A view this service does not hold open, or one
+	 * that is not a window, is refused: the relay must not start a call the folder cannot credit. */
+	openCall(viewId: string, window: CommandWindow): void {
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		this.#windows.open(this.#windowView(viewId).key, window);
+	}
+
+	/** The call ended: its window closes, and the home machine has a boundary, answered once what the window changed
+	 * until then was published or refused, as a command's close is. Said again, it is one more boundary. */
+	async closeCall(viewId: string, callId: string): Promise<MachineBoundary> {
+		const view = this.#windowView(viewId);
+		this.#windows.close(view.key, callId);
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		const machine = view.access?.machine;
+		if (machine === undefined) throw new ProtocolError(ErrorCode.viewClosed, NO_WINDOW);
+		return this.#machineBoundary(machine, []);
+	}
+
+	/** The open window this service holds by that id. */
+	#windowView(viewId: string): View {
+		const view = this.#views.get(`view:${viewId}`);
+		if (view === undefined || view.closed || !view.access?.homeWindow)
+			throw new ProtocolError(ErrorCode.viewClosed, NO_WINDOW);
+		return view;
+	}
+
 	async #machineBoundary(machine: string, final: readonly string[]): Promise<MachineBoundary> {
 		const restarts = this.#restarts.get(machine);
 		// Each view waits for its checks until the same deadline, however long it waits for its turn first: the executor
@@ -883,7 +922,7 @@ export class FolderService {
 		// final: named final again, it asks it again.
 		for (const viewId of final) {
 			const view = this.#views.get(`view:${viewId}`);
-			if (view?.closed && view.finalOut && view.access?.testMachine && view.access.machine === machine)
+			if (view?.closed && view.finalOut && closedByFinal(view) && view.access?.machine === machine)
 				views.push({ viewId, view });
 		}
 		const reports = await Promise.all(
@@ -891,12 +930,12 @@ export class FolderService {
 				const last = final.includes(viewId);
 				try {
 					const report = await this.#inTurn(view, () => {
-						if (!last || !view.access?.testMachine) return this.#boundary(view, false, last, false, deadline);
-						// A test machine's last boundary is final: the core closes its view with it. What the quiet period
-						// would have published goes with it.
+						if (!last || !closedByFinal(view)) return this.#boundary(view, false, last, false, deadline);
+						// A test machine's last boundary is final, and a home window's too (20260930754000): the core closes
+						// its view with it. What the quiet period would have published goes with it.
 						if (view.quiet) clearTimeout(view.quiet);
 						view.quiet = undefined;
-						this.#windows.clear(machine);
+						this.#windows.clear(this.#creditKey(view) ?? machine);
 						return this.#boundary(view, true, true, false, deadline);
 					});
 					return { viewId, report };
@@ -921,8 +960,8 @@ export class FolderService {
 				view.closed &&
 				this.#retained(view) &&
 				!view.movedTo &&
-				view.access?.testMachine &&
-				view.access.machine === machine &&
+				closedByFinal(view) &&
+				view.access?.machine === machine &&
 				!reports.some((report) => report.viewId === viewId)
 			)
 				reports.push({ viewId, error: { code: ErrorCode.viewClosed, message: view.closed } });
@@ -1712,7 +1751,7 @@ export class FolderService {
 			this.#discard(view);
 			// A test machine's view the core closed otherwise (a narrowing, a refusal) stays a while, so its machine's next
 			// boundary lists it closed (VIEW_CLOSED) and the executor restarts the machine then, not once it seems gone.
-			if (view.access?.testMachine && view.admitted && !byFinal && !view.finalOut) view.closedAt ??= this.#now();
+			if (closedByFinal(view) && view.admitted && !byFinal && !view.finalOut) view.closedAt ??= this.#now();
 		}
 		if (view.quiet) clearTimeout(view.quiet);
 		view.quiet = undefined;
@@ -1747,7 +1786,11 @@ export class FolderService {
 		if (this.#retained(view)) return;
 		if (view.finalOut) {
 			if (view.connections === 0) view.idleSince ??= this.#now();
-		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		} else if (this.#views.get(view.key) === view) {
+			this.#views.delete(view.key);
+			// 20260930754000: a home window's call windows are kept under its own key, so they go with it.
+			if (view.access?.homeWindow) this.#windows.clear(view.key);
+		}
 	}
 
 	/** A final that did not close its view, which closed otherwise (a renewal heard why): the view goes now, as any
@@ -1778,6 +1821,7 @@ export class FolderService {
 	#drop(view: View): void {
 		if (view.closed || view.moving) return;
 		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		if (view.access?.homeWindow) this.#windows.clear(view.key); // 20260930754000
 		view.lease = undefined;
 		view.closed = "No machine holds the view";
 		view.tree = undefined;
@@ -2300,8 +2344,8 @@ export class FolderService {
 	async #gitLock<T>(view: View, target: string, create: () => Promise<T>): Promise<T> {
 		// A test machine's changes are credited to its commands (F3 6b), and a git publish carries no credits: it takes no
 		// git lock, so git there changes no shared git file. It reads them as anywhere.
-		if (view.access?.testMachine)
-			throw new ProtocolError(ErrorCode.notPermitted, "A test machine takes no git locks");
+		if (closedByFinal(view))
+			throw new ProtocolError(ErrorCode.notPermitted, "A test machine or home window takes no git locks");
 		const actor = this.#gitActor(view);
 		view.gitTaking.add(target);
 		try {
@@ -2681,10 +2725,18 @@ export class FolderService {
 	}
 
 	/** What a test machine's change made now is credited to (F3 6b): its open windows' commands, or its starter. None
-	 * for any other view. */
+	 * for any other view. A home window's (20260930754000) is credited to the calls open on the view itself. */
 	#windowsOf(view: View): readonly string[] | undefined {
+		const key = this.#creditKey(view);
+		return key === undefined ? undefined : this.#windows.tags(key);
+	}
+
+	/** Under which key the windows of a view's credits are kept: a test machine's by its machine, which its commands run
+	 * on; a home window's by the view, because several runs may each hold a window on one home. */
+	#creditKey(view: View): string | undefined {
+		if (view.access?.homeWindow) return view.key;
 		const machine = view.access?.machine;
-		return view.access?.testMachine && machine !== undefined ? this.#windows.tags(machine) : undefined;
+		return view.access?.testMachine && machine !== undefined ? machine : undefined;
 	}
 
 	/** Waits for a running boundary (a change never lands while one is deciding what it publishes), and gets a boundary

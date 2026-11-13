@@ -48,6 +48,11 @@ export interface CoreAccess {
 	/** A test machine's view (F3 6b): its changes are credited to the command windows open when they were made, and its
 	 * last boundary is final (the core closes the view with it). */
 	readonly testMachine?: true;
+	/** A home window (20260930754000, the agent's home slice 3): one run's own view on its home machine, which the home
+	 * mounts in place of the company folder. Its changes are credited to the native calls open when they were made, by
+	 * the call windows the relay opens on the view (not on the machine: several runs may each hold a window on one
+	 * home), and its last boundary is final, as a test machine's is. */
+	readonly homeWindow?: true;
 	/** Whether the calling machine may present the view. */
 	admits(bridge: BridgeInfo): boolean;
 }
@@ -208,6 +213,17 @@ export class MountGrants {
 				this.#testMachineProjects.includes(bridge.machine.project) &&
 				bridge.machine.name === name;
 			return { write: true, quietMs: DESKTOP_QUIET_MS, machine: placement, testMachine: true, admits };
+		}
+		// 20260930754000: a home window is served to the home's own instance, named after the view's machine (the
+		// placement), as a test machine's view is. It writes the same way; its credits are its calls', not the machine's.
+		if (identity.kind === "home_window" && placement !== null && isUuid(placement)) {
+			const name = `qorpera-machine-${placement.replaceAll("-", "")}`;
+			const admits = (bridge: BridgeInfo): boolean =>
+				bridge.lookup === "found" &&
+				bridge.machine !== undefined &&
+				this.#testMachineProjects.includes(bridge.machine.project) &&
+				bridge.machine.name === name;
+			return { write: true, quietMs: DESKTOP_QUIET_MS, machine: placement, homeWindow: true, admits };
 		}
 		if (identity.kind === "code_host" && isUuid(identity.companyId)) {
 			const project = `qorpera-codehost-${identity.companyId.replaceAll("-", "")}`;
