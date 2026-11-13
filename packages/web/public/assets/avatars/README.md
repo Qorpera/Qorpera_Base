@@ -22,10 +22,10 @@ input, with no runtime subscription, command, or activity-state binding.
 
 `src/ui/figure-acts.ts` is what the figures do: hops with squash and stretch,
 leans, drawn eyes (wide while a figure looks for the member, an arch while it
-cheers), the symbols a figure becomes in its own colour (a "?" or a "!" when
-its work waits on the member, a four-pointed star while it works: it jumps,
-turns once round in the air and is swapped where it is edge on), and small
-effects (dust, stars). It is arithmetic over time, tested on its own;
+cheers), the symbol a figure becomes in its own colour when its work waits on
+the member (a "?" or a "!": it jumps, turns once round in the air and is
+swapped where it is edge on), the three stars it juggles while it works, and
+small effects (dust, stars). It is arithmetic over time, tested on its own;
 `figure-motion.ts` writes the body's pose as a transform on the canvas, about
 the feet, so a jump costs no repaint, and repaints the eyes or the symbol only
 when they change.

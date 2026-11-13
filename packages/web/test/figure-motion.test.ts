@@ -157,7 +157,7 @@ describe("before the recorded motion arrives", () => {
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("0");
 		advance(1000);
 		expect(idle.querySelector("canvas")!.dataset.frame).toBe("60");
-		// The working figure goes on with its act: within some seconds it is off the ground again.
+		// The working figure goes on with its act: it bounces under its stars.
 		const poses = new Set<string>();
 		for (let frame = 0; frame < 420; frame++) {
 			advance(1000 / 60);
@@ -264,26 +264,31 @@ describe("2D studio playback in the shell", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("turns a working figure into a spinning star, the same in every view of the agent", async () => {
+	it("keeps a working figure itself, juggling three stars, the same in every view of the agent", async () => {
 		const rail = mount("Working", "at-work"),
 			thread = mount("Working", "at-work");
+		// Large enough to show its stars.
+		for (const host of [rail, thread]) host.style.width = "50px";
 		await settle();
 		show([rail, thread]);
 		const canvas = rail.querySelector("canvas")!;
-		vi.mocked(context.quadraticCurveTo!).mockClear();
-		vi.mocked(context.rotate!).mockClear();
-		let jumped = false;
+		vi.mocked(context.roundRect!).mockClear();
+		const poses = new Set<string>();
 		for (let frame = 0; frame < 180; frame++) {
 			advance(1000 / 60);
-			jumped ||= /^translate\(0%, -1\d/.test(canvas.style.transform);
+			poses.add(canvas.style.transform);
 			// Two views of one agent show the same pose.
 			expect(canvas.style.transform).toBe(thread.querySelector("canvas")!.style.transform);
 		}
-		// It jumped into the change, and the star (four curved sides) is drawn and turned.
-		expect(jumped).toBe(true);
-		expect(context.quadraticCurveTo).toHaveBeenCalled();
-		const turns = new Set(vi.mocked(context.rotate!).mock.calls.map((call) => Number(call[0]).toFixed(2)));
-		expect(turns.size).toBeGreaterThan(3);
+		// It bounces from side to side, and its eyes (drawn pills) are there the whole time.
+		expect([...poses].some((pose) => /rotate\(-[1-9]/.test(pose))).toBe(true);
+		expect([...poses].some((pose) => /rotate\([1-9]/.test(pose))).toBe(true);
+		expect(context.roundRect).toHaveBeenCalled();
+		// Three stars over it, each placed by its own transform, all out by now.
+		const stars = [...rail.querySelectorAll<HTMLElement>(".figure-prop")];
+		expect(stars).toHaveLength(3);
+		expect(stars.every((star) => /^translate\(.*scale\(1\)$/.test(star.style.transform))).toBe(true);
+		expect(new Set(stars.map((star) => star.style.transform)).size).toBe(3);
 		// It goes on working past any length of time.
 		advance(60_000);
 		expect(frames.size).toBe(1);

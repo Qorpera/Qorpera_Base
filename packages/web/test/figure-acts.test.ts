@@ -67,16 +67,16 @@ describe("a figure that needs the member", () => {
 		// The swap happens while it is thin, so it is never seen.
 		const swap = air.findIndex((act) => act.symbol);
 		expect(air[swap]!.body.scaleX).toBeLessThan(0.25);
-		expect(air.slice(swap).every((act) => act.symbol?.kind === "question")).toBe(true);
+		expect(air.slice(swap).every((act) => act.symbol === "question")).toBe(true);
 		// Down as the symbol, upright and its own size.
-		expect(asking(BECOME + 0.3, "question")).toEqual({ body: REST, symbol: { kind: "question", turn: 0, scale: 1 } });
-		expect(asking(BECOME + 0.3, "bang").symbol?.kind).toBe("bang");
+		expect(asking(BECOME + 0.3, "question")).toEqual({ body: REST, symbol: "question" });
+		expect(asking(BECOME + 0.3, "bang").symbol).toBe("bang");
 	});
 	it("keeps asking as the symbol: it hops or shakes every couple of seconds", () => {
 		for (const kind of ["question", "bang"] as const) {
 			for (const seed of [0, 1]) {
 				const hold = samples(BECOME + 0.5, BECOME + 6.3, 0.01).map((t) => asking(t, kind, seed));
-				expect(hold.every((act) => act.symbol?.kind === kind)).toBe(true);
+				expect(hold.every((act) => act.symbol === kind)).toBe(true);
 				// Some hops (off the ground) and some shaking or rocking (sideways or turned) in one hold.
 				expect(hold.some((act) => act.body.y < -5)).toBe(true);
 				expect(hold.some((act) => Math.abs(act.body.x) > 2 || Math.abs(act.body.turn) > 8)).toBe(true);
@@ -97,7 +97,7 @@ describe("a figure that needs the member", () => {
 		expect(peek.every((act) => !act.symbol)).toBe(true);
 		expect(Math.min(...peek.map((act) => act.eyes![0].x))).toBeLessThan(-0.3);
 		expect(Math.max(...peek.map((act) => act.eyes![0].x))).toBeGreaterThan(0.3);
-		expect(asking(period + BECOME + 0.3, "bang").symbol?.kind).toBe("bang");
+		expect(asking(period + BECOME + 0.3, "bang").symbol).toBe("bang");
 	});
 	it("sets off small stars as it becomes the symbol, and dust wherever it lands", () => {
 		expect(askingCues(0, BECOME).map((cue) => cue.effect)).toEqual(["pop", "dust"]);
@@ -111,69 +111,122 @@ describe("a figure that needs the member", () => {
 		expect(framed).toBe(whole);
 	});
 	it("rests as the symbol for a member who wants no motion", () => {
-		expect(askingStill("question")).toEqual({ body: REST, symbol: { kind: "question", turn: 0, scale: 1 } });
+		expect(askingStill("question")).toEqual({ body: REST, symbol: "question" });
 	});
 });
 
 describe("a working figure", () => {
-	const period = BECOME + 4.2 + 0.72 + 1.5;
-	it("jumps, spins and comes down as a star", () => {
-		expect(working(0.05).symbol).toBeUndefined();
-		expect(Math.min(...samples(0.2, 0.64, 0.01).map((t) => working(t).body.y))).toBeLessThan(-20);
-		expect(working(BECOME + 0.01).symbol?.kind).toBe("star");
+	const BEAT = 0.46;
+	it("stays itself, eyes and all, and brings its three stars out one beat after another", () => {
+		for (const t of samples(0, 30, 0.05)) {
+			const act = working(t, 3);
+			expect(act.symbol).toBeUndefined();
+			expect(act.eyes).toBeDefined();
+			expect(act.props).toHaveLength(3);
+		}
+		const out = (t: number) => working(t).props!.filter((star) => star.scale > 0.5).length;
+		expect(out(0)).toBe(0);
+		expect(out(0.9 * BEAT)).toBe(1);
+		expect(out(1.9 * BEAT)).toBe(2);
+		expect(out(4 * BEAT)).toBe(3);
 	});
-	it("works as the star in spells: it ticks, whirls, swells or hops, and ends each spell as it began", () => {
-		const seen = { turned: false, swollen: false, hopped: false };
-		for (const seed of [0, 1, 2, 3]) {
-			for (const cycle of [0, 1, 2]) {
-				const from = cycle * period + BECOME;
-				for (const t of samples(from + 0.02, from + 4.18, 0.01)) {
-					const { symbol, body } = working(t, seed);
-					expect(symbol?.kind).toBe("star");
-					if (Math.abs(symbol!.turn % 90) > 20) seen.turned = true;
-					if (symbol!.scale > 1.1) seen.swollen = true;
-					if (body.y < -8) seen.hopped = true;
-				}
-				// At the end of every spell the star stands as a star does: a quarter turn is no turn.
-				for (const spell of [1, 2, 3]) {
-					const end = working(from + spell * 1.4 - 0.001, seed).symbol!;
-					expect(Math.abs((((end.turn % 90) + 135) % 90) - 45)).toBeLessThan(1.5);
-					expect(end.scale).toBeCloseTo(1, 1);
-				}
+	it("keeps the stars in the air: each goes from one shoulder over the top to the other, and up again", () => {
+		const path = samples(4 * BEAT, 16 * BEAT, 0.01).map((t) => working(t, 1).props!);
+		for (const star of [0, 1, 2]) {
+			const xs = path.map((stars) => stars[star]!.x),
+				ys = path.map((stars) => stars[star]!.y);
+			// Both shoulders, and well over the head in between.
+			expect(Math.min(...xs)).toBeLessThan(22);
+			expect(Math.max(...xs)).toBeGreaterThan(78);
+			expect(Math.min(...ys)).toBeLessThan(2);
+			expect(Math.max(...ys)).toBeLessThanOrEqual(36.01);
+		}
+		// Never two stars in one place: they follow each other a beat apart.
+		for (const stars of path)
+			for (const [a, b] of [
+				[0, 1],
+				[1, 2],
+				[0, 2],
+			] as const)
+				expect(Math.hypot(stars[a]!.x - stars[b]!.x, stars[a]!.y - stars[b]!.y)).toBeGreaterThan(8);
+		// No star jumps: a hundredth of a second moves it a little.
+		path.slice(1).forEach((stars, index) => {
+			for (const star of [0, 1, 2]) {
+				const before = path[index]![star]!;
+				// A bump turns a star round at its shoulder, where it changes side in place.
+				expect(Math.hypot(stars[star]!.x - before.x, stars[star]!.y - before.y)).toBeLessThan(4);
+			}
+		});
+	});
+	it("bounces from side to side under them and follows them with its eyes", () => {
+		const acts = samples(4 * BEAT, 12 * BEAT, 0.01).map((t) => working(t, 5));
+		// Leaning left and right, up between the beats.
+		expect(Math.min(...acts.map((act) => act.body.turn))).toBeLessThan(-3);
+		expect(Math.max(...acts.map((act) => act.body.turn))).toBeGreaterThan(3);
+		expect(Math.min(...acts.map((act) => act.body.y))).toBeLessThan(-3);
+		// The eyes look up, and to both sides.
+		const looks = acts.filter((act) => act.eyes![0].alpha === 1 && act.eyes![0].smile === 0);
+		expect(Math.min(...looks.map((act) => act.eyes![0].x))).toBeLessThan(-0.3);
+		expect(Math.max(...looks.map((act) => act.eyes![0].x))).toBeGreaterThan(0.3);
+		// As a star is at the top (a little over a beat after its bump), the eyes are on it: near the middle, looking
+		// up, and going the way the star goes (bumped at an even beat, it goes to the right).
+		const star = samples(4, 7, 0.01).map((q) => working(q * BEAT, 1));
+		const top = star.reduce((best, act) => (act.props![1]!.y < best.props![1]!.y ? act : best));
+		expect(Math.abs(top.eyes![0].x)).toBeLessThan(0.2);
+		expect(top.eyes![0].y).toBeLessThan(-0.4);
+	});
+	it("shows a trick every few seconds: a smile, a look at the member, a twirl, higher throws", () => {
+		const seen = new Set<string>();
+		for (const seed of [0, 1, 2, 3, 4, 5, 6, 7]) {
+			for (const t of samples(0, 24, 0.02)) {
+				const act = working(t, seed);
+				if (act.eyes![0].smile === 1) seen.add("smile");
+				if (act.eyes![0].alpha === 0) seen.add("twirl");
+				if (Math.min(...act.props!.map((star) => star.y)) < -4) seen.add("high");
+				if (t > 2 && Math.abs(act.eyes![0].y) < 0.02 && act.eyes![0].smile === 0 && act.eyes![0].alpha === 1)
+					seen.add("check");
 			}
 		}
-		expect(seen).toEqual({ turned: true, swollen: true, hopped: true });
+		expect([...seen].sort()).toEqual(["check", "high", "smile", "twirl"]);
+		// Agents differ in what they show when.
+		const shows = (seed: number) =>
+			samples(0, 30, 0.25)
+				.map((t) => working(t, seed))
+				.map((act) => `${act.eyes![0].smile > 0.5}${act.eyes![0].alpha < 0.5}${Math.round(act.body.y)}`)
+				.join();
+		expect(new Set([1, 2, 3, 4].map(shows)).size).toBeGreaterThan(1);
 	});
-	it("turns back into the figure between spells, for a look or a smile, and is off again", () => {
-		const looks = new Set<string>();
-		for (const seed of [0, 1, 2, 3, 4, 5]) {
-			const peek = samples(period - 1.4, period - 0.1, 0.02).map((t) => working(t, seed));
-			expect(peek.every((act) => !act.symbol && act.eyes)).toBe(true);
-			if (peek.some((act) => act.eyes![0].smile === 1)) looks.add("smile");
-			if (peek.some((act) => Math.abs(act.eyes![0].x) > 0.3)) looks.add("around");
-			if (peek.some((act) => act.body.scaleY < 0.96)) looks.add("nod");
-		}
-		expect([...looks].sort()).toEqual(["around", "nod", "smile"]);
-		expect(working(period + BECOME + 0.01).symbol?.kind).toBe("star");
-	});
-	it("comes back as its ask between spells when something also waits on the member", () => {
+	it("catches its stars and becomes its ask for a moment when something also waits on the member", () => {
 		const symbols = (ask?: "question" | "bang") =>
-			new Set(samples(0, 30, 0.02).map((t) => working(t, 2, ask).symbol?.kind ?? "figure"));
-		expect(symbols()).toEqual(new Set(["figure", "star"]));
-		expect(symbols("question")).toEqual(new Set(["figure", "star", "question"]));
-		expect(symbols("bang")).toEqual(new Set(["figure", "star", "bang"]));
+			new Set(samples(0, 30, 0.02).map((t) => working(t, 2, ask).symbol ?? "figure"));
+		expect(symbols()).toEqual(new Set(["figure"]));
+		expect(symbols("question")).toEqual(new Set(["figure", "question"]));
+		expect(symbols("bang")).toEqual(new Set(["figure", "bang"]));
+		// The stars are away before it changes, and out again after.
+		const asks = samples(0, 12, 0.02).find((t) => working(t, 2, "bang").symbol)!;
+		expect(working(16 * BEAT - 0.05, 2, "bang").props!.every((star) => star.scale < 0.05)).toBe(true);
+		expect(working(asks, 2, "bang").props).toBeUndefined();
+		expect(working(11.6 + 3 * BEAT, 2, "bang").props!.some((star) => star.scale > 0.5)).toBe(true);
 	});
-	it("throws off small stars as it works, each effect once, and differs from agent to agent", () => {
-		const effects = workingCues(0, 60, 4).map((cue) => cue.effect);
-		expect(new Set(effects)).toEqual(new Set(["pop", "dust", "bits"]));
-		let framed = 0;
-		for (let frame = 0; frame < 60 * 60; frame++) framed += workingCues(frame / 60, (frame + 1) / 60, 4).length;
-		expect(framed).toBe(effects.length);
-		const turns = (seed: number) => samples(1, 40, 0.25).map((t) => Math.round(working(t, seed).symbol?.turn ?? -1));
-		expect(turns(1)).not.toEqual(turns(2));
+	it("sets off dust where a twirl lands and stars as it becomes its ask, each once", () => {
+		for (const ask of [undefined, "bang"] as const) {
+			const whole = workingCues(0, 60, 4, ask);
+			let framed = 0;
+			for (let frame = 0; frame < 60 * 60; frame++)
+				framed += workingCues(frame / 60, (frame + 1) / 60, 4, ask).length;
+			expect(framed).toBe(whole.length);
+			expect(new Set(whole.map((cue) => cue.effect))).toEqual(new Set(ask ? ["dust", "pop"] : ["dust"]));
+		}
+		// The dust of a twirl is where the twirl comes down.
+		const seed = [0, 1, 2, 3, 4, 5, 6, 7].find((each) => workingCues(0, 8 * BEAT, each).length)!;
+		const landing = workingCues(0, 8 * BEAT, seed)[0]!.at;
+		expect(working(landing - 0.15, seed).body.y).toBeLessThan(-4);
 	});
-	it("rests as the star for a member who wants no motion", () => {
-		expect(workingStill()).toEqual({ body: REST, symbol: { kind: "star", turn: 0, scale: 1 } });
+	it("rests looking up at its three stars for a member who wants no motion", () => {
+		const still = workingStill();
+		expect(still.body).toBe(REST);
+		expect(still.eyes![0].y).toBeLessThan(0);
+		expect(still.props!.map((star) => star.scale)).toEqual([1, 1, 1]);
 	});
 });
 

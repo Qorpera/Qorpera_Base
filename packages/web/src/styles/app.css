@@ -652,13 +652,15 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 /* The figure acts (ui/figure-acts.ts): its body's jumps, spins and leans are a transform on the canvas, about the
- * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol
- * and as it works, the stars of a cheer) fly and fade here, over the figure. */
+ * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol,
+ * the stars it juggles while it works, the stars of a cheer) fly and fade here, over the figure. */
 .figure-canvas { transform-origin: 50% 90%; }
 .figure-fx { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .figure-bit { position: absolute; display: block; pointer-events: none; }
 .figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
 .figure-sparkle { background: var(--bit); clip-path: polygon(50% 0, 63% 37%, 100% 50%, 63% 63%, 50% 100%, 37% 63%, 0 50%, 37% 37%); }
+/* The stars a working figure juggles: placed from the figure's corner by the transform ui/figure-motion.ts writes. */
+.figure-prop { left: 0; top: 0; transform: scale(0); }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */

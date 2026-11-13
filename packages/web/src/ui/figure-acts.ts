@@ -1,7 +1,7 @@
 /* How a figure acts: what its body does (hops, leans, squash and stretch), where its drawn eyes look
- * and how they look (wide, shut in a smile), which symbol it becomes (a "?" or a "!" when it needs the
- * member, a star while it works), and which small effects go off in the air around it. Pure arithmetic
- * over time, so two views of one agent act alike and a test can read a pose at any second;
+ * and how they look (wide, shut in a smile), which symbol it becomes when it needs the member (a "?"
+ * or a "!"), the stars it juggles while it works, and which small effects go off in the air around it.
+ * Pure arithmetic over time, so two views of one agent act alike and a test can read a pose at any second;
  * figure-motion.ts puts the result on the page. Nothing here is recorded: every eye and every symbol
  * is drawn, so it is sharp at any size.
  *
@@ -31,19 +31,17 @@ export interface EyePose {
 export type Eyes = [EyePose, EyePose];
 /** What a figure asks with: a question the member has to answer, or anything else that waits on them. */
 export type Ask = "question" | "bang";
-/** What a figure can become, in its own colour: the two asks, and the star of work. As the writing dots,
- * a symbol stands in the figure's place. */
-export interface SymbolPose {
-	kind: Ask | "star";
-	/** Degrees about its middle (the star spins). */
+/** A star a working figure juggles, on the figure's 100-unit frame: where its middle is, how far it has
+ * turned, and its size as a factor (0 while it is away). */
+export interface Prop {
+	x: number;
+	y: number;
 	turn: number;
-	/** About its middle (the star swells). */
 	scale: number;
 }
-/** dust: where a jump lands. pop: the small stars as a figure becomes a symbol. bits: what a working star
- * throws off. sparkles, shower, twinkle: the stars of a cheer (a burst, a wider and slower one, a single
- * star). */
-export type Effect = "dust" | "pop" | "bits" | "sparkles" | "shower" | "twinkle";
+/** dust: where a jump lands. pop: the small stars as a figure becomes a symbol. sparkles, shower, twinkle:
+ * the stars of a cheer (a burst, a wider and slower one, a single star). */
+export type Effect = "dust" | "pop" | "sparkles" | "shower" | "twinkle";
 export interface Cue {
 	at: number;
 	effect: Effect;
@@ -52,8 +50,10 @@ export interface Act {
 	body: BodyPose;
 	/** Drawn eyes; none leaves them to the studio's symbolic pose (the dots), or to the symbol. */
 	eyes?: Eyes;
-	/** The figure has become this: it is drawn in the figure's place. */
-	symbol?: SymbolPose;
+	/** The figure has become this, in its own colour: it is drawn in the figure's place, as the writing dots are. */
+	symbol?: Ask;
+	/** The stars a working figure juggles. */
+	props?: Prop[];
 }
 
 const clamp = (value: number, low = 0, high = 1) => Math.min(high, Math.max(low, value));
@@ -178,20 +178,19 @@ function change(u: number, height: number): { body: BodyPose; swapped: boolean; 
 		facing,
 	};
 }
-const symbolOf = (kind: SymbolPose["kind"], turn = 0, scale = 1): SymbolPose => ({ kind, turn, scale });
 /** Eyes that show only while the front faces us. */
 const facingEyes = (eyes: Partial<EyePose>, facing: number): Eyes =>
 	pair({ ...eyes, alpha: clamp((facing - 0.15) / 0.3) });
 
 /** A figure becoming `kind`, `s` seconds in: itself until the swap, the symbol after. */
-function become(kind: SymbolPose["kind"], s: number, eyes: Partial<EyePose>): Act {
+function become(kind: Ask, s: number, eyes: Partial<EyePose>): Act {
 	const { body, swapped, facing } = change(s / BECOME, 23);
-	return swapped ? { body, symbol: symbolOf(kind) } : { body, eyes: facingEyes(eyes, facing) };
+	return swapped ? { body, symbol: kind } : { body, eyes: facingEyes(eyes, facing) };
 }
 /** A symbol coming back as the figure, `s` seconds in. */
-function comeBack(kind: SymbolPose["kind"], s: number, eyes: Partial<EyePose>): Act {
+function comeBack(kind: Ask, s: number, eyes: Partial<EyePose>): Act {
 	const { body, swapped, facing } = change(s / RETURN, 17);
-	return swapped ? { body, eyes: facingEyes(eyes, facing) } : { body, symbol: symbolOf(kind) };
+	return swapped ? { body, eyes: facingEyes(eyes, facing) } : { body, symbol: kind };
 }
 /** The effects of a change that starts at `at`: small stars at the swap, dust where it lands. */
 const changeCues = (at: number, length: number, pop: boolean): Cue[] => [
@@ -251,14 +250,13 @@ export function asking(t: number, kind: Ask, seed = 0): Act {
 	const cycle = Math.floor(Math.max(0, t) / ASK_PERIOD);
 	const at = Math.max(0, t) - cycle * ASK_PERIOD;
 	if (at < BECOME) return become(kind, at, WIDE);
-	if (at < BECOME + ASK_HOLD)
-		return { body: askingSymbol(kind, at - BECOME, pick(seed, cycle, 0, 2)), symbol: symbolOf(kind) };
+	if (at < BECOME + ASK_HOLD) return { body: askingSymbol(kind, at - BECOME, pick(seed, cycle, 0, 2)), symbol: kind };
 	if (at < BECOME + ASK_HOLD + RETURN) return comeBack(kind, at - BECOME - ASK_HOLD, WIDE);
 	return { body: REST, eyes: lookingForYou(at - BECOME - ASK_HOLD - RETURN) };
 }
 /** The asking figure at rest, for a member who wants no motion: the symbol alone. */
 export function askingStill(kind: Ask): Act {
-	return { body: REST, symbol: symbolOf(kind) };
+	return { body: REST, symbol: kind };
 }
 /** What goes off around the asking figure in (`from`, `to`]: stars as it becomes the symbol, dust where it
  * lands and where the symbol hops. */
@@ -274,124 +272,168 @@ export function askingCues(from: number, to: number, seed = 0): Cue[] {
 	return within(cues, from, to);
 }
 
-/* ---- working: the figure becomes a star -------------------------------------------------------------
- * A working figure jumps, spins and comes down as a four-pointed star in its own colour: the sign of
- * work being made. The star works in spells, each drawn from the agent's seed: it ticks round a quarter
- * turn at a time, whirls, swells, or hops and spins, throwing off small stars. Between spells it turns
- * back into the figure for a moment (a look at the member and a nod, a look around, or a smile) and is
- * off again. A figure whose work also waits on the member comes back as its "?" or "!" in between. */
+/* ---- working: the figure juggles ---------------------------------------------------------------------
+ * A working figure stays itself and keeps three small stars in the air. It bumps one up at every
+ * beat, from its left shoulder and its right in turn, bouncing from side to side under them, and its
+ * eyes follow each star over the top. Every few seconds it shows a trick, drawn from the agent's seed:
+ * a smile, a look at the member, a twirl under the stars, or a round of higher throws. A figure whose
+ * work also waits on the member catches its stars now and then, becomes its "?" or "!" for a moment,
+ * and takes the stars up again. */
 
-const SPELL = 1.4;
-const SPELLS = 3;
-const STAR_HOLD = SPELL * SPELLS;
-const WORK_PEEK = 1.5;
-const WORK_PERIOD = BECOME + STAR_HOLD + RETURN + WORK_PEEK;
-/** With something waiting on the member: the ask's symbol for a while, between two shorter looks. */
-const WORK_ASK_HOLD = 2.6;
-const WORK_ASK = BECOME + WORK_ASK_HOLD + RETURN + 0.9;
-const SPELL_KINDS = ["tick", "whirl", "swell", "hop"] as const;
-const TICKS = [0.08, 0.5, 0.92];
-const STAR_HOP: Hop = { start: 0.12, length: 0.95, height: 15 };
+/** A bump every beat. Three stars: each is in the air for three beats. */
+const BEAT = 0.46;
+const STARS = 3;
+/** A star is bumped up from the inside of one shoulder, lands on the outside of the other, and rolls in across
+ * it to be bumped again: the two ways over the top are not the same path, so the stars pass and never meet. */
+const SHOULDER_Y = 33;
+const BUMP_X = 12;
+const LAND_X = 30;
+/** How high over the shoulders a star flies, and how many of its three beats it is in the air. */
+const ARC = 35;
+const FLIGHT = 2.3;
+/** The beat, after a bump, at which that star is at the top. */
+const TOP = FLIGHT / 2;
+/** A trick every this many beats, over the beats in between. */
+const TRICK_EVERY = 8;
+const TRICK_FROM = 2;
+const TRICK_TO = 6;
+const TRICKS = ["smile", "check", "twirl", "high"] as const;
+/** With something waiting on the member: this many beats of juggling, then the ask for a while. */
+const JUGGLE_BEATS = 16;
+const JUGGLE_ASK_HOLD = 2.6;
+const JUGGLE_PERIOD = JUGGLE_BEATS * BEAT + BECOME + JUGGLE_ASK_HOLD + RETURN;
 
-/** Past 1 and back: a turn that snaps into place. */
-function snap(x: number): number {
-	const u = clamp(x) - 1;
-	return 1 + 2.70158 * u ** 3 + 1.70158 * u ** 2;
+/** The trick at beat `q` of a seed's juggling, and how far into its beats it is (0 before, 1 after). */
+function trickAt(q: number, seed: number): { kind: (typeof TRICKS)[number]; local: number; on: number } {
+	const round = Math.floor(q / TRICK_EVERY);
+	const local = q - round * TRICK_EVERY;
+	return {
+		kind: TRICKS[pick(seed, round, 3, TRICKS.length)]!,
+		local,
+		on: pulse(local, TRICK_FROM, TRICK_FROM + 0.5, TRICK_TO - 0.5, TRICK_TO),
+	};
 }
-/** One spell of the star, `s` seconds in: its body's pose and the star's own turn and size. Every spell turns
- * the star by quarter turns in all, so it ends as it began. */
-function spell(kind: (typeof SPELL_KINDS)[number], s: number): { body: BodyPose; turn: number; scale: number } {
-	if (kind === "tick") {
-		let turn = 0,
-			scale = 1;
-		for (const at of TICKS) {
-			turn += 90 * snap((s - at) / 0.3);
-			scale += 0.08 * pulse(s, at, at + 0.07, at + 0.1, at + 0.3);
+/** A throw made at beat `n` goes higher in a round of high throws. */
+const arcOf = (n: number, seed: number) => {
+	const trick = trickAt(n, seed);
+	return ARC * (trick.kind === "high" && trick.local >= TRICK_FROM && trick.local < TRICK_TO ? 1.16 : 1);
+};
+
+/** The three stars at beat `q`: each bumped up from one shoulder, over the top, down onto the other, and across
+ * it to be bumped again. `out` is how far the figure has them out at all (0 none, 1 all in the air). */
+function stars(q: number, seed: number, out: number): Prop[] {
+	return Array.from({ length: STARS }, (_, star) => {
+		// Star `star` is bumped at beats star, star + 3, star + 6…; before its first it is still away.
+		if (q < star) return { x: 50, y: SHOULDER_Y, turn: 0, scale: 0 };
+		const bumped = star + STARS * Math.floor((q - star) / STARS);
+		const since = q - bumped;
+		const way = bumped % 2 === 0 ? 1 : -1;
+		// It pops out at its first bump.
+		const scale = out * ease(star, star + 0.6, q);
+		if (since < FLIGHT) {
+			const u = since / FLIGHT;
+			return {
+				x: 50 - way * BUMP_X + way * (BUMP_X + LAND_X) * u,
+				y: SHOULDER_Y - arcOf(bumped, seed) * 4 * u * (1 - u),
+				turn: way * 300 * u + bumped * 40,
+				scale,
+			};
 		}
-		return { body: REST, turn, scale };
-	}
-	if (kind === "whirl")
-		return { body: REST, turn: 720 * ease(0.06, 1.3, s), scale: 1 + 0.13 * pulse(s, 0.06, 0.5, 0.8, 1.3) };
-	if (kind === "swell")
+		// On the shoulder: it sinks in a little and rolls across to where it is bumped from.
+		const w = (since - FLIGHT) / (STARS - FLIGHT);
 		return {
-			body: REST,
-			turn: 22 * pulse(s, 0, 0.2, 0.95, 1.25) * Math.sin(TAU * (s / 1.25)),
-			scale: 1 + 0.2 * pulse(s, 0.05, 0.28, 0.32, 0.6) + 0.14 * pulse(s, 0.62, 0.84, 0.88, 1.16),
+			x: 50 + way * LAND_X - way * (LAND_X - BUMP_X) * w,
+			y: SHOULDER_Y + 3 * Math.sin(Math.PI * w),
+			turn: way * 300 - way * 100 * w + bumped * 40,
+			scale,
 		};
-	const u = (s - STAR_HOP.start) / STAR_HOP.length;
-	return { body: hop(u, STAR_HOP.height), turn: 180 * ease(HOP_LAUNCH, HOP_LAND, u), scale: 1 };
-}
-/** The figure between two spells as the star. */
-function workPeek(s: number, which: number): Act {
-	if (which === 0) {
-		// A look at the member, a blink and a nod.
-		return {
-			body: { x: 0, y: 0, turn: 0, ...squash(0.07 * pulse(s, 0.62, 0.7, 0.74, 0.92)) },
-			eyes: pair({ height: blink(s, 0.36) * blink(s, 1.2) }),
-		};
-	}
-	if (which === 1) {
-		const look = -0.42 * pulse(s, 0.1, 0.24, 0.5, 0.64) + 0.42 * pulse(s, 0.64, 0.78, 1.04, 1.2);
-		return {
-			body: { x: 1.4 * look, y: 0, turn: 3 * look, scaleX: 1, scaleY: 1 },
-			eyes: pair({ x: look, height: blink(s, 1.26) }),
-		};
-	}
-	return { body: REST, eyes: pair({ smile: pulse(s, 0.08, 0.24, 1.05, 1.3) }) };
+	});
 }
 
-function workAt(t: number, ask: Ask | undefined): { cycle: number; at: number; period: number } {
-	const period = WORK_PERIOD + (ask ? WORK_ASK : 0);
-	const cycle = Math.floor(Math.max(0, t) / period);
-	return { cycle, at: Math.max(0, t) - cycle * period, period };
+/** The juggling figure at beat `q`: its bounce from side to side, its eyes on the stars, and the trick of the
+ * moment. `on` is how much it is at it (it eases in and out of juggling). */
+function juggling(q: number, seed: number, on: number): { body: BodyPose; eyes: Eyes } {
+	const trick = trickAt(q, seed);
+	const high = trick.kind === "high" ? trick.on : 0;
+	// On the ground at each beat, leaning to the side it bumps from; up between beats.
+	const side = -Math.cos(Math.PI * q) * on;
+	const up = Math.abs(Math.sin(Math.PI * q)) ** 1.3 * on;
+	let body: BodyPose = { x: 2.4 * side, y: -(3.4 + 2.2 * high) * up, turn: 4 * side, ...squash(0.06 * (1 - up) * on) };
+	// A star is at the top a little over a beat after its bump: the eyes go over with it and come back for the next.
+	const sweep = Math.sin(Math.PI * (q - TOP + 0.1)) * on;
+	let eye: Partial<EyePose> = {
+		x: 0.44 * sweep,
+		y: -(0.42 + 0.12 * Math.cos(TAU * (q - TOP))) * on,
+		width: 1 + 0.03 * on,
+		height: (1 + 0.04 * on) * blink(q * BEAT, Math.floor((q * BEAT) / 4.1) * 4.1 + 3.2),
+	};
+	if (trick.kind === "smile") eye = { ...eye, smile: trick.on };
+	else if (trick.kind === "check") {
+		// A look down at the member and a blink, the stars still going.
+		const down = pulse(trick.local, TRICK_FROM, TRICK_FROM + 0.6, TRICK_TO - 1.2, TRICK_TO - 0.4);
+		eye = {
+			...eye,
+			x: eye.x! * (1 - down),
+			y: eye.y! * (1 - down),
+			height: eye.height! * blink(trick.local * BEAT, 3.6 * BEAT),
+		};
+	} else if (trick.kind === "twirl") {
+		// Once round under the stars, a little off the ground.
+		const u = (trick.local - 3) / 2;
+		const turned = change(u, 12);
+		body = both(body, turned.body);
+		eye = { ...eye, alpha: clamp((turned.facing - 0.15) / 0.3) };
+	}
+	return { body, eyes: pair(eye) };
+}
+
+function workAt(t: number, ask: Ask | undefined): { cycle: number; at: number } {
+	if (!ask) return { cycle: 0, at: Math.max(0, t) };
+	const cycle = Math.floor(Math.max(0, t) / JUGGLE_PERIOD);
+	return { cycle, at: Math.max(0, t) - cycle * JUGGLE_PERIOD };
 }
 
 /** A working figure `t` seconds in. `ask` is what also waits on the member, if anything does. */
 export function working(t: number, seed = 0, ask?: Ask): Act {
 	const { cycle, at } = workAt(t, ask);
-	if (at < BECOME) return become("star", at, {});
-	if (at < BECOME + STAR_HOLD) {
-		const s = at - BECOME;
-		const index = Math.min(SPELLS - 1, Math.floor(s / SPELL));
-		const now = spell(SPELL_KINDS[pick(seed, cycle, index, SPELL_KINDS.length)]!, s - index * SPELL);
-		return { body: now.body, symbol: symbolOf("star", now.turn, now.scale) };
-	}
-	if (at < BECOME + STAR_HOLD + RETURN) return comeBack("star", at - BECOME - STAR_HOLD, {});
-	if (at < WORK_PERIOD) return workPeek(at - BECOME - STAR_HOLD - RETURN, pick(seed, cycle, 9, 3));
-	if (!ask) return { body: REST, eyes: openEyes() };
-	// Something waits on the member too: the figure comes back as its ask before it works on.
-	const s = at - WORK_PERIOD;
+	const q = at / BEAT;
+	// It eases into its juggling, and (with something waiting) out of it before it asks.
+	const on = ease(0, 1.4, q) * (ask ? 1 - ease(JUGGLE_BEATS - 1.4, JUGGLE_BEATS - 0.2, q) : 1);
+	if (!ask || q < JUGGLE_BEATS) return { ...juggling(q, seed + cycle, on), props: stars(q, seed + cycle, on) };
+	const s = at - JUGGLE_BEATS * BEAT;
 	if (s < BECOME) return become(ask, s, WIDE);
-	if (s < BECOME + WORK_ASK_HOLD) return { body: askingSymbol(ask, s - BECOME, 0), symbol: symbolOf(ask) };
-	if (s < BECOME + WORK_ASK_HOLD + RETURN) return comeBack(ask, s - BECOME - WORK_ASK_HOLD, WIDE);
+	if (s < BECOME + JUGGLE_ASK_HOLD) return { body: askingSymbol(ask, s - BECOME, 0), symbol: ask };
+	return comeBack(ask, s - BECOME - JUGGLE_ASK_HOLD, {});
+}
+/** A working figure at rest, for a member who wants no motion: looking up at its three stars, held in their arc. */
+export function workingStill(): Act {
 	return {
 		body: REST,
-		eyes: pair({ ...WIDE, height: WIDE.height * blink(s, BECOME + WORK_ASK_HOLD + RETURN + 0.3) }),
+		eyes: pair({ y: -0.5 }),
+		props: [0.22, 0.5, 0.78].map((u) => ({
+			x: 50 - LAND_X + 2 * LAND_X * u,
+			y: SHOULDER_Y - ARC * 4 * u * (1 - u),
+			turn: u * 90,
+			scale: 1,
+		})),
 	};
 }
-/** A working figure at rest, for a member who wants no motion: the star alone. */
-export function workingStill(): Act {
-	return { body: REST, symbol: symbolOf("star") };
-}
-/** What goes off around a working figure in (`from`, `to`]: stars and dust as it changes, and what the star
- * throws off in its spells. */
+/** What goes off around a working figure in (`from`, `to`]: dust where a twirl lands, and stars and dust as it
+ * becomes its ask and comes back. */
 export function workingCues(from: number, to: number, seed = 0, ask?: Ask): Cue[] {
 	const cues: Cue[] = [];
-	const { period } = workAt(0, ask);
+	const period = ask ? JUGGLE_PERIOD : TRICK_EVERY * BEAT;
 	for (let cycle = Math.floor(Math.max(0, from) / period); cycle * period < to; cycle++) {
 		const start = cycle * period;
-		cues.push(...changeCues(start, BECOME, true), ...changeCues(start + BECOME + STAR_HOLD, RETURN, false));
-		for (let index = 0; index < SPELLS; index++) {
-			const at = start + BECOME + index * SPELL;
-			const kind = SPELL_KINDS[pick(seed, cycle, index, SPELL_KINDS.length)]!;
-			if (kind === "tick") for (const tick of TICKS) cues.push({ at: at + tick + 0.12, effect: "bits" });
-			else if (kind === "whirl") cues.push({ at: at + 0.45, effect: "bits" }, { at: at + 0.8, effect: "bits" });
-			else if (kind === "swell") cues.push({ at: at + 0.3, effect: "bits" });
-			else cues.push(...landings([STAR_HOP], at));
+		const rounds = ask ? JUGGLE_BEATS / TRICK_EVERY : 1;
+		for (let round = 0; round < rounds; round++) {
+			// The seed and the round as `working` counts them: a cycle's own seed with an ask, the round alone without.
+			const twirls = TRICKS[pick(ask ? seed + cycle : seed, ask ? round : cycle, 3, TRICKS.length)] === "twirl";
+			if (twirls) cues.push({ at: start + (round * TRICK_EVERY + 3 + 2 * HOP_LAND) * BEAT, effect: "dust" });
 		}
 		if (ask) {
-			const asks = start + WORK_PERIOD;
-			cues.push(...changeCues(asks, BECOME, true), ...changeCues(asks + BECOME + WORK_ASK_HOLD, RETURN, false));
+			const asks = start + JUGGLE_BEATS * BEAT;
+			cues.push(...changeCues(asks, BECOME, true), ...changeCues(asks + BECOME + JUGGLE_ASK_HOLD, RETURN, false));
 			cues.push(...landings(ASK_HOPS, asks + BECOME + ASK_BEAT_FIRST));
 		}
 	}

@@ -20,8 +20,8 @@ import {
 	momentCues,
 	nextIdle,
 	openEyes,
+	type Prop,
 	REST,
-	type SymbolPose,
 	working,
 	workingCues,
 	workingStill,
@@ -130,6 +130,11 @@ interface LiveMotion {
 	cued: number;
 	/** The transform on the canvas, so an unchanged pose writes nothing. */
 	posed: string;
+	/** The stars a working figure juggles (made with the first frame that has them), the transforms on them, and
+	 * the figure's side they were sized for. */
+	props?: HTMLElement[];
+	propsPosed: string[];
+	propsSide: number;
 	/** Where the effects go (made with the first one). */
 	effects?: HTMLElement;
 }
@@ -384,41 +389,64 @@ function place(entry: LiveMotion, act: Act): void {
 		entry.canvas.style.transform = posed;
 		entry.posed = posed;
 	}
+	juggle(entry, act.props);
+}
+
+/** The effects' layer over the figure, made when first needed. */
+function effectsLayer(entry: LiveMotion): HTMLElement {
+	let layer = entry.effects;
+	if (!layer) {
+		layer = document.createElement("span");
+		layer.className = "figure-fx";
+		entry.host.append(layer);
+		entry.effects = layer;
+	}
+	return layer;
+}
+
+/** Puts the stars a working figure juggles where the act has them: three small stars over the figure, each a
+ * transform on its own element, written only when it changes. A figure too small to show them has none. */
+function juggle(entry: LiveMotion, props: Prop[] | undefined): void {
+	const side = entry.side / 1.12;
+	if (side < 30 || (!props && !entry.props)) return;
+	if (!entry.props) {
+		const layer = effectsLayer(entry);
+		entry.props = (props ?? []).map((_, index) => {
+			const star = document.createElement("span");
+			star.className = "figure-bit figure-sparkle figure-prop";
+			// Three of the cheer's colours, an agent's own three.
+			star.style.setProperty("--bit", ACCENTS[(entry.clock.seed + index * 2) % ACCENTS.length]!);
+			layer.append(star);
+			return star;
+		});
+	}
+	if (entry.propsSide !== side) {
+		entry.propsSide = side;
+		const size = `${round(Math.max(6, side * 0.22), 1)}px`;
+		for (const star of entry.props) star.style.width = star.style.height = size;
+	}
+	entry.props.forEach((star, index) => {
+		const prop = props?.[index];
+		// The frame is the canvas, which stands 6% proud of the figure's box on every side.
+		const at = (value: number) => round(((value / 100) * 1.12 - 0.06) * side, 1);
+		const posed =
+			prop && prop.scale > 0.001
+				? `translate(${at(prop.x)}px, ${at(prop.y)}px) translate(-50%, -50%) rotate(${round(prop.turn, 0)}deg) scale(${round(prop.scale, 3)})`
+				: "scale(0)";
+		if (posed !== entry.propsPosed[index]) {
+			star.style.transform = posed;
+			entry.propsPosed[index] = posed;
+		}
+	});
 }
 
 /** The symbol a figure has become, in the figure's colour, on the 100-unit frame: a "?" or a "!" standing on
- * the figure's ground, or the four-pointed star of work, turned and sized about its middle. */
-function drawSymbol(ctx: CanvasRenderingContext2D, symbol: SymbolPose, color: string): void {
-	const star = symbol.kind === "star";
-	const middle = star ? 49 : 50;
+ * the figure's ground. */
+function drawSymbol(ctx: CanvasRenderingContext2D, symbol: Ask, color: string): void {
 	ctx.save();
 	ctx.fillStyle = ctx.strokeStyle = color;
 	ctx.lineCap = ctx.lineJoin = "round";
-	ctx.translate(50, middle);
-	ctx.rotate((symbol.turn * Math.PI) / 180);
-	ctx.scale(symbol.scale, symbol.scale);
-	ctx.translate(-50, -middle);
-	if (star) {
-		// Four points with sides drawn in towards the middle, the tips rounded by a stroke of the same colour.
-		const reach = 36,
-			waist = 12.5;
-		ctx.beginPath();
-		ctx.moveTo(50, middle - reach);
-		for (let point = 0; point < 4; point++) {
-			const between = ((point * 90 - 45) * Math.PI) / 180,
-				next = (((point + 1) * 90 - 90) * Math.PI) / 180;
-			ctx.quadraticCurveTo(
-				50 + Math.cos(between) * waist,
-				middle + Math.sin(between) * waist,
-				50 + Math.cos(next) * reach,
-				middle + Math.sin(next) * reach,
-			);
-		}
-		ctx.closePath();
-		ctx.fill();
-		ctx.lineWidth = 7;
-		ctx.stroke();
-	} else if (symbol.kind === "bang") {
+	if (symbol === "bang") {
 		ctx.beginPath();
 		ctx.roundRect(41.25, 12, 17.5, 48.5, 8.75);
 		ctx.fill();
@@ -439,8 +467,8 @@ function drawSymbol(ctx: CanvasRenderingContext2D, symbol: SymbolPose, color: st
 }
 
 /* The effects: a few small shapes that fly and fade (styles/app.css `.figure-bit`), each gone when its
- * animation ends. A cheer's stars take the studio's Done accents; the stars of a change and of work are in the
- * figure's own colour. */
+ * animation ends. A cheer's stars take the studio's Done accents, as the stars a working figure juggles do; the
+ * stars of a change into a symbol are in the figure's own colour. */
 const ACCENTS = ["#97cf66", "#a584d2", "#63bea9", "#658fd0", "#d98fa4", "#cfb94d"];
 const EASE_OUT = "cubic-bezier(0.2, 0.7, 0.2, 1)";
 const CENTRED = "translate(-50%, -50%)";
@@ -449,13 +477,7 @@ function burst(entry: LiveMotion, effect: Effect): void {
 	const side = entry.side / 1.12;
 	// Too small to read, or nowhere to play.
 	if (!entry.visible || side < 30 || typeof entry.host.animate !== "function") return;
-	let layer = entry.effects;
-	if (!layer) {
-		layer = document.createElement("span");
-		layer.className = "figure-fx";
-		entry.host.append(layer);
-		entry.effects = layer;
-	}
+	const layer = effectsLayer(entry);
 	const fly = (
 		className: string,
 		at: [number, number],
@@ -523,18 +545,6 @@ function burst(entry: LiveMotion, effect: Effect): void {
 				entry.shown,
 			);
 		}
-	} else if (effect === "bits") {
-		// The working star throws off a small star of its own colour, to one side and up.
-		const way = Math.random() < 0.5 ? -1 : 1;
-		star(
-			way * side * (0.5 + 0.18 * Math.random()),
-			-side * (0.18 + 0.42 * Math.random()),
-			Math.max(4, side * (0.12 + 0.05 * Math.random())),
-			700,
-			0,
-			0,
-			entry.shown,
-		);
 	} else if (effect === "sparkles") {
 		// A burst over the head and shoulders.
 		for (let index = 0; index < 7; index++) {
@@ -604,7 +614,7 @@ function paint(entry: LiveMotion): void {
 	const { symbol } = act;
 	const drawn: EyePose[] = act.eyes ?? p.face.map((face) => ({ ...face, smile: 0 }));
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
-	const look = symbol ? `${symbol.kind}:${symbol.turn.toFixed(1)}:${symbol.scale.toFixed(3)}` : signature(drawn);
+	const look = symbol ?? signature(drawn);
 	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${look}`;
 	canvas.dataset.frame = String(sample);
 	if (entry.painted === key) return;
@@ -902,6 +912,8 @@ export function mountFigureMotion(
 		alive: Boolean(options.alive),
 		cued: clock.elapsed,
 		posed: "",
+		propsPosed: [],
+		propsSide: 0,
 	};
 	live.add(entry);
 	if (!lifetime) {
