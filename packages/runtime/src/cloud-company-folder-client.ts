@@ -547,6 +547,7 @@ export const HOME_WINDOW_REFUSALS = [
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_HELD_COMPANY_FOLDER",
 	"MACHINE_HOLDS_OTHER_WORK",
+	"MACHINE_BUSY_WITH_OTHER_WORK",
 ] as const;
 
 /** The run's own window on its home machine (20260930754000, the agent's home slice 3), which the home mounts in place

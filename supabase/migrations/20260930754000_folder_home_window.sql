@@ -89,8 +89,9 @@ alter table public.qorpera_folder_views drop constraint qorpera_folder_views_kin
 drop index qorpera_folder_views_open_test_machine;
 create unique index qorpera_folder_views_open_test_machine on public.qorpera_folder_views (company_machine_id)
 	where state = 'open' and kind = 'test_machine';
--- One open window per machine, whichever run holds it: two runs with windows on one home at once would each record
--- only their own reads, and the disk's history would no longer be one chain. A second open supersedes the first.
+-- One open window per machine, whichever run holds it: the machine has one mount, so two runs could not have their
+-- own rights on it at once, and the disk's history would no longer be one chain. A run's own second open supersedes
+-- its first; another run's is refused while one is open.
 create unique index qorpera_folder_views_open_home_window on public.qorpera_folder_views (company_machine_id)
 	where state = 'open' and kind = 'home_window';
 
@@ -239,10 +240,17 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 				where v.placement_id = v_home_placement.id and v.kind = 'test_machine') then
 			raise exception 'This machine has held the company-wide folder' using errcode = '42501',
 				detail = 'qorpera.home-window/new-disk'; end if;
-		-- The machine's open window goes first, whichever run held it: from then on nothing else releases a read through
-		-- it, so what the disk was served is fixed while this open reads it.
+		-- A home serves one run at a time through its one mount: another run's open window is not taken away from it,
+		-- because that run is still working on the machine and its own rights are the mount's. The second run is told so
+		-- and starts no session. This run's own earlier window is superseded: from then on nothing else releases a read
+		-- through it, so what the disk was served is fixed while this open reads it.
+		if exists (select 1 from public.qorpera_folder_views where state = 'open' and kind = 'home_window'
+				and company_machine_id = v_home_machine.id and run_id is distinct from (p_opener ->> 'runId')::uuid) then
+			raise exception 'This machine is busy with other work' using errcode = '42501',
+				detail = 'qorpera.home-window/busy'; end if;
 		update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
-		where state = 'open' and kind = 'home_window' and company_machine_id = v_home_machine.id;
+		where state = 'open' and kind = 'home_window' and company_machine_id = v_home_machine.id
+			and run_id = (p_opener ->> 'runId')::uuid;
 		-- The disk also holds what the windows before this one read: a command may have copied a file out of /company,
 		-- and the next run's shell would read the copy. So the read set lives with the disk, as a test machine's does
 		-- (§6): the placement's newest view holds every read the disk was served, this window carries it on, and the
@@ -454,6 +462,9 @@ begin
 		if v_detail = 'qorpera.home-window/other-work' then
 			return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','refused',
 				'reason','MACHINE_HOLDS_OTHER_WORK'); end if;
+		if v_detail = 'qorpera.home-window/busy' then
+			return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','refused',
+				'reason','MACHINE_BUSY_WITH_OTHER_WORK'); end if;
 		raise;
 	end;
 	return jsonb_build_object('schema','qorpera.folder-home-window/v1','state','open',

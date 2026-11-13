@@ -190,15 +190,21 @@ begin
 		raise exception 'The ask: %', s2; end if;
 	if (pg_temp.view_row(s)).state is distinct from 'closed' or (pg_temp.view_row(s)).close_reason is distinct from 'superseded' then
 		raise exception 'A second window of the run does not supersede the first'; end if;
-	-- One open window per machine, whichever run: another run's open supersedes this one's, so the disk's read history
-	-- stays one chain (review r2 F1).
-	t := pg_temp.hw_open(a, v2);
+	-- One open window per machine: the machine has one mount, so two runs cannot have their own rights on it at once.
+	-- Another run is told the machine is busy and starts no session; the first run keeps its window.
+	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', a, v2), '42501',
+		'This machine is busy with other work', 'qorpera.home-window/busy');
+	r := pg_temp.hw_ask(v2, m);
+	if r ->> 'reason' is distinct from 'MACHINE_BUSY_WITH_OTHER_WORK' then
+		raise exception 'The ask while another run holds the window: %', r; end if;
 	if (select count(*) from public.qorpera_folder_views where company_machine_id = m and state = 'open'
 			and kind = 'home_window') <> 1
 		or (select id from public.qorpera_folder_views where company_machine_id = m and state = 'open'
-			and kind = 'home_window') is distinct from (t ->> 'viewId')::uuid
-		or (pg_temp.view_row(s2)).close_reason is distinct from 'superseded' then
+			and kind = 'home_window') is distinct from (s2 ->> 'viewId')::uuid then
 		raise exception 'A home holds one open window at a time'; end if;
+	-- Once it is closed, the next run takes the home.
+	perform public.qorpera_folder_view_close((s2 ->> 'viewId')::uuid, s2 ->> 'pass');
+	t := pg_temp.hw_open(a, v2);
 	-- The company-wide view of the same machine closes every window of it, and no window opens on that disk again.
 	perform pg_temp.open('test_machine', a);
 	if (select count(*) from public.qorpera_folder_views where company_machine_id = m and state = 'open'
@@ -378,10 +384,14 @@ begin
 	s := pg_temp.hw_open(a, v);
 	r := pg_temp.hw_reads(s, rel, 'secret/s.txt');
 	if r ->> 'runId' is distinct from v ->> 'runId' then raise exception 'The first window''s read: %', r; end if;
-	-- A second run of the same agent and member takes those reads in and opens.
-	if pg_temp.hw_open(a, v2) ->> 'viewId' is null then raise exception 'A window of the same agent on the same disk'; end if;
+	-- The first run's session ends and its window closes; the home is then free for the next run.
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+	-- A second run of the same agent and member takes the disk's reads in and opens.
+	s := pg_temp.hw_open(a, v2);
+	if s ->> 'viewId' is null then raise exception 'A window of the same agent on the same disk'; end if;
 	if not exists (select 1 from public.qorpera_folder_run_reads where run_id = (v2 ->> 'runId')::uuid) then
 		raise exception 'The second run did not take in the disk''s reads'; end if;
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 	-- Another agent's run gets no window on that disk: it would read what this agent's work left there.
 	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', a, vb), '42501',
 		'This machine holds work this run may not read', 'qorpera.home-window/other-work');
@@ -390,7 +400,9 @@ begin
 			jsonb_build_object('machineId', m)) ->> 'reason' is distinct from 'MACHINE_HOLDS_OTHER_WORK' then
 		raise exception 'The ask on a disk that holds another''s work'; end if;
 	-- The same the other way round: agent B's own disk takes no window of agent A's.
-	perform pg_temp.hw_reads(pg_temp.hw_open(ab, vb), extensions.gen_random_uuid(), 'QorperaOS/rules/tone.txt');
+	s := pg_temp.hw_open(ab, vb);
+	perform pg_temp.hw_reads(s, extensions.gen_random_uuid(), 'QorperaOS/rules/tone.txt');
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 	perform pg_temp.refused(format('select pg_temp.hw_open(%L, %L)', ab, v), '42501',
 		'This machine holds work this run may not read', 'qorpera.home-window/other-work');
 	-- A read the next run may no longer make refuses it too: agent A loses its grant on the narrower folder.

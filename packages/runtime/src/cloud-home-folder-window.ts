@@ -66,6 +66,8 @@ const NO_WINDOW_WORDS = {
 		"This machine has held the whole company folder before, so it cannot show only what this piece of work may read. A fresh machine is needed for the agent's own shell and files.",
 	MACHINE_HOLDS_OTHER_WORK:
 		"This machine still holds work that this piece of work may not read, so it cannot be used for the agent's own shell and files. A fresh machine is needed.",
+	MACHINE_BUSY_WITH_OTHER_WORK:
+		"This agent's machine is busy with other work of its own right now, so this piece of work cannot use its own shell and files on it.",
 } as const satisfies Record<Extract<CloudCompanyFolderHomeWindow, { state: "refused" }>["reason"], string>;
 
 /** What the model is told when the ask itself did not get through: the backend does not carry the window's calls yet
