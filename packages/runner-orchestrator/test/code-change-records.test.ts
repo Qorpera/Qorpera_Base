@@ -1231,6 +1231,139 @@ describe("codeChangeIndexText: the changes a restore took out of main (step 6)",
 	});
 });
 
+/** Change 1 of a repository brought in from GitHub (step 6, migration `20260930736000`), as the record makes it: the
+ * kernel's title, no main before it, no session, its files, checks not run, and where it came from. */
+const IMPORTED: Partial<CodeChangeFile> = {
+	n: 1,
+	kind: "import",
+	how: null,
+	createdAt: "2026-11-13T10:02:41.5+00:00",
+	title: "Brought in from GitHub: Qorpera/saml-storefront",
+	session: null,
+	turn: null,
+	mainBefore: null,
+	mainAfter: AFTER,
+	headSha: null,
+	summary: null,
+	notice: null,
+	picture: null,
+	filesChanged: 412,
+	paths: null,
+	checksState: "not_run",
+	checks: null,
+	importedFrom: {
+		kind: "github",
+		repository: "Qorpera/saml-storefront",
+		via: "connection",
+		branch: "master",
+		commit: AFTER,
+		commits: 1234,
+	},
+};
+const IMPORTED_TEXT = text(
+	"# Change 1: Brought in from GitHub: Qorpera/saml-storefront",
+	"",
+	"- State: in main",
+	"- When: 2026-11-13 10:02 UTC",
+	"- What: code brought into Qorpera",
+	`- Main after: ${AFTER}`,
+	"- Files changed: 412",
+	"- Checks: not run",
+	"",
+	"1234 earlier changes on `master` and 412 files came with it. Qorpera does not check code brought in.",
+	"",
+	"## What a customer will notice",
+	"",
+	"Nothing was said.",
+	"",
+	"## Picture",
+	"",
+	"None.",
+);
+
+describe("change 1 of a repository brought in (step 6)", () => {
+	/** The sentence of what came with it, which stands under the record's head. */
+	const said = (extra: Partial<CodeChangeFile>) => {
+		const lines = codeChangeRecordText(change({ ...IMPORTED, ...extra })).split("\n");
+		const at = lines.indexOf("- Checks: not run");
+		expect(lines[at + 1]).toBe("");
+		return lines[at + 2];
+	};
+
+	it("writes its record byte for byte: the kernel's title, what came with it, and no section of checks", () => {
+		expect(codeChangeRecordText(change(IMPORTED))).toBe(IMPORTED_TEXT);
+		// From a file: one change and one file are said as one.
+		expect(
+			codeChangeRecordText(
+				change({
+					...IMPORTED,
+					title: "Brought in from shop.bundle",
+					filesChanged: 1,
+					importedFrom: { kind: "file", name: "shop.bundle", sha256: "f".repeat(64), branch: "main", commits: 1 },
+				}),
+			).split("\n"),
+		).toEqual(
+			IMPORTED_TEXT.replace("GitHub: Qorpera/saml-storefront", "shop.bundle")
+				.replace("- Files changed: 412", "- Files changed: 1")
+				.replace(
+					"1234 earlier changes on `master` and 412 files came with it.",
+					"1 earlier change on `main` and 1 file came with it.",
+				)
+				.split("\n"),
+		);
+	});
+
+	it("leaves out of its sentence what the kernel did not send, and shows the branch as a name, whatever it holds", () => {
+		const rest = "came with it. Qorpera does not check code brought in.";
+		expect(said({ importedFrom: null })).toBe(`Its earlier changes and 412 files ${rest}`);
+		expect(said({ importedFrom: undefined })).toBe(`Its earlier changes and 412 files ${rest}`);
+		expect(said({ importedFrom: "github" })).toBe(`Its earlier changes and 412 files ${rest}`);
+		for (const commits of [0, -1, 1.5, "1234", null])
+			expect(said({ importedFrom: { branch: "master", commits } }), String(commits)).toBe(
+				`Its earlier changes on \`master\` and 412 files ${rest}`,
+			);
+		for (const branch of ["", 7, null, undefined])
+			expect(said({ importedFrom: { branch, commits: 2 } }), String(branch)).toBe(
+				`2 earlier changes and 412 files ${rest}`,
+			);
+		expect(said({ filesChanged: null })).toBe(`1234 earlier changes on \`master\` ${rest}`);
+		expect(said({ filesChanged: 0 })).toBe(`1234 earlier changes on \`master\` and 0 files ${rest}`);
+		// A name is code: no Markdown, line break or control character of its own reaches the line.
+		expect(said({ importedFrom: { branch: `a\`b*c\n# x${NUL}`, commits: 3 } })).toBe(
+			`3 earlier changes on \`\`a\`b*c${GONE}# x${GONE}\`\` and 412 files ${rest}`,
+		);
+		// The record of every other kind has no such sentence, whatever it carries.
+		for (const kind of ["landing", "undo", "restore", "found"] as const)
+			expect(
+				codeChangeRecordText(
+					change({ kind, undoes: kind === "undo" ? [12] : null, importedFrom: IMPORTED.importedFrom }),
+				),
+			).not.toContain("came with it");
+	});
+
+	it("is listed in changes/index.md in the list's own words", () => {
+		expect(
+			codeChangeIndexText({ owner: "qorpera", name: "saml-storefront" }, [
+				{ n: 2, createdAt: "2026-11-13T11:00:00+00:00", state: "landed", kind: "landing", line: "Free returns" },
+				{
+					n: 1,
+					createdAt: "2026-11-13T10:02:41+00:00",
+					state: "landed",
+					kind: "import",
+					line: "Brought in from GitHub: Qorpera/saml-storefront",
+				},
+			]),
+		).toBe(
+			text(
+				"# Changes in qorpera/saml-storefront",
+				"",
+				"- 2 · 2026-11-13 · in main · Free returns",
+				"- 1 · 2026-11-13 · in main · Brought in from GitHub: Qorpera/saml-storefront",
+			),
+		);
+	});
+});
+
 describe("what the kernel is told of paths", () => {
 	it("sends the first fifty paths that fit the row, and counts the rest", () => {
 		const paths = Array.from({ length: 60 }, (_, at) => ({ path: `src/${at}.ts`, change: "changed" as const }));
@@ -2024,6 +2157,46 @@ describe("CodeChangeRecords", () => {
 				{ n: 15, version: 2 },
 				{ n: 16, version: 1 },
 			],
+			indexVersion: 9,
+			problem: null,
+		});
+	});
+
+	it("writes change 1 of a repository brought in and its line from the kernel's answer, and asks no diff for it", async () => {
+		const t = setup();
+		t.kernel.changes = [sent(IMPORTED)];
+		t.kernel.index = {
+			version: 2,
+			lines: [
+				{
+					n: 1,
+					createdAt: "2026-11-13T10:02:41+00:00",
+					state: "landed",
+					kind: "import",
+					line: "Brought in from GitHub: Qorpera/saml-storefront",
+				},
+			],
+		};
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.wrote[0]?.records).toEqual([{ n: 1, text: IMPORTED_TEXT }]);
+		expect(t.wrote[0]?.index).toBe(
+			text(
+				"# Changes in qorpera/shop",
+				"",
+				"- 1 · 2026-11-13 · in main · Brought in from GitHub: Qorpera/saml-storefront",
+			),
+		);
+		expect(t.errors()).toEqual([]);
+		// A row that said a diff was due (no kernel says so: no main was there before it) gets none: its record is
+		// written as it is.
+		const asked = setup();
+		const odd = { ...IMPORTED, needsDiff: true, mainBefore: BEFORE, filesChanged: null };
+		asked.kernel.changes = [sent(odd)];
+		await expect(asked.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(asked.write).toHaveBeenCalledTimes(1);
+		expect(asked.wrote[0]?.records).toEqual([{ n: 1, text: codeChangeRecordText(change(odd)) }]);
+		expect(asked.calls.at(-1)?.args.p_written).toEqual({
+			changes: [{ n: 1, version: 1 }],
 			indexVersion: 9,
 			problem: null,
 		});

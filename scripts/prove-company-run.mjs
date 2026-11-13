@@ -44,13 +44,15 @@ async function bundle(scratch) {
 				'export {CloudCompanyFolderClient} from "./packages/runtime/src/cloud-company-folder-client.ts";',
 				'export {HttpCloudCompanyFolderBytes} from "./packages/runtime/src/cloud-company-folder-bytes.ts";',
 				'export {cloudFolderFileTools} from "./packages/runtime/src/cloud-folder-file-tools.ts";',
+				'export {cloudInterfaceTools} from "./packages/runtime/src/cloud-folder-interface-tools.ts";',
 				'export {CloudRunLogCompanyFolder} from "./packages/runtime/src/cloud-run-log-folder.ts";',
 				'export {openCloudRunLog} from "./packages/runtime/src/cloud-run-log-open.ts";',
 				'export {CloudRunResumeRpc} from "./packages/runtime/src/cloud-run-resume.ts";',
 				'export {CloudRunLogRpcProtection} from "./packages/runtime/src/cloud-run-log-protection.ts";',
 				'export {MemoryCompactChannel, MemoryCompactLane} from "./packages/runtime/src/memory-tree/compact.ts";',
 				'export {cloudNativeContextIdentity} from "./packages/runtime/src/cloud-native-context-composition.ts";',
-				'export {CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
+				'export {CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
+				'export {COMPANY_STATE_PARSER_VERSION, companyStatePath, parseCompanyStateFile} from "./packages/cloud-client/src/company-state-files.ts";',
 				'export {MEMORY_RUN_STEP_FIELD_BYTES, MEMORY_RUN_STEP_READS_BYTES, MEMORY_RUN_STEP_RESULT_BYTES, parseMemoryRunFile} from "./packages/cloud-client/src/memory-run-files.ts";',
 				'export {nativeCodexFixtureCommand} from "./packages/runtime/test/fixtures/native-codex-fixture-command.ts";',
 			].join("\n"),
@@ -274,8 +276,9 @@ function controlPlane(db) {
 }
 
 /** The scripted provider. Agent request n (from 0) is answered with `calls[n]`, a function of the outputs the model
- * has had so far (each `{callId, output}`, in order), which returns the call's `{name, arguments}`; past the last, a
- * final message. Every compactor thread's request (§7.2) is answered with one short line. */
+ * has had so far (each `{callId, output}`, in order), which returns the call's `{name, arguments}` (and its call `id`,
+ * if it names one); past the last, a final message. Every compactor thread's request (§7.2) is answered with one short
+ * line. */
 function provider(state, calls) {
 	const event = (response, value) => response.write(`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`);
 	const stream = (response, model, item) => {
@@ -326,7 +329,7 @@ function provider(state, calls) {
 				stream(response, body.model, message("DONE"));
 				return;
 			}
-			const callId = `call_${String(turn).padStart(2, "0")}_${call.name}`;
+			const callId = call.id ?? `call_${String(turn).padStart(2, "0")}_${call.name}`;
 			state.calls.push({ callId, ...call });
 			stream(response, body.model, {
 				type: "function_call",
@@ -347,7 +350,7 @@ function provider(state, calls) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt } = context;
+	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools } = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -420,7 +423,10 @@ async function attempt(code, context) {
 			assert(opened?.log, "the run keeps a log (Shared context: its recorded memory mode is tree)");
 			runWork = opened.composeContext;
 			return {
-				tools: code.cloudFolderFileTools({ folder, operations, identity }),
+				tools: [
+					...code.cloudFolderFileTools({ folder, operations, identity }),
+					...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
+				],
 				assertContext: (signal, timeoutMs) => gateway.assertReadableContext(signal, timeoutMs),
 				checkRun: (signal, timeoutMs) => gateway.checkRun(signal, timeoutMs),
 				recordContextView: (frame, outputs, signal) => gateway.recordContextView(frame, outputs, signal),
@@ -470,9 +476,11 @@ export function answerOf(output) {
 }
 
 /** Runs one proof: the company of SQL test 924 with `setup` (SQL run in the fixture's transaction after its part, as
- * the platform; `pg_temp.base_*` helpers are there) and the objects of its texts, Alice's run in Shared context through
- * the real patched Codex making `calls`, then `check(run)` on what was stored. Without the binary it prints NOT RUN. */
-export async function proveCompanyRun({ name, prompt, setup, objects, calls, check }) {
+ * the platform; `pg_temp.base_*` helpers are there; or a function of the bundled code that gives it) and the objects of
+ * its texts, Alice's run in Shared context through the real patched Codex making `calls` with the folder file tools
+ * (and the interface tools, `interfaceTools`), then `check(run)` on what was stored. Without the binary it prints NOT
+ * RUN. */
+export async function proveCompanyRun({ name, prompt, setup, objects, calls, check, interfaceTools = false }) {
 	const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 	if (!binary) {
 		process.stdout.write("NOT RUN: set QORPERA_CODEX_FENCE_BINARY to the patched Codex this tree pins\n");
@@ -505,7 +513,7 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 			set local session_replication_role = origin;
 			select pg_temp.base_claims('service_role') \\g /dev/null
-			${setup}
+			${typeof setup === "function" ? setup(code) : setup}
 			select jsonb_build_object('binding', current_setting('qorpera_test.base_binding')::jsonb,
 				'nativeBinarySha256', (select bundle.manifest ->> 'nativeBinarySha256' from public.qorpera_active_runtime_bundle active
 					join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id))::text;
@@ -526,6 +534,7 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			nativeBinarySha256: made.nativeBinarySha256,
 			prompt,
 			lane: state.lane,
+			interfaceTools,
 		});
 		if (state.failure) throw state.failure;
 		assert.equal(state.agent.length, calls.length + 1, "the model made every call, then answered");

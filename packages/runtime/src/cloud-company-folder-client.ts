@@ -74,6 +74,8 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_request_code_undo",
 	"qorpera_folder_code_request",
 	"qorpera_folder_describe_code_change",
+	"qorpera_folder_request_code_import",
+	"qorpera_folder_code_import",
 ]);
 /** What SQL raises instead of taking an undo or a description of a change (20260930720000), by SQLSTATE and SQL's
  * message: no such repository or number, a request it does not take, an operation key that names an earlier, different
@@ -92,6 +94,38 @@ const CODE_UNDO_REASONS = ["never_landed", "lost", "restore", "wall", "too_many"
 const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
 const CODE_REQUEST_KINDS = ["undo", "download", "restore"] as const;
 const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;
+/** Why no import was asked for (20260930736000): a repository kept at the place, the same code kept elsewhere, an import
+ * open in the company, GitHub sessions still on that code, no code service, no file at the path, a company going. */
+const CODE_IMPORT_REASONS = [
+	"kept_here",
+	"already_here",
+	"busy",
+	"sessions_open",
+	"no_executor",
+	"file_missing",
+	"deleting",
+] as const;
+const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside", "build", "open", "tidy"] as const;
+const CODE_IMPORT_RESULTS = ["imported", "looked"] as const;
+/** A code the executor refuses an import with, as the kernel keeps it. */
+const CODE_IMPORT_CODE = /^(IMPORT|CODE_HOST)_[A-Z0-9_]{1,100}$/;
+/** What the look's key scan tells apart (part C1's `CODE_IMPORT_KEY_KINDS`): `env-file` is a tracked .env. */
+const CODE_IMPORT_KEY_KINDS = [
+	"aws",
+	"github",
+	"stripe",
+	"slack",
+	"google",
+	"private-key",
+	"resend",
+	"openai",
+	"anthropic",
+	"env-file",
+] as const;
+/** A time as the look keeps one: UTC, to the second. */
+const CODE_IMPORT_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+/** The word the kernel keeps while an import waits for the company's coding sessions. */
+const CODE_IMPORT_WAITING = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
 export const CODING_QUESTION_STALE = "The session has a new turn since you were asked; leave it";
@@ -404,6 +438,74 @@ export interface CloudCompanyCodeRequest {
 	readonly change: number | null;
 	readonly code: string | null;
 	readonly paths: readonly string[] | null;
+}
+
+/** Where an import takes the code from: a GitHub project as `Owner/Name`, or a git bundle in the company folder
+ * (code/_incoming/<folder>/<name>.bundle) with, when its main branch is not clear, the branch to take. */
+export type CloudCompanyCodeImportSource =
+	| { readonly github: string }
+	| { readonly file: string; readonly branch?: string };
+
+/** What became of an agent's ask to bring code in (`qorpera_folder_request_code_import`): the request the coding
+ * executor serves (also an open, a recently looked or a recorded import of the same code at the same place), or why
+ * nothing was asked. */
+export type CloudCompanyCodeImportAsked =
+	| { readonly state: "queued"; readonly requestId: string }
+	| { readonly state: "refused"; readonly reason: (typeof CODE_IMPORT_REASONS)[number] | CloudCompanyCodeRefusal };
+
+/** What the executor's look found in code it was asked to bring in (`qorpera.code-import-look/v1`, part C1's
+ * `CodeImportLook`). A path the look would not show (over 200 bytes, or one that looks like a key) is null, as is a main
+ * branch whose name it would not keep. `why` is the refusal that stops the import, null when it fits. */
+export interface CloudCompanyCodeImportLook {
+	readonly bytes: number;
+	readonly defaultBranch: string | null;
+	readonly mainSha: string;
+	/** Commits on the default branch, and the first and the last one's time (null when git's is out of range). */
+	readonly commits: number;
+	readonly firstAt: string | null;
+	readonly lastAt: string | null;
+	/** Distinct authors on the default branch in the last 30 days, other than the company's agents and bots. */
+	readonly authors30d: number;
+	readonly tags: { readonly seen: number; readonly kept: number };
+	readonly branches: { readonly seen: number; readonly kept: number };
+	readonly leftOut: number;
+	readonly files: number;
+	readonly entries: number;
+	readonly biggest: { readonly path: string | null; readonly bytes: number };
+	readonly lfs: { readonly pointers: number };
+	readonly submodules: number;
+	/** What main's tree was refused for, at most 10 of its paths, and how many more. */
+	readonly refused: {
+		readonly code: string | null;
+		readonly paths: readonly (string | null)[];
+		readonly more: number;
+	};
+	readonly secrets: {
+		readonly found: number;
+		readonly shown: readonly {
+			readonly kind: (typeof CODE_IMPORT_KEY_KINDS)[number];
+			readonly path: string | null;
+			readonly inMain: boolean;
+		}[];
+		readonly scan: { readonly blobs: number; readonly bytes: number; readonly all: boolean };
+	};
+	readonly fits: boolean;
+	readonly why: string | null;
+}
+
+/** How an import of the run's company stands (`qorpera_folder_code_import`): the place it brings the code to, the step it
+ * is at and what it waits for, the look once it ended, and once the import ended its result, change and code. */
+export interface CloudCompanyCodeImport {
+	readonly requestId: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly state: (typeof CODE_REQUEST_STATES)[number];
+	readonly step: (typeof CODE_IMPORT_STEPS)[number] | null;
+	readonly waiting: string | null;
+	readonly look: CloudCompanyCodeImportLook | null;
+	readonly result: (typeof CODE_IMPORT_RESULTS)[number] | null;
+	readonly change: number | null;
+	readonly code: string | null;
 }
 
 /** A change's description as saved (`qorpera_folder_describe_code_change`): what the change now holds, or why the
@@ -769,6 +871,106 @@ function counter(value: unknown): number {
 function uuid(value: unknown): string {
 	if (typeof value !== "string" || !UUID.test(value)) invalid();
 	return value;
+}
+
+/** A time of the look, or null. */
+function lookTime(value: unknown): string | null {
+	if (
+		value !== null &&
+		(typeof value !== "string" || !CODE_IMPORT_TIME.test(value) || !Number.isFinite(Date.parse(value)))
+	)
+		invalid();
+	return value as string | null;
+}
+
+/** An import's look (`qorpera.code-import-look/v1`, 20260930736000), checked key by key as part C1's `codeImportLookOf`
+ * reads it: at most 10 refused paths and 30 key-like strings, each path a string or null, and `fits` exactly when
+ * nothing stops it. */
+function importLook(value: unknown): CloudCompanyCodeImportLook {
+	const look = record(value, [
+		"schema",
+		"bytes",
+		"defaultBranch",
+		"mainSha",
+		"commits",
+		"firstAt",
+		"lastAt",
+		"authors30d",
+		"tags",
+		"branches",
+		"leftOut",
+		"files",
+		"entries",
+		"biggest",
+		"lfs",
+		"submodules",
+		"refused",
+		"secrets",
+		"fits",
+		"why",
+	]);
+	const pair = (part: unknown) => {
+		const counts = record(part, ["seen", "kept"]);
+		return { seen: counter(counts.seen), kept: counter(counts.kept) };
+	};
+	const biggest = record(look.biggest, ["path", "bytes"]);
+	const refused = record(look.refused, ["code", "paths", "more"]);
+	const secrets = record(look.secrets, ["found", "shown", "scan"]);
+	const scan = record(secrets.scan, ["blobs", "bytes", "all"]);
+	if (
+		look.schema !== "qorpera.code-import-look/v1" ||
+		!nullableString(look.defaultBranch) ||
+		typeof look.mainSha !== "string" ||
+		!/^[0-9a-f]{40}$/.test(look.mainSha) ||
+		!nullableString(biggest.path) ||
+		(refused.code !== null && (typeof refused.code !== "string" || !CODE_IMPORT_CODE.test(refused.code))) ||
+		!Array.isArray(refused.paths) ||
+		refused.paths.length > 10 ||
+		refused.paths.some((path) => !nullableString(path)) ||
+		!Array.isArray(secrets.shown) ||
+		secrets.shown.length > 30 ||
+		typeof scan.all !== "boolean" ||
+		(look.why !== null && (typeof look.why !== "string" || !CODE_IMPORT_CODE.test(look.why))) ||
+		look.fits !== (look.why === null) ||
+		(refused.code !== null && look.why === null)
+	)
+		invalid();
+	const shown = secrets.shown.map((hit) => {
+		const found = record(hit, ["kind", "path", "inMain"]);
+		const kind = CODE_IMPORT_KEY_KINDS.find((known) => known === found.kind);
+		if (kind === undefined || !nullableString(found.path) || typeof found.inMain !== "boolean") invalid();
+		return { kind, path: found.path, inMain: found.inMain };
+	});
+	const lfs = record(look.lfs, ["pointers"]);
+	return {
+		bytes: counter(look.bytes),
+		defaultBranch: look.defaultBranch,
+		mainSha: look.mainSha,
+		commits: counter(look.commits),
+		firstAt: lookTime(look.firstAt),
+		lastAt: lookTime(look.lastAt),
+		authors30d: counter(look.authors30d),
+		tags: pair(look.tags),
+		branches: pair(look.branches),
+		leftOut: counter(look.leftOut),
+		files: counter(look.files),
+		entries: counter(look.entries),
+		biggest: { path: biggest.path, bytes: counter(biggest.bytes) },
+		lfs: { pointers: counter(lfs.pointers) },
+		submodules: counter(look.submodules),
+		refused: {
+			code: refused.code as string | null,
+			paths: refused.paths as (string | null)[],
+			more: counter(refused.more),
+		},
+		secrets: {
+			found: counter(secrets.found),
+			shown,
+			scan: { blobs: counter(scan.blobs), bytes: counter(scan.bytes), all: scan.all },
+		},
+		fits: look.why === null,
+		why: look.why as string | null,
+	};
 }
 
 /** A byte string's SHA-256, as lower-case hex. */
@@ -1432,12 +1634,16 @@ export class CloudCompanyFolderClient {
 		};
 	}
 
-	/** One undo or description of a change (20260930720000): a run effect under its own receipt, keyed by the operation
-	 * key, so the same key again answers what the first call answered. A change of authority (QRC01), a deadlock and a
-	 * lost answer are asked again. What SQL raised instead of taking it comes back as `refused`, unless an earlier call
-	 * with the key ended without a checked answer: that call may have been taken, so the outcome is unknown. */
+	/** One undo or description of a change (20260930720000), or one import (20260930736000): a run effect under its own
+	 * receipt, keyed by the operation key, so the same key again answers what the first call answered. A change of
+	 * authority (QRC01), a deadlock and a lost answer are asked again. What SQL raised instead of taking it comes back as
+	 * `refused`, unless an earlier call with the key ended without a checked answer: that call may have been taken, so
+	 * the outcome is unknown. */
 	async #codeEffect<T>(
-		method: "qorpera_folder_request_code_undo" | "qorpera_folder_describe_code_change",
+		method:
+			| "qorpera_folder_request_code_undo"
+			| "qorpera_folder_describe_code_change"
+			| "qorpera_folder_request_code_import",
 		request: { readonly operationKey: string } & Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
 		read: (answer: unknown) => T,
@@ -1600,6 +1806,91 @@ export class CloudCompanyFolderClient {
 				return { state: "refused", reason };
 			},
 		);
+	}
+
+	/** Asks for existing code to be brought in as a new repository kept in Qorpera, at code/<owner>/<name>/
+	 * (`qorpera_folder_request_code_import`, 20260930736000): from a GitHub project or a git bundle in the company folder,
+	 * with `look` only read. The coding executor serves the request; `codeImport` says how it stands. The same code
+	 * asked again for the same place is answered with the request that has it. */
+	async requestCodeImport(
+		request: {
+			readonly operationKey: string;
+			readonly owner: string;
+			readonly name: string;
+			readonly from: CloudCompanyCodeImportSource;
+			readonly look: boolean;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeImportAsked> {
+		const from = request.from;
+		return this.#codeEffect(
+			"qorpera_folder_request_code_import",
+			{
+				operationKey: request.operationKey,
+				owner: request.owner,
+				name: request.name,
+				from:
+					"github" in from
+						? { github: from.github }
+						: { file: from.file, ...(from.branch === undefined ? {} : { branch: from.branch }) },
+				look: request.look,
+			},
+			signal,
+			(answer): CloudCompanyCodeImportAsked => {
+				const state = (answer as { state?: unknown } | null)?.state;
+				const input = record(
+					answer,
+					state === "queued" ? ["schema", "state", "requestId"] : ["schema", "state", "reason"],
+				);
+				if (input.schema !== "qorpera.code-import/v1") invalid();
+				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				const reason = CODE_IMPORT_REASONS.find((known) => known === input.reason);
+				if (state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
+	}
+
+	/** How an import of the run's company stands (`qorpera_folder_code_import`, 20260930736000): a read, with no
+	 * receipt. A request that is not this company's import is SQL's P0002. A result comes only with `done`. */
+	async codeImport(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeImport> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_import",
+				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
+				signal,
+			),
+			["schema", "requestId", "owner", "name", "state", "step", "waiting", "look", "result", "change", "code"],
+		);
+		const state = CODE_REQUEST_STATES.find((known) => known === input.state);
+		const step = input.step === null ? null : CODE_IMPORT_STEPS.find((known) => known === input.step);
+		const result = input.result === null ? null : CODE_IMPORT_RESULTS.find((known) => known === input.result);
+		if (
+			input.schema !== "qorpera.code-import/v1" ||
+			input.requestId !== requestId ||
+			typeof input.owner !== "string" ||
+			typeof input.name !== "string" ||
+			state === undefined ||
+			step === undefined ||
+			(input.waiting !== null && (typeof input.waiting !== "string" || !CODE_IMPORT_WAITING.test(input.waiting))) ||
+			result === undefined ||
+			(result !== null) !== (state === "done") ||
+			(input.change !== null && counter(input.change) < 1) ||
+			!nullableString(input.code)
+		)
+			invalid();
+		return {
+			requestId,
+			owner: input.owner,
+			name: input.name,
+			state,
+			step,
+			waiting: input.waiting as string | null,
+			look: input.look === null ? null : importLook(input.look),
+			result,
+			change: input.change as number | null,
+			code: input.code,
+		};
 	}
 
 	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin

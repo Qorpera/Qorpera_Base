@@ -1151,12 +1151,23 @@ describe("the package caches' trim", () => {
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {
 		const root = await caches();
 		const shared = await planted(join(root, "pnpm", "files", "00", "a"));
+		// Linked twice in pnpm's own folder too: one folder, however many of its names.
+		await link(shared, join(root, "pnpm", "files", "00", "b"));
 		await mkdir(join(root, "uv", "archive-v0"), { recursive: true });
 		await link(shared, join(root, "uv", "archive-v0", "a"));
 		await planted(join(root, "pip", "wheels", "sparse"), 0);
 		await truncate(join(root, "pip", "wheels", "sparse"), 1024 * MIB);
+		await utimes(join(root, "pip", "wheels", "sparse"), ahead(1), ahead(1));
+		await utimes(await planted(join(root, "npm", "_cacache", "used"), 64 * 1024), ahead(2), ahead(2));
 		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual([]);
 		expect(await readdir(join(root, "uv", "archive-v0"))).toEqual(["a"]);
+		// Under half of it, pnpm goes first (a tie with uv, in the tools' order), and the file stays on disk through uv's
+		// link: uv goes too. Then they hold less than the limit: pip and npm, used later, stay.
+		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual(["pnpm", "uv"]);
+		expect(await readdir(join(root, "pnpm"))).toEqual([]);
+		expect(await readdir(join(root, "uv"))).toEqual([]);
+		expect(await readdir(join(root, "pip", "wheels"))).toEqual(["sparse"]);
+		expect(await readdir(join(root, "npm", "_cacache"))).toEqual(["used"]);
 	});
 
 	it("removes a tool's tree whole when nothing in it was used for the age, and nothing else", async () => {

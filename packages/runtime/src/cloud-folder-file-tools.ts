@@ -45,6 +45,7 @@ import {
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import {
@@ -263,14 +264,18 @@ export function unavailable(error: unknown, what: string): never {
 
 /** Releases what an answer shows under the hash of exactly its text, and returns the text with its citation. An
  * answer that cannot reach the model whole (its smallest form is still cut by the fence) is refused before anything is
- * released. */
+ * released. The text is the answer as the model is shown it: the boundary cuts a secret out of every answer (a file,
+ * a name or a link's target may hold a token) and hashes what is left, and the context view cites the release under
+ * that hash, which SQL compares with the release's (`Context read provenance differs` otherwise). The cut never
+ * lengthens a text, so an answer fitted before it still fits, and cutting again changes nothing. */
 export async function released(
 	folder: CloudCompanyFolderClient,
 	runId: string,
 	context: CloudToolContext,
-	text: string,
+	answer: string,
 	reads: readonly CloudCompanyFolderRelease[],
 ): Promise<CloudToolContent> {
+	const text = redactCloudWebhookSecrets(answer);
 	if (!fitsOneResult(text))
 		throw new CloudToolRefusal(
 			"COMPANY_FILE_ANSWER_TOO_LONG: a path in this answer is too long to show in one tool result, so nothing was read; find names with company_search (names_only)",
