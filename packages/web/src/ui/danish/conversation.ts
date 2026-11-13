@@ -298,7 +298,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Hide the question": "Skjul spørgsmålet",
 	"{count} questions for you": "{count} spørgsmål til dig",
 	"Your answer could not be sent. Try again.": "Dit svar kunne ikke sendes. Prøv igen.",
-	"App · opens on its own page": "App · åbner på sin egen side",
 
 	// What an app asks the member to change, on the bar above its page (app/views/app-ask-bar.ts, app/app-actions.ts)
 	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",

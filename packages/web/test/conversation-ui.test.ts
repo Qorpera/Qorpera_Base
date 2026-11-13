@@ -1252,6 +1252,31 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(panel);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("opens the computer as the member's ask for their own click, and as the page's own when it shows it again (COMPUTER-OPEN-BRIEF)", () => {
+		const panels = new ComputerPanels(),
+			open = vi.spyOn(panels, "open"),
+			f = setup({ computerPanels: panels });
+		// The agent details' Computer: the member's own click.
+		button(f.view.el, "Open agent details").click();
+		button(document, "Computer").click();
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
+		// The card's Computer again while the window stands open: asked again, still one window.
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
+		expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+		// Back in the agent's thread the window shows again by itself: not asked.
+		f.view.dispose();
+		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		document.body.append(restored.el);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: false });
+		// An open without the flag (the page's own, as the window that appears by itself will call it): not asked.
+		restored.el.querySelector<HTMLButtonElement>("button.computer-close")!.click();
+		open.mockClear();
+		expect(restored.show(staff.id, "computer")).toBe(true);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: false });
+		restored.dispose();
+		panels.dispose();
+	});
 	it("opens nothing for another agent, or before the thread knows its agent", () => {
 		const f = setup();
 		expect(f.view.show(id(97), "computer")).toBe(false);

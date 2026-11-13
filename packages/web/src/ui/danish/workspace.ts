@@ -329,18 +329,38 @@ export const WORKSPACE: Record<string, string> = {
 	"to {who}": "til {who}",
 	"cc {who}": "cc {who}",
 	"Not known who used the account": "Det vides ikke, hvem der brugte kontoen",
-	"Tell {name} what to answer": "Fortæl {name}, hvad der skal svares",
-	"About the email {subject} from {from_name}: ": "Om e-mailen {subject} fra {from_name}: ",
+	"Reply all": "Svar alle",
+	Forward: "Videresend",
+	"Forwarded message": "Videresendt besked",
+	Date: "Dato",
+	"Write your reply": "Skriv dit svar",
+	"Your reply is on its way": "Dit svar er på vej",
+	"Please answer the email {subject} from {from_name}: ": "Svar venligst på e-mailen {subject} fra {from_name}: ",
 	"{name} has your note": "{name} har fået din besked",
 	"Send to {name}": "Send til {name}",
 	"{name} answers it": "{name} svarer på den",
 	"No agent answers it yet": "Ingen agent svarer på den endnu",
 	"in the last 7 days": "de seneste 7 dage",
 	Change: "Skift",
-	"Who should answer it?": "Hvem skal svare på den?",
-	"Please have {name} answer the email that comes to {address}.":
-		"Lad venligst {name} svare på de e-mails, der kommer til {address}.",
-	"Asked {cofounder} to give {address} to {name}": "Bad {cofounder} om at give {address} til {name}",
+	"Who answers it": "Hvem svarer på den",
+	"Choose who answers": "Vælg, hvem der svarer",
+	"Answered by": "Besvares af",
+	"Setting it up": "Sætter det op",
+	"{name} and {count} more": "{name} og {count} mere",
+	"{name} answers {address}": "{name} svarer på {address}",
+	"{name} answers {address} too": "{name} svarer også på {address}",
+	"{name} no longer answers {address}": "{name} svarer ikke længere på {address}",
+	"{first} and {second}": "{first} og {second}",
+	"Answer email to {address}": "Svar på e-mail til {address}",
+	"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.":
+		"Læs hver e-mail, der kommer til {address}, og tag dig af den for virksomheden. Svar afsenderen, når e-mailen kræver et svar, som et svar på netop den e-mail. Lad automatiske e-mails, og e-mails der ikke kræver svar, være ubesvarede. Når du ikke selv kan klare noget, så sig det til det medlem, der skal tage sig af det, og sig, hvad du har brug for.",
+	"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.":
+		"En agent svarer selv på e-mail på en af dine egne modelkonti, og ingen af dine kan betale for det. Tilslut en under Indstillinger → AI-abonnementer.",
+	"The address could not be given to the agent.": "Adressen kunne ikke gives til agenten.",
+	"{name} has more than one routine for this address at work, and wakes more than once for an email. Take {name} off the address and give it to {name} again.":
+		"{name} har mere end én rutine for denne adresse i gang og vækkes mere end én gang for en e-mail. Tag {name} af adressen, og giv den til {name} igen.",
+	"{name}'s routine for this address did not start. {name}'s routines say why.":
+		"{name}s rutine for denne adresse startede ikke. {name}s rutiner siger hvorfor.",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",
@@ -494,6 +514,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Wake it": "Væk den",
 	"Someone with edit access can wake it.": "En med redigeringsadgang kan vække den.",
 	"The computer is starting…": "Computeren starter…",
+	"Waiting for room on our servers…": "Venter på plads på vores servere…",
+	"Out of computer hours…": "Ingen computertimer tilbage…",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
@@ -695,8 +717,6 @@ export const WORKSPACE: Record<string, string> = {
 	// The drawer's Icon and colour panel (12 Nov 2026), its icons' names and Generate icon's message.
 	"Icon and colour": "Ikon og farve",
 	"Colour \u00b7 {group}": "Farve · {group}",
-	"Apps in {group} take its colour, so this changes all of them.":
-		"Apps i {group} får dens farve, så dette ændrer dem alle.",
 	"Made for this app": "Lavet til denne app",
 	"None yet.": "Ingen endnu.",
 	"All icons": "Alle ikoner",

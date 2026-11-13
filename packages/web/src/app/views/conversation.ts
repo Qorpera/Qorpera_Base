@@ -225,7 +225,14 @@ function copyShape(target: Node, source: Node, labelsOnly: boolean): void {
 /** How long an answered card settles (styles/motion.css, the longest of its parts). */
 const SETTLING = 1500;
 /** Its parts (not the fold, which restarts from the height it had got to). */
-const SETTLING_PARTS = new Set(["decided-edge", "decided-line", "decided-mark", "draw-stroke", "motion-hold"]);
+const SETTLING_PARTS = new Set([
+	"decided-answer",
+	"decided-edge",
+	"decided-line",
+	"decided-mark",
+	"draw-stroke",
+	"motion-hold",
+]);
 const DECIDED = [
 	".action-review-card.is-folded",
 	".interaction-card:is(.state-answered, .state-declined)",
@@ -1133,7 +1140,7 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
-					computer: () => this.show(agent.id, "computer"),
+					computer: () => this.show(agent.id, "computer", true),
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1148,8 +1155,9 @@ export class ConversationView {
 	}
 
 	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
-	 * its agent yet: the card's request then waits. */
-	show(agentId: string, page: AgentPage): boolean {
+	 * its agent yet: the card's request then waits. `asked`: the member's own click asked for it just now, so a sleeping
+	 * computer wakes (computer.ts OPEN_STARTS); false, the default, for the page's own opens. */
+	show(agentId: string, page: AgentPage, asked = false): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
@@ -1158,7 +1166,12 @@ export class ConversationView {
 		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") {
+			const shown = this.#panel;
+			// Already here: the click still asks for the computer (a sleeping one wakes).
+			if (shown && asked) this.#panels.open(agent, { asked });
+			(shown ?? this.#showPanel(agent, asked))?.focus();
+		}
 		return true;
 	}
 
@@ -1597,7 +1610,9 @@ export class ConversationView {
 	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
 	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
-		const panel = this.#panel ?? this.#showPanel(agent);
+		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+		if (this.#panel) this.#panels.open(agent, { asked: true });
+		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
 		panel?.takeOver();
 	}
@@ -1610,15 +1625,15 @@ export class ConversationView {
 		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
 		rules.seen(agent.id, since);
 		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
-		// MEMBER ASKED = false. The open path gains its "member asked" argument in web/computer-click-wakes: pass false here
-		// then. A window that shows by itself never wakes or starts a computer (the agent's machine runs while it uses it).
-		const panel = this.#showPanel(agent);
+		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
+		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
+		const panel = this.#showPanel(agent, false);
 		if (panel) rules.opened(agent.id, since, panel.el);
 	}
 
-	/** Show the agent's computer here: the one already open, or one started now. */
-	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
-		const panel = this.#panels.open(agent);
+	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
+	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
 		this.#panel = panel;
 		panel.attach(this.#body, () => this.#toggleComputer());
@@ -2896,14 +2911,27 @@ export class ConversationView {
 								takeOver,
 							]),
 				]);
-				nodes.push(
-					keep(item.id, cardKey, email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`, () =>
+				// The agent's figure, waiting, as it stands beside its question in the questions dock: the head of a card
+				// that waits for the member. It becomes a "?" for a question and a "!" for anything else that waits (a
+				// secret, a takeover, a draft), as in the rail.
+				const ask = item.request.surface === "question" ? "question" : "bang";
+				const waitingFigure = agent
+					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
+					: undefined;
+				const card = keep(
+					item.id,
+					cardKey,
+					email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`,
+					() =>
 						renderInteractionCard(
 							{ ...item, answer },
 							{
 								agentName,
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
+								inThread: true,
+								viewerId: this.#company.userId,
+								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
@@ -2953,8 +2981,17 @@ export class ConversationView {
 									: {}),
 							},
 						),
-					),
 				);
+				// The figure follows the agent's look by itself. The look is no part of the card's key: a card drawn
+				// again for it would lose an answer half made in it (review r1 F1 on #1730).
+				const stand = card.querySelector<HTMLElement>(".interaction-figure");
+				if (stand && waitingFigure) {
+					const look = JSON.stringify([agent?.id, agent?.appearance, agent?.templateId]);
+					if (stand.dataset.look !== undefined && stand.dataset.look !== look)
+						stand.replaceChildren(waitingFigure());
+					stand.dataset.look = look;
+				}
+				nodes.push(card);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];

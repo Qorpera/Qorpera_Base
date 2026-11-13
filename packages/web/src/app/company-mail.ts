@@ -199,6 +199,9 @@ export class CompanyMail {
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
+	/** The address reads begun, and the first of them whose answer still counts: one begun before it is let go. */
+	#addressReads = 0;
+	#addressesSince = 0;
 	#watched: {
 		lists: Map<string, MailListRequest>;
 		threads: Set<string>;
@@ -258,6 +261,13 @@ export class CompanyMail {
 		return this.#closed ? Promise.resolve() : this.#refreshCompany();
 	}
 
+	/** Reads the addresses with a read begun now, and says whether it was read: after a change to who answers an
+	 * address (the Mailbox's Addresses). A read already on its way is from before the change: its answer is let go,
+	 * whether this read is read or not. A read that fails keeps the addresses as they were read last. */
+	addressesAfresh(): Promise<boolean> {
+		return this.#closed ? Promise.resolve(false) : this.#readAddresses(true);
+	}
+
 	dispose(): void {
 		this.#disposed = true;
 		clearInterval(this.#companyTimer);
@@ -284,17 +294,32 @@ export class CompanyMail {
 		}
 	}
 
+	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
+	 * whose answer is already in says nothing newer, and is let go. So is one begun before a read asked for after a
+	 * change (`afterChange`), from the moment that read begins: what it says is from before the change. */
+	async #readAddresses(afterChange = false): Promise<boolean> {
+		const read = ++this.#addressReads;
+		if (afterChange) this.#addressesSince = read;
+		const take = (addresses: MailAddress[]) => {
+			if (read < this.#addressesSince) return;
+			this.#addressesSince = read;
+			this.#set((state) => ({ ...state, addresses }));
+		};
+		try {
+			take(await readMailAddresses(this.#cloud, this.#environmentId));
+			return true;
+		} catch (error) {
+			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
+			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return false;
+			take([]);
+			return true;
+		}
+	}
+
 	async #refreshCompany(): Promise<void> {
 		await Promise.all([
 			this.#once("addresses", async () => {
-				try {
-					const addresses = await readMailAddresses(this.#cloud, this.#environmentId);
-					this.#set((state) => ({ ...state, addresses }));
-				} catch (error) {
-					// A cloud without the member mail read has no mail to show; another failure keeps what was read.
-					if (error instanceof CloudRpcError && (error.missing || error.denied))
-						this.#set((state) => ({ ...state, addresses: [] }));
-				}
+				await this.#readAddresses();
 			}),
 			this.#once("waiting", async () => {
 				try {
@@ -768,16 +793,20 @@ export class CompanyMail {
 	}
 
 	/** Sends the member's own email from one of the company's addresses, with no agent (the Mailbox's "Send",
-	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`). It throws what the cloud refuses, for the Write window to say.
-	 * The lists a page shows are then read again, so the email is in Sent. */
+	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`), as a new email or as an answer in a thread. It throws what the
+	 * cloud refuses, for the window it was written in to say. The lists and the threads a page shows are then read
+	 * again, so the email is in Sent and an answer stands in its thread. */
 	async send(request: MailMemberSend): Promise<MailMemberSent> {
 		const sent = await sendMemberMail(this.#cloud, this.#environmentId, request);
-		await Promise.all([...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)));
+		await Promise.all([
+			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
+			...[...this.#watched.threads].map((thread) => this.#readThread(thread)),
+		]);
 		return sent;
 	}
 
 	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's
-	 * "Tell Ida what to answer", "Write an email" and an address's new handler, views/mailbox.ts). It goes from here
+	 * answer or new email an agent is asked to write, and an address's new handler, views/mailbox.ts). It goes from here
 	 * only into a conversation with nothing drafted in it, on the account the cloud chooses for that conversation (as an
 	 * answer does); otherwise, or when the send doesn't go, the note waits in that conversation's composer, and `href`
 	 * is the agent's thread where it waits. Throws when the agent's thread can't be opened or the note can't be added. */

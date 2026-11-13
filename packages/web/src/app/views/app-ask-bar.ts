@@ -251,7 +251,9 @@ export class AppAskBar implements AppGate {
 			h(
 				"span",
 				{ class: "app-ask-figure", "aria-hidden": "true" },
-				ask.kind === "answer" ? agentFigure(agent, name, { size: 30, activity: "Waiting" }) : this.#host.emblem(),
+				ask.kind === "answer"
+					? agentFigure(agent, name, { size: 30, activity: "Waiting", ask: "question" })
+					: this.#host.emblem(),
 			),
 			h("div", { class: "app-ask-copy" }, title, lines),
 			h("div", { class: "app-ask-buttons" }, later, yes),

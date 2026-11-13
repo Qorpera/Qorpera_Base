@@ -79,6 +79,11 @@
 @keyframes rail-app-enter { from { opacity: 0; transform: scale(0.82); } }
 .rail-app.is-leaving { position: absolute; pointer-events: none; animation: rail-app-leave 220ms ease-in both; }
 @keyframes rail-app-leave { to { opacity: 0; transform: scale(0.82); } }
+/* Folding a group: its apps go back into its tile (shell.ts placeTiles), behind it, so the tile stays on top. */
+.rail-app.is-leaving.is-folding { z-index: 0; animation: none; }
+/* A group going into its outer group keeps the absolute place it leaves from (review F2 on #1729), and a held one
+ * rides above the rest (F4). */
+.rail-apps-grid > .rail-app-group:not(.is-leaving, .is-lifted) { position: relative; z-index: 1; }
 /* A group forming (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"): held over another icon's
  * middle, a plate in that icon's colour springs up behind it and breathes, the icon steps back onto it as a group's
  * front card would, and the dragged icon shrinks to go in. Over a group, its cards part a little to take it. Moving
@@ -398,15 +403,18 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .colour-swatch.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted, currentColor); }
 /* Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the panel an app's menu opens beside it. */
 .context-panel { width: 300px; max-width: calc(100vw - 16px); padding: 12px; gap: 0; }
+.context-panel:has(> .app-look.is-colours) { width: 224px; }
 .app-look { display: grid; gap: 6px; }
-.app-look-title { margin: 0 2px 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
 .app-look-label { margin: 6px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
-.app-look .color-grid.app-look-colours { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 3px; width: 100%; margin: 2px 0 0; }
-.app-look .color-choice { grid-column: auto; width: 100%; max-width: 20px; height: auto; aspect-ratio: 1; }
+/* The palette in two rows of six, in the icons' columns below it (Jonas, 13 Nov 2026: "it should be more than one row
+ * for the colors"). */
+.app-look .color-grid.app-look-colours {
+	grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px 4px; justify-items: center; width: 100%; margin: 4px 0 2px;
+}
+.app-look .color-choice { grid-column: auto; width: 24px; height: 24px; }
 .app-look .color-choice:nth-child(7) { grid-column: auto; }
 .app-look .color-choice.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
 .app-look .color-choice[aria-checked="true"]::after { inset: -3px; }
-.app-look-note { margin: 0 2px; font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
 .app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
 .app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
 .app-look-icon:hover { background: var(--hover); }

@@ -1,5 +1,10 @@
 # Assets Room: 2D Motion Studio, September 5, 2026
 
+> November 13, 2026: every eye is drawn now (`src/ui/figure-acts.ts`), and the recorded eye clips, the Working
+> stripes and their sequencer were removed (see `../README.md`, "Acting, and drawn eyes"). What follows describes
+> the studio's recording as the product used it until then; of its files, `motion.mjs`, `eye-tracks.mjs` and the
+> figures' artwork remain.
+
 Source: `Qorpera_Base-step2/.artifacts/qorpera-avatar-assets/status-2d`, linked
 to `Documents/Codex/2026-09-05/ope/outputs/qorpera-2d-motion`.
 
@@ -71,6 +76,11 @@ The colour row changed the same day (`avatar-appearance.js`): Red, Sky and
 Slate took the places of Coral, Teal and Gray, and Green, Purple and Pink moved
 apart, so that no two colours read alike on a figure. The names an `agent.md`
 writes did not change (`src/cloud/agent-colours.ts`).
+
+On November 13, 2026 the last three figures whose own shade sat outside that row
+moved onto it: the Planet from the retired teal (#5ec0b5) to Sky, the Flame
+(#fa752e) to Orange and the Heart (#fb672a) to Red. The artwork did not change;
+`avatar-appearance.js` keeps those three drawn shades only to find the eyes.
 
 ## Working as sequenced pieces (September 22, 2026)
 

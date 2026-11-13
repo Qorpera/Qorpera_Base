@@ -98,6 +98,8 @@
 /* ---- conversation ------------------------------------------------------------ */
 /* Messages on iOS: white on a bubble only a step above the page, so the text carries the contrast. */
 :root[data-theme="dark"] .bubble { background: #303032; color: #fff; }
+:root[data-theme="dark"] .bubble:has(> .app-cards) { background: none; }
+:root[data-theme="dark"] .app-card:hover { background: color-mix(in srgb, var(--text) 6%, var(--bg)); }
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
@@ -237,3 +239,4 @@
 :root[data-theme="dark"] :is(.bank-detail-out .bank-amount-side, .bank-net-down) { color: #f4776b; }
 :root[data-theme="dark"] .bank-year-in { background: #1f6b4c; }
 :root[data-theme="dark"] .bank-year-out { background: #7a3530; }
+:root[data-theme="dark"] .figure-dust { background: rgb(255 255 255 / 24%); }
