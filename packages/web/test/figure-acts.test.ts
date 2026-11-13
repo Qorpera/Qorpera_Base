@@ -225,7 +225,7 @@ describe("a working figure", () => {
 		}
 	});
 	it("goes through all its tricks, in an order of its own, before it shows any again", () => {
-		expect(TRICKS).toHaveLength(13);
+		expect(TRICKS).toHaveLength(11);
 		for (const seed of [0, 1, 2, 3]) {
 			// None in the first round: the stars are only just out.
 			expect(trickOf(0, seed)).toBeUndefined();
@@ -274,11 +274,6 @@ describe("a working figure", () => {
 			header.some((act) => act.props!.some((star) => Math.abs(star.x - 50) < 2 && Math.abs(star.y - 11) < 2)),
 		).toBe(true);
 		expect(Math.min(...header.map((act) => act.body.y))).toBeLessThan(-6);
-		// The stack: one over another, eyes crossed on it.
-		const stack = middle(during("stack"));
-		expect(stack.props!.every((star) => Math.abs(star.x - 50) < 5)).toBe(true);
-		expect(stack.eyes![0].x).toBeGreaterThan(0.1);
-		expect(stack.eyes![1].x).toBeLessThan(-0.1);
 		// The halo: all three overhead in a ring, a smile under it.
 		const halo = middle(during("halo"));
 		expect(halo.props!.every((star) => star.y < 13 && star.y > -3)).toBe(true);
@@ -288,10 +283,6 @@ describe("a working figure", () => {
 		expect(tada.props!.map((star) => Math.round(star.x))).toEqual([23, 50, 77]);
 		expect(tada.props!.every((star) => star.scale > 1.1)).toBe(true);
 		expect(Math.min(...during("tada").map((act) => act.body.y))).toBeLessThan(-8);
-		// Merged: one big star, the other two away inside it.
-		const merge = middle(during("merge"));
-		expect(merge.props![0]!.scale).toBeGreaterThan(1.8);
-		expect(merge.props![1]!.scale).toBeLessThan(0.3);
 		// Round the figure: wide of it on both sides, in front of it and behind, each star in turn.
 		for (const trick of ["orbit", "swirl", "spiral"] as const) {
 			const round = during(trick);

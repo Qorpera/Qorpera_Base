@@ -1,5 +1,4 @@
 import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
-import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
 import {
 	type Act,
 	type Ask,
@@ -31,6 +30,14 @@ import type * as MotionData from "./figure-motion-data.ts";
 
 export type { Activity, Ask, Moment };
 
+/** Where a figure's eye is drawn on its artwork, in the 100-unit frame (motion-model.js `faces`). */
+export interface EyeGeometry {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	rotation: number;
+}
 export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
 	/** Resolves once the plate can be drawn (its light field runs in a worker where it can). */
@@ -56,16 +63,15 @@ export interface FigureMotion {
 	play(kind: Moment): void;
 }
 
-/** The recorded motion, once its chunk has arrived. A figure is `ready` only
- * after it has, so everything that paints can rely on it. */
+/** The studio's motion sampler (the symbolic states' poses and each state's time), once its chunk has arrived.
+ * A figure is `ready` only after it has, so everything that paints can rely on it. */
 let motion: typeof MotionData | undefined;
 let motionLoading: Promise<typeof MotionData> | undefined;
 let motionFailed = false;
 
-/** Fetch the recorded motion (its own chunk, about 950 KB before compression)
- * once, on the first figure. A browser keeps a module it failed to load for
- * the page's life without fetching it again, so a failed load stays failed
- * here too: every figure keeps its still artwork until the page is reloaded. */
+/** Fetch the sampler (its own chunk, about 140 KB before compression) once, on the first figure. A browser keeps
+ * a module it failed to load for the page's life without fetching it again, so a failed load stays failed here
+ * too: every figure keeps its still artwork until the page is reloaded. */
 export function loadFigureMotion(): Promise<typeof MotionData> {
 	motionLoading ??= import("./figure-motion-data.ts").then(
 		(loaded) => {
@@ -1013,7 +1019,7 @@ export function mountFigureMotion(
 		})
 		.catch(() => {
 			// Artwork that failed is fetched again by a figure built anew (the rail
-			// rebuilds these). The recorded motion cannot come back in this page, so
+			// rebuilds these). The motion sampler cannot come back in this page, so
 			// without it the figure keeps its still artwork and asks for no rebuild.
 			if (live.has(entry) && !motionFailed) host.dataset.motionUnavailable = "true";
 		});

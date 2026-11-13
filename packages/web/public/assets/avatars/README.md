@@ -38,5 +38,6 @@ the studio's dots, which hop in turn. `status-2d-v1`'s `motion.mjs` is still
 the sampler for the symbolic states (the dots, the "!", the Done flourish).
 The recorded files (`recorded-motion.mjs`, `recorded-clips.mjs`, `eye-clips.mjs`,
 `working-frames.mjs`, `working-palette.mjs`, the `*-reference-*.webp` sheets) and
-`src/ui/working-sequence.ts` are left in place, unread, until the new motion is
-approved.
+`src/ui/working-sequence.ts` were removed with it: about 820 KB of script and
+1.2 MB of sheets that no figure reads any more. `motion.mjs` and its
+`eye-tracks.mjs` stay.

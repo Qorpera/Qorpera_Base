@@ -279,12 +279,12 @@ export function askingCues(from: number, to: number, seed = 0): Cue[] {
  * beat, from its left shoulder and its right in turn, bouncing from side to side under them. Where
  * its eyes are changes every couple of seconds: over the top with each star, on one star all the way
  * round, up at the top of the arc, on the member, from one shoulder to the other. Every few seconds it
- * shows a trick. There are thirteen, and an agent goes through all of them, in an order of its own,
+ * shows a trick. There are eleven, and an agent goes through all of them, in an order of its own,
  * before it shows any again: a smile, a look at the member, a twirl under the stars, a round of
- * higher throws, one star sent sky high, a header off the top of its head, the stars stacked and
- * balanced, a halo of them circling overhead, a "ta-da" with the stars held out, the three merged
- * into one big star, and three ways of sending them round itself, in front of it and behind (a level
- * ring, a ring that tilts as it turns, and a spiral up over its head and down). A figure whose work
+ * higher throws, one star sent sky high, a header off the top of its head, a halo of them circling
+ * overhead, a "ta-da" with the stars held out, and three ways of sending them round itself, in front
+ * of it and behind (a level ring, a ring that tilts as it turns, and a spiral up over its head and
+ * down). A figure whose work
  * also waits on the member catches its stars now and then, becomes its "?" or "!" for a moment, and
  * takes them up again. */
 
@@ -317,10 +317,8 @@ export const TRICKS = [
 	"high",
 	"sky",
 	"header",
-	"stack",
 	"halo",
 	"tada",
-	"merge",
 	"orbit",
 	"swirl",
 	"spiral",
@@ -329,7 +327,7 @@ export type Trick = (typeof TRICKS)[number];
 /** The tricks that send the stars round the figure, in front of it and behind. */
 const ROUNDS: readonly Trick[] = ["orbit", "swirl", "spiral"];
 /** The tricks that take the stars out of the air and hold them in a figure of their own. */
-const FORMATIONS: readonly Trick[] = ["stack", "halo", "tada", "merge", ...ROUNDS];
+const FORMATIONS: readonly Trick[] = ["halo", "tada", ...ROUNDS];
 /** The beats of its round a trick runs over. */
 const beatsOf = (kind: Trick): [number, number] => (ROUNDS.includes(kind) ? [1, 7] : [TRICK_FROM, TRICK_TO]);
 /** With something waiting on the member: this many beats of juggling, then the ask for a while. */
@@ -439,11 +437,6 @@ const climbed = (s: number) => pulse(s, 0.35, 1.25, 1.45, 2.35);
 
 /** Where the stars stand in a formation, `s` seconds into it. */
 function formation(kind: Trick, star: number, s: number): Prop {
-	if (kind === "stack") {
-		// One on another on the head, the higher ones swaying more.
-		const sway = Math.sin(TAU * (s / 0.95) + star * 0.8) * (0.8 + star * 1.2);
-		return { x: 50 + sway, y: HEAD_Y - 1 - star * 12, turn: sway * 5, scale: 1 };
-	}
 	if (kind === "halo") {
 		// Round and round over the head, larger as they come to the front.
 		const angle = TAU * (s / 0.85) + (star * TAU) / STARS;
@@ -462,11 +455,6 @@ function formation(kind: Trick, star: number, s: number): Prop {
 			turn: s * 90,
 			scale: 1.15 + 0.3 * pulse(s, 0.45, 0.7, 0.75, 1.1),
 		};
-	}
-	if (kind === "merge") {
-		// One big star bouncing on the head, the other two inside it.
-		const bounce = Math.abs(Math.sin(Math.PI * (s / BEAT)));
-		return { x: 50, y: HEAD_Y - 6 - 13 * bounce, turn: s * 200, scale: star === 0 ? 1.95 : 0.2 };
 	}
 	const angle = roundAngle(kind, star, s);
 	// Round the figure's middle, level; or on a ring that tips one way and the other as it turns.
@@ -606,19 +594,6 @@ function juggling(q: number, seed: number, on: number): { body: BodyPose; eyes: 
 		eyes = mixEyes(eyes, pair({ ...lookAt(star.x, star.y), width: 1.07, height: 1.12 }), watched);
 		const hopAt = kind === "header" ? TRICK_FROM + TOP - 0.3 : TRICK_FROM + FLIGHT - 0.15;
 		body = both(body, hop((local - hopAt) / 1.1, kind === "header" ? 9 : 7));
-	} else if (kind === "stack") {
-		// A slow sway to keep them up, eyes crossed on the pile.
-		const sway = Math.sin(TAU * (s / 0.95)) * held;
-		body = both(body, { x: 1.3 * sway, y: 0, turn: 2.6 * sway, scaleX: 1, scaleY: 1 });
-		const crossed = { ...EYE, y: -0.56, width: 1.04, height: 1.06 };
-		eyes = mixEyes(
-			eyes,
-			[
-				{ ...crossed, x: 0.13 },
-				{ ...crossed, x: -0.13 },
-			],
-			held,
-		);
 	} else if (kind === "halo") {
 		// Pleased with itself: a smile, and a rock from side to side under the ring.
 		const rock = Math.sin(TAU * (s / 0.85)) * held;
@@ -628,11 +603,6 @@ function juggling(q: number, seed: number, on: number): { body: BodyPose; eyes: 
 		// A hop with the stars held out, looking at the member: wide eyes, then a smile.
 		body = both(body, hop((s - 0.3) / 0.7, 11));
 		eyes = mixEyes(eyes, pair({ width: 1.06, height: 1.12, smile: pulse(s, 0.75, 0.95, 1.45, 1.7) }), held);
-	} else if (kind === "merge") {
-		// A bump for each bounce of the big star, eyes on it.
-		const bounced = Math.abs(Math.sin(Math.PI * (s / BEAT)));
-		body = both(body, { x: 0, y: 0, turn: 0, ...squash(0.07 * (1 - bounced) * held) });
-		eyes = mixEyes(eyes, pair({ ...lookAt(50, HEAD_Y - 6 - 13 * bounced), width: 1.05, height: 1.08 }), held);
 	} else if (kind && ROUNDS.includes(kind)) {
 		// The stars go round it. Its eyes go with one of them across the front and come back to meet it again
 		// while it is behind; the body turns a little with the ring.
