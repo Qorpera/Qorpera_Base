@@ -83,7 +83,11 @@ create trigger qorpera_rows_gone after delete on qorpera_data.model referencing 
 create trigger qorpera_emptied before truncate on qorpera_data.model
 	for each statement execute function qorpera_data.rows_gone();
 
--- A dropped table, column or schema is recorded. Dropping one of Qorpera's triggers is refused.
+-- A dropped table, column or schema is recorded. A table or a column is recorded whether the statement named it or it
+-- went with something else (a column whose type or domain was dropped with cascade, a table of a dropped schema, a
+-- partition). A schema only when it was named: its tables are each recorded. What holds no rows of the company's own is
+-- left: a view, a materialized view (its rows are computed from tables), a sequence (a counter), an index, a type.
+-- Dropping one of Qorpera's triggers is refused.
 create function qorpera_data.dropped() returns event_trigger language plpgsql security definer set search_path = '' as $$
 declare gone record;
 begin
@@ -92,7 +96,7 @@ begin
 			raise exception 'Qorpera''s trigger % cannot be dropped', gone.object_identity;
 		end if;
 		if gone.object_type in ('table', 'table column', 'schema') and gone.schema_name is distinct from 'qorpera_data'
-			and (gone.original or gone.object_type = 'table') then
+			and (gone.original or gone.object_type in ('table', 'table column')) then
 			insert into qorpera_data.step_effects (kind, object) values ('dropped ' || gone.object_type, gone.object_identity);
 		end if;
 	end loop;

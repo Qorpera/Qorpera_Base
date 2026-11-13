@@ -36,18 +36,19 @@ const LIMITS_HERE = {
 // ---- two companies and their members
 const ENV_A = "64000000-0000-4000-8000-0000000000a0";
 const ENV_B = "64000000-0000-4000-8000-0000000000b0";
+const ENV_C = "64000000-0000-4000-8000-0000000000c0";
 const person = (n) => `64000000-0000-4000-8000-0000000000${String(n).padStart(2, "0")}`;
 const OWNER = person(1);
 const CONTRIBUTOR = person(2);
 const VIEWER = person(3);
 const STRANGER = person(9);
 const B_MEMBER = person(11);
-const MEMBERS = { [ENV_A]: new Set([OWNER, CONTRIBUTOR, VIEWER]), [ENV_B]: new Set([B_MEMBER]) };
+const MEMBERS = { [ENV_A]: new Set([OWNER, CONTRIBUTOR, VIEWER]), [ENV_B]: new Set([B_MEMBER]), [ENV_C]: new Set([OWNER]) };
 /** Folders only one member may read, as a path resource of scope member_private makes them. */
-const PRIVATE = { [ENV_A]: { "data/hr": CONTRIBUTOR }, [ENV_B]: {} };
+const PRIVATE = { [ENV_A]: { "data/hr": CONTRIBUTOR }, [ENV_B]: {}, [ENV_C]: {} };
 
 // ---- the stand-in platform: the folders, the tokens it knows, and its two reads
-const FOLDERS = { [ENV_A]: new Map(), [ENV_B]: new Map() };
+const FOLDERS = { [ENV_A]: new Map(), [ENV_B]: new Map(), [ENV_C]: new Map() };
 const TEXTS = new Map();
 const put = (env, files) => {
 	for (const [path, text] of Object.entries(files)) {
@@ -137,6 +138,14 @@ select 9007199254740993::bigint as big, 42::bigint as small, 7::int as whole, 1.
 	"data/shop/queries/huge-first.sql": "select repeat('x', 1048576) as text union all select 'small';\n",
 	"data/shop/queries/none.sql": "select n from generate_series(1, 0) n;\n",
 	"data/shop/queries/slow.sql": "select pg_sleep(5) as waited;\n",
+	"data/shop/queries/nap.sql": "select pg_sleep(0.2) as napped, :k::int as k;\n",
+	"data/shop/queries/stubborn.sql": "select stubborn() as never;\n",
+	"data/kinds/database.toml": 'format = "qorpera.database/v1"\n',
+	"data/kinds/tables/001-items.sql": `create type mood as enum ('ok', 'bad');
+create domain price as numeric(10,2) check (value >= 0);
+create table items (id int primary key, mood mood not null, cost price not null);
+insert into items select n, case when n % 2 = 0 then 'ok' else 'bad' end::mood, n from generate_series(1, 6) n;
+`,
 	"data/shop/queries/writes.sql": "insert into orders (customer, amount) values ('x', 1) returning id;\n",
 	"data/shop/queries/two.sql": "select 1 as one; select 2 as two;\n",
 	"data/shop/queries/escape.sql": "select set_config('role', 'none', true) as role, (select count(*) from qorpera_data.steps) as steps;\n",
@@ -174,6 +183,12 @@ create function noop() returns trigger language plpgsql as $f$ begin return null
 	"data/qorpera_more/database.toml": 'format = "qorpera.database/v1"\n',
 });
 // Company B has a database of the same name, with the same tables.
+// Company C is made by a gateway that fails once while it makes the company's database.
+put(ENV_C, {
+	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
+	"data/shop/tables/001-orders.sql": ORDERS,
+	"data/shop/queries/count.sql": COUNT,
+});
 put(ENV_B, {
 	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
 	"data/shop/tables/001-orders.sql": ORDERS,
@@ -541,6 +556,8 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			["set local session_replication_role = replica;\ndelete from t;\n", /permission denied/],
 			["alter event trigger qorpera_guard disable;\nalter table t disable trigger user;\ndelete from t;\n", /must be owner|permission denied/],
 			["delete from t where id = 1;\ndelete from qorpera_data.step_effects;\n", /permission denied/],
+			// A deferred foreign key is checked before the step is judged: one that fails, fails the step.
+			["create table d (id int primary key, p int references parent (id) deferrable initially deferred);\ninsert into d values (1, 999);\n", /violates foreign key constraint/],
 		];
 		for (const [text, problem] of refused) {
 			put(ENV_A, { "data/guard/tables/002-try.sql": text });
@@ -552,6 +569,13 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			// The child's rows go by the cascade of the parent's delete: they are counted too.
 			["delete from parent where id = 1;\n", [["deleted rows", "guard.child", 3], ["deleted rows", "guard.parent", 1]]],
 			["merge into t using (select 2 as id) s on t.id = s.id when matched then delete;\n", [["deleted rows", "guard.t", 1]]],
+			// A deferred trigger would delete at commit, after the effects were read: it runs before they are.
+			[
+				"create function wipe() returns trigger language plpgsql as $f$ begin delete from t where id <= 5; return null; end $f$;\n" +
+					"create constraint trigger later after insert on t deferrable initially deferred for each row execute function wipe();\n" +
+					"insert into t values (100, 'late');\n",
+				[["deleted rows", "guard.t", 5]],
+			],
 		];
 		for (const [text, destroys] of held) {
 			put(ENV_A, { "data/guard/tables/002-try.sql": text });
@@ -809,5 +833,155 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		}
 		assert.equal((await ask(owner, "apply", { database: "shop" })).status, 200, "the other gateway's limit is its own");
 		assert.ok(platformCalls > 0);
+	});
+
+	it("holds a step that drops a column with its type, its domain or its schema, and keeps the values", async () => {
+		const database = companyDatabase(ENV_A);
+		assert.deepEqual(states(await ask(contributor, "apply", { database: "kinds" })), ["001-items applied"]);
+		const values = async () => (await asAdmin(database, "select string_agg(id || ' ' || mood || ' ' || cost, ', ' order by id) as v from kinds.items"))[0].v;
+		const before = await values();
+		for (const [text, wanted] of [
+			["drop type mood cascade;\n", ["dropped table column", "kinds.items.mood"]],
+			["drop domain price cascade;\n", ["dropped table column", "kinds.items.cost"]],
+			["drop schema kinds cascade;\n", ["dropped table", "kinds.items"]],
+		]) {
+			put(ENV_A, { "data/kinds/tables/002-try.sql": text });
+			const tried = await ask(contributor, "apply", { database: "kinds" });
+			assert.deepEqual(states(tried), ["001-items already", "002-try held"], `${text}: ${JSON.stringify(tried.value)}`);
+			const destroys = tried.value.results[1].destroys.map((effect) => [effect.what, effect.object]);
+			assert.ok(destroys.some(([what, object]) => what === wanted[0] && object === wanted[1]), `${text}: ${JSON.stringify(destroys)}`);
+			if (text.startsWith("drop schema")) assert.ok(destroys.some(([what, object]) => what === "dropped schema" && object === "kinds"), JSON.stringify(destroys));
+		}
+		assert.equal(await values(), before);
+	});
+
+	/** Runs `work` against a second gateway on the same store, with its own limits, then puts the first one back. */
+	const withGateway = async (options, work) => {
+		const other = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: LIMITS_HERE,
+			...options,
+		});
+		const otherServer = await serve(other);
+		const mainPort = port;
+		port = otherServer.address().port;
+		try {
+			return await work(other);
+		} finally {
+			port = mainPort;
+			otherServer.close();
+			otherServer.closeAllConnections();
+			await other.close();
+		}
+	};
+
+	it("ends the backend of a statement that catches the watcher's cancel, and the next question works", async () => {
+		put(ENV_A, {
+			"data/shop/tables/005-stubborn.sql":
+				"create function stubborn() returns int language plpgsql as $f$\nbegin\n\tloop\n\t\tbegin\n\t\t\tperform pg_sleep(10);\n\t\texception when query_canceled then\n\t\t\tnull;\n\t\tend;\n\tend loop;\nend $f$;\n",
+		});
+		assert.equal(states(await ask(owner, "apply", { database: "shop" })).at(-1), "005-stubborn applied");
+		const database = companyDatabase(ENV_A);
+		const began = Date.now();
+		const asking = ask(viewer, "query", { database: "shop", question: "stubborn" });
+		// Its own time limit is caught, so it runs on until the watcher's margin has passed.
+		await sleep(LIMITS_HERE.questionMs + 2_300);
+		const first = await gateway.watchOnce();
+		assert.deepEqual(first.ended.map((one) => one.how), ["cancelled"]);
+		await sleep(200);
+		const second = await gateway.watchOnce();
+		assert.deepEqual(second.ended.map((one) => one.how), ["terminated"]);
+		const answer = await asking;
+		assert.equal(answer.status, 408, JSON.stringify(answer.value));
+		assert.ok(Date.now() - began < 5_000);
+		const left = await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where pid = $1", [second.ended[0].pid]);
+		assert.equal(left[0].n, 0, "the backend is gone");
+		const next = await ask(viewer, "query", { database: "shop", question: "count" });
+		assert.equal(next.status, 200, JSON.stringify(next.value));
+	});
+
+	it("makes a company's database again when an earlier attempt failed between its creation and its grants", async () => {
+		const database = companyDatabase(ENV_C);
+		let fail = true;
+		await withGateway(
+			{
+				onProvision: (_, stage) => {
+					if (stage === "revoked" && fail) {
+						fail = false;
+						throw new Error("injected");
+					}
+				},
+			},
+			async () => {
+				const broken = await ask(owner, "apply", { database: "shop" }, ENV_C);
+				assert.equal(broken.status, 503, JSON.stringify(broken.value));
+				const grants = await asAdmin("postgres", "select datacl::text as acl from pg_database where datname = $1", [database]);
+				assert.doesNotMatch(grants[0].acl ?? "", /qorpera_data_keeper/, "the failure came before the grant");
+				const retried = await ask(owner, "apply", { database: "shop" }, ENV_C);
+				assert.deepEqual(states(retried), ["001-orders applied"]);
+			},
+		);
+		const [{ acl }] = await asAdmin("postgres", "select datacl::text as acl from pg_database where datname = $1", [database]);
+		assert.match(acl, /qorpera_data_keeper=c\//);
+		assert.match(acl, /qorpera_data_watch=c\//);
+		const settings = await asAdmin("postgres", "select array_to_string(setconfig, ',') as s from pg_db_role_setting r join pg_database d on d.oid = r.setdatabase where d.datname = $1 and r.setrole = 0", [database]);
+		assert.equal(settings[0].s, "temp_file_limit=256MB,work_mem=16MB,max_parallel_workers_per_gather=0");
+		// The first gateway, which never made it, asks it as any other.
+		const count = await ask(owner, "query", { database: "shop", question: "count" }, ENV_C);
+		assert.deepEqual(count.value.rows, [[240]]);
+	});
+
+	const naps = (n) => Array.from({ length: n }, (_, index) => ({ database: "shop", question: "nap", params: { k: index + 1 }, etag: "old" }));
+
+	it("asks a watch's 24 questions a few at a time, inside its deadline", async () => {
+		const began = Date.now();
+		const answer = await call(viewer, "watch", { watches: naps(24), wait: 3, texts: { [sha256(FOLDERS[ENV_A].get("data/shop/queries/nap.sql"))]: FOLDERS[ENV_A].get("data/shop/queries/nap.sql") } });
+		const took = Date.now() - began;
+		assert.equal(answer.status, 200, JSON.stringify(answer.value).slice(0, 300));
+		assert.deepEqual(answer.value.changed.map((one) => one.answer.rows[0][1]), Array.from({ length: 24 }, (_, index) => index + 1));
+		// One after another they take 4.8 s; three at a time 1.6 s.
+		assert.ok(took < 3_000, `${took} ms`);
+	});
+
+	it("answers a watch at its deadline with what it has, and starts no question after it", async () => {
+		// The shop's read login holds 3 connections, and the first gateway's are idle until they time out.
+		const [{ n: shop }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
+		const held = async () =>
+			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1", [`${companyDatabase(ENV_A)}_r${shop}`]))[0].n;
+		assert.equal(await until(held, 0, 7_000), 0);
+		await withGateway({ limits: { ...LIMITS_HERE, watchMs: 1_000 } }, async () => {
+			const began = Date.now();
+			const answer = await call(viewer, "watch", { watches: naps(24), wait: 20 });
+			const took = Date.now() - began;
+			assert.equal(answer.status, 200, JSON.stringify(answer.value).slice(0, 300));
+			assert.ok(took < 1_400, `${took} ms`);
+			assert.ok(answer.value.changed.length > 0 && answer.value.changed.length < 24, `${answer.value.changed.length} answered`);
+		});
+		const [{ n }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
+		const active = await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1 and state = 'active'", [`${companyDatabase(ENV_A)}_r${n}`]);
+		assert.equal(active[0].n, 0);
+	});
+
+	it("stops a watch's questions when its caller goes away", async () => {
+		const [{ n }] = await asAdmin(companyDatabase(ENV_A), "select n from qorpera_data.databases where name = 'shop'");
+		const reader = `${companyDatabase(ENV_A)}_r${n}`;
+		const active = async () => (await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where usename = $1 and state = 'active'", [reader]))[0].n;
+		const text = JSON.stringify({ watches: naps(24), wait: 3 });
+		const request = http.request({
+			host: "127.0.0.1",
+			port,
+			path: `/v1/company-data/${ENV_A}/watch`,
+			method: "POST",
+			headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+		});
+		request.on("error", () => undefined);
+		request.end(text);
+		assert.equal(await until(active, 3), 3, "three questions at a time");
+		const gone = Date.now();
+		request.destroy();
+		assert.equal(await until(active, 0, 2_000), 0);
+		assert.ok(Date.now() - gone < 400, `${Date.now() - gone} ms: cancelled, not left to finish`);
+		assert.equal(await until(listening, 0), 0);
 	});
 });
