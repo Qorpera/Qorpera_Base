@@ -123,6 +123,25 @@ const MAX_PENDING_PIXELS = 16 * 1000 * 1000;
 /** How many areas decode at once across the view: a whole screen's 28 bands then go in four rounds of a few ms. */
 const MAX_DECODING = 8;
 
+/**
+ * One live picture's own decoding and drawing (review r4 F1 of #1746). Everything in it belongs to that stream: the
+ * chain its messages draw in, the turns its areas take, who waits for one, and what it holds. A stream that ends or is
+ * replaced is `dropped`: its queue goes, everyone waiting is let go at once (so nothing of the next stream waits behind
+ * a decode of this one that may never finish), and each bitmap of it is closed as it lands. `showing` turns true only
+ * when pixels of it were drawn: until then the window keeps its own pictures, so the member never sees a blank view.
+ */
+interface StreamPaint {
+	readonly generation: number;
+	dropped: boolean;
+	showing: boolean;
+	chain: Promise<unknown>;
+	decoding: number;
+	readonly waiting: (() => void)[];
+	readonly held: Set<{ readonly bytes: number; readonly pixels: number }>;
+	bytes: number;
+	pixels: number;
+}
+
 /** A decoded picture: what a canvas draws. */
 export type MachineScreenPicture = CanvasImageSource & {
 	readonly width: number;
@@ -216,23 +235,15 @@ export class MachineScreenView {
 	#shown = false;
 	/** Each picture's turn: one decoded after a newer one began is dropped. */
 	#turn = 0;
-	/** The live picture's draws (20260930745000), one after another in the order they came, and how many times the
-	 * picture was cleared or a stream ended: a draw that waited past that draws nothing. The chain belongs to one
-	 * generation (`#drawingFor`): once the generation moves, the next draw starts a chain of its own, so a replacement
-	 * stream's pictures never wait behind an area of the old one that may never finish decoding (review r2 of #1746). */
-	#drawing: Promise<unknown> = Promise.resolve();
-	#drawingFor = 0;
+	/** How many times the picture was cleared or a live picture ended: the generation. Everything a stream decodes and
+	 * draws belongs to its own generation (`#paint`), so a replacement shares nothing with it (review r4 F1 of #1746). */
 	#cleared = 0;
+	/** The one stream whose work this view is doing now, or none. Each has its own chain, its own decoding turns, its own
+	 * waiting list and its own count of what it holds; when it is dropped, its queue goes, every waiter is let go at once
+	 * so nothing of a later stream waits behind it, and each of its bitmaps is closed as it lands. */
+	#paint: StreamPaint | null = null;
 	/** The live picture's pointer shape (a data URL and its hot spot), shown over the picture while it takes input. */
 	#cursor = "";
-	/** The messages of a live picture being decoded now, and what each holds: bounded in number, in PNG bytes and in
-	 * decoded pixels (review r3 F1 of #1746). */
-	readonly #pending = new Set<{ readonly bytes: number; readonly pixels: number }>();
-	#pendingBytes = 0;
-	#pendingPixels = 0;
-	/** Areas decoding right now, and who waits for a turn (MAX_DECODING). */
-	#decoding = 0;
-	readonly #waiting: (() => void)[] = [];
 	#fullscreenAttempt = 0;
 	#ownedFullscreen = false;
 
@@ -661,6 +672,7 @@ export class MachineScreenView {
 	 * the screen: that stream is of no use). The caller must tell the last two apart, or a draw discarded at a renewal
 	 * would end the stream that replaced it (review r2 F4 of #1746). */
 	stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed" | "overflow"> {
+		const paint = this.#paintFor();
 		const bytes =
 			message.kind === "rects"
 				? message.rects.reduce((sum, rect) => sum + rect.png.size, 0)
@@ -673,33 +685,32 @@ export class MachineScreenView {
 				: message.kind === "cursor"
 					? message.width * message.height
 					: 0;
-		// Past what the page may hold while it decodes, nothing of this message is begun: the stream ends and the window
-		// goes back to its own pictures (review r3 F1 of #1746).
+		// Past what this stream may hold while it decodes, nothing of the message is begun: the window ends that stream
+		// and its own pictures carry on (review r3 F1 of #1746).
 		if (
-			this.#pending.size >= MAX_PENDING_MESSAGES ||
-			this.#pendingBytes + bytes > MAX_PENDING_BYTES ||
-			this.#pendingPixels + pixels > MAX_PENDING_PIXELS
+			paint.held.size >= MAX_PENDING_MESSAGES ||
+			paint.bytes + bytes > MAX_PENDING_BYTES ||
+			paint.pixels + pixels > MAX_PENDING_PIXELS
 		)
 			return Promise.resolve("overflow");
-		const held = { bytes, pixels };
-		this.#pending.add(held);
-		this.#pendingBytes += bytes;
-		this.#pendingPixels += pixels;
+		const holds = { bytes, pixels };
+		paint.held.add(holds);
+		paint.bytes += bytes;
+		paint.pixels += pixels;
 		const letGo = () => {
-			if (!this.#pending.delete(held)) return;
-			this.#pendingBytes -= bytes;
-			this.#pendingPixels -= pixels;
+			if (!paint.held.delete(holds)) return;
+			paint.bytes -= bytes;
+			paint.pixels -= pixels;
 		};
 		this.#turn++;
-		const cleared = this.#cleared;
 		const decode = this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob));
-		// At most MAX_DECODING areas decode at once across the view, and a picture whose generation moved while it
-		// decoded is let go there and then, without waiting for the chain (review r3 F1).
+		// At most MAX_DECODING areas of THIS stream decode at once, and a picture of a stream that was dropped is closed
+		// as it lands, whatever the chain is doing (review r4 F1).
 		const one = async (rect: MachineStreamRect) => {
-			await this.#turnToDecode();
+			await this.#turnToDecode(paint);
 			try {
 				const picture = await decode(rect.png);
-				if (this.#cleared !== cleared || this.#stop.signal.aborted) {
+				if (paint.dropped || this.#stop.signal.aborted) {
 					picture.close?.();
 					return null;
 				}
@@ -707,31 +718,29 @@ export class MachineScreenView {
 			} catch {
 				return null;
 			} finally {
-				this.#decoded();
+				this.#decoded(paint);
 			}
 		};
 		const pictures = message.kind === "rects" ? Promise.all(message.rects.map(one)) : Promise.resolve([]);
 		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
-		// Work of an older generation is discarded, so nothing of this one waits for it.
-		const behind = this.#drawingFor === cleared ? this.#drawing : Promise.resolve();
-		this.#drawingFor = cleared;
-		const drawn = behind.then(async () => {
+		const drawn = paint.chain.then(async () => {
 			const decoded = await pictures;
 			const close = () => {
 				for (const each of decoded) each?.picture.close?.();
 			};
-			if (this.#cleared !== cleared || this.#stop.signal.aborted) {
+			if (paint.dropped || this.#stop.signal.aborted) {
 				close();
 				return "dropped";
 			}
 			if (message.kind === "size") {
 				if (this.#canvas.width !== message.width) this.#canvas.width = message.width;
 				if (this.#canvas.height !== message.height) this.#canvas.height = message.height;
+				// A size alone shows nothing: the window keeps its own pictures until pixels of this stream are drawn.
 				return "drawn";
 			}
 			if (message.kind === "cursor") {
 				const url = await cursor.catch(() => "");
-				if (this.#cleared !== cleared) return "dropped";
+				if (paint.dropped) return "dropped";
 				this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
 				this.#showCursor();
 				return "drawn";
@@ -748,6 +757,8 @@ export class MachineScreenView {
 			const context = this.#canvas.getContext("2d");
 			for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
 			close();
+			// Pixels of this stream are on the canvas: only now is it showing (review r4 F1 of #1746).
+			paint.showing = true;
 			this.#shown = true;
 			this.el.hidden = false;
 			this.#enter.disabled = false;
@@ -755,52 +766,75 @@ export class MachineScreenView {
 			return "drawn";
 		});
 		const settled = drawn.catch(() => "failed" as const).finally(letGo);
-		this.#drawing = settled;
+		paint.chain = settled;
 		return settled;
 	}
 
-	/**
-	 * The live picture ended (20260930745000): the picture stays as it was drawn, the pointer is the page's own again,
-	 * and anything of that stream still being decoded draws nothing. Without this, an area that was decoding when the
-	 * socket closed could land after the window's next look and paint the screen as it was before (review r1 F4 of
-	 * #1746).
-	 */
-	streamEnded(): void {
-		this.#cleared++;
-		this.#cursor = "";
-		this.#showCursor();
+	/** This stream's own work, started when a stream's first message comes and left behind when its generation goes. */
+	#paintFor(): StreamPaint {
+		const paint = this.#paint;
+		if (paint && !paint.dropped && paint.generation === this.#cleared) return paint;
+		const made: StreamPaint = {
+			generation: this.#cleared,
+			dropped: false,
+			showing: false,
+			chain: Promise.resolve(),
+			decoding: 0,
+			waiting: [],
+			held: new Set(),
+			bytes: 0,
+			pixels: 0,
+		};
+		this.#paint = made;
+		return made;
 	}
 
-	/** Waits for one of MAX_DECODING decoding turns. */
-	#turnToDecode(): Promise<void> {
-		if (this.#decoding < MAX_DECODING) {
-			this.#decoding++;
+	/** The stream whose work this was is over: its queue goes, everyone waiting for one of its turns is let go at once
+	 * (so nothing of the next stream waits behind it), and each of its pictures is closed as it lands. */
+	#dropPaint(): void {
+		const paint = this.#paint;
+		this.#paint = null;
+		if (!paint || paint.dropped) return;
+		paint.dropped = true;
+		for (const waiting of paint.waiting.splice(0)) waiting();
+		paint.held.clear();
+		paint.bytes = 0;
+		paint.pixels = 0;
+	}
+
+	/** Whether pixels of the live picture are on the canvas: until they are, the window keeps its own pictures. */
+	get streaming(): boolean {
+		return this.#paint?.showing === true;
+	}
+
+	/** Waits for one of this stream's MAX_DECODING turns; a dropped stream's waiters are let go at once. */
+	#turnToDecode(paint: StreamPaint): Promise<void> {
+		if (paint.dropped || paint.decoding < MAX_DECODING) {
+			paint.decoding++;
 			return Promise.resolve();
 		}
-		return new Promise<void>((resolve) => this.#waiting.push(resolve));
+		return new Promise<void>((resolve) => paint.waiting.push(resolve));
 	}
 
-	/** One area finished decoding: the next in line takes its turn. */
-	#decoded(): void {
-		const next = this.#waiting.shift();
+	/** One area of this stream finished decoding: the next of ITS areas takes the turn. */
+	#decoded(paint: StreamPaint): void {
+		const next = paint.waiting.shift();
 		if (next) next();
-		else this.#decoding--;
+		else paint.decoding--;
 	}
 
-	/** What the page holds of a live picture right now: its messages, their PNG bytes and their decoded pixels, with the
-	 * areas decoding at this moment. All four are bounded (review r3 F1 of #1746); read by the tests and nothing else. */
+	/** What the live picture holds right now: its messages, their PNG bytes, their decoded pixels and the areas decoding
+	 * at this moment, all of the current stream alone (review r3 F1 and r4 F1 of #1746). Read by the tests and nothing
+	 * else; a dropped stream's work counts for nothing here, since no later stream waits for it. */
 	get pending(): {
 		readonly messages: number;
 		readonly bytes: number;
 		readonly pixels: number;
 		readonly decoding: number;
 	} {
-		return {
-			messages: this.#pending.size,
-			bytes: this.#pendingBytes,
-			pixels: this.#pendingPixels,
-			decoding: this.#decoding,
-		};
+		const paint = this.#paint;
+		if (!paint || paint.dropped) return { messages: 0, bytes: 0, pixels: 0, decoding: 0 };
+		return { messages: paint.held.size, bytes: paint.bytes, pixels: paint.pixels, decoding: paint.decoding };
 	}
 
 	/** The live picture's pointer shape over the picture while it takes input; the page's own otherwise. */
@@ -827,11 +861,25 @@ export class MachineScreenView {
 		this.#hint.textContent = t("Updating…");
 	}
 
+	/**
+	 * The live picture ended (20260930745000): the picture stays as it was drawn, the pointer is the page's own again,
+	 * and that stream's work is dropped — its queue goes, everyone waiting for one of its decoding turns is let go, and
+	 * each of its pictures is closed as it lands, so a replacement shares nothing with it and waits for none of it
+	 * (review r2 F4 and r4 F1 of #1746).
+	 */
+	streamEnded(): void {
+		this.#cleared++;
+		this.#dropPaint();
+		this.#cursor = "";
+		this.#showCursor();
+	}
+
 	/** No picture any more: the view goes away, and the panel's state text shows. */
 	clear(): void {
 		this.capture(null);
 		this.#turn++;
 		this.#cleared++;
+		this.#dropPaint();
 		this.#cursor = "";
 		this.#showCursor();
 		this.back();
@@ -868,6 +916,7 @@ export class MachineScreenView {
 		this.#stop.abort();
 		this.#turn++;
 		this.#cleared++;
+		this.#dropPaint();
 		this.el.remove();
 	}
 

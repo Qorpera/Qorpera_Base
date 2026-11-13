@@ -168,6 +168,49 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(drawn).toEqual([["after", 0, 0]]);
 	});
 
+	it("a replacement stream waits for nothing of the one it replaced, even with every decoding turn of it still stalled (review r4 F1 of #1746)", async () => {
+		const { screen, area, drawn } = view();
+		await screen.stream({ kind: "size", width: 1600, height: 1000 });
+		// Eight areas of the old stream are stuck in its decoder: every turn it has is taken, for ever.
+		const stuck = new Promise<void>(() => {});
+		const old: Promise<unknown>[] = [];
+		for (let n = 0; n < 8; n++)
+			old.push(screen.stream({ kind: "rects", rects: [area(`old-${n}`, 0, n * 20, 100, 20, stuck)] }));
+		await Promise.resolve();
+		expect(screen.pending.decoding).toBe(8);
+		// The pass ran out and the window opened another socket. Nothing of the old stream is released, ever.
+		screen.streamEnded();
+		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
+		// The replacement draws at once, with its own turns, and the old work is still stalled.
+		await screen.stream({ kind: "size", width: 1600, height: 1000 });
+		expect(await screen.stream({ kind: "rects", rects: [area("new", 0, 0, 10, 10)] })).toBe("drawn");
+		expect(drawn).toEqual([["new", 0, 0]]);
+		expect(screen.streaming).toBe(true);
+		// The stalled ones never resolve; nothing of them is counted against the replacement.
+		expect(await Promise.race([Promise.all(old), Promise.resolve("still stuck")])).toBe("still stuck");
+		expect(screen.pending.decoding).toBeLessThanOrEqual(1);
+	});
+
+	it("says it shows the live picture only once pixels of it are drawn, so the member keeps a picture through a renewal that draws nothing (review r4 F1 of #1746)", async () => {
+		const { screen, area } = view();
+		// A look is up: the member has a picture.
+		expect(await screen.show(new Blob(["look"], { type: "image/png" }))).toBe(false);
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		// A size alone is not showing: the window keeps looking.
+		expect(screen.streaming).toBe(false);
+		const stuck = new Promise<void>(() => {});
+		void screen.stream({ kind: "rects", rects: [area("never", 0, 0, 10, 10, stuck)] });
+		await Promise.resolve();
+		expect(screen.streaming).toBe(false);
+		// The socket is replaced and the new one also sends only a size: still not showing.
+		screen.streamEnded();
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		expect(screen.streaming).toBe(false);
+		// Only pixels make it showing.
+		expect(await screen.stream({ kind: "rects", rects: [area("pixels", 0, 0, 10, 10)] })).toBe("drawn");
+		expect(screen.streaming).toBe(true);
+	});
+
 	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {
 		const { screen, canvas } = view();
 		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });

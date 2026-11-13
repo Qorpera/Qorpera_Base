@@ -554,7 +554,11 @@ interface StreamUpdate {
 	readonly seq: number;
 	readonly rects: readonly RfbRect[];
 	readonly cursor: RfbCursor | null;
-	readonly size: { readonly width: number; readonly height: number } | null;
+	/** The size this update's own pixels belong to: carried on the entry, so nothing in the ring can be paired with a
+	 * size that is not its own, whatever is evicted (review r4 F2 of #1746). */
+	readonly at: { readonly width: number; readonly height: number };
+	/** Whether this update is itself where the size changed. */
+	readonly resized: boolean;
 	readonly bytes: number;
 }
 interface Watcher {
@@ -826,7 +830,15 @@ export class DesktopStream {
 	}): void {
 		const bytes =
 			update.rects.reduce((sum, rect) => sum + rect.pixels.byteLength, 0) + (update.cursor?.pixels.byteLength ?? 0);
-		this.#ring.push({ seq: ++this.#seq, rects: update.rects, cursor: update.cursor, size: update.size, bytes });
+		this.#ring.push({
+			seq: ++this.#seq,
+			rects: update.rects,
+			cursor: update.cursor,
+			// The screen's size as it stands for these pixels (the caller set it before pushing).
+			at: { width: this.#width, height: this.#height },
+			resized: update.size !== null,
+			bytes,
+		});
 		this.#ringBytes += bytes;
 		// Over the ring's bound, in bytes or in entries: the oldest go, and every member who had not been sent them gets
 		// the whole screen anew.
@@ -841,13 +853,17 @@ export class DesktopStream {
 			dropped = old.seq;
 		}
 		if (dropped > 0) {
+			// What is left of the ring begins at the newest size change in it, if any: pixels from before that change
+			// belong to a size this member was never told and are of no use now, since the whole screen is coming anyway
+			// (review r4 F2 of #1746).
+			const newestResize = [...this.#ring].reverse().find((update) => update.resized);
+			const from = Math.max(dropped, newestResize ? newestResize.seq - 1 : 0);
 			let refresh = false;
 			for (const watcher of this.#watchers)
-				if (watcher.sentSeq < dropped) {
-					watcher.sentSeq = dropped;
-					// The updates thrown away may have carried a new size, and the whole screen that recovers them is of
-					// the size the screen has now: this member is told that size before any of those pixels (review r3 F2
-					// of #1746), or it would refuse larger areas and keep pixels outside a smaller screen.
+				if (watcher.sentSeq < from) {
+					watcher.sentSeq = from;
+					// The size is told again from the first entry this member is sent, whatever the eviction left: the
+					// entry carries its own size, so the two can never disagree.
 					watcher.sizeSent = { width: 0, height: 0 };
 					refresh = true;
 				}
@@ -865,18 +881,24 @@ export class DesktopStream {
 		}
 	}
 
-	/** Sends a member what changed after its last cycle up to `upTo`: the size when it changed, the changed areas in
-	 * order (one wholly covered by a later one is left out), the newest pointer shape. */
+	/**
+	 * Sends a member what changed after its last cycle up to `upTo`: the size whenever it is not the one that member
+	 * already has, then the changed areas in order (one wholly covered by a later one is left out), then the newest
+	 * pointer shape. Every area goes under the size it belongs to, which each entry carries (`at`), so nothing an
+	 * eviction leaves behind can be paired with another size: the first entry of the window decides the size told, and a
+	 * later entry of another size clears what came before it (review r4 F2 of #1746).
+	 */
 	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<void> {
 		const sizeSent = watcher.sizeSent;
 		const updates = this.#ring.filter((update) => update.seq > watcher.sentSeq && update.seq <= upTo);
-		// A member who joined after the screen's size was told is told it first.
-		let size = sizeSent.width === 0 && this.#width > 0 ? { width: this.#width, height: this.#height } : sizeSent;
+		// The size these pixels are of: the first entry's own, which is what a member who joined, or one whose updates
+		// were evicted, is told before any of them.
+		let size = sizeSent.width === 0 ? (updates[0]?.at ?? { width: this.#width, height: this.#height }) : sizeSent;
 		let rects: RfbRect[] = [];
 		let cursor: RfbCursor | null = null;
 		for (const update of updates) {
-			if (update.size && (update.size.width !== size.width || update.size.height !== size.height)) {
-				size = update.size;
+			if (update.at.width !== size.width || update.at.height !== size.height) {
+				size = update.at;
 				// What was drawn before a new size is gone with it.
 				rects = [];
 			}

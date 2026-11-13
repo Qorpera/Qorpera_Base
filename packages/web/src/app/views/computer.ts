@@ -2117,13 +2117,16 @@ export class ComputerPanel {
 	#streamMessage(stream: PageStream, message: MachineStreamMessage): void {
 		const view = this.#view;
 		if (!view || this.#stream !== stream || stream.stop.signal.aborted) return;
-		this.#streamLive(stream, true);
 		void view.stream(message).then((drawn) => {
+			if (this.#stream !== stream) return;
+			// The looks stop only once PIXELS of this stream are on the canvas, never at its size message: a stream that
+			// opens and then draws nothing must leave the member the pictures they had (review r4 F1 of #1746).
+			if (drawn === "drawn" && message.kind === "rects") this.#streamLive(stream, true);
 			// Work the picture discarded (it was cleared, or this stream ended while the area decoded) is no fault of the
 			// stream: a renewal reuses this PageStream, so taking it for a failure would end the socket that replaced it
 			// (review r2 F4 of #1746). A picture that could not be drawn ends it, and so does more waiting to be decoded
-			// than the page may hold (review r3 F1): the looks come back either way, so the member still sees the screen.
-			if ((drawn !== "failed" && drawn !== "overflow") || this.#stream !== stream) return;
+			// than the stream may hold (review r3 F1): the looks come back either way, so the member still sees the screen.
+			if (drawn !== "failed" && drawn !== "overflow") return;
 			this.#streamAfter = Date.now() + STREAM_PAUSE_MS;
 			this.#endStream(stream);
 		});

@@ -654,6 +654,58 @@ describe("a desktop's live picture (20260930745000)", () => {
 		await watching;
 	});
 
+	it("keeps old-size pixels with their own size across an eviction, and never sends them under a newer one (review r4 F2 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		let letGo = () => {};
+		const held = new Promise<void>((resolve) => {
+			letGo = resolve;
+		});
+		let gate: Promise<void> | null = null;
+		const sink = sinkOf();
+		// A ring so small that a few updates evict the earlier ones.
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringBytes: 64 * 40 * 4 });
+		const watching = stream.watch(
+			async () => {
+				if (gate) await gate;
+				return "ok";
+			},
+			sink,
+			new AbortController().signal,
+		);
+		await settle();
+		desktop.send(update(rawRect(0, 0, 64, 40, [1, 2, 3])));
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_RECTS)).toBe(true));
+		// This member's cycles stop. The screen SHRINKS, and pixels of both sizes pile up behind the shrink.
+		gate = held;
+		desktop.send(update(rawRect(8, 8, 32, 16, [9, 9, 9])));
+		const shrink = Buffer.alloc(12);
+		shrink.writeUInt16BE(32, 4);
+		shrink.writeUInt16BE(20, 6);
+		shrink.writeInt32BE(-223, 8);
+		desktop.send(update(shrink));
+		for (let n = 0; n < 4; n++) desktop.send(update(rawRect(0, 0, 32, 20, [4, 5, 6])));
+		await settle();
+		sink.messages.length = 0;
+		letGo();
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_RECTS)).toBe(true));
+		// Whatever the eviction kept, the size comes first and every area that follows fits inside it.
+		const sizes = sink.messages.filter((message) => message.type === STREAM_SIZE);
+		expect(sink.messages[0]?.type).toBe(STREAM_SIZE);
+		const last = sizes.at(-1);
+		const width = last?.body.readUInt16BE(0) as number;
+		const height = last?.body.readUInt16BE(2) as number;
+		for (const area of sink.areas().flat()) {
+			const [x, y, w, h] = area
+				.match(/^(\d+),(\d+) (\d+)x(\d+)/)
+				?.slice(1)
+				.map(Number) as number[];
+			expect(x + w, area).toBeLessThanOrEqual(width);
+			expect(y + h, area).toBeLessThanOrEqual(height);
+		}
+		desktop.end(95);
+		await watching;
+	});
+
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {
 		const desktop = fakeDesktop();
 		const ended = vi.fn();
