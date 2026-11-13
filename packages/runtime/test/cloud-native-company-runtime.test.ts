@@ -1139,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v15",
+			schema: "qorpera.hire-overlay/v16",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2526,7 +2526,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
-it("gives a company conversation's run the machine tools with notify, and no waiting", async () => {
+it("gives a company conversation's run the machine tools with notify, and a wait of a minute for a start only", async () => {
 	const f = await fixture("company-runtime", false, undefined, true);
 	expect(await machineToolNames(f)).toHaveLength(7);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -2536,9 +2536,12 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 	}[];
 	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
-	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).not.toHaveProperty(
-		"waitSeconds",
-	);
+	// agent-box B1: it may wait in place while its machine starts, as a worker can, for a minute at most.
+	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
+		type: "integer",
+		minimum: 1,
+		maximum: 60,
+	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
 });
 
@@ -3299,9 +3302,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"413603241623974ce678f2da5f29d477b212cb25a65570c769e8a53a50261250",
+		"60e06dc6f01a8bfc7658cc0d6d639cf7a13bf6a48aba46a71e7a4bdfae7c02ab",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"f1a8171be8cbab82d88555d023f4b1b8090203f6d7178e3c5063b86635e310e0",
+		"2c604264ac21ef49fd869d4f8b3aad9fabd21eaf41c7a3d7ac93b3ebfd6e12a4",
 	);
 });

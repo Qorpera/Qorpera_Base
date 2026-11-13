@@ -65,7 +65,7 @@ it("offers save_app and post_app as Company File tools", async () => {
 	]);
 });
 
-it("tells how to make a page worth opening, within the bytes a tool's description may hold", async () => {
+it("tells how a page written by hand is made, within the bytes a tool's description may hold", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
 	// The tool boundary refuses a tool whose description is over 4096 bytes, and with it every run: the list of colours
@@ -74,14 +74,16 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
 	for (const rule of [
-		"The first screen answers how this stands, without scrolling, on a laptop and on a phone",
-		"A page with nothing to look at is a document, not an app.",
-		"Fold nothing a member needs into <details> or closed rows.",
+		// Jonas, 13 November 2026: pages that kept every rule of 10 November (a first screen that says how the area
+		// stands, about 300 words, a diagram) were still documents in boxes. A page written by hand now follows the kits.
+		"The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
+		"a title of two or three words, at most one short line under it, then the thing",
+		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
+		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
+		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
 		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides",
-		"the company's colours as variables, so the apps look like one company; files says which",
-		"Make it work at phone width (about 390 px)",
-		"The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.",
+		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: files says which",
+		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
 	// The web opens an app's links and gives it a base style now: the description no longer says otherwise.
@@ -264,8 +266,9 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 const LINKS_NOTE =
 	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
-	"this reads as a document. Aim at about 300: show the state as numbers, marks, a chart or a diagram, and keep the long reasoning in its file.";
-const UNSHOWN_NOTE = "Nothing to look at, only text: show the main thing as a picture, a chart, a map or a diagram.";
+	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.";
+const UNSHOWN_NOTE =
+	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).";
 const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
 
 it("reads a page quickly and names what a member would trip on", () => {
@@ -299,11 +302,12 @@ it("reads a page quickly and names what a member would trip on", () => {
 	expect(appLookNotes(folded.repeat(3))).toEqual([
 		"3 folded sections (<details>): a member sees only what is open. Show what matters and leave the rest out.",
 	]);
-	// A page of text: a document past 500 words, and nothing to look at past 150 without a picture or a drawing.
-	expect(appLookNotes(`<p>${words(150)}</p>`)).toEqual([]);
-	expect(appLookNotes(`<p>${words(151)}</p>`)).toEqual([UNSHOWN_NOTE]);
-	expect(appLookNotes(`<p>${words(501)}</p>`)).toEqual([`501 words: ${WORDS_NOTE}`, UNSHOWN_NOTE]);
-	expect(appLookNotes(`<svg viewBox="0 0 10 10"></svg><p>${words(501)}</p>`)).toEqual([`501 words: ${WORDS_NOTE}`]);
+	// A page of text: a document past 250 words, and nothing to look at past 80 without a picture or a drawing (the
+	// pages of 13 November held 150 to 250 words each, under the old bounds of 500 and 150).
+	expect(appLookNotes(`<p>${words(80)}</p>`)).toEqual([]);
+	expect(appLookNotes(`<p>${words(81)}</p>`)).toEqual([UNSHOWN_NOTE]);
+	expect(appLookNotes(`<p>${words(251)}</p>`)).toEqual([`251 words: ${WORDS_NOTE}`, UNSHOWN_NOTE]);
+	expect(appLookNotes(`<svg viewBox="0 0 10 10"></svg><p>${words(251)}</p>`)).toEqual([`251 words: ${WORDS_NOTE}`]);
 	expect(appLookNotes(`<p>${words(200)}</p><script>document.createElementNS(NS, "svg")</script>`)).toEqual([]);
 	expect(appLookNotes(`<p style="background:url(map.png)">${words(200)}</p>`)).toEqual([]);
 	// Only what a member reads counts: not scripts, styles, comments, tags or marks, also when one is never closed.

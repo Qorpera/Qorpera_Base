@@ -165,6 +165,12 @@ export const CLOUD_MACHINE_DESKTOP_LEAST = Object.freeze({ cpus: 2, memoryGiB: 4
 const SHARE_APP_START =
 	"To let members open a server in their browser, run it on an always-on machine and share its port with share_app. ";
 const SHARE_APP_RUN = "To let members open one in their browser, share its port with share_app. ";
+/** How long machine_start's waitSeconds may wait in one call (agent-box B1, 13 Nov 2026). A worker has no conversation to
+ * be woken in. A conversation's run may wait in place too, for about a boot (p50 15 to 23 s, p90 28 to 31 s): it holds
+ * its slot and its conversation meanwhile (one run of an agent at a time, a member's next message waits for it), so the
+ * wait is short and a machine in line answers at once; past it the run is woken when the machine runs, as before. */
+export const CLOUD_MACHINE_START_WAIT_SECONDS = Object.freeze({ worker: 300, conversation: 60 });
+const CONVERSATION_START_WAIT = `With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.conversation}) the call waits while it starts, and no model turn is spent; if it is not running yet, finish this run normally: you are woken when it runs. `;
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
@@ -176,24 +182,23 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
-	"To wake a stopped machine, pass only machine with its name. " +
+	"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait). " +
+	"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
 	SHARE_APP_START +
 	"The result says its state. When no server has room it waits in line and the result gives its place. " +
 	"When the company is out of computer hours it waits until hours are added (waitingFor COMPUTER_HOURS_EXHAUSTED); an hour after the company runs out, its running machines sleep, keeping their disks, and wake by themselves once hours are added. " +
-	"If it is not running yet, finish this run normally: you are woken when it runs. " +
+	CONVERSATION_START_WAIT +
 	"A result with refused started nothing and says why (the name is taken, too large for any server, no such machine). Keep operationKey stable after an uncertain result.";
 /** A worker (an agent's background helper) is never woken: it has no conversation to continue. */
-export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(SHARE_APP_START, "")
-	.replace(
-		"To wake a stopped machine, pass only machine with its name.",
-		"To wake a stopped machine, pass only machine with its name (and waitSeconds to wait).",
-	)
-	.replace(
-		"If it is not running yet, finish this run normally: you are woken when it runs.",
-		"You are a worker: nothing wakes you. With waitSeconds (1 to 300) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). " +
-			"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
-	);
+export const CLOUD_MACHINE_START_WORKER_DESCRIPTION = CLOUD_MACHINE_START_DESCRIPTION.replace(
+	SHARE_APP_START,
+	"",
+).replace(
+	CONVERSATION_START_WAIT,
+	`You are a worker: nothing wakes you. With waitSeconds (1 to ${CLOUD_MACHINE_START_WAIT_SECONDS.worker}) the call waits while it starts, and no model turn is spent; to wait longer, call machine_start again with the same operationKey and arguments (waitSeconds may change). ` +
+		"A machine that waits in line for room returns at once: use another running machine from machine_list, or say in your report that it is waiting so your agent can retry. ",
+);
 /** What a command's result says of the company folder (F3 6e-2a). */
 const FOLDER_REPORT =
 	"On a machine with the company folder, the result has companyFolder: company says whether this boot of the machine has /company (mounted, pending, or none with why); heldBack says why the output and the end are not shown yet; " +
@@ -303,7 +308,8 @@ export function cloudMachineTools(options: {
 	control: CloudCompanyPathControl;
 	operations: Pick<CloudNativeToolOperations, "execute">;
 	gateway: CloudMachineCommandGateway;
-	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. */
+	/** The run is an agent's worker: no notify and no waking; it waits inside machine_start and machine_read. Any other
+	 * run may wait inside machine_start only, and less long (CLOUD_MACHINE_START_WAIT_SECONDS). */
 	worker?: boolean;
 	/** The vault (20260930705000): with it, and a gateway that runs the machine's clipboard helper, a company agent's
 	 * own run (never a worker's) is offered save_coding_value. */
@@ -378,11 +384,12 @@ export function cloudMachineTools(options: {
 			return refused(refusal, `${machine} stopped; its commands stopped with it`);
 		throw error;
 	};
-	const workStopped = () =>
-		refused(
-			"WORK_STOPPED",
-			"your work was stopped (your agent cancelled it, or the company paused work); end your run",
-		);
+	/** What a run is told when the kernel says it may no longer work: a worker's agent cancels it; a conversation's run is
+	 * stopped by a member. */
+	const stoppedText = worker
+		? "your work was stopped (your agent cancelled it, or the company paused work); end your run"
+		: "your work was stopped (a member stopped it, or the company paused work); end your run";
+	const workStopped = () => refused("WORK_STOPPED", stoppedText);
 	/** One machine's state and, with commandId, how that command stands as the executor last recorded it. */
 	const status = async (
 		machine: string,
@@ -474,12 +481,14 @@ export function cloudMachineTools(options: {
 		options.gateway.wake
 			? options.gateway.wake({ machineId: machine.machineId }, wait, signal).catch(() => false)
 			: Promise.resolve(false);
+	/** A worker waits in machine_start and machine_read; a conversation's run only in machine_start, and less long. */
+	const waitMost = worker ? CLOUD_MACHINE_START_WAIT_SECONDS.worker : CLOUD_MACHINE_START_WAIT_SECONDS.conversation;
 	const waitSecondsOf = (value: JsonValue): number => {
-		if (!worker || !Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 300)
+		if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > waitMost)
 			throw new Error("Invalid machine wait");
 		return Number(value);
 	};
-	const waitSchema = { type: "integer", minimum: 1, maximum: 300 };
+	const waitSchema = { type: "integer", minimum: 1, maximum: waitMost };
 	const fits = cloudCommandFits;
 	const receipt = (value: CloudMachineCommandReceipt, machine: string) => {
 		// As much of a start's or a cancel's first page as fits; a handle without a preview is still a complete, honest
@@ -648,24 +657,14 @@ export function cloudMachineTools(options: {
 				lifetime: { type: "string", enum: ["task", "always-on"] },
 				desktop: { type: "boolean" },
 				machine: machineName,
-				...(worker ? { waitSeconds: waitSchema } : {}),
+				waitSeconds: waitSchema,
 			},
 		},
 		parseArguments(value): JsonValue {
 			const input = closed(
 				value,
 				["operationKey"],
-				[
-					"name",
-					"purpose",
-					"cpus",
-					"memoryGiB",
-					"diskGiB",
-					"lifetime",
-					"desktop",
-					"machine",
-					...(worker ? ["waitSeconds"] : []),
-				],
+				["name", "purpose", "cpus", "memoryGiB", "diskGiB", "lifetime", "desktop", "machine", "waitSeconds"],
 			);
 			key(input.operationKey);
 			// The wait is how this call answers, never part of the start or its receipt.
@@ -759,7 +758,10 @@ export function cloudMachineTools(options: {
 					return { content: { kind: "json", value: result } };
 				},
 			});
-			// A worker waits while its machine starts; one waiting in line for room answers at once.
+			// A run that asks (waitSeconds) waits while its machine starts; one waiting in line for room answers at once. A
+			// conversation's run stays on the machine's list of runs to tell (the kernel's, at the start): when its wait ends
+			// first, it is woken when the machine runs, and its look that sees it running keeps it from being woken for it
+			// (20260930747000).
 			const started = result.kind === "json" ? (result.value as Record<string, JsonValue>) : undefined;
 			const machine = started?.machine as MachineView | undefined;
 			if (waitSeconds === undefined || machine?.state !== "starting") {
@@ -784,18 +786,13 @@ export function cloudMachineTools(options: {
 			);
 			stopWord.abort();
 			check(context);
-			// The machine was started either way: a stopped worker is told so beside it, not refused.
+			// The machine was started either way: a stopped run is told so beside it, not refused.
 			return {
 				kind: "json",
 				value: {
 					...started,
 					machine: latest,
-					...(outcome === "stopped"
-						? {
-								workStopped:
-									"your work was stopped (your agent cancelled it, or the company paused work); end your run",
-							}
-						: {}),
+					...(outcome === "stopped" ? { workStopped: stoppedText } : {}),
 				} as JsonValue,
 			};
 		},
