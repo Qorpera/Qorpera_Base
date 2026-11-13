@@ -2,8 +2,10 @@
 -- 20260930752000 (agent-box slice 1): a run's own exec-server session on its home machine. On 924's base (Alice's live
 -- conversation run) with 1241's machine node and executor:
 -- 1. The switch is off: with no rows, with the platform switch alone, and with the company named alone, a run has no
---    home. With both on it still has none until a machine of its own agent is running (section 2), because an
---    environment the model cannot reach would only refuse it.
+--    home. With both on it is still off for everyone while slice 3's sharing rule (qorpera_folder_home_shared,
+--    20260930754000) does not exist, because a home mounts the company-wide view and its agent is root there. With the
+--    rule (here a stand-in, unless 754000 is in this database) and both on, it still has none until a machine of its
+--    own agent is running (section 2), because an environment the model cannot reach would only refuse it.
 -- 2. With a machine of its own running, the run has a home and it is that machine. A session is authorized on it and
 --    its row is the run's: one row, the boot and placement of the
 --    machine it names, the run, its agent and the member it works for; the same session id again answers the same row,
@@ -14,7 +16,7 @@
 -- 4. A closed session stays closed: the close answers it, a second close answers the same, and the authority refuses
 --    it afterwards. With the switch off again, even an open session's authority is refused.
 -- 5. The channel is the runtime's and the executor's: no API role may call any of the four functions, the switch's two
---    tables are revoked from every role, and the session's columns are there (the folder window of slice 3 included).
+--    tables are revoked from every role, and the session's columns are there.
 
 select pg_temp.base_claims('service_role');
 
@@ -109,7 +111,7 @@ create function pg_temp.h1_authorize(p_name text, p_session uuid, p_binding json
 $$;
 create function pg_temp.h1_sessions(p_session uuid) returns jsonb language sql as $$
 	select coalesce(jsonb_agg(jsonb_build_object('machine', machine.name, 'placement', s.placement_id, 'boot', s.boot_id,
-		'run', s.run_id, 'agent', s.staff_agent_id, 'member', s.requested_by_user_id, 'window', s.folder_window_id,
+		'run', s.run_id, 'agent', s.staff_agent_id, 'member', s.requested_by_user_id,
 		'closed', s.closed_at is not null, 'why', s.close_reason) order by s.opened_at), '[]'::jsonb)
 	from public.qorpera_company_home_sessions s join public.qorpera_company_machines machine on machine.id = s.machine_id
 	where s.id = p_session
@@ -154,6 +156,16 @@ begin
 	perform pg_temp.base_assert(not pg_temp.h1_has_home(),
 		'1: the company named alone is not enough');
 	perform pg_temp.h1_switch(true, true);
+	-- Both on, and still off for everyone until slice 3's rule of which runs may share a machine exists: a home mounts
+	-- the company-wide view and its agent is root there. Its stand-in here lets every run share; 20260930754000's own
+	-- tests hold the real rule.
+	if to_regprocedure('public.qorpera_folder_home_shared(public.qorpera_company_machines, uuid, uuid, uuid)') is null then
+		perform pg_temp.base_assert(not public.qorpera_company_home_allowed(pg_temp.h1_company()),
+			'1: with both on and no sharing rule, the switch is still off');
+		perform pg_temp.base_assert(not pg_temp.h1_has_home(), '1: and no run has a home');
+		create function public.qorpera_folder_home_shared(p_machine public.qorpera_company_machines, p_staff_agent_id uuid,
+			p_member_user_id uuid, p_run_id uuid) returns boolean language sql as 'select true';
+	end if;
 	-- Both on, and still no home: this agent has no machine running, and an environment it cannot reach would only
 	-- refuse the model.
 	perform pg_temp.base_assert(not pg_temp.h1_has_home(),
@@ -195,8 +207,8 @@ begin
 		and v_rows #>> '{0,placement}' = (pg_temp.h1_placement('home-a')).id::text
 		and v_rows #>> '{0,agent}' = '92400000-0000-4000-8000-000000000030'
 		and v_rows #>> '{0,member}' = pg_temp.h1_requester()::text
-		and v_rows #> '{0,window}' = 'null'::jsonb and v_rows #> '{0,closed}' = 'false'::jsonb,
-		'2: one row, the run''s, with no window of its own yet: ' || v_rows::text);
+		and v_rows #> '{0,closed}' = 'false'::jsonb,
+		'2: one row, the run''s: ' || v_rows::text);
 	-- The same session id again: the same row, no second one.
 	v := pg_temp.h1_authorize('home-a', v_session);
 	perform pg_temp.base_assert(v ->> 'state' = 'authorized' and v ->> 'sessionId' = v_session::text
@@ -290,6 +302,6 @@ begin
 	perform pg_temp.base_assert((select count(*) from information_schema.columns where table_schema = 'public'
 		and table_name = 'qorpera_company_home_sessions'
 		and column_name in ('id','machine_id','placement_id','boot_id','run_id','staff_agent_id','requested_by_user_id',
-			'folder_window_id','opened_at','closed_at','close_reason')) = 11,
-		'5: the session''s columns are there, slice 3''s folder window included');
+			'opened_at','closed_at','close_reason')) = 10,
+		'5: the session''s columns are there');
 end $$;

@@ -36,7 +36,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // action, its native steps), the channel client, the coding executor's ingress route with its transport token, the
 // run's holder proven, and the session's authority in SQL (20260930752000).
 //
-// Stood in: the model (the scripted provider); the egress relay (a Unix socket that forwards only to it); the machine
+// Stood in: slice 3's sharing rule (20260930754000; a stand-in that lets the run share, unless the real one is there);
+// the model (the scripted provider); the egress relay (a Unix socket that forwards only to it); the machine
 // (`codex exec-server` in a second bubblewrap namespace on the same test VM, where production runs it inside the run's
 // own company machine over LXD, as the agent's user); `/usr/bin/node` in the namespace; and the sign-in (a made-up
 // auth.json and a made-up bearer, as a plan run's fallback passes its token).
@@ -482,7 +483,15 @@ function setup(on) {
 			? `insert into public.qorpera_home_settings(singleton, enabled) values (true, true);
 				insert into public.qorpera_home_companies(profile_id)
 				select (public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.base_binding')::jsonb)
-					#>> '{identity,companyId}')::uuid;`
+					#>> '{identity,companyId}')::uuid;
+				-- Slice 3's rule of which runs may share a machine (20260930754000), without which the switch stays off for
+				-- everyone: a stand-in that lets this run share, unless the real one is in this database.
+				do $$ begin
+					if to_regprocedure('public.qorpera_folder_home_shared(public.qorpera_company_machines, uuid, uuid, uuid)') is null then
+						create function public.qorpera_folder_home_shared(p_machine public.qorpera_company_machines,
+							p_staff_agent_id uuid, p_member_user_id uuid, p_run_id uuid) returns boolean language sql as 'select true';
+					end if;
+				end $$;`
 			: "",
 	].join("\n");
 }
