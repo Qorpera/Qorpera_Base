@@ -17,6 +17,8 @@
 --   9. The old serve and unlock: a visitor's session only, and the cap of 2000 counts visitors' only.
 --  10. Takedown: refusals, gone on every host, nothing goes live, the members' read, an app link, restore.
 --  10b. The agents' calls: a refused name's one sentence; a site taken down takes nothing from an agent, its list file.
+--  10c. A takedown sticks: no agent or member takes it offline or deletes its company (a deletion asked before waits),
+--       its name is never free; only a company's purge passes.
 --  11. The drill: refusals, taken once, only while its switch is on, cleared.
 --  12. Hosts off again: the way back.
 
@@ -948,6 +950,132 @@ begin
 	perform pg_temp.base_assert((pg_temp.rec_shop('h-look')).index_version = v_index + 2
 		and position('h-look:4' in pg_temp.rel_due_names()) > 0 and v -> 'preparing' = '{"change":4}' and not v ? 'takenDown'
 		and v -> 'live' ->> 'url' = 'https://look-shop.qorpera.com/', 'restored: ' || v::text);
+end $$;
+
+-- 10c. A takedown sticks (the lead's call, 13 Nov 2026) -----------------------------------------------------------------
+-- While a site is taken down nobody but the operator takes it offline, deletes it, renames it or frees its name: an
+-- agent's unpublish_site and a member's take offline (a website, a project's site, an app link) refuse it and write
+-- nothing; its company cannot be deleted, and a deletion asked before waits; it is never abandoned, so no other site takes
+-- its name; no row of it goes or changes its name whatever the way, but in a company's purge (which the waiting deletion
+-- never reaches). qorpera_site_restore lifts it, and each call works again.
+select pg_temp.rel_other_site('other-down', interval '2 days');
+
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_shop jsonb; v_app jsonb; v_look jsonb;
+	q public.qorpera_code_repositories%rowtype; v_finish jsonb;
+	v_member constant text := 'Qorpera took this site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your menu.';
+	v_company constant text := 'Qorpera took one of this company''s sites down, so the company can''t be deleted until Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu.';
+begin
+	perform pg_temp.base_assert(public.qorpera_site_abandoned(pg_temp.sh_site('other-down')), 'another company''s abandoned name');
+	perform public.qorpera_site_take_down('agent-shop', 'Reported as phishing.');
+	perform public.qorpera_site_take_down('link-app', 'Reported.');
+	perform public.qorpera_site_take_down('look-shop', 'Reported.');
+	perform public.qorpera_site_take_down('wait-shop', 'Reported.');
+	perform public.qorpera_site_take_down('other-down', 'Reported.');
+	v_shop := to_jsonb(pg_temp.sh_site('agent-shop'));
+	v_app := to_jsonb(pg_temp.sh_site('link-app'));
+	v_look := to_jsonb(pg_temp.sh_site('look-shop'));
+	q := pg_temp.rec_shop('h-look');
+	-- An agent's unpublish_site: refused with the takedown's words, a website and an app link.
+	perform pg_temp.base_error(format('select public.qorpera_site_unpublish(%L, %L)', v_binding, 'agent-shop'), '55000',
+		public.qorpera_site_taken_down_words('Reported as phishing.'));
+	perform pg_temp.base_error(format('select public.qorpera_site_unpublish(%L, %L)', v_binding, 'link-app'), '55000',
+		public.qorpera_site_taken_down_words('Reported.'));
+	-- A member's take offline, an owner's: a website, a project's site (whose repository it would reset) and an app link.
+	perform pg_temp.base_error(format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(),
+		format('public.qorpera_unpublish_company_site(%L)', v_shop ->> 'id')), '55000', v_member);
+	perform pg_temp.base_error(format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(),
+		format('public.qorpera_unpublish_company_site(%L)', v_look ->> 'id')), '55000', v_member);
+	perform pg_temp.base_error(format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(),
+		format('public.qorpera_unpublish_company_site(%L)', v_app ->> 'id')), '55000', v_member);
+	-- The company's deletion.
+	perform pg_temp.base_error(format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(),
+		format('public.qorpera_delete_hosted_profile(%L)', pg_temp.rel_company())), '55000', v_company);
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_deletions deletion
+		where deletion.profile_id = pg_temp.rel_company()), 'no deletion asked');
+	-- Nothing was written.
+	perform pg_temp.base_assert(to_jsonb(pg_temp.sh_site('agent-shop')) = v_shop and to_jsonb(pg_temp.sh_site('link-app')) = v_app
+		and to_jsonb(pg_temp.sh_site('look-shop')) = v_look and to_jsonb(pg_temp.rec_shop('h-look')) = to_jsonb(q), 'nothing written');
+	-- Its name is never free: another company's site taken down is no longer abandoned, so this company's agent cannot
+	-- take the name (the check and the begin answer that another site has it).
+	perform pg_temp.base_assert(not public.qorpera_site_abandoned(pg_temp.sh_site('other-down')), 'not abandoned while down');
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_check(%L, %L)', v_binding, 'other-down'), '55000',
+		'SITE_NAME_TAKEN: another site already has this name; choose another');
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_begin(%L, %L, %L, null)', v_binding, 'take-call',
+		pg_temp.rel_publish('other-down', 'web')), '55000', 'SITE_NAME_TAKEN: another site already has this name; choose another');
+	-- A deletion of the company asked before the takedown waits for it (the other company's, in a block undone after):
+	-- the finisher holds the company back while the site is down, and goes on once it is restored.
+	begin
+		insert into public.qorpera_company_deletions (profile_id) values ('91170000-0000-4000-8000-000000000010');
+		v_finish := public.qorpera_finish_company_deletion('91170000-0000-4000-8000-000000000010');
+		perform pg_temp.base_assert(v_finish ->> 'state' = 'waiting' and v_finish #>> '{holdings,taken_down_sites}' = '1'
+			and (pg_temp.sh_site('other-down')).id is not null, format('a deletion waits for the takedown: %s', v_finish));
+		perform public.qorpera_site_restore('other-down');
+		v_finish := public.qorpera_finish_company_deletion('91170000-0000-4000-8000-000000000010');
+		perform pg_temp.base_assert(v_finish ->> 'state' = 'purged' and pg_temp.sh_site('other-down') is null,
+			format('and goes on once it is restored: %s', v_finish));
+		raise exception 'r1252 undo';
+	exception when raise_exception then
+		if sqlerrm <> 'r1252 undo' then raise; end if;
+	end;
+	perform pg_temp.base_assert((pg_temp.sh_site('other-down')).taken_down_at is not null, 'the block was undone');
+	-- A company's purge passes, as through every delete guard (SQL test 715), in a block undone after.
+	begin
+		insert into public.qorpera_company_purges (xact_id, profile_id)
+		values (pg_current_xact_id(), '91170000-0000-4000-8000-000000000010');
+		delete from public.qorpera_company_sites where slug = 'other-down';
+		perform pg_temp.base_assert(pg_temp.sh_site('other-down') is null, 'a purge passes');
+		raise exception 'r1252 undo';
+	exception when raise_exception then
+		if sqlerrm <> 'r1252 undo' then raise; end if;
+	end;
+	-- Whatever other way, no row of it goes and its name stays: a delete, a rename.
+	perform pg_temp.base_error($q$delete from public.qorpera_company_sites where slug = 'agent-shop'$q$, '55000',
+		public.qorpera_site_taken_down_words('Reported as phishing.'));
+	perform pg_temp.base_error($q$update public.qorpera_company_sites set slug = 'agent-shop-two' where slug = 'agent-shop'$q$,
+		'55000', public.qorpera_site_taken_down_words('Reported as phishing.'));
+	perform pg_temp.base_error($q$delete from public.qorpera_company_sites where slug = 'other-down'$q$, '55000',
+		public.qorpera_site_taken_down_words('Reported.'));
+	-- Its title and other columns still change (only the row and its name are kept).
+	update public.qorpera_company_sites set updated_at = clock_timestamp() where slug = 'agent-shop';
+
+	-- Restored: each call works again.
+	perform public.qorpera_site_restore('agent-shop');
+	perform public.qorpera_site_restore('link-app');
+	perform public.qorpera_site_restore('look-shop');
+	perform public.qorpera_site_restore('wait-shop');
+	perform public.qorpera_site_restore('other-down');
+	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'agent-shop') ->> 'removed' = 'true'
+		and pg_temp.sh_site('agent-shop') is null, 'the agent takes a website offline again');
+	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'link-app') ->> 'removed' = 'true'
+		and (pg_temp.sh_site('link-app')).published_at is null, 'and an app link');
+	perform pg_temp.base_assert(pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_unpublish_company_site(%L)',
+		(pg_temp.sh_site('wait-shop')).id)) ->> 'removed' = 'true' and pg_temp.sh_site('wait-shop') is null,
+		'a member takes a project''s site offline again');
+	perform pg_temp.base_error(format('select pg_temp.req_as(%L, %L)', pg_temp.req_owner(),
+		format('public.qorpera_delete_hosted_profile(%L)', pg_temp.rel_company())), '42501',
+		'Only the last member can delete the company; everyone else leaves');
+	perform pg_temp.base_assert(public.qorpera_site_abandoned(pg_temp.sh_site('other-down'))
+		and public.qorpera_site_publish_check(v_binding, 'other-down') ->> 'mode' = 'new', 'an abandoned name is free again');
+	-- The operator's step to remove a site taken down for good (SITE-HOSTS.md, as written there), a project's site:
+	-- restored and removed in one transaction (a block undone after).
+	begin
+		perform public.qorpera_site_take_down('look-shop', 'Reported.');
+		perform pg_temp.base_assert((pg_temp.rec_shop('h-look')).live_release is not null, 'a live project''s site');
+		perform public.qorpera_site_restore('look-shop');
+		update public.qorpera_code_repositories as repository set index_version = repository.index_version + 1,
+			live_release = null, site_attempts = 0, site_change = null, site_not_before = null, site_problem = null,
+			site_given_up = null
+		from public.qorpera_company_sites as site
+		where site.slug = 'look-shop' and repository.environment_id = site.environment_id
+			and repository.owner = site.code_owner and repository.name = site.code_name;
+		delete from public.qorpera_company_sites where slug = 'look-shop';
+		perform pg_temp.base_assert(pg_temp.sh_site('look-shop') is null and (pg_temp.rec_shop('h-look')).live_release is null,
+			'the operator removes a site taken down for good');
+		raise exception 'r1252 undo';
+	exception when raise_exception then
+		if sqlerrm <> 'r1252 undo' then raise; end if;
+	end;
 end $$;
 
 -- 11. The drill ----------------------------------------------------------------------------------------------------------

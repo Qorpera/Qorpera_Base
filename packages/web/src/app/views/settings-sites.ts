@@ -25,7 +25,8 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  *
  * A site Qorpera took down (step 5.1; the access read, `qorpera_company_site_access`) says so in its row in one plain
  * sentence with the operator's reason, in place of its link and password: every address of it shows a "gone" page, so
- * the row offers no link to one. Its "⋯" keeps only Take offline. A kernel without the read draws the page as before.
+ * the row offers no link to one, and no "⋯": until Qorpera restores it the kernel refuses taking it offline, and its
+ * password opens nothing. A kernel without the read draws the page as before.
  *
  * Every answer that comes back late (a password read, a copy, a change, a take-offline, a read of the list, the version
  * What's new read) acts only on the page it was asked from, by one rule in three parts: it carries the moment it left
@@ -495,7 +496,7 @@ export class SitesView {
 	}
 
 	/** The row's menu: what is done rarely. A press on "⋯" while its menu is open only shuts it. A site Qorpera took down
-	 * can only be taken offline: no visitor reaches it, whatever its password. */
+	 * has none (`#row`); one open as the read says so does nothing (`#unpublish`). */
 	#openMenu(site: CompanySite, opener: HTMLElement): void {
 		const findOpener = () => this.#control(`site-more:${site.id}`) ?? null;
 		const box = opener.getBoundingClientRect();
@@ -515,13 +516,11 @@ export class SitesView {
 				this.#menuShut = press ? { site: site.id, press } : undefined;
 				findOpener()?.setAttribute("aria-expanded", "false");
 			},
-			items: this.#takenDown.has(site.id)
-				? [offline]
-				: [
-						{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
-						{ kind: "separator" },
-						offline,
-					],
+			items: [
+				{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
+				{ kind: "separator" },
+				offline,
+			],
 		});
 		// The menu hangs from the button's right edge, as the button stands at the row's end.
 		const left = Math.max(8 * uiScale(), box.right - menu.el.offsetWidth);
@@ -672,7 +671,8 @@ export class SitesView {
 	}
 
 	async #unpublish(site: CompanySite): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
+		// A site Qorpera took down stays until Qorpera restores it: a menu still open as the read said so does nothing.
+		if (this.#working || this.#lifetime.signal.aborted || this.#takenDown.has(site.id)) return;
 		const name = nameOf(site);
 		const more = `site-more:${site.id}`;
 		const moment = this.#moment(site.id);
@@ -700,9 +700,16 @@ export class SitesView {
 			this.#lifetime.signal,
 		);
 		if (this.#asking === asking) this.#asking = undefined;
-		// No; or while the question was open the site went (taken offline elsewhere), the member's authority went, or the
-		// page was left.
-		if (!yes || this.#working || !this.#still(moment, false) || !this.#access.canManage()) return;
+		// No; or while the question was open the site went (taken offline elsewhere), Qorpera took it down (the kernel
+		// refuses it then), the member's authority went, or the page was left.
+		if (
+			!yes ||
+			this.#working ||
+			!this.#still(moment, false) ||
+			!this.#access.canManage() ||
+			this.#takenDown.has(site.id)
+		)
+			return;
 		const working = { site: site.id, action: "unpublish" } as const;
 		this.#working = working;
 		this.#draw(more);
@@ -726,8 +733,8 @@ export class SitesView {
 		}
 		this.#forget(site.id);
 		if (this.#byHand?.key === `link:${site.id}`) this.#byHand = undefined;
-		// The focus goes to the next site's menu, else the one before, as the row leaves.
-		const list = this.#sites ?? [];
+		// The focus goes to the next site's menu, else the one before, as the row leaves (a site Qorpera took down has none).
+		const list = (this.#sites ?? []).filter((item) => item.id === site.id || !this.#takenDown.has(item.id));
 		const at = list.findIndex((item) => item.id === site.id);
 		const neighbour = list[at + 1] ?? list[at - 1];
 		const focusKey = neighbour ? `site-more:${neighbour.id}` : undefined;
@@ -855,10 +862,11 @@ export class SitesView {
 	#row(site: CompanySite, manage: boolean, index: number): HTMLElement {
 		const busy = Boolean(this.#working);
 		const name = nameOf(site);
-		// Taken down by Qorpera: one sentence in place of the link and the password.
+		// Taken down by Qorpera: one sentence in place of the link and the password, and no menu (nothing in it would be
+		// done until Qorpera restores the site).
 		const down = this.#takenDown.get(site.id);
 		let more: HTMLElement | null = null;
-		if (manage) {
+		if (manage && !down) {
 			const menu = h(
 				"button",
 				{

@@ -170,7 +170,8 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
 
 **What members see:** Sites shows the site's row as "Taken down" with the operator's reason, in place of its link and
 password, and how to tell Qorpera it is wrong: Feedback in their menu (no mail address: none is confirmed to reach
-anyone). Its menu keeps only Take offline. What's new offers no link to it and says it was taken down. The site does not
+anyone). Its row has no menu (nothing in it would be done while the site is down). What's new offers no link to it and
+says it was taken down. The site does not
 go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain
 words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
 
@@ -182,8 +183,47 @@ leaves it out), and its `changes/index.md` says the same words in place of what 
 write after the takedown (the takedown and the restore ask for that write). Write the reason so it can be read by the
 agent and the members alike: one line, no address, nothing private.
 
+**A takedown sticks until you restore it.** While a site is down nobody but you takes it offline, deletes it, renames it
+or frees its name; each refusal writes nothing:
+- an agent's `unpublish_site` (`qorpera_site_unpublish`) answers the takedown sentence above;
+- a member's Take offline (`qorpera_unpublish_company_site`: a website, an app link, or a project's site, whose
+  repository it would also send back to waiting) answers 55000 "Qorpera took this site down, so it stays as it is until
+  Qorpera restores it. If you think this is wrong, tell us with Feedback in your menu.";
+- deleting the company (`qorpera_delete_hosted_profile`) answers 55000 "Qorpera took one of this company's sites down,
+  so the company can't be deleted until Qorpera restores the site. …"; a deletion asked before the takedown waits
+  (`qorpera_finish_company_deletion` answers `waiting` with `holdings.taken_down_sites`) and goes on at its next pass
+  after the restore;
+- its name is never free: a site taken down is never abandoned (`qorpera_site_abandoned`), so another company's
+  `publish_site`, `share_app` or project's site cannot take the name over;
+- a trigger on `qorpera_company_sites` (`qorpera_site_takedown_sticks`) refuses any other delete of its row (a cascade
+  included) or change of its name, with the takedown sentence. Only a company's purge passes, as through every delete
+  guard, and the waiting deletion keeps a purge from reaching such a company.
+
+**Removing a taken-down site for good** (a court order, say): restore it and remove it in one transaction, so no
+visitor reaches it in between, as `postgres` through `newdb_check.py FILE --write`:
+
+```sql
+begin;
+select public.qorpera_site_restore('<slug>');
+-- A project's site only: its repository forgets the site, as a member's Take offline does.
+update public.qorpera_code_repositories as repository set index_version = repository.index_version + 1,
+	live_release = null, site_attempts = 0, site_change = null, site_not_before = null, site_problem = null,
+	site_given_up = null
+from public.qorpera_company_sites as site
+where site.slug = '<slug>' and repository.environment_id = site.environment_id
+	and repository.owner = site.code_owner and repository.name = site.code_name;
+delete from public.qorpera_company_sites where slug = '<slug>';
+commit;
+```
+
+Its versions, password and sessions go with the row, and its name is free. A project's site is made anew from the
+project's newest change at the next upload pass (not live, with a new password, waiting in What's new), as after a
+member's Take offline; if that one must not be served either, take it down too. Write the removal in the registry with
+its UTC time.
+
 **Restore** when the cause is gone: `qorpera_site_restore('<slug>')`; the site answers as before at once (its sessions
-were kept). Write each takedown and restore in the registry with its UTC time from `date -u`.
+were kept), and every call above works again. Write each takedown and restore in the registry with its UTC time from
+`date -u`.
 
 ## When a site is reported
 

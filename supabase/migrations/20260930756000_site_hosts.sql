@@ -34,7 +34,7 @@
 -- 6. The operator's calls (no API role may call them, the service role neither), run as the database owner:
 --      select public.qorpera_site_take_down('<slug>', '<reason, one line>');  select public.qorpera_site_restore('<slug>');
 --      select public.qorpera_code_set_drill('<environment id>', '<owner>', '<name>', 'check' | 'site' | null);
--- 7. Twenty existing functions change, each by anchors on its definition as the migrations before this one leave it (an
+-- 7. Twenty-four existing functions change, each by anchors on its definition as the migrations before this one leave it (an
 --    anchor that is not found exactly once fails the migration); each changed body carries the marker 20260930756000 and
 --    keeps every marker it had:
 --    * qorpera_site_slug_valid: the name rule (3);
@@ -53,7 +53,12 @@
 --      breaks the rule is refused with the rule in one sentence (qorpera_site_name_words); a site of the company that
 --      Qorpera took down takes nothing, refused SITE_TAKEN_DOWN with the reason in plain words and no address
 --      (qorpera_site_taken_down_words), writing nothing;
---    * a repository's site's upload pass (qorpera_code_sites_due, qorpera_code_site_begin): never a site taken down.
+--    * a repository's site's upload pass (qorpera_code_sites_due, qorpera_code_site_begin): never a site taken down;
+--    * a takedown sticks until qorpera_site_restore: unpublish_site (above), a member's take offline
+--      (qorpera_unpublish_company_site) and a company's deletion (qorpera_delete_hosted_profile) refuse while a site is
+--      taken down, a deletion asked before waits (qorpera_finish_company_deletion's holdings: taken_down_sites), and
+--      such a site is never abandoned (qorpera_site_abandoned), so its name is never free. A trigger on
+--      qorpera_company_sites refuses deleting or renaming such a row whatever the way but a company's purge.
 --    The operator's takedown and restore write a repository's list file again (its index_version).
 --
 -- Locks, by the first statements and in this order (the order the executor's site calls take rows in), each waiting 3 s
@@ -441,7 +446,46 @@ select pg_temp.site_hosts_patch('public.qorpera_site_share_app(jsonb,text,jsonb,
 select pg_temp.site_hosts_patch('public.qorpera_site_unpublish(jsonb,text)'::regprocedure, array[
 	$old$		raise exception 'SITE_NAME_INVALID: a site name is 3 to 48 lowercase letters, digits and hyphens' using errcode = '22023'; end if;$old$,
 	$new$		-- 20260930756000: the rule in one sentence (qorpera_site_name_words), as every other refusal of a name says it.
-		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;$new$]);
+		raise exception '%', 'SITE_NAME_INVALID: ' || public.qorpera_site_name_words() using errcode = '22023'; end if;
+	-- 20260930756000: a site of the company that Qorpera took down stays as it is, its name with it, until Qorpera
+	-- restores it: no agent takes it offline.
+	select site.* into v_site from public.qorpera_company_sites as site
+	where site.slug = p_slug and site.profile_id = v_run.profile_id and site.taken_down_at is not null;
+	if found then
+		raise exception '%', public.qorpera_site_taken_down_words(v_site.taken_down_reason) using errcode = '55000'; end if;$new$]);
+-- A takedown sticks until Qorpera restores the site (the lead's call, 13 Nov 2026): no member takes it offline or deletes
+-- its company, and its name is never free for another site (it is never abandoned). The trigger below holds the same for
+-- every other way a row could go.
+select pg_temp.site_hosts_patch('public.qorpera_unpublish_company_site(uuid)'::regprocedure, array[
+	$old$	perform public.qorpera_company_site_for_admin(p_site_id);$old$,
+	$new$	perform public.qorpera_company_site_for_admin(p_site_id);
+	-- 20260930756000: a site Qorpera took down stays as it is, its name with it, until Qorpera restores it.
+	if exists (select 1 from public.qorpera_company_sites as site where site.id = p_site_id and site.taken_down_at is not null) then
+		raise exception 'Qorpera took this site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your menu.'
+			using errcode = '55000'; end if;$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_delete_hosted_profile(uuid)'::regprocedure, array[
+	$old$	if exists (select 1 from public.qorpera_profile_members as other
+		where other.profile_id = p_profile_id and other.user_id <> v_actor_id) then$old$,
+	$new$	-- 20260930756000: a company with a site Qorpera took down stays until Qorpera restores the site, its name with it.
+	if exists (select 1 from public.qorpera_company_sites as site where site.profile_id = p_profile_id
+		and site.taken_down_at is not null) then
+		raise exception 'Qorpera took one of this company''s sites down, so the company can''t be deleted until Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu.'
+			using errcode = '55000'; end if;
+	if exists (select 1 from public.qorpera_profile_members as other
+		where other.profile_id = p_profile_id and other.user_id <> v_actor_id) then$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_finish_company_deletion(uuid)'::regprocedure, array[
+	$old$			v_holdings := public.qorpera_company_node_holdings(p_profile_id);$old$,
+	$new$			v_holdings := public.qorpera_company_node_holdings(p_profile_id);
+			-- 20260930756000: a site Qorpera took down keeps the deletion waiting until Qorpera restores it (its name with it).
+			v_holdings := v_holdings || jsonb_build_object('taken_down_sites', (select count(*)
+				from public.qorpera_company_sites as site where site.profile_id = p_profile_id and site.taken_down_at is not null));$new$,
+	$old$			or (v_holdings ->> 'chatgpt_plan_logins')::bigint > 0) then$old$,
+	$new$			or (v_holdings ->> 'chatgpt_plan_logins')::bigint > 0
+			or (v_holdings ->> 'taken_down_sites')::bigint > 0) then$new$]);
+select pg_temp.site_hosts_patch('public.qorpera_site_abandoned(public.qorpera_company_sites)'::regprocedure, array[
+	$old$	select p_site.code_owner is null$old$,
+	$new$	-- 20260930756000: a site Qorpera took down keeps its name until Qorpera restores it.
+	select p_site.code_owner is null and p_site.taken_down_at is null$new$]);
 select pg_temp.site_hosts_patch('public.qorpera_code_sites_due(text,text,integer)'::regprocedure, array[
 	$old$			or public.qorpera_code_site_given_up(v_repository, v_point);$old$,
 	$new$			or public.qorpera_code_site_given_up(v_repository, v_point)
@@ -458,6 +502,25 @@ select pg_temp.site_hosts_patch('public.qorpera_code_site_begin(text,text,uuid,t
 		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TAKEN_DOWN'); end if;$new$]);
 
 drop function pg_temp.site_hosts_patch(regprocedure, text[]);
+
+-- A takedown sticks: a site Qorpera took down keeps its row and its name until qorpera_site_restore, whatever would
+-- delete it (an agent's or a member's call, a takeover of an abandoned name, a cascade) or rename it. Only a company's
+-- purge passes, as through every delete guard (qorpera_company_purge_active); and a company with a site taken down never
+-- reaches its purge (qorpera_finish_company_deletion keeps the deletion waiting). An operator who must remove such a site
+-- for good restores it and deletes it in one transaction (SITE-HOSTS.md).
+create function public.qorpera_site_takedown_sticks() returns trigger language plpgsql security definer
+set search_path = '' as $$
+-- 20260930756000
+begin
+	if tg_op = 'DELETE' and public.qorpera_company_purge_active() then return old; end if;
+	raise exception '%', public.qorpera_site_taken_down_words(old.taken_down_reason) using errcode = '55000';
+end $$;
+revoke all on function public.qorpera_site_takedown_sticks() from public, anon, authenticated, service_role, qorpera_secret_broker;
+create trigger qorpera_company_sites_takedown_sticks before delete on public.qorpera_company_sites
+	for each row when (old.taken_down_at is not null) execute function public.qorpera_site_takedown_sticks();
+create trigger qorpera_company_sites_takedown_keeps_name before update of slug on public.qorpera_company_sites
+	for each row when (old.taken_down_at is not null and new.slug is distinct from old.slug)
+	execute function public.qorpera_site_takedown_sticks();
 
 -- 3. site-serve's calls ------------------------------------------------------------------------------------------------
 
@@ -787,7 +850,11 @@ begin
 		('public.qorpera_site_share_app(jsonb,text,jsonb,uuid)', array['20260930562000', '20260930729000']),
 		('public.qorpera_site_unpublish(jsonb,text)', array['20260930550000', '20260930562000', '20260930729000']),
 		('public.qorpera_code_sites_due(text,text,integer)', array[]::text[]),
-		('public.qorpera_code_site_begin(text,text,uuid,text,text,integer,jsonb)', array[]::text[])) checked(signature, markers)
+		('public.qorpera_code_site_begin(text,text,uuid,text,text,integer,jsonb)', array[]::text[]),
+		('public.qorpera_unpublish_company_site(uuid)', array['20260930550000', '20260930729000']),
+		('public.qorpera_delete_hosted_profile(uuid)', array[]::text[]),
+		('public.qorpera_finish_company_deletion(uuid)', array[]::text[]),
+		('public.qorpera_site_abandoned(public.qorpera_company_sites)', array['20260930550000', '20260930562000', '20260930729000'])) checked(signature, markers)
 	loop
 		foreach v_marker in array v_markers || '20260930756000'::text loop
 			if strpos((select prosrc from pg_proc where oid = v_function::regprocedure), v_marker) = 0 then

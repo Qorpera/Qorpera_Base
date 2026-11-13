@@ -53,7 +53,12 @@
   Qorpera restores it. Tell a member of the company.`, writing nothing), a repository's site takes no upload while it is
   down (the due list leaves it out, a begin due before is refused), and its list file's `index` then has `live` null, no
   `preparing` and `takenDown: {reason}` (the takedown and the restore raise `index_version`, so the list is written
-  again).
+  again). A takedown sticks until the operator restores it (the lead's call, 13 Nov 2026): an agent's `unpublish_site`
+  is refused in the same words, a member's take offline (`qorpera_unpublish_company_site`) and the company's deletion
+  (`qorpera_delete_hosted_profile`) are refused, writing nothing, a deletion asked before waits
+  (`qorpera_finish_company_deletion`'s holdings: `taken_down_sites`), the site is never abandoned, so its name is never
+  free, and a trigger (`qorpera_site_takedown_sticks`) refuses any other delete or rename of its row but a company's
+  purge; `SITE-HOSTS.md` has the operator's step to remove one for good.
 - A website's own address on the executor's side (own code storage, step 5, release 5.1, part X1;
   `lanes/own-code-storage/STEP5-BUILD.md`, migration `20260930756000`). While the checks switch says `rootLinks` (only
   while sites have hosts of their own) the collect lets a site's links from `/` through: the host always sets

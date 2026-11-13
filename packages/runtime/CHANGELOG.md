@@ -10,8 +10,9 @@
   kernel's refusal of any other name in the same words. A site taken down: the kernel's refusal (`SITE_TAKEN_DOWN: This
   site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
   company.`) is relayed as it is at the check and the begin, and now also when it comes during an upload (before, a
-  refusal after the begin was told as `not_live` with the site's link). The tools' descriptions and the pins do not
-  change.
+  refusal after the begin was told as `not_live` with the site's link). `unpublish_site` relays the same refusal as it
+  is: a takedown sticks until Qorpera restores it (the lead's call, 13 Nov 2026). The tools' descriptions and the pins
+  do not change.
 - Agents read that a project's website is still being prepared (own code storage, step 5.1, D1a;
   `lanes/own-code-storage/STEP5-BUILD.md`; migration `20260930756000`). The staff instructions' website paragraph now
   says that changes/index.md says which version is live, "and when a site is still being prepared, which takes about a

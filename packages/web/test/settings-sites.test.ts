@@ -933,7 +933,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 	};
 	const links = (row: Element) => [...row.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.href);
 
-	it("says so in its row in one plain sentence, and offers no link to the gone page nor its password", async () => {
+	it("says so in its row in one plain sentence, and offers no link to the gone page, its password nor a menu", async () => {
 		setup(
 			[shop, app, gift],
 			admin,
@@ -949,17 +949,16 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		expect(row.querySelector(".site-share, .site-link, .site-secret")).toBeNull();
 		expect(links(row)).toEqual([]);
 		expect(row.innerHTML).not.toContain("sites.qorpera.com");
-		expect(buttonsIn(row).map((item) => item.dataset.focusKey)).toEqual([`site-more:${shop.id}`]);
-		// Its menu keeps only Take offline.
-		press(shop.id, "more");
-		expect(menuLabels()).toEqual([{ label: "Take offline", danger: true }]);
-		openMenu()?.close();
-		// An app link taken down says the same, in its own row.
+		// No menu: until Qorpera restores it, the kernel refuses taking it offline and its password opens nothing.
+		expect(buttonsIn(row)).toEqual([]);
+		expect(row.querySelector(".site-more")).toBeNull();
+		// An app link taken down says the same, in its own row, with no menu either.
 		const link = rowOf(app.id)!;
 		expect(link.querySelector(".site-down")?.textContent).toBe(
 			"Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		expect(links(link)).toEqual([]);
+		expect(buttonsIn(link)).toEqual([]);
 		// A site not taken down is as before; a project's site keeps its way to What's new.
 		const other = rowOf(gift.id)!;
 		expect(other.querySelector(".site-state")?.textContent).toBe("Live");
@@ -983,7 +982,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		expect(links(row)).toEqual([]);
 	});
 
-	it("keeps a project's site's way to What's new, and takes it offline from its menu", async () => {
+	it("keeps a project's site's way to What's new, with no menu: it stays until Qorpera restores it", async () => {
 		const { client } = setup(
 			[gift],
 			admin,
@@ -994,12 +993,58 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		);
 		await settle();
 		expect(rowOf(gift.id)?.querySelector(".site-from")?.textContent).toBe("Version 3 · What's new");
+		expect(buttonsIn(rowOf(gift.id)!)).toEqual([]);
+		expect(client.unpublish).not.toHaveBeenCalled();
+	});
+
+	it("sends nothing when Qorpera took the site down while its Take offline was on the way, and the focus skips its row", async () => {
+		let answer: unknown = accessOf({});
+		const { client } = setup(
+			[shop, gift, draft],
+			admin,
+			withAccess(() => answer),
+		);
+		await settle();
+		/** A read of the list (and of what Qorpera took down) that is still out: a password read that fails reads again. */
+		const readOut = async (down: Record<string, string>) => {
+			const read = deferred<CompanySite[]>();
+			vi.mocked(client.list).mockImplementationOnce(() => read.promise);
+			vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
+			answer = accessOf(down);
+			press(draft.id, "eye");
+			await settle();
+			return async () => {
+				read.resolve([shop, gift, draft]);
+				await settle();
+			};
+		};
+		const asked = () => document.querySelector('[role="alertdialog"]');
+		// The read says so while the project's site's menu is open: Take offline asks nothing and sends nothing.
+		let lands = await readOut({ [gift.id]: REASON });
 		press(gift.id, "more");
+		await lands();
+		expect(rowOf(gift.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
 		choose("Take offline");
 		await settle();
+		expect(asked()).toBeNull();
+		// Restored, then taken down again while the question is open: its yes sends nothing.
+		await (await readOut({}))();
+		lands = await readOut({ [gift.id]: REASON });
+		press(gift.id, "more");
+		choose("Take offline");
+		await lands();
+		expect(rowOf(gift.id)?.querySelector(".site-down")?.textContent).toBe(SAID);
 		pressLabel(dialog(), "Take offline");
 		await settle();
-		expect(client.unpublish).toHaveBeenCalledWith(gift.id, expect.any(AbortSignal));
+		expect(client.unpublish).not.toHaveBeenCalled();
+		expect(rowOf(gift.id)).not.toBeNull();
+		// Taking the site before it offline moves the focus past the row with no menu, to the site after it.
+		press(shop.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		expect(client.unpublish).toHaveBeenCalledExactlyOnceWith(shop.id, expect.any(AbortSignal));
+		expect(focusKey()).toBe(`site-more:${draft.id}`);
 	});
 
 	it("draws the page exactly as before on a kernel without the read, or with an answer it cannot read", async () => {
@@ -1044,7 +1089,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 	it("keeps what the last read said when a read fails, forgets a password on screen, and gives the link back once up again", async () => {
 		let answer: unknown = accessOf({ [shop.id]: REASON });
 		const { client } = setup(
-			[shop, gift],
+			[shop, gift, draft],
 			admin,
 			withAccess(() => answer),
 		);
@@ -1069,18 +1114,13 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		await newPassword("our friends again");
 		expect(client.list).toHaveBeenCalledTimes(3);
 		expect(rowOf(gift.id)?.querySelector(".site-down")).not.toBeNull();
-		expect(view!.el.querySelector(".site-secret")).toBeNull();
+		expect(rowOf(gift.id)?.querySelector(".site-secret")).toBeNull();
 		expect(view!.el.textContent).not.toContain("our friends again");
-		// Up again (Qorpera restored both): the links are back, and the password hidden. A Take offline that does not go
-		// through reads the list again.
+		// Up again (Qorpera restored both): the links are back, and the password hidden. A password read that fails (the
+		// other site's) reads the list again.
 		answer = accessOf({});
-		client.unpublish = vi.fn(async () => {
-			throw new Error("denied");
-		});
-		press(gift.id, "more");
-		choose("Take offline");
-		await settle();
-		pressLabel(dialog(), "Take offline");
+		vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
+		press(draft.id, "eye");
 		await settle();
 		expect(client.list).toHaveBeenCalledTimes(4);
 		expect(rowOf(shop.id)?.querySelector(".site-down")).toBeNull();

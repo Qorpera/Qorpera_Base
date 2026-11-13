@@ -1720,12 +1720,17 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
   says why: "Qorpera took this site down: <reason>"), else null. Every site of the company, by slug. Read leniently:
   later steps add keys (public sites, own addresses).
 - A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
-  new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted: members may still
-  take it offline in Sites. Only the operator takes a site down or restores it.
+  new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
+  sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this
+  site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your
+  menu.", nothing written; Sites offers no menu for its row), `qorpera_delete_hosted_profile` refuses while any site
+  of the company is down (55000 "Qorpera took one of this company's sites down, so the company can't be deleted until
+  Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu."), a deletion asked before
+  waits, and its name is never free to another company. Only the operator takes a site down or restores it.
 - What an agent reads (the platform's calls, not a client's): every refusal of a site's name (`SITE_NAME_INVALID`,
   22023, by `publish_site`, `share_app` and `unpublish_site`) says the rule in one sentence
   (`qorpera_site_name_words()`, which the coding executor and the runtime say byte for byte). A site of the company
-  taken down takes nothing from an agent: `publish_site`'s and `share_app`'s calls refuse it with `SITE_TAKEN_DOWN: This
+  taken down takes nothing from an agent: `publish_site`'s, `share_app`'s and `unpublish_site`'s calls refuse it with `SITE_TAKEN_DOWN: This
   site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
   company.` (55000, no address, nothing written); a repository's site takes no upload while it is down, and its list
   file's `index` then has `live` null, no `preparing` and `takenDown: {reason}`.

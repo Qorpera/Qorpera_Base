@@ -702,6 +702,18 @@ describe("unpublish_site", () => {
 		expect(none.answer.note).toContain("nothing was taken offline");
 	});
 
+	it("relays a site Qorpera took down in its own words: it stays until Qorpera restores it (migration 20260930756000)", async () => {
+		const down =
+			"SITE_TAKEN_DOWN: This site was taken down by Qorpera (Reported as phishing.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		const f = await fixture(SHOP, { refuse: { qorpera_site_unpublish: new CloudControlRpcRefused("55000", down) } });
+		const result = outcome(
+			await f.boundary.invoke("call_1", "qorpera", "unpublish_site", { slug: "wristband-shop" }),
+		);
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(`REFUSED: ${down}`);
+		expect(f.calls("qorpera_site_unpublish")).toEqual([{ p_binding: f.binding, p_slug: "wristband-shop" }]);
+	});
+
 	it("refuses a bad slug without calling the cloud", async () => {
 		const f = await fixture(SHOP);
 		const result = outcome(await f.boundary.invoke("bad", "qorpera", "unpublish_site", { slug: "../x" }));
