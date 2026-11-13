@@ -129,7 +129,8 @@ describe("an agent's take-over card", () => {
 		const f = setup();
 		await settle();
 		pill(f.view, "Take over")!.click();
-		expect(f.panels.open).toHaveBeenCalledWith(expect.objectContaining({ id: staff.id }));
+		// The member's own click: a sleeping computer wakes for it (COMPUTER-OPEN-BRIEF).
+		expect(f.panels.open).toHaveBeenCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
 		expect(f.panel.attach).toHaveBeenCalled();
 		expect(f.panel.takeOver).toHaveBeenCalledOnce();
 		expect(f.answer).not.toHaveBeenCalled();

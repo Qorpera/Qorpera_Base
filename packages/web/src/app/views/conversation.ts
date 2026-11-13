@@ -1120,7 +1120,7 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
-					computer: () => this.show(agent.id, "computer"),
+					computer: () => this.show(agent.id, "computer", true),
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1135,8 +1135,9 @@ export class ConversationView {
 	}
 
 	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
-	 * its agent yet: the card's request then waits. */
-	show(agentId: string, page: AgentPage): boolean {
+	 * its agent yet: the card's request then waits. `asked`: the member's own click asked for it just now, so a sleeping
+	 * computer wakes (computer.ts OPEN_STARTS); false, the default, for the page's own opens. */
+	show(agentId: string, page: AgentPage, asked = false): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
@@ -1145,7 +1146,12 @@ export class ConversationView {
 		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") {
+			const shown = this.#panel;
+			// Already here: the click still asks for the computer (a sleeping one wakes).
+			if (shown && asked) this.#panels.open(agent, { asked });
+			(shown ?? this.#showPanel(agent, asked))?.focus();
+		}
 		return true;
 	}
 
@@ -1582,14 +1588,16 @@ export class ConversationView {
 	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
 	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
-		const panel = this.#panel ?? this.#showPanel(agent);
+		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+		if (this.#panel) this.#panels.open(agent, { asked: true });
+		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
 		panel?.takeOver();
 	}
 
-	/** Show the agent's computer here: the one already open, or one started now. */
-	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
-		const panel = this.#panels.open(agent);
+	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
+	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
 		this.#panel = panel;
 		panel.attach(this.#body, () => this.#toggleComputer());
