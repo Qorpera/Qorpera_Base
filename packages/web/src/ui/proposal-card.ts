@@ -17,8 +17,6 @@ const SAVED_ON = new Map([
 	["coding_session", phrase("a coding session")],
 	["test_machine", phrase("a test machine")],
 	["run_box", phrase("the agent's workspace")],
-	// 20260930754000: the agent's home, with the run's own window on the folder.
-	["home_window", phrase("the agent's own machine")],
 ]);
 
 function parentOf(path: string): string {

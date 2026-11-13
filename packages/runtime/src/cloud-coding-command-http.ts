@@ -15,12 +15,12 @@ import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts"
 import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
-	CLOUD_HOME_CHANNEL_LINE_BYTES,
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
 	type CloudHomeChannelSide,
 	type CloudHomeSessionAnswer,
 	type CloudHomeSessionAuthorized,
+	cloudHomeChannelLines,
 	parseCloudHomeChannelHandshake,
 } from "./cloud-home-channel.ts";
 import {
@@ -339,21 +339,6 @@ export interface CloudCodingCommandServiceOptions {
 	port?: number;
 }
 
-/** Each complete line of an upgraded socket; a line over the bound ends the channel. */
-async function* homeLines(socket: Socket): AsyncGenerator<string> {
-	let rest = "";
-	for await (const chunk of socket) {
-		rest += (chunk as Buffer).toString("utf8");
-		if (Buffer.byteLength(rest) > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error(ERROR);
-		let end = rest.indexOf("\n");
-		while (end >= 0) {
-			yield rest.slice(0, end);
-			rest = rest.slice(end + 1);
-			end = rest.indexOf("\n");
-		}
-	}
-}
-
 async function readRequest(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
 	const declared = request.headers["content-length"];
 	if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > REQUEST_LIMIT)) throw new Error(ERROR);
@@ -446,7 +431,7 @@ export class HttpCloudCodingCommandService {
 			socket.write(
 				`HTTP/1.1 101 Switching Protocols\r\nupgrade: ${CLOUD_HOME_CHANNEL_PROTOCOL}\r\nconnection: Upgrade\r\n\r\n`,
 			);
-			const reader = homeLines(socket);
+			const reader = cloudHomeChannelLines(socket);
 			const first = await Promise.race([
 				reader.next(),
 				new Promise<never>((_resolve, reject) =>
@@ -471,13 +456,25 @@ export class HttpCloudCodingCommandService {
 			side = await home.open(authority, controller.signal);
 			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
 			const machine = side;
+			// Either side ending ends the other (review round 1, F3): the exec-server on the machine waits on its
+			// stdin, so a run's slot that went must not leave a process running there, and a machine whose channel
+			// closed must not leave the slot waiting for an answer that cannot come.
 			const fromMachine = (async () => {
-				for await (const line of machine.lines) {
-					if (!socket.writable) break;
-					socket.write(`${line}\n`);
+				try {
+					for await (const line of machine.lines) {
+						if (!socket.writable) break;
+						socket.write(`${line}\n`);
+					}
+				} finally {
+					socket.destroy();
 				}
 			})();
-			for await (const line of reader) machine.write(line);
+			try {
+				for await (const line of reader) machine.write(line);
+			} finally {
+				await side.close().catch(() => undefined);
+				side = undefined;
+			}
 			await fromMachine.catch(() => undefined);
 		} catch {
 			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);

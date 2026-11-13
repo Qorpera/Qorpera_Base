@@ -217,6 +217,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 			installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
 			mode: "0644",
 		},
+		{ file: "qorpera-agent.sudoers", installedPath: "/etc/sudoers.d/qorpera-agent", mode: "0440" },
 	]);
 	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
 	for (const { file, installedPath, mode } of files) {

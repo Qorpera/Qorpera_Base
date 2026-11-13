@@ -293,7 +293,7 @@ begin
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		pg_temp.vactor(d) || '{"final":true}', 'desk-final', '[{"op":"mkdir","path":"refused"}]'), '22023',
-		'Only a command, test machine or home window view publishes a final change set'); -- 20260930754000
+		'Only a command or test machine view publishes a final change set');
 	perform pg_temp.refused(format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		v || '{"final":true}', 'run-final', '[{"op":"mkdir","path":"refused"}]'), '22023', 'Folder actor is invalid');
 	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');

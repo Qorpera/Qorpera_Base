@@ -10,12 +10,12 @@ import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 import type { CloudCodexHomeChannel, CloudCodexHomeStream } from "./cloud-codex-home.ts";
 import {
-	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
-	CLOUD_HOME_CHANNEL_LINE_BYTES,
+	CLOUD_HOME_CHANNEL_OPEN_MS,
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
 	type CloudHomeChannelReady,
 	cloudHomeChannelHandshake,
+	cloudHomeChannelLines,
 } from "./cloud-home-channel.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
@@ -42,6 +42,26 @@ export function createCloudHomeChannel(options: {
 	return {
 		open: async (input, signal) => {
 			signal.throwIfAborted();
+			// One deadline over the whole of the opening: the connection, the upgrade and the handshake (review round
+			// 1, F11). A peer that accepts and says nothing cannot hold a run's turn, and a stopped run drops it at
+			// once. It ends when the channel is open, deliberately: a deadline left on the request would destroy the
+			// channel from under a run that is working on its machine (the request owns the socket it upgraded).
+			const limit = new AbortController();
+			const timer = setTimeout(() => limit.abort(new Error("the ingress did not answer")), CLOUD_HOME_CHANNEL_OPEN_MS);
+			const stopped = (): void => limit.abort(new Error("stopped"));
+			signal.addEventListener("abort", stopped, { once: true });
+			const deadline = limit.signal;
+			const done = (): void => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", stopped);
+			};
+			try {
+				return await openChannel();
+			} finally {
+				done();
+			}
+
+			async function openChannel(): Promise<CloudCodexHomeStream> {
 			const open = base.protocol === "https:" ? httpsRequest : httpRequest;
 			const connection = open({
 				protocol: base.protocol,
@@ -59,25 +79,41 @@ export function createCloudHomeChannel(options: {
 			const socket = await new Promise<Socket>((resolve, reject) => {
 				// The cause stays in this host's journal: the model is told the home is unavailable, never why in the
 				// ingress's own words, and never an address.
-				const fail = (why: string): void => reject(new Error(`${ERROR}: ${why}`));
-				connection.once("error", (error) => fail(String((error as NodeJS.ErrnoException)?.code ?? "unreachable")));
-				connection.once("response", (answer) => {
+				const fail = (why: string): void => {
 					connection.destroy();
+					reject(new Error(`${ERROR}: ${why}`));
+				};
+				// Until the upgrade, the deadline ends the request itself; after it, nothing of the opening holds the
+				// socket, which is the channel from then on.
+				const abort = (): void => fail(String((deadline.reason as Error)?.message ?? "stopped"));
+				deadline.addEventListener("abort", abort, { once: true });
+				const settled = (): void => deadline.removeEventListener("abort", abort);
+				connection.once("error", (error) => {
+					settled();
+					fail(String((error as NodeJS.ErrnoException)?.code ?? "unreachable"));
+				});
+				connection.once("response", (answer) => {
+					settled();
 					fail(`refused ${answer.statusCode ?? 0} ${String(answer.headers["x-qorpera-home"] ?? "")}`.trim());
 				});
-				connection.once("upgrade", (_answer, upgraded) => resolve(upgraded as Socket));
+				connection.once("upgrade", (_answer, upgraded) => {
+					settled();
+					resolve(upgraded as Socket);
+				});
 				connection.end();
 			});
 			socket.on("error", () => undefined);
-			const reader = lines(socket);
+			const reader = cloudHomeChannelLines(socket);
 			let ready: CloudHomeChannelReady | undefined;
 			try {
 				socket.write(`${cloudHomeChannelHandshake({ ...input, binding: options.binding })}\n`);
 				const first = await Promise.race([
 					reader.next(),
-					new Promise<never>((_resolve, reject) =>
-						setTimeout(() => reject(new Error(ERROR)), CLOUD_HOME_CHANNEL_HANDSHAKE_MS).unref(),
-					),
+					new Promise<never>((_resolve, reject) => {
+						const wake = (): void => reject(new Error(`${ERROR}: no answer to the handshake`));
+						if (deadline.aborted) wake();
+						else deadline.addEventListener("abort", wake, { once: true });
+					}),
 				]);
 				if (!first.done) ready = JSON.parse(first.value) as CloudHomeChannelReady;
 			} catch (error) {
@@ -100,21 +136,7 @@ export function createCloudHomeChannel(options: {
 					socket.destroy();
 				},
 			} satisfies CloudCodexHomeStream;
+			}
 		},
 	};
-}
-
-/** Each complete line of the socket. A line over the bound ends the channel, as it does on the ingress's side. */
-async function* lines(socket: Socket): AsyncGenerator<string> {
-	let rest = "";
-	for await (const chunk of socket) {
-		rest += (chunk as Buffer).toString("utf8");
-		if (Buffer.byteLength(rest) > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error(ERROR);
-		let end = rest.indexOf("\n");
-		while (end >= 0) {
-			yield rest.slice(0, end);
-			rest = rest.slice(end + 1);
-			end = rest.indexOf("\n");
-		}
-	}
 }

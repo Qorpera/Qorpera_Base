@@ -46,8 +46,6 @@ const SAVED_FROM: Readonly<Record<string, string>> = {
 	coding_session: "a coding session",
 	test_machine: "a test machine",
 	run_box: "a run's own copy of the folder",
-	// 20260930754000: the agent's home, with the run's own window on the folder.
-	home_window: "the agent's own machine",
 };
 /** Changes the context shows per proposal; the rest are counted. */
 const CONTEXT_CHANGES = 20;

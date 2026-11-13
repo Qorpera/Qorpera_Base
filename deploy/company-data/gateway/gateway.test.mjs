@@ -2,18 +2,19 @@
  * up from store/cluster.sql and store/template.sql, as the proof does, in a throwaway container on a random loopback
  * port (2 CPUs, 4 GiB, removed at the end). The platform is a stand-in: an in-memory company folder per company with
  * read rights per member, answering the two folder reads the gateway makes in the shapes the platform gives. The
- * gateway is driven over its own HTTP side. Limits are small, so the file runs in well under a minute.
+ * gateway is driven over its own HTTP side. Limits are small, so the file runs in well under a minute. The run door
+ * (SLICE5) is driven over its own listener, with a stand-in for the platform's data passes.
  * Run on a test machine: node --test deploy/company-data/gateway/gateway.test.mjs */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
-import { companyDatabase, folderPassword, Gateway, LIMITS, Platform, serve } from "./gateway.mjs";
+import { companyDatabase, folderPassword, Gateway, LIMITS, Platform, serve, serveRuns } from "./gateway.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -31,24 +32,36 @@ const LIMITS_HERE = {
 	watchAgainMs: 50,
 	proofMs: 0,
 	bodyBytes: 8192,
+	agentMs: 4_000,
+	agentRows: 20,
+	agentBytes: 2048,
 };
+/** The node's private token the run door takes. */
+const RUN_TOKEN = randomBytes(32).toString("base64url");
 
 // ---- two companies and their members
 const ENV_A = "64000000-0000-4000-8000-0000000000a0";
 const ENV_B = "64000000-0000-4000-8000-0000000000b0";
 const ENV_C = "64000000-0000-4000-8000-0000000000c0";
+/** A company whose databases only agents' runs make and ask. */
+const ENV_D = "64000000-0000-4000-8000-0000000000d0";
 const person = (n) => `64000000-0000-4000-8000-0000000000${String(n).padStart(2, "0")}`;
 const OWNER = person(1);
 const CONTRIBUTOR = person(2);
 const VIEWER = person(3);
 const STRANGER = person(9);
 const B_MEMBER = person(11);
-const MEMBERS = { [ENV_A]: new Set([OWNER, CONTRIBUTOR, VIEWER]), [ENV_B]: new Set([B_MEMBER]), [ENV_C]: new Set([OWNER]) };
+const MEMBERS = {
+	[ENV_A]: new Set([OWNER, CONTRIBUTOR, VIEWER]),
+	[ENV_B]: new Set([B_MEMBER]),
+	[ENV_C]: new Set([OWNER]),
+	[ENV_D]: new Set([OWNER, VIEWER]),
+};
 /** Folders only one member may read, as a path resource of scope member_private makes them. */
-const PRIVATE = { [ENV_A]: { "data/hr": CONTRIBUTOR }, [ENV_B]: {}, [ENV_C]: {} };
+const PRIVATE = { [ENV_A]: { "data/hr": CONTRIBUTOR }, [ENV_B]: {}, [ENV_C]: {}, [ENV_D]: { "data/diary": VIEWER } };
 
 // ---- the stand-in platform: the folders, the tokens it knows, and its two reads
-const FOLDERS = { [ENV_A]: new Map(), [ENV_B]: new Map(), [ENV_C]: new Map() };
+const FOLDERS = { [ENV_A]: new Map(), [ENV_B]: new Map(), [ENV_C]: new Map(), [ENV_D]: new Map() };
 const TEXTS = new Map();
 const put = (env, files) => {
 	for (const [path, text] of Object.entries(files)) {
@@ -68,10 +81,47 @@ const tokenOf = (userId) => {
 const mayRead = (env, userId, path) =>
 	MEMBERS[env]?.has(userId) === true &&
 	Object.entries(PRIVATE[env] ?? {}).every(([folder, only]) => only === userId || !(path === folder || path.startsWith(`${folder}/`)));
+/** Data passes the stand-in made, by pass: what it kept, whether it was redeemed, and until when it lasts. */
+const PASSES = new Map();
+/** A run's data pass, as qorpera_run_data_pass makes it: database.toml and the files directly in tables/, queries/ and
+ * actions/ of the database named (or of every database) that the run's requester may read. */
+const passFor = (env, userId, database = null, { ms = 60_000 } = {}) => {
+	const files = [...FOLDERS[env]]
+		.filter(([path]) => {
+			const at = /^data\/([a-z][a-z0-9_]{0,39})\/(database\.toml|(tables|queries|actions)\/[^/]+)$/.exec(path);
+			return at && (database === null || at[1] === database) && FOLDERS[env].has(`data/${at[1]}/database.toml`) && mayRead(env, userId, `data/${at[1]}/database.toml`) && mayRead(env, userId, path);
+		})
+		.map(([path, text]) => ({ path, sha256: sha256(text), bytes: Buffer.byteLength(text) }));
+	const pass = randomBytes(32).toString("base64url");
+	PASSES.set(pass, {
+		kept: {
+			schema: "qorpera.data-pass-redeemed/v1",
+			kind: "run",
+			environmentId: env,
+			runId: randomUUID(),
+			staffAgentId: randomUUID(),
+			requesterUserId: userId,
+			database,
+			files,
+		},
+		redeemed: false,
+		until: Date.now() + ms,
+	});
+	return pass;
+};
 let platformCalls = 0;
 async function platformFetch(url, init) {
 	platformCalls++;
 	const reply = (status, value) => ({ status, ok: status >= 200 && status < 300, json: async () => value });
+	// The redeem goes with the publishable key alone.
+	if (new URL(url).pathname === "/rest/v1/rpc/qorpera_data_pass_redeem") {
+		if (init.method !== "POST" || init.headers.apikey !== "publishable" || init.headers.authorization !== undefined)
+			return reply(400, { message: "bad request" });
+		const held = PASSES.get(JSON.parse(init.body).p_pass);
+		if (!held || held.redeemed || Date.now() >= held.until) return reply(200, null);
+		held.redeemed = true;
+		return reply(200, held.kept);
+	}
 	const token = /^Bearer (.+)$/.exec(init.headers.authorization ?? "")?.[1];
 	if (init.method !== "POST" || init.headers.apikey !== "publishable") return reply(400, { message: "bad request" });
 	if (!KNOWN.has(token)) return reply(401, { message: "JWT invalid" });
@@ -226,6 +276,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	let gateway = null;
 	let server = null;
 	let port = 0;
+	let runServer = null;
 	const owner = tokenOf(OWNER);
 	const contributor = tokenOf(CONTRIBUTOR);
 	const viewer = tokenOf(VIEWER);
@@ -267,12 +318,12 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	};
 
 	/** One HTTP request to the gateway. */
-	const send = ({ method = "POST", path, bearer, text = "" }) =>
+	const send = ({ method = "POST", path, bearer, text = "", to = port }) =>
 		new Promise((resolve, reject) => {
 			const request = http.request(
 				{
 					host: "127.0.0.1",
-					port,
+					port: to,
 					path,
 					method,
 					headers: { ...(bearer ? { authorization: `Bearer ${bearer}` } : {}), "content-type": "application/json", "content-length": Buffer.byteLength(text) },
@@ -329,9 +380,11 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 				store: { host: "127.0.0.1", port: storePort, logins },
 				platform: new Platform({ url: "http://platform/", publishableKey: "publishable", fetch: platformFetch }),
 				limits: LIMITS_HERE,
+				runs: { token: RUN_TOKEN },
 			});
 			server = await serve(gateway);
 			port = server.address().port;
+			runServer = await serveRuns(gateway);
 		} catch (error) {
 			spawnSync("docker", ["rm", "-f", "-v", container], { stdio: "ignore" });
 			throw error;
@@ -339,9 +392,10 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	after(async () => {
-		if (server) {
-			server.close();
-			server.closeAllConnections();
+		for (const open of [server, runServer]) {
+			if (!open) continue;
+			open.close();
+			open.closeAllConnections();
 		}
 		if (gateway) await gateway.close();
 		spawnSync("docker", ["rm", "-f", "-v", container], { stdio: "ignore" });
@@ -1198,5 +1252,228 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		// marker, which the watcher's termination would have quoted as context, is not.
 		assert.match(all, /statement: /);
 		assert.equal(all.includes(marker), false, all.split("\n").filter((line) => line.includes(marker)).slice(0, 5).join("\n"));
+	});
+
+	// ---- the run door (SLICE5): an agent's run, through the node's private token and a data pass
+	const STOCK = "create table items (id int primary key, name text not null, owner uuid);\ninsert into items select n, 'item ' || n, null from generate_series(1, 100) n;\n";
+	put(ENV_D, {
+		"data/stock/database.toml": 'format = "qorpera.database/v1"\nname = "Stock"\nabout = "What the shop holds" # one line\n',
+		"data/stock/tables/001-items.sql": STOCK,
+		"data/stock/queries/count.sql": "-- How many items there are.\nselect count(*) as items from items;\n",
+		"data/stock/queries/mine.sql": "-- The items a member owns.\nselect count(*) as items from items where owner = :viewer::uuid;\n",
+		"data/stock/queries/named.sql": "-- One item by its id.\nselect name from items where id = :id::int;\n",
+		"data/stock/notes.md": "Not a database's file",
+		"data/diary/database.toml": 'format = "qorpera.database/v1"\n',
+		"data/diary/tables/001-days.sql": "create table days (day date primary key);\n",
+		"data/loose/tables/001-a.sql": "create table a ();\n",
+	});
+	const runSend = (verb, body, token = RUN_TOKEN) =>
+		send({ to: runServer.address().port, path: `/v1/run-data/${verb}`, bearer: token, text: JSON.stringify(body) });
+	/** A call as the tool makes it: a new pass for each call, and the texts the gateway asks for, read as the run. */
+	const runAsk = async (verb, body, { env = ENV_D, user = OWNER, database = body.database ?? null } = {}) => {
+		let answer = await runSend(verb, { ...body, pass: passFor(env, user, database) });
+		for (let round = 0; round < 3 && answer.status === 200 && answer.value.need; round++) {
+			const texts = Object.fromEntries(answer.value.need.map((wanted) => [wanted.sha256, TEXTS.get(wanted.sha256)]));
+			answer = await runSend(verb, { ...body, texts, pass: passFor(env, user, database) });
+		}
+		return answer;
+	};
+
+	it("opens the run door only to the node's token with a pass that redeems once, the same 401 for everything else", async () => {
+		const refused = { status: 401, value: { error: "Not allowed" } };
+		const pass = passFor(ENV_D, OWNER, "stock");
+		assert.deepEqual(await runSend("describe", { pass }, "wrong-token"), refused, "a wrong token");
+		assert.deepEqual(await send({ to: runServer.address().port, path: "/v1/run-data/describe", text: JSON.stringify({ pass }) }), refused, "no token");
+		assert.deepEqual(await runSend("describe", {}), refused, "no pass");
+		assert.deepEqual(await runSend("describe", { pass: "short" }), refused, "not a pass");
+		assert.deepEqual(await runSend("describe", { pass: randomBytes(32).toString("base64url") }), refused, "an unknown pass");
+		const expired = passFor(ENV_D, OWNER, "stock", { ms: -1 });
+		assert.deepEqual(await runSend("describe", { pass: expired }), refused, "an expired pass");
+		assert.equal((await runSend("describe", { pass })).status, 200, "the pass, once");
+		assert.deepEqual(await runSend("describe", { pass }), refused, "the same pass again");
+		// The members' door has no run calls, and the run door no members' calls.
+		assert.equal((await send({ path: "/v1/run-data/describe", bearer: owner, text: JSON.stringify({ pass: passFor(ENV_D, OWNER) }) })).status, 404);
+		assert.equal((await send({ to: runServer.address().port, path: `/v1/company-data/${ENV_D}/describe`, bearer: RUN_TOKEN, text: "{}" })).status, 404);
+		assert.equal((await send({ to: runServer.address().port, method: "GET", path: "/v1/run-data/describe", bearer: RUN_TOKEN })).status, 405);
+		// A gateway without the token answers nothing on the run door.
+		await withGateway({}, async (other) => {
+			const closed = await serveRuns(other);
+			try {
+				const answer = await send({ to: closed.address().port, path: "/v1/run-data/describe", bearer: RUN_TOKEN, text: JSON.stringify({ pass: passFor(ENV_D, OWNER) }) });
+				assert.equal(answer.status, 404);
+			} finally {
+				closed.close();
+				closed.closeAllConnections();
+			}
+		});
+		// Off loopback the run door listens only with TLS, and with both its certificate and its key.
+		assert.throws(() => serveRuns(gateway, { host: "0.0.0.0" }), /needs TLS/);
+		assert.throws(() => serveRuns(gateway, { cert: "x" }), /both a certificate and its key/);
+	});
+
+	it("describes a run's databases before the company has a database, from the texts it asks for", async () => {
+		const asked = await runSend("describe", { pass: passFor(ENV_D, OWNER) });
+		assert.deepEqual(asked.value.need?.map((wanted) => wanted.path).sort(), [
+			"data/stock/database.toml",
+			"data/stock/queries/count.sql",
+			"data/stock/queries/mine.sql",
+			"data/stock/queries/named.sql",
+		]);
+		// The texts may come in rounds, as the tool sends them when they are many: each round's are kept, so the next
+		// round asks only for the rest, and the call ends.
+		const [toml, ...questions] = asked.value.need.toSorted((a, b) => (a.path < b.path ? -1 : 1));
+		const textsOf = (wanted) => Object.fromEntries(wanted.map((one) => [one.sha256, TEXTS.get(one.sha256)]));
+		const half = await runSend("describe", { pass: passFor(ENV_D, OWNER), texts: textsOf([toml]) });
+		assert.deepEqual(half.value.need?.map((wanted) => wanted.path).sort(), questions.map((one) => one.path));
+		const rest = await runSend("describe", { pass: passFor(ENV_D, OWNER), texts: textsOf(questions) });
+		assert.equal(rest.status, 200, JSON.stringify(rest.value));
+		assert.equal(rest.value.need, undefined, "the first round's text was kept");
+		assert.deepEqual(rest.value.databases.map((database) => database.database), ["stock"]);
+		const described = await runAsk("describe", {});
+		assert.equal(described.status, 200, JSON.stringify(described.value));
+		assert.deepEqual(described.value, {
+			databases: [
+				{
+					database: "stock",
+					name: "Stock",
+					about: "What the shop holds",
+					steps: { applied: [], waiting: ["001-items"], changed: [], missing: [] },
+					tables: [],
+					questions: [
+						{ name: "count", words: "How many items there are.", parameters: [] },
+						{ name: "mine", words: "The items a member owns.", parameters: ["viewer"] },
+						{ name: "named", words: "One item by its id.", parameters: ["id"] },
+					],
+				},
+			],
+			companyBytes: 0,
+			limitBytes: LIMITS_HERE.companyBytes,
+		});
+		// The private database is another member's, and loose/ has no database.toml.
+		assert.equal((await runAsk("describe", { database: "diary" })).status, 404);
+		assert.equal((await runAsk("describe", { database: "loose" })).status, 404);
+		// The viewer, whose database diary is, sees it.
+		const own = await runAsk("describe", { database: "diary" }, { user: VIEWER });
+		assert.equal(own.status, 200, JSON.stringify(own.value));
+		assert.deepEqual(own.value.databases.map((database) => database.database), ["diary"]);
+	});
+
+	it("applies a run's database from the files its pass kept, then describes it as the store holds it", async () => {
+		const first = await runSend("apply", { database: "stock", pass: passFor(ENV_D, OWNER, "stock") });
+		assert.deepEqual(first.value.need?.map((wanted) => wanted.path), ["data/stock/tables/001-items.sql"]);
+		const applied = await runAsk("apply", { database: "stock" });
+		assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+		assert.deepEqual(states(applied), ["001-items applied"]);
+		const described = await runAsk("describe", { database: "stock" });
+		const [stock] = described.value.databases;
+		assert.deepEqual(stock.steps.waiting, []);
+		assert.deepEqual(stock.steps.applied.map((step) => step.name), ["001-items"]);
+		assert.deepEqual(stock.tables.map((table) => [table.name, table.columns.map((column) => column.name)]), [["items", ["id", "name", "owner"]]]);
+		assert.ok(described.value.companyBytes > 0);
+		// A step a member wrote that destroys rows is held, with what it would destroy, and nothing changes.
+		put(ENV_D, { "data/stock/tables/002-clear.sql": "delete from items where id > 90;\n" });
+		const held = await runAsk("apply", { database: "stock" });
+		assert.deepEqual(states(held), ["001-items already", "002-clear held"]);
+		assert.deepEqual(held.value.results.at(-1).destroys, [{ what: "deleted rows", object: "stock.items", rows: 10 }]);
+		assert.deepEqual((await runAsk("query", { database: "stock", question: "count" })).value.rows, [[100]]);
+		const waiting = await runAsk("describe", { database: "stock" });
+		assert.deepEqual(waiting.value.databases[0].steps.waiting, ["002-clear"]);
+		remove(ENV_D, "data/stock/tables/002-clear.sql");
+		// A changed applied step is said so.
+		put(ENV_D, { "data/stock/tables/001-items.sql": `${STOCK}-- changed\n` });
+		const changed = await runAsk("describe", { database: "stock" });
+		assert.deepEqual(changed.value.databases[0].steps.changed, ["001-items"]);
+		put(ENV_D, { "data/stock/tables/001-items.sql": STOCK });
+	});
+
+	it("answers a run's question and its own read with an agent's rows and bytes, as the read role, one statement", async () => {
+		const count = await runAsk("query", { database: "stock", question: "count" });
+		assert.equal(count.status, 200, JSON.stringify(count.value));
+		assert.deepEqual(count.value.columns, ["items"]);
+		assert.deepEqual(count.value.rows, [[100]]);
+		assert.equal(count.value.more, false);
+		assert.ok(Math.abs(Date.parse(count.value.asOf) - Date.now()) < 5_000);
+		// :viewer is the member who asked the run, unless the run names one.
+		await asAdmin(companyDatabase(ENV_D), "update stock.items set owner = $1 where id <= 3", [OWNER]);
+		await asAdmin(companyDatabase(ENV_D), "update stock.items set owner = $1 where id between 4 and 8", [VIEWER]);
+		assert.deepEqual((await runAsk("query", { database: "stock", question: "mine" })).value.rows, [[3]]);
+		assert.deepEqual((await runAsk("query", { database: "stock", question: "mine", params: { viewer: VIEWER } })).value.rows, [[5]]);
+		assert.equal((await runAsk("query", { database: "stock", question: "mine", params: { viewer: "nobody" } })).status, 400);
+		assert.equal((await runAsk("query", { database: "stock", question: "count", params: { viewer: VIEWER } })).status, 400);
+		assert.deepEqual((await runAsk("query", { database: "stock", question: "named", params: { id: 7 } })).value.rows, [["item 7"]]);
+		// Its own read: one statement, read only, rows and bytes cut at an agent's limits.
+		const own = await runAsk("query", { database: "stock", sql: "select id, name from items where id <= :top order by id", params: { top: 5 } });
+		assert.equal(own.status, 200, JSON.stringify(own.value));
+		assert.deepEqual(own.value.rows.map((row) => row[0]), [1, 2, 3, 4, 5]);
+		const many = await runAsk("query", { database: "stock", sql: "select id from items order by id" });
+		assert.equal(many.value.rows.length, LIMITS_HERE.agentRows);
+		assert.equal(many.value.more, true);
+		const wide = await runAsk("query", { database: "stock", sql: "select repeat('x', 300) as text from items" });
+		assert.ok(JSON.stringify(wide.value.rows).length <= LIMITS_HERE.agentBytes, `${JSON.stringify(wide.value.rows).length}`);
+		assert.equal(wide.value.more, true);
+		const writes = await runAsk("query", { database: "stock", sql: "delete from items returning id" });
+		assert.equal(writes.status, 400, JSON.stringify(writes.value));
+		const two = await runAsk("query", { database: "stock", sql: "select 1 as one; select 2 as two" });
+		assert.equal(two.status, 400);
+		assert.match(two.value.error, /more than one statement/);
+		const escape = await runAsk("query", { database: "stock", sql: "select count(*) from qorpera_data.steps" });
+		assert.equal(escape.status, 400, JSON.stringify(escape.value));
+		assert.equal((await runAsk("query", { database: "stock", question: "count", sql: "select 1" })).status, 400);
+		assert.deepEqual((await asAdmin(companyDatabase(ENV_D), "select count(*)::int as n from stock.items"))[0].n, 100);
+	});
+
+	it("keeps a run to the files its pass kept", async () => {
+		// A pass for stock does not open diary, nor another company's shop, nor a database the requester may not read.
+		assert.equal((await runSend("query", { database: "diary", sql: "select 1", pass: passFor(ENV_D, OWNER, "stock") })).status, 404);
+		assert.equal((await runSend("apply", { database: "diary", pass: passFor(ENV_D, OWNER, "stock") })).status, 404);
+		assert.equal((await runAsk("query", { database: "diary", sql: "select 1" })).status, 404);
+		assert.equal((await runAsk("query", { database: "shop", question: "count" }, { env: ENV_D })).status, 404);
+		// The run's company is the pass's: company A's shop through a pass of company D's is not there.
+		assert.equal((await runSend("query", { database: "shop", question: "count", pass: passFor(ENV_D, OWNER) })).status, 404);
+		// A file's text is used only when its hash is the one the pass kept.
+		put(ENV_D, { "data/stock/queries/fresh.sql": "select 42 as answer;\n" });
+		const pass = passFor(ENV_D, OWNER, "stock");
+		const wrong = await runSend("query", {
+			database: "stock",
+			question: "fresh",
+			pass,
+			texts: { [sha256("select 42 as answer;\n")]: "select count(*) from items;\n" },
+		});
+		assert.deepEqual(wrong.value.need?.map((wanted) => wanted.path), ["data/stock/queries/fresh.sql"]);
+		assert.deepEqual((await runAsk("query", { database: "stock", question: "fresh" })).value.rows, [[42]]);
+	});
+
+	it("gives an agent's read its own time limit, and the watcher leaves it until then", async () => {
+		// Past a question's limit and the watcher's margin (300 + 2,000 ms), inside an agent's (4,000 ms).
+		const running = runAsk("query", { database: "stock", sql: "select pg_sleep(2.8) as slept, count(*) as items from items" });
+		await sleep(2_500);
+		const looked = await gateway.watchOnce();
+		assert.deepEqual(looked.ended, [], "the watcher ended an agent's read inside its limit");
+		const answer = await running;
+		assert.equal(answer.status, 200, JSON.stringify(answer.value));
+		assert.deepEqual(answer.value.rows[0].slice(1), [100]);
+		const slow = await runAsk("query", { database: "stock", sql: "select pg_sleep(5) as slept" });
+		assert.equal(slow.status, 408);
+	});
+
+	it("starts no step once an apply call's time has passed, and says which steps still wait", async () => {
+		put(ENV_D, {
+			"data/slow/database.toml": 'format = "qorpera.database/v1"\n',
+			"data/slow/tables/001-a.sql": "create table a (id int);\nselect pg_sleep(1.2);\n",
+			"data/slow/tables/002-b.sql": "create table b (id int);\nselect pg_sleep(1.2);\n",
+			"data/slow/tables/003-c.sql": "create table c (id int);\n",
+		});
+		// 001 starts at once, 002 inside the call's 2 s, and 003 would start after them: it waits for the next call.
+		await withGateway({ limits: { ...LIMITS_HERE, applyMs: 2_000 } }, async () => {
+			const first = await ask(owner, "apply", { database: "slow" }, ENV_D);
+			assert.equal(first.status, 200, JSON.stringify(first.value));
+			assert.deepEqual(states(first), ["001-a applied", "002-b applied", "003-c waiting"]);
+			assert.equal(first.value.more, true);
+			assert.equal(first.value.applied, false);
+			const second = await ask(owner, "apply", { database: "slow" }, ENV_D);
+			assert.deepEqual(states(second), ["001-a already", "002-b already", "003-c applied"]);
+			assert.equal(second.value.more, undefined);
+			assert.equal(second.value.applied, true);
+		});
 	});
 });

@@ -6,6 +6,8 @@
 // is a small pipe of its own: what has not been read yet waits in memory, bounded, and a side that fills up ends the
 // channel rather than the machine's command.
 
+import { StringDecoder } from "node:string_decoder";
+
 /** A command's own output can be large (P1 saw 2.4 MB from one `seq`), and its lines are bounded again at both ends. */
 export const EXEC_SERVER_OUTPUT_BYTES = 64 * 1024 * 1024;
 /** What may wait unread in one direction before the channel is ended. */
@@ -61,11 +63,14 @@ export class LinePipe {
 		}
 	}
 
-	/** The same bytes as complete lines, without their newline. */
+	/** The same bytes as complete lines, without their newline, decoded across chunk boundaries: a character split
+	 * between two reads must arrive whole (review round 1, F9). The runtime's own readers share
+	 * `cloudHomeChannelLines`; this package cannot import it, so it keeps the same decoder of its own. */
 	async *lines(): AsyncGenerator<string> {
+		const decoder = new StringDecoder("utf8");
 		let rest = "";
 		for await (const chunk of this.read()) {
-			rest += Buffer.from(chunk).toString("utf8");
+			rest += decoder.write(Buffer.from(chunk));
 			let end = rest.indexOf("\n");
 			while (end >= 0) {
 				yield rest.slice(0, end);

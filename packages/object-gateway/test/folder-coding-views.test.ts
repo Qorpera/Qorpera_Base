@@ -641,12 +641,6 @@ describe("the control socket", () => {
 			},
 			openWindow: () => undefined,
 			closeWindow: async (machine: string): Promise<MachineBoundary> => ({ machine, reads: "released", views: [] }),
-			openCall: () => undefined,
-			closeCall: async (viewId: string): Promise<MachineBoundary> => ({
-				machine: viewId,
-				reads: "released",
-				views: [],
-			}),
 			secrets: (machine: string, set: SecretSet) => {
 				sets.push([machine, set]);
 				return set.size;
@@ -735,12 +729,7 @@ describe("the control socket", () => {
 		const KEY_IS = "key is 32 bytes, base64url";
 		expect(answers).toEqual([
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{
-				error: {
-					code: "BAD_REQUEST",
-					message: "A request's op is boundary, restarted, open, close, call-open, call-close or secrets",
-				},
-			},
+			{ error: { code: "BAD_REQUEST", message: "A request's op is boundary, restarted, open, close or secrets" } },
 			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
 			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },

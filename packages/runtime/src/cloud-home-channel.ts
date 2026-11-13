@@ -15,6 +15,7 @@
 // The handshake is the first line ON the socket, never the URL or a header: a run's holder and its binding are not
 // things to put in a request line that proxies and logs keep.
 
+import { StringDecoder } from "node:string_decoder";
 import { type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
@@ -24,6 +25,8 @@ export const CLOUD_HOME_CHANNEL_PROTOCOL = "qorpera-home-session/1";
 export const CLOUD_HOME_CHANNEL_LINE_BYTES = 8 * 1024 * 1024;
 /** How long the ingress waits for the handshake line after the upgrade. */
 export const CLOUD_HOME_CHANNEL_HANDSHAKE_MS = 10_000;
+/** The whole of opening a channel from the run's side: the connection, the upgrade and the handshake together. */
+export const CLOUD_HOME_CHANNEL_OPEN_MS = 20_000;
 
 /** The first line the run's host writes: whose channel this is, and which machine it wants. */
 export interface CloudHomeChannelHandshake {
@@ -58,6 +61,26 @@ export interface CloudHomeChannelSide {
 	write(line: string): void;
 	lines: AsyncIterable<string>;
 	close(): Promise<void>;
+}
+
+/**
+ * Each complete line of a stream of bytes, in order, decoded as UTF-8 across chunk boundaries: a character split
+ * between two reads must arrive whole, or a command, a path or a file's text would change on its way through this
+ * host (review round 1, F9). One reader per connection, used by both ends of the channel.
+ */
+export async function* cloudHomeChannelLines(chunks: AsyncIterable<Buffer | Uint8Array>): AsyncGenerator<string> {
+	const decoder = new StringDecoder("utf8");
+	let rest = "";
+	for await (const chunk of chunks) {
+		rest += decoder.write(Buffer.from(chunk));
+		if (Buffer.byteLength(rest) > CLOUD_HOME_CHANNEL_LINE_BYTES) throw new Error("Home line too large");
+		let end = rest.indexOf("\n");
+		while (end >= 0) {
+			yield rest.slice(0, end);
+			rest = rest.slice(end + 1);
+			end = rest.indexOf("\n");
+		}
+	}
 }
 
 export function cloudHomeChannelHandshake(input: {

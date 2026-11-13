@@ -32,13 +32,6 @@ import type { CommandWindow } from "./windows.ts";
  *   {"op":"close","machine":"<placement id>","commandId":…}
  *   → {"boundary":…}: sent when the command ended; answered once what the machine changed until then was published or
  *     refused (`FolderService.closeWindow`)
- *   {"op":"call-open","window":"<view id>","callId":…,"runId":…,"staffAgentId":…,"requestedByUserId":…}
- *   → {"opened":{"window":…,"callId":…}}: 20260930754000, a native call on a home window: what the window saves from
- *     then until the call closes is credited to the call, and so carries the call's own receipt
- *     (`FolderService.openCall`). Sent again, it changes nothing; a view that is no open window is refused
- *   {"op":"call-close","window":"<view id>","callId":…}
- *   → {"boundary":…}: sent when the native call ended; answered once what the window changed until then was published
- *     or refused (`FolderService.closeCall`)
  *   {"op":"secrets","machine":"<machine id>","key":"<32 bytes, base64url>","values":[{"length":…,"start":…,"whole":…}, …]}
  *   → {"secrets":{"machine":…,"values":…}}: a coding machine's secret values as keyed hashes (secret-scan.ts), never
  *     the values. They replace what it sent before; what its views save is checked against them, and none of its views
@@ -63,9 +56,6 @@ export interface ControlTarget {
 	restarted(machine: string): boolean;
 	openWindow(machine: string, window: CommandWindow): void;
 	closeWindow(machine: string, commandId: string): Promise<MachineBoundary>;
-	/** 20260930754000: the call windows of a home window, kept under the view's own id. */
-	openCall(viewId: string, window: CommandWindow): void;
-	closeCall(viewId: string, callId: string): Promise<MachineBoundary>;
 	/** Takes the machine's secret values in place of what it sent before; how many it holds. */
 	secrets(machine: string, set: SecretSet): number;
 }
@@ -75,8 +65,6 @@ type Request =
 	| { op: "restarted"; machine: string }
 	| { op: "open"; machine: string; window: CommandWindow }
 	| { op: "close"; machine: string; commandId: string }
-	| { op: "call-open"; window: string; call: CommandWindow }
-	| { op: "call-close"; window: string; callId: string }
 	| { op: "secrets"; machine: string; set: SecretSet };
 
 /** Each request's keys: all are needed but a boundary's `final`. */
@@ -85,8 +73,6 @@ const KEYS: Record<Request["op"], readonly string[]> = {
 	restarted: ["op", "machine"],
 	open: ["op", "machine", "commandId", "runId", "staffAgentId", "requestedByUserId"],
 	close: ["op", "machine", "commandId"],
-	"call-open": ["op", "window", "callId", "runId", "staffAgentId", "requestedByUserId"],
-	"call-close": ["op", "window", "callId"],
 	secrets: ["op", "machine", "key", "values"],
 };
 const SHAPES: Record<Request["op"], string> = {
@@ -94,15 +80,12 @@ const SHAPES: Record<Request["op"], string> = {
 	restarted: "A restarted request is {op, machine}",
 	open: "An open request is {op, machine, commandId, runId, staffAgentId, requestedByUserId}",
 	close: "A close request is {op, machine, commandId}",
-	"call-open": "A call-open request is {op, window, callId, runId, staffAgentId, requestedByUserId}",
-	"call-close": "A call-close request is {op, window, callId}",
 	secrets: "A secrets request is {op, machine, key, values}",
 };
 const KEY = "key is 32 bytes, base64url";
 const VALUES = `values is a list of at most ${SECRET_VALUES_MAX} values, each {length, start, whole}: a length of ${SECRET_MIN_BYTES} to ${SECRET_MAX_BYTES} bytes, a start below 2^${SECRET_TAG_BITS}, and 16 bytes base64url`;
 const IDS: Record<string, string> = {
 	commandId: "commandId is a command's id",
-	callId: "callId is a call's id",
 	runId: "runId is a run's id",
 	staffAgentId: "staffAgentId is an agent's id",
 	requestedByUserId: "requestedByUserId is a user's id",
@@ -113,8 +96,6 @@ const FAILED: Record<Request["op"], string> = {
 	restarted: "The restart could not be taken now",
 	open: "The window could not be opened now",
 	close: "The window's boundary could not be made now",
-	"call-open": "The call's window could not be opened now",
-	"call-close": "The call's boundary could not be made now",
 	secrets: "The secret values could not be taken now",
 };
 
@@ -228,19 +209,12 @@ async function answer(text: string, options: ControlOptions): Promise<unknown> {
 		}
 		if (request.op === "close")
 			return { boundary: await options.target.closeWindow(request.machine, request.commandId) };
-		if (request.op === "call-open") {
-			options.target.openCall(request.window, request.call);
-			return { opened: { window: request.window, callId: request.call.commandId } };
-		}
-		if (request.op === "call-close")
-			return { boundary: await options.target.closeCall(request.window, request.callId) };
 		if (request.op === "secrets")
 			return { secrets: { machine: request.machine, values: options.target.secrets(request.machine, request.set) } };
 		return { boundary: await options.target.boundary(request.machine, request.final) };
 	} catch (error) {
 		if (error instanceof ProtocolError) return { error: { code: error.code, message: error.message } };
-		const of = "machine" in request ? request.machine : request.window;
-		options.log(`folder-service: control: ${request.op} of ${of} failed: ${(error as Error).message}`);
+		options.log(`folder-service: control: ${request.op} of ${request.machine} failed: ${(error as Error).message}`);
 		return { error: { code: ErrorCode.unavailable, message: FAILED[request.op] } };
 	}
 }
@@ -257,34 +231,9 @@ function parseRequest(text: string): Request | string {
 		return "A request is one JSON object a line";
 	const request = value as Record<string, unknown>;
 	const op = request.op;
-	if (
-		op !== "boundary" &&
-		op !== "restarted" &&
-		op !== "open" &&
-		op !== "close" &&
-		op !== "secrets" &&
-		op !== "call-open" &&
-		op !== "call-close"
-	)
-		return "A request's op is boundary, restarted, open, close, call-open, call-close or secrets";
+	if (op !== "boundary" && op !== "restarted" && op !== "open" && op !== "close" && op !== "secrets")
+		return "A request's op is boundary, restarted, open, close or secrets";
 	if (Object.keys(request).some((key) => !KEYS[op].includes(key))) return SHAPES[op];
-	// 20260930754000: a call names its home window by the view's id, not a machine.
-	if (op === "call-open" || op === "call-close") {
-		if (!isUuid(request.window)) return "window is a home window's view id";
-		for (const key of KEYS[op].slice(2)) if (!isUuid(request[key])) return IDS[key] as string;
-		const callId = request.callId as string;
-		if (op === "call-close") return { op, window: request.window, callId };
-		return {
-			op,
-			window: request.window,
-			call: {
-				commandId: callId,
-				runId: request.runId as string,
-				staffAgentId: request.staffAgentId as string,
-				requestedByUserId: request.requestedByUserId as string,
-			},
-		};
-	}
 	const machine = request.machine;
 	if (!isUuid(machine)) return "machine is a coding machine's id or a test machine's placement id";
 	if (op === "restarted") return { op, machine };

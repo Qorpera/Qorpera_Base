@@ -27,10 +27,6 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_memory_commit",
 	"qorpera_folder_record_release",
 	"qorpera_folder_run_view_open",
-	"qorpera_folder_home_window_open",
-	"qorpera_folder_home_call_open",
-	"qorpera_folder_home_call_end",
-	"qorpera_folder_home_window_bind",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
@@ -52,6 +48,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
+	"qorpera_run_data_pass",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -139,11 +136,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_record_release",
 			// The run's own view, for the node's folder search (F3, 20260929999970).
 			"qorpera_folder_run_view_open",
-			// The run's own window on its home machine, and the calls on it (20260930754000).
-			"qorpera_folder_home_window_open",
-			"qorpera_folder_home_call_open",
-			"qorpera_folder_home_call_end",
-			"qorpera_folder_home_window_bind",
 			// Staging a folder-v2 file's bytes (core C1d).
 			"qorpera_folder_open_upload",
 			"qorpera_folder_seal_upload",
@@ -172,6 +164,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
 			"qorpera_folder_request_code_import",
 			"qorpera_folder_code_import",
+			// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
+			"qorpera_run_data_pass",
 			// An agent's page and table changes in its conversation, with Undo (I10).
 			"qorpera_folder_note_interface_changes",
 			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).

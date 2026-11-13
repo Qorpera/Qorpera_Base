@@ -8,8 +8,8 @@
 -- * The switch is OFF. A company has a home only when the platform's own switch is on AND that company is named
 --   (qorpera_home_settings, qorpera_home_companies). With no rows at all, every company is as it is today: no
 --   environment, no channel, the same tools and the same provider request.
--- * One session belongs to exactly one run, on one boot of one machine, and a run has one open at a time. A second
---   run cannot take it, and a session
+-- * One session belongs to exactly one run, on one boot of one machine, and a run has one open per boot. A second
+--   run cannot take it, a boot that ended takes its sessions with it, and a session
 --   of a boot that ended is refused: its home is gone with the boot, as a command's output is.
 -- * The session row is where the folder window of slice 3 is named (folder_window_id), so a write that arrives from
 --   a home can be credited to the call that made it. Slice 3 owns that column's use; nothing here writes it.
@@ -63,10 +63,13 @@ begin
 		or not public.qorpera_company_machines_available() then
 		return jsonb_build_object('schema','qorpera.company-home/v1','available',false); end if;
 	-- This agent's own running machine, the one it works on; the latest used of them when it has more than one.
+	-- It must be running, not only on its way: a machine that is still starting would be offered to the model and
+	-- then refuse its channel (MACHINE_NOT_RUNNING). `running_at` is the guest's own mark of its boot.
 	select machine.* into v_machine from public.qorpera_company_machines machine
 	where machine.profile_id = (v_identity ->> 'companyId')::uuid
 		and machine.started_by_staff_agent_id = (v_identity ->> 'staffAgentId')::uuid
 		and machine.removed_at is null and machine.desired_state = 'running'
+		and (public.qorpera_company_machine_placement(machine.id)).running_at is not null
 		and public.qorpera_company_machine_reserved(machine)
 	order by machine.last_used_at desc nulls last, machine.created_at desc limit 1;
 	return jsonb_build_object('schema','qorpera.company-home/v1','available',v_machine.id is not null,
@@ -90,15 +93,15 @@ create table public.qorpera_company_home_sessions (
 	folder_window_id uuid,
 	opened_at timestamptz not null default clock_timestamp(),
 	closed_at timestamptz,
-	close_reason text check (close_reason is null or close_reason in ('ended','stopped','lost','boot_ended')),
+	close_reason text check (close_reason is null or close_reason in ('ended','stopped','lost','boot_ended','superseded')),
 	check ((closed_at is null) = (close_reason is null))
 );
 comment on table public.qorpera_company_home_sessions is
 	'One exec-server session of one run on one boot of its home machine: the channel P1 proved. Never shown to a member.';
 create index qorpera_company_home_sessions_machine on public.qorpera_company_home_sessions(machine_id, opened_at desc);
 create index qorpera_company_home_sessions_run on public.qorpera_company_home_sessions(run_id, opened_at desc);
-create unique index qorpera_company_home_sessions_open on public.qorpera_company_home_sessions(placement_id, run_id)
-	where closed_at is null;
+create unique index qorpera_company_home_sessions_open
+	on public.qorpera_company_home_sessions(placement_id, boot_id, run_id) where closed_at is null;
 
 alter table public.qorpera_company_home_sessions enable row level security;
 revoke all on public.qorpera_company_home_sessions from public, anon, authenticated, service_role;
@@ -141,16 +144,23 @@ begin
 		or v_session.machine_id <> v_machine.id) then
 		-- Another run's session, or another machine's: never adopted.
 		raise exception 'Home session authority unavailable' using errcode = '42501'; end if;
-	if v_session.id is not null and (v_session.closed_at is not null or v_session.placement_id is distinct from v_placement.id) then
+	-- The boot as well as the disk: a machine that was restarted keeps its placement but starts a new boot, and a
+	-- session of the boot before it must not reach the one after (review round 1, F4). Its home went with the boot,
+	-- as a command's output does.
+	if v_session.id is not null and (v_session.closed_at is not null
+		or v_session.placement_id is distinct from v_placement.id or v_session.boot_id is distinct from v_placement.boot_id) then
 		return jsonb_build_object('schema','qorpera.home-session-authority/v1','state','refused','reason','HOME_SESSION_ENDED',
 			'machine',v_machine.name,'closeReason',v_session.close_reason); end if;
 	if v_session.id is null then
-		-- One channel per run on one boot: a second id while the first is open is refused in words, never as a clash.
-		if exists (select 1 from public.qorpera_company_home_sessions open_session
-			where open_session.placement_id = v_placement.id and open_session.run_id = (p_binding ->> 'runId')::uuid
-				and open_session.closed_at is null) then
-			return jsonb_build_object('schema','qorpera.home-session-authority/v1','state','refused','reason','HOME_SESSION_OPEN',
-				'machine',v_machine.name); end if;
+		-- One channel per run on one boot. A run comes back here with a session id of its own only when its last host
+		-- is gone (its slot was killed, its node restarted): nothing closed that row, and a refusal would shut the run
+		-- out of its home for the rest of the boot. Its own earlier session is closed here as superseded, so the run
+		-- always has exactly one open session and no row has to be cleaned up by hand (review round 1, F4 and F10).
+		-- Another run's session is refused above and is never taken.
+		update public.qorpera_company_home_sessions superseded
+		set closed_at = clock_timestamp(), close_reason = 'superseded'
+		where superseded.placement_id = v_placement.id and superseded.boot_id = v_placement.boot_id
+			and superseded.run_id = (p_binding ->> 'runId')::uuid and superseded.closed_at is null;
 		insert into public.qorpera_company_home_sessions(id, machine_id, placement_id, boot_id, run_id, staff_agent_id,
 			requested_by_user_id)
 		values (p_session_id, v_machine.id, v_placement.id, v_placement.boot_id, (p_binding ->> 'runId')::uuid,

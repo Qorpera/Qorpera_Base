@@ -623,8 +623,6 @@ export const CONVERSATION: Record<string, string> = {
 	"a command on a computer": "en kommando på en computer",
 	"a coding session": "en kodesession",
 	"a test machine": "en testmaskine",
-	// 20260930754000: the agent's home, with the run's own window on the folder.
-	"the agent's own machine": "agentens egen maskine",
 	"the agent's workspace": "agentens arbejdsområde",
 	"More saved changes wait after these.": "Flere gemte ændringer venter efter disse.",
 

@@ -540,29 +540,12 @@ export interface CloudCompanyFolderRunView {
 	readonly pass: string;
 }
 
-/** Why a run got no window on its home machine (20260930754000): the machine is gone, it is not running, or its disk has
- * held the company-wide folder and so may hold bytes this run may not read. */
-export const HOME_WINDOW_REFUSALS = [
-	"MACHINE_NOT_FOUND",
-	"MACHINE_NOT_RUNNING",
-	"MACHINE_HELD_COMPANY_FOLDER",
-	"MACHINE_HOLDS_OTHER_WORK",
-	"MACHINE_BUSY_WITH_OTHER_WORK",
-] as const;
-
-/** The run's own window on its home machine (20260930754000, the agent's home slice 3), which the home mounts in place
- * of the company folder: its pass opens the window on the node's folder service, and the window shows and saves what
- * this run may, nothing more. A refusal is an answer, so the session is not started and the model is told why. */
-export type CloudCompanyFolderHomeWindow =
-	| {
-			readonly state: "open";
-			readonly viewId: string;
-			readonly pass: string;
-			readonly machineId: string;
-			readonly placementId: string;
-			readonly bootId: string;
-	  }
-	| { readonly state: "refused"; readonly reason: (typeof HOME_WINDOW_REFUSALS)[number] };
+/** A run's data pass (`qorpera_run_data_pass`, 20260930750000), or why it has none: the database named is not there or
+ * the run may not read it (the same answer), more than 1,000 files would be kept, or (with no name) data/ holds more
+ * than 5,000 folders to look through. */
+export type CloudCompanyDataPass =
+	| { readonly state: "pass"; readonly pass: string; readonly files: number }
+	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" };
 
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
@@ -1469,112 +1452,40 @@ export class CloudCompanyFolderClient {
 		return { viewId: input.viewId, pass: input.pass };
 	}
 
-	/** Opens the run's own window on its home machine (`qorpera_folder_home_window_open`, 20260930754000). The core finds
-	 * the machine's current placement and boot, so the caller names only the machine. The relay asks for the window
-	 * before it starts a session on the home and names it to the home; the folder service renews it by its pass, and the
-	 * run's end closes it. Asking again in the same run closes the earlier window. */
-	async openHomeWindow(machineId: string, signal: AbortSignal): Promise<CloudCompanyFolderHomeWindow> {
-		// An open answer carries the window and no reason; a refusal carries the reason and none of the window. Each
-		// state's own keys are checked, never both at once.
-		const answered = await this.#once("qorpera_folder_home_window_open", { p_request: { machineId } }, signal);
-		const state = record(
-			answered,
-			["schema", "state"],
-			["viewId", "pass", "leaseUntil", "machineId", "placementId", "bootId", "reason"],
-		);
-		if (state.schema !== "qorpera.folder-home-window/v1") invalid();
-		if (state.state === "refused") {
-			const refusal = record(answered, ["schema", "state", "reason"]);
-			const reason = HOME_WINDOW_REFUSALS.find((known) => known === refusal.reason);
-			if (reason === undefined) invalid();
-			return { state: "refused", reason };
+	/** A data pass for the company data gateway's run door (company databases, slice 5; `qorpera_run_data_pass`,
+	 * 20260930750000): the platform keeps, as the run, each file the run may read under data/<database>/ (or under
+	 * every database's folder, for null) with its hash, and answers 32 random bytes that the gateway redeems once
+	 * within 60 s. */
+	async dataPass(database: string | null, signal: AbortSignal): Promise<CloudCompanyDataPass> {
+		if (database !== null && !/^[a-z][a-z0-9_]{0,39}$/.test(database))
+			throw new Error("Invalid company database name");
+		let value: unknown;
+		try {
+			value = await this.#once("qorpera_run_data_pass", { p_database: database }, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyFolderRpcError) {
+				if (error.code === "P0002" && error.detail === "Data pass has no such database")
+					return { state: "no_database" };
+				if (error.code === "54000" && error.detail === "Data pass would keep more than 1,000 files")
+					return { state: "too_many_files" };
+				if (
+					error.code === "54000" &&
+					error.detail === "Data pass would look through more than 5,000 folders under data/"
+				)
+					return { state: "too_many_folders" };
+			}
+			throw error;
 		}
-		const input = record(answered, [
-			"schema",
-			"state",
-			"viewId",
-			"pass",
-			"leaseUntil",
-			"machineId",
-			"placementId",
-			"bootId",
-		]);
+		const input = record(value, ["schema", "pass", "expiresAt", "files"]);
 		if (
-			input.state !== "open" ||
-			typeof input.viewId !== "string" ||
-			!UUID.test(input.viewId) ||
+			input.schema !== "qorpera.data-pass/v1" ||
 			typeof input.pass !== "string" ||
 			!/^[A-Za-z0-9_-]{43}$/.test(input.pass) ||
-			typeof input.machineId !== "string" ||
-			!UUID.test(input.machineId) ||
-			typeof input.placementId !== "string" ||
-			!UUID.test(input.placementId) ||
-			typeof input.bootId !== "string" ||
-			!UUID.test(input.bootId)
+			typeof input.expiresAt !== "string" ||
+			counter(input.files) > 1000
 		)
 			invalid();
-		return {
-			state: "open",
-			viewId: input.viewId,
-			pass: input.pass,
-			machineId: input.machineId,
-			placementId: input.placementId,
-			bootId: input.bootId,
-		};
-	}
-
-	/** Opens a native call on the run's window (`qorpera_folder_home_call_open`, 20260930754000): what the window saves
-	 * from then until the call ends is credited to the call, and so carries the call's own receipt. `callId` is that
-	 * receipt's id. Sent again with the same ids it changes nothing. */
-	async openHomeCall(
-		request: { viewId: string; callId: string; commandHead: string },
-		signal: AbortSignal,
-	): Promise<void> {
-		const input = record(await this.#once("qorpera_folder_home_call_open", { p_request: request }, signal), [
-			"schema",
-			"state",
-			"callId",
-		]);
-		if (input.schema !== "qorpera.folder-home-call/v1" || input.state !== "open" || input.callId !== request.callId)
-			invalid();
-	}
-
-	/** Names the run's window on its home session's row (`qorpera_folder_home_window_bind`, 20260930754000), once the
-	 * session is authorized (migration 20260930752000): both are the same run's, the same machine and the same boot, so
-	 * what arrives from the session can be read back to the window it was opened for. Sent again it changes nothing. */
-	async bindHomeWindow(request: { viewId: string; sessionId: string }, signal: AbortSignal): Promise<void> {
-		const input = record(await this.#once("qorpera_folder_home_window_bind", { p_request: request }, signal), [
-			"schema",
-			"state",
-			"viewId",
-			"sessionId",
-		]);
-		if (
-			input.schema !== "qorpera.folder-home-window/v1" ||
-			input.state !== "bound" ||
-			input.viewId !== request.viewId ||
-			input.sessionId !== request.sessionId
-		)
-			invalid();
-	}
-
-	/** Ends a native call on the run's window (`qorpera_folder_home_call_end`, 20260930754000): what the window saves
-	 * from then on no longer carries it. Sent again it changes nothing. Whether this call ended it. */
-	async endHomeCall(request: { viewId: string; callId: string }, signal: AbortSignal): Promise<boolean> {
-		const input = record(await this.#once("qorpera_folder_home_call_end", { p_request: request }, signal), [
-			"schema",
-			"state",
-			"callId",
-			"closedNow",
-		]);
-		if (
-			input.schema !== "qorpera.folder-home-call/v1" ||
-			input.state !== "ended" ||
-			input.callId !== request.callId ||
-			typeof input.closedNow !== "boolean"
-		)
-			invalid();
-		return input.closedNow;
+		return { state: "pass", pass: input.pass, files: input.files as number };
 	}
 
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers
