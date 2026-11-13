@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -4084,7 +4084,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		expect(project).toBe("machines");
 		expect(name).toBe(lxdCompanyMachineName(id(6)));
 		// The pointer drawn: no member's own pointer moved this desktop (20260930744000).
-		expect(given.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, id(7), "look", "drawn"]);
+		expect(given.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, id(7), "look", "drawn", "-"]);
 		// Nothing on stdin, no environment, the picture's own bound, no stderr kept.
 		expect(given.stdin).toBeUndefined();
 		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 8 * 1024 * 1024, stderrTailBytes: 0 });
@@ -4093,7 +4093,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		expect(f.calls[0]?.args).toEqual({ p_placement_id: id(6), p_generation: 4, p_user_id: id(21) });
 		// The member's word within 30 minutes: the desktop's idle stop is put off.
 		await f.host.memberLook(look(id(7), true), f.signal);
-		expect(pipe.mock.calls[1]![2].command.at(-2)).toBe("keep");
+		expect(pipe.mock.calls[1]![2].command.at(-3)).toBe("keep");
 		// On SQL's boot only; scrot there; the desktop's unit active and its display answering; only `keep` touches the
 		// desktop's note, and never makes one; the pointer drawn; no helper of the image, nothing started.
 		for (const part of [
@@ -4333,7 +4333,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			}
 			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 			const run = (bytes: number) =>
-				spawnSync("/bin/sh", ["-c", script, boot, "look"], {
+				// No mover around: no fence to check (`-`).
+				spawnSync("/bin/sh", ["-c", script, boot, "look", "drawn", "-"], {
 					env: { PATH: `${bin}:/usr/bin:/bin`, SCROT_BYTES: String(bytes) },
 					maxBuffer: 16 * 1024 * 1024,
 				});
@@ -4397,6 +4398,9 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		y: 443,
 		...change,
 	});
+	/** The desktop's incarnations: its unit's invocation ids, one per start. */
+	const FIRST = "a".repeat(32);
+	const SECOND = "b".repeat(32);
 	/** A mover's run as the machine sees it: the lines its stdin gave, and how the test ends it (its exit). While `held`,
 	 * it reads no further line (the line it read last sits in its stdin, and the host's next waits in the pipe). */
 	interface Run {
@@ -4407,19 +4411,25 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		held: boolean;
 		read(): void;
 	}
-	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; the pointer fence answers the next of
-	 * `fenceExits`, else `fenceExit`, once `fenceGate` (when set) opens; a look answers a picture; an agent's action holds
-	 * until released. `order` is every exec's kind, in turn. */
+	/** The pipe exec, as the machine would answer it. The desktop holds a fence (`desktop.fence`) and runs an incarnation
+	 * (`config.incarnation`, `none` when it is off); the fence script keeps the newer fence of its own process and answers
+	 * what the desktop holds, unless `fenceExits` (in turn) or `fenceExit` say otherwise, once `fenceGate` (when set) opens.
+	 * A mover reads its stdin until it ends or the test ends it. A look answers 93 when it was given a fence and the
+	 * desktop holds or runs another (`lookExits` first, in turn), else a picture. An agent's action holds until released.
+	 * `order` is every exec's kind, in turn. */
 	async function piped() {
 		const f = await fixture();
 		const runs: Run[] = [];
 		const looks: LxdExecPipeRequest[] = [];
 		const fences: string[] = [];
 		const order: string[] = [];
+		const desktop = { fence: "" };
 		const config = {
+			incarnation: FIRST,
 			fenceExit: 0,
 			fenceExits: [] as number[],
 			fenceGate: undefined as Promise<void> | undefined,
+			lookExits: [] as number[],
 		};
 		let releaseAction = () => {};
 		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
@@ -4459,20 +4469,33 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 				return { exitCode: await ended, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 			}
 			if (given.command[2] === COMPANY_MACHINE_POINTER_FENCE) {
-				order.push(`fence ${given.command[4]}`);
-				fences.push(given.command[4] as string);
+				const fence = given.command[4] as string;
+				order.push(`fence ${fence}`);
+				fences.push(fence);
 				if (config.fenceGate) {
 					const gate = config.fenceGate;
 					config.fenceGate = undefined;
 					await gate;
 				}
 				const exitCode = config.fenceExits.shift() ?? config.fenceExit;
-				return { exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+				if (exitCode !== 0) return { exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+				const [nonce, count] = fence.split(":");
+				const [keptNonce, keptCount] = desktop.fence.split(":");
+				if (keptNonce !== nonce || Number(count) > Number(keptCount)) desktop.fence = fence;
+				return {
+					exitCode: 0,
+					stdout: Buffer.from(`${desktop.fence} ${config.incarnation}`),
+					stderrTail: Buffer.alloc(0),
+				};
 			}
 			if (given.command[2] === COMPANY_MACHINE_MEMBER_LOOK) {
 				order.push("look");
 				looks.push(given);
-				return { exitCode: 0, stdout: png(), stderrTail: Buffer.alloc(0) };
+				const expected = given.command.at(-1);
+				const exitCode =
+					config.lookExits.shift() ??
+					(expected !== "-" && expected !== `${desktop.fence} ${config.incarnation}` ? 93 : 0);
+				return { exitCode, stdout: exitCode === 0 ? png() : Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 			}
 			order.push("action");
 			await new Promise<void>((resolve) => {
@@ -4482,14 +4505,18 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			return { exitCode: 97, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 		});
 		Object.assign(f.client, { execInstancePipe: pipe });
-		return { f, pipe, runs, looks, fences, order, config, release: () => releaseAction() };
+		return { f, pipe, runs, looks, fences, order, config, desktop, release: () => releaseAction() };
 	}
+	const settle = async () => {
+		for (let n = 0; n < 8; n++) await new Promise((resolve) => setImmediate(resolve));
+	};
 	/** A line the mover read: its position and the fence it carries. */
 	const line = (text: string) => {
 		const [x, y, fence] = text.trimEnd().split(" ");
 		expect(text).toMatch(/^\d{1,4} \d{1,4} [0-9a-f]{16}:\d+\n$/);
 		return { at: `${x} ${y}`, fence: fence as string };
 	};
+	const count = (fence: string) => Number(fence.split(":")[1]);
 	const agentClick = (f: Awaited<ReturnType<typeof piped>>["f"], generation = 4) =>
 		f.host.screen(
 			{
@@ -4507,29 +4534,34 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			},
 			f.signal,
 		);
-	const settle = async () => {
-		for (let n = 0; n < 5; n++) await new Promise((resolve) => setImmediate(resolve));
-	};
+	/** A member's look at generation `generation` (`userId` B by default). */
+	const lookAt = (f: Awaited<ReturnType<typeof piped>>["f"], generation: number, userId = id(22)) =>
+		f.host.memberLook(
+			{ placementId: id(6), bootId: id(7), userId, keepDesktop: false, desktopGeneration: generation },
+			f.signal,
+		);
 
-	it("moves the pointer through one held-open mover, the newest position only, with no SQL, receipt or marker per move", async () => {
-		const { f, pipe, runs } = await piped();
+	it("writes the desktop's fence first, then moves the pointer through one held-open mover bound to the desktop's incarnation, the newest position only, with no SQL, receipt or marker per move", async () => {
+		const { f, pipe, runs, fences, order } = await piped();
 		expect(f.host.memberPointer(move({ x: 10, y: 20 }))).toEqual({ moved: true });
 		expect(f.host.memberPointer(move({ x: 11, y: 21 }))).toEqual({ moved: true });
 		expect(f.host.memberPointer(move({ x: 12, y: 22 }))).toEqual({ moved: true });
 		await settle();
-		expect(runs).toHaveLength(1);
+		expect(order).toEqual([`fence ${fences[0]}`, "mover"]);
 		// The three came before the mover read: the newest alone went, with the host's fence of now.
 		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["12 22"]);
 		expect(f.host.memberPointer(move({ x: 13, y: 23 }))).toEqual({ moved: true });
 		await settle();
 		expect(runs[0]!.lines.map((text) => line(text).at)).toEqual(["12 22", "13 23"]);
-		// One fence for both, the mover's own (its start's).
-		const fence = line(runs[0]!.lines[0]!).fence;
-		expect(runs[0]!.lines.map((text) => line(text).fence)).toEqual([fence, fence]);
-		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(runs[0]!.lines.map((text) => line(text).fence)).toEqual([fences[0], fences[0]]);
+		expect(pipe).toHaveBeenCalledTimes(2);
 		expect(f.methods()).toEqual([]);
-		// As root on SQL's boot, the fixed script and its program, nothing else; nothing comes back but its exit.
-		const [project, name, given] = pipe.mock.calls[0]!;
+		// The fence first, as root on SQL's boot: the fixed script, the fence; then the mover with the incarnation the
+		// fence script read; nothing comes back from the mover but its exit.
+		const [, , written] = pipe.mock.calls[0]!;
+		expect(written.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, id(7), fences[0]]);
+		expect(fences[0]).toMatch(/^[0-9a-f]{16}:\d+$/);
+		const [project, name, given] = pipe.mock.calls[1]!;
 		expect(project).toBe("machines");
 		expect(name).toBe(lxdCompanyMachineName(id(6)));
 		expect(given.command).toEqual([
@@ -4538,7 +4570,7 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			COMPANY_MACHINE_MEMBER_POINTER,
 			id(7),
 			COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
-			fence,
+			FIRST,
 		]);
 		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 64, stderrTailBytes: 0 });
 		for (const part of [
@@ -4549,28 +4581,50 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			'exec python3 -c "$1" "$2"',
 		])
 			expect(COMPANY_MACHINE_MEMBER_POINTER).toContain(part);
-		// It moves the pointer only for a line whose fence is the desktop's, holding the lock, and waits for the X server
-		// to have done it; it touches the idle clock; it reads nothing but two short numbers and a fence, starts nothing.
+		// Its checks, under the lock: the fence file there, its incarnation the mover's own and the desktop's now; before X
+		// is loaded, again after it is opened, and with the line's fence before every move, which X has done (XSync) before
+		// the lock goes. Missing is closed. It reads nothing but two short numbers and a fence, starts nothing.
+		const program = COMPANY_MACHINE_MEMBER_POINTER_PROGRAM;
 		for (const part of [
-			"fcntl.flock(lock, fcntl.LOCK_EX)",
-			"if words[2].decode('ascii', 'replace') == fence():",
+			"lock = os.open('/run/qorpera-pointer/lock', os.O_WRONLY)",
+			"fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+			"now = os.readlink('/run/systemd/units/invocation:qorpera-machine-desktop.service')",
+			"if not kept or kept.group(2) != mine or now != mine:",
+			"if fence is None or words[2].decode('ascii', 'replace') != fence:",
 			"XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
 			"x11.XSync(display, 0)",
 			"fcntl.flock(lock, fcntl.LOCK_UN)",
 			"word.isdigit() and len(word) <= 4 for word in words[:2]",
-			"if newer(start, fence()):",
 			"os.utime('/run/qorpera-desktop/last-use')",
-			"if now - touched >= 30:",
 		])
-			expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).toContain(part);
-		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|XFlush/);
-		// It opens only its lock and its fence.
-		expect(COMPANY_MACHINE_MEMBER_POINTER_PROGRAM.match(/open\('[^']*'/g)).toEqual([
-			"open('/run/qorpera-desktop/pointer.lock'",
-			"open('/run/qorpera-desktop/pointer-fence'",
-			"open('/run/qorpera-desktop/pointer-fence'",
+			expect(program).toContain(part);
+		expect(program.indexOf("if not still():")).toBeLessThan(program.indexOf("ctypes.CDLL('libX11.so.6')"));
+		expect(program.lastIndexOf("if not still():")).toBeGreaterThan(program.indexOf("x11.XOpenDisplay(b':1')"));
+		// A mover never writes, creates or initialises the fence or its lock.
+		expect(program).not.toMatch(
+			/subprocess|os\.system|exec\(|eval\(|XFlush|O_CREAT|'w'|\.write\(|qorpera-desktop\/pointer/,
+		);
+		expect(program.match(/open\('[^']*'/g)).toEqual([
+			"open('/run/qorpera-pointer/lock'",
+			"open('/run/qorpera-pointer/fence'",
 		]);
 		runs[0]!.end(0);
+	});
+
+	it("starts no mover on a desktop that is not running, nor when the fence cannot be written, and refuses moves for a moment", async () => {
+		const { f, runs, config, order } = await piped();
+		config.incarnation = "none";
+		expect(f.host.memberPointer(move())).toEqual({ moved: true });
+		await settle();
+		expect(runs).toHaveLength(0);
+		expect(f.host.memberPointer(move())).toEqual({ refused: "DESKTOP_NOT_RUNNING" });
+		const { f: g, runs: gruns, config: gconfig } = await piped();
+		gconfig.fenceExit = 1;
+		g.host.memberPointer(move());
+		await settle();
+		expect(gruns).toHaveLength(0);
+		expect(g.host.memberPointer(move())).toEqual({ refused: "DESKTOP_NOT_RUNNING" });
+		expect(order).toEqual([expect.stringMatching(/^fence /)]);
 	});
 
 	it("drops a move, never queues it, while an action holds the desktop, and moves again after it", async () => {
@@ -4596,6 +4650,7 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		f.host.memberPointer(move({ x: 10, y: 10 }));
 		await settle();
 		const before = line(runs[0]!.lines[0]!).fence;
+		expect(before).toBe(fences[0]);
 		// The mover reads one more and then no further: that one sits in its stdin (read, not yet done), and the next waits
 		// in the host's pipe.
 		runs[0]!.held = true;
@@ -4605,14 +4660,12 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		f.host.memberPointer(move({ x: 30, y: 30 }));
 		await settle();
 		expect(runs[0]!.lines).toHaveLength(2);
-		// An agent's click: the desktop gets a newer fence, and only then does the click run.
+		// An agent's click: the desktop confirms a newer fence, and only then does the click run.
 		const acting = agentClick(f);
 		await settle();
-		expect(order).toEqual(["mover", `fence ${fences[0]}`, "action"]);
-		expect(fences).toHaveLength(1);
-		expect(fences[0]).not.toBe(before);
-		expect(fences[0]!.split(":")[0]).toBe(before.split(":")[0]);
-		expect(Number(fences[0]!.split(":")[1])).toBeGreaterThan(Number(before.split(":")[1]));
+		expect(order).toEqual([`fence ${fences[0]}`, "mover", `fence ${fences[1]}`, "action"]);
+		expect(fences[1]!.split(":")[0]).toBe(before.split(":")[0]);
+		expect(count(fences[1]!)).toBeGreaterThan(count(before));
 		// The action ran and ended before the mover read on. What waited reaches it only with the old fence (the desktop
 		// drops it), or not at all (the host drops it: its fence moved).
 		release();
@@ -4624,7 +4677,7 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		// After the action, a move goes with the fence the desktop has now.
 		f.host.memberPointer(move({ x: 40, y: 40 }));
 		await settle();
-		expect(line(runs[0]!.lines.at(-1)!)).toEqual({ at: "40 40", fence: fences[0] });
+		expect(line(runs[0]!.lines.at(-1)!)).toEqual({ at: "40 40", fence: fences[1] });
 		// A member's action fences the same way, before it runs.
 		const member = f.host.memberAct(
 			{
@@ -4639,8 +4692,8 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			f.signal,
 		);
 		await settle();
-		expect(order.slice(-2)).toEqual([`fence ${fences[1]}`, "action"]);
-		expect(Number(fences[1]!.split(":")[1])).toBeGreaterThan(Number(fences[0]!.split(":")[1]));
+		expect(order.slice(-2)).toEqual([`fence ${fences[2]}`, "action"]);
+		expect(count(fences[2]!)).toBeGreaterThan(count(fences[1]!));
 		release();
 		await member.catch(() => undefined);
 		runs[0]!.end(0);
@@ -4656,33 +4709,20 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		await settle();
 		f.host.memberPointer(move({ x: 30, y: 30, generation: 4 }));
 		await settle();
-		// The private holder's window looks (generation 5): the fence is on the desktop before its picture is taken.
-		await f.host.memberLook(
-			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 5 },
-			f.signal,
-		);
-		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look"]);
-		expect(Number(fences[0]!.split(":")[1])).toBeGreaterThan(Number(before.split(":")[1]));
+		// The private holder's window looks (generation 5): the desktop confirms the newer fence before its picture.
+		await lookAt(f, 5);
+		expect(order).toEqual([`fence ${fences[0]}`, "mover", `fence ${fences[1]}`, "look"]);
+		expect(count(fences[1]!)).toBeGreaterThan(count(before));
 		runs[0]!.read();
 		await settle();
 		// The queued shared move of generation 4 never went; what went before carries the old fence only.
 		for (const text of runs[0]!.lines) expect(line(text).fence).toBe(before);
 		expect(runs[0]!.lines.map((text) => line(text).at)).not.toContain("30 30");
 		// The same look again (no newer generation): no fence.
-		await f.host.memberLook(
-			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 5 },
-			f.signal,
-		);
-		expect(fences).toHaveLength(1);
+		await lookAt(f, 5);
+		expect(fences).toHaveLength(2);
 		runs[0]!.end(0);
 	});
-
-	/** A member's look at generation `generation` (`userId` B by default). */
-	const lookAt = (f: Awaited<ReturnType<typeof piped>>["f"], generation: number, userId = id(22)) =>
-		f.host.memberLook(
-			{ placementId: id(6), bootId: id(7), userId, keepDesktop: false, desktopGeneration: generation },
-			f.signal,
-		);
 
 	it("takes no picture until the desktop confirmed the newer fence: a write that failed is written again by the next look (review r2 F1 of #1733)", async () => {
 		const { f, runs, fences, order, config } = await piped();
@@ -4691,16 +4731,15 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		// The private holder's first look (generation 5): the fence write fails once. No picture, no look at all.
 		config.fenceExits.push(1);
 		await expect(lookAt(f, 5)).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
-		expect(order).toEqual(["mover", `fence ${fences[0]}`]);
+		expect(order).toEqual([`fence ${fences[0]}`, "mover", `fence ${fences[1]}`]);
 		// The next look, of the same generation (nothing newer to see): the fence is still not confirmed, so it writes it
 		// again, and only then takes its picture.
-		const outcome = await lookAt(f, 5);
-		expect(outcome).toHaveProperty("png");
-		expect(fences).toEqual([fences[0], fences[0]]);
-		expect(order).toEqual(["mover", `fence ${fences[0]}`, `fence ${fences[0]}`, "look"]);
+		expect(await lookAt(f, 5)).toHaveProperty("png");
+		expect(fences.slice(1)).toEqual([fences[1], fences[1]]);
+		expect(order.slice(2)).toEqual([`fence ${fences[1]}`, `fence ${fences[1]}`, "look"]);
 		// Confirmed now: a third look writes nothing.
 		await lookAt(f, 5);
-		expect(fences).toHaveLength(2);
+		expect(fences).toHaveLength(3);
 		expect(order.at(-1)).toBe("look");
 		runs[0]!.end(0);
 	});
@@ -4717,12 +4756,12 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		const first = lookAt(f, 5);
 		const second = lookAt(f, 5, id(23));
 		await settle();
-		expect(order).toEqual(["mover", `fence ${fences[0]}`]);
+		expect(order.slice(2)).toEqual([`fence ${fences[1]}`]);
 		open();
 		expect(await first).toHaveProperty("png");
 		expect(await second).toHaveProperty("png");
 		// One write for both, and both pictures taken after it.
-		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look", "look"]);
+		expect(order.slice(2)).toEqual([`fence ${fences[1]}`, "look", "look"]);
 		// Again, at generation 6, and the write on its way fails: the look that wrote it fails; the one that waited writes
 		// the fence itself, and takes its picture only once that is confirmed.
 		config.fenceGate = new Promise<void>((resolve) => {
@@ -4732,43 +4771,86 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		const third = lookAt(f, 6);
 		const fourth = lookAt(f, 6, id(23));
 		await settle();
-		expect(order.slice(4)).toEqual([`fence ${fences[1]}`]);
+		expect(order.slice(5)).toEqual([`fence ${fences[2]}`]);
 		open();
 		await expect(third).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
 		expect(await fourth).toHaveProperty("png");
-		expect(order.slice(4)).toEqual([`fence ${fences[1]}`, `fence ${fences[1]}`, "look"]);
+		expect(order.slice(5)).toEqual([`fence ${fences[2]}`, `fence ${fences[2]}`, "look"]);
 		runs[0]!.end(0);
 	});
 
-	it("starts the next mover with the confirmed fence when the last one died between the fence write and the next move (review r2 of #1733)", async () => {
-		const { f, runs, fences, order } = await piped();
+	it("writes the fence afresh for every new mover, binding it to the desktop's incarnation of that moment, when the last one died between the fence write and the next move (review r2 and r3 of #1733)", async () => {
+		const { f, runs, fences, order, config } = await piped();
 		f.host.memberPointer(move({ generation: 4 }));
 		await settle();
 		await lookAt(f, 5);
-		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look"]);
-		// The mover dies right after the write (its desktop restarted, LXD ended it).
+		expect(order).toEqual([`fence ${fences[0]}`, "mover", `fence ${fences[1]}`, "look"]);
+		// The mover dies right after the write (LXD ended it).
 		runs[0]!.end(0);
 		await settle();
-		// The next move starts a mover with the fence the desktop confirmed; its moves carry it.
+		// The next move: the fence written afresh, and the next mover bound to the incarnation it read; its moves carry
+		// the confirmed fence.
 		f.host.memberPointer(move({ x: 70, y: 80, generation: 5 }));
 		await settle();
-		expect(runs).toHaveLength(2);
-		expect(runs[1]!.request.command.at(-1)).toBe(fences[0]);
-		expect(line(runs[1]!.lines[0]!)).toEqual({ at: "70 80", fence: fences[0] });
+		expect(order.slice(4)).toEqual([`fence ${fences[2]}`, "mover"]);
+		expect(fences[2]).toBe(fences[1]);
+		expect(runs[1]!.request.command.at(-1)).toBe(FIRST);
+		expect(line(runs[1]!.lines[0]!)).toEqual({ at: "70 80", fence: fences[1] });
 		// Nothing newer: the next look needs no write.
 		await lookAt(f, 5);
-		expect(fences).toHaveLength(1);
-		// It dies again, and a newer generation comes before the next move: the look writes the newer fence (a mover ended
-		// just now may have left moves on their way), and the next mover starts with it.
+		expect(fences).toHaveLength(3);
+		// The desktop restarted meanwhile (another incarnation), and the mover died with its X server: the next mover is
+		// bound to the new incarnation, read by its own fence write.
+		config.incarnation = SECOND;
 		runs[1]!.end(0);
 		await settle();
-		await lookAt(f, 6);
-		expect(fences).toHaveLength(2);
-		f.host.memberPointer(move({ x: 71, y: 81, generation: 6 }));
+		f.host.memberPointer(move({ x: 71, y: 81, generation: 5 }));
 		await settle();
-		expect(runs[2]!.request.command.at(-1)).toBe(fences[1]);
-		expect(line(runs[2]!.lines[0]!).fence).toBe(fences[1]);
+		expect(runs[2]!.request.command.at(-1)).toBe(SECOND);
 		runs[2]!.end(0);
+	});
+
+	it("takes no picture after a desktop restart until the desktop confirmed the fence for the incarnation it runs now (review r3 F1 of #1733)", async () => {
+		const { f, runs, fences, order, config, looks } = await piped();
+		f.host.memberPointer(move({ generation: 4 }));
+		await settle();
+		await lookAt(f, 5);
+		expect(looks.at(-1)?.command.at(-1)).toBe(`${fences[1]} ${FIRST}`);
+		// The desktop restarts (a new incarnation); the host's confirmation still names the old one. The next look's own
+		// check finds the desktop running another incarnation (93): the host writes the fence again, and looks once more.
+		config.incarnation = SECOND;
+		expect(await lookAt(f, 5)).toHaveProperty("png");
+		expect(order.slice(4)).toEqual(["look", `fence ${fences[2]}`, "look"]);
+		expect(looks.at(-1)?.command.at(-1)).toBe(`${fences[2]} ${SECOND}`);
+		// A desktop that still does not hold it at the second look: nothing is shown.
+		config.lookExits.push(93, 93);
+		await expect(lookAt(f, 5)).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		// Without a mover around (none ever ran here), a look checks nothing.
+		const { f: g, looks: glooks, fences: gfences } = await piped();
+		await lookAt(g, 5);
+		expect(glooks.at(-1)?.command.at(-1)).toBe("-");
+		expect(gfences).toEqual([]);
+		runs[0]!.end(0);
+	});
+
+	it("makes what the desktop holds unconfirmed when a mover ended on a check of its own: 94 lets the next move start another, 96 refuses moves for a moment", async () => {
+		const { f, runs, fences, order } = await piped();
+		f.host.memberPointer(move({ generation: 4 }));
+		await settle();
+		// A stale line, or another incarnation, after it had moved (94).
+		runs[0]!.end(94);
+		await settle();
+		// The next look writes the fence again before its picture.
+		await lookAt(f, 4);
+		expect(order).toEqual([`fence ${fences[0]}`, "mover", `fence ${fences[1]}`, "look"]);
+		// The next move starts another mover, its fence written afresh.
+		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ moved: true });
+		await settle();
+		expect(runs).toHaveLength(2);
+		// It ends on its first check (96: no fence, no lock, another incarnation): moves are refused for a moment.
+		runs[1]!.end(96);
+		await settle();
+		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ refused: "DESKTOP_NOT_RUNNING" });
 	});
 
 	it("runs no action when the fence could not be written, and frees the desktop at once", async () => {
@@ -4788,46 +4870,12 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		runs[0]!.end(0);
 	});
 
-	it.skipIf(process.platform !== "linux")(
-		"writes a fence on the desktop only when it is newer: a higher count, or another host process's",
-		async () => {
-			const dir = await mkdtemp(join(tmpdir(), "pointer-fence-"));
-			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-			const script = COMPANY_MACHINE_POINTER_FENCE.replaceAll("/run/qorpera-desktop", dir);
-			const write = (fence: string, onBoot = boot) =>
-				spawnSync("/bin/sh", ["-c", script, onBoot, fence], { encoding: "utf8" }).status;
-			const kept = () => readFileSync(join(dir, "pointer-fence"), "utf8");
-			const a = "0123456789abcdef";
-			const b = "fedcba9876543210";
-			expect(write(`${a}:3`)).toBe(0);
-			expect(kept()).toBe(`${a}:3`);
-			// An older count of the same process never goes back.
-			expect(write(`${a}:2`)).toBe(0);
-			expect(kept()).toBe(`${a}:3`);
-			expect(write(`${a}:3`)).toBe(0);
-			expect(write(`${a}:12`)).toBe(0);
-			expect(kept()).toBe(`${a}:12`);
-			// Another host process (its NONCE): its fence, whatever its count.
-			expect(write(`${b}:0`)).toBe(0);
-			expect(kept()).toBe(`${b}:0`);
-			// Not a fence, or another boot: nothing written.
-			expect(write("12; rm -rf /")).toBe(1);
-			expect(write(`${a}:99`, "00000000-0000-0000-0000-000000000000")).toBe(97);
-			expect(kept()).toBe(`${b}:0`);
-			// No desktop (no folder): nothing to fence.
-			await rm(dir, { recursive: true });
-			expect(write(`${a}:100`)).toBe(0);
-		},
-	);
-
 	it("refuses a pass of an older lease generation once the host saw a newer one, a shared and a private one", async () => {
 		const { f, runs } = await piped();
 		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ moved: true });
+		await settle();
 		// A member's look read at generation 6 (someone took the desktop over since).
-		await f.host.memberLook(
-			{ placementId: id(6), bootId: id(7), userId: id(22), keepDesktop: false, desktopGeneration: 6 },
-			f.signal,
-		);
+		await lookAt(f, 6);
 		expect(f.host.memberPointer(move({ generation: 4 }))).toEqual({ refused: "DESKTOP_HELD_SINCE" });
 		expect(f.host.memberPointer(move({ generation: 5, private: true }))).toEqual({
 			refused: "DESKTOP_CONTROL_ENDED",
@@ -4839,18 +4887,15 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 
 	it("shows the member whose own pointer moves the desktop no drawn pointer, and everyone else the drawn one", async () => {
 		const { f, looks, runs } = await piped();
-		const look = (userId: string) =>
-			f.host.memberLook(
-				{ placementId: id(6), bootId: id(7), userId, keepDesktop: false, desktopGeneration: 4 },
-				f.signal,
-			);
+		const look = (userId: string) => lookAt(f, 4, userId);
 		await look(id(21));
-		expect(looks.at(-1)?.command.at(-1)).toBe("drawn");
+		expect(looks.at(-1)?.command.at(-2)).toBe("drawn");
 		f.host.memberPointer(move());
+		await settle();
 		await look(id(21));
-		expect(looks.at(-1)?.command.at(-1)).toBe("plain");
+		expect(looks.at(-1)?.command.at(-2)).toBe("plain");
 		await look(id(22));
-		expect(looks.at(-1)?.command.at(-1)).toBe("drawn");
+		expect(looks.at(-1)?.command.at(-2)).toBe("drawn");
 		for (const run of runs) run.end(0);
 	});
 
@@ -4871,6 +4916,104 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		expect(runs[1]!.signal.aborted).toBe(true);
 		for (const run of runs) run.end(0);
 	});
+
+	it.skipIf(process.platform !== "linux")(
+		"writes the fence on the desktop as the host alone does: whole, the newer of its process's, with the desktop's incarnation, and says what it holds",
+		async () => {
+			const dir = await mkdtemp(join(tmpdir(), "pointer-fence-"));
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const link = join(dir, "invocation");
+			const script = (running: boolean) =>
+				COMPANY_MACHINE_POINTER_FENCE.replaceAll("/run/qorpera-pointer", join(dir, "pointer"))
+					.replaceAll("/run/systemd/units/invocation:qorpera-machine-desktop.service", link)
+					.replace("systemctl is-active --quiet qorpera-machine-desktop.service", running ? "true" : "false")
+					.replaceAll("install -d -o root -g root -m 0700", "install -d -m 0700");
+			const write = (fence: string, options: { running?: boolean; onBoot?: string } = {}) => {
+				const done = spawnSync("/bin/sh", ["-c", script(options.running ?? true), options.onBoot ?? boot, fence], {
+					encoding: "utf8",
+				});
+				return { status: done.status, said: done.stdout };
+			};
+			const kept = () => readFileSync(join(dir, "pointer", "fence"), "utf8");
+			const a = "0123456789abcdef";
+			const b = "fedcba9876543210";
+			await symlink(FIRST, link);
+			expect(write(`${a}:3`)).toEqual({ status: 0, said: `${a}:3 ${FIRST}` });
+			expect(kept()).toBe(`${a}:3 ${FIRST}`);
+			// An older count of the same process never goes back; what the desktop holds is said.
+			expect(write(`${a}:2`)).toEqual({ status: 0, said: `${a}:3 ${FIRST}` });
+			expect(write(`${a}:12`)).toEqual({ status: 0, said: `${a}:12 ${FIRST}` });
+			// The desktop restarted: the same fence, now with its new incarnation.
+			await rm(link);
+			await symlink(SECOND, link);
+			expect(write(`${a}:12`)).toEqual({ status: 0, said: `${a}:12 ${SECOND}` });
+			// It stopped: none.
+			expect(write(`${a}:12`, { running: false })).toEqual({ status: 0, said: `${a}:12 none` });
+			// Another host process (its NONCE): its fence, whatever its count.
+			expect(write(`${b}:0`)).toEqual({ status: 0, said: `${b}:0 ${SECOND}` });
+			// A write cut off before (half a file beside it) or a fence file that is not one: the next write is whole.
+			await writeFile(join(dir, "pointer", "fence.new"), "garb");
+			await writeFile(join(dir, "pointer", "fence"), "12 x");
+			expect(write(`${a}:13`)).toEqual({ status: 0, said: `${a}:13 ${SECOND}` });
+			// Not a fence, or another boot: nothing written.
+			expect(write("12; rm -rf /").status).toBe(1);
+			expect(write(`${a}:99`, { onBoot: "00000000-0000-0000-0000-000000000000" }).status).toBe(97);
+			expect(kept()).toBe(`${a}:13 ${SECOND}`);
+			await rm(dir, { recursive: true });
+		},
+	);
+
+	it.skipIf(process.platform !== "linux" || spawnSync("python3", ["-c", "0"]).status !== 0)(
+		"ends a mover before it loads X when the fence, the lock or the incarnation is not its own, and never writes either (review r3 F1 of #1733)",
+		async () => {
+			const dir = await mkdtemp(join(tmpdir(), "pointer-mover-"));
+			const link = join(dir, "invocation");
+			const program = COMPANY_MACHINE_MEMBER_POINTER_PROGRAM.replaceAll(
+				"/run/qorpera-pointer",
+				join(dir, "pointer"),
+			).replaceAll("/run/systemd/units/invocation:qorpera-machine-desktop.service", link);
+			// No X here: a mover past every check gets as far as X itself (98 without libX11, 95 without a display).
+			const run = (incarnation = FIRST) =>
+				spawnSync("python3", ["-c", program, incarnation], {
+					encoding: "utf8",
+					env: { PATH: process.env.PATH ?? "" },
+					input: "",
+				}).status;
+			const fence = `0123456789abcdef:4 ${FIRST}`;
+			// No folder, no lock, no fence: closed (96), and nothing is made.
+			expect(run()).toBe(96);
+			expect(existsSync(join(dir, "pointer"))).toBe(false);
+			await mkdir(join(dir, "pointer"));
+			expect(run()).toBe(96);
+			expect(existsSync(join(dir, "pointer", "lock"))).toBe(false);
+			await writeFile(join(dir, "pointer", "lock"), "");
+			expect(run()).toBe(96);
+			expect(existsSync(join(dir, "pointer", "fence"))).toBe(false);
+			// A fence, but no desktop running (no link): closed.
+			await writeFile(join(dir, "pointer", "fence"), fence);
+			expect(run()).toBe(96);
+			// The desktop runs another incarnation than the mover's (a restart came in between): closed.
+			await symlink(SECOND, link);
+			expect(run()).toBe(96);
+			// The fence names another incarnation than the mover's: closed.
+			await rm(link);
+			await symlink(FIRST, link);
+			await writeFile(join(dir, "pointer", "fence"), `0123456789abcdef:4 ${SECOND}`);
+			expect(run()).toBe(96);
+			// All its own: it goes on to X.
+			await writeFile(join(dir, "pointer", "fence"), fence);
+			expect([95, 98]).toContain(run());
+			// Someone holds the lock past its 2 s: closed.
+			const holder = spawn("flock", [join(dir, "pointer", "lock"), "sleep", "4"]);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(run()).toBe(96);
+			holder.kill();
+			// None of it ever wrote the fence.
+			expect(readFileSync(join(dir, "pointer", "fence"), "utf8")).toBe(fence);
+			await rm(dir, { recursive: true });
+		},
+		20_000,
+	);
 
 	it("takes only a move of whole pixels within the largest screen, on ids", async () => {
 		const { f } = await piped();

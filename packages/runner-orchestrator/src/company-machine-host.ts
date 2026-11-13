@@ -147,6 +147,15 @@ export const COMPANY_MACHINE_MEMBER_LOOK = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"command -v scrot >/dev/null 2>&1 || exit 98",
 	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
+	// While a mover may run (20260930744000, review r3 F1 of #1733): no picture unless the desktop holds the fence the host
+	// confirmed (`$3`, `FENCE INCARNATION`) and runs that incarnation now (else 93: the host writes it again).
+	'if [ "$3" != - ]; then',
+	"	{ exec 9>>/run/qorpera-pointer/lock && flock -w 2 9; } 2>/dev/null || exit 93",
+	"	inc=$(readlink /run/systemd/units/invocation:qorpera-machine-desktop.service 2>/dev/null) || exit 93",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	'	[ "$(cat /run/qorpera-pointer/fence 2>/dev/null)" = "$3" ] && [ "$inc" = "${3#* }" ] || exit 93',
+	"	exec 9>&-",
+	"fi",
 	'if [ "$1" = keep ]; then touch -c /run/qorpera-desktop/last-use; fi',
 	"umask 077",
 	"d=/run/qorpera-view",
@@ -167,35 +176,72 @@ export const COMPANY_MACHINE_MEMBER_LOOK = [
 ].join("\n");
 /** The pointer's mover (20260930744000): one held-open X connection per desktop while a member's pointer moves, run as
  * root on exactly the boot SQL named (`$0`, else 97), with what the image has (python3, libX11, libXtst; else 98) and the
- * desktop's display answering (else 95). Its program (`$1`) gets the host's pointer fence as it was when the mover was
- * started (`$2`, below). It reads `X Y FENCE` lines on stdin and moves the pointer to X, Y only while the desktop's fence
- * is still FENCE; nothing else is ever read or done: a line that is not two whole numbers of at most four digits and a
- * fence is skipped. It touches the desktop's idle clock at most every 30 s (a member at the desktop). It answers nothing
- * and prints nothing. It ends when its stdin ends (the host closes it after MEMBER_POINTER_IDLE_MS without a move) or LXD
- * kills it.
+ * desktop's display answering (else 95). Its program (`$1`) gets the desktop's INCARNATION (`$2`): the invocation id of
+ * qorpera-machine-desktop.service, as the host's own fence write read it the moment before (systemd's root-owned link
+ * /run/systemd/units/invocation:qorpera-machine-desktop.service; it changes at every start of the desktop, and the X
+ * server lives and dies inside one). It reads `X Y FENCE` lines on stdin and moves the pointer to X, Y; nothing else is
+ * ever read or done: a line that is not two whole numbers of at most four digits and a fence is skipped. It touches the
+ * desktop's idle clock at most every 30 s (a member at the desktop). It prints nothing.
  *
- * The fence (review r1 F1 and F2 of #1733): a move the host gave the mover can wait in the host's pipe, LXD's websocket,
- * the program's stdin and its read buffer. Whatever the host learned since it gave it (an action took the desktop, a
- * newer lease generation) must stop it there. The host keeps a fence per desktop, `NONCE:COUNT` (NONCE its own, random
- * per host process; COUNT moved at every action and every newer generation it sees) and stamps each move with the fence
- * of the moment it took it. The desktop keeps the newest fence in /run/qorpera-desktop/pointer-fence: before an action
- * runs, and before any look while a mover runs, the desktop must have CONFIRMED the host's fence of now (the host writes
- * it there, COMPANY_MACHINE_POINTER_FENCE, one write at a time, and counts on it only once the script answered: a write
- * that failed or is still on its way lets no action run and no picture be taken; review r2 F1 of #1733), and the mover
- * writes its own at its start (only ever newer: same NONCE and a higher COUNT, or another NONCE, a new host process). The mover moves the pointer only while holding
- * pointer.lock, only for a line whose fence is the file's, and waits for the X server to have done it (XSync) before it
- * lets the lock go. So a move either took effect before the fence moved (before the action, before the newer holder's
- * look) or never does. Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, no process per
- * move. */
+ * The fence, by construction (review r1 F1 and F2, r2 F1 and r3 F1 of #1733): a move can wait in the host's pipe, LXD's
+ * websocket, the program's stdin and its read buffer, and the program itself can wait (before it opens X). ONLY THE HOST
+ * WRITES THE FENCE (COMPANY_MACHINE_POINTER_FENCE): root's own folder /run/qorpera-pointer (0700), which no start or stop
+ * of the desktop empties, holds `FENCE INCARNATION` and the lock; a mover never creates, initialises or writes either.
+ * Under the lock (taken within 2 s, else it ends), the program checks that the fence file is there, that its incarnation
+ * is the program's own, and that the desktop running now is that incarnation: before it opens X, again after, and
+ * before every move, together with the line's fence being the file's. Anything else ends it at once (96 before any
+ * line, 94 after): missing is closed, and a mover never lives into another incarnation of the desktop. It moves the
+ * pointer only while holding the lock and waits for the X server to have done it (XSync) before it lets go. So a move
+ * either took effect before the fence moved (an action, a newer generation's look) or never does, in this desktop or
+ * any later one. Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, no process per move. */
 export const COMPANY_MACHINE_MEMBER_POINTER = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"command -v python3 >/dev/null 2>&1 || exit 98",
 	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
 	'exec python3 -c "$1" "$2"',
 ].join("\n");
-/** The mover's program (COMPANY_MACHINE_MEMBER_POINTER's `$1`; its fence at its start is `sys.argv[1]`). */
+/** The mover's program (COMPANY_MACHINE_MEMBER_POINTER's `$1`; the desktop's incarnation it is bound to is `sys.argv[1]`).
+ * Its checks come before X is even loaded, so a machine without X or with a desktop of another incarnation ends it
+ * having opened nothing. */
 export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
 	"import ctypes, fcntl, os, re, sys, time",
+	"FENCE = re.compile(r'([0-9a-f]{16}:[0-9]{1,15}) ([0-9a-f]{32})')",
+	"mine = sys.argv[1] if len(sys.argv) > 1 else ''",
+	"if not re.fullmatch(r'[0-9a-f]{32}', mine):",
+	"    sys.exit(1)",
+	"try:",
+	"    lock = os.open('/run/qorpera-pointer/lock', os.O_WRONLY)",
+	"except OSError:",
+	"    sys.exit(96)",
+	"def hold():",
+	"    until = time.monotonic() + 2",
+	"    while True:",
+	"        try:",
+	"            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+	"            return True",
+	"        except BlockingIOError:",
+	"            if time.monotonic() >= until:",
+	"                return False",
+	"            time.sleep(0.002)",
+	"def current():",
+	"    try:",
+	"        with open('/run/qorpera-pointer/fence') as f:",
+	"            kept = FENCE.fullmatch(f.read().strip())",
+	"        now = os.readlink('/run/systemd/units/invocation:qorpera-machine-desktop.service')",
+	"    except OSError:",
+	"        return None",
+	"    if not kept or kept.group(2) != mine or now != mine:",
+	"        return None",
+	"    return kept.group(1)",
+	"def still():",
+	"    if not hold():",
+	"        return False",
+	"    try:",
+	"        return current() is not None",
+	"    finally:",
+	"        fcntl.flock(lock, fcntl.LOCK_UN)",
+	"if not still():",
+	"    sys.exit(96)",
 	"try:",
 	"    x11 = ctypes.CDLL('libX11.so.6')",
 	"    xtest = ctypes.CDLL('libXtst.so.6')",
@@ -205,39 +251,24 @@ export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
 	"x11.XOpenDisplay.argtypes = [ctypes.c_char_p]",
 	"x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]",
 	"xtest.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]",
-	"FENCE = re.compile(r'[0-9a-f]{16}:[0-9]{1,15}')",
-	"start = sys.argv[1] if len(sys.argv) > 1 else ''",
-	"if not FENCE.fullmatch(start):",
-	"    sys.exit(1)",
 	"display = x11.XOpenDisplay(b':1')",
 	"if not display:",
 	"    sys.exit(95)",
-	"lock = os.open('/run/qorpera-desktop/pointer.lock', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)",
-	"def fence():",
-	"    try:",
-	"        with open('/run/qorpera-desktop/pointer-fence') as f:",
-	"            return f.read().strip()",
-	"    except OSError:",
-	"        return ''",
-	"def newer(new, old):",
-	"    if not FENCE.fullmatch(old):",
-	"        return True",
-	"    return new[:16] != old[:16] or int(new[17:]) > int(old[17:])",
-	"fcntl.flock(lock, fcntl.LOCK_EX)",
-	"if newer(start, fence()):",
-	"    with open('/run/qorpera-desktop/pointer-fence', 'w') as f:",
-	"        f.write(start)",
-	"fcntl.flock(lock, fcntl.LOCK_UN)",
+	"if not still():",
+	"    sys.exit(96)",
 	"touched = 0.0",
 	"for line in sys.stdin.buffer:",
 	"    words = line.split()",
 	"    if len(words) != 3 or not all(word.isdigit() and len(word) <= 4 for word in words[:2]):",
 	"        continue",
-	"    fcntl.flock(lock, fcntl.LOCK_EX)",
+	"    if not hold():",
+	"        sys.exit(94)",
 	"    try:",
-	"        if words[2].decode('ascii', 'replace') == fence():",
-	"            xtest.XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
-	"            x11.XSync(display, 0)",
+	"        fence = current()",
+	"        if fence is None or words[2].decode('ascii', 'replace') != fence:",
+	"            sys.exit(94)",
+	"        xtest.XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
+	"        x11.XSync(display, 0)",
 	"    finally:",
 	"        fcntl.flock(lock, fcntl.LOCK_UN)",
 	"    now = time.monotonic()",
@@ -248,30 +279,42 @@ export const COMPANY_MACHINE_MEMBER_POINTER_PROGRAM = [
 	"        except OSError:",
 	"            pass",
 ].join("\n");
-/** The host writes its pointer fence on the desktop (COMPANY_MACHINE_MEMBER_POINTER, the fence): as root on exactly
- * the boot SQL named (`$0`, else 97), the fence `$1` (`NONCE:COUNT`, else 1) into /run/qorpera-desktop/pointer-fence,
- * holding pointer.lock (flock, at most 2 s, else 1), and only when it is newer than the file's (same NONCE and a higher
- * COUNT, or another NONCE). With the desktop off there is no such folder and no mover (0). Plain sh, with flock and cat.
- * Once it answered 0, no move the host gave a mover before it can move the pointer. */
+/** The host writes its pointer fence on the desktop (COMPANY_MACHINE_MEMBER_POINTER, the fence), the only one who ever
+ * does: as root on exactly the boot SQL named (`$0`, else 97), the fence `$1` (`NONCE:COUNT`, else 1), into root's own
+ * /run/qorpera-pointer (made 0700 if missing; no start or stop of the desktop touches it), holding its lock (flock, at
+ * most 2 s, else 1). The file holds `FENCE INCARNATION`: the incarnation is the desktop's now (its unit's invocation id
+ * while it runs, else `none`), and the fence the newer of the file's and `$1` (same NONCE and a higher COUNT, or another
+ * NONCE, a new host process). It is written whole (a new file renamed over the old), only when it changes, and printed:
+ * what the desktop now holds is the host's confirmation, nothing less. Plain sh, with flock, readlink, cat and mv. */
 export const COMPANY_MACHINE_POINTER_FENCE = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	'printf %s "$1" | grep -qxE "[0-9a-f]{16}:[0-9]{1,15}" || exit 1',
-	"[ -d /run/qorpera-desktop ] || exit 0",
-	"exec 9>>/run/qorpera-desktop/pointer.lock || exit 1",
+	"install -d -o root -g root -m 0700 /run/qorpera-pointer || exit 1",
+	"exec 9>>/run/qorpera-pointer/lock || exit 1",
 	"flock -w 2 9 || exit 1",
-	"old=$(cat /run/qorpera-desktop/pointer-fence 2>/dev/null) || old=",
+	"now=$(readlink /run/systemd/units/invocation:qorpera-machine-desktop.service 2>/dev/null) || now=",
+	"systemctl is-active --quiet qorpera-machine-desktop.service || now=",
+	'printf %s "$now" | grep -qxE "[0-9a-f]{32}" || now=none',
+	"old=$(cat /run/qorpera-pointer/fence 2>/dev/null) || old=",
 	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
-	'if printf %s "$old" | grep -qxE "[0-9a-f]{16}:[0-9]{1,15}" && [ "${old%%:*}" = "${1%%:*}" ]; then',
+	"kept=${old%% *}",
+	"fence=$1",
 	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
-	'\t[ "${1##*:}" -gt "${old##*:}" ] || exit 0',
+	'if printf %s "$kept" | grep -qxE "[0-9a-f]{16}:[0-9]{1,15}" && [ "${kept%%:*}" = "${1%%:*}" ]; then',
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	'\t[ "${kept##*:}" -gt "${1##*:}" ] && fence=$kept',
 	"fi",
-	'printf %s "$1" > /run/qorpera-desktop/pointer-fence || exit 1',
+	'if [ "$old" != "$fence $now" ]; then',
+	'\tprintf "%s %s" "$fence" "$now" > /run/qorpera-pointer/fence.new || exit 1',
+	"\tmv -f /run/qorpera-pointer/fence.new /run/qorpera-pointer/fence || exit 1",
+	"fi",
+	"cat /run/qorpera-pointer/fence || exit 1",
 ].join("\n");
 /** The fence's own deadline: a healthy desktop writes it in a few milliseconds. */
 const POINTER_FENCE_MS = 3000;
 /** A mover that ended within this long may still have had moves on their way when it did: the fence is written then too. */
 const POINTER_FENCE_AFTER_MOVER_MS = 5000;
-/** How many times one caller looks again for a confirmed fence while it keeps moving (#publishFence) before it gives up. */
+/** How many times one caller looks again for a confirmed fence while it keeps moving (#confirmFence) before it gives up. */
 const POINTER_FENCE_ROUNDS = 4;
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
@@ -282,9 +325,22 @@ const MEMBER_POINTER_FAILED_MS = 3000;
 const MEMBER_POINTER_PLAIN_MS = 10000;
 const MEMBER_POINTER_EXITS: Readonly<
 	Record<number, "DESKTOP_NOT_RUNNING" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN">
-> = Object.freeze({ 95: "DESKTOP_NOT_RUNNING", 97: "MACHINE_BOOT_CHANGED", 98: "MACHINE_IMAGE_WITHOUT_SCREEN" });
+> = Object.freeze({
+	95: "DESKTOP_NOT_RUNNING",
+	// It ended before any line: no fence, no lock, or not this desktop's incarnation (a restart came in between).
+	96: "DESKTOP_NOT_RUNNING",
+	97: "MACHINE_BOOT_CHANGED",
+	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
+});
 /** A desktop's mover (20260930744000): the boot it runs on, the newest position not given yet (a newer move replaces
  * it: never a queue), how to wake its stdin, and how it stops. */
+/** What a desktop confirmed it holds (COMPANY_MACHINE_POINTER_FENCE's answer): on which boot, the fence, and the
+ * desktop's incarnation (`none` when it was not running). */
+interface PointerFence {
+	readonly bootId: string;
+	readonly fence: string;
+	readonly incarnation: string;
+}
 interface PointerMover {
 	readonly bootId: string;
 	readonly stop: AbortController;
@@ -1180,10 +1236,12 @@ export class LxdCompanyMachineHost {
 	readonly #fenceNonce = randomBytes(8).toString("hex");
 	readonly #fenceCounts = new Map<string, number>();
 	readonly #moverEnded = new Map<string, number>();
-	/** Per placement, the fence the desktop CONFIRMED (the fence script answered 0 for it, on that boot), and the write
-	 * on its way (review r2 F1 of #1733): observing a newer generation moves the fence at once, but no look, action or
-	 * picture counts on the desktop having it until a write of it was confirmed (#publishFence). */
-	readonly #fencePublished = new Map<string, { readonly bootId: string; readonly fence: string }>();
+	/** Per placement, what the desktop CONFIRMED it holds (the fence script's own answer: its boot, the fence and the
+	 * desktop's incarnation then), and the write on its way (review r2 F1, r3 F1 of #1733): observing a newer generation
+	 * moves the fence at once, but no look, action or mover counts on the desktop having it until a write of it was
+	 * confirmed (#confirmFence). A mover that ended on a check of its own, or a look that found the desktop holding
+	 * something else (a restart: another incarnation), makes it unconfirmed again. */
+	readonly #fencePublished = new Map<string, PointerFence>();
 	readonly #fenceWrites = new Map<string, Promise<void>>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
@@ -2819,7 +2877,7 @@ export class LxdCompanyMachineHost {
 			// Before the action, and before any look while a mover runs: the desktop has confirmed the host's fence of now
 			// (review r2 F1 of #1733). Nothing ran if it could not: no action, no picture, the desktop free again at once.
 			try {
-				await this.#publishFence(pipe, run.placementId, run.bootId, signal);
+				await this.#confirmFence(pipe, run.placementId, run.bootId, signal);
 			} catch (error) {
 				ended = true;
 				throw error;
@@ -3033,7 +3091,7 @@ export class LxdCompanyMachineHost {
 		// No move a member made before it may move the pointer once it runs: the desktop has the fence first. Nothing ran
 		// if that failed: the desktop is free again.
 		try {
-			await this.#publishFence(pipe, act.placementId, act.bootId, signal);
+			await this.#confirmFence(pipe, act.placementId, act.bootId, signal);
 		} catch (error) {
 			this.#releaseDesktop(act.placementId, true);
 			throw error;
@@ -3182,30 +3240,37 @@ export class LxdCompanyMachineHost {
 	}
 	/**
 	 * Makes sure the desktop has CONFIRMED the placement's fence of now before the caller goes on (an action runs, a picture
-	 * is taken; review r2 F1 of #1733), while a mover runs there or ended within POINTER_FENCE_AFTER_MOVER_MS (otherwise no
-	 * move can be waiting anywhere, and a mover started later writes the fence of its start itself).
+	 * is taken, a mover starts; review r2 F1 and r3 F1 of #1733), and answers what it confirmed (its incarnation too). A
+	 * look or an action needs it only while a mover runs there or ended within POINTER_FENCE_AFTER_MOVER_MS (otherwise no
+	 * move can be waiting anywhere: null); a mover's start (`fresh`) always writes, so the incarnation it is bound to is
+	 * the desktop's of the moment before.
 	 *
-	 * Observed is not confirmed: #seeGeneration and #moveFence move the fence at once, and only a write the fence script
-	 * answered 0 for (on that boot) marks the desktop as having it (#fencePublished). One write at a time per placement:
-	 * a caller that finds one on its way waits for it and then looks again (the fence may have moved meanwhile, or that
-	 * write failed: it then writes itself). A write of its own that fails throws: the caller runs nothing and shows
-	 * nothing, and the next caller writes again. Another boot (97) is no confirmation: the caller's own exec meets the same
-	 * boot change.
+	 * Observed is not confirmed: #seeGeneration and #moveFence move the fence at once, and only the fence script's own
+	 * answer marks what the desktop holds (#fencePublished). One write at a time per placement: a caller that finds one on
+	 * its way waits for it and then looks again (the fence may have moved meanwhile, or that write failed: it then writes
+	 * itself). A write of its own that fails throws: the caller runs nothing and shows nothing, and the next caller writes
+	 * again. Another boot (97) is no confirmation: the caller's own exec meets the same boot change.
 	 */
-	async #publishFence(
+	async #confirmFence(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		placementId: string,
 		bootId: string,
 		signal: AbortSignal,
-	): Promise<void> {
+		fresh = false,
+	): Promise<PointerFence | null> {
 		const now = this.#options.now ?? Date.now;
+		let wrote = false;
 		for (let round = 0; ; round++) {
 			const ended = this.#moverEnded.get(placementId);
-			if (!this.#movers.has(placementId) && (ended === undefined || now() - ended > POINTER_FENCE_AFTER_MOVER_MS))
-				return;
+			if (
+				!fresh &&
+				!this.#movers.has(placementId) &&
+				(ended === undefined || now() - ended > POINTER_FENCE_AFTER_MOVER_MS)
+			)
+				return null;
 			const fence = this.#fence(placementId);
 			const published = this.#fencePublished.get(placementId);
-			if (published?.bootId === bootId && published.fence === fence) return;
+			if (published?.bootId === bootId && published.fence === fence && (!fresh || wrote)) return published;
 			// The fence keeps moving under us (actions, generations): never endlessly.
 			if (round >= POINTER_FENCE_ROUNDS) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
 			const writing = this.#fenceWrites.get(placementId);
@@ -3214,8 +3279,9 @@ export class LxdCompanyMachineHost {
 				signal.throwIfAborted();
 				continue;
 			}
-			const write = this.#writeFence(pipe, placementId, bootId, fence, signal).then((confirmed) => {
-				if (confirmed) this.#fencePublished.set(placementId, { bootId, fence });
+			const write = this.#writeFence(pipe, placementId, bootId, fence, signal).then((held) => {
+				if (held) this.#fencePublished.set(placementId, held);
+				else this.#fencePublished.delete(placementId);
 			});
 			this.#fenceWrites.set(placementId, write);
 			try {
@@ -3223,17 +3289,21 @@ export class LxdCompanyMachineHost {
 			} finally {
 				if (this.#fenceWrites.get(placementId) === write) this.#fenceWrites.delete(placementId);
 			}
+			wrote = true;
+			// Another boot: nothing here to confirm, and nothing of this boot can move.
+			if (!this.#fencePublished.has(placementId)) return null;
 		}
 	}
-	/** Writes `fence` on the desktop (COMPANY_MACHINE_POINTER_FENCE) and waits for its answer: true when the desktop has it
-	 * (0: written, or a newer one there already), false on another boot (97); anything else throws. */
+	/** Writes `fence` on the desktop (COMPANY_MACHINE_POINTER_FENCE) and answers what the desktop holds now (the fence,
+	 * or a newer one, with its incarnation); null on another boot (97). Anything else, or an answer that is not exactly
+	 * `FENCE INCARNATION`, throws. */
 	async #writeFence(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		placementId: string,
 		bootId: string,
 		fence: string,
 		signal: AbortSignal,
-	): Promise<boolean> {
+	): Promise<PointerFence | null> {
 		const written = await pipe(
 			this.#policy.project,
 			lxdCompanyMachineName(placementId),
@@ -3241,14 +3311,17 @@ export class LxdCompanyMachineHost {
 				command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, fence],
 				environment: {},
 				cwd: "/",
-				maxStdoutBytes: 64,
+				maxStdoutBytes: 128,
 				stderrTailBytes: 0,
 			},
 			AbortSignal.any([signal, AbortSignal.timeout(POINTER_FENCE_MS)]),
 		);
-		if (written.exitCode === 97) return false;
-		if (written.exitCode !== 0) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
-		return true;
+		if (written.exitCode === 97) return null;
+		const held = /^([0-9a-f]{16}:[0-9]{1,15}) ([0-9a-f]{32}|none)$/.exec(
+			Buffer.from(written.stdout).toString("ascii"),
+		);
+		if (written.exitCode !== 0 || !held) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		return { bootId, fence: held[1] as string, incarnation: held[2] as string };
 	}
 	/** Whether this member's own pointer moved the desktop lately (their looks are plain). */
 	#movesPointer(placementId: string, userId: string): boolean {
@@ -3256,8 +3329,12 @@ export class LxdCompanyMachineHost {
 		const at = this.#pointerUsers.get(placementId)?.get(userId);
 		return at !== undefined && now() - at < MEMBER_POINTER_PLAIN_MS;
 	}
-	/** Starts a desktop's mover: its stdin gives the newest position each time the program has read the last one, and
-	 * nothing while an action holds the desktop; it ends after MEMBER_POINTER_IDLE_MS without a move. */
+	/** Starts a desktop's mover: first the desktop's fence, written fresh (the mover is bound to the incarnation the desktop
+	 * has right then: review r3 F1 of #1733), then the program; its stdin gives the newest position each time the program
+	 * has read the last one, and nothing while an action holds the desktop; it ends after MEMBER_POINTER_IDLE_MS without a
+	 * move. A fence that cannot be written, a desktop that is not running, or a program that ended on its own first check
+	 * (96) refuse moves for MEMBER_POINTER_FAILED_MS; one that ended on a later check (94: a stale line, another
+	 * incarnation) only makes what the desktop holds unconfirmed, and the next move starts another. */
 	#startMover(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		placementId: string,
@@ -3298,31 +3375,42 @@ export class LxdCompanyMachineHost {
 			}
 		}
 		const now = this.#options.now ?? Date.now;
-		void pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(placementId),
-			{
-				command: [
-					"/bin/sh",
-					"-c",
-					COMPANY_MACHINE_MEMBER_POINTER,
-					bootId,
-					COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
-					this.#fence(placementId),
-				],
-				environment: {},
-				cwd: "/",
-				stdin: positions(),
-				maxStdoutBytes: 64,
-				stderrTailBytes: 0,
-			},
-			mover.stop.signal,
-		)
-			.then((result) => {
-				const refused = MEMBER_POINTER_EXITS[result.exitCode];
-				if (refused) this.#moverFailed.set(placementId, { bootId, refused, at: now() });
+		const fail = (refused: "DESKTOP_NOT_RUNNING" | "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_SCREEN") =>
+			this.#moverFailed.set(placementId, { bootId, refused, at: now() });
+		void (async () => {
+			const fence = await this.#confirmFence(pipe, placementId, bootId, mover.stop.signal, true);
+			if (!fence) return fail("MACHINE_BOOT_CHANGED");
+			if (fence.incarnation === "none") return fail("DESKTOP_NOT_RUNNING");
+			mover.stop.signal.throwIfAborted();
+			const result = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						COMPANY_MACHINE_MEMBER_POINTER,
+						bootId,
+						COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
+						fence.incarnation,
+					],
+					environment: {},
+					cwd: "/",
+					stdin: positions(),
+					maxStdoutBytes: 64,
+					stderrTailBytes: 0,
+				},
+				mover.stop.signal,
+			);
+			const refused = MEMBER_POINTER_EXITS[result.exitCode];
+			if (refused) fail(refused);
+			// It ended on a check of its own: what the desktop holds is asked again before anything counts on it.
+			if (result.exitCode === 94 || result.exitCode === 96) this.#fencePublished.delete(placementId);
+		})()
+			.catch(() => {
+				// The fence could not be written (or the exec failed): no mover now, and none for a moment.
+				if (!mover.stop.signal.aborted) fail("DESKTOP_NOT_RUNNING");
 			})
-			.catch(() => undefined)
 			.finally(() => {
 				mover.stop.abort();
 				this.#moverEnded.set(placementId, now());
@@ -3366,27 +3454,37 @@ export class LxdCompanyMachineHost {
 		// now, this look's or one before it that is still on its way or failed (review r2 F1): if it cannot, the look
 		// fails, and no picture shows while an older move could still run.
 		this.#seeGeneration(look.placementId, look.desktopGeneration);
-		await this.#publishFence(pipe, look.placementId, look.bootId, signal);
-		const result = await pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(look.placementId),
-			{
-				command: [
-					"/bin/sh",
-					"-c",
-					COMPANY_MACHINE_MEMBER_LOOK,
-					look.bootId,
-					look.keepDesktop ? "keep" : "look",
-					// The member whose own pointer moves this desktop sees no drawn one (20260930744000).
-					this.#movesPointer(look.placementId, look.userId) ? "plain" : "drawn",
-				],
-				environment: {},
-				cwd: "/",
-				maxStdoutBytes: SCREEN_PNG_BYTES,
-				stderrTailBytes: 0,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberLookTimeoutMs ?? MEMBER_LOOK_MS)]),
-		);
+		// The script itself checks, under the lock, that the desktop holds the fence confirmed here and runs the incarnation
+		// it was confirmed with (review r3 F1): a desktop restarted since answers 93, the confirmation is dropped, and the
+		// look writes the fence again and looks once more; a second 93 shows nothing.
+		let result: Awaited<ReturnType<typeof pipe>> | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const fence = await this.#confirmFence(pipe, look.placementId, look.bootId, signal);
+			result = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(look.placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						COMPANY_MACHINE_MEMBER_LOOK,
+						look.bootId,
+						look.keepDesktop ? "keep" : "look",
+						// The member whose own pointer moves this desktop sees no drawn one (20260930744000).
+						this.#movesPointer(look.placementId, look.userId) ? "plain" : "drawn",
+						fence ? `${fence.fence} ${fence.incarnation}` : "-",
+					],
+					environment: {},
+					cwd: "/",
+					maxStdoutBytes: SCREEN_PNG_BYTES,
+					stderrTailBytes: 0,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberLookTimeoutMs ?? MEMBER_LOOK_MS)]),
+			);
+			if (result.exitCode !== 93) break;
+			if (this.#fencePublished.get(look.placementId) === fence) this.#fencePublished.delete(look.placementId);
+		}
+		if (!result || result.exitCode === 93) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
 		const refused = MEMBER_LOOK_EXITS[result.exitCode];
 		if (refused !== undefined) return { refused };
 		// A picture larger than a screen's: not streamed, and removed on the machine.
