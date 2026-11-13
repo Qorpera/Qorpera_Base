@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- An agent reads which rule a site's name broke, and that a site Qorpera took down takes nothing (own code storage,
+  step 5.1, the lead's calls on the cross-check's seams 2 and 7; migration `20260930756000`). `publish_site`,
+  `share_app` and `unpublish_site` refuse a slug of the wrong shape with the kernel's own sentence, `SITE_NAME_INVALID:
+  A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit,
+  does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop,
+  login).` (`SITE_NAME_RULE`, byte for byte `qorpera_site_name_words()`; a test reads the migration), and relay the
+  kernel's refusal of any other name in the same words. A site taken down: the kernel's refusal (`SITE_TAKEN_DOWN: This
+  site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
+  company.`) is relayed as it is at the check and the begin, and now also when it comes during an upload (before, a
+  refusal after the begin was told as `not_live` with the site's link). The tools' descriptions and the pins do not
+  change.
 - Agents read that a project's website is still being prepared (own code storage, step 5.1, D1a;
   `lanes/own-code-storage/STEP5-BUILD.md`; migration `20260930756000`). The staff instructions' website paragraph now
   says that changes/index.md says which version is live, "and when a site is still being prepared, which takes about a

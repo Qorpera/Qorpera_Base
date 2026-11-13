@@ -169,15 +169,18 @@ them). Errors: 22023 for a reason that is not one line of 1 to 300 characters, P
   open session that long). Its link program is refused at its next check (within 5 minutes) and stops.
 
 **What members see:** Sites shows the site's row as "Taken down" with the operator's reason, in place of its link and
-password, and where to write if they think it is wrong (the address is one constant, `SUPPORT_ADDRESS` in
-`packages/web/src/app/views/settings-sites.ts`: confirm it reaches someone, or set it to null to leave that clause out);
-its menu keeps only Take offline. What's new offers no link to it and says it was taken down. The site does not go live
-again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain words. The
-reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
+password, and how to tell Qorpera it is wrong: Feedback in their menu (no mail address: none is confirmed to reach
+anyone). Its menu keeps only Take offline. What's new offers no link to it and says it was taken down. The site does not
+go live again: Put it live and Go back answer `SITE_TAKEN_DOWN`, and Look first answers `gone`, each said in plain
+words. The reason comes from `qorpera_company_site_access` (every member). Tell the company's owner too, in plain words.
 
-**What an agent sees:** nothing of it yet. An agent can still publish to the site (`publish_site`, `share_app`, a
-project's next version for What's new): it stays down, but `publish_site` answers `"state": "live"` with the link, so
-the agent may tell a member a link that shows the "gone" page. Tell the company's owner yourself.
+**What an agent sees:** a refusal in plain words it can pass on, with your reason and no address: "SITE_TAKEN_DOWN: This
+site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
+company." `publish_site` (its check, its begin, an upload on its way and its finish) and `share_app` (its check and its
+share) refuse so and write nothing. A project's site made from code takes no upload while it is down (the upload pass
+leaves it out), and its `changes/index.md` says the same words in place of what is live, with no link, from the next
+write after the takedown (the takedown and the restore ask for that write). Write the reason so it can be read by the
+agent and the members alike: one line, no address, nothing private.
 
 **Restore** when the cause is gone: `qorpera_site_restore('<slug>')`; the site answers as before at once (its sessions
 were kept). Write each takedown and restore in the registry with its UTC time from `date -u`.

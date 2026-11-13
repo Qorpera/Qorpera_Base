@@ -45,7 +45,15 @@
   members read why (`qorpera_company_site_access`). The checks switch says `rootLinks` while hosts are on and hands an
   operator's drill (`qorpera_code_set_drill`) over once; the list file says what is being prepared while hosts are on.
   SQL test 1252 holds the one host list every reader of a site host runs in its own tests (site-serve, the web's two
-  link parses, the executor's change record, the front's Envoy and `sites-route.mjs`'s probe names).
+  link parses, the executor's change record, the front's Envoy and `sites-route.mjs`'s probe names). An agent's calls
+  (the lead's calls on the cross-check's seams 2 and 7): every refusal of a site's name (`SITE_NAME_INVALID`, by
+  `publish_site`, `share_app` and `unpublish_site`) says the rule in one sentence, `qorpera_site_name_words()`; a site
+  Qorpera took down takes nothing from an agent (`publish_site`'s check, begin, put and finish, `share_app`'s check and
+  share refuse it with `SITE_TAKEN_DOWN: This site was taken down by Qorpera (<reason>) and cannot be published until
+  Qorpera restores it. Tell a member of the company.`, writing nothing), a repository's site takes no upload while it is
+  down (the due list leaves it out, a begin due before is refused), and its list file's `index` then has `live` null, no
+  `preparing` and `takenDown: {reason}` (the takedown and the restore raise `index_version`, so the list is written
+  again).
 - A website's own address on the executor's side (own code storage, step 5, release 5.1, part X1;
   `lanes/own-code-storage/STEP5-BUILD.md`, migration `20260930756000`). While the checks switch says `rootLinks` (only
   while sites have hosts of their own) the collect lets a site's links from `/` through: the host always sets
@@ -55,7 +63,9 @@
   either way the turn fails on its usual refusal path and its words start "This was a drill by Qorpera's operator:
   nothing is wrong with your work, and the next try goes through. Finish again." The change record's list says
   "Being prepared for What's new: change N (about a minute)." while the index answers `preparing`, and its Live line
-  links a site's own host `https://<slug>.qorpera.com/` (the one host rule) beside today's form. Moves at release: the
+  links a site's own host `https://<slug>.qorpera.com/` (the one host rule) beside today's form. While the index says
+  `takenDown`, the list says in place of what is live "Live: nothing. This site was taken down by Qorpera (<reason>)
+  and cannot be published until Qorpera restores it. Tell a member of the company.", with no link. Moves at release: the
   coding executor, node 2 then node 1, after the migration and before the runtime bundle.
 
 - The shared execution service hands each run's provider host the company data run door (company databases; `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §3): with `QORPERA_COMPANY_DATA_URL`, `QORPERA_LXD_COMPANY_DATA_TOKEN_FILE`, `QORPERA_LXD_COMPANY_DATA_CA_FILE` and `QORPERA_LXD_COMPANY_DATA_CA_SHA256` set together (all or none; the token distinct from every other credential, the CA pinned by its sha256 as the secret broker's), the slot gets the URL in its env and the credentials `qorpera-company-data` and `qorpera-company-data-ca` (empty when off), which `qorpera-shared-run-host@.service` loads, the CA's path set by the unit. One-run VMs (the overflow path) do not get it yet.
@@ -291,7 +301,9 @@
 - A site's name follows the name rule D20 (own code storage, step 5, release 5.1, part X1): no two hyphens in a row,
   not ending `-preview`, not holding `qorpera`, and none of 118 reserved names, `CODE_SITE_RESERVED_NAMES`, which is
   `qorpera_site_reserved_names()`'s text byte for byte (a test pins its SHA-256 and compares it with the migration). A
-  checks file's bad `site.name` is refused with words that say the rule and which part the name breaks. These words
+  checks file's bad `site.name` is refused with words that say the rule and which part the name breaks: the rule is
+  `CODE_SITE_NAME_RULE`, the kernel's own sentence (`qorpera_site_name_words()`) byte for byte, then "This one has two
+  hyphens in a row.", "ends in -preview.", "contains qorpera." or "is a reserved name.". These words
   change with this executor whatever the database: on a database before migration `20260930756000` a name today's
   rule refused (`api`, `ab`) gets the new words too, and a name only the new rule refuses (`a--b`) is refused by this
   executor before the kernel would.
