@@ -6526,8 +6526,9 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    - `snapshot/`: its rows, written by the platform at least daily (item 8).
 
    `data/` joins the top of the folder (5.6) as the company's own work: agents and members write it, and the platform
-   writes only `snapshot/`. The files are structured kinds, checked at every save and indexed; an applied step is
-   never changed, moved or deleted.
+   writes `snapshot/`. They are plain files, and the folder stays their one truth: the platform uses a file's text
+   only when its hash is the live file's, read with the caller's own rights. A step that was applied is never applied
+   again; when one was changed afterwards, applying stops and says so.
 2. **The rows live in the company data store**: a PostgreSQL on Qorpera's own nodes that holds companies' rows and
    nothing else, with a standby on the other node and backups on Qorpera's own storage. It is not the platform's
    database and shares no server process with it. Each company has one database there, each `data/<name>/` one schema
@@ -6544,12 +6545,12 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    and deleting a database's folder. Until that approval is built these are refused with their reason. The rule that
    agents do not define the earlier tables and pages (`QorperaOS/tables`, `QorperaOS/interfaces`) is unchanged.
 6. **Interfaces reach rows only through the named questions and changes.** A page never sends SQL of its own. A
-   question runs with the rights of the member looking: the folder's path authority and the database's own `read`
-   rule. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
+   question runs with the rights of the member looking: the folder's path authority for the question's file. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
    amendment: the platform draws every confirmation), with the file's own words. Agents may also ask any read, because they analyse. Nothing is
    public unless a file marks it public, and that road has its own design first.
 7. **Interfaces show the values live.** When rows change, a notice that carries no rows reaches the open page, and
-   the page asks its questions again: within about a second of the change.
+   the page shows the new answers within about a second of the change. Notices do not pass through the platform's
+   database.
 8. **The folder gets a snapshot of each database that changed, at least daily**: its shape as SQL and its rows as
    text files, enough to make the database again from the folder alone. The platform writes it. Path versions are
    kept for good (the 2026-09-27 amendment "every machine works in the company folder", item 6) with one exception

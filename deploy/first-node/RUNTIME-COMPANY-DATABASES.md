@@ -40,11 +40,11 @@ data/
       sales-this-month.sql     a named question: one read, with named parameters
     actions/
       mark-shipped.sql         a named change: one write, with the words a member is shown
-    snapshot/                  written by Qorpera every night (§7); nobody else writes here
+    snapshot/                  written by Qorpera every night (§7)
 ```
 
 `data/` is a top-level folder of the company's own work, like its area folders: agents and members write it, and
-Qorpera writes only `snapshot/`. Nothing uses the name today, and the rule that agents may not define the old tables
+Qorpera writes `snapshot/`. Nothing uses the name today, and the rule that agents may not define the old tables
 (`layout_authoring`, `20260930510000`, newest form `20260930534000:426-428`) names only `QorperaOS/interfaces/` and
 `QorperaOS/tables`, so it does not reach `data/` and is not changed.
 
@@ -58,18 +58,11 @@ step's name is three digits, `-`, then such a name.
 format = "qorpera.database/v1"
 name = "Shop"                        # what members see, up to 60 characters
 about = "Orders and customers of the web shop"   # one line, up to 200
-uses = ["crm"]                       # optional: other databases of this company its questions may read
-
-[read]
-members = "all"                      # all | owners | none
-agents = "all"                       # all | none | a list of agent ids
-
-[change]
-members = "all"                      # who may run its named changes: all | owners | none
-agents = "all"
 ```
 
-A database exists when its `database.toml` exists. Creating the folder with the file makes it; nothing else does.
+A database exists when its `database.toml` exists. Who may read it and who may change its files is the folder's own
+path authority for `data/<name>/`: every member reads the company's shared work and owners, admins and contributors
+write it, unless a path resource says otherwise. The file names no readers of its own.
 
 ### Steps, questions and changes
 
@@ -81,11 +74,10 @@ A database exists when its `database.toml` exists. Creating the folder with the 
 - **A change** (`actions/<name>.sql`, at most 16 KiB) is one write statement (a statement may hold several writes as
   `with` parts, or call a function a step made). Its leading `--` lines are the words a member is shown before they
   say yes, with each `:name` replaced by its value: `-- Mark order :id as shipped.`
-- **Names resolve in the database's own schema.** A file writes `orders`, not `shop.orders`. A database listed in
-  `uses` is named by its schema: `crm.customers`.
-- **Two parameters are Qorpera's.** `:viewer` is the id of the member looking and `:viewer_role` their role (`owner`,
-  `admin`, `contributor`, `viewer`); for an agent they are the member it works for. The gateway fills them. A caller
-  that sends them is refused. This is how a question shows a member only their own rows.
+- **Names resolve in the database's own schema.** A file writes `orders`, not `shop.orders`.
+- **One parameter is Qorpera's.** `:viewer` is the id of the member looking. The gateway fills it from the member's
+  proven token; a page that sends it is refused. This is how a question shows a member only their own rows. An
+  agent, which may read everything in the database anyway, says which member it asks for.
 - **Other parameters** are text, numbers, booleans or null, at most 16 a call and 4 KiB together. PostgreSQL decides
   their types from the statement.
 
@@ -96,25 +88,29 @@ from orders
 where placed_at >= :since;
 ```
 
-### What the save check refuses
+### The files are plain files
 
-`data/*/database.toml`, `data/*/tables/*.sql`, `data/*/queries/*.sql` and `data/*/actions/*.sql` become structured
-kinds of the folder core (RUNTIME-COMPANY-FOLDER-CORE.md §5): checked at every save, indexed in the platform's
-database as text (`qorpera_folder_data_files`), within the core's bound for a checked file. The index holds
-definitions only, never a row of the company's data. The save check refuses:
+Nothing in the folder core changes for them: no new structured kind, no save check, no index in the platform's
+database. Qorpera learns a file's text this way:
 
-| Code | When |
+- Every file of the folder has the sha256 of its bytes in its entry (`fileSha256`), and a read of the entry runs with
+  the reader's own rights.
+- A caller that wants a question asked names it. The gateway reads the file's entry **as that caller** and so learns
+  two things at once: that the caller may read the file, and the hash of its live text.
+- If the gateway does not hold a text with that hash yet, it asks the caller for it, checks the hash, and keeps it in
+  the company's own database beside the rows. A text is trusted only because its hash is the live file's.
+
+So the folder stays the one truth, the gateway never reads the folder with rights of its own, and a changed file is
+live at the next call. What would have been a save check is enforced where a file is used:
+
+| Refused | When |
 | --- | --- |
-| `name` | a database, step, question or change name outside the rules above |
-| `format` | `database.toml` is not this format, or holds a key it does not know |
-| `size` | a file over its bound |
-| `order` | a new step whose number is not higher than every step already applied |
-| `applied` | changing, moving or deleting a step that was applied (write a new step instead) |
-| `platform` | anyone but the platform writing under `snapshot/` |
-| `orphan` | a step, question or change in a folder with no `database.toml` |
+| a name outside the rules above, a file over its size | at the call that uses it |
+| a second statement in a question or a change, a write in a question | by PostgreSQL when it runs (§3) |
+| a step that was applied and then changed, moved or deleted | at the next apply, which stops and says which; the folder's history holds the applied text to put back |
+| a new step numbered below an applied one | at apply |
 
-The check does not read SQL. Whether a statement is one statement, and whether it only reads, is enforced where it
-runs (§3), by PostgreSQL itself.
+Anyone may write under `snapshot/`, and the next night's snapshot replaces it; nothing reads a snapshot as truth.
 
 ## 2. The company data store
 
@@ -148,8 +144,9 @@ node's budget for agents' machines.
 - Each company gets one PostgreSQL database, named `c_` and the 32 hex digits of its folder's id (the environment
   id the folder core keys by), made from a template. Each `data/<name>/` is one schema in it. Database names say
   nothing about whose they are: a login can list them.
-- Three roles per company, none of which can log in: `<db>_owner` owns the schemas and runs steps, `<db>_write` runs
-  changes, `<db>_read` runs questions.
+- Three roles per database folder, none of which can log in: an owner role owns the schema and runs its steps, a
+  write role runs its changes, a read role runs its questions. A question so reads its own database only; reading
+  another of the company's databases from it comes later, with a check that the caller may read both.
 - The gateway has one login per door: `qorpera_data_read`, `qorpera_data_write`, `qorpera_data_owner`. Each is a
   member only of the company roles of its own kind and inherits nothing, so a read cannot become a write by any
   statement (proven, §11). A fourth, `qorpera_data_watch`, reads sizes and ends statements. Making and dropping
@@ -204,47 +201,47 @@ connections each, and it serves tables directly (§11, P1).
 
 | Caller | Road | What proves them |
 | --- | --- | --- |
-| A member, from an interface app | the web page, then `member-company-gateway` on `api.qorpera.com`, then node 1's mux: `/v1/company-data/<company>/…` | the member's own token. The gateway begins each call as the member (`qorpera_member_data_pass` with the member's token and the publishable key, as the coding executor begins a look at a screen), then reads the store as itself. No service key. |
-| An agent's run | a tool in the execution host, to the gateway's loopback address | the node's private token says "a host of ours"; the run's binding is checked in SQL (`qorpera_run_data_pass`), as for folder bytes |
+| A member, from an interface app | the web page, then `member-company-gateway` on `api.qorpera.com`, then node 1's mux: `/v1/company-data/<company>/…` | the member's own token. The gateway begins each call as the member: `qorpera_member_folder_read_many` with the member's token and the publishable key, as the coding executor begins a look at a screen. Then it reads the store as itself. |
+| An agent's run | a tool in the execution host, to the gateway's loopback address | the node's private token says "a host of ours"; a data pass says which run. The tool gets the pass from the platform as the run (`qorpera_run_data_pass`: 32 random bytes, only their hash kept, one use, 60 s, as the folder's view passes are); the gateway redeems it once. |
 | Qorpera itself | the gateway's own timers | nothing leaves the service |
 
-A pass says who the caller is, whether they may read the database and run its changes, and the newest save of the
-company's `data/` files. The gateway keeps a pass for 30 s.
+The gateway holds no service key and no login to the platform's database. Everything it asks the platform, it asks
+as the caller. It keeps what a member's read said for 10 s.
 
-**Whose rights.** A member may ask a database's questions when the folder lets them read its files and `[read]`
-names them. The same for changes with `[change]`. An agent's access is its requester's access and its own grant, as
-everywhere in the folder (`qorpera_folder_actor_resource_allowed`). A database in `uses` is checked the same way for the same caller.
-
-The gateway reads the definitions as itself (`qorpera_data_definitions`, with a database role that may run the
-gateway's few functions and nothing else, as `qorpera_site_relay` is for the app relay). It keeps them per company
-until a pass shows a newer save, so a changed question is live within 30 s, and at once for the agent that applies it.
+**Whose rights.** A member may ask a database's questions when the folder lets them read the question's file. An
+agent's access is its requester's access and its own grant, as everywhere in the folder
+(`qorpera_folder_actor_resource_allowed`). Applying steps needs no more than reading them: a step that is live in the
+folder was put there by someone the folder let write it, and applying it only makes the store match the folder.
 
 ### A question
 
-1. The pass. Refused without one.
-2. The file's text from the definitions. The gateway finds the `:name` parameters outside strings, quoted names,
-   dollar quotes and comments, and sends the statement with numbered parameters through the extended protocol, so
-   PostgreSQL refuses a second statement in the text.
-3. One transaction: `begin read only`, the time limit, the company's read role, the search path, the statement.
-4. The answer: `{ columns, rows, more, asOf }`. Rows are arrays in column order. Whole numbers and decimals a double
-   holds exactly are JSON numbers, larger ones are text; booleans are booleans; JSON is JSON; times are ISO 8601 text;
-   everything else is text.
+1. The entry of `data/<db>/queries/<name>.sql`, read as the caller. Not readable or not there: refused, the same
+   answer for both.
+2. The text for the entry's hash, from the gateway's keep or from the caller (above). The gateway finds the `:name`
+   parameters outside strings, quoted names, dollar quotes and comments, and sends the statement with numbered
+   parameters through the extended protocol, so PostgreSQL refuses a second statement in the text.
+3. One transaction: `begin read only`, the time limit, the database's read role, the search path, the statement.
+4. The answer: `{ columns, rows, more, asOf, etag }`. Rows are arrays in column order. Whole numbers and decimals a
+   double holds exactly are JSON numbers, larger ones are text; booleans are booleans; JSON is JSON; times are ISO
+   8601 text; everything else is text. `etag` is a hash of the answer.
 
 An agent may also send a read of its own instead of a question's name. It runs the same way: one statement, read
 only, as the read role.
 
 ### A step
 
-Steps are applied when an agent calls `data_apply` (§6), in order, by the owner role, one transaction each:
+Steps are applied when `apply` is called for a database: by an agent's `data_apply` (§6), in order, by the owner
+role, one transaction each. The caller lists the step files with their hashes as the folder gave them; the gateway
+checks each entry as the caller and asks for the texts it does not hold.
 
 1. The step runs.
 2. The triggers of `qorpera_data` have recorded what it destroyed: a dropped table, column or schema, deleted rows
    with their count, an emptied table, also when the delete sits inside a function.
-3. If it destroyed nothing, it commits and is recorded as applied: in the store, in the same transaction, and in the
-   platform's database (`qorpera_company_data_steps`), which the save check reads.
-4. If it destroyed something, it is rolled back and **held**. The agent is told exactly what it would destroy. In the
-   first slice a held step stays held. With slice 7 it becomes an approval of contract 16.2 that only a member can
-   give, never the reviewer and never a rule; with the member's yes the same step is applied.
+3. If it destroyed nothing, it commits and is recorded as applied, with its hash, in the company's own database in
+   the same transaction.
+4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy. In
+   the first slices a held step stays held. With slice 7 it becomes an approval of contract 16.2 that only a member
+   can give, never the reviewer and never a rule; with the member's yes the same step is applied.
 
 Updating rows in a step is not "destroying": last night's snapshot and the WAL hold what was there.
 
@@ -252,18 +249,16 @@ Updating rows in a step is not "destroying": last night's snapshot and the WAL h
 
 - Every table carries a statement trigger that calls `pg_notify` with the table's name. PostgreSQL sends a notice
   once per table per transaction.
-- The gateway listens on a company's database only while someone watches it. A page that watches says so with each
-  question, and that lasts 90 s.
-- The gateway passes on at most 4 notices a second per database: `qorpera_data_hint(company, database)` in the
-  platform's database sends a Realtime broadcast `{"schema":"qorpera.data-hint/v1","database":"shop"}` on the private
-  topic `qorpera-data-<environmentId>`, as the folder hint is sent (`20260928469260`): a 20 ms lock budget, every
-  failure absorbed. A member of the company may receive it; nobody else joins. It says only that the database
-  changed.
-- The page's host asks the watched questions of that database again and hands a page only answers that changed.
+- A page that shows live values keeps one call open through the member gateway: `watch`, with the questions it
+  shows and the `etag` it holds for each. The gateway answers at once if an answer differs. Otherwise it listens on
+  that company's database, asks the watched questions again when a notice comes, at most twice a second, and answers
+  when one differs, or after 20 s with "the same". The page then calls again.
+- The gateway listens on a company's database only while such a call is open.
 
-This is the one place company data makes the platform's database work: one small insert per notice, bounded by the
-gateway's own rate, only while a member has that company's data open. When held-open connections from a node to the
-browser exist (the screens' stream), notices can move there and this goes away.
+Nothing of this touches the platform's database: a notice travels store, gateway, member gateway, page. The member
+gateway's bridge answers whole replies and allows 25 s, which a 20 s wait fits. Each open page with live values holds
+one such call; when held-open connections from a node to the browser exist (the screens' stream), the watch can
+move there.
 
 ### The watcher
 
@@ -280,9 +275,9 @@ the gateway, so a company can make room.
   deleting a database's folder. Until slice 7 these are refused with their reason.
 - **Interfaces and, later, the public reach rows only through questions and changes kept as files.** They never send
   SQL of their own. Agents may ask any read, because they analyse.
-- **Nothing is public** unless a file marks it public (slice 9).
-- Who reads a database is the folder's path authority and `[read]`. Finer than that is a question's own work, with
-  `:viewer`.
+- **Nothing is public** unless a file marks it public (slice 8).
+- Who reads a database is the folder's path authority for `data/<name>/`. Finer than that is a question's own work,
+  with `:viewer`.
 
 ## 5. Interfaces: live values
 
@@ -296,8 +291,8 @@ The bridge of an interface app (`packages/web/src/app/interface-apps.ts`, `publi
   it. It rejects, with the reason, as `setRow` does when the member says not now.
 
 `app.toml` names what an app uses: `data` in `reads`, and each change it may ask for in `writes` as
-`data:<database>/<change>`. A call costs one of the app's 120 a minute; a watch's repeat asks cost nothing while the
-answer is the same.
+`data:<database>/<change>`. A `query` costs one of the app's 120 calls a minute. All watches of the open company
+travel in one held call, at most 24 questions; a watch costs the app one call when it starts.
 
 **Kits.** Wherever a kit's data file takes a number it may take a binding instead:
 `{"query": "shop/sales-this-month", "params": {"since": "2026-11-01"}, "column": "total"}`, where `params` and
@@ -305,8 +300,8 @@ answer is the same.
 shared helper that calls `watch` and tells the engine to redraw. The shape was proposed to the interfaces lead on
 13 November; the engines and what a kit's data may say are that lead's.
 
-Latency: the store and the gateway add about 3 ms from a commit to a new answer (§11, P2); the Realtime broadcast and
-the page's new question through `api.qorpera.com` add the rest, a few hundred milliseconds.
+Latency: the store and the gateway add about 3 ms from a commit to a new answer (§11, P2); the answer's way back
+through `api.qorpera.com` adds the rest (a request on that road took 139 to 354 ms on 4 November).
 
 ## 6. Agents
 
@@ -341,22 +336,24 @@ data/shop/snapshot/
 - The worst day, edits spread evenly over all history, changes every part. The folder keeps every version of a file
   for good, so **old versions under `data/<name>/snapshot/` are pruned after 7 days**, the way old versions of git's
   objects are (`20260928569140_folder_git_expiry`). The newest snapshot is always a full copy.
-- The platform writes it as the platform, in commits of its own. Nobody else writes there.
+- The platform writes it as the platform, in commits of its own, and replaces whatever else is there.
 - The folder then holds everything: the files that define the database and its rows as of last night. A database made
   from `schema.sql` and the parts alone holds the same rows (proven). The steps stay the truth for the shape.
 - Writing 839 MiB took 7 to 9 s on a test machine. A database at the 1 GiB limit is about 60 parts.
 
 ## 8. Named changes and routines (slice 7)
 
-- `qorpera.act` and `data_change` run a change: the pass with `[change]`, one statement as the write role, 5 s.
+- `qorpera.act` and `data_change` run a change: the change's file read as the caller, one statement as the write
+  role, 5 s. A member who may read a database may run its named changes; a database only some members may change is
+  a folder only they may read.
   Deleting rows inside a named change is the company's own defined act and runs; the file says what it does.
 - A member's change from an interface is asked on the bar the platform draws, with the file's words and values.
 - A step or a folder delete that destroys data becomes a member's approval (§3).
-- A routine may wake on a database: `when: data-change` with `watch: data/shop` and optionally a table. The notice
-  the gateway already hears becomes a wake, claimed once, at most one a minute per routine; the run reads the rows
-  with `data_query`.
+- A routine may wake on a database: `when: data-change` with `watch: data/shop` and optionally a table. The gateway
+  listens on a database a routine watches and turns a notice into a wake, claimed once, at most one a minute per
+  routine; the run reads the rows with `data_query`.
 
-## 9. The product's doors (slice 9)
+## 9. The product's doors (slice 8)
 
 - **A server's connection.** A company's server on a machine (`share_app`) gets a login to its own database,
   limited by the server itself and by the watcher (§2), handed over the way the app relay's link key is: never in a
@@ -367,7 +364,7 @@ data/shop/snapshot/
 
 Each gets its own design before it is built.
 
-## 10. Qorpera's own data (slice 10)
+## 10. Qorpera's own data (slice 9)
 
 What Qorpera already holds about a company (bank transactions, mail, todos, agents, usage) appears in the company's
 database as read-only tables in the schema `qorpera`, copied one way, so one question joins money, work and sales.
@@ -394,18 +391,17 @@ registry when a slice starts.
 | --- | --- | --- | --- |
 | 1 | The amendment and this design | none | nothing |
 | 2 | The store: the machine pair, PostgreSQL, the template, roles, limits, backups, the standby | none; `deploy/company-data/store/` with its scripts and a proof that runs in `changed` | both nodes: enrolment, then the machines; a drill of the backup and the take-over |
-| 3 | The files: the four structured kinds and their index, the save check, the passes, the definitions feed, the steps record, the data hint and its Realtime topic | one migration, one SQL test; the parser in `@qorpera/cloud-client` | the migration |
-| 4 | The gateway: questions, steps, notices, the watcher, removal with the company | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed` | the node release on both nodes; node 1's mux route |
-| 5 | Agents: `data_describe`, `data_apply`, `data_query`, their instructions | one migration (the tools' names in the observation list), one SQL test | a runtime bundle and image |
-| 6 | Interfaces: `query` and `watch` in the bridge, the member gateway's route, the hint in the web, bindings in the kits | none; web and function tests | the edge function, then the web |
-| 7 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
-| 8 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
-| 9 | The product's doors, each after its own design | | |
-| 10 | Qorpera's own data as tables | | |
+| 3 | The gateway for members: questions, apply, the held watch, limits, the watcher; the member gateway's route | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed`; function tests | the node release on both nodes, node 1's mux route, the edge function |
+| 4 | Interfaces: `query` and `watch` in the bridge, bindings in the kits | none; web tests | the web |
+| 5 | Agents: the run's data pass, `data_describe`, `data_apply`, `data_query`, their instructions; removal with the company | one migration (the pass, the tools' names in the observation list, the removal's call), one SQL test | the migration, a runtime bundle and image, the node release |
+| 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
+| 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
+| 8 | The product's doors, each after its own design | | |
+| 9 | Qorpera's own data as tables | | |
 
-Slices 2 to 6 together are "live reads": a fresh company's agents make a database and an interface shows its numbers
-live. Slice 7 follows at once, since the contract asks for the snapshot. Before slice 4 is cut, the whole path runs
-on a test machine first.
+Slices 2 to 5 together are "live reads": a fresh company's agents make a database and an interface shows its numbers
+live. Slice 6 follows at once, since the contract asks for the snapshot. Before slice 3 is cut, the whole path runs
+on a test machine first. Live reads change nothing in the platform's database but slice 5's one migration.
 
 ## 13. Decisions (Jonas; open)
 
