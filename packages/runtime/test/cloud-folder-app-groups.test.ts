@@ -12,6 +12,7 @@ import {
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
@@ -403,7 +404,8 @@ it("puts a new app in a group as save_app makes it, in the same commit, and refu
 it("lists a long layout a page at a time, and a change answers only what it did, however many apps there are", async () => {
 	const files: Record<string, string> = {};
 	const title = (n: number) => `App number ${n} ${"x".repeat(44)}`.slice(0, 60);
-	for (let n = 0; n < 150; n++) files[`apps/app-${String(n).padStart(3, "0")}/app.toml`] = app(title(n));
+	// About 75 bytes a line as shown: 480 of them are more than one 32 KiB result holds.
+	for (let n = 0; n < 480; n++) files[`apps/app-${String(n).padStart(3, "0")}/app.toml`] = app(title(n));
 	const f = await fixture(files);
 	const lines: string[] = [];
 	let cursor: number | undefined;
@@ -413,16 +415,16 @@ it("lists a long layout a page at a time, and a change answers only what it did,
 		const value: JsonValue = cursor === undefined ? { action: "list" } : { action: "list", cursor };
 		const content = await tool.execute(tool.parseArguments(value), { ...f.context, callId: randomUUID() });
 		const text = String(content.value);
-		expect(Buffer.byteLength(text)).toBeLessThan(8 * 1024);
+		expect(fitsOneResult(text)).toBe(true);
 		const page = JSON.parse(text);
 		lines.push(...page.layout);
 		cursor = page.cursor;
 		pages++;
 	} while (cursor !== undefined && pages < 20);
 	expect(pages).toBeGreaterThan(1);
-	expect(lines).toHaveLength(3 + 150);
+	expect(lines).toHaveLength(3 + 480);
 	expect(lines[3]).toBe(`app:app-000 ${title(0)}`);
-	expect(lines.at(-1)).toBe(`app:app-149 ${title(149)}`);
+	expect(lines.at(-1)).toBe(`app:app-479 ${title(479)}`);
 	// Every app into one group: the answer stays small.
 	const keys = Array.from({ length: 64 }, (_, n) => `app:app-${String(n).padStart(3, "0")}`);
 	const tool = f.tool();

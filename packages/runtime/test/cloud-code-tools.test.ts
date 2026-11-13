@@ -14,8 +14,9 @@ import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /* manage_code (cloud-code-tools.ts, migration 20260930720000): an agent takes a change out of the main code of a
- * repository kept in Qorpera, and describes one. Only the wire is simulated: each answer has the shape the SQL returns
- * (tests 1210 and 1211 pin those against the real functions), and the calls go through the run's real folder client. */
+ * repository kept in Qorpera, and describes one; since step 6 (20260930736000) it also brings existing code in. Only the
+ * wire is simulated: each answer has the shape the SQL returns (tests 1210, 1211 and 1229 pin those against the real
+ * functions), and the calls go through the run's real folder client. */
 
 const REQUEST = "72000000-0000-4000-8000-000000000001";
 const UNDO = "qorpera_folder_request_code_undo";
@@ -42,6 +43,55 @@ const stands = (over: Record<string, unknown> = {}) => ({
 	...over,
 });
 const sqlError = (code: string, message: string) => new CloudCompanyFolderRpcError(code, message);
+const IMPORT = "qorpera_folder_request_code_import";
+const IMPORTED = "qorpera_folder_code_import";
+const bringIn = {
+	action: "bring_in",
+	operationKey: "bring-shop",
+	owner: "acme",
+	name: "shop",
+	from: { github: "Acme/Shop" },
+};
+const asked = { schema: "qorpera.code-import/v1", state: "queued", requestId: REQUEST };
+/** What the executor's look found (qorpera.code-import-look/v1). */
+const look = (over: Record<string, unknown> = {}) => ({
+	schema: "qorpera.code-import-look/v1",
+	bytes: 12 * 1024 * 1024,
+	defaultBranch: "main",
+	mainSha: "a".repeat(40),
+	commits: 340,
+	firstAt: "2024-03-01T10:00:00Z",
+	lastAt: "2026-11-10T09:30:00Z",
+	authors30d: 2,
+	tags: { seen: 12, kept: 12 },
+	branches: { seen: 30, kept: 8 },
+	leftOut: 0,
+	files: 210,
+	entries: 260,
+	biggest: { path: "assets/hero.png", bytes: 2_000_000 },
+	lfs: { pointers: 0 },
+	submodules: 0,
+	refused: { code: null, paths: [], more: 0 },
+	secrets: { found: 0, shown: [], scan: { blobs: 900, bytes: 40_000_000, all: true } },
+	fits: true,
+	why: null,
+	...over,
+});
+/** How an import stands (qorpera_folder_code_import). */
+const imports = (over: Record<string, unknown> = {}) => ({
+	schema: "qorpera.code-import/v1",
+	requestId: REQUEST,
+	owner: "acme",
+	name: "shop",
+	state: "queued",
+	step: null,
+	waiting: null,
+	look: null,
+	result: null,
+	change: null,
+	code: null,
+	...over,
+});
 /** The undo without one of its keys. */
 const less = (key: string) => Object.fromEntries(Object.entries(undo).filter(([name]) => name !== key));
 
@@ -93,35 +143,49 @@ async function fixture(
 }
 
 describe("manage_code: the tool an agent's own run is offered", () => {
-	it("is one tool with two actions, described in plain words within the catalog's bound", async () => {
+	it("is one tool with three actions, described in plain words within the catalog's bound", async () => {
 		const f = await fixture(() => queued);
 		try {
 			expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["manage_code", "runtime"]]);
 			expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("manage_code");
 			const [tool] = f.tools;
 			expect(tool.description).toBe(CLOUD_CODE_TOOL_DESCRIPTION);
-			expect(Buffer.byteLength(tool.description)).toBeLessThan(1600);
+			expect(Buffer.byteLength(tool.description)).toBeLessThan(1800);
 			for (const said of [
 				"Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md.",
-				"Actions: undo, describe. Both need operationKey, owner, name and change (the number).",
+				"Actions: undo, describe, bring_in. Each needs operationKey, owner and name; undo and describe also need change (the number).",
 				"undo puts main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone.",
 				"When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up.",
 				"After an undo, check main before you tell anyone.",
 				"describe sets the change's notice (one plain sentence on what a customer will notice) and picture",
+				// Step 6 (STEP6-IMPORT-BUILD.md section 6): existing code comes in with its history, after a look.
+				'bring_in brings existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
+				"look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings.",
+				"It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in.",
+				"Replace keys it found where you can, and ask a member once for the rest.",
 				"After a result you did not see, call again with the same operationKey.",
 				// What a member reads never carries the platform's own names for things.
 				"Change numbers are yours, never the members' words.",
 			])
 				expect(tool.description).toContain(said);
-			expect(tool.description).not.toMatch(/commit|branch|pull request|merge|revert|git\b/i);
+			// Only how a bundle is made names git, for the machine it is made on.
+			expect(tool.description.replace(/ \(from a zip: [^)]*\)|a git bundle/g, "")).not.toMatch(
+				/commit|branch|pull request|merge|revert|git\b/i,
+			);
 			expect(tool.inputSchema).toMatchObject({
 				type: "object",
 				additionalProperties: false,
-				required: ["action", "operationKey", "owner", "name", "change"],
+				required: ["action", "operationKey", "owner", "name"],
 				properties: {
-					action: { type: "string", enum: ["undo", "describe"] },
+					action: { type: "string", enum: ["undo", "describe", "bring_in"] },
 					change: { type: "integer", minimum: 1 },
 					andLater: { type: "boolean" },
+					from: {
+						type: "object",
+						additionalProperties: false,
+						properties: { github: { type: "string" }, file: { type: "string" }, branch: { type: "string" } },
+					},
+					look: { type: "boolean" },
 				},
 			});
 		} finally {
@@ -133,8 +197,8 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 		const f = await fixture(() => queued);
 		try {
 			for (const [args, why] of [
-				[{ ...undo, action: "revert" }, "action is undo or describe"],
-				[{ operationKey: "k", owner: "acme", name: "shop", change: 12 }, "action is undo or describe"],
+				[{ ...undo, action: "revert" }, "action is undo, describe or bring_in"],
+				[{ operationKey: "k", owner: "acme", name: "shop", change: 12 }, "action is undo, describe or bring_in"],
 				[
 					{ ...undo, picture: "product/a.png" },
 					"undo takes only action, operationKey, owner, name, change, andLater, reason, notice",
@@ -208,6 +272,81 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 					},
 					"picture is the company path of a .png, .jpg, .jpeg or .webp file",
 				],
+				// bring_in takes no change, and its own keys only (from and look).
+				[{ ...bringIn, change: 1 }, "bring_in takes only action, operationKey, owner, name, from, look"],
+				[{ ...undo, from: { github: "acme/shop" } }, "undo takes only action"],
+				[{ ...bringIn, owner: "Acme" }, "owner and name are the repository's"],
+				[{ ...bringIn, look: "yes" }, "look is true or false"],
+				[(({ from: _from, ...rest }) => rest)(bringIn), 'from is {"github":"owner/name"} or {"file":'],
+				...[
+					"acme/shop",
+					{},
+					{ github: "acme/shop", file: "code/_incoming/shop/shop.bundle" },
+					{ github: "acme/shop", branch: "main" },
+					{ url: "https://github.com/acme/shop" },
+				].map((from) => [{ ...bringIn, from }, 'from is {"github":"owner/name"} or {"file":'] as const),
+				...[
+					"acme",
+					"acme/shop/tree",
+					"-acme/shop",
+					"gitlab.com/acme/shop",
+					"http://github.com/acme/shop",
+					"acme/shop%20x",
+					7,
+				].map(
+					(github) => [{ ...bringIn, from: { github } }, "from.github is a GitHub project's owner/name"] as const,
+				),
+				...[
+					"code/_incoming/shop.bundle",
+					"code/_incoming/shop/shop.zip",
+					"code/_incoming/shop/deep/shop.bundle",
+					"product/shop.bundle",
+					"code/_incoming/../shop/shop.bundle",
+					`code/_incoming/shop/${"x".repeat(1010)}.bundle`,
+					"",
+					// What qorpera_code_import_from_valid refuses (20260930736000): the folder and the name of letters,
+					// digits, ., _ and -, each from a letter or a digit, the folder 1 to 100 not ending in a dot and not
+					// git's own repo.git, the name 1 to 93 before .bundle, no "..".
+					"code/_incoming/my shop/shop.bundle",
+					"code/_incoming/shop/my shop.bundle",
+					"code/_incoming/shöp/shop.bundle",
+					"code/_incoming/shop/shöp.bundle",
+					"code/_incoming/.shop/shop.bundle",
+					"code/_incoming/shop/_shop.bundle",
+					"code/_incoming/shop./shop.bundle",
+					"code/_incoming/repo.git/shop.bundle",
+					"code/_incoming/Repo.GIT/shop.bundle",
+					"code/_incoming/shop/a..b.bundle",
+					"code/_incoming/sh@p/shop.bundle",
+					`code/_incoming/${"a".repeat(101)}/shop.bundle`,
+					`code/_incoming/shop/${"b".repeat(94)}.bundle`,
+				].map((file) => [{ ...bringIn, from: { file } }, "from.file is the company path of a git bundle"] as const),
+				...[
+					"",
+					"two words",
+					"-main",
+					"a..b",
+					"x".repeat(201),
+					"a\nb",
+					7,
+					// What a session's base branch may not be (qorpera_coding_repository_valid), which SQL refuses too.
+					"über",
+					"feature@2",
+					"_main",
+					".main",
+					"a/.b",
+					"a/",
+					"a//b",
+					"main.lock",
+					"a/b.",
+					"a#b",
+				].map(
+					(branch) =>
+						[
+							{ ...bringIn, from: { file: "code/_incoming/shop/shop.bundle", branch } },
+							"from.branch is the name of the file's branch to bring in",
+						] as const,
+				),
 			] as const) {
 				const refused = await f.invoke(args as Record<string, unknown>);
 				expect(refused, JSON.stringify(args)).toMatchObject({ success: false, status: "denied" });
@@ -760,6 +899,551 @@ describe("manage_code describe", () => {
 				status: "denied",
 				text: `REFUSED: ${why}`,
 			});
+		} finally {
+			f.run.close();
+		}
+	});
+});
+
+// Own code storage, step 6 (20260930736000; STEP6-IMPORT-BUILD.md section 6 and STEP6-BUILD.md "Part D"): an agent brings
+// existing code in, looks first, and reads how it went in plain words.
+describe("manage_code bring_in: one answer in plain words per way it can go", () => {
+	const imported = (over: Record<string, unknown> = {}) =>
+		imports({ state: "done", step: "open", look: look(), result: "imported", change: 1, ...over });
+
+	it("asks with exactly the request's keys, then says the code is in, where, and what came with it", async () => {
+		const f = await fixture((method, _args, count) =>
+			method === IMPORT ? asked : count < 3 ? imports({ state: "running", step: "fetch" }) : imported(),
+		);
+		try {
+			// A GitHub address is read as owner/name; look is false when left out.
+			const answer = await f.invoke({ ...bringIn, from: { github: "https://github.com/Acme/Shop.git" } });
+			expect(answer).toEqual({
+				success: true,
+				status: "ok",
+				text: "Brought in as code/acme/shop: 340 earlier changes on main, 210 files; change 1 of its record. The copy on GitHub stays as it was; Qorpera no longer works on it there. Have a coding session add its checks file.",
+			});
+			expect(f.calls[0]).toEqual({
+				method: IMPORT,
+				args: {
+					p_binding: f.binding,
+					p_request: {
+						operationKey: "bring-shop",
+						owner: "acme",
+						name: "shop",
+						from: { github: "Acme/Shop" },
+						look: false,
+					},
+				},
+			});
+			expect(f.calls.slice(1)).toEqual(
+				Array.from({ length: 3 }, () => ({
+					method: IMPORTED,
+					args: { p_binding: f.binding, p_request_id: REQUEST },
+				})),
+			);
+		} finally {
+			f.run.close();
+		}
+		// From a file: no GitHub line, but the bundle Qorpera read and leaves, to delete only while it is still that bundle,
+		// by the company path the machine's own path is read as; and branch is sent as given.
+		const file = await fixture((method) =>
+			method === IMPORT ? asked : imported({ look: look({ commits: 1, files: 1, defaultBranch: null }) }),
+		);
+		try {
+			expect(
+				(
+					await file.invoke({
+						...bringIn,
+						from: { file: "/company/code/_incoming/shop/shop.bundle", branch: "refs/heads/release" },
+					})
+				).text,
+			).toBe(
+				"Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file; change 1 of its record. Qorpera no longer needs the bundle it read from code/_incoming/shop/shop.bundle. Delete that file only if it is still the bundle you made for this; leave any other file there. Have a coding session add its checks file.",
+			);
+			expect(file.calls[0]?.args.p_request).toEqual({
+				operationKey: "bring-shop",
+				owner: "acme",
+				name: "shop",
+				from: { file: "code/_incoming/shop/shop.bundle", branch: "release" },
+				look: false,
+			});
+		} finally {
+			file.run.close();
+		}
+		// At SQL's bounds (qorpera_code_import_from_valid): a folder of 100 and a name of 93 before .bundle, and a branch
+		// of 200 with a slash, are sent as they are.
+		const bounds = await fixture((method) =>
+			method === IMPORT ? asked : imported({ look: look({ commits: 1, files: 1, defaultBranch: null }) }),
+		);
+		const folder = `S${"h.o_p-".repeat(16)}x9_`;
+		const name = `${"b".repeat(92)}9`;
+		const release = `release/${"r".repeat(191)}9`;
+		try {
+			await bounds.invoke({
+				...bringIn,
+				from: { file: `code/_incoming/${folder}/${name}.bundle`, branch: release },
+			});
+			expect([folder.length, name.length, release.length]).toEqual([100, 93, 200]);
+			expect(bounds.calls[0]?.args.p_request).toMatchObject({
+				from: { file: `code/_incoming/${folder}/${name}.bundle`, branch: release },
+			});
+		} finally {
+			bounds.run.close();
+		}
+	});
+
+	it("says of a file it brought in that it no longer needs the bundle it read, to delete only while the file is still that bundle, in every answer that says it is in", async () => {
+		const fileIn = { ...bringIn, from: { file: "code/_incoming/shop/shop.bundle" } };
+		const sentence =
+			"Qorpera no longer needs the bundle it read from code/_incoming/shop/shop.bundle. Delete that file only if it is still the bundle you made for this; leave any other file there.";
+		const unconditional = /delete it\b|delete (the|this) (file|bundle)[.:]/i;
+		// Brought in: the words with the path, and never a removal without its condition.
+		const f = await fixture((method) => (method === IMPORT ? asked : imported()));
+		let first = "";
+		try {
+			first = (await f.invoke(fileIn)).text;
+			expect(first).toContain(sentence);
+			expect(first).not.toMatch(unconditional);
+			// The same call again under the same operationKey (the kernel answers the same request to the same key): the same
+			// words.
+			expect((await f.invoke(fileIn)).text).toBe(first);
+			expect(f.calls.filter((call) => call.method === IMPORT)).toHaveLength(2);
+		} finally {
+			f.run.close();
+		}
+		// Asked in a later run: while the import is still open, nothing of the file; once it is in, the same words.
+		let done = false;
+		const later = await fixture(
+			(method) => (method === IMPORT ? asked : done ? imported() : imports({ state: "running", step: "open" })),
+			{ lookMs: 1, waitMs: 10 },
+		);
+		try {
+			const open = (await later.invoke(fileIn)).text;
+			expect(open).toMatch(/^It is being brought in \(putting it in place\)\./);
+			expect(open).not.toMatch(/delete|bundle/i);
+			done = true;
+			expect((await later.invoke(fileIn)).text).toBe(first);
+		} finally {
+			later.run.close();
+		}
+		// GitHub code: no word of a file. A file that was looked at, refused or failed: no word of deleting it (the agent may
+		// ask again with the same file).
+		for (const [from, ended] of [
+			[bringIn.from, imported()],
+			[fileIn.from, imports({ state: "done", step: "look", look: look(), result: "looked" })],
+			[fileIn.from, imports({ state: "refused", code: "IMPORT_FILE_NOT_WHOLE" })],
+			[fileIn.from, imports({ state: "failed", code: "IMPORT_RELAY_NOT_ROUTED" })],
+		] as const) {
+			const g = await fixture((method) => (method === IMPORT ? asked : ended));
+			try {
+				const text = (await g.invoke({ ...bringIn, from, look: ended.result === "looked" })).text;
+				expect(text).not.toMatch(/delete/i);
+				expect(text).not.toContain("_incoming");
+			} finally {
+				g.run.close();
+			}
+		}
+	});
+
+	it("says what a look found in one or two lines, the key-like strings by kind and file, and how to go on", async () => {
+		const f = await fixture((method) =>
+			method === IMPORT ? asked : imports({ state: "done", step: "look", look: look(), result: "looked" }),
+		);
+		try {
+			expect((await f.invoke({ ...bringIn, look: true })).text).toBe(
+				"12 MB, 340 changes from 2024-03-01 to 2026-11-10, 2 people other than the company's agents changed it in the last 30 days, 210 files; it fits. It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.",
+			);
+			expect(f.calls[0]?.args.p_request).toMatchObject({ look: true });
+			// A look at a file says nothing of deleting it: the agent brings it in next, from the same file.
+			const file = (await f.invoke({ ...bringIn, look: true, from: { file: "code/_incoming/shop/shop.bundle" } }))
+				.text;
+			expect(file).toMatch(/^12 MB, /);
+			expect(file).not.toContain("delete");
+		} finally {
+			f.run.close();
+		}
+		const secrets = {
+			found: 13,
+			shown: [
+				{ kind: "aws", path: "config/prod.js", inMain: true },
+				{ kind: "stripe", path: null, inMain: false },
+				{ kind: "env-file", path: '.env"', inMain: true },
+			],
+			scan: { blobs: 900, bytes: 40_000_000, all: false },
+		};
+		const keys = await fixture((method) =>
+			method === IMPORT
+				? asked
+				: imports({
+						state: "done",
+						look: look({ bytes: 3000, commits: 1, authors30d: 1, files: 1, secrets }),
+						result: "looked",
+					}),
+		);
+		try {
+			expect((await keys.invoke({ ...bringIn, look: true })).text).toBe(
+				'3 KB, 1 change from 2024-03-01 to 2026-11-10, 1 person other than the company\'s agents changed it in the last 30 days, 1 file; it fits. Strings that look like keys: an AWS key in "config/prod.js" (still in the code), a live Stripe key in a file whose name is not shown, a .env file in ".env\\"" (still in the code) and 10 more. It could not read every file. To bring it in, call bring_in with look false and a new operationKey.',
+			);
+		} finally {
+			keys.run.close();
+		}
+		// No one but the company's agents; what does not fit says why, and a brought-in answer names the keys too.
+		const alone = await fixture((method) =>
+			method === IMPORT
+				? asked
+				: imports({
+						state: "done",
+						look: look({
+							bytes: 3 * 1024 ** 3,
+							authors30d: 0,
+							fits: false,
+							refused: { code: "IMPORT_USES_LFS", paths: [".gitattributes"], more: 0 },
+							why: "IMPORT_USES_LFS",
+						}),
+						result: "looked",
+					}),
+		);
+		try {
+			expect((await alone.invoke({ ...bringIn, look: true })).text).toBe(
+				"3.0 GB, 340 changes from 2024-03-01 to 2026-11-10, no one but the company's agents changed it in the last 30 days, 210 files; it does not fit: it keeps large files outside the code (Git LFS), and Qorpera can't bring those in yet. It found no strings that look like keys.",
+			);
+		} finally {
+			alone.run.close();
+		}
+		const odd = await fixture((method) =>
+			method === IMPORT
+				? asked
+				: imports({ state: "done", look: look({ fits: false, why: "IMPORT_SOMETHING_NEW" }), result: "looked" }),
+		);
+		try {
+			expect((await odd.invoke({ ...bringIn, look: true })).text).toContain(
+				"210 files; it does not fit: Qorpera cannot take it in. [code=IMPORT_SOMETHING_NEW] It found no",
+			);
+		} finally {
+			odd.run.close();
+		}
+		const found = await fixture((method) =>
+			method === IMPORT
+				? asked
+				: imported({ look: look({ secrets: { ...secrets, found: 1, shown: [secrets.shown[0]] } }) }),
+		);
+		try {
+			expect((await found.invoke(bringIn)).text).toBe(
+				'Brought in as code/acme/shop: 340 earlier changes on main, 210 files; change 1 of its record. The copy on GitHub stays as it was; Qorpera no longer works on it there. Have a coding session add its checks file. Strings that look like keys: an AWS key in "config/prod.js" (still in the code). It could not read every file.',
+			);
+		} finally {
+			found.run.close();
+		}
+	});
+
+	it.each([
+		[
+			"kept_here",
+			"Nothing was brought in: code/acme/shop/ is already a repository kept here. Give another owner or name, with a new operationKey.",
+		],
+		[
+			"already_here",
+			"Nothing was brought in: this code was brought in before. Find it under code/ and work on it there.",
+		],
+		[
+			"busy",
+			"Nothing was brought in: other code is being brought in for this company right now. Call again with a new operationKey when it is in.",
+		],
+		[
+			"sessions_open",
+			"Nothing was brought in: coding sessions still work on this code on GitHub. When their work is done, archive them with manage_worker, action archive (another agent's sessions are that agent's to archive), then call again with a new operationKey.",
+		],
+		[
+			"no_executor",
+			"Nothing was brought in: Qorpera's code service is not running for this company right now. Try again in a few minutes, with a new operationKey.",
+		],
+		[
+			"file_missing",
+			"Nothing was brought in: there is no file at code/_incoming/shop/shop.bundle. Write the bundle there on a machine first, then call again with a new operationKey.",
+		],
+		["deleting", "Nothing was brought in: the company is being deleted."],
+	])(
+		"refuses an import the kernel does not take (%s) with why, and asks the executor nothing",
+		async (reason, why) => {
+			const f = await fixture(() => ({ schema: "qorpera.code-import/v1", state: "refused", reason }));
+			try {
+				expect(await f.invoke({ ...bringIn, from: { file: "code/_incoming/shop/shop.bundle" } })).toEqual({
+					success: false,
+					status: "denied",
+					text: `REFUSED: ${why}`,
+				});
+				expect(f.methods()).toEqual([IMPORT]);
+			} finally {
+				f.run.close();
+			}
+		},
+	);
+
+	it("refuses what the database raised instead of taking an import, in its own words where they differ", async () => {
+		const invalid = await fixture(() => {
+			throw sqlError("22023", "Code request is invalid");
+		});
+		try {
+			expect(await invalid.invoke(bringIn)).toEqual({
+				success: false,
+				status: "denied",
+				text: "REFUSED: The request was not taken as written: check owner, name and from, and call again.",
+			});
+		} finally {
+			invalid.run.close();
+		}
+		const reused = await fixture(() => {
+			throw sqlError("23505", "logical operation key is already bound to other work");
+		});
+		try {
+			expect((await reused.invoke(bringIn)).text).toBe(
+				"REFUSED: That operationKey was used for a different request: use a new one.",
+			);
+		} finally {
+			reused.run.close();
+		}
+	});
+
+	it.each([
+		["IMPORT_TOO_LARGE", "it is larger than 1 GB, the most Qorpera brings in"],
+		// The code host's own refusal of a restore-shaped bundle over the store's 2 GB reads as too large too.
+		["CODE_HOST_BUNDLE_TOO_LARGE", "it is larger than 1 GB, the most Qorpera brings in"],
+		[
+			"IMPORT_SOURCE_REFUSED",
+			"GitHub did not let Qorpera read github.com/Acme/Shop: check the address, and that the company's GitHub connection can see it",
+		],
+		[
+			"IMPORT_SOURCE_MOVED",
+			"GitHub says github.com/Acme/Shop has moved: call again with its new address and a new operationKey",
+		],
+		["IMPORT_USES_LFS", "it keeps large files outside the code (Git LFS), and Qorpera can't bring those in yet"],
+		["IMPORT_USES_SUBMODULES", "it is made of other projects (git submodules), and Qorpera can't bring those in yet"],
+		["IMPORT_SOURCE_EMPTY", "it is empty: there is nothing to bring in"],
+		["IMPORT_SHA256_REPOSITORY", "it uses git's newer SHA-256 format, which Qorpera can't bring in yet"],
+		["IMPORT_TOO_MANY_REFS", "it has more branches and tags than Qorpera can read"],
+		["IMPORT_HISTORY_DAMAGED", "its history has damage Qorpera can't take in"],
+		// An error of git's check names its message id or none; a warning its strict check refuses names it (part B).
+		["IMPORT_HISTORY_DAMAGED_BAD_TREE", "its history has damage Qorpera can't take in"],
+		// A warning fsck's strict check refuses names git's message id (part B).
+		["IMPORT_HISTORY_ZERO_PADDED_FILEMODE", "its history has old git objects Qorpera can't take in yet"],
+		[
+			"IMPORT_BRANCH_NAME",
+			"its main branch has a name Qorpera can't keep: longer than 200 bytes, or one that looks like a key",
+		],
+		// The look's paths: a null one is one it would not show, counted with the rest.
+		[
+			"IMPORT_TOO_MANY_FILES",
+			'it has more files, or file names, than a repository kept in Qorpera can take, in "src/A.ts", "src/a.ts" and 3 more',
+		],
+		[
+			"CODE_HOST_NAMES_DIFFER_BY_CASE",
+			'it has more files, or file names, than a repository kept in Qorpera can take, in "src/A.ts", "src/a.ts" and 3 more',
+		],
+		[
+			"CODE_HOST_FILE_TOO_LARGE",
+			'it has a file larger than a repository kept in Qorpera can take (256 MB), in "src/A.ts", "src/a.ts" and 3 more',
+		],
+		// A path of main the company folder refuses where main will stand (part B): the names' words, with its paths.
+		[
+			"CODE_HOST_NAMES_FOLDER_REFUSES",
+			'it has more files, or file names, than a repository kept in Qorpera can take, in "src/A.ts", "src/a.ts" and 3 more',
+		],
+		// An earlier import's half-done snapshot at the place (part C3).
+		[
+			"IMPORT_PLACE_HALF_DONE",
+			"an earlier bring-in stopped half way at code/acme/shop: bring the same code in again, with a new operationKey, to finish it; other code cannot go there until then. If the same code is refused too, tell a member that Qorpera must clear that place first",
+		],
+	])("says nothing was brought in when the executor refused it (%s), with why and no code", async (code, why) => {
+		const f = await fixture((method) =>
+			method === IMPORT
+				? asked
+				: imports({
+						state: "refused",
+						step: "look",
+						code,
+						look: look({
+							fits: false,
+							refused: { code, paths: ["src/A.ts", null, "src/a.ts"], more: 2 },
+							why: code,
+						}),
+					}),
+		);
+		try {
+			expect(await f.invoke(bringIn)).toEqual({
+				success: true,
+				status: "ok",
+				text: `Nothing was brought in: ${why}.`,
+			});
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it.each([
+		[
+			"IMPORT_BRANCH_UNKNOWN",
+			"the file has more than one branch and none is clearly its main one: call again with from.branch, the branch to bring in, and a new operationKey",
+		],
+		[
+			"IMPORT_FILE_NOT_WHOLE",
+			"the file is not a whole git bundle: make it again with git bundle create <file> --all",
+		],
+		["IMPORT_FILE_CHANGED", "the file changed after you asked: call again with a new operationKey"],
+		// A file's bound is 256 MB, not GitHub's 1 GB (part B refuses a larger file before it copies it).
+		["IMPORT_TOO_LARGE", "the file is larger than 256 MB, the most Qorpera brings in from a file"],
+	])("says why a file was not brought in (%s)", async (code, why) => {
+		const f = await fixture((method) => (method === IMPORT ? asked : imports({ state: "refused", code })));
+		try {
+			expect((await f.invoke({ ...bringIn, from: { file: "code/_incoming/shop/shop.bundle" } })).text).toBe(
+				`Nothing was brought in: ${why}.`,
+			);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("says a refusal with no words of its own plainly, with its code, and a GitHub word only for GitHub code", async () => {
+		for (const [from, code] of [
+			[bringIn.from, "IMPORT_SOMETHING_NEW"],
+			[{ file: "code/_incoming/shop/shop.bundle" }, "IMPORT_SOURCE_REFUSED"],
+		] as const) {
+			const f = await fixture((method) => (method === IMPORT ? asked : imports({ state: "refused", code })));
+			try {
+				expect((await f.invoke({ ...bringIn, from })).text).toBe(
+					`Nothing was brought in: Qorpera could not take this code in. [code=${code}]`,
+				);
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("says an import that failed did, with its code: the place as before, one to go on with, and the rest", async () => {
+		for (const [code, lookOnly, text] of [
+			[
+				"CODE_HOST_JOB_FAILED:PLACE_AS_BEFORE",
+				false,
+				"It could not be brought in just now, and code/acme/shop/ is as it was. Try again with a new operationKey. [code=CODE_HOST_JOB_FAILED:PLACE_AS_BEFORE]",
+			],
+			[
+				"DID_NOT_FINISH",
+				false,
+				"It did not finish. Call bring_in again for the same code with a new operationKey: it goes on from where this one stopped. [code=DID_NOT_FINISH]",
+			],
+			[
+				"IMPORT_RELAY_NOT_ROUTED",
+				false,
+				"It could not be brought in just now. Try again with a new operationKey. [code=IMPORT_RELAY_NOT_ROUTED]",
+			],
+			[
+				"IMPORT_RELAY_NOT_ROUTED",
+				true,
+				"It could not be looked at just now. Try again with a new operationKey. [code=IMPORT_RELAY_NOT_ROUTED]",
+			],
+			["not a code]. It is in", false, "It could not be brought in just now. Try again with a new operationKey."],
+		] as const) {
+			const f = await fixture((method) => (method === IMPORT ? asked : imports({ state: "failed", code })));
+			try {
+				expect(await f.invoke({ ...bringIn, look: lookOnly })).toEqual({ success: true, status: "ok", text });
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("says where an import is when its wait ends, with what it waits for, and the same call again goes on", async () => {
+		vi.useFakeTimers();
+		try {
+			let now: Record<string, unknown> = imports({ state: "running", step: "look", waiting: "SESSIONS_BUSY" });
+			const f = await fixture((method) => (method === IMPORT ? asked : now), { lookMs: 5, waitMs: 40 });
+			try {
+				const first = f.invoke(bringIn);
+				await vi.advanceTimersByTimeAsync(40);
+				expect(await first).toEqual({
+					success: true,
+					status: "ok",
+					text: "It is being brought in (checking it, waiting until the company's coding sessions are quiet). Call bring_in again with the same operationKey to see how it went.",
+				});
+				expect(f.methods().filter((method) => method === IMPORTED)).toHaveLength(8);
+				for (const [seen, said] of [
+					[imports(), "It is being brought in (waiting its turn)."],
+					[imports({ state: "running", step: "fetch" }), "It is being brought in (getting it from GitHub)."],
+					[imports({ state: "running", step: "read" }), "It is being brought in (reading the file)."],
+					[
+						imports({ state: "queued", step: "fetch", waiting: "SESSIONS_OPEN" }),
+						"It is being brought in (getting it from GitHub, waiting until no coding session works on it on GitHub).",
+					],
+					[imports({ state: "running", step: "set-aside" }), "It is being brought in (putting it in place)."],
+					[imports({ state: "running", step: "tidy" }), "It is being brought in (tidying up)."],
+					[
+						imports({ state: "queued", step: "look", waiting: "QUIET_NIGHT" }),
+						"It is being brought in (checking it, waiting for the company's other code work).",
+					],
+				] as const) {
+					now = seen;
+					const again = f.invoke(bringIn);
+					await vi.advanceTimersByTimeAsync(40);
+					expect((await again).text).toBe(
+						`${said} Call bring_in again with the same operationKey to see how it went.`,
+					);
+				}
+				now = imports({ state: "running", step: "look" });
+				const looking = f.invoke({ ...bringIn, operationKey: "look-shop", look: true });
+				await vi.advanceTimersByTimeAsync(40);
+				expect((await looking).text).toContain("It is being looked at (checking it).");
+				// The same call again (the kernel answers the same request to the same key) reads how it went.
+				now = imported();
+				const done = f.invoke(bringIn);
+				await vi.advanceTimersByTimeAsync(5);
+				expect((await done).text).toMatch(/^Brought in as code\/acme\/shop: /);
+			} finally {
+				f.run.close();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("never reads another place's import as this one, and leaves a lost ask unconfirmed", async () => {
+		const other = await fixture((method) => (method === IMPORT ? asked : imported({ name: "store" })));
+		try {
+			expect(await other.invoke(bringIn)).toMatchObject({ success: false, status: "unconfirmed" });
+		} finally {
+			other.run.close();
+		}
+		const lost = await fixture(() => {
+			throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
+		});
+		try {
+			expect(await lost.invoke(bringIn)).toMatchObject({ success: false, status: "unconfirmed" });
+			const sent = lost.calls.map((call) => JSON.stringify(call.args.p_request));
+			expect(sent.length).toBeGreaterThan(1);
+			expect(new Set(sent).size).toBe(1);
+		} finally {
+			lost.run.close();
+		}
+	});
+});
+
+// Finding 28 of build6/PRE-IMPORT-SQL-BROKER.md: change 1 of code brought in is where its record begins, and the kernel
+// answers an undo of it, alone or with andLater, as a wall. Its words speak of the import, not of a restore.
+describe("manage_code undo of the first change of code brought in", () => {
+	it.each([
+		[
+			false,
+			"Change 1 cannot be undone: it is the code as it came into Qorpera, where its record begins. Instead, send the session a follow-up that puts the old behaviour back.",
+		],
+		[
+			true,
+			"Nothing was undone: change 1 is the code as it came into Qorpera, where its record begins. Undo change 2 with andLater true to take out every change after it, or send the session a follow-up that puts the old behaviour back.",
+		],
+	])("says so with andLater %s", async (andLater, why) => {
+		const f = await fixture(() => ({ schema: "qorpera.code-request/v1", state: "refused", reason: "wall" }));
+		try {
+			const answer = await f.invoke({ ...undo, change: 1, andLater });
+			expect(answer).toEqual({ success: false, status: "denied", text: `REFUSED: ${why}` });
+			expect(answer.text).not.toMatch(/restore|put back from its copy/);
 		} finally {
 			f.run.close();
 		}

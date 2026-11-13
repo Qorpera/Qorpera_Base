@@ -621,6 +621,13 @@ describe("the coding executor over a session turn", () => {
 		expect(landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])).toContain(
 			": 1 path too long to name here. Take them out",
 		);
+		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
+		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes): "bad.", "x " and 1 more. Rename them, commit and finish again.',
+		);
+		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
+			": 1 path not named here. Rename them, commit and finish again.",
+		);
 		// Any summary is cut by bytes, whole characters only.
 		expect(withinBytes("abc", 4000)).toBe("abc");
 		expect(withinBytes("\u00e5".repeat(3000), 4000)).toBe("\u00e5".repeat(2000));

@@ -441,6 +441,9 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_request_code_undo",
 		"qorpera_folder_code_request",
 		"qorpera_folder_describe_code_change",
+		// Existing code brought in (20260930736000).
+		"qorpera_folder_request_code_import",
+		"qorpera_folder_code_import",
 	] as const;
 
 	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {

@@ -167,11 +167,12 @@ begin
 	foreach v_table in array array['public.qorpera_code_changes', 'public.qorpera_code_requests'] loop
 		perform pg_temp.base_assert((select relrowsecurity from pg_class where oid = v_table::regclass),
 			'row level security is on: ' || v_table);
-		-- The company's purge takes both with the company (their profile's key, and the registry row's), and nothing
-		-- stops its delete.
+		-- The company's purge takes both with the company (their profile's key, and a change's registry row's: a request
+		-- has none since 20260930736000, an import has no registry row until its record), and nothing stops its delete.
 		perform pg_temp.base_assert((select count(*) from pg_constraint
 			where conrelid = v_table::regclass and contype = 'f' and confdeltype = 'c'
-				and confrelid in ('public.qorpera_profiles'::regclass, 'public.qorpera_code_repositories'::regclass)) = 2
+				and confrelid in ('public.qorpera_profiles'::regclass, 'public.qorpera_code_repositories'::regclass))
+				= case v_table when 'public.qorpera_code_changes' then 2 else 1 end
 			and not exists (select 1 from pg_trigger where tgrelid = v_table::regclass and not tgisinternal),
 			v_table || ' goes with its company');
 	end loop;
@@ -203,7 +204,7 @@ begin
 			'public.qorpera_code_change_files_due(text,text,integer)',
 			'public.qorpera_code_change_files(text,text,uuid,text,text,integer)',
 			'public.qorpera_code_change_files_written(text,text,uuid,text,text,jsonb)',
-			'public.qorpera_code_requests_claim(text,text,integer)',
+			'public.qorpera_code_requests_claim(text,text,integer,text[])',
 			'public.qorpera_code_request_step(text,text,uuid,uuid,jsonb)',
 			'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
 			'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
@@ -707,7 +708,7 @@ begin
 			'mainAfter', pg_temp.rec_sha('c2'), 'headSha', pg_temp.rec_sha('c2'), 'summary', 'Summary of session 2, turn 1.',
 			'notice', 'Each price says free returns.', 'picture', r.picture, 'pictureProblem', null)
 			|| jsonb_build_object('filesChanged', 2, 'paths', r.paths, 'pathsMore', 0, 'needsDiff', false, 'refusal', null,
-			'undoes', null, 'revertedBy', null, 'restoredFrom', null, 'checksState', null, 'checks', null),
+			'undoes', null, 'revertedBy', null, 'restoredFrom', null, 'importedFrom', null, 'checksState', null, 'checks', null),
 		'a landing''s file: ' || (v -> 'changes' -> 2)::text);
 	-- A filler needs its files counted; a row with no main, and a row that has them, do not.
 	v_row := v -> 'changes' -> 3;

@@ -173,6 +173,12 @@ function fsckMsOf(options: { fsckMs?: number } | undefined): number {
 	return fsckMs;
 }
 
+function provenOf(options: { proven?: boolean } | undefined): boolean {
+	const proven = options?.proven ?? false;
+	if (typeof proven !== "boolean") throw new Error("INVALID_CODE_HOST_JOB");
+	return proven;
+}
+
 /** What stands at each path, by plain file tests: a folder (`folders`) or a file is there, or nothing. A link is
  * refused, and so is anything else. A restore looks at a place this way, never through `Run.prepare`: a damaged place
  * may hold what that refuses, and nothing in it is repaired. */
@@ -295,12 +301,15 @@ interface Proven {
  * `+refs/*:refs/*` into a new bare repository that borrows nothing, whose refs must have the manifest's fingerprint,
  * with the mark and the default branch among them, the branch at the manifest's commit; and `git fsck --full` there.
  * No two of its refs may be one name to the folder, the default branch's files must pass the folder's name rules, and
- * its packs must each be under the folder's limit. */
+ * its packs must each be under the folder's limit. `proven` (an import's restore-shaped bundle, made from a history the
+ * import's look already ran `fsck --full` over) leaves out the fsck alone: every other check stays, the strict fetch
+ * among them. */
 async function prove(
 	run: Run,
 	bundle: CodeRestoreBundle,
 	source: AsyncIterable<Uint8Array>,
 	fsckMs: number,
+	proven = false,
 ): Promise<Proven> {
 	const file = `${run.directory}/restore.bundle`,
 		proof = `${run.directory}/proof.git`,
@@ -385,20 +394,22 @@ async function prove(
 		}
 	}
 	if (clash.size) throw new CodeHostRefusal("CODE_HOST_RESTORE_REFS_DIFFER_BY_CASE", [...clash]);
-	const checked = await run.sh(FSCK, [
-		`${run.directory}/fsck.out`,
-		String(fsckMs / 1000),
-		run.layout.git,
-		"--no-replace-objects",
-		`--git-dir=${proof}`,
-		"fsck",
-		"--full",
-		"--no-dangling",
-		"--no-progress",
-	]);
-	if (checked.status === 124 || checked.status === 137)
-		throw new CodeHostJobFailure("CODE_HOST_RESTORE_BUNDLE_FSCK_TIMEOUT");
-	if (checked.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RESTORE_BUNDLE_DAMAGED", tail(checked.stderr));
+	if (!proven) {
+		const checked = await run.sh(FSCK, [
+			`${run.directory}/fsck.out`,
+			String(fsckMs / 1000),
+			run.layout.git,
+			"--no-replace-objects",
+			`--git-dir=${proof}`,
+			"fsck",
+			"--full",
+			"--no-dangling",
+			"--no-progress",
+		]);
+		if (checked.status === 124 || checked.status === 137)
+			throw new CodeHostJobFailure("CODE_HOST_RESTORE_BUNDLE_FSCK_TIMEOUT");
+		if (checked.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RESTORE_BUNDLE_DAMAGED", tail(checked.stderr));
+	}
 	// What `main/` will hold: refused here, naming the paths, as a landing refuses them.
 	await run.checkNames(proof, bundle.mainSha);
 	// Self-contained packs under the folder's limit (the job's settings split them), as a seed's. One thread: the same
@@ -484,7 +495,8 @@ export interface CodeAreaClosed {
  * its branch, a ref came or went) or that is gone is refused, `CODE_HOST_RESTORE_REFS_MOVED`: no mark is written, and
  * the caller takes a new bundle. A place that already has its mark is not asked: it has not been open since the mark
  * was written. A bundle that was asked for by its name is not `fresh`: it closes whatever the place holds, since
- * there the operator chose to go back. */
+ * there the operator chose to go back. `proven`: the bundle is an import's restore-shaped one, whose history the
+ * import's look checked with `fsck --full`; `prove` leaves out that fsck alone. */
 export async function closeCodeArea(
 	job: CodeHostJob,
 	value: {
@@ -495,18 +507,19 @@ export async function closeCodeArea(
 		fresh: boolean;
 	},
 	source: AsyncIterable<Uint8Array>,
-	options: { fsckMs?: number } = {},
+	options: { fsckMs?: number; proven?: boolean } = {},
 ): Promise<CodeAreaClosed> {
 	const input = closed(value, ["repository", "requestId", "bundle", "at", "fresh"]);
 	const repository = keptRepositoryOf(input.repository),
 		bundle = bundleOf(input.bundle),
 		bytes = sourceOf(source),
 		fsckMs = fsckMsOf(options),
+		proven = provenOf(options),
 		{ requestId, at, fresh } = input;
 	if (!isUuid(requestId) || typeof at !== "string" || !AT.test(at) || typeof fresh !== "boolean")
 		throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
-		await prove(run, bundle, bytes, fsckMs);
+		await prove(run, bundle, bytes, fsckMs, proven);
 		const { there, mark } = await lookAt(run);
 		if (mark) {
 			if (mark.bundle !== bundle.name) {
@@ -650,18 +663,20 @@ export async function setAsideCodeArea(
  * step made (`repo.git`, `main`), and each ref there must be the bundle's ref at the bundle's commit
  * (`CODE_HOST_RESTORE_PLACE_CHANGED` otherwise, naming what is in the way); such a ref is left as it is. A place whose
  * mark does not say `emptied` is refused (`CODE_HOST_RESTORE_NOT_SET_ASIDE`). It answers the repository's default
- * branch, the refs' fingerprint and how many refs there are, which are the bundle's. */
+ * branch, the refs' fingerprint and how many refs there are, which are the bundle's. `proven`, as for the close: the
+ * proof leaves out its fsck alone. */
 export async function restoreCodeArea(
 	job: CodeHostJob,
 	value: { repository: CloudCodingRepository; bundle: CodeRestoreBundle },
 	source: AsyncIterable<Uint8Array>,
-	options: { fsckMs?: number } = {},
+	options: { fsckMs?: number; proven?: boolean } = {},
 ): Promise<{ mainSha: string; refsSha256: string; refs: number }> {
 	const input = closed(value, ["repository", "bundle"]);
 	const repository = keptRepositoryOf(input.repository),
 		bundle = bundleOf(input.bundle),
 		bytes = sourceOf(source),
 		fsckMs = fsckMsOf(options),
+		proven = provenOf(options),
 		base = `refs/heads/${repository.baseBranch}`;
 	return withJob(job, repository, async (run) => {
 		const mark = markFor(run, (await lookAt(run)).mark, bundle.name);
@@ -674,7 +689,7 @@ export async function restoreCodeArea(
 				"CODE_HOST_RESTORE_PLACE_CHANGED",
 				strange.map((name) => `${run.area}/${name}`),
 			);
-		const proven = await prove(run, bundle, bytes, fsckMs);
+		const fetched = await prove(run, bundle, bytes, fsckMs, proven);
 		// From here on the place is written. Its git files are the platform's own before git reads one.
 		const area = await run.prepare(undefined, { restoring: true });
 		if (!area.seeded)
@@ -695,7 +710,7 @@ export async function restoreCodeArea(
 		await run.keep(`${run.repo}/config`, CODE_AREA_CONFIG);
 		await run.keep(`${run.repo}/HEAD`, `ref: ${base}\n`);
 		// What an earlier run made: only the bundle's refs, each at the bundle's commit.
-		const wanted = new Map(proven.refs.map((ref) => [ref.name, ref.sha])),
+		const wanted = new Map(fetched.refs.map((ref) => [ref.name, ref.sha])),
 			made = await run.refs(run.repo),
 			other = made.filter((ref) => ref.symref || wanted.get(ref.name) !== ref.sha);
 		if (other.length)
@@ -704,7 +719,7 @@ export async function restoreCodeArea(
 				other.map((ref) => ref.name),
 			);
 		// git's own temporary-then-rename for each pack; the folder publishes them with the first ref below.
-		for (const pack of proven.packs) {
+		for (const pack of fetched.packs) {
 			const indexed = await run.sh('f=$1; shift; exec "$@" <"$f"', [
 				pack,
 				run.layout.git,
@@ -716,7 +731,7 @@ export async function restoreCodeArea(
 			if (indexed.status !== 0) throw new CodeHostJobFailure(FAILED, tail(indexed.stderr));
 		}
 		const here = new Set(made.map((ref) => ref.name)),
-			create = proven.refs.filter((ref) => ref.name !== base && !here.has(ref.name));
+			create = fetched.refs.filter((ref) => ref.name !== base && !here.has(ref.name));
 		if (create.length) {
 			const lines = ["start", ...create.map((ref) => `create ${ref.name} ${ref.sha}`), "prepare", "commit", ""];
 			const created = await run.git(run.repo, ["update-ref", "--no-deref", "--stdin"], {

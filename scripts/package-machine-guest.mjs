@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
 import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
+import { MACHINE_DESKTOP_PICTURES, tarArchive } from "./machine-desktop-art.mjs";
 
 // The company machine guest (2026-09-28): the command helper and its watchdog
 // units, packaged as reviewable files with their checksums. Installing them
@@ -17,7 +18,9 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // same way and for the same reason.
 // Since 12 Nov 2026 it also carries every machine's compressed memory and edge
 // guard (machine-memory, its two units, the LXD agent's drop-in): files only,
-// so the guest helper stays as it was.
+// so the guest helper stays as it was. And the desktop's look (desktop-look,
+// the dock's request units, and one archive of pictures: the dock icons and
+// the backdrop sets): files only too.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
@@ -30,12 +33,17 @@ const units = [
 	"qorpera-machine-desktop.service",
 	"qorpera-machine-memory.service",
 	"qorpera-machine-memory-guard.service",
+	"qorpera-machine-desktop-dock.path",
+	"qorpera-machine-desktop-dock.service",
 ];
 // The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile. Since 10 Nov
 // 2026 also the page `desktop selftest` opens, the browser's managed policy (no translate offer, no sign-in), a
 // `chromium` that runs from root's shell, the login shells' paths to the installed Playwright, and the build's
 // Playwright check. Since 12 Nov 2026 also every machine's memory at the edge: compressed memory at boot and the guard
-// that ends one program when it runs out (machine-memory, with the two units above), and the LXD agent's protection.
+// that ends one program when it runs out (machine-memory, with the two units above), and the LXD agent's protection;
+// and the desktop's look, which the session writes at every start (desktop-look), the program root starts for a press
+// on the dock (desktop-dock-open, with the two dock units above) and the folder such a press asks in; and what
+// `desktop` does with files where the desktop's account can reach (desktop-files).
 const files = [
 	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
@@ -55,8 +63,21 @@ const files = [
 		installedPath: "/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf",
 		mode: "0644",
 	},
+	{ file: "desktop-look", installedPath: "/opt/qorpera-machine/desktop-look", mode: "0555" },
+	{ file: "desktop-dock-open", installedPath: "/opt/qorpera-machine/desktop-dock-open", mode: "0555" },
+	{ file: "desktop-files", installedPath: "/opt/qorpera-machine/desktop-files", mode: "0555" },
+	{
+		file: "qorpera-machine-desktop.tmpfiles",
+		installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
+		mode: "0644",
+	},
 ];
 await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
+// The desktop's pictures (the dock icons and the backdrop sets), one archive the image build unpacks at
+// /usr/share/qorpera-desktop (scripts/machine-desktop-art.mjs).
+const art = tarArchive(
+	await Promise.all(MACHINE_DESKTOP_PICTURES.map(async ({ name, source }) => ({ name, bytes: await readFile(source) }))),
+);
 // Only the recorded build: the image script pins the same bytes.
 const program = await readFile(resolve(args[3]));
 const record = readFolderProgramRecord();
@@ -158,6 +179,17 @@ for (const { file, installedPath, mode } of files) {
 		bytes: bytes.length,
 	});
 }
+await writeFile(resolve(output, "desktop-art.tar"), art, { mode: 0o644 });
+artifacts.push({
+	file: "desktop-art.tar",
+	source: "deploy/lxd-company-computer-guest/design/icons, deploy/lxd-company-computer-guest/backdrops, deploy/machine/backdrops",
+	installedPath: "/usr/share/qorpera-desktop",
+	owner: "root:root",
+	mode: "0644",
+	sha256: createHash("sha256").update(art).digest("hex"),
+	bytes: art.length,
+	entries: MACHINE_DESKTOP_PICTURES.length,
+});
 await writeFile(resolve(output, "qorpera-folder"), program, { mode: 0o755 });
 artifacts.push({
 	file: "qorpera-folder",

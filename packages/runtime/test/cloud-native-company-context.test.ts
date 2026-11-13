@@ -843,7 +843,8 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 		"Invalid cloud context source",
 	);
 	// A 16 KiB page is fitted to the result fence: the model always receives nextOffset,
-	// counted in code points, also for the last page of a source (SQL nextOffset null).
+	// counted in code points, also for the last page of a source (SQL nextOffset null). At the 32 KiB fence a page of
+	// plain or four-byte characters comes whole; one whose characters escape past the fence is cut.
 	const take = (units: string[], from: number, maxBytes: number) => {
 		let count = 0;
 		let bytes = 0;
@@ -903,12 +904,14 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 		expect(fenced).toMatchObject({ status: "ok", content: { truncated: false } });
 		const returned = JSON.parse(fenced.content.text);
 		const length = [...returned.content.text].length;
-		expect(length).toBeGreaterThan(256);
-		expect(length).toBeLessThan(size);
+		if (unit === "<" || unit === '"') {
+			expect(length).toBeGreaterThan(256);
+			expect(length).toBeLessThan(size);
+		} else expect(length).toBe(size);
 		expect(returned.content).toMatchObject({
 			sha256: source.content.sha256,
 			offset: inline,
-			nextOffset: inline + length,
+			nextOffset: length < size || !last ? inline + length : null,
 			truncated: true,
 		});
 		expect(returned.content.text).toBe(units.slice(inline, inline + length).join(""));
@@ -1548,15 +1551,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
-// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), and for overlay v15 (the
-// Co-Founder's tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November
-// 2026). A change to any is a change to every run's bytes.
+// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
+// a file brought in with manage_code bring_in (step 6's import, 20260930736000), and for overlay v15 (the Co-Founder's
+// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026). A change
+// to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "030d6b423479ddf035cb23b4039645614af4d2e82ca6e9675c285475e2beb44e",
+			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
 			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
@@ -1572,7 +1576,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "030d6b423479ddf035cb23b4039645614af4d2e82ca6e9675c285475e2beb44e",
+			instructions: "e14e3c2d850071f0bd08c27758a1d799326270f0b6c18ef6b9efc3146c7bd286",
 			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],
@@ -1960,7 +1964,11 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"A coding session cannot push, merge, open a pull request or send messages itself: when a member asks for any of that, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked;",
 		// Own code storage, slice 1 (8 Nov 2026): the company's code is kept in Qorpera, and members hear outcomes only.
 		"The company's code lives in Qorpera: start a new repository there yourself (host qorpera), without asking anyone, and keep all new code there, also when the company has a GitHub connection.",
-		"Use GitHub only for code that already lives there, or when a member asks for GitHub by name: never create a GitHub repository or move code to GitHub otherwise, and never ask a member to connect GitHub, create a repository or give access for code you write.",
+		// Own code storage, step 6 (20260930736000): code on GitHub or in a file comes into Qorpera with bring_in, after a
+		// look, and a member is asked once when people other than the company's agents changed it lately.
+		"Code that lives on GitHub, or comes as a file, comes into Qorpera with manage_code, action bring_in; then work on it here like any other repository.",
+		"Call it with look true first, and when people other than the company's agents changed the code in the last 30 days, ask a member once before you bring it in.",
+		"Use GitHub only when a member asks for GitHub by name: never create a GitHub repository or move code to GitHub otherwise, and never ask a member to connect GitHub, create a repository or give access for code you write.",
 		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
@@ -1972,6 +1980,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"Members use conversations to supervise the company and to get what they need quickly. Show the work simply: what is done, with links; what you decided, each with its reason in a line; and what you need from them.",
 	])
 		expect(staff).toContain(rule);
+	expect(staff).not.toContain("Use GitHub only for code that already lives there");
 	expect(cloudCompanyRuntimeInstructions(null, false)).toContain("# Starting work");
 	// The Co-Founder does what a founder asks first; the vision never holds it up.
 	const cofounder = cloudRuntimeHireBehavior("cofounder");

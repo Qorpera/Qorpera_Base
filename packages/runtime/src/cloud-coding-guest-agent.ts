@@ -574,16 +574,19 @@ export async function ageCodingPackageTrees(root: string, nowMs: number, ageMs: 
 }
 /** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
  * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
- * order; one that holds nothing is passed over). A folder's size is the blocks of what it holds (a file linked twice
- * counted once), its last use the newest read, write or change of a file in it (a hard link into a project changes only
- * the change time). A tool folder that is not a real folder is neither counted nor emptied. Emptied, a folder stays,
- * with its owner, mode and ACL. */
+ * order; one that holds nothing is passed over). What they hold is the blocks of each file and folder in them, a file
+ * linked twice counted once; a file also linked from a folder not yet emptied still counts after its first folder is
+ * emptied, so the trim goes on while it stays on disk. A folder's last use is the newest read, write or change of a file
+ * in it (a hard link into a project changes only the change time). A tool folder that is not a real folder is neither
+ * counted nor emptied. Emptied, a folder stays, with its owner, mode and ACL. */
 export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
-	const seen = new Set<string>();
-	const folders: { folder: string; path: string; bytes: number; usedMs: number }[] = [];
+	// Each file or folder once (by device and inode), with its blocks and how many of the tool folders still hold it.
+	const held = new Map<string, { bytes: number; folders: number }>();
+	const folders: { folder: string; path: string; entries: string[]; bytes: number; usedMs: number }[] = [];
 	for (const { folder } of CODING_PACKAGE_CACHES.tools) {
 		const path = join(root, folder);
 		if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
+		const entries = new Set<string>();
 		let bytes = 0;
 		let usedMs = 0;
 		for (const directories = [path]; directories.length > 0; ) {
@@ -594,23 +597,30 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 				if (!stat) continue;
 				if (stat.isDirectory()) directories.push(entry);
 				else if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
-				if (stat.nlink > 1 && !stat.isDirectory()) {
-					if (seen.has(`${stat.dev}:${stat.ino}`)) continue;
-					seen.add(`${stat.dev}:${stat.ino}`);
-				}
+				const key = `${stat.dev}:${stat.ino}`;
+				if (entries.has(key)) continue;
+				entries.add(key);
 				bytes += stat.blocks * 512;
+				const known = held.get(key);
+				if (known) known.folders++;
+				else held.set(key, { bytes: stat.blocks * 512, folders: 1 });
 			}
 		}
-		folders.push({ folder, path, bytes, usedMs });
+		folders.push({ folder, path, entries: [...entries], bytes, usedMs });
 	}
-	let total = folders.reduce((sum, { bytes }) => sum + bytes, 0);
+	let total = 0;
+	for (const { bytes } of held.values()) total += bytes;
 	const emptied: string[] = [];
-	for (const { folder, path, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
+	for (const { folder, path, entries, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
 		if (total <= limitBytes) break;
 		if (bytes === 0) continue;
 		for (const name of (await missing(() => readdir(path))) ?? [])
 			await rm(join(path, name), { recursive: true, force: true });
-		total -= bytes;
+		// What only this folder held is gone; what another folder still holds stays counted.
+		for (const key of entries) {
+			const known = held.get(key) as { bytes: number; folders: number };
+			if (--known.folders === 0) total -= known.bytes;
+		}
 		emptied.push(folder);
 	}
 	return emptied;
