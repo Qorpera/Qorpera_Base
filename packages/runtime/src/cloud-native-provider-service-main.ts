@@ -222,7 +222,8 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 
 /** The data gateway's run door (company databases, slice 5): its HTTPS origin and the CA file its certificate is pinned
  * to. Without the URL this host offers no data tool; a URL without its CA, or one that is not a plain HTTPS origin,
- * stops the host. The door takes the native object token, the credential this host already holds for a host of ours. */
+ * stops the host. The door takes a credential of its own (the systemd credential `qorpera-company-data`), as every
+ * other service this host calls does: the store's machine then holds nothing that opens another service. */
 export function nativeCompanyDataConfiguration(
 	environment: NodeJS.ProcessEnv,
 ): { url: string; caFile: string } | undefined {
@@ -449,14 +450,31 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			serviceRoleKey: publishableKey,
 			fetch: dispatch.fetch,
 		});
-		// The data gateway's run door, its CA pinned, on the native object token ("a host of ours").
-		const companyData = dataConfiguration
-			? httpsCompanyDataDoor({
-					url: dataConfiguration.url,
-					ca: await readFile(dataConfiguration.caFile, "utf8"),
-					token: objectToken,
-				})
-			: undefined;
+		// The data gateway's run door, its CA pinned, on a credential of its own ("a host of ours").
+		const dataToken = dataConfiguration ? await systemdCredential(environment, "qorpera-company-data") : undefined;
+		if (
+			dataConfiguration &&
+			(!dataToken ||
+				!TOKEN_PATTERN.test(dataToken) ||
+				[
+					masterKey,
+					bridgeToken,
+					identity.credential,
+					objectToken,
+					secretBrokerToken,
+					computerToken,
+					codingToken,
+				].includes(dataToken))
+		)
+			throw new Error("Company databases require a distinct private systemd credential");
+		const companyData =
+			dataConfiguration && dataToken
+				? httpsCompanyDataDoor({
+						url: dataConfiguration.url,
+						ca: await readFile(dataConfiguration.caFile, "utf8"),
+						token: dataToken,
+					})
+				: undefined;
 		const codingControl = codingConfiguration
 			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: publishableKey, fetch: dispatch.fetch })
 			: undefined;

@@ -48,7 +48,8 @@ or drops it, or that makes an unlogged table, is refused the moment it runs.
 
 `new Gateway({ store: { host, port, logins: { admin, keeper, watch, folderKey } }, platform, limits, runs })`, where
 `platform` is `new Platform({ url, publishableKey })`, `folderKey` is 32 random bytes as hex and `runs` is `{ token }`,
-the node's private token agents' tools bring (leave it out and the run door answers nothing). `serve(gateway)` answers
+the run door's own token, which each provider host holds as its systemd credential `qorpera-company-data` and no other
+service takes (leave it out and the run door answers nothing). `serve(gateway)` answers
 members on loopback; `serveRuns(gateway, { host, port, cert, key })` is the run door, its own listener (TLS with the PEM
 `cert` and `key`; without them only on loopback); `startWatcher(gateway)` looks every 10 s.
 
@@ -66,7 +67,7 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 ### The run door (agents)
 
 An agent's tool (`data_describe`, `data_apply`, `data_query`, `packages/runtime/src/cloud-data-tools.ts`) calls `POST
-/v1/run-data/<call>` on the run door with the node's private token (`authorization: Bearer …`) and, in the body, a data
+/v1/run-data/<call>` on the run door with the run door's token (`authorization: Bearer …`) and, in the body, a data
 pass the platform made for its run (`qorpera_run_data_pass`, migration `20260930750000`). The gateway redeems the pass
 once with the publishable key alone (`qorpera_data_pass_redeem`): it names the company, the member who asked the run and
 each file the run may read under `data/<name>/` (its `database.toml` and the files directly in `tables/`, `queries/`
