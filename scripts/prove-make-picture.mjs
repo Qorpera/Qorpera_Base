@@ -25,7 +25,9 @@ import { build } from "esbuild";
 // A sign-in's picture limit, when it is hit, shows in the probe's lines (reason picture_limit and resetsAt) and in the
 // tap (the item's `failure`). Not covered: the company folder's commit and the web's view of the file (PROOF.md, step 3).
 // Prints one PASS line per check and FACT lines with what was measured; exits 1 on the first failure. Without the binary
-// or the sign-in it prints NOT RUN and exits 0. The sign-in is copied into a private scratch root, never changed in place.
+// or the sign-in it prints NOT RUN and exits 0. The sign-in is copied into a private scratch root, never changed in place,
+// and every copy is removed when the run ends, also a failed run's and also with QORPERA_PICTURE_KEEP=1 (which keeps the
+// tap and the bundle alone).
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -169,8 +171,11 @@ async function main() {
 	const scratch = await realpath(await mkdtemp(join(tmpdir(), "qorpera-make-picture-")));
 	await chmod(scratch, 0o700);
 	const runtime = await bundle(scratch);
+	// Every identity root holds a copy of the sign-in: each is removed when the run ends, kept scratch or not.
+	const identities = [];
 	const identity = async (name) => {
 		const root = join(scratch, name);
+		identities.push(root);
 		await mkdir(join(root, "codex"), { recursive: true, mode: 0o700 });
 		await copyFile(auth, join(root, "codex", "auth.json"));
 		await chmod(join(root, "codex", "auth.json"), 0o600);
@@ -285,8 +290,12 @@ async function main() {
 			`both pictures came back isolated, the slower in ${slowest} ms${slowest > 30_000 ? ", past the relay's 30 s: the long-wait window carried it" : " (under 30 s: the window was not needed this time)"}`,
 		);
 	} finally {
+		// The copies of the sign-in go first and always, also when the run failed and also with QORPERA_PICTURE_KEEP: a
+		// kept scratch folder holds the tap and the bundle, never a sign-in (13 November 2026: a kept folder of a failed
+		// run left two copies on a shared test machine).
+		for (const root of identities) await rm(root, { recursive: true, force: true });
 		if (!process.env.QORPERA_PICTURE_KEEP) await rm(scratch, { recursive: true, force: true });
-		else process.stdout.write(`Kept ${scratch}\n`);
+		else process.stdout.write(`Kept ${scratch} (the tap and the bundle; the sign-in copies are removed)\n`);
 	}
 }
 
