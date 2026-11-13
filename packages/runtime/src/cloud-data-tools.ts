@@ -1,5 +1,5 @@
 import { request as httpsRequest } from "node:https";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, parseRecord } from "@qorpera/contracts";
 import type { CloudCompanyDataPass, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
@@ -153,13 +153,19 @@ function plain(text: string): string {
 	return words.length > 900 ? `${words.slice(0, 900)}...` : words;
 }
 
-function record(value: unknown): Record<string, unknown> | null {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+/** The run door's answer as an object, else the door is unavailable. */
+function answerOf(value: unknown): Record<string, unknown> {
+	try {
+		return parseRecord(value, "Company data answer");
+	} catch {
+		return refusal(502, value);
+	}
 }
 
 /** A gateway's answer that is not one: a refusal for the model when it says why, else the door is unavailable. */
 function refusal(status: number, value: unknown): never {
-	const answer = record(value);
+	const object = typeof value === "object" && !Array.isArray(value);
+	const answer = object ? (value as Record<string, unknown> | null) : null;
 	if (status === 401)
 		throw new CloudRuntimeDiagnosticError("authority_unavailable", "Company data door refused the run");
 	if (status >= 400 && status < 500 && answer && typeof answer.error === "string" && status !== 413) {
@@ -197,27 +203,24 @@ export function cloudDataTools(options: {
 		let texts: Record<string, string> | null = null;
 		for (let round = 0; round < ROUNDS; round++) {
 			const passed: CloudCompanyDataPass = await folder.dataPass(name, signal);
-			if (passed.state === "no_database")
+			if (passed.state !== "pass")
 				throw new CloudToolRefusal(
-					`No database ${name} that you may read: it needs data/${name}/database.toml (format = "qorpera.database/v1")`,
-				);
-			if (passed.state === "too_many_files")
-				throw new CloudToolRefusal(
-					name === null
-						? "The company's databases hold more than 1,000 files together: name one database"
-						: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
+					passed.state === "no_database"
+						? `No database ${name} that you may read: it needs data/${name}/database.toml (format = "qorpera.database/v1")`
+						: name === null
+							? "The company's databases hold more than 1,000 files together: name one database"
+							: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
 				);
 			const answer = await door.call(verb, { ...body, pass: passed.pass, ...(texts ? { texts } : {}) }, signal);
 			if (answer.status !== 200) refusal(answer.status, answer.value);
-			const need = record(answer.value)?.need;
+			const need = answerOf(answer.value).need;
 			if (need === undefined) return answer.value;
 			if (!Array.isArray(need) || need.length === 0) refusal(502, answer.value);
 			// The files the gateway asks for, read as the run: a file changed since the pass is left for the next pass.
 			texts = {};
 			let bytes = 0;
 			for (const wanted of need) {
-				const path = record(wanted)?.path;
-				const hash = record(wanted)?.sha256;
+				const { path, sha256: hash } = answerOf(wanted);
 				if (typeof path !== "string" || typeof hash !== "string") refusal(502, answer.value);
 				let read: Awaited<ReturnType<typeof folder.readText>> = null;
 				try {
@@ -247,7 +250,7 @@ export function cloudDataTools(options: {
 		parseArguments: (value) => parseDescribe(value) as unknown as JsonValue,
 		async execute(value, context) {
 			const request = value as unknown as DescribeRequest;
-			const answer = record(
+			const answer = answerOf(
 				await ask(
 					"describe",
 					request.database ?? null,
@@ -255,8 +258,8 @@ export function cloudDataTools(options: {
 					context.signal,
 				),
 			);
-			const databases = Array.isArray(answer?.databases) ? (answer.databases as Record<string, unknown>[]) : null;
-			if (!answer || !databases) refusal(502, answer);
+			const databases = Array.isArray(answer.databases) ? (answer.databases as Record<string, unknown>[]) : null;
+			if (!databases) refusal(502, answer);
 			const room = { companyBytes: answer.companyBytes, limitBytes: answer.limitBytes };
 			return shown([
 				() => answer,
@@ -300,9 +303,9 @@ export function cloudDataTools(options: {
 		parseArguments: (value) => parseApply(value) as unknown as JsonValue,
 		async execute(value, context) {
 			const request = value as unknown as ApplyRequest;
-			const answer = record(await ask("apply", request.database, { database: request.database }, context.signal));
-			const results = Array.isArray(answer?.results) ? (answer.results as Record<string, unknown>[]) : null;
-			if (!answer || !results || typeof answer.applied !== "boolean") refusal(502, answer);
+			const answer = answerOf(await ask("apply", request.database, { database: request.database }, context.signal));
+			const results = Array.isArray(answer.results) ? (answer.results as Record<string, unknown>[]) : null;
+			if (!results || typeof answer.applied !== "boolean") refusal(502, answer);
 			// A held step says what it would destroy and that a member must say yes.
 			const told = results
 				.filter((result) => result.state !== "already")
@@ -355,10 +358,9 @@ export function cloudDataTools(options: {
 				...(request.question !== undefined ? { question: request.question } : { sql: request.sql ?? "" }),
 				...(request.params ? { params: request.params } : {}),
 			};
-			const answer = record(await ask("query", request.database, body, context.signal));
-			const rows = Array.isArray(answer?.rows) ? (answer.rows as unknown[]) : null;
-			if (!answer || !rows || !Array.isArray(answer.columns) || typeof answer.more !== "boolean")
-				refusal(502, answer);
+			const answer = answerOf(await ask("query", request.database, body, context.signal));
+			const rows = Array.isArray(answer.rows) ? (answer.rows as unknown[]) : null;
+			if (!rows || !Array.isArray(answer.columns) || typeof answer.more !== "boolean") refusal(502, answer);
 			// The answer whole when it fits one result; else as many rows as fit, with more.
 			const page = (count: number) => ({
 				columns: answer.columns,
