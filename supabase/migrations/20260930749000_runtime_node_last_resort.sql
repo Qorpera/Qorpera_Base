@@ -31,11 +31,15 @@
 --    both nodes run today), after 1.5 seconds for a fast host and after 10 seconds for an overflow host, and a run
 --    claimed with a dispatch role records the claim turn's node instead of asking the chooser. The guard therefore sits
 --    at the top of the claim turn, so every path passes it: an orchestrator whose nodes are all last resort claims a run
---    only when no node that is not a last resort could take it right now. The three cases that mean exactly that still
---    pass: the run's own placement names this node (a warm conversation, or the only node left), another orchestrator's
---    admission refusal (a full or retiring sandbox, the case the overflow role answers), and no regular node that is
---    eligible, fits, takes the run's bundle and may hold the run's identity -- the node where this run's last start
---    failed is never such a node, so the failed-start rule still prefers a healthy last-resort node over it.
+--    only when no node that is not a last resort could take it right now. A regular node counts as able to take it when
+--    it is eligible, fits, takes the run's bundle, may hold the run's identity, and still has a live host that has not
+--    refused this run's admission in the last 15 seconds (qorpera_runtime_refused_recently, the released claim rows). A
+--    refusal is evidence about the host that refused and about nothing else (review r2 F1), so it takes that host out of
+--    the set instead of opening the guard: while another regular host has room, that host is preferred and the
+--    last-resort node stays out; once every regular host has refused or gone ineligible the set is empty and the
+--    last-resort node passes on the ordinary rule. The run's own placement naming this node (a warm conversation, or the
+--    only node left) passes as before, and the node where this run's last start failed never counts as able, so the
+--    failed-start rule still prefers a healthy last-resort node over it.
 -- 4. The pull path (qorpera_admit_executor_machines): a last-resort node's executor admits a waiting machine, or gives up
 --    a stopped machine's disk for one, only when no node that is not a last resort could fit it now
 --    (qorpera_company_machine_candidates, the push path's own test, with the machine's own disk given back). One asleep on
@@ -179,23 +183,25 @@ $claim_old$,
 		and not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
 			join public.qorpera_runtime_nodes spare on spare.id = mine.node_id where not spare.last_resort) then
 		v_placement := public.qorpera_runtime_run_placement(p_job, p_run);
-		-- Three cases mean no other node can take it, and each still passes: the run's own placement names this node (a
-		-- warm conversation, or the only node left once the failed node and the regular nodes are passed over); another
-		-- orchestrator refused the run's admission (a full or retiring sandbox, the case the overflow role answers), and
-		-- this one has not refused it itself recently; and no node that is not a last resort is eligible, fits, takes the
-		-- run's bundle and may hold the run's identity. The node where this run's last start failed is never such a node,
-		-- so the failed-start rule still prefers a healthy last-resort node over it.
+		-- The run's own placement names this node (a warm conversation, or the only node left once the failed node and
+		-- the regular nodes are passed over): nothing else can take it, so the claim stands. Otherwise ask whether a
+		-- node that is not a last resort could take it right now: eligible, fits, takes the run's bundle, may hold the
+		-- run's identity, and with a live host that has not refused this run's admission in the last 15 seconds. A
+		-- refusal says a host is full or retiring and says nothing about the others (review r2), so it takes that host
+		-- out of the set, and the set is empty only once every regular host has refused or gone ineligible. The node
+		-- where this run's last start failed never counts, so the failed-start rule still prefers this node over it.
 		if not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
 				where mine.node_id = (v_placement ->> 'nodeId')::uuid)
-			and not (v_error like 'ADMISSION_REFUSED:%' and p_job.dispatch_refused_by is distinct from p_orchestrator_id
-				and not public.qorpera_runtime_refused_recently(p_job.run_id, p_orchestrator_id))
 			and exists (select 1 from jsonb_array_elements(public.qorpera_runtime_node_placement_candidates('native')) regular
 				where (regular ->> 'eligible')::boolean and (regular ->> 'fits')::boolean
 					and not coalesce((regular ->> 'lastResort')::boolean, false)
 					and (regular ->> 'nodeId')::uuid is distinct from (select failure.node_id
 						from public.qorpera_runtime_run_start_failures failure where failure.run_id = p_run.id)
 					and public.qorpera_runtime_adapter_takes_bundle(regular ->> 'providerId', p_run.runtime_bundle_sha256)
-					and public.qorpera_runtime_run_adapter_allowed(p_run, regular ->> 'providerId')) then
+					and public.qorpera_runtime_run_adapter_allowed(p_run, regular ->> 'providerId')
+					and exists (select 1 from public.qorpera_runner_orchestrators host
+						where host.provider_adapter = regular ->> 'providerId' and host.status = 'active'
+							and not public.qorpera_runtime_refused_recently(p_job.run_id, host.id))) then
 			return false;
 		end if;
 	end if;

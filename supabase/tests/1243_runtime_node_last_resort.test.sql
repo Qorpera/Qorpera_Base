@@ -11,8 +11,9 @@
 -- regular executor is enabled". Nodes,
 -- providers, observations, reservations and every chooser are the real functions; the machines, the coding executors,
 -- worker and session, the second company and a run's start failure are rows written as the fixtures elsewhere write them.
--- Review r1: section 4b drives real claims through every bypass of the claim turn (F1), and section 6 proves that a
--- regular node reporting less hardware than its policy counts on is no candidate, so the spare still admits work (F2).
+-- Review r1: section 4b drives real claims through every bypass of the claim turn (F1; r2: a refusal takes only the host
+-- that refused out of the set), and section 6 proves that a regular node reporting less hardware than its policy counts
+-- on is no candidate, so the spare still admits work (F2).
 reset role;
 select pg_temp.base_claims('service_role');
 
@@ -126,19 +127,32 @@ begin
 	return (v_pass -> 'run_ids' ->> 0)::uuid;
 end $$;
 -- A real claim by one node's orchestrator: the run it took, or nothing.
+create function pg_temp.lr_take(p_node text) returns jsonb language sql as $$
+	select public.qorpera_claim_runner_job_for_orchestrator(pg_temp.lr_orchestrator(p_node), extensions.gen_random_uuid(), 120)
+$$;
 create function pg_temp.lr_claim(p_node text) returns text language plpgsql as $$
-declare v_work jsonb := public.qorpera_claim_runner_job_for_orchestrator(pg_temp.lr_orchestrator(p_node),
-	extensions.gen_random_uuid(), 120);
+declare v_work jsonb := pg_temp.lr_take(p_node);
 begin
 	return case when v_work = 'null'::jsonb then 'nothing' else coalesce(v_work #>> '{work,run_id}', v_work::text) end;
 end $$;
--- The job waited past the claim turn's 1.5 seconds; and: another node's orchestrator refused its admission.
+-- The job waited past the claim turn's 1.5 seconds.
 create function pg_temp.lr_age_job(p_run uuid) returns void language sql as $$
 	update public.qorpera_runner_jobs set queued_at = clock_timestamp() - interval '5 seconds' where run_id = p_run
 $$;
-create function pg_temp.lr_refused_by(p_run uuid, p_node text) returns void language sql as $$
-	update public.qorpera_runner_jobs set last_error = 'ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED',
-		dispatch_refused_by = pg_temp.lr_orchestrator(p_node) where run_id = p_run
+-- One node's orchestrator claims the run and then refuses its admission, as a host with no room does (721's pattern):
+-- the claim is released with the reason, which is what qorpera_runtime_refused_recently reads.
+create function pg_temp.lr_claim_then_refuse(p_node text) returns text language plpgsql as $$
+declare v_work jsonb := pg_temp.lr_take(p_node);
+begin
+	if v_work = 'null'::jsonb then return 'nothing'; end if;
+	perform public.qorpera_release_runner_job_claim(pg_temp.lr_orchestrator(p_node), (v_work ->> 'claim_id')::uuid,
+		extensions.gen_random_uuid(), 'ADMISSION_REFUSED:NODE_CAPACITY_EXHAUSTED');
+	return coalesce(v_work #>> '{work,run_id}', v_work::text);
+end $$;
+-- The 15 seconds every host waits after a refusal, sat out (721's fa_ready). The refusals themselves stay on the
+-- released claims, which is where the guard reads them.
+create function pg_temp.lr_waited_out(p_run uuid) returns void language sql as $$
+	update public.qorpera_runner_jobs set dispatch_deferred_until = null, dispatch_refused_by = null where run_id = p_run
 $$;
 create function pg_temp.lr_roles(p_role text) returns void language sql as $$
 	select public.qorpera_set_runner_orchestrator_dispatch_role(pg_temp.lr_orchestrator(n), p_role)
@@ -334,11 +348,12 @@ set local session_replication_role = origin;
 select pg_temp.base_assert(pg_temp.lr_run_node() = pg_temp.lr_id('c'), '(iv) The run''s start failed on node A: node C, not A again');
 rollback to savepoint fast_failed;
 
--- 4b. The claim itself (review r1 F1): a last-resort node's orchestrator claims a run only when no regular node could
---     take it, through every bypass of the claim turn. With dispatch roles, run placement does not look at room (it
---     ranks live fast hosts), so a full regular node is still preferred and refuses the start; the spare comes in
---     through that refusal, which is why the refusal must pass the guard. The no-role path, which is how both nodes run
---     today, asks the chooser instead, so there the spare comes in as soon as no regular node fits.
+-- 4b. The claim itself (review r1 F1, narrowed in r2): a last-resort node's orchestrator claims a run only when no
+--     regular node could take it right now, through every bypass of the claim turn. A host's refused admission takes
+--     that host out of the set and nothing more, so another regular host with room is still preferred; the set is empty
+--     only once every regular host has refused or gone ineligible. With dispatch roles, run placement ranks live fast
+--     hosts without a room test, so a full regular node is still preferred and refuses, and the spare waits for the
+--     others' refusals; the no-role path, which is how both nodes run today, asks the chooser instead.
 select set_config('qorpera_test.lr_run', pg_temp.lr_run('92400000-0000-4000-8000-000000000031')::text, true);
 select pg_temp.lr_observe_all();
 select pg_temp.base_assert((select count(*) = 1 from public.qorpera_runner_jobs where status = 'queued'
@@ -355,12 +370,25 @@ select pg_temp.lr_age_job(current_setting('qorpera_test.lr_run')::uuid);
 select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node C claims nothing after the 1.5 s wait either');
 select pg_temp.lr_expect(pg_temp.lr_claim('a'), current_setting('qorpera_test.lr_run'), 'Node A still claims it');
 rollback to savepoint claim_waited;
--- A fast host's refused admission is the "no room" case: it still lets node C in (the overflow rule, kept).
+-- A refusal takes the host that refused out of the set and says nothing about the others: node B still has room, so
+-- node B claims it and node C stays out (review r2 F1).
 savepoint claim_refused;
-select pg_temp.lr_refused_by(current_setting('qorpera_test.lr_run')::uuid, 'a');
-select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
-	'(ii) Node A refused the run''s admission: node C claims it');
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a'), current_setting('qorpera_test.lr_run'),
+	'Node A claims the run and refuses its admission');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) Node A refused, but node B has room: node C claims nothing');
+select pg_temp.lr_expect(pg_temp.lr_claim('b'), current_setting('qorpera_test.lr_run'), '(i) Node B claims it instead');
 rollback to savepoint claim_refused;
+-- No dispatch role, as both nodes run today: the same, and then the case that matters -- once every regular host has
+-- refused, the set is empty and node C claims on the ordinary rule.
+savepoint claim_refused_no_role;
+select pg_temp.lr_roles(null) \g /dev/null
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('a'), current_setting('qorpera_test.lr_run'), 'No role: node A refuses');
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), 'nothing', '(i) No role: node B has room, so node C claims nothing');
+select pg_temp.lr_expect(pg_temp.lr_claim_then_refuse('b'), current_setting('qorpera_test.lr_run'), 'Node B claims it and refuses too');
+select pg_temp.lr_waited_out(current_setting('qorpera_test.lr_run')::uuid);
+select pg_temp.lr_expect(pg_temp.lr_claim('c'), current_setting('qorpera_test.lr_run'),
+	'(ii) Every regular host has refused: node C claims it');
+rollback to savepoint claim_refused_no_role;
 savepoint claim_waited_flag_off;
 select pg_temp.lr_age_job(current_setting('qorpera_test.lr_run')::uuid);
 select pg_temp.lr_spare(false) \g /dev/null
