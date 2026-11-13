@@ -4407,15 +4407,20 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		held: boolean;
 		read(): void;
 	}
-	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; the pointer fence answers `fenceExit`; a
-	 * look answers a picture; an agent's action holds until released. `order` is every exec's kind, in turn. */
+	/** The pipe exec: a mover reads its stdin until it ends or the test ends it; the pointer fence answers the next of
+	 * `fenceExits`, else `fenceExit`, once `fenceGate` (when set) opens; a look answers a picture; an agent's action holds
+	 * until released. `order` is every exec's kind, in turn. */
 	async function piped() {
 		const f = await fixture();
 		const runs: Run[] = [];
 		const looks: LxdExecPipeRequest[] = [];
 		const fences: string[] = [];
 		const order: string[] = [];
-		const config = { fenceExit: 0 };
+		const config = {
+			fenceExit: 0,
+			fenceExits: [] as number[],
+			fenceGate: undefined as Promise<void> | undefined,
+		};
 		let releaseAction = () => {};
 		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
 			if (given.command[2] === COMPANY_MACHINE_MEMBER_POINTER) {
@@ -4456,7 +4461,13 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			if (given.command[2] === COMPANY_MACHINE_POINTER_FENCE) {
 				order.push(`fence ${given.command[4]}`);
 				fences.push(given.command[4] as string);
-				return { exitCode: config.fenceExit, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+				if (config.fenceGate) {
+					const gate = config.fenceGate;
+					config.fenceGate = undefined;
+					await gate;
+				}
+				const exitCode = config.fenceExits.shift() ?? config.fenceExit;
+				return { exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
 			}
 			if (given.command[2] === COMPANY_MACHINE_MEMBER_LOOK) {
 				order.push("look");
@@ -4664,6 +4675,100 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		);
 		expect(fences).toHaveLength(1);
 		runs[0]!.end(0);
+	});
+
+	/** A member's look at generation `generation` (`userId` B by default). */
+	const lookAt = (f: Awaited<ReturnType<typeof piped>>["f"], generation: number, userId = id(22)) =>
+		f.host.memberLook(
+			{ placementId: id(6), bootId: id(7), userId, keepDesktop: false, desktopGeneration: generation },
+			f.signal,
+		);
+
+	it("takes no picture until the desktop confirmed the newer fence: a write that failed is written again by the next look (review r2 F1 of #1733)", async () => {
+		const { f, runs, fences, order, config } = await piped();
+		f.host.memberPointer(move({ generation: 4 }));
+		await settle();
+		// The private holder's first look (generation 5): the fence write fails once. No picture, no look at all.
+		config.fenceExits.push(1);
+		await expect(lookAt(f, 5)).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		expect(order).toEqual(["mover", `fence ${fences[0]}`]);
+		// The next look, of the same generation (nothing newer to see): the fence is still not confirmed, so it writes it
+		// again, and only then takes its picture.
+		const outcome = await lookAt(f, 5);
+		expect(outcome).toHaveProperty("png");
+		expect(fences).toEqual([fences[0], fences[0]]);
+		expect(order).toEqual(["mover", `fence ${fences[0]}`, `fence ${fences[0]}`, "look"]);
+		// Confirmed now: a third look writes nothing.
+		await lookAt(f, 5);
+		expect(fences).toHaveLength(2);
+		expect(order.at(-1)).toBe("look");
+		runs[0]!.end(0);
+	});
+
+	it("lets two looks of the same newer generation at once both wait for the one fence write, and the second write it itself when that fails (review r2 F1 of #1733)", async () => {
+		const { f, runs, fences, order, config } = await piped();
+		f.host.memberPointer(move({ generation: 4 }));
+		await settle();
+		// Both looks at once; the fence write on its way is held.
+		let open = () => {};
+		config.fenceGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const first = lookAt(f, 5);
+		const second = lookAt(f, 5, id(23));
+		await settle();
+		expect(order).toEqual(["mover", `fence ${fences[0]}`]);
+		open();
+		expect(await first).toHaveProperty("png");
+		expect(await second).toHaveProperty("png");
+		// One write for both, and both pictures taken after it.
+		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look", "look"]);
+		// Again, at generation 6, and the write on its way fails: the look that wrote it fails; the one that waited writes
+		// the fence itself, and takes its picture only once that is confirmed.
+		config.fenceGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		config.fenceExits.push(1);
+		const third = lookAt(f, 6);
+		const fourth = lookAt(f, 6, id(23));
+		await settle();
+		expect(order.slice(4)).toEqual([`fence ${fences[1]}`]);
+		open();
+		await expect(third).rejects.toThrow("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		expect(await fourth).toHaveProperty("png");
+		expect(order.slice(4)).toEqual([`fence ${fences[1]}`, `fence ${fences[1]}`, "look"]);
+		runs[0]!.end(0);
+	});
+
+	it("starts the next mover with the confirmed fence when the last one died between the fence write and the next move (review r2 of #1733)", async () => {
+		const { f, runs, fences, order } = await piped();
+		f.host.memberPointer(move({ generation: 4 }));
+		await settle();
+		await lookAt(f, 5);
+		expect(order).toEqual(["mover", `fence ${fences[0]}`, "look"]);
+		// The mover dies right after the write (its desktop restarted, LXD ended it).
+		runs[0]!.end(0);
+		await settle();
+		// The next move starts a mover with the fence the desktop confirmed; its moves carry it.
+		f.host.memberPointer(move({ x: 70, y: 80, generation: 5 }));
+		await settle();
+		expect(runs).toHaveLength(2);
+		expect(runs[1]!.request.command.at(-1)).toBe(fences[0]);
+		expect(line(runs[1]!.lines[0]!)).toEqual({ at: "70 80", fence: fences[0] });
+		// Nothing newer: the next look needs no write.
+		await lookAt(f, 5);
+		expect(fences).toHaveLength(1);
+		// It dies again, and a newer generation comes before the next move: the look writes the newer fence (a mover ended
+		// just now may have left moves on their way), and the next mover starts with it.
+		runs[1]!.end(0);
+		await settle();
+		await lookAt(f, 6);
+		expect(fences).toHaveLength(2);
+		f.host.memberPointer(move({ x: 71, y: 81, generation: 6 }));
+		await settle();
+		expect(runs[2]!.request.command.at(-1)).toBe(fences[1]);
+		expect(line(runs[2]!.lines[0]!).fence).toBe(fences[1]);
+		runs[2]!.end(0);
 	});
 
 	it("runs no action when the fence could not be written, and frees the desktop at once", async () => {

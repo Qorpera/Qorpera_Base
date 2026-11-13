@@ -179,9 +179,10 @@ export const COMPANY_MACHINE_MEMBER_LOOK = [
  * newer lease generation) must stop it there. The host keeps a fence per desktop, `NONCE:COUNT` (NONCE its own, random
  * per host process; COUNT moved at every action and every newer generation it sees) and stamps each move with the fence
  * of the moment it took it. The desktop keeps the newest fence in /run/qorpera-desktop/pointer-fence: before an action
- * runs, and before a look that showed a newer generation, the host writes its new fence there
- * (COMPANY_MACHINE_POINTER_FENCE) and waits for it, and the mover writes its own at its start (only ever newer: same
- * NONCE and a higher COUNT, or another NONCE, a new host process). The mover moves the pointer only while holding
+ * runs, and before any look while a mover runs, the desktop must have CONFIRMED the host's fence of now (the host writes
+ * it there, COMPANY_MACHINE_POINTER_FENCE, one write at a time, and counts on it only once the script answered: a write
+ * that failed or is still on its way lets no action run and no picture be taken; review r2 F1 of #1733), and the mover
+ * writes its own at its start (only ever newer: same NONCE and a higher COUNT, or another NONCE, a new host process). The mover moves the pointer only while holding
  * pointer.lock, only for a line whose fence is the file's, and waits for the X server to have done it (XSync) before it
  * lets the lock go. So a move either took effect before the fence moved (before the action, before the newer holder's
  * look) or never does. Measured on a machine of the live image (13 Nov 2026): 0.2 to 0.4 ms a move, no process per
@@ -270,6 +271,8 @@ export const COMPANY_MACHINE_POINTER_FENCE = [
 const POINTER_FENCE_MS = 3000;
 /** A mover that ended within this long may still have had moves on their way when it did: the fence is written then too. */
 const POINTER_FENCE_AFTER_MOVER_MS = 5000;
+/** How many times one caller looks again for a confirmed fence while it keeps moving (#publishFence) before it gives up. */
+const POINTER_FENCE_ROUNDS = 4;
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
 /** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
@@ -1177,6 +1180,11 @@ export class LxdCompanyMachineHost {
 	readonly #fenceNonce = randomBytes(8).toString("hex");
 	readonly #fenceCounts = new Map<string, number>();
 	readonly #moverEnded = new Map<string, number>();
+	/** Per placement, the fence the desktop CONFIRMED (the fence script answered 0 for it, on that boot), and the write
+	 * on its way (review r2 F1 of #1733): observing a newer generation moves the fence at once, but no look, action or
+	 * picture counts on the desktop having it until a write of it was confirmed (#publishFence). */
+	readonly #fencePublished = new Map<string, { readonly bootId: string; readonly fence: string }>();
+	readonly #fenceWrites = new Map<string, Promise<void>>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
@@ -2160,6 +2168,8 @@ export class LxdCompanyMachineHost {
 		this.#movers.delete(e.placementId);
 		this.#moverEnded.delete(e.placementId);
 		this.#fenceCounts.delete(e.placementId);
+		this.#fencePublished.delete(e.placementId);
+		this.#fenceWrites.delete(e.placementId);
 		this.#moverFailed.delete(e.placementId);
 		this.#pointerUsers.delete(e.placementId);
 		this.#generations.delete(e.placementId);
@@ -2797,7 +2807,7 @@ export class LxdCompanyMachineHost {
 			run.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
-		const newer = this.#seeGeneration(run.placementId, run.desktopGeneration);
+		this.#seeGeneration(run.placementId, run.desktopGeneration);
 		const acting = run.request.action !== null && run.request.action !== undefined;
 		if (acting && !this.#holdDesktop(run.placementId)) return { refused: "DESKTOP_BUSY" };
 		// An action moves the pointer fence (20260930744000, review r1 F1 of #1733): no move a member made before it moves
@@ -2806,15 +2816,14 @@ export class LxdCompanyMachineHost {
 		let ended = false;
 		let result: Awaited<ReturnType<typeof pipe>>;
 		try {
-			// Before the action, and before a look that showed a newer generation: the desktop has the fence. Nothing ran
-			// if that failed: the desktop is free again at once.
-			if (acting || newer)
-				try {
-					await this.#writeFence(pipe, run.placementId, run.bootId, signal);
-				} catch (error) {
-					ended = true;
-					throw error;
-				}
+			// Before the action, and before any look while a mover runs: the desktop has confirmed the host's fence of now
+			// (review r2 F1 of #1733). Nothing ran if it could not: no action, no picture, the desktop free again at once.
+			try {
+				await this.#publishFence(pipe, run.placementId, run.bootId, signal);
+			} catch (error) {
+				ended = true;
+				throw error;
+			}
 			// A member held the desktop since its clipboard was last confirmed clear: cleared and recorded first (F35). If the
 			// fence or the record says a member holds the desktop now, an action does not run (round 24 N1: no receipt
 			// marker is made yet); a look goes on, and its fence after the capture refuses the picture.
@@ -3024,7 +3033,7 @@ export class LxdCompanyMachineHost {
 		// No move a member made before it may move the pointer once it runs: the desktop has the fence first. Nothing ran
 		// if that failed: the desktop is free again.
 		try {
-			await this.#writeFence(pipe, act.placementId, act.bootId, signal);
+			await this.#publishFence(pipe, act.placementId, act.bootId, signal);
 		} catch (error) {
 			this.#releaseDesktop(act.placementId, true);
 			throw error;
@@ -3171,24 +3180,65 @@ export class LxdCompanyMachineHost {
 	#moveFence(placementId: string): void {
 		this.#fenceCounts.set(placementId, (this.#fenceCounts.get(placementId) ?? 0) + 1);
 	}
-	/** Writes the placement's fence of now on the desktop (COMPANY_MACHINE_POINTER_FENCE) while a mover runs there, or
-	 * ended within POINTER_FENCE_AFTER_MOVER_MS, and waits for it: once it answered, no stale move moves the pointer.
-	 * Another boot (97) has no mover of this one. Any other end throws: nothing runs after a fence that may not hold. */
-	async #writeFence(
+	/**
+	 * Makes sure the desktop has CONFIRMED the placement's fence of now before the caller goes on (an action runs, a picture
+	 * is taken; review r2 F1 of #1733), while a mover runs there or ended within POINTER_FENCE_AFTER_MOVER_MS (otherwise no
+	 * move can be waiting anywhere, and a mover started later writes the fence of its start itself).
+	 *
+	 * Observed is not confirmed: #seeGeneration and #moveFence move the fence at once, and only a write the fence script
+	 * answered 0 for (on that boot) marks the desktop as having it (#fencePublished). One write at a time per placement:
+	 * a caller that finds one on its way waits for it and then looks again (the fence may have moved meanwhile, or that
+	 * write failed: it then writes itself). A write of its own that fails throws: the caller runs nothing and shows
+	 * nothing, and the next caller writes again. Another boot (97) is no confirmation: the caller's own exec meets the same
+	 * boot change.
+	 */
+	async #publishFence(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		placementId: string,
 		bootId: string,
 		signal: AbortSignal,
 	): Promise<void> {
 		const now = this.#options.now ?? Date.now;
-		const ended = this.#moverEnded.get(placementId);
-		if (!this.#movers.has(placementId) && (ended === undefined || now() - ended > POINTER_FENCE_AFTER_MOVER_MS))
-			return;
+		for (let round = 0; ; round++) {
+			const ended = this.#moverEnded.get(placementId);
+			if (!this.#movers.has(placementId) && (ended === undefined || now() - ended > POINTER_FENCE_AFTER_MOVER_MS))
+				return;
+			const fence = this.#fence(placementId);
+			const published = this.#fencePublished.get(placementId);
+			if (published?.bootId === bootId && published.fence === fence) return;
+			// The fence keeps moving under us (actions, generations): never endlessly.
+			if (round >= POINTER_FENCE_ROUNDS) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+			const writing = this.#fenceWrites.get(placementId);
+			if (writing) {
+				await writing.catch(() => undefined);
+				signal.throwIfAborted();
+				continue;
+			}
+			const write = this.#writeFence(pipe, placementId, bootId, fence, signal).then((confirmed) => {
+				if (confirmed) this.#fencePublished.set(placementId, { bootId, fence });
+			});
+			this.#fenceWrites.set(placementId, write);
+			try {
+				await write;
+			} finally {
+				if (this.#fenceWrites.get(placementId) === write) this.#fenceWrites.delete(placementId);
+			}
+		}
+	}
+	/** Writes `fence` on the desktop (COMPANY_MACHINE_POINTER_FENCE) and waits for its answer: true when the desktop has it
+	 * (0: written, or a newer one there already), false on another boot (97); anything else throws. */
+	async #writeFence(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		placementId: string,
+		bootId: string,
+		fence: string,
+		signal: AbortSignal,
+	): Promise<boolean> {
 		const written = await pipe(
 			this.#policy.project,
 			lxdCompanyMachineName(placementId),
 			{
-				command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, this.#fence(placementId)],
+				command: ["/bin/sh", "-c", COMPANY_MACHINE_POINTER_FENCE, bootId, fence],
 				environment: {},
 				cwd: "/",
 				maxStdoutBytes: 64,
@@ -3196,7 +3246,9 @@ export class LxdCompanyMachineHost {
 			},
 			AbortSignal.any([signal, AbortSignal.timeout(POINTER_FENCE_MS)]),
 		);
-		if (written.exitCode !== 0 && written.exitCode !== 97) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		if (written.exitCode === 97) return false;
+		if (written.exitCode !== 0) throw new Error("COMPANY_MACHINE_POINTER_FENCE_FAILED");
+		return true;
 	}
 	/** Whether this member's own pointer moved the desktop lately (their looks are plain). */
 	#movesPointer(placementId: string, userId: string): boolean {
@@ -3310,9 +3362,11 @@ export class LxdCompanyMachineHost {
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
 		// A look that shows a newer generation (a member took the desktop since: the private holder's own window looks before
-		// it can type) puts the fence on the desktop before its picture (review r1 F2 of #1733).
-		if (this.#seeGeneration(look.placementId, look.desktopGeneration))
-			await this.#writeFence(pipe, look.placementId, look.bootId, signal);
+		// it can type) moves the fence (review r1 F2 of #1733). No picture is taken until the desktop confirmed the fence of
+		// now, this look's or one before it that is still on its way or failed (review r2 F1): if it cannot, the look
+		// fails, and no picture shows while an older move could still run.
+		this.#seeGeneration(look.placementId, look.desktopGeneration);
+		await this.#publishFence(pipe, look.placementId, look.bootId, signal);
 		const result = await pipe(
 			this.#policy.project,
 			lxdCompanyMachineName(look.placementId),
