@@ -6555,10 +6555,9 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
      the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
    - One answer is one moment of the folder (13 November 2026, owed from v240: a rename between two of a call's
      pages showed a path twice or not at all). A look whose pages answered at different folder clocks is taken
-     again, no further than the look before it went, at most three looks a call, all within about 4 s; the answer is a
-     look whose pages answered at one clock, or one that saw what the look before it saw (each entry's path, version
-     and change set). If the folder changed under every look, the answer says so in one line and to call again the
-     same way for a clean listing.
+     again, at most three looks a call, all within about 4 s; the answer is a look whose pages answered at one clock
+     (each page is one statement, so that look is the folder at that moment). If no look was, the answer says so in
+     one line and to call again the same way for a clean listing.
    - `asOfSeq` is the folder clock of the first page of the look the call answers with, as `company_move` takes it.
 2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
    `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).

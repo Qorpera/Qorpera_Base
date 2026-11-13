@@ -1044,20 +1044,33 @@ it("shows a file when it is renamed between two of a call's pages from a page no
 	expect(c.calls()).toBe(6);
 });
 
-it("answers with a second look that saw what the first saw, when only the rest of the company changed meanwhile", async () => {
+it("answers with the next look at one clock when only the rest of the company changed meanwhile", async () => {
 	const c = await changingFolder();
 	c.before.set(1, c.elsewhere);
-	c.before.set(4, c.elsewhere);
 	const answer = listing(await c.f.call("company_list", { path: "w" }));
 	expect(paths(answer.entries)).toEqual(W_FILES);
-	// As of the second look's first page; a third look is not needed.
+	// As of the second look's first page.
 	expect(answer.asOfSeq).toBe(8);
 	expect(c.calls()).toBe(6);
 });
 
-it("looks again at a listing that took its whole 2 s, as far as it went and no further", async () => {
-	// Each page takes 1.1 s: the first look stops after two pages (400 entries), and a change elsewhere came between
-	// them; the second look begins past 2 s, stops at the same entry, saw the same, and is the answer.
+it("never takes two looks that read the same for one moment: a file renamed back and forth in step with the pages (review r1 of #1748)", async () => {
+	// Renamed from a page not read yet to one read during the first look, back before the second look's first page,
+	// and forth again before its second: both looks miss it alike, though the folder always holds it.
+	const c = await changingFolder();
+	c.before.set(1, c.rename("w/0300.md", "w/0050-renamed.md"));
+	c.before.set(3, c.rename("w/0050-renamed.md", "w/0300.md"));
+	c.before.set(4, c.rename("w/0300.md", "w/0050-renamed.md"));
+	const answer = listing(await c.f.call("company_list", { path: "w" }));
+	expect(c.calls()).toBe(9);
+	expect(paths(answer.entries)).toEqual(c.now());
+	expect(paths(answer.entries)).toContain("w/0050-renamed.md");
+	expect(answer.asOfSeq).toBe(10);
+});
+
+it("takes again a look that took its whole 2 s, within the call's 4 s", async () => {
+	// Each page takes 1.1 s: the first look stops after two pages (400 entries), a change elsewhere between them; the
+	// second begins past 2 s, at one clock, and stops at the call's 4 s, after two pages too.
 	const c = await changingFolder();
 	let clock = 0;
 	const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
@@ -1065,7 +1078,7 @@ it("looks again at a listing that took its whole 2 s, as far as it went and no f
 		for (const call of [0, 1, 2, 3])
 			c.before.set(call, () => {
 				clock += 1100;
-				if (call === 1 || call === 3) c.elsewhere();
+				if (call === 1) c.elsewhere();
 			});
 		const answer = listing(await c.f.call("company_list", { path: "w" }));
 		expect(c.calls()).toBe(4);

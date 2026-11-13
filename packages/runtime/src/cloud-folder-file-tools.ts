@@ -100,8 +100,8 @@ const MAX_DEPTH = 8;
 const LIST_SCAN_ENTRIES = 5000;
 const LIST_SCAN_MS = 2000;
 /** One listing answer is one moment of the folder: a look whose pages answered at different folder clocks is taken
- * again, no further than the look before it went, up to this many looks a call in all, all within LIST_CALL_MS (so
- * a look that took its whole LIST_SCAN_MS is still looked at again once). */
+ * again, up to this many looks a call in all, all within LIST_CALL_MS (so a look that took its whole LIST_SCAN_MS is
+ * still taken again once). */
 const LIST_LOOKS = 3;
 const LIST_CALL_MS = 2 * LIST_SCAN_MS;
 /** The line a listing answer carries when the folder kept changing through every look. */
@@ -233,33 +233,14 @@ function globMatches(glob: Glob, key: string): boolean {
 }
 
 /** One look through a listing's pages: every entry it looked at, in key order, those it would show, the folder clock
- * of its first page, whether all its pages answered at that clock, and whether it reached the folder's end. */
+ * of its first page, whether all its pages answered at that clock (then it is the folder at that moment: each page is
+ * one statement, and no change set came between them), and whether it reached the folder's end. */
 interface ListLook {
 	readonly looked: readonly CloudCompanyFolderEntry[];
 	readonly matched: readonly CloudCompanyFolderEntry[];
 	readonly asOfSeq: number;
 	readonly steady: boolean;
 	readonly ended: boolean;
-}
-
-/** Whether a look saw what the look before it saw, as far as it went: the same entries in the same order, each at the
- * same version written by the same change set, and the folder's end only where that one found it too. A change shows
- * in what it touches (an entry's version and change set, or an entry come or gone), and no change brings back the
- * change set that wrote an entry. So nothing this look read changed between the earlier look's read and its own
- * (an entry that came and went in between aside): no change met it half way, as a rename between two pages does
- * (shown twice, or not at all), and it shows the folder as it was when it began, at its first page's clock. */
-function sawTheSame(again: ListLook, before: ListLook): boolean {
-	if (again.looked.length > before.looked.length) return false;
-	if (again.ended && !(before.ended && again.looked.length === before.looked.length)) return false;
-	return again.looked.every((entry, index) => {
-		const seen = before.looked[index] as CloudCompanyFolderEntry;
-		return (
-			entry.path === seen.path &&
-			entry.kind === seen.kind &&
-			entry.version === seen.version &&
-			entry.seq === seen.seq
-		);
-	});
 }
 
 export function path(value: JsonValue | undefined, root: boolean): string {
@@ -1198,9 +1179,7 @@ export function cloudFolderFileTools(options: {
 				const levels = input.path === "" ? 0 : input.path.split("/").length;
 				const glob = input.glob === null ? null : compileGlob(input.glob);
 				const begun = performance.now();
-				// `stopAfter`: a look again goes no further than the last entry the look before it looked at (when that one
-				// stopped short of the folder's end), so what it shows was read by both.
-				const look = async (stopAfter?: string): Promise<ListLook> => {
+				const look = async (): Promise<ListLook> => {
 					const looked: CloudCompanyFolderEntry[] = [];
 					const matched: CloudCompanyFolderEntry[] = [];
 					let asOfSeq = -1;
@@ -1222,21 +1201,13 @@ export function cloudFolderFileTools(options: {
 						// later page shows (listAll's rule). A later page at another clock may have met a change.
 						if (asOfSeq < 0) asOfSeq = page.asOfSeq;
 						else if (page.asOfSeq !== asOfSeq) steady = false;
-						for (const [index, entry] of page.entries.entries()) {
+						for (const entry of page.entries) {
 							looked.push(entry);
 							const names = entry.path.split("/");
-							if (
-								names.length - levels <= input.depth &&
-								(!glob || globMatches(glob, folderKey(names.slice(levels).join("/"))))
-							) {
-								matched.push(entry);
-								if (matched.length > input.limit) break scan;
-							}
-							if (entry.path === stopAfter) {
-								if (page.next === null && index === page.entries.length - 1)
-									return { looked, matched, asOfSeq, steady, ended: true };
-								break scan;
-							}
+							if (names.length - levels > input.depth) continue;
+							if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) continue;
+							matched.push(entry);
+							if (matched.length > input.limit) break scan;
 						}
 						if (page.next === null) return { looked, matched, asOfSeq, steady, ended: true };
 						after = page.next;
@@ -1252,15 +1223,16 @@ export function cloudFolderFileTools(options: {
 				};
 				// One answer is one moment of the folder. A look whose pages answered at different clocks may have met a
 				// change between two of them (a rename then shows a path twice, or not at all), so the call looks again,
-				// and answers with a look whose pages answered at one clock, or one that saw what the look before it saw.
-				// If the folder kept changing, the answer says so (owed from v240, 13 November 2026).
+				// and answers with a look whose pages answered at one clock. The clock is the company's whole folder's, so
+				// a change elsewhere costs a look too: two looks that read the same are no proof (a file renamed back and
+				// forth in step with the pages is missed alike by both; review r1 of #1748). If no look was one moment,
+				// the answer says so (owed from v240, 13 November 2026).
 				let listed = await look();
-				let settled = listed.steady;
-				for (let looks = 1; !settled && looks < LIST_LOOKS && performance.now() - begun < LIST_CALL_MS; looks++) {
-					const again = await look(listed.ended ? undefined : listed.looked.at(-1)?.path);
-					settled = again.steady || sawTheSame(again, listed);
-					listed = again;
+				for (let looks = 1; !listed.steady && looks < LIST_LOOKS; looks++) {
+					if (performance.now() - begun >= LIST_CALL_MS) break;
+					listed = await look();
 				}
+				const settled = listed.steady;
 				const { matched, asOfSeq, ended } = listed;
 				const looked = listed.looked.length;
 				const last = listed.looked.at(-1);
