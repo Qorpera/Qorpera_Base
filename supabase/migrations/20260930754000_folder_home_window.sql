@@ -237,7 +237,8 @@ select pg_temp.folder_home_window_patch('public.qorpera_folder_view_open(uuid,js
 		-- machine's output is taken in). A read this run may not make, and a window of another agent or member, refuse
 		-- the open. A fresh disk has none to take in.
 		select v.id into v_home_previous from public.qorpera_folder_views v
-		where v.placement_id = v_home_placement.id order by v.created_at desc, v.id desc limit 1;
+		where v.environment_id = p_environment_id and v.placement_id = v_home_placement.id
+		order by v.created_at desc, v.id desc limit 1;
 		if v_home_previous is not null then
 			begin
 				perform public.qorpera_folder_run_inherit_view_reads(p_environment_id, p_opener, v_home_previous,
