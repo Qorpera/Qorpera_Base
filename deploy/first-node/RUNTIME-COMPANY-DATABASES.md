@@ -160,8 +160,10 @@ node's budget for agents' machines.
 - The template holds the schema `qorpera_data`: the trigger that says a table changed, the triggers that record what
   a step destroys, and the event triggers that put both on every new table, whoever makes it. A table's owner can
   switch a table's triggers off, so further event triggers, which no company role can touch, refuse a statement at
-  the moment it disables, drops or replaces one of Qorpera's triggers. A table that is not kept logged is refused
-  too: its rows would be in no backup.
+  the moment it disables, drops, renames or replaces one of Qorpera's triggers: after such a statement every trigger
+  of Qorpera's on the table must still be there and be the same as on Qorpera's own model table (its function, when
+  it fires, its condition), switched on. A table that is not kept logged is refused too: its rows would be in no
+  backup.
 - A company's roles cannot read or write server files, run programs, add an extension, a C function, a database or a
   role, or change server settings (proven). Extensions come from a short list Qorpera installs when `database.toml`
   asks; none in the first slice.
@@ -345,13 +347,14 @@ data/shop/snapshot/
 ```
 
 - **Every table is written, whole.** A table with a primary key is cut into parts at key values that stay fixed from
-  night to night, so a usual day (new rows, edits among the newest) changes a few parts: 3 % of the bytes for a
-  918 MiB database (§11, P4). A part past 32 MiB is cut in two. A table without a primary key is cut by its rows'
+  night to night, so a usual day (new rows, edits among the newest) changes a few parts: 3 % of the bytes of an
+  834 MiB table (§11, P4). A part past 32 MiB is cut in two. A table without a primary key is cut by its rows'
   place on disk; its parts are complete and may all change from night to night.
 - **One moment.** A database's whole snapshot, its shape, its sequences and every part, is read in one transaction
   that sees one moment (`repeatable read`), however many rows are written meanwhile.
 - **Sequences.** `sequences.sql` puts each sequence where it stood, so the first row made after loading gets a new
-  number and not an old one.
+  number and not an old one. A sequence is not part of the one moment (PostgreSQL gives its newest value), so it may
+  stand past the newest loaded row, never before it.
 - The worst day, edits spread evenly over all history, changes every part. The folder keeps every version of a file
   for good, so **old versions under `data/<name>/snapshot/` are pruned after 7 days**, the way old versions of git's
   objects are (`20260928569140_folder_git_expiry`). The newest snapshot is always a full copy.
@@ -359,7 +362,7 @@ data/shop/snapshot/
 - The folder then holds everything: the files that define the database and its rows as of last night. A database made
   from `schema.sql`, the parts and `sequences.sql` alone holds the same rows and takes new rows (proven). The steps
   stay the truth for the shape.
-- Writing 839 MiB took 7 to 9 s on a test machine. A database at the 1 GiB limit is about 60 parts.
+- Writing 932 MiB took 4 to 5 s on a test machine. A database at the 1 GiB limit is about 60 parts.
 
 ## 8. Named changes and routines (slice 7)
 
@@ -400,8 +403,8 @@ or a node.
 | --- | --- | --- |
 | P1 | one gateway of our own against a PostgREST per company, 50 company databases | ours: a call p50 1.5 ms, p95 2.8 ms, 142 MiB for all 50, idle connections given back. PostgREST: p50 1.1 ms, 36 to 55 MiB and 3 held connections for each company |
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
-| P3 | limits and walls, 39 checks | all pass: no company reaches another's database, role or statements; connection, time and temp file limits hold; a read cannot write or become the owner; a step that destroys is held with what it destroys and lands after a yes |
-| P4 | the snapshot of a 918 MiB database | 839 MiB of parts in 7 to 9 s; a usual day changes 2 of 51 parts (3 %), the worst day all of them; loaded back from the files alone with the same rows in 12 s |
+| P3 | limits and walls, 128 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge` and inside a function), an emptied table and a dropped column or table are recorded, so the step is held, and it lands after a yes |
+| P4 | the snapshot of a 1,020 MiB database, written to files and loaded back | 932 MiB in 60 parts in 5.1 s while another connection wrote 200 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw, each moved row in it once at its old key. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. After loading, a new row's number is above every loaded one. A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 12 s |
 | E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 43 of 43 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
 
 ## 12. Build order
