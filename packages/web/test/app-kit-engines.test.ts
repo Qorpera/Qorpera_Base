@@ -28,16 +28,21 @@ interface Question {
 
 const page = window as unknown as Record<string, unknown>;
 
-/** The page's bridge as a test sets it: the data file's text, or why a read of it fails, and the open questions. */
+/** The page's bridge as a test sets it: the data file's text, or why a read of it fails, and the open questions, or
+ * why they cannot be read, after `slow` milliseconds. */
 function standIn(file: string | Error) {
-	const now = { file, questions: [] as Question[] };
+	const now = { file, questions: [] as Question[] | Error, slow: 0 };
 	const notices: (() => void)[] = [];
 	const qorpera = {
 		read: vi.fn(async (_path: string) => {
 			if (now.file instanceof Error) throw now.file;
 			return now.file;
 		}),
-		questions: vi.fn(async () => now.questions),
+		questions: vi.fn(async () => {
+			if (now.slow) await new Promise((done) => setTimeout(done, now.slow));
+			if (now.questions instanceof Error) throw now.questions;
+			return now.questions;
+		}),
 		answer: vi.fn(async (_id: string, _value: unknown) => undefined),
 		setRow: vi.fn(async (_table: string, _key: unknown, _cells: Record<string, unknown>) => undefined),
 		addRow: vi.fn(async (_table: string, _cells: Record<string, unknown>) => undefined),
@@ -56,8 +61,9 @@ function standIn(file: string | Error) {
 const settle = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
 
 /** An app of the kit opened on a stand-in, as the frame opens it: the page's QORPERA_KIT, then the engine. */
-async function open(kit: Kit, file: string | Error) {
+async function open(kit: Kit, file: string | Error, before?: (now: ReturnType<typeof standIn>["now"]) => void) {
 	const bridge = standIn(file);
+	before?.(bridge.now);
 	page.QORPERA_KIT = { app: "demo", kit, data: `${kit}.json` };
 	page.qorpera = bridge.qorpera;
 	new Function(kitFile(kit, "engine.js"))();
@@ -184,6 +190,17 @@ describe("the model kit's engine", () => {
 		return range;
 	}
 	const saveButton = () => document.querySelector<HTMLButtonElement>(".mk-save");
+	/** Inputs n1, n2, … of 0 to 10, each at 5. */
+	const numbers = (count: number) =>
+		Array.from({ length: count }, (_, n) => ({
+			id: `n${n + 1}`,
+			label: `Number ${n + 1}`,
+			min: 0,
+			max: 10,
+			step: 1,
+			value: 5,
+			state: "known",
+		}));
 
 	it.each([1, 0, "Basis", { region: "eu", year: 2026 }])("saves to the row whose key is %j", async (key) => {
 		const { qorpera } = await open("model", model([price], { table: "prices", key }));
@@ -220,16 +237,8 @@ describe("the model kit's engine", () => {
 		expect(qorpera.addRow).toHaveBeenCalledWith("sizes", { size: 1.5 });
 	});
 
-	it("offers Save for at most 12 cells, the bridge's most for a row, and saves the columns it names", async () => {
-		const inputs = Array.from({ length: 13 }, (_, n) => ({
-			id: `n${n + 1}`,
-			label: `Number ${n + 1}`,
-			min: 0,
-			max: 10,
-			step: 1,
-			value: 5,
-			state: "known",
-		}));
+	it("offers Save of a keyed row for at most 12 cells, setRow's most, and saves the columns it names", async () => {
+		const inputs = numbers(13);
 		await open("model", model(inputs, { table: "plan", key: "now" }));
 		expect(saveButton()).toBeNull();
 		expect(document.querySelector(".mk-err")?.textContent).toContain("save: name at most 12 columns");
@@ -242,6 +251,19 @@ describe("the model kit's engine", () => {
 			"plan",
 			"now",
 			Object.fromEntries(columns.map((id) => [id, id === "n1" ? 7 : 5])),
+		);
+	});
+
+	it("adds a whole row of more than 12 cells when the save names no key", async () => {
+		// addRow takes as many cells as the table has columns: a new row may need all of them.
+		const inputs = numbers(13);
+		const { qorpera } = await open("model", model(inputs, { table: "plan" }));
+		slide("Number 1", 7);
+		saveButton()?.click();
+		await settle();
+		expect(qorpera.addRow).toHaveBeenCalledWith(
+			"plan",
+			Object.fromEntries(inputs.map((input) => [input.id, input.id === "n1" ? 7 : 5])),
 		);
 	});
 });
@@ -284,6 +306,58 @@ describe("the board kit's engine", () => {
 		change();
 		await settle(10000);
 		expect(document.querySelector(".bk-pick")).toBeNull();
+	});
+
+	it("asks for the questions again ten seconds after the call failed, until it works, and then waits", async () => {
+		const { now, qorpera } = await open("board", board, (bridge) => {
+			bridge.questions = new Error("Too many calls");
+		});
+		document.querySelector<HTMLButtonElement>('.bk-panel[data-id="lys"]')?.click();
+		expect(document.querySelector(".bk-pick")).toBeNull();
+		// No change in the folder: the page asks again by itself.
+		now.questions = [question];
+		await settle(10000);
+		expect(qorpera.questions).toHaveBeenCalledTimes(2);
+		expect(document.querySelector(".bk-world .bk-pick")?.textContent).toBe("Choose Lys");
+		// Once a call worked, it asks again only on a change, never on a timer.
+		await settle(60000);
+		expect(qorpera.questions).toHaveBeenCalledTimes(2);
+		expect(qorpera.read).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the Choose button it shows while the questions cannot be read", async () => {
+		const { now, change } = await open("board", board, (bridge) => {
+			bridge.questions = [question];
+		});
+		document.querySelector<HTMLButtonElement>('.bk-panel[data-id="lys"]')?.click();
+		expect(document.querySelector(".bk-world .bk-pick")?.textContent).toBe("Choose Lys");
+		now.questions = new Error("Too many calls");
+		change();
+		await settle(10000);
+		expect(document.querySelector(".bk-world .bk-pick")?.textContent).toBe("Choose Lys");
+		// Answered in the chat meanwhile: the next call that works takes the button away.
+		now.questions = [];
+		await settle(10000);
+		expect(document.querySelector(".bk-pick")).toBeNull();
+	});
+
+	it("asks nothing more for a board it has drawn again", async () => {
+		const { now, change, qorpera } = await open("board", board, (bridge) => {
+			bridge.questions = new Error("Too many calls");
+			bridge.slow = 2000;
+		});
+		// Drawn again before the failed call's ten seconds are up, as a shelf, which has no question to ask.
+		now.file = JSON.stringify({
+			lang: "en",
+			mode: "scale",
+			title: "Prices",
+			items: [{ id: "lys", name: "Lys", value: 10 }],
+		});
+		change();
+		await settle(10000);
+		expect(document.querySelector("h1")?.textContent).toBe("Prices");
+		await settle(60000);
+		expect(qorpera.questions).toHaveBeenCalledTimes(1);
 	});
 });
 

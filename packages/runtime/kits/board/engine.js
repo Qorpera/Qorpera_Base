@@ -1344,7 +1344,9 @@ body{margin:0}
 			for (const { o, p } of panels) p.classList.toggle("is-chosen", S.chosen === o.id);
 			if (world) world.update();
 		}
+		let retry = 0;
 		async function ask() {
+			clearTimeout(retry);
 			if (!window.qorpera || typeof window.qorpera.questions !== "function") return;
 			try {
 				const qs = list(await window.qorpera.questions()).filter((q) => q && q.id && Array.isArray(q.options));
@@ -1355,7 +1357,9 @@ body{margin:0}
 					qs.find((q) => q.options.some((x) => ids.includes(String(x.value)))) ||
 					null;
 			} catch {
-				S.q = null;
+				// keep the question the page shows, and ask again ten seconds later, until a read works
+				if (!ac.signal.aborted) retry = setTimeout(ask, 10000);
+				return;
 			}
 			if (world) world.update();
 		}
@@ -1548,6 +1552,7 @@ body{margin:0}
 			refresh: ask,
 			destroy() {
 				ac.abort();
+				clearTimeout(retry);
 				if (world) world.remove(true);
 			},
 		};

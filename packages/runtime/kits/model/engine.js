@@ -434,14 +434,14 @@
 			for (const k of Object.keys(s.values)) if (M.inp[k] && fin(toNum(s.values[k]))) values[k] = M.inp[k].fit(toNum(s.values[k]));
 			if (cut(s.label, 16) && Object.keys(values).length) M.scen.push({ label: cut(s.label, 16), values });
 		}
-		// save: one row of at most 12 cells (the bridge's limit), the named columns or else every input
+		// save: one row, the named columns or else every input; a keyed row takes at most 12 cells (setRow's limit)
 		const sv0 = d.save;
 		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim()) {
 			const key = saveKey(sv0.key);
 			const named = arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c]));
 			const columns = named.length ? named : M.inputs.map((i) => i.id);
 			if (key === undefined) errs.push("save: key is a value or {column: value}");
-			else if (columns.length > 12) errs.push("save: name at most 12 columns");
+			else if (key !== null && columns.length > 12) errs.push("save: name at most 12 columns");
 			else M.save = { table: sv0.table.trim(), key, columns };
 		}
 		// names that point nowhere, and loops

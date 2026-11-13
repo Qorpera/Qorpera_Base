@@ -35,8 +35,8 @@ Write \`model.json\`. Every number comes from the company's files. What is not k
 - \`scenarios\`: optional, up to 4 \`{label (≤16), values: {id: number}}\`: chips that move those sliders.
 - \`save\`: optional \`{table, key?, columns?}\`: a button keeping the founder's numbers via \`setRow(table, key, cells)\`
   (with \`key\`: the row's key value, or \`{column: value}\` for a key of several columns) or \`addRow(table, cells)\`.
-  Cells: \`{id: number or null}\` for the input and computed ids in \`columns\`, at most 12; with no \`columns\`, every
-  input. A model of more than 12 inputs names its \`columns\`, or it has no save button.
+  Cells: \`{id: number or null}\` for the input and computed ids in \`columns\`; with no \`columns\`, every input. With
+  \`key\`, at most 12 cells: a model of more than 12 inputs names its \`columns\`, or it has no save button.
 
 Example:
 
@@ -702,14 +702,14 @@ export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive
 			for (const k of Object.keys(s.values)) if (M.inp[k] && fin(toNum(s.values[k]))) values[k] = M.inp[k].fit(toNum(s.values[k]));
 			if (cut(s.label, 16) && Object.keys(values).length) M.scen.push({ label: cut(s.label, 16), values });
 		}
-		// save: one row of at most 12 cells (the bridge's limit), the named columns or else every input
+		// save: one row, the named columns or else every input; a keyed row takes at most 12 cells (setRow's limit)
 		const sv0 = d.save;
 		if (sv0 && typeof sv0 === "object" && typeof sv0.table === "string" && sv0.table.trim()) {
 			const key = saveKey(sv0.key);
 			const named = arr(sv0.columns).filter((c) => typeof c === "string" && (M.inp[c] || M.comp[c]));
 			const columns = named.length ? named : M.inputs.map((i) => i.id);
 			if (key === undefined) errs.push("save: key is a value or {column: value}");
-			else if (columns.length > 12) errs.push("save: name at most 12 columns");
+			else if (key !== null && columns.length > 12) errs.push("save: name at most 12 columns");
 			else M.save = { table: sv0.table.trim(), key, columns };
 		}
 		// names that point nowhere, and loops
@@ -3633,7 +3633,9 @@ body{margin:0}
 			for (const { o, p } of panels) p.classList.toggle("is-chosen", S.chosen === o.id);
 			if (world) world.update();
 		}
+		let retry = 0;
 		async function ask() {
+			clearTimeout(retry);
 			if (!window.qorpera || typeof window.qorpera.questions !== "function") return;
 			try {
 				const qs = list(await window.qorpera.questions()).filter((q) => q && q.id && Array.isArray(q.options));
@@ -3644,7 +3646,9 @@ body{margin:0}
 					qs.find((q) => q.options.some((x) => ids.includes(String(x.value)))) ||
 					null;
 			} catch {
-				S.q = null;
+				// keep the question the page shows, and ask again ten seconds later, until a read works
+				if (!ac.signal.aborted) retry = setTimeout(ask, 10000);
+				return;
 			}
 			if (world) world.update();
 		}
@@ -3837,6 +3841,7 @@ body{margin:0}
 			refresh: ask,
 			destroy() {
 				ac.abort();
+				clearTimeout(retry);
 				if (world) world.remove(true);
 			},
 		};
