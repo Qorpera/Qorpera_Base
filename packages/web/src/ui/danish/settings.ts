@@ -462,8 +462,8 @@ export const SETTINGS: Record<string, string> = {
 		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
 	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
 	"Taken down": "Taget ned",
-	"Qorpera took this site down: {reason}.": "Qorpera har taget hjemmesiden ned: {reason}.",
-	"Write to {address} if you think this is wrong.": "Skriv til {address}, hvis du mener, det er forkert.",
+	"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.":
+		"Qorpera har taget hjemmesiden ned: {reason}. Hvis du mener, det er forkert, så skriv til os under {feedback} i din menu.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",

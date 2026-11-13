@@ -167,20 +167,18 @@ function stateOf(site: CompanySite, down: boolean): HTMLElement {
 	);
 }
 
-/** Where a member writes when they think Qorpera took a site down wrongly (step 5.1), named in the row's sentence. Not
- * yet confirmed to reach anyone: the founder's answer is this one line (another address, or null, which leaves the
- * clause out). */
-export const SUPPORT_ADDRESS: string | null = "support@qorpera.com";
-
-/** Why Qorpera took a site down, in one plain sentence: the operator's reason, without a full stop of its own, and where
- * to write. */
+/** Why Qorpera took a site down, in one plain sentence: the operator's reason, without a full stop of its own, and how
+ * to tell Qorpera it is wrong, through the product's own channel: Feedback in the member's menu, by that item's own
+ * label (the lead's call, 13 Nov 2026: no address that is not known to reach anyone). */
 function downLine(down: CompanySiteTakedown): HTMLElement {
 	const reason = down.reason.replace(/[\s.]+$/, "") || down.reason;
 	return h(
 		"p",
 		{ class: "site-down" },
-		t("Qorpera took this site down: {reason}.", { reason }),
-		SUPPORT_ADDRESS ? ` ${t("Write to {address} if you think this is wrong.", { address: SUPPORT_ADDRESS })}` : null,
+		t("Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.", {
+			reason,
+			feedback: t("Feedback"),
+		}),
 	);
 }
 

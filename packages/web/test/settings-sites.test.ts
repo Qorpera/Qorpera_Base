@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type SitesAccess, SitesView, SUPPORT_ADDRESS, shownLink } from "../src/app/views/settings-sites.ts";
+import { type SitesAccess, SitesView, shownLink } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type CompanySite,
@@ -14,7 +14,7 @@ import {
 	type WebSites,
 } from "../src/cloud/sites.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
-import { setLanguagePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, t } from "../src/ui/preferences.ts";
 import { deferred, id, oneHostList, settle, timestamp } from "./fixtures.ts";
 
 const ORIGIN = "https://sites.qorpera.com";
@@ -912,7 +912,7 @@ describe("Sites: who may do what", () => {
 describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 	const REASON = "It asked visitors for bank passwords.";
 	const SAID =
-		"Qorpera took this site down: It asked visitors for bank passwords. Write to support@qorpera.com if you think this is wrong.";
+		"Qorpera took this site down: It asked visitors for bank passwords. If you think this is wrong, tell us with Feedback in your menu.";
 	/** The access read as the kernel answers it (qorpera.company-site-access/v1), with keys this web does not know. */
 	const accessOf = (down: Record<string, string>, extra: Record<string, unknown> = {}) => ({
 		schema: "qorpera.company-site-access/v1",
@@ -957,7 +957,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		// An app link taken down says the same, in its own row.
 		const link = rowOf(app.id)!;
 		expect(link.querySelector(".site-down")?.textContent).toBe(
-			"Qorpera took this site down: Spam. Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		expect(links(link)).toEqual([]);
 		// A site not taken down is as before; a project's site keeps its way to What's new.
@@ -1101,33 +1101,59 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 			return rowOf(shop.id)?.querySelector(".site-down")?.textContent;
 		};
 		expect(await said("Phishing")).toBe(
-			"Qorpera took this site down: Phishing. Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: Phishing. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		expect(await said("Phishing. . ")).toBe(
-			"Qorpera took this site down: Phishing. Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: Phishing. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		// Read as text: braces and markup stay as they are.
 		expect(await said("{name} <b>x</b>")).toBe(
-			"Qorpera took this site down: {name} <b>x</b>. Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: {name} <b>x</b>. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		expect(rowOf(shop.id)?.querySelector("b")).toBeNull();
 		expect(await said("...")).toBe(
-			"Qorpera took this site down: .... Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: .... If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		setLanguagePreference("da");
 		try {
 			await said(REASON);
 			expect(rowOf(shop.id)?.querySelector(".site-state")?.textContent).toBe("Taget ned");
 			expect(rowOf(shop.id)?.querySelector(".site-down")?.textContent).toBe(
-				"Qorpera har taget hjemmesiden ned: It asked visitors for bank passwords. Skriv til support@qorpera.com, hvis du mener, det er forkert.",
+				"Qorpera har taget hjemmesiden ned: It asked visitors for bank passwords. Hvis du mener, det er forkert, så skriv til os under Feedback i din menu.",
 			);
 		} finally {
 			setLanguagePreference("system");
 		}
 	});
 
-	it("names the address to write to from one constant, the only place the web writes it", () => {
-		expect(SUPPORT_ADDRESS).toBe("support@qorpera.com");
+	it("sends a member who thinks it wrong to Feedback in their menu, by that item's own label, and names no address", () => {
+		// The menu's item, as the account menu draws it, in both languages.
+		const shell = readFileSync(resolve("src/app/views/shell.ts"), "utf8");
+		expect(shell).toContain('h("span", { class: "account-item-label" }, uiText("Feedback"))');
+		const said = (lang: string) => {
+			setLanguagePreference(lang);
+			try {
+				return {
+					item: t("Feedback"),
+					sentence: t(
+						"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.",
+						{ reason: "Spam", feedback: t("Feedback") },
+					),
+				};
+			} finally {
+				setLanguagePreference("system");
+			}
+		};
+		expect(said("en")).toEqual({
+			item: "Feedback",
+			sentence: "Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
+		});
+		expect(said("da")).toEqual({
+			item: "Feedback",
+			sentence:
+				"Qorpera har taget hjemmesiden ned: Spam. Hvis du mener, det er forkert, så skriv til os under Feedback i din menu.",
+		});
+		// No mail address anywhere in the web's words.
 		const files = (dir: string): string[] =>
 			readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
 				entry.isDirectory()
@@ -1136,13 +1162,9 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 						? [join(dir, entry.name)]
 						: [],
 			);
-		const written = files(resolve("src")).flatMap((path) =>
-			readFileSync(path, "utf8").includes("support@qorpera.com") ? [path.slice(resolve("src").length + 1)] : [],
-		);
-		expect(written).toEqual(["app/views/settings-sites.ts"]);
 		expect(
-			readFileSync(resolve("src/app/views/settings-sites.ts"), "utf8").split("support@qorpera.com"),
-		).toHaveLength(2);
+			files(resolve("src")).filter((path) => readFileSync(path, "utf8").includes("support@qorpera.com")),
+		).toEqual([]);
 	});
 });
 
@@ -1619,7 +1641,7 @@ describe("sites client", () => {
 			"qorpera_list_company_sites",
 		]);
 		expect(rowOf(shop.id)?.querySelector(".site-down")?.textContent).toBe(
-			"Qorpera took this site down: Spam. Write to support@qorpera.com if you think this is wrong.",
+			"Qorpera took this site down: Spam. If you think this is wrong, tell us with Feedback in your menu.",
 		);
 		expect(rowOf(shop.id)?.querySelector("a")).toBeNull();
 		expect(control(app.id, "copy-link")?.textContent).toBe("saml-shop-preview.qorpera.com");
