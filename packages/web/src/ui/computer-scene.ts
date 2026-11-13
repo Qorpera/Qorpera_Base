@@ -343,6 +343,10 @@ export class ComputerScene {
 	readonly #lineShort = h("span", { class: "computer-scene-line is-short" });
 	readonly #lineSide = h("span", { class: "computer-scene-line is-side" });
 	readonly #note = h("p", { class: "computer-scene-note" });
+	/** The dock's clocks: read at every set, apart from the artwork, which is built once an hour (review r1 F3 of
+	 * #1734: a scene built at 10:05 and shown again at 10:25 said 10:05). */
+	readonly #date = h("span", { class: "computer-scene-date" });
+	readonly #time = h("span", { class: "computer-scene-time" });
 	readonly #stop = new AbortController();
 
 	constructor(look: SceneLook) {
@@ -411,6 +415,8 @@ export class ComputerScene {
 	/** Builds the screen for the look: the dark screen, the hour's frame, the avatar, the eyes and the dock. */
 	#build(): void {
 		const now = desktopClock(new Date(), this.#look.timeZone);
+		if (this.#date.textContent !== now.date) this.#date.textContent = now.date;
+		if (this.#time.textContent !== now.time) this.#time.textContent = now.time;
 		const key = `${this.#look.figure}|${this.#look.color}|${now.hour}`;
 		if (this.#built === key) return;
 		this.#built = key;
@@ -478,14 +484,12 @@ export class ComputerScene {
 			avatar,
 			eyes,
 		);
-		const date = h("span", { class: "computer-scene-date" }, now.date);
-		const time = h("span", { class: "computer-scene-time" }, now.time);
 		const dock = h(
 			"div",
 			{ class: "computer-scene-dock" },
-			date,
+			this.#date,
 			h("span", { class: "computer-scene-icons" }, dockIcon("browser"), dockIcon("files"), dockIcon("terminal")),
-			time,
+			this.#time,
 			this.#line,
 			this.#lineShort,
 			this.#lineSide,

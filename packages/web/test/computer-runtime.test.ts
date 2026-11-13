@@ -1546,6 +1546,41 @@ describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPE
 		expect(status(p)).toBe("The computer is starting…");
 	});
 
+	it("starts nothing from a click that lapsed while its read was on its way (review r1 F1 of #1734)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		let open = () => {};
+		s.state.listHold = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const p = asked(s);
+		await flush();
+		// Every read begun after the click (a retry too) answers only after the click lapsed.
+		await advance(ASK_LASTS_MS + 1000);
+		s.state.listHold = undefined;
+		open();
+		await flush();
+		expect(wakes(s)).toEqual([]);
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(action(p)?.textContent).toBe("Wake it");
+	});
+
+	it("resumes a window paused for want of a touch when the member clicks Computer again, and wakes it (review r1 F2 of #1734)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => panels.dispose());
+		const p = panels.open(staff)!;
+		p.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		expect(wakes(s)).toEqual([]);
+		panels.open(staff, { asked: true });
+		await flush();
+		expect(wakes(s)).toHaveLength(1);
+		expect(status(p)).toBe("The computer is starting…");
+	});
+
 	it("counts a click on Computer while the window stands open and asleep as asking, and a click that lapsed as nothing", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });

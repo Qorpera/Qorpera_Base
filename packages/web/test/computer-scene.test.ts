@@ -191,6 +191,24 @@ describe("the scene in the window", () => {
 		w.stop.abort();
 	});
 
+	it("reads the dock's clocks at every step, not only when the hour's artwork is built (review r1 F3 of #1734)", () => {
+		vi.setSystemTime(new Date("2026-11-13T10:05:00Z"));
+		const scene = new ComputerScene({ figure: "crown", color: "#fcb51b", timeZone: "UTC" });
+		document.body.append(scene.el);
+		scene.set("asleep");
+		const time = () => scene.el.querySelector(".computer-scene-time")?.textContent;
+		expect(time()).toBe("10:05");
+		vi.setSystemTime(new Date("2026-11-13T10:25:00Z"));
+		scene.set("waking");
+		expect(time()).toBe("10:25");
+		vi.setSystemTime(new Date("2026-11-13T10:26:00Z"));
+		scene.hide();
+		scene.set("screen");
+		expect(time()).toBe("10:26");
+		expect(scene.el.querySelector(".computer-scene-date")?.textContent).toBe("Fri 13 Nov");
+		scene.dispose();
+	});
+
 	it("draws the neutral desktop on a computer another agent started", () => {
 		const scene = new ComputerScene({ figure: "neutral", color: "#123456", timeZone: "UTC" });
 		document.body.append(scene.el);

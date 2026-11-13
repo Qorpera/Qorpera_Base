@@ -624,6 +624,11 @@ export class ComputerPanel {
 		this.#ask = { before: this.#listReads, at: Date.now() };
 		this.#wakeFailed = undefined;
 		this.#listStale = true;
+		// The click is the member's word that they watch, as showing the window again is (attach; review r1 F2 of #1734).
+		if (this.#paused) {
+			this.#paused = false;
+			this.#confirm = true;
+		}
 		this.#touched();
 		this.#poke();
 	}
@@ -834,10 +839,12 @@ export class ComputerPanel {
 					const waiting = this.#listWaiters;
 					this.#listWaiters = waiting.filter((waiter) => waiter.after >= read);
 					for (const waiter of waiting) if (waiter.after < read) waiter.done();
-					// The member's click: the first read begun after it decides what starts.
-					if (this.#ask && read > this.#ask.before) {
+					// The member's click: the first read begun after it decides what starts, while the click still stands (review
+					// r1 F1 of #1734: a read begun before the ask lapsed may answer after it).
+					const ask = this.#ask;
+					if (ask && read > ask.before) {
 						this.#ask = undefined;
-						this.#askedOpen(computer, signal);
+						if (Date.now() - ask.at < ASK_LASTS_MS) this.#askedOpen(computer, signal);
 					}
 				} catch {
 					signal.throwIfAborted();
