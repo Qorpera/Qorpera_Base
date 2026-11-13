@@ -1336,7 +1336,7 @@ async function main() {
 		assert.deepEqual(viewed.off, { version: 2, regex: false });
 		if (oldTree) assert.equal(viewed.old, null);
 		pass(
-			`hellos: the new service says ${JSON.stringify(viewed.on)} with its unit's flag and ${JSON.stringify(viewed.off)} without it${oldTree ? ", the old one says nothing (version 1)" : ""}; asked a pattern anyway with the switch off, the node itself refuses ("${viewed.offRefusal}")`,
+			`hellos: the new service says ${JSON.stringify(viewed.off)} as its unit ships and ${JSON.stringify(viewed.on)} with the flag added${oldTree ? ", the old one says nothing (version 1)" : ""}; asked a pattern anyway as it ships, the node itself refuses ("${viewed.offRefusal}")`,
 		);
 
 		// 7. An old runtime over the new folder service: exactly what the old one answers it, call for call.
