@@ -3659,7 +3659,16 @@ export class LxdCompanyMachineHost {
 				staffAgentId: session.staffAgentId,
 				requestedByUserId: session.requestedByUserId,
 			};
-			await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+			try {
+				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+			} catch (error) {
+				// The service may have taken the open although it did not answer in time: no channel starts, so the
+				// window is closed again, at best, as a window whose channel ended (review r11 F1).
+				await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				throw error;
+			}
 			boot.homes.set(session.sessionId, window);
 		}
 		let closing: Promise<void> | undefined;

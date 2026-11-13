@@ -6667,6 +6667,19 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		);
 	});
 
+	it("closes the window again when its first open is not answered, and starts no channel (review r11 F1)", async () => {
+		const { f, pipe, session } = await home();
+		f.homeSessions.push(session());
+		f.service.down = true;
+		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
+			"FOLDER_CONTROL_UNANSWERED",
+		);
+		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
+			["open", "close"],
+		);
+		expect(pipe).not.toHaveBeenCalled();
+	});
+
 	it("asks whether the session may share its machine on an executor without a folder too (review r10 F2)", async () => {
 		const f = await fixture();
 		const pipe = vi.fn(async (_project: string, _name: string, _request: LxdExecPipeRequest, signal: AbortSignal) => {
