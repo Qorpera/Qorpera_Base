@@ -386,14 +386,14 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		for (const cue of writingAskCues(since * PACE, elapsed * PACE)) effects.push(cue.effect);
 	} else if (activity === "AtComputer") {
 		// At its computer; with something waiting on the member it becomes that symbol now and then, as a writing
-		// figure does (at the same pace), so the ask is never out of sight for long.
-		const asked = entry.ask ? writingAsk(elapsed * PACE, entry.ask) : undefined;
+		// figure does, so the ask is never out of sight for long.
+		const asked = entry.ask ? writingAsk(elapsed, entry.ask) : undefined;
 		// The ask's own act whenever it shows anything: the symbol (also held at rest) or the hops into and out of it.
 		act =
 			asked && (asked.symbol || asked.body !== REST)
 				? asked
 				: atComputer(entry, atComputerFrame(elapsed, clock.seed, false));
-		if (entry.ask) for (const cue of writingAskCues(since * PACE, elapsed * PACE)) effects.push(cue.effect);
+		if (entry.ask) for (const cue of writingAskCues(since, elapsed)) effects.push(cue.effect);
 	} else if (activity === "Idle") act.eyes = idleOpening(elapsed);
 	else if (activity === "Done") {
 		// The studio's flourish, with the short cheer's jump under it.
