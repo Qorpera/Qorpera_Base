@@ -339,6 +339,22 @@ export interface LxdInstanceDeviceUpdateClient {
 	listCustomStorageVolumes(project: string, pool: string, signal: AbortSignal): Promise<LxdStorageVolumeRecord[]>;
 }
 
+/** A storage pool's real use as LXD counts it (`lxc storage info`), and what each named virtual machine's disk holds of
+ * its own (`lxc list -c D`): a thin clone holds only what was written to it. */
+export interface LxdStoragePoolUse {
+	totalBytes: number;
+	usedBytes: number;
+	/** By instance name; one LXD does not have, or whose use it does not give, is left out (its use is not known). */
+	volumes: ReadonlyMap<string, number>;
+}
+export interface LxdStoragePoolUseClient {
+	readStoragePoolUse(
+		pool: string,
+		volumes: readonly { project: string; name: string }[],
+		signal: AbortSignal,
+	): Promise<LxdStoragePoolUse>;
+}
+
 /** Submission and observation are separate so an office provider can persist
  * the operation ID before polling. A rejected submission has an UNKNOWN
  * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
@@ -1525,7 +1541,8 @@ export class LxdUnixClient
 		LxdOfficeBootServiceRestartClient,
 		LxdOfficeResetServiceRestartClient,
 		LxdOfficeResetClient,
-		LxdOfficeResetSuccessorClient
+		LxdOfficeResetSuccessorClient,
+		LxdStoragePoolUseClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
@@ -1952,6 +1969,57 @@ export class LxdUnixClient
 		const volumes = envelopeMetadata(result);
 		if (!Array.isArray(volumes)) throw new Error("LXD storage volume listing is invalid");
 		return volumes.map(storageVolume);
+	}
+
+	/** The pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them), then each
+	 * named virtual machine's disk volume's own use (`/state`), one request at a time, each within 5 s. A pool whose
+	 * figures are missing or not whole byte counts fails the read; a volume LXD does not have (404) or whose use it does
+	 * not give is left out, so its use stays unknown. */
+	async readStoragePoolUse(
+		pool: string,
+		volumes: readonly { project: string; name: string }[],
+		signal: AbortSignal,
+	): Promise<LxdStoragePoolUse> {
+		if (
+			!INSTANCE_NAME.test(pool) ||
+			volumes.length > 1024 ||
+			volumes.some((volume) => !INSTANCE_NAME.test(volume.project) || !INSTANCE_NAME.test(volume.name))
+		)
+			throw new Error("LXD storage scope is invalid");
+		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
+		const space = record(resources.space, "LXD storage pool space");
+		const totalBytes = space.total;
+		const usedBytes = space.used;
+		if (
+			typeof totalBytes !== "number" ||
+			typeof usedBytes !== "number" ||
+			!Number.isSafeInteger(totalBytes) ||
+			!Number.isSafeInteger(usedBytes) ||
+			totalBytes <= 0 ||
+			usedBytes < 0 ||
+			usedBytes > totalBytes
+		)
+			throw new Error("LXD storage pool use is invalid");
+		const use = new Map<string, number>();
+		for (const volume of volumes) {
+			signal.throwIfAborted();
+			const result = await this.#request(
+				"GET",
+				projectPath(
+					`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(volume.name)}/state`,
+					volume.project,
+				),
+				undefined,
+				AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+			);
+			if (result.status < 200 || result.status >= 300) continue;
+			const state = envelopeMetadata(result);
+			const usage = state && typeof state === "object" ? (state as Record<string, unknown>).usage : undefined;
+			const used = usage && typeof usage === "object" ? (usage as Record<string, unknown>).used : undefined;
+			if (typeof used === "number" && Number.isSafeInteger(used) && used >= 0 && used <= totalBytes)
+				use.set(volume.name, used);
+		}
+		return { totalBytes, usedBytes, volumes: use };
 	}
 
 	async createStorageVolume(

@@ -311,6 +311,80 @@ describe("LXD Unix client", () => {
 		]);
 		expect(urls).toEqual(["/1.0/storage-pools/qorpera-vm/volumes/custom?recursion=1&project=qn25b2"]);
 	});
+	it("reads a pool's real use and each named VM disk's own, leaving out one LXD does not have (20260930757000)", async () => {
+		const urls: string[] = [];
+		// As node 2's LXD 6.9 answered on 13 Nov 2026 (lanes/agent-box-20261113/home/node-read-pool.out).
+		const socket = await unixServer((_method, url) => {
+			urls.push(url);
+			if (url === "/1.0/storage-pools/qorpera-vm/resources")
+				return {
+					body: {
+						type: "sync",
+						status_code: 200,
+						metadata: { inodes: { total: 0, used: 0 }, space: { total: 1589674780672, used: 579340568064 } },
+					},
+				};
+			if (url.includes("/qorpera-machine-running/"))
+				return {
+					body: { type: "sync", status_code: 200, metadata: { usage: { total: 42949672960, used: 30721536 } } },
+				};
+			if (url.includes("/qorpera-machine-nousage/"))
+				return { body: { type: "sync", status_code: 200, metadata: { usage: null } } };
+			return {
+				status: 404,
+				body: {
+					type: "error",
+					error_code: 404,
+					error: 'Failed fetching instance "x" in project "machines": Instance not found',
+				},
+			};
+		});
+		const use = await new LxdUnixClient(socket).readStoragePoolUse(
+			"qorpera-vm",
+			[
+				{ project: "machines", name: "qorpera-machine-running" },
+				{ project: "machines", name: "qorpera-machine-gone" },
+				{ project: "machines", name: "qorpera-machine-nousage" },
+			],
+			new AbortController().signal,
+		);
+		expect(use).toEqual({
+			totalBytes: 1589674780672,
+			usedBytes: 579340568064,
+			volumes: new Map([["qorpera-machine-running", 30721536]]),
+		});
+		expect(urls).toEqual([
+			"/1.0/storage-pools/qorpera-vm/resources",
+			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-running/state?project=machines",
+			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-gone/state?project=machines",
+			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-nousage/state?project=machines",
+		]);
+	});
+	it("fails a pool read whose figures are not whole byte counts, and never reads outside a valid scope", async () => {
+		let space: unknown = { total: 100, used: 101 };
+		let requests = 0;
+		const socket = await unixServer(() => {
+			requests++;
+			return { body: { type: "sync", status_code: 200, metadata: { space } } };
+		});
+		const client = new LxdUnixClient(socket);
+		const read = () => client.readStoragePoolUse("qorpera-vm", [], new AbortController().signal);
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = { total: 0, used: 0 };
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = { total: 100.5, used: 1 };
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = undefined;
+		await expect(read()).rejects.toThrow("LXD storage pool space is invalid");
+		const before = requests;
+		await expect(client.readStoragePoolUse("../pools", [], new AbortController().signal)).rejects.toThrow(
+			"LXD storage scope is invalid",
+		);
+		await expect(
+			client.readStoragePoolUse("qorpera-vm", [{ project: "machines", name: "a/b" }], new AbortController().signal),
+		).rejects.toThrow("LXD storage scope is invalid");
+		expect(requests).toBe(before);
+	});
 	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
 		const dispatch = new AbortController(),
 			caller = new AbortController();

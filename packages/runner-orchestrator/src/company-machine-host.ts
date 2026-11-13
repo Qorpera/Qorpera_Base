@@ -34,10 +34,16 @@ import {
 	lxdCompanyMachineName,
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
+import { companyMachineDiskReport } from "./company-machine-disk.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./company-machine-figure.ts";
 import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
-import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
+import type {
+	LxdInstanceExecPipeClient,
+	LxdInstanceExecStreamClient,
+	LxdStoragePoolUseClient,
+	LxdTrackedClient,
+} from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -589,6 +595,12 @@ const STARTING_WAKES = 3;
 const PASS_FLOOR_MS = 1000;
 /** The most time between passes. */
 export const COMPANY_MACHINE_PASS_EVERY_MS = 10000;
+/** How often a pass reads its storage pool's real use for the kernel (20260930757000), at most: the kernel decides on a
+ * report for 2 minutes, then on the paper budget. */
+export const COMPANY_MACHINE_DISK_REPORT_EVERY_MS = 30000;
+/** How long one disk report (LXD's reads, local and quick, and the kernel's call) may hold up its pass: then the pass
+ * goes on without it. */
+const DISK_REPORT_MS = 5000;
 /** How long a pass waits for its placements' steps by default. */
 const PASS_HOLD_MS = 2000;
 
@@ -633,6 +645,8 @@ const HELD = Object.freeze({
 
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
+	// The pool's real use, for the room a new machine's disk needs (20260930757000).
+	"qorpera_report_executor_disk",
 	"qorpera_list_executor_machines",
 	"qorpera_authorize_executor_machine",
 	"qorpera_mark_company_machine_running",
@@ -669,7 +683,9 @@ export interface CompanyMachineHostOptions {
 		| "execInstance"
 	> &
 		Partial<LxdInstanceExecStreamClient> &
-		Partial<LxdInstanceExecPipeClient>;
+		Partial<LxdInstanceExecPipeClient> &
+		// The pool's real use (20260930757000); without it the executor reports nothing and the kernel keeps the paper budget.
+		Partial<LxdStoragePoolUseClient>;
 	/** The node's folder service (F3 6d): each boot of a test machine gets its own company folder view, its commands'
 	 * windows and boundaries go through it, and their output leaves only once the machine's reads are released. Without
 	 * it, machines run without /company. It needs the client's execInstanceStream (the view's hand-over). */
@@ -707,7 +723,7 @@ export interface CompanyMachineHostOptions {
 	memberStartTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
-	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
+	/** The clock a desktop's busy grace and the disk report's 30 s are counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
 
@@ -1206,6 +1222,10 @@ export class LxdCompanyMachineHost {
 	/** Steps ended so far, and per placement the count when its last one ended: a list asked before a step ended may
 	 * show its placement as it was before that step, so that pass leaves the placement to the next. */
 	#stepEnds = 0;
+	/** The placements of the last listing: whose disks the next disk report reads (20260930757000). */
+	#listed: readonly CompanyMachineEntry[] = [];
+	/** When the last disk report was read (the host's clock), whether or not it reached the kernel. */
+	#diskReadAt = Number.NEGATIVE_INFINITY;
 	readonly #endedAt = new Map<string, number>();
 	/** What steps that outlasted their pass came to, for the next pass to hand over. */
 	readonly #late: CompanyMachineOutcome[] = [];
@@ -2291,6 +2311,49 @@ export class LxdCompanyMachineHost {
 		).catch(() => undefined);
 	}
 
+	/** The pool's real use, for the kernel's room (20260930757000): before admission, at most every 30 s, LXD's figures
+	 * for the policy's pool and each listed placement's disk of that pool (what it holds of its own), reported with
+	 * qorpera_report_executor_disk. A read or a report that fails is left (the kernel decides on the paper budget once its
+	 * last report is 2 minutes old); it never fails the pass. */
+	async #reportDisk(signal: AbortSignal): Promise<void> {
+		const client = this.#options.client;
+		const now = (this.#options.now ?? Date.now)();
+		if (
+			typeof client.readStoragePoolUse !== "function" ||
+			now - this.#diskReadAt < COMPANY_MACHINE_DISK_REPORT_EVERY_MS
+		)
+			return;
+		this.#diskReadAt = now;
+		const pool = this.#policy.storagePool;
+		const named = new Map<string, string>();
+		const volumes: { project: string; name: string }[] = [];
+		for (const e of this.#listed) {
+			if (e.binding.storagePool !== pool) continue;
+			try {
+				const { project, name } = this.#plan(e);
+				named.set(name, e.placementId);
+				volumes.push({ project, name });
+			} catch {
+				// A placement whose binding is not this executor's: its use stays unknown.
+			}
+		}
+		try {
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(DISK_REPORT_MS)]);
+			const use = await client.readStoragePoolUse(pool, volumes, checked);
+			await this.#call(
+				"qorpera_report_executor_disk",
+				{
+					p_owner: this.#options.owner,
+					p_machine_id_sha256: this.#options.machineIdSha256,
+					p_report: companyMachineDiskReport(pool, use, named),
+				},
+				checked,
+			);
+		} catch {
+			// Left for the next pass: the kernel's paper budget stands in once the last report is old.
+		}
+	}
+
 	/** One pass. Placements progress side by side; a failed step is recorded
 	 * on its machine and retried at the next pass, never hidden. Admission
 	 * takes one machine per call (one reservation per transaction) and never
@@ -2301,6 +2364,7 @@ export class LxdCompanyMachineHost {
 	/** `lasting` outlasts this pass: a step that outlasts it goes on under it, each step under a scope of its own. */
 	async #pass(signal: AbortSignal, lasting: AbortSignal): Promise<CompanyMachineOutcome[]> {
 		const admission: CompanyMachineOutcome[] = [];
+		await this.#reportDisk(signal);
 		for (let admitted = 0; admitted < 8; admitted++) {
 			let taken: unknown;
 			try {
@@ -2323,6 +2387,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (!Array.isArray(listed)) throw new Error("COMPANY_MACHINE_LIST_INVALID");
 		const entries = listed.map(entry);
+		this.#listed = entries;
 		const outcomes: (CompanyMachineOutcome | undefined)[] = [];
 		let over = false;
 		const steps = Promise.all(
