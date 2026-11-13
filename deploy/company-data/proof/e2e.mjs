@@ -52,6 +52,8 @@ where placed_at >= :since::timestamptz;
 	"data/shop/queries/writes.sql": "insert into orders (customer, amount) values ('x', 1) returning id;\n",
 	"data/shop/queries/two.sql": "select 1 as one; select 2 as two;\n",
 	"data/shop/queries/escape.sql": "select set_config('role', 'none', true) as role, (select count(*) from qorpera_data.steps) as steps;\n",
+	// A question of the shop that tries to become the private folder's read role, then reads it through a function.
+	"data/shop/queries/other-folder.sql": "select set_config('role', (select rolname from pg_roles where rolname like 'c\\_%\\_r2'), true) as role, query_to_xml('select * from hr.salaries', false, false, '') as rows;\n",
 	// A database only member 2 may read: its folder is private to them.
 	"data/hr/database.toml": 'format = "qorpera.database/v1"\nname = "People"\nabout = "Salaries"\n',
 	"data/hr/tables/001-salaries.sql": "create table salaries (name text primary key, monthly numeric(12,2) not null);\ninsert into salaries values ('Ada', 52000), ('Bo', 47000);\n",
@@ -207,7 +209,9 @@ grant anon, authenticated, service_role to authenticator;`);
 	if (!ready) throw new Error("No PostgREST");
 
 	// ---- the store: the gateway's logins and the template, then the gateway
-	const logins = Object.fromEntries(["admin", "owner", "write", "read", "watch"].map((door) => [door, randomBytes(16).toString("hex")]));
+	// The gateway's own three logins, and the key it derives each database folder's login passwords from.
+	const passwords = Object.fromEntries(["admin", "keeper", "watch"].map((login) => [login, randomBytes(16).toString("hex")]));
+	const logins = { ...passwords, folderKey: randomBytes(32).toString("hex") };
 	const psql = (database, file, variables = {}) => {
 		const made = spawnSync(
 			"docker",
@@ -217,7 +221,7 @@ grant anon, authenticated, service_role to authenticator;`);
 		);
 		if (made.status !== 0) throw new Error(`${file}: ${made.stderr}`);
 	};
-	psql("postgres", "cluster.sql", Object.fromEntries(Object.entries(logins).map(([door, password]) => [`${door}_password`, password])));
+	psql("postgres", "cluster.sql", Object.fromEntries(Object.entries(passwords).map(([login, password]) => [`${login}_password`, password])));
 	psql("qorpera_company_template", "template.sql");
 	gateway = new Gateway({
 		store: { host: process.env.PGHOST, port: Number(process.env.PGPORT), logins },
@@ -308,6 +312,9 @@ grant anon, authenticated, service_role to authenticator;`);
 	check("a member reads a private database's question only when the folder lets them", hrOwner.value.rows?.[0]?.[0] === 99000 && hrOther.status === 404,
 		`its owner ${JSON.stringify(hrOwner.value.rows)}, another member ${hrOther.status}, the company's owner ${hrBoss.status}`);
 	check("the refusal is the same as for a question that is not there", hrOther.value.error === (await call(viewer, "query", { database: "hr", question: "nothing" })).value.error.replace("nothing", "total"));
+	const crossFolder = await ask(viewer, "query", { database: "shop", question: "other-folder" });
+	check("a question of one database cannot become another database folder's role and read it", crossFolder.status === 400 && !JSON.stringify(crossFolder.value).includes("52000"),
+		crossFolder.value.error);
 	const applyOther = await call(viewer, "apply", { database: "hr" });
 	check("another member cannot apply a private database either", applyOther.status === 404);
 	await withAdmin(store, (db) => db.query("update shop.orders set placed_by = $1 where id <= 7", [member(3)]));
@@ -326,7 +333,7 @@ grant anon, authenticated, service_role to authenticator;`);
 	const two = await ask(viewer, "query", { database: "shop", question: "two" });
 	check("a question of two statements is refused", two.status === 400, two.value.error);
 	const escape = await ask(viewer, "query", { database: "shop", question: "escape" });
-	check("a question cannot leave its read role", escape.status === 400, escape.value.error);
+	check("a question cannot read the gateway's own records", escape.status === 400, escape.value.error);
 	const orders = await withAdmin(store, (db) => db.query("select count(*)::int as n from shop.orders"));
 	check("nothing was written by the refused questions", orders.rows[0].n === 240);
 
