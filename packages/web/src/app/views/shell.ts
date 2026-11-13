@@ -2184,7 +2184,9 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	}
 	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
-	// round 3, on #1729).
+	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
+	for (const element of before.keys())
+		if (!kept.has(element) && leavingTiles.has(element) && element.parentElement !== grid) grid.append(element);
 	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
 	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
 	// wraps).

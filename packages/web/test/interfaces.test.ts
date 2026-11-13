@@ -1710,9 +1710,13 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			vi.advanceTimersByTime(50);
 			groupNamed("trips").click();
 			expect(tiles(element)).toEqual(["Market", "Trips+", "Trips", "Members"]);
-			// Market's apps are still on their first way out: no second one, their folds still running.
+			// Market's apps are still on their first way out, in the grid: no second one, their folds still running.
 			expect(folds).toHaveLength(2);
 			expect(folds.every((fold) => fold.cancel.mock.calls.length === 0)).toBe(true);
+			for (const fold of folds) {
+				expect(fold.element.parentElement).toBe(element.querySelector(".rail-apps-grid"));
+				expect((fold.element as HTMLElement).classList.contains("is-folding")).toBe(true);
+			}
 			vi.advanceTimersByTime(400);
 			// Their way out ended: gone, the folds cancelled, so Market opens with them whole.
 			for (const fold of folds) {
