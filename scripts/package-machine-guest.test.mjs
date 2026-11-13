@@ -184,6 +184,109 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 	}
 });
 
+test("the image has Blender pinned, a starter set fetched by its pinned list, and renders one frame before it is published", () => {
+	// deploy/machine/README.md, "Renders" (13 Nov 2026). Agents fetched Blender onto every machine by themselves and lit
+	// boxes against a black world: the image brings the renderer, real light, materials and furniture, and the picture
+	// tools a frame goes through afterwards.
+	assert.match(imageScript, /\nBLENDER_VERSION=4\.3\.2\nBLENDER_SHA256=[0-9a-f]{64}\n/);
+	// The official build from its version's own folder, checked before it is unpacked, and unpacked as root's.
+	assert.ok(
+		imageScript.includes(
+			'\tcurl -fsSLo /tmp/blender.tar.xz "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"\n' +
+				'\techo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum -c -\n' +
+				"\ttar -xJf /tmp/blender.tar.xz -C /opt --no-same-owner\n",
+		),
+	);
+	assert.ok(imageScript.includes('\tln -sfn "/opt/blender-${BLENDER_VERSION}-linux-x64" /opt/blender\n\tln -sf /opt/blender/blender /usr/local/bin/blender\n'));
+	// Both blocks that name the version are handed it.
+	assert.match(imageScript, /PLAYWRIGHT_VERSION="\$PLAYWRIGHT_VERSION" BLENDER_VERSION="\$BLENDER_VERSION" BLENDER_SHA256="\$BLENDER_SHA256" \\\n\tbash -euo pipefail -c '/);
+	assert.match(imageScript, /PLAYWRIGHT_VERSION="\$PLAYWRIGHT_VERSION" BLENDER_VERSION="\$BLENDER_VERSION" bash -euo pipefail -c '\n\tsystemctl daemon-reload/);
+	// The six libraries Blender's build asks the system for, and the picture tools beside ffmpeg.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	for (const name of ["libxrender1", "libxxf86vm1", "libxi6", "libsm6", "libice6", "libgl1", "libxfixes3", "libxkbcommon0"])
+		assert.ok(apt.includes(name), `apt installs ${name}, which Blender needs to start`);
+	for (const name of ["imagemagick", "webp", "python3-pil", "python3-numpy", "ffmpeg"]) assert.ok(apt.includes(name), `apt installs ${name}`);
+
+	// The starter set's list: a path inside the set, Poly Haven's own address for that very file, a sha-256 and a size;
+	// each path once, in order; 10 lights, 14 materials and 10 things at 2k, under 256 MiB together.
+	const text = read("deploy/machine/render-assets.tsv");
+	assert.ok(text.endsWith("\n") && !text.includes("\r") && !text.includes("\n\n"));
+	const rows = text.slice(0, -1).split("\n").map((line) => line.split("\t"));
+	for (const row of rows) {
+		assert.equal(row.length, 4, row[0]);
+		const [path, url, sha256, bytes] = row;
+		assert.match(path, /^(hdris|textures|models)\/[A-Za-z0-9_/.-]+\.(exr|gltf|bin|jpg)$/);
+		assert.ok(!path.includes(".."), path);
+		assert.match(url, /^https:\/\/dl\.polyhaven\.org\/file\/ph-assets\/(HDRIs|Textures|Models)\/[A-Za-z0-9_/.-]+$/);
+		assert.equal(url.split("/").at(-1), path.split("/").at(-1), path);
+		assert.match(sha256, /^[0-9a-f]{64}$/);
+		assert.match(bytes, /^[1-9][0-9]*$/);
+	}
+	const paths = rows.map(([path]) => path);
+	assert.deepEqual(paths, [...new Set(paths)].sort());
+	const names = (kind) => [...new Set(paths.filter((path) => path.startsWith(`${kind}/`)).map((path) => path.split("/")[1]))];
+	const lights = names("hdris").map((file) => file.replace(/_2k\.exr$/, ""));
+	const materials = names("textures");
+	const things = names("models");
+	assert.deepEqual([lights.length, materials.length, things.length], [10, 14, 10]);
+	for (const name of [...materials, ...things])
+		assert.ok(paths.includes(`${paths.find((path) => path.split("/")[1] === name).split("/")[0]}/${name}/${name}_2k.gltf`), name);
+	const total = rows.reduce((sum, row) => sum + Number(row[3]), 0);
+	assert.ok(total > 128 * 1024 * 1024 && total < 256 * 1024 * 1024, `the starter set is ${total} bytes`);
+	// The guide an agent reads names every light, material and thing of the list, and where the set is.
+	const guide = read("deploy/machine/render-assets.md");
+	for (const name of [...lights, ...materials, ...things]) assert.ok(guide.includes(`\`${name}\``), `the guide names ${name}`);
+	for (const said of ["/opt/qorpera-assets/hdris/", "/opt/qorpera-assets/textures/", "/opt/qorpera-assets/models/", "CC0", "`SOURCES.tsv`", "`preview.jpg`"])
+		assert.ok(guide.includes(said), said);
+	// The picture of the set is a JPEG small enough to look at.
+	const preview = readFileSync(join(repositoryRoot, "deploy/machine/render-assets-preview.jpg"));
+	assert.deepEqual([...preview.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+	assert.ok(preview.length < 2 * 1024 * 1024, `the preview is ${preview.length} bytes`);
+
+	// The build fetches every row from where the list says and refuses another sha-256; nothing lies beside the list,
+	// the guide and the picture; root owns the set and Blender, and nobody else can change them.
+	for (const line of [
+		'\twhile IFS=$(printf "\\t") read -r path url sha256 bytes; do\n',
+		'\t\t\t$bytes =~ ^[0-9]+$ && $url == https://dl.polyhaven.org/file/ph-assets/* ]] ||\n',
+		'\t\tcurl -fsSL --retry 3 -o "/opt/qorpera-assets/$path" "$url"\n',
+		'\t\techo "$sha256  /opt/qorpera-assets/$path" | sha256sum -c --quiet - ||\n',
+		"\tdone </opt/qorpera-assets/SOURCES.tsv\n",
+		"\t[[ $(find /opt/qorpera-assets -type f | wc -l) == $(( $(wc -l </opt/qorpera-assets/SOURCES.tsv) + 3 )) ]] ||\n",
+		"\t[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o -perm /022) ]] ||\n",
+		// Blender is the pinned build and renders one frame of the set, which the picture tools then open.
+		'\t[[ $(HOME=/tmp/render-home blender --version | head -1) == "Blender ${BLENDER_VERSION}" ]] || { echo "blender is not ${BLENDER_VERSION}" >&2; exit 1; }\n',
+		"\tHOME=/tmp/render-home blender -b --factory-startup --python-exit-code 1 -P /opt/qorpera-machine/render-check.py -- /opt/qorpera-assets /tmp/render-check.png\n",
+		'\t[[ $(file -b /tmp/render-check.png) == "PNG image data, 320 x 180,"* ]] || { echo "the render check left no frame" >&2; exit 1; }\n',
+		"\tconvert /tmp/render-check.png /tmp/render-check.webp\n",
+		"\tcwebp -quiet /tmp/render-check.png -o /tmp/render-check-2.webp\n",
+		// The smallest machine has the builder's 10 GiB: an image that leaves it under 1.5 GiB is refused.
+		'\t(( free_mib >= 1536 )) || { echo "the image leaves the smallest machine only $free_mib MiB free: too little to work in" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The fetch runs before the image's last clean-up, which empties /tmp of the check's frames.
+	assert.ok(imageScript.indexOf("done </opt/qorpera-assets/SOURCES.tsv") < imageScript.indexOf("rm -rf /var/lib/apt/lists/* /tmp/*"));
+
+	// The render check asks what a render needs: the pinned version, Cycles on the processors with OpenImageDenoise, a
+	// light, a material and a thing of the set at its real size, and a frame that is neither black nor flat.
+	const check = read("deploy/machine/render-check.py");
+	for (const asked of [
+		'EXPECTED = os.environ.get("BLENDER_VERSION", "")',
+		'scene.render.engine = "CYCLES"',
+		'scene.cycles.device = "CPU"',
+		'scene.cycles.denoiser = "OPENIMAGEDENOISE"',
+		'os.path.join(assets, "hdris", "photo_studio_loft_hall_2k.exr")',
+		'os.path.join(assets, "textures", "laminate_floor_02", "textures")',
+		'os.path.join(assets, "models", "wooden_table_02", "wooden_table_02_2k.gltf")',
+		"if not 0.6 < height < 1.0:",
+		// A script that raises still ends Blender well: the check turns any error into its own failure.
+		"except Exception as error:\n\tfail(",
+		"if not 0.08 < mean < 0.9 or spread < 0.03:",
+	])
+		assert.ok(check.includes(asked), asked);
+	for (const file of ["hdris/photo_studio_loft_hall_2k.exr", "textures/laminate_floor_02/textures/laminate_floor_02_diff_2k.jpg", "textures/laminate_floor_02/textures/laminate_floor_02_rough_2k.jpg", "models/wooden_table_02/wooden_table_02_2k.gltf"])
+		assert.ok(paths.includes(file), `the list has what the render check loads: ${file}`);
+});
+
 test("the image has a desktop that only `desktop start` starts, with Chromium sandboxed, and checks it end to end", () => {
 	// deploy/machine/README.md, "The desktop" (9 Nov 2026).
 	const packager = read("scripts/package-machine-guest.mjs");
@@ -217,6 +320,11 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 			installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
 			mode: "0644",
 		},
+		// The render tools (13 Nov 2026): the build's render check, and the starter set's list, guide and picture.
+		{ file: "render-check.py", installedPath: "/opt/qorpera-machine/render-check.py", mode: "0444" },
+		{ file: "render-assets.tsv", installedPath: "/opt/qorpera-assets/SOURCES.tsv", mode: "0444" },
+		{ file: "render-assets.md", installedPath: "/opt/qorpera-assets/README.md", mode: "0444" },
+		{ file: "render-assets-preview.jpg", installedPath: "/opt/qorpera-assets/preview.jpg", mode: "0444" },
 	]);
 	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
 	for (const { file, installedPath, mode } of files) {
