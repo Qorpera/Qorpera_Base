@@ -35,6 +35,14 @@ export function linearRegexAvailable(): boolean {
 	return linear;
 }
 
+/** Text as a search that is not case-sensitive compares it, a query's and a pattern's letters too: lowercased, with
+ * a final sigma (ς, which lowercasing a whole string gives at a word's end, and a letter alone never does) as the sigma
+ * it is (σ), so the same letters fold the same way wherever they stand. The only context-dependent lowercasing there is
+ * (Unicode's Final_Sigma); every other lowercasing is the same letter by letter. */
+export function foldText(text: string): string {
+	return text.toLowerCase().replaceAll("\u03c2", "\u03c3");
+}
+
 /** Code points of class ranges whose lowercase forms are added, in all, for one pattern. */
 const FOLD_BUDGET = 4096;
 const SPECIAL = new Set(Array.from("\\^$.|?*+()[]{}/"));
@@ -120,7 +128,7 @@ const unit = (code: number): string => `\\u${code.toString(16).padStart(4, "0")}
  * code units (or one that lowercases to several) as one group, so a count after it takes it whole. */
 function literal(code: number, caseSensitive: boolean): string {
 	const own = String.fromCodePoint(code);
-	const folded = caseSensitive ? own : own.toLowerCase();
+	const folded = caseSensitive ? own : foldText(own);
 	const text = Array.from(folded)
 		.map((c) => {
 			const point = c.codePointAt(0)!;
@@ -262,7 +270,7 @@ function characterClass(
 			if (used + (hi - lo + 1) > budget) break;
 			used += hi - lo + 1;
 			for (let code = lo; code <= hi; code++) {
-				const lower = String.fromCharCode(code).toLowerCase();
+				const lower = foldText(String.fromCharCode(code));
 				if (lower.length === 1 && lower.charCodeAt(0) !== code) added.push(lower.charCodeAt(0));
 			}
 		}

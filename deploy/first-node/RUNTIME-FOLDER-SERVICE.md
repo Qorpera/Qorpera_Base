@@ -414,6 +414,10 @@ service, so the execution host stays small:
     first turn after its view closes or its lease lapses (cutting the text around a hit in a stretch of a very long line
     can hold the loop longer, about 200 ms for 4 MiB). `next` is a path, and inside a file the byte and line to go on from, in the version it was
     searched at; a client never shows it (the run seals it). A page is never the search's end: there is no cap.
+    A file that changed after the page that gave the cursor is searched again from its start at its new version, and a
+    path gone by then is passed over (the walk goes on at the next path); every file a page goes on in is among its
+    `reads` at the version it searched, which is how the runtime tells: it leaves out what the same call showed of an
+    old version (and does not release it), and says so when an earlier answer showed part of it.
   - **Errors.** A path not in the view is `NOT_FOUND`; a run view the core ended is `VIEW_CLOSED` (the run opens
     another); an operator mount's view is `BAD_REQUEST`. A storage server that cannot be read now fails the page
     (`UNAVAILABLE`), and so does a share with no folder for the company's objects (an unmounted share shows an empty
