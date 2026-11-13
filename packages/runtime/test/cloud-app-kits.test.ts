@@ -411,6 +411,59 @@ it("keeps the last good answer when a later ask fails", async () => {
 	]);
 });
 
+it("takes a watch the bridge could not start as no answer at once, keeps its last answer, and tries it again", async () => {
+	vi.useFakeTimers();
+	try {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		// The bridge refuses shop/month until it is allowed, and then answers it once and gives up on it.
+		let allowed = false;
+		const watch = vi.fn(
+			(
+				name: string,
+				params: Record<string, unknown>,
+				listener: (answer: unknown) => void,
+				failed: (error: Error) => void,
+			) => {
+				if (name !== "shop/month") return db.watch(name, params, listener);
+				queueMicrotask(() => {
+					if (allowed)
+						listener({
+							columns: ["orders", "revenue"],
+							rows: [{ orders: 340, revenue: 51000 }],
+							more: false,
+							asOf: "",
+						});
+					failed(new Error("Too many watches."));
+				});
+				return () => undefined;
+			},
+		);
+		const { kit } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), watch, onChange() {} });
+		let text: string | null = null;
+		void kit.load().then((loaded) => {
+			text = loaded;
+		});
+		// No three seconds' wait for a watch that was refused.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(inputs(text ?? "").map(({ value, state }) => [value, state])).toEqual([
+			[null, "unknown"],
+			[null, "unknown"],
+			[4200, "known"],
+		]);
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(1);
+		allowed = true;
+		await kit.load();
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(2);
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		// Refused again: the last good answer stays.
+		allowed = false;
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(4);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("loads one at a time, so a load asked for while one waits on its read ends in the newer answer", async () => {
 	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
 	const reads: ((text: string) => void)[] = [];
