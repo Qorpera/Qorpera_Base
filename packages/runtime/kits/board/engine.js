@@ -11,6 +11,11 @@
 
 	const D = document;
 	const KIT = window.QORPERA_KIT || {};
+	/* A concept's page is the thing itself: the Concepts viewer beside it already names the app, says what it is and
+	   who made it, so the page carries no title block and keeps almost nothing around its stage (Jonas, 13 November
+	   2026: "get rid of it ... minimize the borders/framing around the visual we are just trying to show"). Every
+	   control, sheet and detail stays as it is. `concept` comes from the page (kitPage), never from the data. */
+	const BARE = KIT.concept === true;
 	const RM = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 	const calm = () => !!(RM && RM.matches);
 	const BASE_WORDS = {
@@ -52,6 +57,10 @@ body{margin:0}
 .bk :focus-visible{outline:2px solid var(--q-accent);outline-offset:3px;border-radius:12px}
 .bk img,.bk video{max-width:none}
 .bk-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 28px;position:relative;z-index:4}
+.bk--bare{--pad:clamp(12px,1vw,16px)}
+.bk--bare .bk-titles{display:none}
+.bk--bare .bk-head:not(:has(.bk-chips)){display:none}
+.bk--bare.bk-choose{padding-top:0}
 .bk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .bk-line{margin:3px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .bk-empty{margin:auto 0;font-size:15px;color:var(--q-muted)}
@@ -251,6 +260,9 @@ body{margin:0}
 .bk-reason::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--q-bad);margin-right:8px;vertical-align:1px}
 @media (max-width:760px){
 .bk-panels{flex-direction:column;min-height:0;flex:0 0 auto}
+/* a concept has nothing but its worlds: on a phone they share the screen instead of leaving a band under them */
+.bk--bare.bk-choose .bk-panels{min-height:100vh;flex:1 1 auto}
+.bk--bare.bk-choose .bk-panel{flex:1 1 auto}
 .bk-panel{flex:0 0 auto;min-height:max(210px,25vh);flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:flex-start;text-align:left;gap:12px 18px;padding:20px var(--pad) 26px}
 .bk-panel+.bk-panel{box-shadow:inset 0 1px 0 var(--faint)}
 .bk-ptop{flex:1 0 100%;min-height:0;order:0}
@@ -1789,7 +1801,7 @@ body{margin:0}
 	function empty() {
 		ensureStyle();
 		if (app.root) return;
-		const root = h("main", "bk");
+		const root = h("main", BARE ? "bk bk--bare" : "bk");
 		root.append(h("p", "bk-empty", null, WORDS.empty));
 		D.body.append(root);
 		app.root = root;
@@ -1805,7 +1817,7 @@ body{margin:0}
 		WORDS = model.words;
 		LANG = model.lang;
 		const first = !app.mounted;
-		const root = h("main", `bk bk-${model.mode}${first ? " is-first" : ""}`, { lang: model.lang });
+		const root = h("main", `bk bk-${model.mode}${BARE ? " bk--bare" : ""}${first ? " is-first" : ""}`, { lang: model.lang });
 		D.body.append(root);
 		app.root = root;
 		app.model = model;

@@ -67,10 +67,11 @@ async function open(
 	file: string | Error,
 	before?: (now: ReturnType<typeof standIn>["now"]) => void,
 	tell?: Mock,
+	concept = false,
 ) {
 	const bridge = standIn(file);
 	before?.(bridge.now);
-	page.QORPERA_KIT = { app: "demo", kit, data: `${kit}.json` };
+	page.QORPERA_KIT = { app: "demo", kit, data: `${kit}.json`, ...(concept ? { concept: true } : {}) };
 	page.qorpera = tell ? { ...bridge.qorpera, tell } : bridge.qorpera;
 	new Function(kitFile(kit, "engine.js"))();
 	await settle();
@@ -712,5 +713,43 @@ describe("each data kit's note to the app's owner", () => {
 		await settle();
 		// The whole line would end in a number cut short: the number goes, and the line stops at a word.
 		expect(tell).toHaveBeenCalledWith({ about: "Customers in the whole world…", at: "people" });
+	});
+});
+
+describe("a kit's page as a concept", () => {
+	/* A concept opens full screen beside the Concepts viewer, which already names the app and says what it is, so the
+	 * page is the thing itself: no title block, and almost nothing around the stage (Jonas, 13 November 2026: "get rid
+	 * of it ... minimize the borders/framing around the visual we are just trying to show"). The page says so, in
+	 * QORPERA_KIT.concept (kitPage), never the agent's data. */
+	const BARE: Readonly<Record<Kit, { readonly root: string; readonly header: string; readonly kept: string }>> = {
+		// the root's class when the page is a concept, the title block it then leaves out, and a control that stays
+		model: { root: "mk--bare", header: ".mk-title", kept: ".mk-row" },
+		board: { root: "bk--bare", header: ".bk-titles", kept: ".bk-item" },
+		path: { root: "pk--bare", header: ".pk-head", kept: ".pk-node" },
+		object: { root: "ok--bare", header: ".ok-head", kept: ".ok-strip button" },
+	};
+	/** What the page shows of an element: jsdom reads the engine's own stylesheet for a class selector. */
+	const shows = (selector: string) => {
+		const found = document.querySelector(selector);
+		return found !== null && getComputedStyle(found).display !== "none";
+	};
+
+	it.each(KITS)("of %s draws its title block and its own padding when the page is no concept", async (kit) => {
+		await open(kit, example(kit));
+		drawFrames(3);
+		const root = document.querySelector("main") as HTMLElement;
+		expect(root.className).not.toContain("--bare");
+		expect(shows(BARE[kit].header)).toBe(true);
+		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
+	});
+
+	it.each(KITS)("of %s draws no title block when the page is a concept, and keeps what a member does", async (kit) => {
+		await open(kit, example(kit), undefined, undefined, true);
+		drawFrames(3);
+		const root = document.querySelector("main") as HTMLElement;
+		expect(root.className).toContain(BARE[kit].root);
+		expect(shows(BARE[kit].header)).toBe(false);
+		// every control is still there; how little room the stage then keeps around it is looked at in a browser
+		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
 });
