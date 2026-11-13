@@ -186,6 +186,10 @@ export interface MachineScreenAuthority {
 	/** A member held the desktop since its clipboard was last confirmed clear (F35 of #1661): the host clears it under this
 	 * call's hold of the desktop and records it before it looks or acts. */
 	clipboardClear: boolean;
+	/** A member acted on the shared desktop since an agent was last told (20260930734000): who, how many seconds ago, and
+	 * when that action was (`at`, SQL's own timestamp); never what. SQL says it at every read until the executor's word
+	 * that an answer carrying it is ready (qorpera_machine_desktop_shared_told with `at`; review r1 F4 of #1701). */
+	memberTouched?: { name: string; secondsAgo: number; at: string };
 }
 
 /** The calling run's live tool authority, for an action its own executing machine_screen receipt of exactly this
@@ -216,7 +220,8 @@ export async function authorizeMachineScreen(
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
 		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
 		!Number.isSafeInteger(result.desktopGeneration) || (result.desktopGeneration as number) < 0 ||
-		typeof result.clipboardClear !== "boolean")
+		typeof result.clipboardClear !== "boolean" ||
+		(result.memberTouched !== undefined && !memberTouched(result.memberTouched)))
 		throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
 	let action: MachineScreenAction | null = null;
 	if (request.input.commandId === null) {
@@ -233,7 +238,22 @@ export async function authorizeMachineScreen(
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
 		settleMs: request.input.settleMs, look: request.input.look, desktopGeneration: result.desktopGeneration as number,
-		clipboardClear: result.clipboardClear };
+		clipboardClear: result.clipboardClear,
+		...(result.memberTouched !== undefined ? { memberTouched: { ...(result.memberTouched as { name: string; secondsAgo: number; at: string }) } } : {}) };
+}
+
+/** A member's name as SQL keeps it: 1 to 256 characters (char_length, code points: never UTF-16 units; review r1 F2 of
+ * #1701), not blank. */
+export const MEMBER_NAME_CHARACTERS = 256;
+/** SQL's memberTouched (20260930734000): exactly a member's name (as the review card names them, or "A member"), the
+ * whole seconds since their shared action, and its time (an ISO timestamp SQL gave). */
+function memberTouched(value: unknown): value is { name: string; secondsAgo: number; at: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "at,name,secondsAgo")
+		return false;
+	const { name, secondsAgo, at } = value as Record<string, unknown>;
+	return typeof name === "string" && name.trim().length > 0 && [...name].length <= MEMBER_NAME_CHARACTERS &&
+		typeof secondsAgo === "number" && Number.isSafeInteger(secondsAgo) && secondsAgo >= 0 &&
+		typeof at === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?(Z|[+-]\d\d:\d\d)$/.test(at) && Number.isFinite(Date.parse(at));
 }
 
 /** What SQL says about one member's look at a desktop (20260930712000): where the machine runs, the member, whether the
@@ -348,9 +368,13 @@ export interface MemberMachineActAuthority {
 	executorOwner: string;
 	providerId: string;
 	userId: string;
-	/** The seat the action was begun in: the host asks the fence again once it holds the desktop (round 23 of #1661). */
+	/** The seat the action was begun in: the host asks the fence again once it holds the desktop (round 23 of #1661). For a
+	 * shared action, the lease generation it was begun at (0 on a desktop no one ever held). */
 	seat: number;
 	served: boolean;
+	/** A shared action (20260930734000): begun with no hold of the member's; the host's fence then names no member, so a
+	 * private hold by anyone since stops it. */
+	shared: boolean;
 }
 
 /** The action's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_act_authority)
@@ -371,12 +395,17 @@ export async function authorizeMemberMachineAct(
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.member-machine-desktop-act-authority/v1") throw new Error("MEMBER_ACT_AUTHORITY_INVALID");
 	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW" ||
-		result.reason === "DESKTOP_CONTROL_ENDED"))
+		result.reason === "DESKTOP_CONTROL_ENDED" ||
+		// A shared action that a private hold (anyone's) began after (20260930734000).
+		result.reason === "DESKTOP_MEMBER_IN_CONTROL"))
 		throw new CloudMemberMachineActRefusal(result.reason);
+	// A shared action says so (20260930734000); a private one's answer is as before.
+	const shared = "shared" in result;
 	if (result.state !== "authorized" ||
 		Object.keys(result).sort().join() !==
-			"action,actionId,bootId,executorOwner,machineId,placementId,providerId,schema,seat,served,state,userId" ||
-		typeof result.seat !== "number" || !Number.isSafeInteger(result.seat) || result.seat < 1 ||
+			`action,actionId,bootId,executorOwner,machineId,placementId,providerId,schema,seat,served,${shared ? "shared," : ""}state,userId` ||
+		(shared && result.shared !== true) ||
+		typeof result.seat !== "number" || !Number.isSafeInteger(result.seat) || result.seat < (shared ? 0 : 1) ||
 		result.actionId !== request.actionId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
@@ -389,5 +418,5 @@ export async function authorizeMemberMachineAct(
 	signal.throwIfAborted();
 	return { actionId: result.actionId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, seat: result.seat, served: result.served as boolean };
+		userId: result.userId as string, seat: result.seat, served: result.served as boolean, shared };
 }

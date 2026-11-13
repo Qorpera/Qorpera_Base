@@ -38,12 +38,12 @@ const draft: WebCompanyAgentDraft = {
 
 /** The figures' own shades, as the figure model has them (public/assets/avatars/motion-model.js). */
 const NATIVE = {
-	planet: "#5ec0b5",
+	planet: "#3faff3",
 	acorn: "#87674c",
-	flame: "#fa752e",
+	flame: "#f96e2d",
 	rocket: "#f96e2d",
 	crown: "#fcb51b",
-	heart: "#fb672a",
+	heart: "#e22538",
 	star: "#fcb51b",
 	cloud: "#3faff3",
 	bolt: "#a145f7",

@@ -16,6 +16,8 @@ export type MenuEntry =
 			danger?: boolean;
 			/** A radio choice: the current one carries a check, at the row's end when a picture leads it. */
 			checked?: boolean;
+			/** With `checked`: one of several that may be chosen together (a checkbox), not one choice of a group. */
+			multiple?: boolean;
 			/** A picture in the icon's place: a member's face. */
 			lead?: HTMLElement;
 			/** A second, quieter line under the label. */
@@ -210,7 +212,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				{
 					type: "button",
 					class: entry.danger ? "context-menu-item danger" : "context-menu-item",
-					role: radio ? "menuitemradio" : "menuitem",
+					role: radio ? (entry.multiple ? "menuitemcheckbox" : "menuitemradio") : "menuitem",
 					...(radio ? { "aria-checked": String(entry.checked) } : {}),
 					...(entry.disabled ? { disabled: true } : {}),
 				},

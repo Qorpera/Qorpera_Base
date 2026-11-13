@@ -77,6 +77,7 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
 import type { MailState } from "./company-mail.ts";
+import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
 import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
@@ -626,6 +627,8 @@ export class CompanyController {
 	#openFullTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Realtime was connected once: a return to connected catches up on what it may have missed. */
 	#connectedBefore = false;
+	/** This member's time zone was handed in for the company, which had none (#offerTimeZone): once, whatever came of it. */
+	#timeZoneOffered = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -974,6 +977,7 @@ export class CompanyController {
 				.team?.members.map((member) => member.userId)
 				.join(" ");
 			this.store.set({ team, accessLost: false });
+			void this.#offerTimeZone(team);
 			this.#joinPresence();
 			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
 			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
@@ -1008,6 +1012,28 @@ export class CompanyController {
 					}));
 				this.stop();
 			} else this.store.set({ error: describeError(error) });
+		}
+	}
+
+	/** A company without a time zone takes the one this member's app shows times in (company-time-zone.ts; migration
+	 * 20260930739000): when the team read says the company has none (null; a cloud before the migration says nothing
+	 * and is asked nothing) and this member may act for it (never a viewer). Once: the cloud takes it only while the
+	 * company has none and answers the company's, which the team then says. Nothing shows, whatever comes of it: a call
+	 * that failed is not made again by this company's open, and a zone the cloud refused is not handed in again by this
+	 * browser. */
+	async #offerTimeZone(team: HostedProfileTeam): Promise<void> {
+		if (this.#timeZoneOffered || team.timeZone !== null || !team.capabilities.write) return;
+		const profileId = this.profile.profileId;
+		const zone = memberTimeZone();
+		if (!zone || timeZoneRefused(profileId, zone)) return;
+		this.#timeZoneOffered = true;
+		try {
+			const timeZone = await this.#api.ensureCompanyTimeZone(profileId, zone);
+			const current = this.store.get().team;
+			if (!this.#stopped && current?.timeZone === null) this.store.set({ team: { ...current, timeZone } });
+		} catch (error) {
+			// 22023: the cloud does not know this zone's name. Anything else (offline, a cloud without the call) is left.
+			if (error instanceof CloudRpcError && error.code === "22023") rememberTimeZoneRefused(profileId, zone);
 		}
 	}
 

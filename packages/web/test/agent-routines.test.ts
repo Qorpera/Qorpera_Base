@@ -1747,6 +1747,37 @@ describe("a new routine's file (P34r)", () => {
 		expect(f.calls).toEqual([]);
 		expect(fake.commits).toEqual([]);
 	});
+	// The Mailbox gives an address to an agent with one (views/mailbox.ts, "who answers it").
+	it("saves a new routine that starts on what arrives at a mailbox", async () => {
+		const fake = seeded({ text: null });
+		const f = writer(fake);
+		const hook = "10000000-0000-4000-8000-0000000000a1";
+		const trigger = parseCloudRoutineTrigger({
+			id: "file",
+			kind: "listener",
+			source: "event",
+			hookId: hook,
+			only: ["mail.received"],
+			timeZone: "Europe/Copenhagen",
+			replyPolicy: "optional",
+		});
+		const draft = newDraft({ title: "Answer email to hello@acme.example", prompt: "Answer it.", trigger });
+		await expect(f.routines.save(draft, account, "save-1")).resolves.toBe("saved");
+		const path = `${ROUTINES}/answer-email-to-helloacmeexample.md`;
+		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([[["write", path]]]);
+		expect(parsed(fake.text(path), path)).toMatchObject({
+			id: draft.clientRoutineId,
+			title: "Answer email to hello@acme.example",
+			status: "active",
+			trigger: { when: "event", hook, only: ["mail.received"] },
+			timezone: "Europe/Copenhagen",
+			reply: "optional",
+			effort: "low",
+			instructions: "Answer it.",
+		});
+		// The member's login is consented and bound first, as for any new routine.
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
+	});
 });
 
 describe("an edit of a routine's file (P34r)", () => {

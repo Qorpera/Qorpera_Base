@@ -323,6 +323,12 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(answered).not.toBe(waiting);
 		expect(answering.added).toEqual([answered]);
 		expect(answered.textContent).toContain("Sending");
+		// In the thread it is the exchange it was: the member's answer is their bubble, with "Sending" under it.
+		expect(answered.classList.contains("is-exchange")).toBe(true);
+		const result = answered.querySelector<HTMLElement>(".interaction-result.is-said.mine")!;
+		expect(result.querySelector(".interaction-chosen.bubble")).not.toBeNull();
+		expect(result.querySelector(".interaction-beside")?.textContent).toBe("Sending");
+		expect(result.dataset.sentAt).toBe(at(3));
 		// Its input id arrives, then the transcript's answer: the same card, only the words that changed.
 		const settling = await thread.mutations(async () => {
 			thread.store.set({ interactionAnswers: { [id(600)]: { ...answer, pending: true, inputId: id(610) } } });
@@ -333,8 +339,47 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(thread.card(id(600))).toBe(answered);
 		expect(answered.textContent).not.toContain("Sending");
 		expect(answered.querySelector(".interaction-attribution")?.textContent).toBe(`You · ${fmtTime(at(4))}`);
+		// Sent: nothing shows under the bubble any more, and the bubble tells its time on a hover.
+		expect(result.isConnected).toBe(true);
+		expect(result.querySelector(".interaction-beside")?.textContent).toBe("");
+		expect(result.dataset.sentAt).toBe(at(4));
 		expect(settling.added).toEqual([]);
 		expect(settling.removed).toEqual([]);
+	});
+
+	it("keeps an answer half made in a waiting card when the agent's look changes, and draws only the figure anew", async () => {
+		const thread = setup([message(1), question()]);
+		const waiting = thread.card(id(600))!;
+		expect(waiting.classList.contains("is-asking")).toBe(true);
+		const stand = waiting.querySelector<HTMLElement>(".interaction-figure")!;
+		const figure = stand.firstElementChild;
+		expect(figure?.classList.contains("figure")).toBe(true);
+		const field = waiting.querySelector<HTMLInputElement>(".interaction-own > .interaction-field")!;
+		field.value = "#ops";
+		field.dispatchEvent(new Event("input"));
+		const send = waiting.querySelector<HTMLButtonElement>(".interaction-send")!;
+		expect(send.disabled).toBe(false);
+		// Another colour for the agent (review r1 F1 on #1730).
+		const { staff: agents } = thread.company.store.get();
+		thread.company.store.set({
+			staff: agents.map((agent) =>
+				agent.id === staff.id ? { ...agent, appearance: { ...agent.appearance, color: "#654321" } } : agent,
+			),
+		});
+		await settle();
+		expect(thread.card(id(600))).toBe(waiting);
+		expect(waiting.querySelector(".interaction-own > .interaction-field")).toBe(field);
+		expect([field.value, send.disabled]).toEqual(["#ops", false]);
+		expect(waiting.querySelector(".interaction-figure")).toBe(stand);
+		expect(stand.firstElementChild).not.toBe(figure);
+		expect(stand.firstElementChild?.classList.contains("figure")).toBe(true);
+		expect(stand.children).toHaveLength(1);
+		// A redraw with the same look leaves the figure as it is.
+		const again = stand.firstElementChild;
+		await thread.show([message(1), question(), message(3)]);
+		expect(thread.card(id(600))).toBe(waiting);
+		expect(stand.firstElementChild).toBe(again);
+		expect(field.value).toBe("#ops");
 	});
 
 	it("draws a coding value's card again when a role change moves whose value it saves", async () => {
