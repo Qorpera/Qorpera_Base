@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { createHttpCloudCodingCommandGateway, type CloudCodingCommandExecution, type CloudCodingCommandHttpRequest } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 
 export interface CodingCommandPeer {
@@ -22,6 +23,8 @@ interface CodingCommandRouterOptions {
 }
 export class CodingCommandRouter {
 	readonly #options: CodingCommandRouterOptions;
+	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
+	readonly #pages = new CloudCommandPages();
 	constructor(options: CodingCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
 	}
@@ -51,7 +54,7 @@ export class CodingCommandRouter {
 				if (!isDeepStrictEqual(scope, request.scope)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
 				await authorizeCodingCommand(this.#options.control, request, checked);
 			},
-			fetch: this.#options.fetch,
+			fetch: this.#options.fetch, pages: this.#pages,
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
 		// its own credential, rechecks SQL and may only execute locally.

@@ -420,6 +420,42 @@ describe("a session's attach", () => {
 		expect(await readCodeAreaBase(c.job, f.repository)).toBe(f.baseSha);
 	});
 
+	it("refuses GitHub's base branch with a name the company folder does not take before anything enters repo.git, and adds no worktree", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const a = randomUUID();
+		// GitHub's main gets a name git takes and the company folder does not.
+		await writeFile(join(f.root, "source", "bad."), "x\n");
+		await f.src("add", "--all");
+		await f.src("commit", "--quiet", "-m", "bad");
+		const bad = await f.src("rev-parse", "HEAD");
+		const refusal = await attachCodeSession(
+			c.job,
+			{ repository: f.repository, workerId: a, baseSha: bad },
+			f.broker,
+		).catch((error: unknown) => error);
+		expect(refusal).toMatchObject({
+			name: "CodeHostRefusal",
+			code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+			paths: ["bad."],
+		});
+		// The seed's, not a worktree's: it says no session's branch or base.
+		expect(refusal).not.toHaveProperty("of");
+		expect(await exists(c.repo)).toBe(false);
+		expect(await exists(join(c.code, `worktrees/${a}`))).toBe(false);
+		expect(c.log.some((command) => command.argv.includes("repack"))).toBe(false);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expect(await readdir(f.journalRoot)).toEqual([]);
+		// Renamed on GitHub: the next attach seeds and adds the worktree.
+		await f.src("mv", "bad.", "good");
+		await f.src("commit", "--quiet", "-m", "renamed");
+		const renamed = await f.src("rev-parse", "HEAD");
+		expect(
+			await attachCodeSession(c.job, { repository: f.repository, workerId: a, baseSha: renamed }, f.broker),
+		).toEqual({ seeded: "seeded", state: "added", headSha: renamed, restored: [] });
+		expect(await readFile(join(c.code, `worktrees/${a}/good`), "utf8")).toBe("x\n");
+	});
+
 	it("refuses a present worktree whose branch is gone", async () => {
 		const f = await fixture(),
 			c = await f.company();

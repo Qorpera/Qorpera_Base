@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
 import { ObjectIntegrityError, ObjectMissingError } from "../src/folder-service/objects.ts";
-import type { SearchRequest } from "../src/folder-service/protocol.ts";
+import { encodeJson, Kind, parseSearch, type SearchRequest } from "../src/folder-service/protocol.ts";
+import {
+	compilePattern,
+	foldText,
+	linearRegexAvailable,
+	SearchPatternError,
+	translate,
+} from "../src/folder-service/regex.ts";
 import {
 	compileGlob,
 	globMatches,
 	type SearchAnswer,
+	type SearchFile,
 	type SearchSource,
+	SHOWN_BYTES,
 	searchView,
 	treeOrder,
 } from "../src/folder-service/search.ts";
@@ -64,15 +73,22 @@ function stage(
 /** A page's hits as path, line and text. */
 const seen = (page: SearchAnswer) => page.hits.map(({ path, line, text }) => ({ path, line, text }));
 
-const request = (query: string, more: Partial<SearchRequest> = {}): SearchRequest => ({
+const request = (query: string | null, more: Partial<SearchRequest> = {}): SearchRequest => ({
+	version: 1,
 	query,
+	regex: false,
 	path: "",
 	glob: null,
 	namesOnly: false,
+	filesOnly: false,
 	caseSensitive: false,
+	context: 0,
 	after: null,
 	...more,
 });
+/** A version 2 request (keyholes S4). */
+const request2 = (query: string | null, more: Partial<SearchRequest> = {}): SearchRequest =>
+	request(query, { version: 2, ...more });
 
 /** Every page until the end, and every hit in order. */
 async function all(source: SearchSource, first: SearchRequest): Promise<{ pages: SearchAnswer[]; hits: string[] }> {
@@ -451,5 +467,349 @@ describe("folder search", () => {
 	it("orders paths depth first, name by name", () => {
 		const paths = ["a-c", "a/b", "a", "a0", "b"];
 		expect(paths.sort(treeOrder)).toEqual(["a", "a/b", "a-c", "a0", "b"]);
+	});
+});
+
+/** Every page of a search until its end, by any clock, with each page's hits in full (context lines too). */
+async function pages(source: SearchSource, first: SearchRequest): Promise<SearchAnswer[]> {
+	const out: SearchAnswer[] = [];
+	let next: SearchRequest | null = first;
+	while (next) {
+		const page = await searchView(source, next);
+		out.push(page);
+		next = page.next ? { ...first, after: page.next } : null;
+		if (out.length > 5000) throw new Error("The search never ended");
+	}
+	return out;
+}
+
+/** The files a files-only search counted, a file a page ended inside counted on by the next as one. */
+function counted(answers: readonly SearchAnswer[]): { path: string; count: number }[] {
+	const out: { path: string; count: number }[] = [];
+	let open: SearchFile | undefined;
+	for (const file of answers.flatMap((a) => a.files ?? [])) {
+		const last = out.at(-1);
+		if (open && last && last.path === file.path) last.count += file.count;
+		else out.push({ path: file.path, count: file.count });
+		open = file.partial ? file : undefined;
+	}
+	return out;
+}
+
+const payload = (body: Record<string, unknown>) => encodeJson(Kind.search, body).subarray(5);
+/** A clock a second later at each look: every page's time is up at its first check. */
+function ticking(): () => number {
+	let t = 0;
+	return () => {
+		t += 1_000;
+		return t;
+	};
+}
+const v1 = { query: "x", path: "", glob: null, namesOnly: false, caseSensitive: false, after: null };
+const v2 = { ...v1, version: 2, regex: false, filesOnly: false, context: 0 };
+
+describe("folder search, version 2 (keyholes S4)", () => {
+	it("reads a version 1 request as before and a version 2 one with its new parts, and refuses what does not go together", () => {
+		expect(parseSearch(payload(v1))).toEqual({
+			...v1,
+			version: 1,
+			regex: false,
+			filesOnly: false,
+			context: 0,
+		});
+		expect(parseSearch(payload({ ...v2, regex: true, context: 5 }))).toMatchObject({
+			version: 2,
+			regex: true,
+			context: 5,
+		});
+		expect(parseSearch(payload({ ...v2, query: null, namesOnly: true, glob: "*.md" }))).toMatchObject({
+			query: null,
+			namesOnly: true,
+		});
+		for (const bad of [
+			{ ...v1, regex: true },
+			{ ...v1, context: 1 },
+			{ ...v2, version: 3 },
+			{ ...v2, extra: 1 },
+			{ ...v2, filesOnly: undefined },
+			{ ...v2, query: null },
+			{ ...v2, query: null, namesOnly: true, regex: true },
+			{ ...v2, filesOnly: true, namesOnly: true },
+			{ ...v2, context: 6 },
+			{ ...v2, context: 1, filesOnly: true },
+			{ ...v2, context: 1, namesOnly: true },
+			{ ...v2, regex: "yes" },
+		])
+			expect(() => parseSearch(payload(bad as Record<string, unknown>)), JSON.stringify(bad)).toThrow();
+	});
+
+	it("fills a page with about 26 KiB of hits as the run shows them, and shows each hit once over the pages", async () => {
+		const lines = Array.from({ length: 3000 }, (_, i) => `line ${i + 1} has the word plan in it`);
+		const { source } = stage({ "big.md": `${lines.join("\n")}\n`, "z.md": "plan\n" });
+		const answers = await pages(source, request2("plan"));
+		const hits = answers.flatMap((p) => p.hits.map((h) => `${h.path}:${h.line}:${h.text}`));
+		expect(hits).toEqual([...lines.map((l, i) => `big.md:${i + 1}:${l}`), "z.md:1:plan"]);
+		const shown = (page: SearchAnswer) =>
+			page.hits.reduce(
+				(sum, h) => sum + Buffer.byteLength(h.path) + String(h.line).length + Buffer.byteLength(h.text) + 4,
+				0,
+			);
+		expect(answers[0]!.hits.length).toBeGreaterThan(500);
+		for (const page of answers) expect(shown(page)).toBeLessThanOrEqual(SHOWN_BYTES);
+		expect(shown(answers[0]!)).toBeGreaterThan(SHOWN_BYTES - 100);
+		// A version 2 answer always says what it counted.
+		expect(answers[0]).toMatchObject({ files: [], longLines: 0 });
+		// Version 1 keeps its 6 KiB pages and its answer's shape.
+		const old = await searchView(source, request("plan"));
+		expect(Buffer.byteLength(JSON.stringify(old.hits))).toBeLessThanOrEqual(6 * 1024 + 200);
+		expect(Object.keys(old).sort()).toEqual(["binary", "hits", "next", "reads", "searched", "unreadable"]);
+	});
+
+	it("shows lines before and after each hit, none twice, the same whatever the pieces, and goes on from any hit with them", async () => {
+		const text = `${Array.from({ length: 14 }, (_, i) => `line ${i + 1}${[4, 5, 10].includes(i + 1) ? " plan" : ""}`).join("\n")}\n`;
+		const starts = [0];
+		for (let at = text.indexOf("\n"); at >= 0 && at < text.length - 1; at = text.indexOf("\n", at + 1))
+			starts.push(at + 1);
+		const shown = (page: SearchAnswer) =>
+			page.hits.map(({ line, text, before, after, from }) => ({ line, text, before, after, from }));
+		const expected = [
+			{ line: 4, text: "line 4 plan", before: ["line 2", "line 3"], after: [], from: starts[1] },
+			{ line: 5, text: "line 5 plan", before: [], after: ["line 6", "line 7"], from: starts[4] },
+			{
+				line: 10,
+				text: "line 10 plan",
+				before: ["line 8", "line 9"],
+				after: ["line 11", "line 12"],
+				from: starts[7],
+			},
+		];
+		for (const pieceBytes of [7, 16, 64, 4096]) {
+			const { source } = stage({ "a.md": text });
+			const page = await searchView({ ...source, pieceBytes }, request2("plan", { context: 2 }));
+			expect(shown(page), `pieces of ${pieceBytes}`).toEqual(expected);
+			// The run shows a page in part and goes on from the first hit it left out, from its first line before.
+			const third = page.hits[2]!;
+			const rest = await searchView(
+				{ ...source, pieceBytes },
+				request2("plan", {
+					context: 2,
+					after: {
+						path: "a.md",
+						version: third.version,
+						offset: third.from!,
+						line: third.line - 1 - third.before!.length,
+					},
+				}),
+			);
+			expect(shown(rest)).toEqual(expected.slice(2));
+		}
+		// Pages that end on time keep every line around every hit: each goes on from the lines before the next hit.
+		const late = stage({ "a.md": text, "b.md": text });
+		const timed = await pages({ ...late.source, now: ticking(), pieceBytes: 8 }, request2("plan", { context: 2 }));
+		expect(timed.length).toBeGreaterThan(2);
+		const all = (await pages(late.source, request2("plan", { context: 2 }))).flatMap(shown);
+		expect(timed.flatMap(shown)).toEqual(all);
+		expect(all).toHaveLength(6);
+	});
+
+	it("counts the matching lines of each file with filesOnly, a file a page ended inside counted on by the next", async () => {
+		const big = Array.from({ length: 500 }, (_, i) => (i % 2 === 0 ? `plan ${i}` : `other ${i}`)).join("\n");
+		const { source } = stage({ "a.md": "plan\nx\nplan plan\n", "b.md": "nothing", "c/d.md": "PLAN\n", "e.md": big });
+		const page = await searchView(source, request2("plan", { filesOnly: true }));
+		expect(page.hits).toEqual([]);
+		expect(page.files).toEqual([
+			{ path: "a.md", version: v(2), count: 2 },
+			{ path: "c/d.md", version: v(4), count: 1 },
+			{ path: "e.md", version: v(5), count: 250 },
+		]);
+		expect(page.searched).toBe(4);
+		const timed = await pages({ ...source, now: ticking() }, request2("plan", { filesOnly: true }));
+		expect(timed.length).toBeGreaterThan(4);
+		expect(timed.flatMap((p) => p.files ?? []).some((f) => f.partial)).toBe(true);
+		expect(counted(timed)).toEqual([
+			{ path: "a.md", count: 2 },
+			{ path: "c/d.md", count: 1 },
+			{ path: "e.md", count: 250 },
+		]);
+		// Many files fill a page by their lines too.
+		const files: Record<string, string> = {};
+		for (let i = 0; i < 2_000; i++) files[`f/${String(i).padStart(5, "0")}-${"n".repeat(40)}.md`] = "plan\n";
+		const many = await pages(stage(files).source, request2("plan", { filesOnly: true }));
+		expect(many.length).toBeGreaterThan(2);
+		expect(counted(many)).toHaveLength(2_000);
+	});
+
+	it("finds names by glob alone", async () => {
+		const { source } = stage({ "a.md": "x", "b.txt": "x", "docs/c.md": "x", "docs/notes/d.md": "x" });
+		const page = await searchView(source, request2(null, { namesOnly: true, glob: "**/*.md" }));
+		expect(page.hits.map((h) => h.path)).toEqual(["a.md", "docs/c.md", "docs/notes/d.md"]);
+		expect(page.reads.map((r) => r.path)).toEqual(["a.md", "docs", "docs/c.md", "docs/notes", "docs/notes/d.md"]);
+		const folders = await searchView(source, request2(null, { namesOnly: true, glob: "notes" }));
+		expect(folders.hits.map((h) => [h.path, h.kind])).toEqual([["docs/notes", "folder"]]);
+	});
+
+	it.runIf(linearRegexAvailable())(
+		"searches with a regular expression, in text and names, folded unless case-sensitive",
+		async () => {
+			const { source } = stage({
+				"a.md": "Call 555-1234 now\nno number\nPLAN B\n",
+				"plan-x.md": "nothing",
+				"plans/q.md": "plans 12\n",
+			});
+			const text = (page: SearchAnswer) => page.hits.map((h) => `${h.path}:${h.line}:${h.text}`);
+			expect(text(await searchView(source, request2("\\b\\d{3}-\\d{4}\\b", { regex: true })))).toEqual([
+				"a.md:1:Call 555-1234 now",
+			]);
+			expect(text(await searchView(source, request2("^pl[a-z]n( b)?$", { regex: true })))).toEqual([
+				"a.md:3:PLAN B",
+			]);
+			expect(
+				text(await searchView(source, request2("^pl[a-z]n( b)?$", { regex: true, caseSensitive: true }))),
+			).toEqual([]);
+			// A final sigma is a sigma to a search that is not case-sensitive, in the text as in the pattern or query
+			// (review r9 of #1698: the text lowercased whole gave ς at a word's end, the pattern letter by letter σ).
+			const greek = stage({ "g.md": "ΟΣ\nΟΣΟ\nκόσμος\nάλλο\n" });
+			const sigma = ["g.md:1:ΟΣ", "g.md:2:ΟΣΟ", "g.md:3:κόσμος"];
+			expect(text(await searchView(greek.source, request2("ΟΣ", { regex: true })))).toEqual(sigma);
+			expect(text(await searchView(greek.source, request2("ΟΣ")))).toEqual(sigma);
+			expect(text(await searchView(greek.source, request2("ος", { regex: true })))).toEqual(sigma);
+			expect(
+				(await searchView(source, request2("^plans?(-x)?(\\.md)?$", { regex: true, namesOnly: true }))).hits.map(
+					(h) => h.path,
+				),
+			).toEqual(["plan-x.md", "plans"]);
+			// What RE2 refuses is refused before any work, with why.
+			for (const [pattern, code] of [
+				["(a)\\1", "REGEX_BACKREFERENCE"],
+				["a(?=b)", "REGEX_LOOKAROUND"],
+				["(?<!a)b", "REGEX_LOOKAROUND"],
+				["(?i)a", "REGEX_FLAGS"],
+				["a{1,100}", "REGEX_TOO_LARGE"],
+				["(a{1,10}){1,10}", "REGEX_TOO_LARGE"],
+				["[a", "REGEX_SYNTAX"],
+				["a)", "REGEX_SYNTAX"],
+				["\\q", "REGEX_ESCAPE"],
+				["\\p{L}", "REGEX_ESCAPE"],
+				["[[:alpha:]]", "REGEX_SYNTAX"],
+			] as const)
+				await expect(searchView(source, request2(pattern, { regex: true })), pattern).rejects.toThrow(
+					new RegExp(`^${code}: `),
+				);
+			// Linear, whatever the pattern: what backtracks exponentially elsewhere takes no time here.
+			const evil = stage({ "e.txt": `${"a".repeat(200_000)}\n` });
+			const started = performance.now();
+			const none = await searchView(
+				{ ...evil.source, pieceBytes: 1 << 20 },
+				request2("(a|aa)*(a*)*b", { regex: true }),
+			);
+			expect(none.hits).toEqual([]);
+			expect(performance.now() - started).toBeLessThan(2_000);
+		},
+	);
+
+	it.runIf(linearRegexAvailable())(
+		"searches whole lines only with a pattern: a line too long is read past, unsearched, and counted",
+		async () => {
+			// Its anchors and word boundaries are never judged at a stretch's end: END$ in a line that goes on is no hit.
+			const long = `${"x".repeat(100)}plan END${"x".repeat(100)}ENDsuffix`;
+			const { source } = stage({ "a.txt": `first\n${long}\nplan three END\ntail` });
+			for (const pattern of ["pl.n", "END$", "\\bEND\\b"]) {
+				const page = await searchView({ ...source, longestLine: 40 }, request2(pattern, { regex: true }));
+				expect(
+					page.hits.map((h) => h.line),
+					pattern,
+				).toEqual([3]);
+				expect(page.longLines).toBe(1);
+			}
+			// Its lines around a hit are kept as any line's: the long one shows its start.
+			const around = await searchView(
+				{ ...source, longestLine: 40 },
+				request2("three", { regex: true, context: 1 }),
+			);
+			expect(around.hits[0]).toMatchObject({
+				line: 3,
+				before: [expect.stringMatching(/^x{40,}$/)],
+				after: ["tail"],
+			});
+			// Text is still searched in stretches, as before.
+			const literal = await searchView({ ...source, longestLine: 40 }, request2("plan"));
+			expect(literal.hits.map((h) => h.line)).toEqual([2, 3]);
+			expect(literal.longLines).toBe(0);
+		},
+	);
+
+	it.runIf(linearRegexAvailable())("judges a pattern's line by its own length, however the pieces fall", async () => {
+		// With lines of at most 40 bytes searched: 41 x's are too long, 40 are not, wherever the line starts.
+		const lines = (prefix: string) => `${prefix}${"x".repeat(41)}\n${"x".repeat(40)}\nb\n${"x".repeat(41)}`;
+		for (const prefix of ["", "a\n", "ab\n"])
+			for (const pieceBytes of [7, 16, 41, 64, 4096]) {
+				const { source } = stage({ "a.txt": lines(prefix) });
+				const page = await searchView(
+					{ ...source, pieceBytes, longestLine: 40 },
+					request2("^x+$", { regex: true }),
+				);
+				const at = prefix === "" ? 0 : 1;
+				expect(
+					page.hits.map((h) => h.line),
+					`${JSON.stringify(prefix)} in pieces of ${pieceBytes}`,
+				).toEqual([2 + at]);
+				expect(page.longLines).toBe(2);
+				// So are they when the pattern matches nothing anywhere.
+				const none = await searchView({ ...source, pieceBytes, longestLine: 40 }, request2("^q$", { regex: true }));
+				expect(none.hits).toEqual([]);
+				expect(none.longLines, `${JSON.stringify(prefix)} in pieces of ${pieceBytes}, no match`).toBe(2);
+			}
+	});
+
+	it.runIf(linearRegexAvailable())("matches a pattern on empty lines too, and counts them", async () => {
+		const { source } = stage({ "a.txt": "a\n\nb\n\n\nc" });
+		expect((await searchView(source, request2("^$", { regex: true }))).hits.map((h) => h.line)).toEqual([2, 4, 5]);
+		expect((await searchView(source, request2("^$", { regex: true, filesOnly: true }))).files).toEqual([
+			{ path: "a.txt", version: v(1), count: 3 },
+		]);
+	});
+
+	it("ends the count of a file a page began inside, with 0 when nothing more matched there", async () => {
+		const { source } = stage({ "a.md": `plan\nplan\n${"x\n".repeat(40)}`, "b.md": "plan\n" });
+		const timed = await pages({ ...source, now: ticking() }, request2("plan", { filesOnly: true }));
+		const a = timed.flatMap((p) => p.files ?? []).filter((f) => f.path === "a.md");
+		expect(a[0]).toMatchObject({ count: 2, partial: true });
+		expect(a.at(-1)).toEqual({ path: "a.md", version: v(1), count: 0 });
+		expect(counted(timed)).toEqual([
+			{ path: "a.md", count: 2 },
+			{ path: "b.md", count: 1 },
+		]);
+	});
+
+	it.runIf(linearRegexAvailable())("matches as a case-folding regular expression does", () => {
+		const cases: [string, string][] = [
+			["Straße", "STRASSE straße"],
+			["[A-C]x+", "bXX"],
+			["[^a-z]", "ABC"],
+			["ÆØÅ", "æøå"],
+			["[À-Þ]", "é"],
+			["\\u00c9t\\x{E9}", "été"],
+			["\\w+\\s\\d", "Word 7"],
+			["(?:ab|cd){2}", "ABCD"],
+			["ß", "ẞ"],
+			["a.c", "A\nC"],
+			// A final sigma (review r9 of #1698): JavaScript's /iu folds ς, σ and Σ alike, and so does foldText.
+			["ΟΣ", "ΟΣ"],
+			["ος", "ΚΟΣΜΟΣ"],
+			["[ς]", "Σ"],
+			["κόσμος", "ΚΌΣΜΟΣ"],
+		];
+		for (const [pattern, subject] of cases) {
+			const ours = compilePattern(pattern, false).test(foldText(subject));
+			const js = new RegExp(pattern.replace("\\x{E9}", "\\u00e9"), "imu").test(subject);
+			expect(ours, `${pattern} on ${subject}`).toBe(js);
+		}
+		// Every group is emitted without a capture, a class as escapes only.
+		expect(translate("(a|[b-c])", false)).toBe("(?:a|[\\u0062-\\u0063])");
+		expect(translate("A[B]", false)).toBe("a[\\u0042\\u0062]");
+		expect(translate("A[B]", true)).toBe("A[\\u0042]");
+		expect(translate("😀+", true)).toBe("(?:😀)+");
+		expect(translate("a{2,3}b{x}", true)).toBe("a{2,3}b\\{x\\}");
+		expect(() => compilePattern("[😀]", true)).toThrow(SearchPatternError);
 	});
 });

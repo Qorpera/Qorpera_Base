@@ -21,6 +21,18 @@ const MAX_ACT_BYTES = 16 * 1024;
  * open), at most 1 KiB, which the executor checks. The node's mux passes POST for this location. */
 const MACHINE_START = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/start$`);
 const MAX_START_BYTES = 1024;
+/** A member's pointer on an agent's desktop (20260930744000): a pointer pass's begin or one move, at most 256 bytes of
+ * numbers and an id, many a second while the member's pointer moves (the window keeps one in flight; the executor admits
+ * at most 30 a second on a pass). Its body is read without asking the auth service first: a body this small is no hold
+ * on the bridge, and the executor checks the member's token itself (SQL for a begin, the pass's own for a move), so a
+ * move costs the auth service nothing. A browser keeps the preflight for 10 minutes. The node's mux already passes POST
+ * for the location. */
+const MACHINE_POINTER = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/pointer$`);
+const MAX_POINTER_BYTES = 256;
+/** A pointer move is worth little once a newer one exists: the window gives up on it after this. */
+const POINTER_TIMEOUT_MS = 5_000;
+/** How long a browser keeps a preflight of the pointer route (seconds). */
+const POINTER_PREFLIGHT_SECONDS = 600;
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -49,6 +61,10 @@ interface RoutePolicy {
 	maxBody?: number;
 	timeoutMs?: number;
 	unavailable: string;
+	/** A body small enough to read before asking the auth service (the destination checks the member's token itself). */
+	readsSmallBodyFirst?: boolean;
+	/** How long a browser keeps this route's preflight (seconds). */
+	preflightSeconds?: number;
 }
 
 function route(path: string): RoutePolicy | undefined {
@@ -91,6 +107,16 @@ function route(path: string): RoutePolicy | undefined {
 			method: "POST",
 			headers: ["authorization", "content-type"],
 			maxBody: MAX_ACT_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
+	if (MACHINE_POINTER.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_POINTER_BYTES,
+			timeoutMs: POINTER_TIMEOUT_MS,
+			readsSmallBodyFirst: true,
+			preflightSeconds: POINTER_PREFLIGHT_SECONDS,
 			unavailable: "The computer is unavailable just now.",
 		};
 	if (MACHINE_START.test(path))
@@ -214,6 +240,7 @@ export async function forwardMemberCompanyGateway(
 			return fail(403, "Invalid member gateway preflight");
 		headers.set("access-control-allow-methods", policy.method);
 		headers.set("access-control-allow-headers", policy.headers.join(", "));
+		if (policy.preflightSeconds) headers.set("access-control-max-age", String(policy.preflightSeconds));
 		return new Response(null, { status: 204, headers });
 	}
 	if (request.method !== policy.method) return fail(405, "Method not allowed");
@@ -251,7 +278,7 @@ export async function forwardMemberCompanyGateway(
 		return refuse(400, "Member gateway request could not be read");
 	const size = Number(length ?? "0");
 	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
-	if (size > 0) {
+	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
 		let signedIn: boolean;
 		try {
 			if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");

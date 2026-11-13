@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
@@ -10,6 +11,7 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
+import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
@@ -18,9 +20,11 @@ import {
 	type CloudMachineCommandServiceOptions,
 	CloudMachineScreenRefusal,
 	CloudMemberMachineActRefusal,
+	CloudMemberMachinePointerRefusal,
 	CloudMemberMachineScreenRefusal,
 	CloudMemberMachineStartRefusal,
 	cloudMemberMachineActAnswer,
+	cloudMemberMachinePointerAnswer,
 	cloudMemberMachineScreenAnswer,
 	cloudMemberMachineStartAnswer,
 	parseCloudMachineCodingValueAnswer,
@@ -29,6 +33,7 @@ import {
 	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
 	parseCloudMemberMachineActPeerRequest,
+	parseCloudMemberMachinePointerPeerRequest,
 	parseCloudMemberMachineScreenPeerRequest,
 	parseCloudMemberMachineStartPeerRequest,
 	serveCloudMachineCommand,
@@ -166,6 +171,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 	 * executor forwarding to its peer, which holds no run's lease. */
 	holder: (() => string) | null;
 	authorize: CloudCodingCommandGateway["authorize"];
+	/** What the executors said they take for a page (keyholes S1): one per process, shared by its gateways. A gateway
+	 * without it learns only from its own answers. */
+	pages?: CloudCommandPages;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudCodingCommandGateway {
@@ -175,15 +183,21 @@ export function createHttpCloudCodingCommandGateway(options: {
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const holder = options.holder;
 	const transport = options.fetch ?? fetch;
-	const request = async (
+	const pages = options.pages ?? new CloudCommandPages();
+	const send = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
 		input: CommandInput | CloudCodingCommandRead,
 		signal: AbortSignal,
+		/** Set when the executor answered with a refusal of its own (4xx), not a proxy's or a server's failure (5xx). */
+		answer: { refused: boolean } = { refused: false },
 	): Promise<unknown> => {
 		try {
+			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
+			const read = action === "read" ? parseCloudCodingCommandRead(input) : undefined;
+			const asked = read ? { ...read, limit: Math.min(read.limit ?? 4096, pages.of(origin)) } : input;
 			const admitted = parseRequest(
-				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input },
+				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input: asked },
 				action,
 			);
 			const body = JSON.stringify(admitted);
@@ -201,7 +215,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 						},
 						body,
 					});
+					pages.heard(origin, response.headers);
 					if (!response.ok || response.status !== 200) {
+						answer.refused = response.status < 500;
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error(ERROR);
 					}
@@ -230,6 +246,33 @@ export function createHttpCloudCodingCommandGateway(options: {
 			);
 		} catch {
 			throw new Error(ERROR);
+		}
+	};
+	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. A
+	 * failure that is not the executor's refusal (5xx, no answer) is never asked again. */
+	const request = async (
+		action: "start" | "read" | "cancel",
+		admittedScope: CloudCodingCommandScope,
+		input: CommandInput | CloudCodingCommandRead,
+		signal: AbortSignal,
+	): Promise<unknown> => {
+		// What a read may ask the executor for now; nothing for any other call, or a read that does not parse (`send`
+		// refuses it).
+		const limit = (): number => {
+			try {
+				return action === "read" ? Math.min(parseCloudCodingCommandRead(input).limit ?? 4096, pages.of(origin)) : 0;
+			} catch {
+				return 0;
+			}
+		};
+		const asked = limit();
+		const answer = { refused: false };
+		try {
+			return await send(action, admittedScope, input, signal, answer);
+		} catch (error) {
+			if (!answer.refused || limit() >= asked) throw error;
+			return send(action, admittedScope, input, signal);
 		}
 	};
 	return Object.freeze<CloudCodingCommandGateway>({
@@ -294,7 +337,8 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). */
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). Each says
+ * what a page of a command's log may ask this executor for (keyholes S1). */
 function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
 	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
@@ -303,6 +347,7 @@ function replyJson(reply: ServerResponse, status: number, value: unknown, limit 
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		[CLOUD_COMMAND_PAGE_HEADER]: String(CLOUD_CODING_COMMAND_PAGE_BYTES),
 	});
 	reply.end(body);
 }
@@ -410,6 +455,11 @@ export class HttpCloudCodingCommandService {
 				this.#options.proveBinding === null &&
 				this.#options.machines?.memberStart &&
 				request.url === "/v1/machine-commands/member-start";
+			// A member's pointer move (20260930744000): on the peer listener only, from another executor, as the look.
+			const memberPointerRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberPointer &&
+				request.url === "/v1/machine-commands/member-pointer";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
@@ -420,7 +470,8 @@ export class HttpCloudCodingCommandService {
 					!screenRoute &&
 					!memberScreenRoute &&
 					!memberActRoute &&
-					!memberStartRoute) ||
+					!memberStartRoute &&
+					!memberPointerRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -513,6 +564,24 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the member's window acts on is told apart, by its fixed code.
 					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberPointerRoute && this.#options.machines?.memberPointer) {
+				const admitted = parseCloudMemberMachinePointerPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachinePointerAnswer(
+							admitted,
+							await this.#options.machines.memberPointer(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachinePointerRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

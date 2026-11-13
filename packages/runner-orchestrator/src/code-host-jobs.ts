@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type CloudCodingRepository, folderKey, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
-import { codeFolderRefuses } from "./code-folder-names.ts";
+import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
  * a member's root. Each job runs in the company's code host VM, through its `code_host` view of `/company` (code/
@@ -57,6 +57,16 @@ export class CodeHostRefusal extends Error {
 		this.name = "CodeHostRefusal";
 		this.code = code;
 		this.paths = Object.freeze([...paths]);
+	}
+}
+/** A session's worktree refused for the names of what it would hold (`addCodeWorktree`): the refusal of the names'
+ * rules (`Run.checkNames`, and the company folder's, `CODE_HOST_NAMES_FOLDER_REFUSES`), saying whose names they are.
+ * `branch`: the session's own branch, whose worktree was to be made again; `base`: the base a new worktree starts at. */
+export class CodeWorktreeNamesRefused extends CodeHostRefusal {
+	readonly of: "branch" | "base";
+	constructor(code: string, paths: readonly string[], of: "branch" | "base") {
+		super(code, paths);
+		this.of = of;
 	}
 }
 /** A command that failed, with the end of what it said. */
@@ -641,7 +651,13 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 			) !== `${baseSha}\n`
 		)
 			throw new CodeHostRefusal("CODE_HOST_SEED_HEADS", [base]);
-		await run.checkNames(scratch, baseSha);
+		const records = await run.checkNames(scratch, baseSha);
+		// And the company folder's rule for each path where a session's worktree holds it (the longest place a commit of
+		// the place is checked out at, so main/ takes it too): git takes a name such as `bad.` that the folder refuses, and
+		// the folder would refuse the checkout's whole change set once main/ or the worktree was written. Before the
+		// repack: nothing of the seed enters repo.git.
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		// Only what the code area does not hold yet, in self-contained packs under the limit.
 		await run.gitOk(scratch, ["repack", "-a", "-d", "-l", "-q"], "CODE_HOST_SEED_FAILED");
 		const listed = await run.command([
@@ -831,7 +847,9 @@ export interface CodeWorktreeAdded {
  * baseSha, or keeps its commits when it is already there. A worktree is never unlocked when its session detaches
  * (retain-workspace). A worktree whose files are gone while git's own folder for it is left (nightly care retired it,
  * or a removal stopped halfway) is added again from its branch: that folder holds nothing the missing files do not
- * make moot, so it is removed first and named in `restored`. Files without git's folder stay a refusal. */
+ * make moot, so it is removed first and named in `restored`. Files without git's folder stay a refusal. A worktree
+ * whose names the code host's rules or the company folder's refuse where it stands is not added (`CodeWorktreeNamesRefused`,
+ * with the paths), and nothing is written for it. */
 export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Promise<CodeWorktreeAdded> {
 	const input = closed(value, ["repository", "workerId", "baseSha"]);
 	const repository = repositoryOf(input.repository),
@@ -861,7 +879,16 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 			]);
 		if (!head && !(await run.isCommit(run.repo, baseSha)))
 			throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
-		await run.checkNames(run.repo, head ?? baseSha);
+		// The names of what the worktree would hold, by the code host's rules and then the company folder's where this
+		// worktree holds them, before anything is written: the folder would refuse the checkout's whole change set (or
+		// the mount a name over 255 bytes) once it was written, the same at every follow-up. The refusal says whose names
+		// they are: the session's branch, or the base a new worktree starts at.
+		const of = head ? "branch" : "base";
+		const records = await run.checkNames(run.repo, head ?? baseSha).catch((error: unknown) => {
+			throw error instanceof CodeHostRefusal ? new CodeWorktreeNamesRefused(error.code, error.paths, of) : error;
+		});
+		const refused = codeFolderRefuses(run.area, records, `worktrees/${workerId}`);
+		if (refused.length) throw new CodeWorktreeNamesRefused("CODE_HOST_NAMES_FOLDER_REFUSES", refused, of);
 		if (adminLeft) {
 			// With git's folder there, git would call the branch checked out and refuse the add.
 			const removed = await run.command(["/usr/bin/rm", "-rf", "--", admin]);
@@ -1237,8 +1264,8 @@ export interface CodeBranchLanded {
  * merge itself. The landed tree passes the same name checks as a seed. For the change's record (step 2b) the answer
  * says where the default branch was before, what the landing changed in its files and what the session's picture
  * is; all of that is read before the branch moves, so the move is the landing's last step. The names checks are
- * `Run.checkNames`, then the company folder's rule for each path where main/ will hold it (`codeFolderRefuses`,
- * `CODE_HOST_NAMES_FOLDER_REFUSES` naming the paths), as the import's look asks them.
+ * `Run.checkNames`, then the company folder's rule for each path where a session's worktree will hold it, which also
+ * holds where main/ will (`codeFolderRefuses`, `CODE_HOST_NAMES_FOLDER_REFUSES` naming the paths).
  *
  * A landing whose checks run between two jobs (own code storage, step 3): with `checks`, after the names of the
  * commit that would become the default branch passed, the checks file is read there and at the default branch, and
@@ -1374,10 +1401,11 @@ export async function landCodeBranch(
 			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
 		}
 		const records = await run.checkNames(run.repo, next);
-		// Every path where main/ will hold it, by the company folder's own rule, as the import's look asks: git takes a
-		// name such as `bad.` that the folder refuses, and it would refuse main/'s whole change set at the publish, with
-		// no word to the session. Before the checks, so none runs on a commit that cannot land.
-		const refused = codeFolderRefuses(run.area, records);
+		// Every path where a session's worktree will hold it, by the company folder's own rule, as the import's look asks:
+		// git takes a name such as `bad.` that the folder refuses, and it would refuse main/'s whole change set at the
+		// publish, with no word to the session. A worktree is 42 bytes deeper than main/, so nothing goes into main that a
+		// session could not check out. Before the checks, so none runs on a commit that cannot land.
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
 		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		if (checks) {
 			const found = await commitFile(run, next, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES),
@@ -1903,12 +1931,13 @@ async function retireFiles(run: Run, workerId: string): Promise<string | null> {
 		if (own.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(own.stderr));
 		if (own.stdout.length) return "IN_PROGRESS";
 	}
-	// The names first: a head `addCodeWorktree` would refuse could never be given back.
+	// The names first: a head `addCodeWorktree` would refuse could never be given back. Its rules: the code host's, then
+	// the company folder's where this worktree holds them.
 	const records = await run.checkNames(run.repo, head).catch((error: unknown) => {
 		if (error instanceof CodeHostRefusal) return null;
 		throw error;
 	});
-	if (!records) return "NAMES_REFUSED";
+	if (!records || codeFolderRefuses(run.area, records, `worktrees/${workerId}`).length) return "NAMES_REFUSED";
 	// And no repository inside this one, in the head or in the folder, before git's status walks the folder.
 	if (records.some((record) => record.type === "commit")) return "SUBMODULE";
 	const nested = await run.command(["/usr/bin/find", tree, "-mindepth", "2", "-iname", ".git", "-print", "-quit"]);

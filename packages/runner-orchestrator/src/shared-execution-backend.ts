@@ -136,7 +136,8 @@ export interface SharedExecutionProviderConfig {
 	warmIdleMs?: number;
 	/**
 	 * The node's folder search (F3 `company_search`; founder decision "Light threads", 2 October 2026): each slot's
-	 * native host gets its relay socket to the node's folder service, started before the host. Absent: off.
+	 * native host gets its relay socket to the node's folder service, started before the host. Absent: off (the
+	 * service's own entry point sets it unless QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off: on for every run, keyholes S4).
 	 */
 	folderSearch?: boolean;
 }

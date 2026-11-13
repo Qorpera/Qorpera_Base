@@ -68,7 +68,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import type { WaitingKind, WaitingWork } from "../cloud/waiting-work.ts";
-import { withReply } from "../cloud/wall-reply.ts";
+import { appNoteHeader, appNoteLead, splitAppNote, withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
@@ -76,6 +76,7 @@ import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
+import { type AgentAtComputer, type AgentsAtComputers, AtComputerWatch } from "./agents-at-computers.ts";
 import type { MailState } from "./company-mail.ts";
 import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
 import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
@@ -104,7 +105,13 @@ import { debounce, Store, throttle } from "./state.ts";
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
 /** What a member sees of an agent's execution: see CompanyController.agentState. */
-export type AgentState = "idle" | "working" | "writing" | "decision" | "failed";
+/** `computer`: working, and using its desktop computer now (20260930742000). */
+export type AgentState = "idle" | "working" | "writing" | "computer" | "decision" | "failed";
+
+/** The states in which an agent's run works: working, writing, or working at its computer. */
+export function agentWorks(state: AgentState): boolean {
+	return state === "working" || state === "writing" || state === "computer";
+}
 
 /** A run the server holds against the agent until someone dismisses it. */
 export interface FailedRun {
@@ -295,6 +302,11 @@ export interface CompanyState {
 	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
 	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
+	/** The agents using their desktop computers now, by agent (20260930742000; app/agents-at-computers.ts). Unset until
+	 * the first read lands. */
+	atComputers?: AgentsAtComputers;
+	/** The cloud does not say which agents use their computers (before 20260930742000): no agent shows at one. */
+	atComputersUnavailable?: boolean;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
@@ -645,6 +657,8 @@ export class CompanyController {
 	readonly roomDrafts: RoomDrafts;
 	/** This member's chats with the company's other members (20260930715000). */
 	readonly memberChats: MemberChats;
+	/** Which agents use their desktop computers now (20260930742000). */
+	readonly #atComputers: AtComputerWatch;
 	#mentionReads = 0;
 	#approvalReads = 0;
 	#hoursWaitReads = 0;
@@ -658,19 +672,47 @@ export class CompanyController {
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
 		this.#userId = userId;
+		// A note from an app that waits in a thread (app/tell-agent.ts) answers its app's line, which the composer shows
+		// above the field and never in it (`answering`). Wherever the draft is saved and shared, the line is its text's
+		// first line (cloud/wall-reply.ts `appNoteLead`), so a reload, another tab and another member's client have it
+		// with the words: it is put in front of the draft for the room, and taken out of the room's text again here.
+		const lead = (sessionId: string) => {
+			const answering = this.conversation(sessionId, false).get().answering;
+			return answering !== undefined && appNoteHeader(answering) ? appNoteLead(answering) : "";
+		};
+		const shift = (quotes: readonly MessageQuote[], by: number) =>
+			quotes.map((quote) => ({ ...quote, start: quote.start + by, end: quote.end + by }));
 		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
-			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
-			quotes: (sessionId) => this.draftQuotes(sessionId),
+			draft: (sessionId) => lead(sessionId) + (this.conversation(sessionId).get().draft ?? ""),
+			quotes: (sessionId) => shift(this.draftQuotes(sessionId), [...lead(sessionId)].length),
 			broken: (sessionId) => this.draftBroken(sessionId),
+			lead: (text) => splitAppNote(text)?.lead.length ?? 0,
 			// The merged draft's quotes take their words over: a record kept here never outlives the email its
 			// words now come from (another tab removed one quote and quoted the same words from another email).
 			setDraft: (sessionId, text, quotes) =>
-				this.conversation(sessionId).set((state) => ({
-					draft: text,
-					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
-					...draftReplaced(state),
-				})),
+				this.conversation(sessionId).set((state) => {
+					const note = splitAppNote(text);
+					const draft = note ? note.rest : text;
+					const by = note ? [...note.lead].length : 0;
+					const own = shift(
+						quotes.filter((quote) => quote.start >= by),
+						-by,
+					);
+					// The room's text says what the draft answers now: an app's line it opens with, or none any more
+					// (another tab sent the note, or left the app out). A wall question is this browser's alone.
+					const answering = note
+						? { answering: note.line }
+						: state.answering !== undefined && appNoteHeader(state.answering)
+							? { answering: undefined }
+							: {};
+					return {
+						draft,
+						quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], draft, own),
+						...answering,
+						...draftReplaced(state),
+					};
+				}),
 		});
 		this.#writeInput =
 			writeInput ??
@@ -716,6 +758,16 @@ export class CompanyController {
 				void this.refreshSidebar();
 			},
 		});
+		this.#atComputers = new AtComputerWatch({
+			read: () => this.#api.listScreensInUse(this.profile.profileId),
+			onChange: (atComputers) => {
+				if (!this.#stopped) this.store.set({ atComputers });
+			},
+			onUnavailable: () => {
+				if (!this.#stopped) this.store.set({ atComputers: undefined, atComputersUnavailable: true });
+			},
+			resting: () => this.#restsWhileHidden(),
+		});
 	}
 
 	get profile(): HostedProfile {
@@ -751,6 +803,7 @@ export class CompanyController {
 			},
 		);
 		await this.refreshAll();
+		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
@@ -763,6 +816,7 @@ export class CompanyController {
 						this.#hiddenAt ??= Date.now();
 						return;
 					}
+					this.#atComputers.returned();
 					// Away a whole clock period: a frozen tab's timers never fired, so no skip was noted.
 					const away = this.#hiddenAt !== undefined && Date.now() - this.#hiddenAt >= HEARTBEAT_MS;
 					this.#hiddenAt = undefined;
@@ -794,6 +848,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#atComputers.dispose();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set((state) => ({
@@ -1410,7 +1465,8 @@ export class CompanyController {
 		if (busy()) return { ok: false, reason: started };
 		// What the icons were before the ask, by id and version: a new one, or one drawn again, ends the drawing.
 		const known = (this.store.get().appIcons?.[app.name] ?? []).map(iconVersion);
-		if (!(await this.sendPrompt(sessionId, text)))
+		// Pressed in the apps drawer, over whatever page is open: the member's press stands for the thread on screen.
+		if (!(await this.sendNote(sessionId, text)))
 			return {
 				ok: false,
 				reason: this.conversation(sessionId, false).get().sendError ?? t("The message could not be sent."),
@@ -1924,12 +1980,23 @@ export class CompanyController {
 		// A run waiting at its login's usage limit is no work in progress: the agent rests until the reset
 		// (20260930703000), and its thread says why.
 		if (pausedNow(row)) return waiting ? "decision" : "idle";
-		if (row.activity !== "needs_attention")
-			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
+		if (row.activity !== "needs_attention") {
+			if (row.jobStatus === "leased" && row.phase === "writing") return "writing";
+			// Working, and using its desktop computer now (20260930742000): only while its run works.
+			return this.atComputer(staffAgentId) ? "computer" : "working";
+		}
 		if (waiting || !isFailedRun(row)) return "decision";
 		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
 			? "decision"
 			: "failed";
+	}
+
+	/** The desktop computer this agent uses now, by the database's word (20260930742000), whether its run works or not;
+	 * undefined when it uses none. The rail and the thread show it only while the agent works (agentState). */
+	atComputer(staffAgentId: string | undefined): AgentAtComputer | undefined {
+		if (!staffAgentId) return undefined;
+		const entry = this.store.get().atComputers?.[staffAgentId];
+		return entry && entry.until > Date.now() ? entry : undefined;
 	}
 
 	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says),
@@ -3026,6 +3093,14 @@ export class CompanyController {
 		this.roomDrafts.input(sessionId);
 	}
 
+	/** What the conversation's draft answers: a question from the agent's wall, an app's line (a note from an app's
+	 * page, app/tell-agent.ts), or nothing. An app's line is part of the draft where it is shared, so it is shared at
+	 * once, as the draft's text would be. */
+	setAnswering(sessionId: string, answering: string | undefined): void {
+		this.conversation(sessionId, false).set({ answering });
+		this.roomDrafts.input(sessionId);
+	}
+
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
 		if (this.#stopped || viewSignal?.aborted) return false;
 		try {
@@ -3194,6 +3269,31 @@ export class CompanyController {
 		}
 	}
 
+	/** Notes on their way, by conversation (`sendNote`). */
+	readonly #notes = new Map<string, number>();
+
+	/** Sends a note the member wrote and sent somewhere other than the conversation's own thread (a note from an app's
+	 * page or from the Mailbox, app/tell-agent.ts; Generate icon in the apps drawer, `requestAppIcons`), as `sendPrompt`
+	 * sends the thread's own message. A send goes only
+	 * while the conversation is on screen (the app's input writer checks the route, app/application.ts); for a note
+	 * the member's own press, on the bar that named the agent, stands for that, for as long as the note is on its way
+	 * (`noteOnItsWay`). Every other check of a send holds. */
+	async sendNote(sessionId: string, text: string): Promise<boolean> {
+		this.#notes.set(sessionId, (this.#notes.get(sessionId) ?? 0) + 1);
+		try {
+			return await this.sendPrompt(sessionId, text);
+		} finally {
+			const left = (this.#notes.get(sessionId) ?? 1) - 1;
+			if (left > 0) this.#notes.set(sessionId, left);
+			else this.#notes.delete(sessionId);
+		}
+	}
+
+	/** Whether a note to the conversation is on its way (`sendNote`). */
+	noteOnItsWay(sessionId: string): boolean {
+		return this.#notes.has(sessionId);
+	}
+
 	/** While an agent works, the member watches it happen: activity and the open
 	 * conversation are re-read every couple of seconds, easing off after two
 	 * minutes. The watch ends by itself a few seconds after the work does. */
@@ -3264,6 +3364,7 @@ export class CompanyController {
 		void this.refreshActivity();
 		void this.refreshMentions();
 		this.memberChats.hinted();
+		this.#atComputers.read();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
@@ -3291,6 +3392,9 @@ export class CompanyController {
 			this.#refreshSidebarSoon();
 		} else if (resource === "member-chats") {
 			this.memberChats.hinted();
+		} else if (resource === "machines") {
+			// An agent may have begun a stretch at its computer (20260930742000).
+			this.#atComputers.hinted();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -3313,6 +3417,8 @@ export class CompanyController {
 					for (const listener of this.#invalidations) {
 						listener("sessions");
 					}
+				// The `machines` hint comes by push only: without it, an agent's new stretch at its computer is read here.
+				if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
 				await (this.#sessionsFullRead ?? this.refreshSessions());
 			// Proposal comments/rejections do not all touch the Company File head.

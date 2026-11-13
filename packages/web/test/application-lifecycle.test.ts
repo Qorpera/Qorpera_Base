@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -15,7 +16,8 @@ import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
-import { markdown } from "../src/ui/markdown.ts";
+import { h } from "../src/ui/dom.ts";
+import { appCard, markdown } from "../src/ui/markdown.ts";
 import { PAGE_READY } from "../src/ui/page-frame.ts";
 import {
 	deferred,
@@ -1161,6 +1163,78 @@ describe("account and route ownership", () => {
 		// A card whose app the company does not have stays plain.
 		expect(gone?.querySelector(".app-card-note")?.textContent).toBe("App");
 		expect(gone?.style.getPropertyValue("--app-colour")).toBe("");
+	});
+
+	it("names the card a note from an app opens with as the drawer names the app, keeps its line, and opens the app", async () => {
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nabout = "This week's sales, shop by shop"\nemblem = "chart"\nowner = "${staff.id}"\nposted = true\n`,
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		// As views/conversation.ts draws a member's message that opens with `> app:sales-board#4 · Shop 4 · Aarhus`.
+		const card = appCard("sales-board", "sales-board", "Shop 4 · Aarhus");
+		f.root.querySelector(".thread")!.append(h("div", { class: "app-cards" }, card));
+		await draw();
+		expect(card.querySelector(".app-card-title")?.textContent).toBe("Sales board");
+		expect(card.querySelector(".app-card-note")?.textContent).toBe("Shop 4 · Aarhus");
+		// The drawer's own emblem for the app, in place of the plain page's.
+		const tile = f.root.querySelector<HTMLElement>('.rail .rail-app[data-app-key="app:sales-board"]');
+		// Each emblem names its own mask: the drawing is what is compared.
+		const emblem = (root: Element | null | undefined) =>
+			root?.querySelector(".interface-emblem")?.innerHTML.replace(/emblem-cuts-\d+/g, "");
+		expect(emblem(card)).toBe(emblem(tile));
+		expect(emblem(card)).not.toBe(emblem(appCard("sales-board", "sales-board", "x")));
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		card.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
+	});
+
+	/** The app's own page open (its thread is not on screen), the controller the app made for the company, and the
+	 * member transport a send goes out on. Every send below passes the app's own check of where the member is. */
+	async function onAppPage() {
+		const start = vi.spyOn(CompanyController.prototype, "start");
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		await draw();
+		await draw();
+		expect(appPage(f.root)).not.toBeNull();
+		const controller = start.mock.contexts[0] as CompanyController;
+		const texts = () =>
+			send.mock.calls.map((call) => (JSON.parse(String(call[0]?.body)) as { p_body: { text: string } }).p_body.text);
+		return { f, controller, send, texts };
+	}
+
+	it("sends a note from an app's page, its thread not on screen, and no other message from there", async () => {
+		const { controller, texts } = await onAppPage();
+		const accounts = controller.appIconAccounts!;
+		const note = { text: "Get a quote for shop 4.", quotes: [], header: "app:sales-board#4 · Shop 4" };
+		expect(await tellAgent(controller, accounts, staff.id, note)).toEqual({
+			sent: true,
+			href: `#/c/${profileA.profileId}/staff/${staff.id}`,
+		});
+		expect(texts()).toEqual(["> app:sales-board#4 · Shop 4\n\nGet a quote for shop 4."]);
+		// Any other send from here is refused, as before: the member is not looking at the thread.
+		expect(await controller.sendPrompt(session.sessionId, "From the app's page")).toBe(false);
+		expect(controller.conversation(session.sessionId).get().sendError).toBe("Company access is unavailable.");
+		expect(texts()).toHaveLength(1);
+	});
+
+	it("asks an app's owner for new icons from the drawer while another page is on screen", async () => {
+		const { controller, texts } = await onAppPage();
+		const app = controller.store.get().apps?.find((entry) => entry.name === "sales-board");
+		expect(await controller.requestAppIcons(app!)).toEqual({ ok: true, agent: staff.displayName });
+		expect(texts()).toEqual([
+			"Please draw 3 new icons for Sales board (apps/sales-board), from its name and what it shows.",
+		]);
 	});
 
 	it("leads back to the conversation from a card whose app is gone", async () => {
