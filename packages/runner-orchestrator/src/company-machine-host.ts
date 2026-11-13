@@ -41,7 +41,7 @@ import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./fold
 import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 import { EXEC_SERVER_OUTPUT_BYTES, LinePipe } from "./machine-exec-server.ts";
-import { HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
+import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -2107,8 +2107,13 @@ export class LxdCompanyMachineHost {
 			if (!e.commands.includes(commandId) || this.#delivering.has(`${e.placementId}/${commandId}`)) continue;
 			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
 		}
-		for (const window of f.homes.values())
+		// A home's window closes when its channel ends, at any time: one that closed while this open was out (the service
+		// may take the two in either order) is closed again, so no window outlives its session.
+		for (const [sessionId, window] of [...f.homes]) {
 			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+			if (!f.homes.has(sessionId))
+				noted(f, await folder.closeWindow(e.placementId, sessionId, checked).catch(() => undefined));
+		}
 	}
 	/** A settled boot's folder, watched each pass (6d-2) at the boundary its ends' closes answered, or a plain one.
 	 * Reads the core cannot read retire the placement (#retire): a read being released, or one released before that a
@@ -3563,7 +3568,14 @@ export class LxdCompanyMachineHost {
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
-		const home = this.#options.folder ? await this.#homeFolder(input, signal) : undefined;
+		// Slice 3 (20260930754000): SQL says whether the session may share its machine, on every executor; the folder's
+		// part (the window and the release of the output) only where the machines have a folder.
+		const answer = parseHomeFolderAnswer(
+			await this.#call("qorpera_folder_home_session_window", { p_session_id: input.sessionId }, signal),
+			input,
+		);
+		if (answer.state === "refused") throw new Error(answer.reason);
+		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
 		const name = lxdCompanyMachineName(input.placementId);
 		const toMachine = new LinePipe();
 		const fromMachine = new LinePipe();
@@ -3621,29 +3633,23 @@ export class LxdCompanyMachineHost {
 			},
 		};
 	}
-	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts. SQL says
-	 * whether the session still stands and may share its machine (its agent's, for the same member and worker access,
-	 * and only while they read the whole folder), with the ids its window carries; a refusal is thrown by its reason and
-	 * no channel starts. Then, once the boot's folder settled: on a boot with /company the session's command window opens,
+	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
+	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
+	 * while they read the whole folder) and named the ids its window carries (execServer). Once the boot's folder
+	 * settled: on a boot with /company the session's command window opens,
 	 * its id the session's, so what the machine changes until it closes is credited to the session's run (opened again
 	 * each pass, #reopen); and the run takes in every read the disk was served before anything of the channel's reaches
 	 * it, so what an earlier run left on this disk is in this run's read set. A take-in that holds starts no channel.
 	 * The gate holds each later batch of output for the same release; `close` closes the window, once, with the
 	 * boundary that publishes what the session changed last. */
 	async #homeFolder(
-		input: { readonly placementId: string; readonly sessionId: string },
+		session: HomeFolderSession,
 		signal: AbortSignal,
 	): Promise<{
 		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
 		close(): Promise<void>;
 	}> {
 		const folder = this.#options.folder as FolderControl;
-		const answer = parseHomeFolderAnswer(
-			await this.#call("qorpera_folder_home_session_window", { p_session_id: input.sessionId }, signal),
-			input,
-		);
-		if (answer.state === "refused") throw new Error(answer.reason);
-		const { session } = answer;
 		const boot = await this.#settled(session, signal);
 		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
 		if (boot.state === "open") {

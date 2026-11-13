@@ -6648,6 +6648,59 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		).toHaveLength(1);
 	});
 
+	it("closes again a window whose channel ended while a pass was opening it again (review r10 F1)", async () => {
+		const { f, session, opens } = await home();
+		f.homeSessions.push(session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		let answer = (): void => undefined;
+		f.service.opening = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const passing = f.host.pass(f.signal);
+		await vi.waitFor(() => expect(opens()).toBe(2));
+		// The channel ends while the pass's open is still out; the service may take the close first.
+		await channel.close();
+		answer();
+		await passing;
+		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
+			["open", "open", "close", "close"],
+		);
+	});
+
+	it("asks whether the session may share its machine on an executor without a folder too (review r10 F2)", async () => {
+		const f = await fixture();
+		const pipe = vi.fn(async (_project: string, _name: string, _request: LxdExecPipeRequest, signal: AbortSignal) => {
+			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
+				const done = () => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+				if (signal.aborted) done();
+				signal.addEventListener("abort", done, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
+		await expect(f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal)).rejects.toThrow(
+			"HOME_NOT_SHARED",
+		);
+		expect(pipe).not.toHaveBeenCalled();
+		f.homeSessions.push({
+			schema: "qorpera.folder-home-session/v1",
+			state: "open",
+			sessionId: id(30),
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+			machineId: id(2),
+			placementId: id(6),
+			bootId: id(34),
+		});
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30) }, f.signal);
+		expect(pipe).toHaveBeenCalledTimes(1);
+		// No folder here: no window and no release, only the ask.
+		expect(f.service.requests).toEqual([]);
+		expect(f.calls.filter((call) => call.method === "qorpera_folder_home_session_window")).toHaveLength(2);
+		await channel.close();
+	});
+
 	it("starts no channel when SQL refuses the session, or when the disk's reads cannot be taken in", async () => {
 		const { f, pipe, session, opens } = await home();
 		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });

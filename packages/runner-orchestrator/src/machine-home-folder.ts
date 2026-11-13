@@ -7,7 +7,7 @@
 // - reads before output: what the machine sends back leaves only after a boundary released every read the machine was
 //   served and the run took them in, as a command's output does. HomeOutputGate holds it until then.
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+import { UUID_PATTERN } from "@qorpera/contracts";
 
 /** One home session as SQL answers the executor before its channel starts (qorpera_folder_home_session_window): the ids
  * its folder command window carries, and the boot it is on. */
@@ -64,7 +64,7 @@ export function parseHomeFolderAnswer(
 	const session: Record<string, string> = {};
 	for (const key of SESSION_KEYS) {
 		const id = answer[key];
-		if (typeof id !== "string" || !UUID.test(id)) throw new Error("HOME_FOLDER_SESSION_INVALID");
+		if (typeof id !== "string" || !UUID_PATTERN.test(id)) throw new Error("HOME_FOLDER_SESSION_INVALID");
 		session[key] = id;
 	}
 	if (session.sessionId !== request.sessionId || session.placementId !== request.placementId)
