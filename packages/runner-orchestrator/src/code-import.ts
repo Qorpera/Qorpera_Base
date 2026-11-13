@@ -660,20 +660,21 @@ export interface CodeImportWanted {
 	/** The default branch's name (after `refs/heads/`) and its commit. */
 	readonly defaultBranch: string;
 	readonly mainSha: string;
-	/** The first bundle's header, the default branch first, then the other heads and the tags, each in its names' byte
-	 * order. */
+	/** The first bundle's header, the default branch first (then the source's own default, when the request named
+	 * another branch), then the other heads and the tags, each in its names' byte order. */
 	readonly refs: readonly CodeBundleRef[];
 	/** The objects to fetch, each once, in that order. */
 	readonly wants: readonly string[];
 	/** Refs not in the header: names git or the header refuses, refs past the wants' cap, and the list's unreadable. */
 	readonly leftOut: number;
-	/** The source's own default branch (HEAD's `symref-target`, after `refs/heads/`) when the request named another one
-	 * and HEAD names a listed head whose name the import takes; null otherwise. The refs plan keeps it whatever its age
-	 * (`codeImportRefsPlan`'s `sourceBranch`). */
+	/** The source's own default branch (HEAD's `symref-target`, after `refs/heads/`) when the request named another one,
+	 * HEAD names a listed head whose name the import takes, and its ref is in the header; null otherwise. The refs plan
+	 * keeps it whatever its age (`codeImportRefsPlan`'s `sourceBranch`). */
 	readonly sourceBranch: string | null;
 }
 
-/** From the ref list to the fetch: the default branch is `branch` when the request named one
+/** From the ref list to the fetch (when the request named a branch, the source's own default, HEAD's, comes second):
+ * the default branch is `branch` when the request named one
  * (`IMPORT_BRANCH_UNKNOWN` when the list has no such head), else HEAD's `symref-target` (`IMPORT_SOURCE_EMPTY` when
  * HEAD is missing or names no commit, `IMPORT_BRANCH_UNKNOWN` when it is no listed head); a name `codeImportBranchValid`
  * refuses is `IMPORT_BRANCH_NAME`. Then every head and tag whose name the header takes, each object wanted once, until
@@ -699,23 +700,26 @@ export function codeImportWants(
 	const defaultBranch = target.slice("refs/heads/".length);
 	if (!codeImportBranchValid(defaultBranch)) throw refused("IMPORT_BRANCH_NAME");
 	// When another branch comes in as main, the source's own default is kept beside it whatever its age (the lead's
-	// call 6a of the import's follow-ups): its name, when HEAD names a listed head the import would take as a name.
-	const own = list.head?.target;
-	const sourceBranch =
-		typeof own === "string" &&
-		own !== target &&
-		own.startsWith("refs/heads/") &&
-		byName.has(own) &&
-		codeImportBranchValid(own.slice("refs/heads/".length))
-			? own.slice("refs/heads/".length)
-			: null;
+	// call 6a of the import's follow-ups): its name, when HEAD names a listed head the import would take as a name. It
+	// is wanted right after the branch brought in, before every other head and tag, so the cap on wanted objects never
+	// leaves it out (review round 3 of #1725, F2), and it stands second in the bundle's header.
+	const ownName = list.head?.target;
+	const own =
+		typeof ownName === "string" &&
+		ownName !== target &&
+		ownName.startsWith("refs/heads/") &&
+		codeImportBranchValid(ownName.slice("refs/heads/".length))
+			? byName.get(ownName)
+			: undefined;
 	const main = byName.get(target) as CodeImportListedRef;
 	const sorted = (prefix: string) =>
-		list.refs.filter((ref) => ref.name.startsWith(prefix) && ref !== main).sort((a, b) => byBytes(a.name, b.name));
+		list.refs
+			.filter((ref) => ref.name.startsWith(prefix) && ref !== main && ref !== own)
+			.sort((a, b) => byBytes(a.name, b.name));
 	const wanted = new Set<string>(),
 		refs: CodeBundleRef[] = [];
 	let leftOut = list.unreadable;
-	for (const ref of [main, ...sorted("refs/heads/"), ...sorted("refs/tags/")]) {
+	for (const ref of [main, ...(own ? [own] : []), ...sorted("refs/heads/"), ...sorted("refs/tags/")]) {
 		if (!codeImportHeaderRefValid(ref.name)) {
 			leftOut += 1;
 			continue;
@@ -729,6 +733,8 @@ export function codeImportWants(
 		}
 		refs.push({ name: ref.name, sha: ref.oid });
 	}
+	// Named only when its ref is in the bundle (a cap of one want can still leave it out): there is nothing to keep else.
+	const sourceBranch = own && refs.some((ref) => ref.name === own.name) ? own.name.slice("refs/heads/".length) : null;
 	return { defaultBranch, mainSha: main.oid, refs, wants: [...wanted], leftOut, sourceBranch };
 }
 

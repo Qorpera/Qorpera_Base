@@ -881,6 +881,88 @@ describe("the wants", () => {
 		).toBeNull();
 	});
 
+	// Review round 3 of #1725, F2: the source's own default is wanted right after the branch brought in, before every
+	// other head and tag, so the cap on wanted objects never leaves it out of the bundle the refs plan keeps it from.
+	it("wants the source's own default right after the branch asked for, ahead of the cap; without one, as before", () => {
+		// The branch asked for and the source's default are the two wanted; the other head is left out and counted, and a
+		// tag at a wanted object comes along.
+		expect(codeImportWants(list(refs), { branch: "zeta", maximumWants: 2 })).toEqual({
+			defaultBranch: "zeta",
+			mainSha: B,
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/heads/master", sha: A },
+				{ name: "refs/tags/v0", sha: B },
+			],
+			wants: [B, A],
+			leftOut: 3,
+			sourceBranch: "master",
+		});
+		// The review's case: 4,999 other heads, each its own commit, whose names sort before master's: master is still the
+		// second want and the second ref, and only one other head is past the cap.
+		const crowd = list([
+			["refs/heads/feature", B],
+			["refs/heads/master", A],
+			...Array.from(
+				{ length: 4_999 },
+				(_, i) => [`refs/heads/a${String(i).padStart(4, "0")}`, shaOf(i + 10)] as [string, string],
+			),
+		]);
+		const many = codeImportWants(crowd, { branch: "feature" });
+		expect(many.wants).toHaveLength(CODE_IMPORT_WANTS);
+		expect(many.wants.slice(0, 2)).toEqual([B, A]);
+		expect(many.refs.slice(0, 2)).toEqual([
+			{ name: "refs/heads/feature", sha: B },
+			{ name: "refs/heads/master", sha: A },
+		]);
+		expect(many.leftOut).toBe(2);
+		expect(many.sourceBranch).toBe("master");
+		// At the commit of the branch asked for: no second want, and its ref comes along.
+		expect(
+			codeImportWants(
+				list(
+					[
+						["refs/heads/zeta", B],
+						["refs/heads/master", B],
+						["refs/heads/alpha", D],
+					],
+					{ oid: B, target: "refs/heads/master" },
+				),
+				{ branch: "zeta", maximumWants: 1 },
+			),
+		).toMatchObject({
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/heads/master", sha: B },
+			],
+			wants: [B],
+			leftOut: 2,
+			sourceBranch: "master",
+		});
+		// A cap of one want: the branch asked for alone, and the source's default named nowhere (nothing to keep).
+		expect(codeImportWants(list(refs), { branch: "zeta", maximumWants: 1 })).toMatchObject({
+			refs: [
+				{ name: "refs/heads/zeta", sha: B },
+				{ name: "refs/tags/v0", sha: B },
+			],
+			wants: [B],
+			sourceBranch: null,
+		});
+		// Without a branch named: the wants, the header and what is left out exactly as before.
+		expect(codeImportWants(list(refs), { maximumWants: 2 })).toEqual({
+			defaultBranch: "master",
+			mainSha: A,
+			refs: [
+				{ name: "refs/heads/master", sha: A },
+				{ name: "refs/heads/alpha", sha: D },
+			],
+			wants: [A, D],
+			leftOut: 4,
+			sourceBranch: null,
+		});
+		expect(codeImportWants(crowd).wants.slice(0, 3)).toEqual([A, shaOf(10), shaOf(11)]);
+	});
+
 	it("leaves out what is past the wants' cap, and names the header refuses; a ref of a wanted object comes along", () => {
 		const wanted = codeImportWants(list(refs), { maximumWants: 2 });
 		expect(wanted.wants).toEqual([A, D]);
