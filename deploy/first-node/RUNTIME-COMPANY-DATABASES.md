@@ -191,9 +191,10 @@ which ends what runs too long (proven).
 
 ## 3. The data gateway
 
-One small service of our own, `deploy/company-data/` (Node 24, `pg`, no other dependency), installed on both nodes by
-the node release like the other node services; node 1's answers, since the store's primary and the members' door are
-there. It listens on loopback. It is the only thing with a login to the store.
+One small service of our own, `deploy/company-data/gateway/` (Node 24, `pg`, no other dependency). It runs beside
+the store in the store's own machine, one compose project (`deploy/company-data/kit/`), as the app relay runs beside
+the platform's database: so the store's port is published to nothing but its standby, and the machine shows only the
+gateway. Node 1's mux sends `/v1/company-data/` to it. It is the only thing with a login to the store.
 
 Not PostgREST: a PostgREST serves one database, so each company would need its own process, 36 to 55 MiB and 3 held
 connections each, and it serves tables directly (§11, P1).
@@ -297,9 +298,12 @@ travel in one held call, at most 24 questions; a watch costs the app one call wh
 
 **Kits.** Wherever a kit's data file takes a number it may take a binding instead:
 `{"query": "shop/sales-this-month", "params": {"since": "2026-11-01"}, "column": "total"}`, where `params` and
-`column` are optional and the default is the first column of the first row. The engines resolve bindings through one
-shared helper that calls `watch` and tells the engine to redraw. The shape was proposed to the interfaces lead on
-13 November; the engines and what a kit's data may say are that lead's.
+`column` are optional and the default is the first column of the first row. As the proof's page did it: the bridge's
+`read` of a kit's data file gives the file with each binding replaced by its current number, and the page's
+`onChange` listeners are called with `{ data: true }` when a watched value changes, so an engine keeps reading its
+data file and redrawing, and knows nothing of questions; the one change in an engine is to redraw at once for such a
+change and not wait its ten seconds. Proposed to the interfaces lead on 13 November; the engines and what a kit's
+data may say are that lead's.
 
 Latency: the store and the gateway add about 3 ms from a commit to a new answer (§11, P2); the answer's way back
 through `api.qorpera.com` adds the rest (a request on that road took 139 to 354 ms on 4 November).
@@ -382,6 +386,7 @@ On a test machine, 13 November 2026, each against a throwaway PostgreSQL 17.6 ca
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
 | P3 | limits and walls, 39 checks | all pass: no company reaches another's database, role or statements; connection, time and temp file limits hold; a read cannot write or become the owner; a step that destroys is held with what it destroys and lands after a yes |
 | P4 | the snapshot of a 918 MiB database | 839 MiB of parts in 7 to 9 s; a usual day changes 2 of 51 parts (3 %), the worst day all of them; loaded back from the files alone with the same rows in 12 s |
+| E2E | the whole road for a member (`proof/e2e.mjs`): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 43 of 43 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
 
 ## 12. Build order
 
@@ -391,8 +396,8 @@ registry when a slice starts.
 | Slice | What | Migrations and tests | A release rolls |
 | --- | --- | --- | --- |
 | 1 | The amendment and this design | none | nothing |
-| 2 | The store: the machine pair, PostgreSQL, the template, roles, limits, backups, the standby | none; `deploy/company-data/store/` with its scripts and a proof that runs in `changed` | both nodes: enrolment, then the machines; a drill of the backup and the take-over |
-| 3 | The gateway for members: questions, apply, the held watch, limits, the watcher; the member gateway's route | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed`; function tests | the node release on both nodes, node 1's mux route, the edge function |
+| 2 | The store: the machine pair, PostgreSQL, the template, roles, limits, backups, the standby | none; `deploy/company-data/store/` and `deploy/company-data/kit/` with a drill of the backup, the restore and the take-over on a test machine | both nodes: enrolment, then the machines; the same drill there |
+| 3 | The gateway for members: questions, apply, the held watch, limits, the watcher; the member gateway's route | none; `deploy/company-data/` with tests against a real PostgreSQL in `changed`; function tests | the kit on the store's machines, node 1's mux route, the edge function |
 | 4 | Interfaces: `query` and `watch` in the bridge, bindings in the kits | none; web tests | the web |
 | 5 | Agents: the run's data pass, `data_describe`, `data_apply`, `data_query`, their instructions; removal with the company | one migration (the pass, the tools' names in the observation list, the removal's call), one SQL test | the migration, a runtime bundle and image, the node release |
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
