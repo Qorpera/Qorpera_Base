@@ -307,12 +307,16 @@ select pg_temp.base_claims('service_role');
 --     stock's seven files as before.
 savepoint dp_empty;
 do $$
-declare v_units jsonb := '[]'::jsonb;
+declare v_units jsonb; v_from integer;
 begin
-	for i in 1..1001 loop
-		v_units := v_units || jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'data/e' || lpad(i::text, 4, '0')));
+	-- Two commits, folders 1 to 500 and 501 to 1,001: a commit takes at most 1,000 changes.
+	foreach v_from in array array[1, 501] loop
+		v_units := '[]'::jsonb;
+		for i in v_from..(case when v_from = 1 then 500 else 1001 end) loop
+			v_units := v_units || jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'data/e' || lpad(i::text, 4, '0')));
+		end loop;
+		perform pg_temp.base_commit('{"kind":"platform"}', 'data-pass-empty-folders-' || v_from, v_units);
 	end loop;
-	perform pg_temp.base_commit('{"kind":"platform"}', 'data-pass-empty-folders', v_units);
 	perform pg_temp.base_claims('service_role');
 	perform pg_temp.dp_same(pg_temp.dp_pass() ->> 'files', '7', '1,001 empty folders keep nothing');
 end $$;
