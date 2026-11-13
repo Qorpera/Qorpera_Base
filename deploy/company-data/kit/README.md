@@ -2,9 +2,9 @@
 
 The company data store (`deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §2) and its data gateway (§3) as one Docker
 Compose project per machine, with WAL archiving, nightly base backups, a point-in-time restore and a streaming standby.
-It is the same whether the store gets a machine pair of its own or runs inside the platform database's machine: it
-needs Docker, a folder of its own and a backup folder. It is proven by a drill on a test machine (below). Nothing of
-it is installed anywhere yet.
+The store runs on a machine pair of its own (decided, §13 of that design). The kit asks little of a machine:
+Docker, a folder of its own and a backup folder. It is proven by a drill on a test machine (below). Nothing of it is
+installed anywhere yet.
 
 ## Files
 
