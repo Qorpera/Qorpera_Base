@@ -6,8 +6,12 @@
 # The archive is mounted read-only and archive_mode is off in the copy, so it never writes there. The copy gets a new
 # CA and cert of its own (name data-restore). To make the copy a primary later: copy the real machine's postgres/tls
 # and secrets into its folder, delete postgres/restore.conf, restart it, and start a new WAL folder (init.sh's rule).
+# Settings in the environment win over the kit's .env, so on a machine:
+#   COMPOSE_PROJECT_NAME=company-data-restore DATA_LOCAL=/opt/company-data/restore ./restore.sh latest '...'
 # Prints names, counts and times only.
 set -euo pipefail
+# The store alone, whatever this machine's .env says: never replication.yml's published port, never the gateway.
+export COMPOSE_FILE=docker-compose.yml
 . "$(dirname "$0")/lib.sh"
 export DATA_BACKUP_MODE=ro
 want=${1:-}

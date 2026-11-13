@@ -9,7 +9,8 @@
 #   DATA_GATEWAY_LISTEN    where the gateway's port is published, address:port, for example 127.0.0.1:8480
 #   DATA_PLATFORM_URL      the platform's API, the gateway asks it as the caller
 #   DATA_PLATFORM_KEY      the platform's publishable key (not a secret)
-#   DATA_NODE_MODULES      a node_modules folder that holds pg (README.md: how it is packaged for real)
+#   DATA_GATEWAY_PACKAGE   the folder that holds the packaged gateway: qorpera-company-data-gateway.mjs and its
+#                          .sha256 (scripts/package-company-data-gateway.mjs; README.md: how a machine gets it)
 #   DATA_DB_CPUS, DATA_DB_MEMORY   the database's caps (2 and 7g by default: the machine is 2 vCPU and 8 GiB)
 #   DATA_BACKUP_MODE       rw (the default); restore.sh sets ro, so a restored copy never writes the archive
 #
@@ -60,7 +61,13 @@ services:
       data-db:
         condition: service_healthy
     working_dir: /app
-    entrypoint: ["node", "/app/kit/gateway-main.mjs"]
+    # The packaged gateway runs only if it is the file its sha256 names.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        sha256sum --check --status qorpera-company-data-gateway.mjs.sha256 || { echo "data gateway: the package does not match its
+        sha256" >&2; exit 2; }; exec node qorpera-company-data-gateway.mjs
     environment:
       DATA_STORE_HOST: data-db
       DATA_STORE_PORT: "5432"
@@ -69,9 +76,7 @@ services:
       DATA_PLATFORM_KEY: ${DATA_PLATFORM_KEY:?set DATA_PLATFORM_KEY}
       DATA_LISTEN: 0.0.0.0:8480
     volumes:
-      - ../gateway:/app/gateway:ro
-      - ./gateway-main.mjs:/app/kit/gateway-main.mjs:ro
-      - ${DATA_NODE_MODULES:?set DATA_NODE_MODULES}:/app/node_modules:ro
+      - ${DATA_GATEWAY_PACKAGE:?set DATA_GATEWAY_PACKAGE}:/app:ro
       - ${DATA_LOCAL}/secrets/gateway:/run/company-data/logins:ro
     ports:
       - ${DATA_GATEWAY_LISTEN:?set DATA_GATEWAY_LISTEN}:8480

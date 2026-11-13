@@ -27,6 +27,10 @@ const WORK = mkdtempSync(join(tmpdir(), `${RUN}-`));
 const NAS = join(WORK, "nas");
 const FOLDER = join(WORK, "folder");
 const LINK = `${RUN}-link`;
+const PACKAGE = join(WORK, "package");
+const DOTENV = join(KIT, ".env");
+// What a script sees besides the kit's .env: on a machine, a root shell or a systemd unit.
+const BARE = { PATH: process.env.PATH, HOME: process.env.HOME ?? "/root" };
 const ENV = "64000000-0000-4000-8000-000000000001";
 const MEMBER = "64000000-0000-4000-8000-000000000002";
 const STORE = companyDatabase(ENV);
@@ -78,7 +82,7 @@ const machine = (name, linkName, port, files = ["docker-compose.yml", "drill/dri
 		DATA_GATEWAY_LISTEN: `127.0.0.1:${port}`,
 		DATA_PLATFORM_URL: "http://platform-standin:8000",
 		DATA_PLATFORM_KEY: "drill-publishable-key",
-		DATA_NODE_MODULES: join(ROOT, "node_modules"),
+		DATA_GATEWAY_PACKAGE: PACKAGE,
 		DATA_DB_CPUS: "2",
 		DATA_DB_MEMORY: "4g",
 		DRILL_LINK_NETWORK: LINK,
@@ -90,7 +94,8 @@ const run = (command, args, options = {}) => {
 	const done = spawnSync(command, args, { encoding: "utf8", timeout: 600_000, maxBuffer: 64 * 1024 * 1024, ...options });
 	return { ok: done.status === 0, status: done.status, out: done.stdout ?? "", err: `${done.stderr ?? ""}${done.error ? ` ${done.error.message}` : ""}` };
 };
-const script = (m, name, args = [], input) => run("bash", [join(KIT, name), ...args], { env: m.env, input });
+// Every script runs from /, never from the kit's folder, with the settings the machine gives it (scriptEnv).
+const script = (m, name, args = [], options = {}) => run("bash", [join(KIT, name), ...args], { cwd: "/", env: { ...m.scriptEnv, ...options.env }, input: options.input, encoding: options.encoding });
 const compose = (m, args, input) => run("docker", ["compose", ...args], { env: m.env, input });
 const sql = (m, text, database = "postgres") => {
 	const done = compose(m, ["exec", "-T", "-u", "postgres", "data-db", "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", "-d", database, "-c", text]);
@@ -132,6 +137,14 @@ const ask = async (m, verb, body) => {
 const A = machine("a", "data-primary", await freePort());
 const B = machine("b", "data-standby", await freePort());
 const R = machine("r", "data-restore", await freePort(), ["docker-compose.yml"]);
+// A, the primary, has its settings in the kit's .env alone, with a relative COMPOSE_FILE, as a machine's setup writes
+// it. B's come from the environment, which wins over that .env. R is the README's restore line: a project and a folder
+// in the environment, the rest from A's .env.
+const DOTENV_KEYS = ["COMPOSE_PROJECT_NAME", "DATA_LOCAL", "DATA_BACKUP", "DATA_GATEWAY_LISTEN", "DATA_PLATFORM_URL", "DATA_PLATFORM_KEY",
+	"DATA_GATEWAY_PACKAGE", "DATA_DB_CPUS", "DATA_DB_MEMORY", "DRILL_LINK_NETWORK", "DRILL_LINK_NAME", "DRILL_FOLDER"];
+A.scriptEnv = BARE;
+B.scriptEnv = B.env;
+R.scriptEnv = { ...BARE, COMPOSE_PROJECT_NAME: R.project, DATA_LOCAL: R.local };
 const MACHINES = [A, B, R];
 let failure = null;
 
@@ -143,6 +156,12 @@ try {
 		if (!there) throw new Error(`missing image ${image}: report it, do not pull`);
 	}
 	mkdirSync(NAS, { mode: 0o755 });
+	if (existsSync(DOTENV)) throw new Error(`${DOTENV} exists: the drill writes its own and removes it`);
+	writeFileSync(DOTENV, ["# Written by drill.mjs for machine A, removed at its end.", "COMPOSE_FILE=docker-compose.yml:drill/drill.yml",
+		...DOTENV_KEYS.map((key) => `${key}=${A.env[key]}`), ""].join("\n"), { mode: 0o600 });
+	const packaged = await timed("package", async () => run(process.execPath, [join(ROOT, "scripts/package-company-data-gateway.mjs"), "--out", PACKAGE], { cwd: ROOT }));
+	check("the gateway is packaged into one file with its sha256 (scripts/package-company-data-gateway.mjs)", packaged.ok && existsSync(join(PACKAGE, "qorpera-company-data-gateway.mjs.sha256")), tail(packaged.err, 3));
+	if (!packaged.ok) throw new Error("no package");
 	mkdirSync(FOLDER, { mode: 0o755 });
 	writeFileSync(join(FOLDER, "folder.json"), JSON.stringify({ member: MEMBER, files: FILES }), { mode: 0o644 });
 	const link = run("docker", ["network", "create", "--internal", "--label", `cdkit.run=${RUN}`, LINK]);
@@ -160,7 +179,7 @@ try {
 	// ---- (a) init, then the gateway answers
 	const init = await timed("init", async () => script(A, "init.sh", ["data-primary", "data-standby"]));
 	show("init", init);
-	check("(a) init.sh starts the store and the gateway on an empty volume", init.ok);
+	check("(a) init.sh starts the store and the gateway on an empty volume, run from / with only the kit's .env (a relative COMPOSE_FILE)", init.ok);
 	if (!init.ok) throw new Error("init failed");
 	const again = script(A, "init.sh", ["data-primary"]);
 	check("(a) a second init.sh is refused", !again.ok && /init runs once/.test(again.err), tail(again.err, 2));
@@ -183,6 +202,10 @@ try {
 	check("(a) the gateway makes the company database and applies its step through an apply call", applied.value.applied === true, JSON.stringify(applied.value).slice(0, 200));
 	const first = await ask(A, "query", { database: "shop", question: "count" });
 	check("(a) the gateway answers a question", first.status === 200 && first.value.rows?.[0]?.[0] === 10, JSON.stringify(first.value).slice(0, 200));
+	const mounts = run("docker", ["inspect", "-f", "{{range .Mounts}}{{.Destination}}={{.Source}} {{end}}", container(A, "data-gateway")]).out;
+	const gatewayLog = run("docker", ["logs", container(A, "data-gateway")]);
+	check("(a) the gateway that answers is the packaged file: /app is the package folder, and it started from it",
+		mounts.includes(`/app=${PACKAGE} `) && !/node_modules/.test(mounts) && /data gateway: listening on .*secrets admin, folderKey, keeper, watch/.test(`${gatewayLog.out}${gatewayLog.err}`), mounts.trim());
 
 	// ---- (b) ports
 	const dbPorts = run("docker", ["port", container(A, "data-db")]).out.trim();
@@ -205,9 +228,9 @@ try {
 	// ---- (c) base backup, then a point-in-time restore into a new project
 	const insert = (m, label, n) => sql(m, `insert into shop.orders (note) select '${label} ' || g from generate_series(1, ${n}) g`, STORE);
 	insert(A, "before base", 1000);
-	const backup = await timed("base backup", async () => run("bash", [join(KIT, "base-backup.sh")], { env: { ...A.env, CHECKPOINT: "fast" } }));
+	const backup = await timed("base backup", async () => script(A, "base-backup.sh", [], { env: { CHECKPOINT: "fast" } }));
 	show("base-backup", backup);
-	check("(c) base-backup.sh takes a base backup into the backup folder", backup.ok);
+	check("(c) base-backup.sh, run from / with the kit's .env, takes a base backup into the backup folder", backup.ok);
 	insert(A, "after base", 1000);
 	await sleep(1100);
 	const target = sql(A, "select clock_timestamp()");
@@ -225,7 +248,8 @@ try {
 	note(`rows at the target ${target}: ${atTarget}; rows now: ${sql(A, ROWS, STORE)}`);
 	const restored = await timed("restore", async () => script(R, "restore.sh", ["latest", target]));
 	show("restore", restored);
-	check("(c) restore.sh restores the base backup and the WAL to the time into a new project", restored.ok);
+	check("(c) restore.sh, as the README's line runs it (a project and a folder in the environment, the rest from the kit's .env), restores into a new project", restored.ok);
+	check("(c) the restore did not touch the primary's project", restored.ok && compose(A, ["ps", "-q", "--status", "running"]).out.trim().split("\n").filter(Boolean).length === 3);
 	const restoredRows = restored.ok ? sql(R, ROWS, STORE) : "none";
 	check("(c) the restored store holds exactly the rows up to the time: count and hash", restoredRows === atTarget, restoredRows);
 	check("(c) no row written after the time is there", restored.ok && sql(R, "select count(*) from shop.orders where note like 'after target%'", STORE) === "0");
@@ -234,8 +258,8 @@ try {
 	// ---- (d) a standby on the other machine, then the take-over
 	const allow = script(A, "standby.sh", ["allow", linkSubnet]);
 	show("allow", allow);
-	const pack = run("bash", [join(KIT, "standby.sh"), "pack"], { env: A.env, encoding: "buffer" });
-	const unpack = run("bash", [join(KIT, "standby.sh"), "unpack"], { env: B.env, input: pack.out });
+	const pack = script(A, "standby.sh", ["pack"], { encoding: "buffer" });
+	const unpack = script(B, "standby.sh", ["unpack"], { input: pack.out });
 	show("unpack", unpack);
 	check("(d) the standby's machine gets the TLS files and secrets from the primary's (never the CA key)", allow.ok && pack.ok && unpack.ok && !existsSync(join(B.local, "ca")));
 	const seed = await timed("standby seed", async () => script(B, "standby.sh", ["seed", "data-primary", "5432"]));
@@ -252,7 +276,9 @@ try {
 		caught = sql(B, `select coalesce(pg_last_wal_replay_lsn() >= '${lsn}'::pg_lsn, false)`) === "t";
 		if (!caught) await sleep(250);
 	}
-	show("status on the primary", script(A, "standby.sh", ["status"]));
+	const statusA = script(A, "standby.sh", ["status"]);
+	show("status on the primary", statusA);
+	check("standby.sh status, run from / with the kit's .env, reads the primary", statusA.ok && /^company_data_standby\|streaming\|t\|/m.test(statusA.out), tail(statusA.err, 2));
 	show("status on the standby", script(B, "standby.sh", ["status"]));
 	check("(d) the standby replayed every committed row", caught, lsn);
 	const committed = sql(A, ROWS, STORE);
@@ -281,13 +307,14 @@ try {
 	for (const m of MACHINES) compose(m, ["down", "-v", "--remove-orphans", "--timeout", "20"]);
 	run("docker", ["network", "rm", LINK]);
 	rmSync(WORK, { recursive: true, force: true });
+	rmSync(DOTENV, { force: true });
 	const left = MACHINES.flatMap((m) => [
 		...run("docker", ["ps", "-aq", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 		...run("docker", ["volume", "ls", "-q", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 		...run("docker", ["network", "ls", "-q", "--filter", `label=com.docker.compose.project=${m.project}`]).out.split("\n"),
 	]).filter(Boolean);
 	left.push(...run("docker", ["network", "ls", "-q", "--filter", `name=^${LINK}$`]).out.split("\n").filter(Boolean));
-	check("(f) every container, volume, network and folder of the drill is removed", left.length === 0 && !existsSync(WORK), left.join(" ") || "none left");
+	check("(f) every container, volume, network and folder of the drill, and the kit's .env it wrote, is removed", left.length === 0 && !existsSync(WORK) && !existsSync(DOTENV), left.join(" ") || "none left");
 	note(`timings: ${timings.join(", ")}`);
 }
 finish();
