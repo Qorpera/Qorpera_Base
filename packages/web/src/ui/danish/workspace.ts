@@ -514,6 +514,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Wake it": "Væk den",
 	"Someone with edit access can wake it.": "En med redigeringsadgang kan vække den.",
 	"The computer is starting…": "Computeren starter…",
+	"Waiting for room on our servers…": "Venter på plads på vores servere…",
+	"Out of computer hours…": "Ingen computertimer tilbage…",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
