@@ -241,13 +241,55 @@ await finish(
 
 			// 7. Both orders of a roll: over a backend without the migration the function is not there, so the ask is
 			// refused and the relay says plain words and starts no session; the migration goes before the bundle.
-			db.query(`delete from public.qorpera_native_host_calls where name like 'qorpera_folder_home%';
-				drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
+			// The path a run's own box takes is the native host's entry point, which admits only the calls the kernel
+			// lists: the proof drives it as the host does, with the job's own lease token.
+			const TOKEN = "home-window-proof-token-0123456789";
+			service(`set local session_replication_role = replica;
+				update public.qorpera_runner_jobs
+				set lease_token_sha256 = encode(extensions.digest(convert_to('${TOKEN}', 'utf8'), 'sha256'), 'hex')
+				where id = '${binding.jobId}';
+				select to_jsonb(1)::text`);
+			// A folder call carries the run's own environment and actor, which the native host supplies and the entry
+			// point checks against the job's run.
+			const runActor = {
+				kind: "run",
+				runId: binding.runId,
+				jobId: binding.jobId,
+				runnerId: binding.runnerId,
+				assignmentId: binding.assignmentId,
+			};
+			const throughHost = (name, request) =>
+				service(`select public.qorpera_native_host_call('${binding.jobId}', '${TOKEN}', '${name}',
+					'${JSON.stringify({ p_environment_id: ENVIRONMENT, p_actor: runActor, p_request: request })}'::jsonb)::text`);
+			assert.equal(throughHost("qorpera_folder_home_window_open", { machineId: HOME }).state, "open");
+			// With the registrations gone (an unmigrated kernel), the host's entry point refuses the call itself.
+			db.query("delete from public.qorpera_native_host_calls where name like 'qorpera_folder_home%'");
+			assert.throws(
+				() => throughHost("qorpera_folder_home_window_open", { machineId: HOME }),
+				/native host call is refused/,
+			);
+			// The runtime turns that refusal, and the one a missing function gives, into plain words: no session either
+			// way. The kernel's own refusal is read by its code, never by words a public message sanitises.
+			for (const refusal of [
+				{ code: "42501", message: "native host call is refused" },
+				{ code: "42883", message: "function does not exist" },
+			]) {
+				const raising = {
+					openHomeWindow: async () => {
+						throw Object.assign(new Error(refusal.message), { code: refusal.code });
+					},
+					openHomeCall: async () => undefined,
+					endHomeCall: async () => true,
+				};
+				const answer = await code.openHomeFolderWindow(raising, HOME, signal());
+				assert("refused" in answer, `a window although the ask was refused with ${refusal.code}`);
+				assert.match(answer.refused, /could not be made ready just now/);
+				assert.doesNotMatch(answer.refused, /window|view|mount|terminal|[\da-f]{8}/i);
+			}
+			// And the same through the real client, over a backend whose functions are gone.
+			db.query(`drop function public.qorpera_folder_home_window_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_open(uuid, jsonb, jsonb);
 				drop function public.qorpera_folder_home_call_end(uuid, jsonb, jsonb);`);
-			// Whichever way an unmigrated backend refuses the ask — the function is not there (42883 here), or the native
-			// host does not list the call (42501, the path a run's own box takes) — the relay gets plain words and starts
-			// no session. The kernel's refusal is checked by its code, never by words a public message sanitises.
 			let thrown;
 			await assert.rejects(
 				() => run.folder.openHomeWindow(HOME, signal()),
@@ -261,8 +303,7 @@ await finish(
 			const withoutMigration = await code.openHomeFolderWindow(run.folder, HOME, signal());
 			assert("refused" in withoutMigration, "a window from a backend that has no window calls");
 			assert.match(withoutMigration.refused, /could not be made ready just now/);
-			assert.doesNotMatch(withoutMigration.refused, /window|view|mount|terminal|[\da-f]{8}/i);
-			pass("over a backend without the migration the ask gives plain words and no session, so a release runs the migration first");
+			pass("the native host admits the calls the kernel lists, and without them the relay says plain words and starts no session");
 		},
 	}),
 );
