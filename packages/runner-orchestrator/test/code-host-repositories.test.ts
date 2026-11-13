@@ -40,14 +40,24 @@ import {
 } from "../src/code-host-repositories.ts";
 import { attachCodeSession, type CodeAreaBroker } from "../src/code-host-seed.ts";
 import type { CodeHostJobs } from "../src/code-host-views.ts";
-import { type CodeSiteCollected, codeSiteRefusedSummary } from "../src/code-site.ts";
+import {
+	CODE_CHECKS_DRILL,
+	CODE_DRILL_WORDS,
+	CODE_SITE_DRILL_FOLDER,
+	type CodeSiteCollected,
+	codeSiteRefusedSummary,
+} from "../src/code-site.ts";
 import {
 	CodingLandConflict,
 	CodingLandRefused,
 	type CodingSessionClaim,
 	CodingWorkspaceFailed,
 } from "../src/coding-executor.ts";
-import type { CodeChangeReport, CodingFolderRepositorySession } from "../src/coding-folder-repositories.ts";
+import type {
+	CodeChangeReport,
+	CodeChecksSwitched,
+	CodingFolderRepositorySession,
+} from "../src/coding-folder-repositories.ts";
 import { type CodingBrokerGitCommand, createCodingBrokerGitRunner, pushCloudCodingBundle } from "../src/coding-git.ts";
 import type { LxdCodingMachineBinding } from "../src/coding-machine.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
@@ -1411,10 +1421,10 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 	});
 	const DIFF = { filesChanged: 1, paths: [{ path: "cart.js", change: "added" }], pathsMore: 0 };
 
-	/** A session on a repository kept in Qorpera whose host runs checks: its switch answers `on`, and its runner is a
-	 * stand-in that answers `runs` in turn (each run is a step of the session's). The landing's two jobs are stand-ins
-	 * where a test says. */
-	async function checked(on = true, sites = true) {
+	/** A session on a repository kept in Qorpera whose host runs checks: its switch answers `on`, `sites` and what step
+	 * 5 adds (`more`: links from the root, a drill), and its runner is a stand-in that answers `runs` in turn (each run is
+	 * a step of the session's). The landing's two jobs are stand-ins where a test says. */
+	async function checked(on = true, sites = true, more: Pick<CodeChecksSwitched, "rootLinks" | "drill"> = {}) {
 		const f = await fixture();
 		const claim = { ...f.session.claim, repository: KEPT, baseSha: null };
 		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
@@ -1427,7 +1437,13 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		const runs: CodeChecksRun[] = [];
 		const runChecks = vi.fn(
 			async (
-				_input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
+				_input: {
+					commit: string;
+					checks: readonly CodeCheck[];
+					attempt: number;
+					site: CodeSiteRecipe | null;
+					rootLinks?: boolean;
+				},
 				_signal: AbortSignal,
 			): Promise<CodeChecksRun> => {
 				f.events.push("checks");
@@ -1436,9 +1452,9 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 				return run;
 			},
 		);
-		const checksSwitch = vi.fn(async (_signal: AbortSignal) => {
+		const checksSwitch = vi.fn(async (_signal: AbortSignal): Promise<CodeChecksSwitched> => {
 			f.events.push("switch");
-			return { checks: on, site: sites };
+			return { checks: on, site: sites, ...more };
 		});
 		const session: CodingFolderRepositorySession = {
 			...f.session,
@@ -2261,6 +2277,176 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 				},
 			});
 			expect(t.wake).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("links from the root and an operator's drill, as the switch says them (own code storage, step 5)", () => {
+		const RECIPE: CodeSiteRecipe = { folder: "dist", name: "gift-message", title: "Gift message" };
+		const MADE: CodeSiteCollected = { state: "made", tree: "a".repeat(40), files: 3, bytes: 4_096, ...RECIPE };
+		const OPENING = `${CODE_DRILL_WORDS} `;
+		/** Job A then job B, the gate with `site`, and the row's checks for a run that passes. */
+		const lands = (t: Awaited<ReturnType<typeof checked>>, head: string, site: CodeSiteRecipe | null) => {
+			vi.mocked(landCodeBranch)
+				.mockResolvedValueOnce(toCheck(t.baseSha, head) as never)
+				.mockResolvedValueOnce(landed(t.baseSha, head) as never);
+			gateRuns(site);
+			vi.mocked(codeChecksPassed).mockReturnValueOnce(result(head, "fast-forward", 1));
+		};
+		/** The drill's own check failing, the last of the run, as the runner reports it. */
+		const DRILL_FAILED: Extract<CodeChecksRun, { state: "failed" }> = {
+			state: "failed",
+			ms: 99_100,
+			passed: [
+				{ name: "install", ms: 38_000 },
+				{ name: "test", ms: 59_000 },
+			],
+			failed: {
+				name: CODE_CHECKS_DRILL.name,
+				run: CODE_CHECKS_DRILL.run,
+				ms: 100,
+				exitCode: 1,
+				atLimit: false,
+				tail: "A drill by Qorpera's operator: this check fails on purpose, once.",
+				log: "~/.qorpera-checks/0000000001-0001/out/3-qorpera-drill.log",
+			},
+			notRun: [],
+		};
+
+		it("lets the site's links from the root through only while the switch says so, in every run of the landing", async () => {
+			const t = await checked(true, true, { rootLinks: true });
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(NOT_RUN("CODE_CHECKS_MACHINE_STOPPED"), { ...PASSED, site: MADE });
+			expect(await t.land(head)).toMatchObject({ state: "fast-forward", mainSha: head, change: 7 });
+			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
+				{ commit: head, checks: CHECKS, attempt: 1, site: RECIPE, rootLinks: true },
+				{ commit: head, checks: CHECKS, attempt: 2, site: RECIPE, rootLinks: true },
+			]);
+			// Hosts off, a kernel before step 5 or an answer lost: no key at all, the input as before.
+			const off = await checked(true, true);
+			const next = await off.f.commit(off.f.tree, "cart.js");
+			lands(off, next, RECIPE);
+			off.runs({ ...PASSED, site: MADE });
+			await off.land(next);
+			expect(off.runChecks.mock.calls.map(([input]) => input)).toEqual([
+				{ commit: next, checks: CHECKS, attempt: 1, site: RECIPE },
+			]);
+			expect(off.logged.filter((event) => event.step === "drill")).toEqual([]);
+		});
+
+		it("runs a check drill's check after the repository's own, and fails the turn on its own path with the drill's words first", async () => {
+			const t = await checked(true, true, { drill: "check" });
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
+			gateRuns(RECIPE);
+			t.runs(DRILL_FAILED);
+			const failed = await t.land(head).catch((e) => e);
+			expect(failed).toBeInstanceOf(CodingLandRefused);
+			expect(failed.message).toBe("CODING_CHECKS_FAILED");
+			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
+				{ commit: head, checks: [...CHECKS, CODE_CHECKS_DRILL], attempt: 1, site: RECIPE },
+			]);
+			// The failed check's words of part C1, the drill's first.
+			expect(vi.mocked(codeChecksFailedSummary).mock.calls).toEqual([[DRILL_FAILED, "fast-forward", OPENING]]);
+			expect(failed.summary.startsWith(`${OPENING}Nothing went into main: the check "qorpera-drill" failed`)).toBe(
+				true,
+			);
+			expect(failed.summary).toMatch(/\[code=CODING_CHECKS_FAILED\]$/);
+			// No job B, no row, main where it was; the log says the drill was taken and failed the run.
+			expect(t.asked()).toHaveLength(1);
+			expect(t.recordChange).not.toHaveBeenCalled();
+			expect(t.logged.filter((event) => event.event === "code-checks")).toEqual([
+				expect.objectContaining({ step: "drill", drill: "check" }),
+				expect.objectContaining({ step: "failed", attempt: 1, exitCode: 1, drill: "check" }),
+			]);
+		});
+
+		it("says nothing of a check drill when the repository's own check failed first, or one of its own has the drill's name", async () => {
+			for (const ownFailed of [
+				{
+					...DRILL_FAILED,
+					failed: { ...DRILL_FAILED.failed, name: "test", run: "npm test" },
+					notRun: ["qorpera-drill"],
+				},
+				{ ...DRILL_FAILED, notRun: ["qorpera-drill"] },
+				// A run that names no check after the failed one, which is not the drill's: not the drill's words either.
+				{ ...DRILL_FAILED, failed: { ...DRILL_FAILED.failed, name: "test", run: "npm test" } },
+			]) {
+				const t = await checked(true, true, { drill: "check" });
+				const head = await t.f.commit(t.f.tree, "cart.js");
+				vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
+				gateRuns();
+				t.runs(ownFailed);
+				const failed = await t.land(head).catch((e) => e);
+				expect(failed.message).toBe("CODING_CHECKS_FAILED");
+				expect(vi.mocked(codeChecksFailedSummary).mock.calls).toEqual([[ownFailed, "fast-forward"]]);
+				expect(failed.summary.startsWith("Nothing went into main: the check")).toBe(true);
+				expect(t.logged.at(-1)).not.toHaveProperty("drill");
+			}
+		});
+
+		it("takes a site drill's site from a folder no repository has, and fails the turn on the site's path with the drill's words first", async () => {
+			const t = await checked(true, true, { drill: "site" });
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
+			gateRuns(RECIPE);
+			const problem = { code: "SITE_FOLDER_MISSING", path: null, variable: null } as const;
+			t.runs({ state: "site_refused", ms: 99_000, checks: PASSED.checks, problem });
+			const refused = await t.land(head).catch((e) => e);
+			expect(refused).toBeInstanceOf(CodingLandRefused);
+			expect(refused.message).toBe("CODING_CHECKS_SITE_REFUSED");
+			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
+				{ commit: head, checks: CHECKS, attempt: 1, site: { ...RECIPE, folder: CODE_SITE_DRILL_FOLDER } },
+			]);
+			expect(refused.summary).toBe(codeSiteRefusedSummary(problem, CODE_SITE_DRILL_FOLDER, OPENING));
+			expect(refused.summary).toBe(
+				`${CODE_DRILL_WORDS} Nothing went into main: every check passed, but the site in "qorpera-drill-missing" is not there (no folder of that name once the checks ran; a link is not followed). Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`,
+			);
+			expect(t.recordChange).not.toHaveBeenCalled();
+			expect(t.logged.filter((event) => event.event === "code-checks")).toEqual([
+				expect.objectContaining({ step: "drill", drill: "site" }),
+				expect.objectContaining({ step: "site-refused", problem: "SITE_FOLDER_MISSING", drill: "site" }),
+			]);
+			// Any other refusal of that site is not the drill's: its words as before.
+			const other = await checked(true, true, { drill: "site" });
+			const next = await other.f.commit(other.f.tree, "cart.js");
+			vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(other.baseSha, next) as never);
+			gateRuns(RECIPE);
+			const noIndex = { code: "SITE_NO_INDEX", path: null, variable: null } as const;
+			other.runs({ state: "site_refused", ms: 1, checks: PASSED.checks, problem: noIndex });
+			expect((await other.land(next).catch((e) => e)).summary).toBe(
+				codeSiteRefusedSummary(noIndex, CODE_SITE_DRILL_FOLDER),
+			);
+		});
+
+		it("spends a drill that finds nothing to act on, and lands as before: no checks file, no site, sites off", async () => {
+			// No checks file: one job, nothing run.
+			const none = await checked(true, true, { drill: "check" });
+			const head = await none.f.commit(none.f.tree, "cart.js");
+			const real = await vi.importActual<typeof import("../src/code-host-jobs.ts")>("../src/code-host-jobs.ts");
+			vi.mocked(landCodeBranch).mockImplementationOnce(async (job, value) => {
+				const { checks: _checks, ...today } = value as typeof value & { checks?: true };
+				return await real.landCodeBranch(job, today);
+			});
+			expect(await none.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 1, change: 7 });
+			expect(none.runChecks).not.toHaveBeenCalled();
+			expect(none.logged.filter((event) => event.event === "code-checks")).toEqual([
+				expect.objectContaining({ step: "drill", drill: "check" }),
+			]);
+			// A site drill with no recipe, or with sites off: no site, the checks as they are; the change lands.
+			for (const [sites, recipe] of [
+				[true, null],
+				[false, RECIPE],
+			] as const) {
+				const t = await checked(true, sites, { drill: "site" });
+				const next = await t.f.commit(t.f.tree, "cart.js");
+				lands(t, next, recipe);
+				t.runs({ ...PASSED, site: null });
+				expect(await t.land(next)).toMatchObject({ state: "fast-forward", mainSha: next, change: 7 });
+				expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
+					{ commit: next, checks: CHECKS, attempt: 1, site: null },
+				]);
+			}
 		});
 	});
 });
