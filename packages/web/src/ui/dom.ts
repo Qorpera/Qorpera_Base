@@ -228,11 +228,24 @@ export function button(
 
 /* Small stroked icons, the desktop's set (Lucide, ISC). Drawn inline so they
  * inherit the row's colour; an <img> could not. */
+
+/** Icons drawn on a grid of their own instead of Lucide's 24, so their lines fall on whole pixels at the size they are
+ * shown: the grid's size (the viewBox) and its line. The sidebar's toggle (Jonas, 13 November 2026: it read thin and
+ * soft) is drawn for the 20 px box the Concepts viewer gives it at the default scale (styles/conversation.css): a
+ * 1.5 px line, Lucide's 1.8 of 24 at that size, so it weighs what the icons beside it weigh. Its lines are centred on
+ * quarter pixels, so at 2x every edge is a whole device pixel and at 1x the outline's outer edge is a whole pixel. The
+ * outline is 16 by 14, the optical size of the search and plus icons beside it in the rail, with outer corners of 3.5;
+ * the divider stands a third in from the panel's side. */
+const ICON_GRIDS: Readonly<Record<string, { readonly size: number; readonly stroke: number }>> = {
+	navigation: { size: 20, stroke: 1.5 },
+};
+
 const ICON_PATHS: Record<string, string[]> = {
 	// Lucide list / table-2, matching the existing ISC-licensed icon set.
 	list: ["M3 5h.01", "M3 12h.01", "M3 19h.01", "M8 5h13", "M8 12h13", "M8 19h13"],
 	table: ["M3 9h18", "M9 3v18"],
-	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
+	// The sidebar, on a grid of its own (ICON_GRIDS): its outline is a rectangle (icon), this is its divider.
+	navigation: ["M7.75 3.75v12.5"],
 	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
 	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
@@ -414,10 +427,11 @@ const ICON_PATHS: Record<string, string[]> = {
 
 export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-	svg.setAttribute("viewBox", "0 0 24 24");
+	const grid = ICON_GRIDS[name];
+	svg.setAttribute("viewBox", `0 0 ${grid?.size ?? 24} ${grid?.size ?? 24}`);
 	svg.setAttribute("fill", "none");
 	svg.setAttribute("stroke", "currentColor");
-	svg.setAttribute("stroke-width", "1.8");
+	svg.setAttribute("stroke-width", String(grid?.stroke ?? 1.8));
 	svg.setAttribute("stroke-linecap", "round");
 	svg.setAttribute("stroke-linejoin", "round");
 	svg.setAttribute("aria-hidden", "true");
@@ -427,18 +441,20 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 		path.setAttribute("d", d);
 		svg.append(path);
 	}
-	// Lucide layout-grid / table-2 use native rectangles rather than path outlines.
+	// Lucide layout-grid / table-2 and the sidebar's outline use native rectangles rather than path outlines.
 	const rectangles =
-		name === "grid"
-			? [
-					[3, 3, 7, 7, 1],
-					[14, 3, 7, 7, 1],
-					[14, 14, 7, 7, 1],
-					[3, 14, 7, 7, 1],
-				]
-			: name === "table"
-				? [[3, 3, 18, 18, 2]]
-				: [];
+		name === "navigation"
+			? [[2.75, 3.75, 14.5, 12.5, 2.75]]
+			: name === "grid"
+				? [
+						[3, 3, 7, 7, 1],
+						[14, 3, 7, 7, 1],
+						[14, 14, 7, 7, 1],
+						[3, 14, 7, 7, 1],
+					]
+				: name === "table"
+					? [[3, 3, 18, 18, 2]]
+					: [];
 	for (const [x, y, width, height, radius] of rectangles) {
 		const rectangle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
 		for (const [key, value] of Object.entries({ x, y, width, height, rx: radius }))
