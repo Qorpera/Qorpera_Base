@@ -133,6 +133,41 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(drawn).toEqual([["after", 20, 20]]);
 	});
 
+	it("holds a bounded amount while it decodes, and overflows rather than piling up behind a stalled decoder (review r3 F1 of #1746)", async () => {
+		const { screen, area, drawn } = view();
+		await screen.stream({ kind: "size", width: 1600, height: 1000 });
+		// A decoder that never answers: the first message's areas are stuck.
+		let release: () => void = () => {};
+		const stuck = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const flood: Promise<unknown>[] = [];
+		// A whole screen's worth of areas, then message after message of them, as a stalled page would see.
+		for (let n = 0; n < 40; n++)
+			flood.push(screen.stream({ kind: "rects", rects: [area(`late-${n}`, 0, n * 20, 1600, 20, stuck)] }));
+		const answers = await Promise.all(
+			flood.slice(0, 16).map((one) => Promise.race([one, Promise.resolve("pending")])),
+		);
+		// What the page holds while they decode is bounded in messages, bytes, pixels and decodes at once.
+		const held = screen.pending;
+		expect(held.messages).toBeLessThanOrEqual(16);
+		expect(held.bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+		expect(held.pixels).toBeLessThanOrEqual(16 * 1000 * 1000);
+		expect(held.decoding).toBeLessThanOrEqual(8);
+		// Past the bound, a message is refused outright and the window ends the stream (its looks come back).
+		expect(await flood[39]).toBe("overflow");
+		expect(answers.every((one) => one === "pending")).toBe(true);
+		expect(drawn).toEqual([]);
+		// A renewal: the backlog is let go on its own as each decode lands, not kept behind the chain.
+		screen.streamEnded();
+		release();
+		await Promise.all(flood);
+		expect(screen.pending).toEqual({ messages: 0, bytes: 0, pixels: 0, decoding: 0 });
+		// And the stream that replaced it draws at once.
+		expect(await screen.stream({ kind: "rects", rects: [area("after", 0, 0, 10, 10)] })).toBe("drawn");
+		expect(drawn).toEqual([["after", 0, 0]]);
+	});
+
 	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {
 		const { screen, canvas } = view();
 		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });

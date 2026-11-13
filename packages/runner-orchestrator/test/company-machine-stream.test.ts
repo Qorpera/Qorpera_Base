@@ -609,6 +609,51 @@ describe("a desktop's live picture (20260930745000)", () => {
 		expect(desktop.state.aborted).toBe(true);
 	});
 
+	it("tells a member the screen's size again when an eviction threw away the resize that changed it (review r3 F2 of #1746)", async () => {
+		const desktop = fakeDesktop();
+		// A ring that keeps almost nothing, and a member whose cycles lag behind the guest.
+		let letGo = () => {};
+		const held = new Promise<void>((resolve) => {
+			letGo = resolve;
+		});
+		// This member's cycles are let through until the test holds them.
+		let gate: Promise<void> | null = null;
+		const sink = sinkOf();
+		const stream = new DesktopStream({ run: desktop.run, cycleEveryMs: 0, ringBytes: 64 * 40 * 4 });
+		const watching = stream.watch(
+			async () => {
+				if (gate) await gate;
+				return "ok";
+			},
+			sink,
+			new AbortController().signal,
+		);
+		await settle();
+		// The first picture of the 64 x 40 screen reaches the member.
+		desktop.send(update(rawRect(0, 0, 64, 40, [1, 2, 3])));
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_RECTS)).toBe(true));
+		// Now the screen grows and the pixels of that size come while this member's cycle is held: the ring drops the
+		// update that carried the new size.
+		gate = held;
+		const resize = Buffer.alloc(12);
+		resize.writeUInt16BE(96, 4);
+		resize.writeUInt16BE(60, 6);
+		resize.writeInt32BE(-223, 8);
+		desktop.send(update(resize));
+		await settle();
+		for (let n = 0; n < 6; n++) desktop.send(update(rawRect(0, 0, 96, 60, [4, 5, 6])));
+		await settle();
+		sink.messages.length = 0;
+		letGo();
+		// What this member is sent next begins with the size it must have, before any pixels of it.
+		await vi.waitFor(() => expect(sink.messages.some((message) => message.type === STREAM_RECTS)).toBe(true));
+		const first = sink.messages[0];
+		expect(first?.type).toBe(STREAM_SIZE);
+		expect(`${first?.body.readUInt16BE(0)}x${first?.body.readUInt16BE(2)}`).toBe("96x60");
+		desktop.end(95);
+		await watching;
+	});
+
 	it("ends every member's stream when the relay ends (the X server or the boot) with why", async () => {
 		const desktop = fakeDesktop();
 		const ended = vi.fn();

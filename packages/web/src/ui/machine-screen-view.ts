@@ -108,6 +108,21 @@ export interface MachineScreenInput {
 	point?(at: { readonly x: number; readonly y: number } | null): void;
 }
 
+/**
+ * What the page may hold of a live picture while it decodes (review r3 F1 of #1746: before this, every message began
+ * decoding at once and a stalled decoder held every later PNG and bitmap). The numbers come from what the real machine
+ * sends: a whole 1600 x 1000 screen is one message of 28 areas, about 50 KB of PNG and 1.6 Mpx; a moving page sends
+ * about 30 messages a second, together some 16 KiB/s. So these bounds sit far above an ordinary busy screen — 16
+ * messages is half a second of a moving page's backlog, 8 MiB is 160 whole screens of PNG, 16 Mpx is ten whole screens
+ * decoded — and a decoder that is merely slow catches up, while one that is stuck overflows. On overflow the stream
+ * ends and the window goes back to its own pictures, so the member is never left with nothing.
+ */
+const MAX_PENDING_MESSAGES = 16;
+const MAX_PENDING_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_PIXELS = 16 * 1000 * 1000;
+/** How many areas decode at once across the view: a whole screen's 28 bands then go in four rounds of a few ms. */
+const MAX_DECODING = 8;
+
 /** A decoded picture: what a canvas draws. */
 export type MachineScreenPicture = CanvasImageSource & {
 	readonly width: number;
@@ -210,6 +225,14 @@ export class MachineScreenView {
 	#cleared = 0;
 	/** The live picture's pointer shape (a data URL and its hot spot), shown over the picture while it takes input. */
 	#cursor = "";
+	/** The messages of a live picture being decoded now, and what each holds: bounded in number, in PNG bytes and in
+	 * decoded pixels (review r3 F1 of #1746). */
+	readonly #pending = new Set<{ readonly bytes: number; readonly pixels: number }>();
+	#pendingBytes = 0;
+	#pendingPixels = 0;
+	/** Areas decoding right now, and who waits for a turn (MAX_DECODING). */
+	#decoding = 0;
+	readonly #waiting: (() => void)[] = [];
 	#fullscreenAttempt = 0;
 	#ownedFullscreen = false;
 
@@ -637,22 +660,57 @@ export class MachineScreenView {
 	 * it decoded: discarded work, no fault of the stream) or `"failed"` (an area that does not decode, or does not fit
 	 * the screen: that stream is of no use). The caller must tell the last two apart, or a draw discarded at a renewal
 	 * would end the stream that replaced it (review r2 F4 of #1746). */
-	stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed"> {
+	stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed" | "overflow"> {
+		const bytes =
+			message.kind === "rects"
+				? message.rects.reduce((sum, rect) => sum + rect.png.size, 0)
+				: message.kind === "cursor"
+					? (message.png?.size ?? 0)
+					: 0;
+		const pixels =
+			message.kind === "rects"
+				? message.rects.reduce((sum, rect) => sum + rect.width * rect.height, 0)
+				: message.kind === "cursor"
+					? message.width * message.height
+					: 0;
+		// Past what the page may hold while it decodes, nothing of this message is begun: the stream ends and the window
+		// goes back to its own pictures (review r3 F1 of #1746).
+		if (
+			this.#pending.size >= MAX_PENDING_MESSAGES ||
+			this.#pendingBytes + bytes > MAX_PENDING_BYTES ||
+			this.#pendingPixels + pixels > MAX_PENDING_PIXELS
+		)
+			return Promise.resolve("overflow");
+		const held = { bytes, pixels };
+		this.#pending.add(held);
+		this.#pendingBytes += bytes;
+		this.#pendingPixels += pixels;
+		const letGo = () => {
+			if (!this.#pending.delete(held)) return;
+			this.#pendingBytes -= bytes;
+			this.#pendingPixels -= pixels;
+		};
 		this.#turn++;
 		const cleared = this.#cleared;
 		const decode = this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob));
-		// Areas decode at once, side by side; they are drawn in order.
-		const pictures =
-			message.kind === "rects"
-				? Promise.all(
-						message.rects.map((rect) =>
-							decode(rect.png).then(
-								(picture) => ({ rect, picture }),
-								() => null,
-							),
-						),
-					)
-				: Promise.resolve([]);
+		// At most MAX_DECODING areas decode at once across the view, and a picture whose generation moved while it
+		// decoded is let go there and then, without waiting for the chain (review r3 F1).
+		const one = async (rect: MachineStreamRect) => {
+			await this.#turnToDecode();
+			try {
+				const picture = await decode(rect.png);
+				if (this.#cleared !== cleared || this.#stop.signal.aborted) {
+					picture.close?.();
+					return null;
+				}
+				return { rect, picture };
+			} catch {
+				return null;
+			} finally {
+				this.#decoded();
+			}
+		};
+		const pictures = message.kind === "rects" ? Promise.all(message.rects.map(one)) : Promise.resolve([]);
 		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
 		// Work of an older generation is discarded, so nothing of this one waits for it.
 		const behind = this.#drawingFor === cleared ? this.#drawing : Promise.resolve();
@@ -696,8 +754,9 @@ export class MachineScreenView {
 			this.live();
 			return "drawn";
 		});
-		this.#drawing = drawn.catch(() => "failed" as const);
-		return drawn.catch(() => "failed" as const);
+		const settled = drawn.catch(() => "failed" as const).finally(letGo);
+		this.#drawing = settled;
+		return settled;
 	}
 
 	/**
@@ -710,6 +769,38 @@ export class MachineScreenView {
 		this.#cleared++;
 		this.#cursor = "";
 		this.#showCursor();
+	}
+
+	/** Waits for one of MAX_DECODING decoding turns. */
+	#turnToDecode(): Promise<void> {
+		if (this.#decoding < MAX_DECODING) {
+			this.#decoding++;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => this.#waiting.push(resolve));
+	}
+
+	/** One area finished decoding: the next in line takes its turn. */
+	#decoded(): void {
+		const next = this.#waiting.shift();
+		if (next) next();
+		else this.#decoding--;
+	}
+
+	/** What the page holds of a live picture right now: its messages, their PNG bytes and their decoded pixels, with the
+	 * areas decoding at this moment. All four are bounded (review r3 F1 of #1746); read by the tests and nothing else. */
+	get pending(): {
+		readonly messages: number;
+		readonly bytes: number;
+		readonly pixels: number;
+		readonly decoding: number;
+	} {
+		return {
+			messages: this.#pending.size,
+			bytes: this.#pendingBytes,
+			pixels: this.#pendingPixels,
+			decoding: this.#decoding,
+		};
 	}
 
 	/** The live picture's pointer shape over the picture while it takes input; the page's own otherwise. */

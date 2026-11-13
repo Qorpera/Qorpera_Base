@@ -560,6 +560,10 @@ interface StreamUpdate {
 interface Watcher {
 	sentSeq: number;
 	wake: () => void;
+	/** The size this member was last told. Zero width means "tell it the screen's size before any pixels": that is how a
+	 * member who joined is served, and how one whose updates were evicted is served again, since the eviction may have
+	 * thrown away the very update that carried a new size (review r3 F2 of #1746). */
+	sizeSent: { width: number; height: number };
 }
 
 /** At most this many messages wait for the VNC server at once: the reader answers one update with one request, so a
@@ -720,14 +724,13 @@ export class DesktopStream {
 	async watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string> {
 		if (this.#ended) return this.#ended;
 		const now = this.#options.now ?? Date.now;
-		const watcher: Watcher = { sentSeq: this.#seq, wake: () => {} };
+		const watcher: Watcher = { sentSeq: this.#seq, wake: () => {}, sizeSent: { width: 0, height: 0 } };
 		this.#watchers.add(watcher);
 		const done = AbortSignal.any([signal, this.#stop.signal]);
 		const wakeOnEnd = () => watcher.wake();
 		done.addEventListener("abort", wakeOnEnd, { once: true });
 		const began = now();
 		let failures = 0;
-		let sizeSent = { width: 0, height: 0 };
 		try {
 			this.#start();
 			// The whole screen for this member: asked anew, so it is a change after the member came, and passes a cycle.
@@ -763,7 +766,7 @@ export class DesktopStream {
 					continue;
 				}
 				if (done.aborted) continue;
-				sizeSent = await this.#send(watcher, upTo, sink, sizeSent, done);
+				await this.#send(watcher, upTo, sink, done);
 				watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
 				this.#trim();
 				await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
@@ -842,6 +845,10 @@ export class DesktopStream {
 			for (const watcher of this.#watchers)
 				if (watcher.sentSeq < dropped) {
 					watcher.sentSeq = dropped;
+					// The updates thrown away may have carried a new size, and the whole screen that recovers them is of
+					// the size the screen has now: this member is told that size before any of those pixels (review r3 F2
+					// of #1746), or it would refuse larger areas and keep pixels outside a smaller screen.
+					watcher.sizeSent = { width: 0, height: 0 };
 					refresh = true;
 				}
 			if (refresh && this.#width > 0) this.#outbox.push(rfbUpdateRequest(false, this.#width, this.#height));
@@ -860,13 +867,8 @@ export class DesktopStream {
 
 	/** Sends a member what changed after its last cycle up to `upTo`: the size when it changed, the changed areas in
 	 * order (one wholly covered by a later one is left out), the newest pointer shape. */
-	async #send(
-		watcher: Watcher,
-		upTo: number,
-		sink: DesktopStreamSink,
-		sizeSent: { width: number; height: number },
-		signal: AbortSignal,
-	): Promise<{ width: number; height: number }> {
+	async #send(watcher: Watcher, upTo: number, sink: DesktopStreamSink, signal: AbortSignal): Promise<void> {
+		const sizeSent = watcher.sizeSent;
 		const updates = this.#ring.filter((update) => update.seq > watcher.sentSeq && update.seq <= upTo);
 		// A member who joined after the screen's size was told is told it first.
 		let size = sizeSent.width === 0 && this.#width > 0 ? { width: this.#width, height: this.#height } : sizeSent;
@@ -882,6 +884,7 @@ export class DesktopStream {
 			if (update.cursor) cursor = update.cursor;
 		}
 		if (size !== sizeSent) {
+			watcher.sizeSent = size;
 			const message = Buffer.alloc(5);
 			message[0] = STREAM_SIZE;
 			message.writeUInt16BE(size.width, 1);
@@ -941,7 +944,6 @@ export class DesktopStream {
 			head.writeUInt32BE(png.byteLength, 9);
 			await sendOrStop(sink, Buffer.concat([head, png]), signal);
 		}
-		return size;
 	}
 
 	/** One PNG per area or shape, however many members it goes to. */

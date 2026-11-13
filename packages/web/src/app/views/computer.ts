@@ -2121,8 +2121,9 @@ export class ComputerPanel {
 		void view.stream(message).then((drawn) => {
 			// Work the picture discarded (it was cleared, or this stream ended while the area decoded) is no fault of the
 			// stream: a renewal reuses this PageStream, so taking it for a failure would end the socket that replaced it
-			// (review r2 F4 of #1746). Only a picture that could not be drawn ends it.
-			if (drawn !== "failed" || this.#stream !== stream) return;
+			// (review r2 F4 of #1746). A picture that could not be drawn ends it, and so does more waiting to be decoded
+			// than the page may hold (review r3 F1): the looks come back either way, so the member still sees the screen.
+			if ((drawn !== "failed" && drawn !== "overflow") || this.#stream !== stream) return;
 			this.#streamAfter = Date.now() + STREAM_PAUSE_MS;
 			this.#endStream(stream);
 		});
