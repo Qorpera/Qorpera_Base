@@ -115,7 +115,7 @@ The agent's own setting (1280 x 922, 32 samples, 2 threads, the dark world) took
 - **A larger machine costs the same.** Computer hours count `max(cpus / 4, GiB / 8)` times the time awake (`deploy/first-node/RUNTIME-COMPUTER-HOURS.md`): the 256-sample frame is 0.19 computer hours on 2 CPUs and 4 GiB and 0.17 on 8 CPUs and 8 GiB.
 - **Idle time is what costs.** A task machine sleeps after an hour without use: on 8 CPUs that hour is 2 computer hours, more than forty 64-sample frames. Hence `machine_stop` when the work is done.
 - **The room costs nothing.** The real room renders as fast as the dark world: what makes a frame look real is its light and its materials, not samples or processors. 64 samples with the denoiser are enough for a still.
-- **A large machine may wait or be refused.** Its CPUs count in full against its node's budget while it is awake, beside every other awake machine; when no node has room it waits in line, and a size above every node's largest machine is refused at once. The words name 8 CPUs and 8 GiB and say to start a smaller one instead of waiting.
+- **A large machine may wait or be refused.** Its CPUs count in full against its node's budget while it is awake, beside every other awake machine; when no node has room it waits in line, and a size above every node's largest machine is refused at once. The words name 8 CPUs and 8 GiB and say to start a smaller one instead of waiting, after deleting the one in line: left there, it would start by itself when room comes, unused and counted.
 - Not measured: more than 10 threads (the test machines have 10 vCPUs), and a company machine itself.
 
 ### Proof on node 2 (2026-09-29)

@@ -1638,7 +1638,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
+			instructions: "c00a24a04da63fef14e4b6e122cbf7ad02516bfb47e15faa8d62591d74e1da52",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1654,7 +1654,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "1d8a69c68b8e4e2dcd1ff52f6c8269ff4f57d3d21f28da562e319fbd8ca5a706",
+			instructions: "c00a24a04da63fef14e4b6e122cbf7ad02516bfb47e15faa8d62591d74e1da52",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1803,9 +1803,10 @@ it("has a render lit and looked at like a photograph, on a machine sized for it 
 			"fix the weakest thing and render again, and render the final frames only when the small one holds up, on a machine sized for it (machine_start with cpus 8 or more), because a render uses every processor it is given.",
 		])
 			expect(instructions).toContain(rule);
-	// Choosing the machine is the staff agent's judgement: what it costs, and what to do when it waits for room.
+	// Choosing the machine is the staff agent's judgement: what it costs, and what to do when it is refused or waits for
+	// room. A machine left waiting would start by itself when room comes, unused and counted (review r1 of #1764, F1).
 	const sized =
-		"- Work that keeps processors busy for minutes, such as a render, encoding a film or a large build: a machine sized for it (machine_start with cpus 8 and memoryGiB 8), with the program told to use every processor, stopped when the work is done. Computer hours count a machine's size times the time it is awake, so a larger machine for a shorter time costs the same, and the work is done in a quarter of the time; when it is refused as too large or has to wait in line for room, start a smaller one instead of waiting.";
+		"- Work that keeps processors busy for minutes, such as a render, encoding a film or a large build: a machine sized for it (machine_start with cpus 8 and memoryGiB 8), with the program told to use every processor, stopped when the work is done. Computer hours count a machine's size times the time it is awake, so a larger machine for a shorter time costs the same, and the work is done in a quarter of the time; when it is refused as too large, start a smaller one; when it has to wait in line for room, delete it with machine_delete (it has not run, so nothing is lost) and start a smaller one instead of waiting.";
 	expect(staff).toContain(sized);
 	expect(worker).not.toContain("Work that keeps processors busy for minutes");
 	// It follows the page's own look step, which stays as it was.
