@@ -1,12 +1,31 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { forwardMemberCompanyGateway, type MemberCompanyGatewayOptions } from "./member-company-gateway.ts";
+import {
+	forwardMemberCompanyGateway,
+	type MemberCompanyGatewayOptions,
+	memberTokenShaped,
+} from "./member-company-gateway.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
 const commit = `/v1/member-folder-commits/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
+const issuer = "https://project.supabase.co/auth/v1";
+const NOW = Date.parse("2026-11-13T10:00:00Z");
+/** A token as the project's auth service issues it (its signature is the database's to check, not the bridge's). */
+function jwt(claims: Record<string, unknown> = {}, header: Record<string, unknown> = { alg: "ES256", typ: "JWT" }) {
+	const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+	return `${part(header)}.${part({
+		iss: issuer,
+		aud: "authenticated",
+		role: "authenticated",
+		sub: "22222222-2222-4222-8222-222222222222",
+		exp: NOW / 1000 + 3600,
+		...claims,
+	})}.${Buffer.from("s".repeat(64)).toString("base64url")}`;
+}
+const memberJwt = jwt();
 /** A request as the bridge receives it: a body of known size carries its length, as a browser sends it. */
 function request(path = object, init: RequestInit = {}) {
 	const length =
@@ -29,6 +48,8 @@ function request(path = object, init: RequestInit = {}) {
 function forward(req: Request, options: MemberCompanyGatewayOptions) {
 	return forwardMemberCompanyGateway(req, {
 		memberSignedIn: async (authorization) => authorization === "Bearer member.jwt.token",
+		memberTokenIssuer: issuer,
+		now: () => NOW,
 		...options,
 	});
 }
@@ -622,11 +643,18 @@ describe("public member Company File gateway", () => {
 		let asked = 0;
 		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
 		const move = JSON.stringify({ pass: id, x: 812, y: 443 });
+		const member = { authorization: `Bearer ${memberJwt}` };
 		const done = await forwardMemberCompanyGateway(
-			request(path, { method: "POST", body: move, headers: { "content-type": "application/json", cookie: "a=b" } }),
+			request(path, {
+				method: "POST",
+				body: move,
+				headers: { ...member, "content-type": "application/json", cookie: "a=b" },
+			}),
 			{
 				upstreamUrl,
 				fetchImplementation,
+				memberTokenIssuer: issuer,
+				now: () => NOW,
 				memberSignedIn: async () => {
 					asked++;
 					return true;
@@ -636,12 +664,33 @@ describe("public member Company File gateway", () => {
 		assert.equal(done.status, 200);
 		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-pointer/v1", moved: true });
 		assert.deepEqual(seen, [
-			`POST ${path} authorization=Bearer member.jwt.token content-length=${move.length} content-type=application/json ${move}`,
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${move.length} content-type=application/json origin=https://app.qorpera.com ${move}`,
 		]);
 		// The auth service is never asked for a move: the executor checks the token against the pass.
 		assert.equal(asked, 0);
+		// A live picture's ticket is bought on the same route, and the browser's Origin goes with it: the ticket opens
+		// the stream for that Origin alone (20260930745000). It is an allowed one, or nothing is forwarded at all.
+		const stream = JSON.stringify({ stream: { pass: id, hold: { generation: 3 } } });
+		const ticket = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, "content-type": "application/json" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(ticket.status, 200);
+		assert.equal(
+			seen.at(-1),
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${stream.length} content-type=application/json origin=https://app.qorpera.com ${stream}`,
+		);
+		const elsewhere = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, origin: "https://evil.example" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(elsewhere.status, 403);
+		assert.equal(seen.length, 2);
 		// 256 bytes pass; the preflight is kept 10 minutes and names the route's own method and headers.
-		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256) }), { upstreamUrl, fetchImplementation });
+		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256), headers: member }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
 		assert.equal(largest.status, 200);
 		const preflight = await forward(
 			request(path, {
@@ -668,6 +717,65 @@ describe("public member Company File gateway", () => {
 			{ upstreamUrl, fetchImplementation },
 		);
 		assert.equal(act.headers.get("access-control-max-age"), null);
+	});
+	it("forwards a pointer request only with a member's own unexpired token of this project, read here with no call out (20260930745000)", async () => {
+		let forwarded = 0;
+		let asked = 0;
+		const fetchImplementation: typeof fetch = async () => {
+			forwarded++;
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
+		const body = JSON.stringify({ pass: id, x: 1, y: 2 });
+		const send = (authorization: string, options: Partial<MemberCompanyGatewayOptions> = {}) =>
+			forward(request(path, { method: "POST", body, headers: { authorization, "content-type": "application/json" } }), {
+				upstreamUrl,
+				fetchImplementation,
+				memberSignedIn: async () => {
+					asked++;
+					return true;
+				},
+				...options,
+			});
+		const segments = memberJwt.split(".");
+		for (const [name, token] of [
+			["no token at all, only a string", "member.jwt.token"],
+			["two parts", segments.slice(0, 2).join(".")],
+			["a short signature", `${segments[0]}.${segments[1]}.c2ln`],
+			["a header that is no JSON", `bm9wZQ.${segments[1]}.${segments[2]}`],
+			["no algorithm", jwt({}, { typ: "JWT" })],
+			["the none algorithm", jwt({}, { alg: "none" })],
+			["another type", jwt({}, { alg: "HS256", typ: "JWE" })],
+			["claims that are no JSON", `${segments[0]}.bm9wZQ.${segments[2]}`],
+			["the project's publishable (anon) key", jwt({ role: "anon", sub: undefined })],
+			["a service key", jwt({ role: "service_role", aud: undefined })],
+			["another audience", jwt({ aud: "other" })],
+			["another project", jwt({ iss: "https://other.supabase.co/auth/v1" })],
+			["no member", jwt({ sub: "someone" })],
+			["no expiry", jwt({ exp: undefined })],
+			["run out", jwt({ exp: NOW / 1000 })],
+			["an expiry that is no whole number", jwt({ exp: "2099" })],
+		] as const) {
+			const refused = await send(`Bearer ${token}`);
+			assert.equal(refused.status, 401, name);
+			assert.deepEqual(await refused.json(), { error: "Member sign-in is required" }, name);
+		}
+		// Nothing of it went on, and no auth service was asked.
+		assert.equal(forwarded, 0);
+		assert.equal(asked, 0);
+		// A bridge that does not know its project's issuer serves the route to nobody.
+		const unconfigured = await send(`Bearer ${memberJwt}`, { memberTokenIssuer: undefined });
+		assert.equal(unconfigured.status, 503);
+		assert.equal(forwarded, 0);
+		// The member's own token goes on, with an audience list too; the bridge's clock decides its expiry.
+		assert.equal((await send(`Bearer ${memberJwt}`)).status, 200);
+		assert.equal((await send(`Bearer ${jwt({ aud: ["authenticated", "other"] }, { alg: "HS256" })}`)).status, 200);
+		assert.equal((await send(`Bearer ${memberJwt}`, { now: () => NOW + 3600_000 })).status, 401);
+		assert.equal(forwarded, 2);
+		assert.equal(asked, 0);
+		// The other routes keep their own checks.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, issuer, NOW / 1000), true);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "https://project.supabase.co", NOW / 1000), false);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);

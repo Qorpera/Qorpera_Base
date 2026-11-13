@@ -48,13 +48,18 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 // (409). `{"pass": p, "x": n, "y": n}` moves the pointer on that pass, in the screen's own pixels: 200 {"schema",
 // "moved": true | false} (false: dropped, the desktop busy with an action or moves too fast; never queued), or why not
 // (409; POINTER_PASS_ENDED: begin another). Nothing typed is ever in it, and no move is logged, stored or answered
-// with more than that.
+// with more than that. `{"stream": {"pass": p, "hold": {"generation": g} | {"epoch": e, "seat": s}}}` (20260930745000)
+// buys a ticket for the desktop's live picture on that pass, for the Origin the request came with (the member bridge
+// passes the browser's on; none, or one that is not https, is a bad request): 200 {"schema", "ticket", "seconds"}
+// (single use, opened at the executor's live-picture listener, cloud-member-machine-stream-http.ts), or why not (409).
 
 /** A company's and a machine's ids, lower-case as the database writes them, and `/watching`, `/act` or `/start`. */
 const UUID = UUID_PATTERN.source.slice(1, -1);
 const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act|/start|/pointer)?$`);
-/** A pointer pass's begin or a move: a few numbers and an id. */
+/** A pointer pass's begin, a move, or a live picture's ticket: a few numbers and an id. */
 const POINTER_BODY_BYTES = 256;
+/** A browser's Origin a live picture's ticket is bound to: an https origin (http only on the loopback, for tests). */
+const STREAM_ORIGIN = /^(https:\/\/[a-z0-9.-]{1,200}(:[0-9]{1,5})?|http:\/\/(127\.0\.0\.1|localhost)(:[0-9]{1,5})?)$/;
 /** A member's start: `{}` today. */
 const START_BODY_BYTES = 1024;
 /** A member's action: one action, a text of at most 500 characters in it. */
@@ -109,11 +114,22 @@ export type CloudMemberMachinePointerRequest = {
 } & (
 	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
 	| { readonly pass: string; readonly x: number; readonly y: number }
+	| {
+			/** A ticket for the desktop's live picture on that pass, under that hold (20260930745000), for the browser
+			 * whose Origin asked (the member bridge checked it and passed it on). */
+			readonly stream: {
+				readonly pass: string;
+				readonly hold: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			};
+			readonly origin: string;
+	  }
 );
-/** A pointer pass (its id and what is left of it), or a move's end. */
+/** A pointer pass (its id and what is left of it), a move's end, or a live picture's ticket (single use, for its
+ * seconds). */
 export type CloudMemberMachinePointerAnswer =
 	| { readonly pass: string; readonly milliseconds: number }
-	| CloudMemberMachinePointerMove;
+	| CloudMemberMachinePointerMove
+	| { readonly ticket: string; readonly seconds: number };
 /** One start of the desktop, as the listener read it from the member's request. */
 export interface CloudMemberMachineStartRequest {
 	readonly companyId: string;
@@ -207,6 +223,7 @@ async function readPointer(
 ): Promise<
 	| { begin: { generation: number } | { epoch: number; seat: number } }
 	| { pass: string; x: number; y: number }
+	| { stream: { pass: string; hold: { generation: number } | { epoch: number; seat: number } } }
 	| undefined
 > {
 	if (request.headers["content-type"] !== "application/json") return undefined;
@@ -230,14 +247,27 @@ async function readPointer(
 				return undefined;
 			return { pass: pass.toLowerCase(), x: x as number, y: y as number };
 		}
+		const holdOf = (hold: unknown) => {
+			if (!hold || typeof hold !== "object" || Array.isArray(hold)) return undefined;
+			const form = Object.keys(hold).sort().join();
+			const { generation, epoch, seat } = hold as { generation?: unknown; epoch?: unknown; seat?: unknown };
+			if (form === "generation" && whole(generation)) return { generation };
+			if (form === "epoch,seat" && whole(epoch) && whole(seat)) return { epoch, seat };
+			return undefined;
+		};
+		if (keys === "stream") {
+			// A live picture's ticket (20260930745000): `{"stream": {"pass": p, "hold": {...}}}`.
+			const stream = (body as { stream: unknown }).stream;
+			if (!stream || typeof stream !== "object" || Array.isArray(stream)) return undefined;
+			if (Object.keys(stream).sort().join() !== "hold,pass") return undefined;
+			const { pass, hold } = stream as { pass: unknown; hold: unknown };
+			const held = holdOf(hold);
+			if (typeof pass !== "string" || !UUID_PATTERN.test(pass) || !held) return undefined;
+			return { stream: { pass: pass.toLowerCase(), hold: held } };
+		}
 		if (keys !== "begin") return undefined;
-		const begin = (body as { begin: unknown }).begin;
-		if (!begin || typeof begin !== "object" || Array.isArray(begin)) return undefined;
-		const form = Object.keys(begin).sort().join();
-		const { generation, epoch, seat } = begin as { generation?: unknown; epoch?: unknown; seat?: unknown };
-		if (form === "generation" && whole(generation)) return { begin: { generation } };
-		if (form === "epoch,seat" && whole(epoch) && whole(seat)) return { begin: { epoch, seat } };
-		return undefined;
+		const begin = holdOf((body as { begin: unknown }).begin);
+		return begin ? { begin } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -403,21 +433,29 @@ export class HttpCloudMemberMachineScreenService {
 				// Moves are many and alike: none is logged, a failure of one neither (the window keeps moving or falls back).
 				quiet = true;
 				const asked = await readPointer(request, controller.signal);
-				if (asked === undefined) {
+				// A live picture's ticket is for the browser that asked: its Origin, as the member bridge passed it on.
+				const origin = request.headers.origin;
+				if (
+					asked === undefined ||
+					("stream" in asked && (typeof origin !== "string" || !STREAM_ORIGIN.test(origin)))
+				) {
 					replyJson(reply, 400, { error: "member_pointer_invalid" });
 					return;
 				}
+				const base = { companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string };
 				const done = await this.#options.pointer(
-					{ companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string, ...asked },
+					"stream" in asked ? { ...base, stream: asked.stream, origin: origin as string } : { ...base, ...asked },
 					controller.signal,
 				);
 				controller.signal.throwIfAborted();
 				replyJson(
 					reply,
 					200,
-					"pass" in done
-						? { schema: "qorpera.member-machine-pointer/v1", pass: done.pass, milliseconds: done.milliseconds }
-						: { schema: "qorpera.member-machine-pointer/v1", moved: done.moved },
+					"ticket" in done
+						? { schema: "qorpera.member-machine-pointer/v1", ticket: done.ticket, seconds: done.seconds }
+						: "pass" in done
+							? { schema: "qorpera.member-machine-pointer/v1", pass: done.pass, milliseconds: done.milliseconds }
+							: { schema: "qorpera.member-machine-pointer/v1", moved: done.moved },
 				);
 				return;
 			}

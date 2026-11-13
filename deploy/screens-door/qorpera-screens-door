@@ -1,0 +1,94 @@
+#!/bin/bash
+# The door of members' live pictures on node 1 (20260930745000; deploy/screens-door/README.md): the one place the
+# Cloudflare tunnel's token passes, and the switch of the tunnel's connector (qorpera-screens-tunnel.service).
+#   token   reads the token once (a hidden prompt on a terminal, else one line of stdin; the whole install command
+#           Cloudflare shows may be pasted, the token is taken out of it), seals it with this host's own key into
+#           /etc/credstore.encrypted/qorpera-screens-tunnel (systemd-creds, from memory: never a file in the clear,
+#           never an argument, never printed), and says `written` or why not. A connector that runs takes it at once.
+#   on      enables and starts the connector, and says `on` once it reached Cloudflare (its own readiness), within 30 s;
+#           else it says why not (exit 3) and stays enabled until `off`.
+#   off     stops, disables and masks it: within seconds the hostname answers only Cloudflare's own error, and every
+#           window falls back to its pictures through the member bridge. The kill switch.
+#   status  the connector's state, whether it reached Cloudflare, and whether a token is sealed; never the token.
+# Run as root (its sudoers line names exactly these four). It never traces itself, and keeps the token in one shell
+# variable, emptied as soon as it is sealed.
+set -euo pipefail
+set +x
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+UNIT=qorpera-screens-tunnel.service
+STORE=/etc/credstore.encrypted
+SEALED=$STORE/qorpera-screens-tunnel
+if [[ ${EUID} -ne 0 ]]; then
+	echo "run it as root (sudo -n)" >&2
+	exit 1
+fi
+case "${1:-}:$#" in
+token:1)
+	line=""
+	if [[ -t 0 ]]; then
+		read -r -s -p "Paste the tunnel's install command or its token (nothing shows), then Enter: " line || true
+		echo >&2
+	else
+		IFS= read -r line || true
+	fi
+	token=""
+	# A tunnel token is base64 of JSON (it begins eyJ); bash's own match: no other process ever sees it.
+	if [[ ${line} =~ (eyJ[A-Za-z0-9+/=_-]{40,4096}) ]]; then token=${BASH_REMATCH[1]}; fi
+	line=""
+	# The match keeps a copy: overwrite it with one of nothing.
+	[[ x =~ x ]]
+	if [[ -z ${token} ]]; then
+		echo "that is not a tunnel token; nothing written" >&2
+		exit 2
+	fi
+	install -d -o root -g root -m 0700 "${STORE}"
+	rm -f -- "${SEALED}.new"
+	# printf is bash's own: the token goes down the pipe, never into an argument or a file.
+	if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then
+		token=""
+		rm -f -- "${SEALED}.new"
+		echo "the token could not be sealed; nothing written" >&2
+		exit 1
+	fi
+	token=""
+	chmod 0600 "${SEALED}.new"
+	mv -f -- "${SEALED}.new" "${SEALED}"
+	echo "written"
+	if systemctl is-active --quiet "${UNIT}"; then systemctl restart "${UNIT}"; fi
+	;;
+on:1)
+	if [[ ! -s ${SEALED} ]]; then
+		echo "no token sealed (qorpera-screens-door token first)" >&2
+		exit 2
+	fi
+	systemctl unmask "${UNIT}" >/dev/null 2>&1 || true
+	systemctl enable --now "${UNIT}" >/dev/null
+	# "on" only once the connector reached Cloudflare (its own readiness), not once it was started: a connector that
+	# cannot run or connect says so, and stays enabled until `off`.
+	for _ in $(seq 1 30); do
+		if curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:20242/ready 2>/dev/null; then
+			echo "on"
+			exit 0
+		fi
+		sleep 1
+	done
+	echo "started, but not connected after 30 s: $(systemctl is-active "${UNIT}" 2>/dev/null || true); see status, or off" >&2
+	exit 3
+	;;
+off:1)
+	systemctl disable --now "${UNIT}" >/dev/null 2>&1 || true
+	systemctl mask "${UNIT}" >/dev/null
+	echo "off"
+	;;
+status:1)
+	state=$(systemctl is-active "${UNIT}" 2>/dev/null || true)
+	if curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:20242/ready 2>/dev/null; then ready=ready; else ready=not-ready; fi
+	if [[ -s ${SEALED} ]]; then sealed=sealed; else sealed=none; fi
+	echo "${UNIT} ${state:-unknown}, connector ${ready}, token ${sealed}"
+	;;
+*)
+	echo "usage: qorpera-screens-door token|on|off|status" >&2
+	exit 64
+	;;
+esac

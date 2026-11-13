@@ -31,8 +31,59 @@ const MACHINE_POINTER = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/
 const MAX_POINTER_BYTES = 256;
 /** A pointer move is worth little once a newer one exists: the window gives up on it after this. */
 const POINTER_TIMEOUT_MS = 5_000;
-/** How long a browser keeps a preflight of the pointer route (seconds). */
+/** How long a browser keeps a preflight of the pointer route (seconds). On production the API gateway in front of the
+ * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
+/** The signing algorithms of the project's own access tokens (its legacy secret, or its asymmetric keys). */
+const MEMBER_TOKEN_ALGORITHMS: ReadonlySet<string> = new Set(["HS256", "ES256", "RS256"]);
+const MEMBER_ID = new RegExp(`^${UUID}$`);
+
+/** One part of a token: base64url of a JSON object, or undefined. */
+function tokenPart(segment: string): Record<string, unknown> | undefined {
+	if (!/^[A-Za-z0-9_-]{2,4096}$/.test(segment)) return undefined;
+	try {
+		const binary = atob(
+			segment.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (segment.length % 4)) % 4),
+		);
+		const value: unknown = JSON.parse(
+			new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))),
+		);
+		return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether a bearer is a member's own access token of this project that has not run out (step 2 of the member's
+ * pointer, 20260930745000; v242 release prep), read here alone: three base64url parts, a JSON header naming one of the
+ * project's signing algorithms, and claims of a signed-in member: role and audience `authenticated`, a user id, this
+ * project's issuer, and an expiry still ahead. The project's publishable (anon) key, a service key, another project's
+ * token, an expired one or any other string is no member's. Its signature is not checked here (no key, no call out):
+ * the executor has the database (PostgREST) check it before any SQL runs for a pass's begin, and a move or a live
+ * picture's ticket is matched in its memory against the pass that token began (no SQL, no call). So nobody's request
+ * leaves the bridge, and a forged one that looks right costs the executor one refused call to PostgREST, within its
+ * own bound on begins.
+ */
+export function memberTokenShaped(authorization: string, issuer: string, nowSeconds: number): boolean {
+	const parts = /^Bearer ([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,1024})$/.exec(authorization);
+	if (!parts || authorization.length > 8192) return false;
+	const header = tokenPart(parts[1] as string);
+	const claims = tokenPart(parts[2] as string);
+	if (!header || !claims) return false;
+	if (typeof header.alg !== "string" || !MEMBER_TOKEN_ALGORITHMS.has(header.alg)) return false;
+	if (header.typ !== undefined && header.typ !== "JWT") return false;
+	const audience = claims.aud;
+	return (
+		claims.role === "authenticated" &&
+		(audience === "authenticated" || (Array.isArray(audience) && audience.includes("authenticated"))) &&
+		claims.iss === issuer &&
+		typeof claims.sub === "string" &&
+		MEMBER_ID.test(claims.sub) &&
+		Number.isSafeInteger(claims.exp) &&
+		(claims.exp as number) > nowSeconds
+	);
+}
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -53,6 +104,11 @@ export interface MemberCompanyGatewayOptions {
 	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
 	 * signed out can make the bridge hold a body. */
 	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
+	/** The issuer of the project's member tokens (`<project URL>/auth/v1`), for the routes that read a member's token
+	 * here (memberTokenShaped). Without it those routes are not served. */
+	memberTokenIssuer?: string;
+	/** The clock, in milliseconds (the tests'). */
+	now?: () => number;
 }
 
 interface RoutePolicy {
@@ -65,6 +121,11 @@ interface RoutePolicy {
 	readsSmallBodyFirst?: boolean;
 	/** How long a browser keeps this route's preflight (seconds). */
 	preflightSeconds?: number;
+	/** The browser's Origin goes with it (already one of the allowed origins): the executor binds a live-picture ticket
+	 * to it, so only that Origin can open the stream (20260930745000). */
+	forwardsOrigin?: boolean;
+	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
+	memberToken?: boolean;
 }
 
 function route(path: string): RoutePolicy | undefined {
@@ -117,6 +178,8 @@ function route(path: string): RoutePolicy | undefined {
 			timeoutMs: POINTER_TIMEOUT_MS,
 			readsSmallBodyFirst: true,
 			preflightSeconds: POINTER_PREFLIGHT_SECONDS,
+			forwardsOrigin: true,
+			memberToken: true,
 			unavailable: "The computer is unavailable just now.",
 		};
 	if (MACHINE_START.test(path))
@@ -278,6 +341,19 @@ export async function forwardMemberCompanyGateway(
 		return refuse(400, "Member gateway request could not be read");
 	const size = Number(length ?? "0");
 	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
+	// A route that asks no auth service takes only a member's own token of this project that has not run out: nobody's
+	// request goes no further than here (20260930745000).
+	if (policy.memberToken) {
+		if (!options.memberTokenIssuer) return refuse(503, "Member gateway is not configured");
+		if (
+			!memberTokenShaped(
+				request.headers.get("authorization") ?? "",
+				options.memberTokenIssuer,
+				Math.floor((options.now ?? Date.now)() / 1000),
+			)
+		)
+			return refuse(401, "Member sign-in is required");
+	}
 	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
 		let signedIn: boolean;
 		try {
@@ -304,6 +380,7 @@ export async function forwardMemberCompanyGateway(
 			if (value !== null) forwarded.set(name, value);
 		}
 		if (body) forwarded.set("content-length", String(body.byteLength));
+		if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
 		const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
 			method: request.method,
 			headers: forwarded,

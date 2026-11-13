@@ -1,0 +1,45 @@
+[Unit]
+Description=Qorpera live pictures: node 1's own Cloudflare tunnel to the executor's live-picture listener
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/screens-door/README.md
+Wants=network-online.target
+After=network-online.target
+# No token sealed on this host (qorpera-screens-door token): it does not start.
+ConditionPathExists=/etc/credstore.encrypted/qorpera-screens-tunnel
+
+[Service]
+Type=simple
+# The tunnel's token, sealed with this host's own key (or its TPM): decrypted by systemd into this unit's own
+# credentials directory, never on a command line, in the environment or on disk in the clear.
+LoadCredentialEncrypted=token:/etc/credstore.encrypted/qorpera-screens-tunnel
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20242 run --token-file ${CREDENTIALS_DIRECTORY}/token
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# It reaches the executor's live-picture listener on the loopback and Cloudflare's tunnel edge on 7844 (region1 and
+# region2 of v2.argotunnel.com), nothing else.
+IPAddressDeny=any
+IPAddressAllow=localhost 198.41.192.0/24 198.41.200.0/24 2606:4700:a0::/44 2606:4700:a8::/44
+UMask=0077
+LogLevelMax=info
+
+[Install]
+WantedBy=multi-user.target

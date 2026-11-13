@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+// Node 1's door of members' live pictures (20260930745000; README.md). The real proof (a fake token sealed, found
+// nowhere else) runs on a throwaway machine; these hold the files to what that proof proved.
+
+const here = dirname(fileURLToPath(import.meta.url));
+const read = (name) => readFileSync(join(here, name), "utf8");
+const door = read("qorpera-screens-door");
+const unit = read("qorpera-screens-tunnel.service");
+const sudoers = read("qorpera-screens-door.sudoers");
+const installer = read("install-screens-door.sh");
+const SEALED = "/etc/credstore.encrypted/qorpera-screens-tunnel";
+const sha256 = (name) => createHash("sha256").update(readFileSync(join(here, name))).digest("hex");
+
+test("the installer pins every file it installs, and the connector to the release asset GitHub states", () => {
+	assert.match(installer, new RegExp(`EXPECTED_DOOR_SHA256="${sha256("qorpera-screens-door")}"`));
+	assert.match(installer, new RegExp(`EXPECTED_UNIT_SHA256="${sha256("qorpera-screens-tunnel.service")}"`));
+	assert.match(installer, new RegExp(`EXPECTED_SUDOERS_SHA256="${sha256("qorpera-screens-door.sudoers")}"`));
+	assert.match(installer, /CLOUDFLARED_VERSION="2026\.10\.5"/);
+	assert.match(installer, /EXPECTED_CLOUDFLARED_SHA256="e1bc0cf084fd9e590554fe769a86b1db46701c3f847a43d902f7b974a4e16298"/);
+	assert.match(installer, /if \[\[ ! \$\{expected\} =~ \^\[0-9a-f\]\{64\}\$ \]\]; then/);
+	assert.match(installer, /verify_sha256 "\$\{cloudflared\}" "\$\{EXPECTED_CLOUDFLARED_SHA256\}"/);
+	// Installed, never enabled or started; no token asked for.
+	assert.doesNotMatch(installer, /systemctl (enable|start|restart)|qorpera-screens-door token\s*$|systemd-creds/m);
+	assert.match(installer, /visudo -cqf/);
+	assert.match(installer, /UNIT_PATH=\/usr\/local\/lib\/systemd\/system\/qorpera-screens-tunnel\.service/);
+	for (const script of ["qorpera-screens-door", "install-screens-door.sh"])
+		execFileSync("bash", ["-n", join(here, script)]);
+});
+
+test("the unit runs the connector with the sealed token as its own credential, off until the door turns it on", () => {
+	assert.match(unit, new RegExp(`^ConditionPathExists=${SEALED}$`, "m"));
+	assert.match(unit, new RegExp(`^LoadCredentialEncrypted=token:${SEALED}$`, "m"));
+	assert.match(
+		unit,
+		/^ExecStart=\/usr\/local\/bin\/cloudflared tunnel --no-autoupdate --metrics 127\.0\.0\.1:20242 run --token-file \$\{CREDENTIALS_DIRECTORY\}\/token$/m,
+	);
+	// The token is never an argument or in the environment.
+	assert.doesNotMatch(unit, /--token |TUNNEL_TOKEN|^Environment/m);
+	for (const line of [
+		"DynamicUser=yes",
+		"NoNewPrivileges=yes",
+		"CapabilityBoundingSet=",
+		"ProtectSystem=strict",
+		"ProtectHome=yes",
+		"PrivateDevices=yes",
+		"IPAddressDeny=any",
+		"UMask=0077",
+		"WantedBy=multi-user.target",
+	])
+		assert.match(unit, new RegExp(`^${line.replace(/[.$]/g, "\\$&")}$`, "m"), line);
+	assert.match(unit, /^IPAddressAllow=localhost 198\.41\.192\.0\/24 198\.41\.200\.0\/24 /m);
+});
+
+test("the door: root only, four verbs, the token in one variable that only bash and the sealing pipe see", () => {
+	assert.match(door, /^set -euo pipefail\nset \+x\numask 077\nexport PATH=\/usr\/sbin:\/usr\/bin:\/sbin:\/bin$/m);
+	assert.match(door, /if \[\[ \$\{EUID\} -ne 0 \]\]; then/);
+	assert.match(door, new RegExp(`^SEALED=\\$STORE/qorpera-screens-tunnel$`, "m"));
+	assert.match(door, /^STORE=\/etc\/credstore\.encrypted$/m);
+	for (const verb of ["token", "on", "off", "status"]) assert.match(door, new RegExp(`^${verb}:1\\)$`, "m"));
+	assert.match(door, /^\*\)\n\techo "usage: qorpera-screens-door token\|on\|off\|status" >&2\n\texit 64$/m);
+	// Nothing that traces, evaluates, or writes a here-string to a temporary file.
+	assert.doesNotMatch(door, /set -x|set -o xtrace|\beval\b|<<<|\blogger\b|systemd-cat|decrypt|--pretty/);
+	// Every line that names the token or the line it came in, exactly these.
+	const allowed = new Set([
+		'line=""',
+		'read -r -s -p "Paste the tunnel\'s install command or its token (nothing shows), then Enter: " line || true',
+		"IFS= read -r line || true",
+		'token=""',
+		"if [[ ${line} =~ (eyJ[A-Za-z0-9+/=_-]{40,4096}) ]]; then token=${BASH_REMATCH[1]}; fi",
+		"if [[ -z ${token} ]]; then",
+		'if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then',
+	]);
+	const naming = door
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => !line.startsWith("#") && /\$\{?(token|line)\b|\b(token|line)=|read .*\bline\b/.test(line));
+	for (const line of naming) assert.ok(allowed.has(line), line);
+	assert.ok(naming.includes('if ! printf %s "${token}" | systemd-creds encrypt --name=token - "${SEALED}.new"; then'));
+	// Sealed beside, then moved over: never half written; a failure leaves nothing.
+	assert.match(door, /chmod 0600 "\$\{SEALED\}\.new"\n\tmv -f -- "\$\{SEALED\}\.new" "\$\{SEALED\}"/);
+	// The kill switch: stopped, disabled and masked.
+	assert.match(door, /^off:1\)\n\tsystemctl disable --now "\$\{UNIT\}" >\/dev\/null 2>&1 \|\| true\n\tsystemctl mask "\$\{UNIT\}" >\/dev\/null$/m);
+	assert.match(door, /^on:1\)\n\tif \[\[ ! -s \$\{SEALED\} \]\]; then/m);
+});
+
+test("the door takes the token out of what Cloudflare shows, and nothing else", () => {
+	const match = door.split("\n").find((line) => line.includes("=~ (eyJ"));
+	assert.ok(match);
+	const fake = `eyJ${"a".repeat(30)}${"Q".repeat(30)}x9_-/+==`;
+	const run = (input) =>
+		spawnSync(
+			"bash",
+			[
+				"-c",
+				`set -euo pipefail\nIFS= read -r line || true\ntoken=""\n${match.trim()}\nprintf %s "\${#token}:\${token:0:3}"`,
+			],
+			{ input: `${input}\n`, encoding: "utf8" },
+		).stdout;
+	assert.equal(run(`sudo cloudflared service install ${fake}`), `${fake.length}:eyJ`);
+	assert.equal(run(`cloudflared tunnel run --token ${fake}`), `${fake.length}:eyJ`);
+	assert.equal(run(fake), `${fake.length}:eyJ`);
+	assert.equal(run("  "), "0:");
+	assert.equal(run("eyJshort"), "0:");
+	assert.equal(run("sudo cloudflared service install"), "0:");
+});
+
+test("the operator's sudoers line names the four verbs, nothing else", () => {
+	const lines = sudoers.split("\n").filter((line) => line && !line.startsWith("#"));
+	assert.deepEqual(lines, [
+		"OPERATOR ALL=(root) NOPASSWD: /usr/local/sbin/qorpera-screens-door token, /usr/local/sbin/qorpera-screens-door on, /usr/local/sbin/qorpera-screens-door off, /usr/local/sbin/qorpera-screens-door status",
+	]);
+	assert.match(installer, /sed "s\/\^OPERATOR \/\$\{operator\} \/"/);
+});

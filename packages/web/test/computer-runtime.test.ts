@@ -63,6 +63,39 @@ type ActAnswer =
 	| { hold: Promise<void>; exitCode: number }
 	| { hold: Promise<void>; code: string };
 
+/** The browser's WebSocket, as the live picture uses it (20260930745000): what it was opened on, what the page sent on
+ * it (never anything), how the page closed it, and the machine's node's side (a message, a close). */
+class FakeSocket extends EventTarget {
+	readonly url: string;
+	readonly protocol: string;
+	binaryType = "blob";
+	readyState = 0;
+	readonly sent: unknown[] = [];
+	closedWith: number | undefined;
+	constructor(url: string, protocol: string) {
+		super();
+		this.url = url;
+		this.protocol = protocol;
+		FakeSocket.made?.push(this);
+	}
+	static made: FakeSocket[] | undefined;
+	send(data: unknown) {
+		this.sent.push(data);
+	}
+	close(code?: number) {
+		this.closedWith = code;
+		this.readyState = 3;
+	}
+	message(data: ArrayBuffer) {
+		this.readyState = 1;
+		this.dispatchEvent(Object.assign(new Event("message"), { data }));
+	}
+	closeWith(code: number, reason = "") {
+		this.readyState = 3;
+		this.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
+	}
+}
+
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
@@ -85,11 +118,22 @@ function setup(
 		canWake?: boolean;
 		canTakeOver?: boolean;
 		role?: typeof profileA.role;
+		/** The build names a machine-stream address (20260930745000): the large view streams the desktop. */
+		stream?: boolean;
 	} = {},
 ) {
 	const f = fixture(),
 		stop = new AbortController();
-	Object.assign(f.cloud.config, { objectGatewayUrl: gateway, memberCompanyGatewayUrl: bridge });
+	Object.assign(f.cloud.config, {
+		objectGatewayUrl: gateway,
+		memberCompanyGatewayUrl: bridge,
+		...(options.stream ? { machineStreamUrl: "wss://screens.example.invalid" } : {}),
+	});
+	const sockets: FakeSocket[] = [];
+	if (options.stream) {
+		FakeSocket.made = sockets;
+		vi.stubGlobal("WebSocket", FakeSocket);
+	}
 	const state = {
 		machines: options.machines ?? [machine(1)],
 		canWake: options.canWake ?? true,
@@ -161,6 +205,9 @@ function setup(
 		 * requests answer, in turn (a refusal's code; then a pass, or moved). */
 		pointerRoute: "there" as "there" | "missing" | "failing" | "movesFail",
 		pointerAnswers: [] as string[],
+		/** What a live picture's ticket answers, in turn (a refusal's code, or `old`: an executor before 20260930745000,
+		 * 400); then a ticket. */
+		ticketAnswers: [] as string[],
 		/** The next pointer move waits for this before it is answered (a move on its way). */
 		pointerGate: undefined as Promise<void> | undefined,
 		/** As the database: a member's looks at a machine at least 400 ms apart (20260930712000), else SCREEN_TOO_SOON;
@@ -222,7 +269,20 @@ function setup(
 			expect(headers.get("content-type")).toBe("application/json");
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			pointers.push({ url: url.slice(bridge.length), body });
-			order.push("begin" in body ? "begin" : `move ${String(body.x)} ${String(body.y)}`);
+			order.push(
+				"begin" in body ? "begin" : "stream" in body ? "ticket" : `move ${String(body.x)} ${String(body.y)}`,
+			);
+			if ("stream" in body) {
+				// A live picture's ticket on the member's pass (20260930745000).
+				const code = state.ticketAnswers.shift();
+				if (code === "old") return Response.json({ error: "member_pointer_invalid" }, { status: 400 });
+				if (code) return Response.json({ code }, { status: 409 });
+				return Response.json({
+					schema: "qorpera.member-machine-pointer/v1",
+					ticket: `${"T".repeat(40)}${String(pointers.length).padStart(3, "0")}`,
+					seconds: 30,
+				});
+			}
 			if (state.pointerRoute === "missing")
 				return Response.json({ error: "Member route is not available" }, { status: 404 });
 			if (state.pointerRoute === "failing" || (state.pointerRoute === "movesFail" && !("begin" in body)))
@@ -517,6 +577,7 @@ function setup(
 		rpcs,
 		pointers,
 		order,
+		sockets,
 		hints,
 		decode,
 		hint: (resource: RealtimeResource) => hint?.(resource),
@@ -4455,6 +4516,209 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			{ begin: { epoch: 0, seat: 1 } },
 			{ pass: bodies(s)[asked + 1]?.pass, x: 260, y: 260 },
 		]);
+	});
+});
+
+describe("the desktop's live picture in the large view (20260930745000)", () => {
+	const entered = (p: ComputerPanel) =>
+		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
+	/** A window showing machine 1's picture (1600 x 1000 in an 800 x 500 box), in the large view, shared. */
+	async function inside(s: Setup) {
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		canvas(p).width = 1600;
+		canvas(p).height = 1000;
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(p)).toBe(true);
+		return { s, p };
+	}
+	const u16 = (value: number) => [value >> 8, value & 0xff];
+	const size = () => new Uint8Array([1, ...u16(1600), ...u16(1000)]).buffer;
+	const whole = () =>
+		new Uint8Array([
+			2,
+			...u16(1),
+			...u16(0),
+			...u16(0),
+			...u16(1600),
+			...u16(1000),
+			0,
+			0,
+			0,
+			8,
+			137,
+			80,
+			78,
+			71,
+			13,
+			10,
+			26,
+			10,
+		]).buffer;
+	const bodies = (s: Setup) => s.pointers.map((one) => one.body);
+	const tickets = (s: Setup) => bodies(s).filter((body) => "stream" in body);
+	/** The stream shows the screen: its size and the whole screen came. */
+	async function live(s: Setup, socket = s.sockets.at(-1)!) {
+		socket.message(size());
+		socket.message(whole());
+		await flush();
+	}
+
+	it("streams the shared desktop on the sharing's own pass once the large view shows its picture: the looks pause, the pass is renewed, nothing is ever sent on it", async () => {
+		const s = setup({ stream: true });
+		s.state.seats.set(machine(1).machineId, 3);
+		const { p } = await inside(s);
+		await flush();
+		const pass = id(901);
+		expect(bodies(s)).toEqual([{ begin: { generation: 3 } }, { stream: { pass, hold: { generation: 3 } } }]);
+		expect(s.sockets).toHaveLength(1);
+		expect(s.sockets[0]!.url).toMatch(/^wss:\/\/screens\.example\.invalid\/v1\/member-machine-streams\/T{40}002$/);
+		expect(s.sockets[0]!.protocol).toBe("qorpera.machine-stream.v1");
+		await live(s);
+		expect(mark(p)).toBe("Live");
+		// No looks while the stream shows the screen; the list is read as before.
+		const looked = s.looks.length;
+		await advance(5000);
+		expect(s.looks).toHaveLength(looked);
+		// The pass is begun again before it runs out (10 s), on the same hold.
+		await advance(3000);
+		expect(bodies(s).filter((body) => "begin" in body)).toEqual([
+			{ begin: { generation: 3 } },
+			{ begin: { generation: 3 } },
+		]);
+		expect(s.sockets).toHaveLength(1);
+		// The member's moves and clicks go their own ways (the pointer route, the action route), never on the stream.
+		canvas(p).dispatchEvent(pointer("pointermove", 100, 100));
+		press(canvas(p), 200, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 400, y: 200 }]);
+		expect(bodies(s).some((body) => "x" in body)).toBe(true);
+		expect(s.sockets[0]!.sent).toEqual([]);
+		expect(s.sockets[0]!.closedWith).toBeUndefined();
+	});
+
+	it("ends with the sharing at once (Back, Type privately, a hidden tab, the close), and the looks come back with a whole picture", async () => {
+		// Back to the preview.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			const looked = s.looks.length;
+			await advance(LOOK_EVERY_MS);
+			expect(s.looks.length).toBeGreaterThan(looked);
+			expect(s.looks[looked]!.etag).toBeNull();
+			await advance(5000);
+			expect(s.sockets).toHaveLength(1);
+			p.dispose();
+		}
+		// Type privately: the sharing ends, and the private hold streams on a pass of its own epoch and seat.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			pressControl(p);
+			await flush();
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			await advance(2000);
+			expect(tickets(s).at(-1)).toMatchObject({ stream: { hold: { epoch: 0, seat: 1 } } });
+			expect(s.sockets).toHaveLength(2);
+			p.dispose();
+			expect(s.sockets[1]!.closedWith).toBe(1000);
+		}
+		// A hidden tab, within a second.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+			await advance(1000);
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			p.dispose();
+		}
+	});
+
+	it("falls back to its looks when a stream fails, tries again after a wait, and is off for 10 minutes after three failures", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		// The door is off: the socket closes before anything came.
+		s.sockets[0]!.closeWith(1006);
+		await flush();
+		const looked = s.looks.length;
+		await advance(1000);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		expect(s.sockets).toHaveLength(1);
+		await advance(1000);
+		expect(s.sockets).toHaveLength(2);
+		s.sockets[1]!.closeWith(1006);
+		await advance(4000);
+		expect(s.sockets).toHaveLength(3);
+		s.sockets[2]!.closeWith(1006);
+		await advance(60_000);
+		expect(s.sockets).toHaveLength(3);
+		// The looks went on all along.
+		expect(s.looks.length).toBeGreaterThan(looked + 10);
+	});
+
+	it("leaves a refusal of its release cycle to the looks: a private hold since the sharing's generation ends the sharing until a list read", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		await live(s);
+		const listed = lists(s);
+		s.sockets[0]!.closeWith(4003, "DESKTOP_HELD_SINCE");
+		await flush();
+		// The sharing ended: the picture takes no input until a list read names the generation that stands.
+		press(canvas(p), 100, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts).toEqual([]);
+		await advance(1000);
+		expect(lists(s)).toBeGreaterThan(listed);
+		expect(s.looks.length).toBeGreaterThan(0);
+		// No stream for a moment after a refusal.
+		expect(s.sockets).toHaveLength(1);
+	});
+
+	it("keeps the looks quietly when the way has no stream route (an executor before it), or a ticket is refused", async () => {
+		const s = setup({ stream: true });
+		s.state.ticketAnswers.push("old");
+		const { p } = await inside(s);
+		await advance(10_000);
+		expect(tickets(s)).toHaveLength(1);
+		expect(s.sockets).toEqual([]);
+		p.dispose();
+		// A ticket refused for its pass: another pass, after a wait.
+		const refused = setup({ stream: true });
+		refused.state.ticketAnswers.push("POINTER_PASS_ENDED");
+		await inside(refused);
+		await flush();
+		expect(tickets(refused)).toHaveLength(1);
+		expect(refused.sockets).toEqual([]);
+		await advance(2500);
+		expect(bodies(refused).filter((body) => "begin" in body)).toHaveLength(2);
+		expect(tickets(refused)).toHaveLength(2);
+		expect(refused.sockets).toHaveLength(1);
+	});
+
+	it("draws nothing it cannot place, and then ends: an area that does not fit the screen", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		s.decode.mockResolvedValue({ width: 10, height: 10, close() {} } as unknown as ImageBitmap);
+		s.sockets[0]!.message(size());
+		s.sockets[0]!.message(whole());
+		await flush();
+		expect(s.sockets[0]!.closedWith).toBe(1000);
+		expect(screen(p)?.hidden).toBe(false);
 	});
 });
 

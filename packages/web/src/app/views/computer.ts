@@ -12,6 +12,7 @@ import type {
 	MachineScreenLook,
 	MachineStartAnswer,
 } from "../../cloud/machine-screens.ts";
+import type { MachineStreamMessage } from "../../cloud/machine-stream.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
@@ -73,6 +74,18 @@ const POINTER_PASSING: ReadonlySet<string> = new Set([
 	"MACHINE_BOOT_CHANGED",
 	"MACHINE_NOT_RUNNING",
 ]);
+/** The desktop's live picture in the large view (20260930745000): its pointer pass is begun again when less than
+ * STREAM_RENEW_MS is left of it (before the pointer's own POINTER_RENEW_MS: one renewal serves both), and whether it may
+ * go on is checked every STREAM_CHECK_MS; at most one stream opens a second. A stream that failed is tried again after
+ * STREAM_RETRY_MS times the failures in a row; STREAM_FAILURES of them turn it off for the page for STREAM_OFF_MS (the
+ * looks go on); a refusal or the desktop's end waits STREAM_PAUSE_MS, and the looks say why meanwhile. */
+const STREAM_RENEW_MS = 4000;
+const STREAM_CHECK_MS = 1000;
+const STREAM_OPEN_EVERY_MS = 1000;
+const STREAM_RETRY_MS = 2000;
+const STREAM_FAILURES = 3;
+const STREAM_OFF_MS = 10 * 60_000;
+const STREAM_PAUSE_MS = 3000;
 /** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
  * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
  * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
@@ -274,6 +287,14 @@ function pointerLane(): PointerLane {
 	};
 }
 
+/** The desktop's live picture (20260930745000), for one hold or one sharing alone: it ends with it (its stop), and
+ * `live` while its messages show the screen (the window's looks pause then). */
+interface PageStream {
+	readonly sender: PageHold | SharedInput;
+	readonly stop: AbortController;
+	live: boolean;
+}
+
 /** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
 interface QueuedAction {
 	readonly action: MachineDesktopAction;
@@ -407,6 +428,11 @@ export class ComputerPanel {
 	 * and whether the page has no pointer route (a bridge or an executor from before it: today's way, quietly). */
 	#movedAt = Number.NEGATIVE_INFINITY;
 	#pointerOff = false;
+	/** The desktop's live picture in the large view (20260930745000), while there is one; no new one before
+	 * `#streamAfter`, and none on this page once the way has no stream route (`#streamOff`). */
+	#stream: PageStream | undefined;
+	#streamAfter = Number.NEGATIVE_INFINITY;
+	#streamOff = false;
 	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
 	 * until one begun after it has answered, with the generation that stands now. */
 	#heldSince: number | undefined;
@@ -854,6 +880,7 @@ export class ComputerPanel {
 		// The member closes it: shared input goes, unsaid (review r5 F2), before anything redraws.
 		this.#endShared();
 		this.#released();
+		if (this.#stream) this.#endStream(this.#stream);
 		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
 		this.#stop.abort();
 		this.#poke();
@@ -973,6 +1000,12 @@ export class ComputerPanel {
 				continue;
 			}
 			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
+			// The live picture shows the screen (20260930745000): no looks while it does; the list is read as before, and the
+			// looks come back the moment it ends.
+			if (this.#streamShows(machine.machineId)) {
+				await this.#wait(this.#listedAt + MACHINES_EVERY_MS - Date.now(), signal);
+				continue;
+			}
 			// While the member's pointer moves, the window does not back off, so a hover shows within a look (20260930744000).
 			const delay =
 				Date.now() - this.#movedAt < POINTER_MOVING_MS ? Math.min(this.#delay, LOOK_EVERY_MS) : this.#delay;
@@ -1003,6 +1036,8 @@ export class ComputerPanel {
 			// The answer is the machine's the window shows now, or nothing (a switch made while the look was on its way:
 			// release review r1 of #1667, the requests' audit).
 			if (machine.machineId !== this.#machineId || this.#pick()?.machineId !== machine.machineId) continue;
+			// The live picture began while the look was on its way: its picture is newer than the look's.
+			if (this.#streamShows(machine.machineId)) continue;
 			if (look.kind === "picture") {
 				if (await this.#view?.show(look.png)) {
 					// The first picture settles in over the scene it was waited on.
@@ -1229,6 +1264,8 @@ export class ComputerPanel {
 		hold.stop.abort();
 		hold.queue.length = 0;
 		this.#hold = undefined;
+		// Its live picture ends with it, at once.
+		if (this.#stream?.sender === hold) this.#endStream(this.#stream);
 		this.#enterOnHold = false;
 		clearTimeout(this.#keepTimer);
 		this.#keepTimer = undefined;
@@ -1386,6 +1423,8 @@ export class ComputerPanel {
 		if (shared.queue.length > 0) this.#toldLost(shared);
 		shared.stop.abort();
 		shared.queue.length = 0;
+		// Its live picture ends with it, at once.
+		if (this.#stream?.sender === shared) this.#endStream(this.#stream);
 	}
 
 	/** THE predicate of shared input (20260930734000, review r3 of #1701), in this one place: the shared sender exists,
@@ -1798,6 +1837,243 @@ export class ComputerPanel {
 		this.#quicken();
 	}
 
+	/**
+	 * Whether the desktop's live picture may go on for this hold or sharing (20260930745000): the build names a stream
+	 * address and the way has the route; the window is open, in a thread, in a visible tab, watched (no pause, a touch in
+	 * the last 30 minutes), in the large view with this computer's picture up; no run of failures or refusal waits; and the
+	 * hold or sharing is the window's own and its pointer goes (as for a move: #pointerCurrent). Checked at every change the
+	 * window draws and every STREAM_CHECK_MS: false ends the stream.
+	 */
+	#streamWanted(sender: PageHold | SharedInput): boolean {
+		return (
+			this.#computer?.screens.stream !== undefined &&
+			!this.#stop.signal.aborted &&
+			this.attached &&
+			document.visibilityState !== "hidden" &&
+			!this.#paused &&
+			Date.now() - this.#lastTouch < PAUSE_AFTER_MS &&
+			this.#view?.entered === true &&
+			this.#picturing() &&
+			!this.#pointerOff &&
+			!this.#streamOff &&
+			Date.now() >= this.#streamAfter &&
+			!sender.stop.signal.aborted &&
+			!sender.pointer.done &&
+			this.#pointerCurrent(sender)
+		);
+	}
+
+	/** Whether the live picture shows this machine's screen now: the looks pause. */
+	#streamShows(machineId: string): boolean {
+		return this.#stream?.live === true && this.#stream.sender.machineId === machineId;
+	}
+
+	/** The live picture is of `sender` (the input the picture takes in the large view), or of nothing: another one's ends,
+	 * and one begins when it may. */
+	#syncStream(sender: PageHold | SharedInput | undefined): void {
+		const stream = this.#stream;
+		if (stream && (stream.sender !== sender || !this.#streamWanted(stream.sender))) this.#endStream(stream);
+		if (!sender || this.#stream || !this.#streamWanted(sender)) return;
+		const next: PageStream = { sender, stop: new AbortController(), live: false };
+		this.#stream = next;
+		void this.#keepStream(next);
+	}
+
+	/** The live picture ends: its socket, its renewals and its checks with it; the looks come back at once, with a whole
+	 * picture (the one up is the stream's, newer than any etag the window has). */
+	#endStream(stream: PageStream): void {
+		stream.stop.abort();
+		if (this.#stream !== stream) return;
+		this.#stream = undefined;
+		this.#view?.streamEnded();
+		this.#streamLive(stream, false);
+	}
+
+	#streamLive(stream: PageStream, live: boolean): void {
+		if (stream.live === live) return;
+		stream.live = live;
+		if (live) return;
+		this.#etag = null;
+		this.#quicken();
+	}
+
+	/** The hold a pass of this hold or sharing is under, as the executor's ticket asks it; null for a database before
+	 * lease generations (no pass then). */
+	#streamHold(sender: PageHold | SharedInput): { generation: number } | { epoch: number; seat: number } | null {
+		if ("seat" in sender) return { epoch: sender.epoch, seat: sender.seat };
+		return sender.generation === null ? null : { generation: sender.generation };
+	}
+
+	/** Waits `ms`, or until `signal` aborts; leaves no timer. */
+	#streamPause(ms: number, signal: AbortSignal): Promise<void> {
+		return new Promise<void>((resolve) => {
+			if (signal.aborted || ms <= 0) {
+				resolve();
+				return;
+			}
+			const done = () => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			signal.addEventListener("abort", done, { once: true });
+		});
+	}
+
+	/**
+	 * The pointer pass of this hold or sharing, begun again when less than STREAM_RENEW_MS is left of it, as the pointer's
+	 * own begin is (one request of the lane at a time, at most one begin a second, the same refusals): true while a pass
+	 * lasts. A begin of the pointer's own on its way is waited for.
+	 */
+	async #renewPass(sender: PageHold | SharedInput, signal: AbortSignal): Promise<boolean> {
+		const lane = sender.pointer;
+		const computer = this.#computer;
+		for (let waited = 0; lane.inFlight && waited < POINTER_RENEW_MS * 2 && !signal.aborted; waited += 50)
+			await this.#streamPause(50, signal);
+		const lasts = () => lane.pass !== null && lane.pass.until > Date.now();
+		if (!computer || signal.aborted || lane.inFlight || lane.done || this.#pointerOff) return false;
+		if (lane.pass && lane.pass.until - Date.now() >= STREAM_RENEW_MS) return true;
+		if (Date.now() < lane.paused || Date.now() < lane.begunAt + POINTER_BEGIN_EVERY_MS) return lasts();
+		const begin = this.#streamHold(sender);
+		if (!begin) {
+			lane.done = true;
+			return false;
+		}
+		lane.inFlight = true;
+		try {
+			const began = Date.now();
+			lane.begunAt = began;
+			const answer = await computer.screens.pointer(sender.machineId, { begin }, sender.stop.signal);
+			if (answer.kind === "pass") {
+				lane.pass = {
+					id: answer.pass,
+					until: began + answer.milliseconds,
+					endsBy: Date.now() + answer.milliseconds + POINTER_PASS_MARGIN_MS,
+				};
+				return true;
+			}
+			this.#pointerRefused(sender, answer);
+			return false;
+		} catch {
+			// No answer: the pass that lasts still serves; the next check asks again.
+			return lasts();
+		} finally {
+			lane.inFlight = false;
+			if (lane.pending && !lane.done) void this.#pumpPointer(sender);
+		}
+	}
+
+	/**
+	 * Keeps the desktop's live picture of this hold or sharing (20260930745000) while it may go on: a pass, a ticket on
+	 * it, one stream, its messages drawn; the pass renewed and the stream's right checked every STREAM_CHECK_MS. A stream
+	 * that ends is followed by another only for a renewal (the pass ran out, or it was long), or after a failure with a
+	 * wait (STREAM_RETRY_MS times the failures; STREAM_FAILURES in a row: off for STREAM_OFF_MS). A refusal or the
+	 * desktop's end leaves it to the looks, which say why. Everything it began ends with it: its timer, its socket (the
+	 * stream's signal), and its turn as the window's stream.
+	 */
+	async #keepStream(stream: PageStream): Promise<void> {
+		const { sender } = stream;
+		const signal = stream.stop.signal;
+		const open = this.#computer?.screens.stream;
+		let tick: ReturnType<typeof setTimeout> | undefined;
+		const check = () => {
+			if (signal.aborted) return;
+			if (!this.#streamWanted(sender)) {
+				this.#endStream(stream);
+				return;
+			}
+			void this.#renewPass(sender, signal);
+			tick = setTimeout(check, STREAM_CHECK_MS);
+		};
+		tick = setTimeout(check, STREAM_CHECK_MS);
+		signal.addEventListener("abort", () => clearTimeout(tick), { once: true });
+		let failures = 0;
+		let openedAt = Number.NEGATIVE_INFINITY;
+		try {
+			while (open && !signal.aborted) {
+				if (!(await this.#renewPass(sender, signal)) || !sender.pointer.pass) {
+					if (signal.aborted || sender.pointer.done || this.#pointerOff) return;
+					if (++failures >= STREAM_FAILURES) {
+						this.#streamAfter = Date.now() + STREAM_OFF_MS;
+						return;
+					}
+					await this.#streamPause(STREAM_RETRY_MS * failures, signal);
+					continue;
+				}
+				const hold = this.#streamHold(sender);
+				if (!hold) return;
+				await this.#streamPause(openedAt + STREAM_OPEN_EVERY_MS - Date.now(), signal);
+				// The pass as it is after the wait (a renewal may have replaced it, a refusal ended it).
+				const pass = sender.pointer.pass;
+				if (signal.aborted || !pass) continue;
+				openedAt = Date.now();
+				const end = await open(
+					sender.machineId,
+					{ pass: pass.id, hold },
+					(message) => this.#streamMessage(stream, message),
+					signal,
+				).catch(() => ({ kind: "failed", delivered: false }) as const);
+				if (signal.aborted) return;
+				// Whatever comes next, the looks show the screen until another stream does.
+				this.#view?.streamEnded();
+				this.#streamLive(stream, false);
+				if (end.kind === "closed") return;
+				if (end.kind === "unavailable") {
+					// No stream route on the way (an executor before it): the page keeps its looks, quietly.
+					this.#streamOff = true;
+					return;
+				}
+				if (end.kind === "refused" && end.code === "POINTER_PASS_ENDED" && !end.delivered) {
+					// The ticket's pass is not held where it was asked (it ran out, or the executor restarted): another pass, as
+					// after a failure.
+					if (sender.pointer.pass?.id === pass.id) sender.pointer.pass = null;
+				} else if (end.kind === "refused" || end.kind === "desktop") {
+					this.#streamRefused(sender, end.code);
+					return;
+				}
+				if (end.kind === "renew" && end.delivered) {
+					failures = 0;
+					continue;
+				}
+				failures = end.delivered ? 1 : failures + 1;
+				if (failures >= STREAM_FAILURES) {
+					this.#streamAfter = Date.now() + STREAM_OFF_MS;
+					return;
+				}
+				await this.#streamPause(STREAM_RETRY_MS * failures, signal);
+			}
+		} finally {
+			clearTimeout(tick);
+			this.#endStream(stream);
+		}
+	}
+
+	/** One message of the live picture, drawn in order while it is the window's stream; the first pauses the looks. One
+	 * that cannot be drawn ends the stream (the looks go on). */
+	#streamMessage(stream: PageStream, message: MachineStreamMessage): void {
+		const view = this.#view;
+		if (!view || this.#stream !== stream || stream.stop.signal.aborted) return;
+		this.#streamLive(stream, true);
+		void view.stream(message).then((drawn) => {
+			if (drawn || this.#stream !== stream) return;
+			this.#streamAfter = Date.now() + STREAM_PAUSE_MS;
+			this.#endStream(stream);
+		});
+	}
+
+	/** A stream refused by a release cycle, or ended with the desktop: as a look's refusal, the screen is not as the member
+	 * saw it (no shared input until a look shows it again), the list is read again, and someone's private hold since the
+	 * sharing's generation waits for a list read begun now (20260930738000). The looks say why. */
+	#streamRefused(sender: PageHold | SharedInput, code: string): void {
+		this.#streamAfter = Date.now() + STREAM_PAUSE_MS;
+		if (code === "DESKTOP_HELD_SINCE" && !("seat" in sender)) this.#heldSince = this.#listReads;
+		this.#screenSeen = false;
+		this.#listStale = true;
+		this.#syncControls();
+		this.#quicken();
+	}
+
 	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at
 	 * once, the first time a quiet line says that they share it with the agent, and Type privately (a lock) starts the
 	 * private mode; in the preview nothing but who else uses it (a click on the picture opens the large view). Typing
@@ -1898,6 +2174,8 @@ export class ComputerPanel {
 		// says so (review r5 F2 of #1701): the note shows at once.
 		if (!note && this.#controlNote.textContent !== "") this.#controls.hidden = !picture;
 		if (entering) this.#view?.focusScreen();
+		// The live picture follows the input the picture takes (20260930745000): of that hold or that sharing, or none.
+		this.#syncStream(picture && entered ? (hold ?? (sharing ? this.#shared : undefined)) : undefined);
 	}
 
 	/** A control's label, with the lock of private typing before it where it starts it; drawn again only when it changes. */

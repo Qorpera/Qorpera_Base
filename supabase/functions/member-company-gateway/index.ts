@@ -25,10 +25,17 @@ async function memberSignedIn(authorization: string, signal: AbortSignal): Promi
 	throw new Error(`Auth answered ${response.status}`);
 }
 
+/** The issuer of the project's member tokens: its own URL's auth service (`https://<ref>.supabase.co/auth/v1`). */
+function memberTokenIssuer(): string | undefined {
+	const base = Deno.env.get("SUPABASE_URL");
+	return base ? `${new URL(base).origin}/auth/v1` : undefined;
+}
+
 Deno.serve((request) =>
 	forwardMemberCompanyGateway(request, {
 		upstreamUrl: Deno.env.get("QORPERA_MEMBER_GATEWAY_UPSTREAM_URL"),
 		allowedOrigins: allowedOrigins(),
 		memberSignedIn,
+		memberTokenIssuer: memberTokenIssuer(),
 	}),
 );

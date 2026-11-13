@@ -29,10 +29,16 @@ import {
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	type CompanyMachineMemberStream,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
 	LxdCompanyMachineHost,
 } from "../src/company-machine-host.ts";
+import {
+	COMPANY_MACHINE_DESKTOP_VIEW,
+	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+	RFB_VERSION,
+} from "../src/company-machine-stream.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type {
 	LxdExecPipeRequest,
@@ -138,6 +144,8 @@ async function fixture(
 	const memberReads: unknown[] = [];
 	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
 	const pictureChecks: unknown[] = [];
+	/** What a live picture's release cycle answers, in turn (then ok; 20260930745000). */
+	const streamReleases: unknown[] = [];
 	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
 	const clipboardClears: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
@@ -231,6 +239,11 @@ async function fixture(
 				const next = pictureChecks.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
+			}
+			if (method === "qorpera_member_machine_stream_release") {
+				const next = streamReleases.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.member-machine-stream-release/v1", state: "ok" };
 			}
 			if (method === "qorpera_machine_desktop_clipboard_cleared") {
 				const next = clipboardClears.shift();
@@ -471,6 +484,7 @@ async function fixture(
 		inherits,
 		memberReads,
 		pictureChecks,
+		streamReleases,
 		clipboardClears,
 		busy,
 		client,
@@ -5028,6 +5042,225 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		])
 			expect(() => f.host.memberPointer(move(wrong)), JSON.stringify(wrong)).toThrow(
 				"COMPANY_MACHINE_MEMBER_POINTER_INVALID",
+			);
+	});
+});
+
+describe("a member's live picture of a desktop (20260930745000)", () => {
+	/** The desktop's VNC server, as the relay hands it on: its handshake, then the updates the test sends. */
+	async function relayed(options: { folder?: boolean } = {}) {
+		const f = await fixture(options);
+		const relays: {
+			request: LxdExecPipeRequest;
+			signal: AbortSignal;
+			sent: Buffer[];
+			out: (bytes: Buffer) => void;
+			end: (code: number) => void;
+		}[] = [];
+		const order: string[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (given.command[2] === COMPANY_MACHINE_DESKTOP_VIEW) {
+				order.push("relay");
+				let finish: (code: number) => void = () => {};
+				const ended = new Promise<number>((resolve) => {
+					finish = resolve;
+				});
+				const relay = {
+					request: given,
+					signal,
+					sent: [] as Buffer[],
+					out: (bytes: Buffer) => given.stdout?.(bytes),
+					end: finish,
+				};
+				relays.push(relay);
+				signal.addEventListener("abort", () => finish(137), { once: true });
+				void (async () => {
+					for await (const chunk of given.stdin as AsyncIterable<Uint8Array>) relay.sent.push(Buffer.from(chunk));
+				})();
+				const init = Buffer.alloc(24 + 2);
+				init.writeUInt16BE(64, 0);
+				init.writeUInt16BE(40, 2);
+				init.writeUInt32BE(2, 20);
+				init.write(":1", 24, "latin1");
+				for (const part of [RFB_VERSION, Buffer.from([1, 1]), Buffer.alloc(4), init])
+					given.stdout?.(Buffer.from(part));
+				return { exitCode: await ended, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			if (given.command[2] === COMPANY_MACHINE_POINTER_FENCE) {
+				order.push("fence");
+				return {
+					exitCode: 0,
+					stdout: Buffer.from(`${given.command[4]} ${"a".repeat(32)}`),
+					stderrTail: Buffer.alloc(0),
+				};
+			}
+			if (given.command[2] === COMPANY_MACHINE_MEMBER_POINTER) {
+				order.push("mover");
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+				return { exitCode: 137, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			throw new Error(`unexpected ${given.command[2]?.slice(0, 40)}`);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const update = (rgb: [number, number, number]) => {
+			const head = Buffer.alloc(4 + 12);
+			head.writeUInt16BE(1, 2);
+			head.writeUInt16BE(64, 8);
+			head.writeUInt16BE(40, 10);
+			const pixels = Buffer.alloc(64 * 40 * 4);
+			for (let i = 0; i < 64 * 40; i++) pixels.set([rgb[2], rgb[1], rgb[0], 0], i * 4);
+			return Buffer.concat([head, pixels]);
+		};
+		return { f, pipe, relays, order, update };
+	}
+	const stream = (change: Partial<CompanyMachineMemberStream> = {}): CompanyMachineMemberStream => ({
+		placementId: id(6),
+		bootId: id(7),
+		userId: id(21),
+		generation: 4,
+		epoch: null,
+		...change,
+	});
+	const sinkOf = () => {
+		const messages: Buffer[] = [];
+		return { messages, send: vi.fn(async (message: Buffer) => void messages.push(message)) };
+	};
+	const settle = async () => {
+		for (let n = 0; n < 20; n++) await new Promise((resolve) => setImmediate(resolve));
+	};
+
+	it("runs one relay per desktop for every member, the fixed script as root on SQL's boot, and lets each member's changes go after that member's own SQL cycle", async () => {
+		const { f, pipe, relays, update } = await relayed();
+		const a = sinkOf();
+		const b = sinkOf();
+		const stopA = new AbortController();
+		const stopB = new AbortController();
+		const watchingA = f.host.memberStream(stream(), a, stopA.signal);
+		const watchingB = f.host.memberStream(stream({ userId: id(22), epoch: 3, generation: 9 }), b, stopB.signal);
+		await settle();
+		expect(relays).toHaveLength(1);
+		const [project, name, given] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(given.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_DESKTOP_VIEW,
+			id(7),
+			COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+		]);
+		expect(given).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+		expect(typeof given.stdout).toBe("function");
+		relays[0]!.out(update([255, 0, 0]));
+		await vi.waitFor(() => expect(a.messages.some((message) => message[0] === 2)).toBe(true));
+		await vi.waitFor(() => expect(b.messages.some((message) => message[0] === 2)).toBe(true));
+		// Each member's own cycle, with its own hold: shared (no epoch), and private under its epoch in its seat.
+		const cycles = f.calls
+			.filter((call) => call.method === "qorpera_member_machine_stream_release")
+			.map((call) => call.args);
+		expect(cycles).toContainEqual({
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+			p_user_id: id(21),
+			p_generation: 4,
+			p_epoch: null,
+		});
+		expect(cycles).toContainEqual({
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+			p_user_id: id(22),
+			p_generation: 9,
+			p_epoch: 3,
+		});
+		stopA.abort();
+		stopB.abort();
+		expect(await watchingA).toBe("closed");
+		expect(await watchingB).toBe("closed");
+		await settle();
+		expect(relays[0]!.signal.aborted).toBe(true);
+	});
+
+	it("ends a member's stream on SQL's refusal or a read of the machine's the member may not read, with nothing of the change sent", async () => {
+		for (const [refusal, reason] of [
+			[
+				{ schema: "qorpera.member-machine-stream-release/v1", state: "refused", reason: "DESKTOP_HELD_SINCE" },
+				"DESKTOP_HELD_SINCE",
+			],
+			[
+				{ schema: "qorpera.member-machine-stream-release/v1", state: "refused", reason: "STREAM_NOT_ALLOWED" },
+				"STREAM_NOT_ALLOWED",
+			],
+			[new CodingControlRefused("qorpera.test-machine/member-unreadable", null), "MEMBER_CANNOT_READ"],
+		] as const) {
+			const { f, relays, update } = await relayed();
+			const sink = sinkOf();
+			const watching = f.host.memberStream(stream(), sink, new AbortController().signal);
+			await settle();
+			// The first cycle (the size) passes; the next one, for the red screen, is refused.
+			await vi.waitFor(() => expect(sink.messages).toHaveLength(1));
+			f.streamReleases.push(refusal);
+			relays[0]!.out(update([255, 0, 0]));
+			expect(await watching).toBe(reason);
+			expect(sink.messages.map((message) => message[0])).toEqual([1]);
+			await settle();
+			expect(relays[0]!.signal.aborted).toBe(true);
+		}
+	});
+
+	it("confirms the pointer fence on the desktop before any of a member's changes go while a mover is around, and asks the folder's boundary when the boot has /company", async () => {
+		const { f, relays, order, update } = await relayed({ folder: true });
+		f.host.memberPointer({
+			placementId: id(6),
+			bootId: id(7),
+			userId: id(21),
+			generation: 4,
+			private: false,
+			x: 1,
+			y: 1,
+		});
+		await settle();
+		const sink = sinkOf();
+		const stop = new AbortController();
+		const watching = f.host.memberStream(stream(), sink, stop.signal);
+		await settle();
+		relays[0]!.out(update([0, 255, 0]));
+		await vi.waitFor(() => expect(sink.messages.some((message) => message[0] === 2)).toBe(true));
+		// The fence came before the relay and the mover; every cycle asked the folder, then SQL.
+		expect(order.slice(0, 2)).toEqual(["fence", "mover"]);
+		const cycle = f.order.filter(
+			(step) => step === "folder:boundary" || step === "sql:qorpera_member_machine_stream_release",
+		);
+		expect(cycle.slice(0, 2)).toEqual(["folder:boundary", "sql:qorpera_member_machine_stream_release"]);
+		stop.abort();
+		await watching;
+	});
+
+	it("ends every member's stream when the relay ends (the desktop off, another boot) and starts a new one for the next member", async () => {
+		const { f, relays } = await relayed();
+		const watching = f.host.memberStream(stream(), sinkOf(), new AbortController().signal);
+		await settle();
+		relays[0]!.end(95);
+		expect(await watching).toBe("DESKTOP_NOT_RUNNING");
+		await settle();
+		const stop = new AbortController();
+		const next = f.host.memberStream(stream(), sinkOf(), stop.signal);
+		await settle();
+		expect(relays).toHaveLength(2);
+		stop.abort();
+		await next;
+	});
+
+	it("takes only a stream on ids, a whole generation and a whole epoch or none", async () => {
+		const { f } = await relayed();
+		for (const wrong of [
+			{ placementId: "x" },
+			{ generation: -1 },
+			{ generation: 1.5 },
+			{ epoch: -1 },
+			{ userId: "u" },
+		])
+			await expect(f.host.memberStream(stream(wrong), sinkOf(), f.signal), JSON.stringify(wrong)).rejects.toThrow(
+				"COMPANY_MACHINE_MEMBER_STREAM_INVALID",
 			);
 	});
 });

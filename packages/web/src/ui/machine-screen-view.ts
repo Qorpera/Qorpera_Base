@@ -1,4 +1,5 @@
 import type { MachineDesktopAction } from "../cloud/machine-screens.ts";
+import type { MachineStreamMessage, MachineStreamRect } from "../cloud/machine-stream.ts";
 import { h } from "./dom.ts";
 import { t } from "./preferences.ts";
 
@@ -200,6 +201,12 @@ export class MachineScreenView {
 	#shown = false;
 	/** Each picture's turn: one decoded after a newer one began is dropped. */
 	#turn = 0;
+	/** The live picture's draws (20260930745000), one after another in the order they came, and how many times the
+	 * picture was cleared: a draw that waited past a clear draws nothing. */
+	#drawing: Promise<unknown> = Promise.resolve();
+	#cleared = 0;
+	/** The live picture's pointer shape (a data URL and its hot spot), shown over the picture while it takes input. */
+	#cursor = "";
 	#fullscreenAttempt = 0;
 	#ownedFullscreen = false;
 
@@ -300,6 +307,7 @@ export class MachineScreenView {
 		this.#input = input;
 		this.#press = null;
 		this.el.classList.toggle("is-controlling", input !== null);
+		this.#showCursor();
 		if (!input) {
 			this.#canvas.removeAttribute("tabindex");
 			this.#canvas.setAttribute("role", "img");
@@ -620,6 +628,82 @@ export class MachineScreenView {
 		return true;
 	}
 
+	/** One message of the desktop's live picture (20260930745000), drawn after those before it: the screen's size (what
+	 * was drawn goes), changed areas at their places, the pointer's shape. A picture of a look still being decoded is
+	 * dropped (the stream's is newer). Resolves false when it could not be drawn (an area that does not decode, or does
+	 * not fit the screen): the stream is then of no use, and the window falls back to its looks. */
+	stream(message: MachineStreamMessage): Promise<boolean> {
+		this.#turn++;
+		const cleared = this.#cleared;
+		const decode = this.#options.decode ?? ((blob: Blob) => createImageBitmap(blob));
+		// Areas decode at once, side by side; they are drawn in order.
+		const pictures =
+			message.kind === "rects"
+				? Promise.all(
+						message.rects.map((rect) =>
+							decode(rect.png).then(
+								(picture) => ({ rect, picture }),
+								() => null,
+							),
+						),
+					)
+				: Promise.resolve([]);
+		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
+		const drawn = this.#drawing.then(async () => {
+			const decoded = await pictures;
+			const close = () => {
+				for (const each of decoded) each?.picture.close?.();
+			};
+			if (this.#cleared !== cleared || this.#stop.signal.aborted) {
+				close();
+				return false;
+			}
+			if (message.kind === "size") {
+				if (this.#canvas.width !== message.width) this.#canvas.width = message.width;
+				if (this.#canvas.height !== message.height) this.#canvas.height = message.height;
+				return true;
+			}
+			if (message.kind === "cursor") {
+				const url = await cursor.catch(() => "");
+				if (this.#cleared !== cleared) return false;
+				this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
+				this.#showCursor();
+				return true;
+			}
+			const fits = (rect: MachineStreamRect, picture: MachineScreenPicture) =>
+				picture.width === rect.width &&
+				picture.height === rect.height &&
+				rect.x + rect.width <= this.#canvas.width &&
+				rect.y + rect.height <= this.#canvas.height;
+			if (decoded.some((each) => each === null || !fits(each.rect, each.picture))) {
+				close();
+				return false;
+			}
+			const context = this.#canvas.getContext("2d");
+			for (const each of decoded) if (each) context?.drawImage(each.picture, each.rect.x, each.rect.y);
+			close();
+			this.#shown = true;
+			this.el.hidden = false;
+			this.#enter.disabled = false;
+			this.live();
+			return true;
+		});
+		this.#drawing = drawn.catch(() => false);
+		return drawn.catch(() => false);
+	}
+
+	/** The live picture ended (20260930745000): the picture stays as it was drawn, the pointer is the page's own again. */
+	streamEnded(): void {
+		this.#cursor = "";
+		this.#showCursor();
+	}
+
+	/** The live picture's pointer shape over the picture while it takes input; the page's own otherwise. */
+	#showCursor(): void {
+		const shape = this.#input ? this.#cursor : "";
+		if (this.#canvas.style.cursor !== shape) this.#canvas.style.cursor = shape;
+	}
+
 	/** The picture up is the screen as it is now (the member had it already). */
 	live(): void {
 		if (!this.#shown) return;
@@ -642,6 +726,9 @@ export class MachineScreenView {
 	clear(): void {
 		this.capture(null);
 		this.#turn++;
+		this.#cleared++;
+		this.#cursor = "";
+		this.#showCursor();
 		this.back();
 		this.#shown = false;
 		this.el.hidden = true;
@@ -675,6 +762,7 @@ export class MachineScreenView {
 		this.back();
 		this.#stop.abort();
 		this.#turn++;
+		this.#cleared++;
 		this.el.remove();
 	}
 
@@ -720,4 +808,14 @@ export class MachineScreenView {
 			.catch(() => setTimeout(refused, 0))
 			.finally(() => clearTimeout(slow));
 	}
+}
+
+/** A PNG as a data URL (what a CSS cursor takes everywhere). */
+function dataUrl(png: Blob): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => (typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("unread")));
+		reader.onerror = () => reject(new Error("unread"));
+		reader.readAsDataURL(png);
+	});
 }
