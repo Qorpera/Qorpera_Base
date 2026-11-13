@@ -119,6 +119,22 @@ export function redactCloudWebhookSecrets(text: string): string {
 	for (const [secret, replacement] of SECRET_CUTS) cut = cut.replace(secret, replacement);
 	return cut;
 }
+/** Where a text holds what the cut takes out (SECRET_CUTS): each match's start and end (UTF-16 units), overlapping
+ * ones as one span, in order. A tool that shows a file in windows ends and starts its windows outside them
+ * (cloud-folder-file-tools.ts), so that each secret is in one window whole, where the cut finds it. */
+export function cloudSecretSpans(text: string): readonly { readonly start: number; readonly end: number }[] {
+	const found: { start: number; end: number }[] = [];
+	for (const [secret] of SECRET_CUTS)
+		for (const match of text.matchAll(secret)) found.push({ start: match.index, end: match.index + match[0].length });
+	found.sort((a, b) => a.start - b.start || b.end - a.end);
+	const spans: { start: number; end: number }[] = [];
+	for (const span of found) {
+		const last = spans.at(-1);
+		if (last && span.start < last.end) last.end = Math.max(last.end, span.end);
+		else spans.push({ ...span });
+	}
+	return spans;
+}
 /** A JSON value with the same cut in each of its texts, its keys included. */
 export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
 	if (typeof value === "string") return redactCloudWebhookSecrets(value);

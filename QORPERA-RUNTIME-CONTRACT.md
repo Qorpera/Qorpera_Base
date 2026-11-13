@@ -6519,6 +6519,16 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
      from two NAS lanes, one operation at a time on any one object, and answers 503 for a file with no Storage copy
      yet (one just written) when it cannot take it now. Files of the same content share objects, so one call never
      contends with itself there.
+   - A secret the boundary cuts out of an answer (#1721) is cut before the answer is hashed and released, for a read
+     of several files as for one, so the context view cites what the model was shown.
+   - A window never starts or ends inside a secret, for a file read from any offset, files read together and cut
+     alike, a link's target, and a listed target's start (keyholes S3, 13 November 2026). A window's end that falls
+     inside one moves to where it starts, so the next window holds it whole and the boundary cuts it; a window that
+     starts at one takes it whole, past `limit` if need be (shown cut); an offset inside one starts the window where it
+     starts, and the answer's `offset` says so. To see them the read takes 1 KiB past the window and before it.
+     `nextOffset` stays an exact byte position in the file. A secret-shaped run longer than a window plus that 1 KiB
+     (no real key is) is shown cut as far as read, and the answer says in `secretRun` that reading on shows the rest
+     of it, which nothing can cut on its own; a read asked to start more than 1 KiB inside such a run cannot see it.
    - Codex still sends one call a model response, so this is what lets one round read several files.
 3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
    `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`

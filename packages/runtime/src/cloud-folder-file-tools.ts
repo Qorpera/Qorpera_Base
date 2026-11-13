@@ -42,6 +42,7 @@ import {
 	type CloudToolContent,
 	type CloudToolContext,
 	CloudToolRefusal,
+	cloudSecretSpans,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
@@ -112,6 +113,12 @@ const LIST_TARGET_BYTES = 512;
 export const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 export const TOOL_VERSION = "folder-v2/1";
 const TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** What a read takes past a window's end, and before its start, to see a secret its edge would cut (windowEnd,
+ * windowLead): more than the longest the shortest whole secret can be in any spelling the cut knows (a github_pat_
+ * whose every `_` is JSON-escaped twice: 597 characters). */
+const SECRET_MARGIN = 1024;
+/** Text around a window, only to find secrets in: bytes that are no UTF-8 become U+FFFD, which no secret holds. */
+const AROUND = new TextDecoder("utf-8", { ignoreBOM: true });
 
 type MutationTool = "company_write" | "company_edit" | "company_move" | "company_mkdir" | "company_delete";
 
@@ -302,14 +309,17 @@ function partReleaseId(runId: string, callId: string, outputSha256: string, part
 
 /** `released` for an answer that shows several files: each file's read is its own release, in the answer's order,
  * all under the hash of the whole text; the answer cites the first, as company_search cites its first part (the
- * context view cites one release an output, and the run log keeps every release of the step). */
+ * context view cites one release an output, and the run log keeps every release of the step). As in `released`, the
+ * text is the answer as the model is shown it, a secret cut out (#1721): the context view cites the release under the
+ * hash of that text, and SQL refuses any other (`Context read provenance differs`). */
 async function releasedEach(
 	folder: CloudCompanyFolderClient,
 	runId: string,
 	context: CloudToolContext,
-	text: string,
+	answer: string,
 	reads: readonly CloudCompanyFolderRelease[],
 ): Promise<CloudToolContent> {
+	const text = redactCloudWebhookSecrets(answer);
 	if (!fitsOneResult(text))
 		throw new CloudToolRefusal(
 			"COMPANY_FILE_ANSWER_TOO_LONG: these paths are too long to read together in one tool result, so nothing was read; read fewer at once",
@@ -381,6 +391,42 @@ function fitted(text: string, least: number, render: (shown: string) => string):
 		else high = middle - 1;
 	}
 	return render(points.slice(0, low).join(""));
+}
+
+/**
+ * Where a window may end (keyholes S3, after #1721). The boundary cuts a secret out of an answer only when the answer
+ * holds it whole, so a window that ended inside one showed its start, and the next window its rest, neither cut. So a
+ * window never ends inside a secret (cloudSecretSpans, the boundary's own patterns): `text` is the window and what
+ * follows it as far as read, `end` where the window's room would end it (within the window). A secret that starts in
+ * the window and runs past that end ends the window where it starts, so the next window holds it whole. One that
+ * starts the window is taken whole, past the room if need be: the answer shows its short cut form. If it goes on past
+ * everything read (`more`: the file goes on), it is taken as far as read, and `runsOn` says the window ends inside it:
+ * no window can hold it, and what follows is the rest of it, which nothing can cut on its own.
+ */
+function windowEnd(text: string, end: number, more: boolean): { readonly end: number; readonly runsOn: boolean } {
+	for (const span of cloudSecretSpans(text)) {
+		if (span.start >= end) break;
+		if (span.end <= end) continue;
+		if (span.start > 0) return { end: span.start, runsOn: false };
+		return { end: span.end, runsOn: more && span.end === text.length };
+	}
+	return { end, runsOn: false };
+}
+
+/** Where a window may start: never inside a secret either. `behind` is what was read before the window's offset,
+ * `rest` the window and what follows. A secret that runs from `behind` into the window starts the window instead: what
+ * of `behind` the window takes in front, or "". */
+function windowLead(behind: string, rest: string): string {
+	for (const span of cloudSecretSpans(behind + rest)) {
+		if (span.start >= behind.length) break;
+		if (span.end > behind.length) return behind.slice(span.start);
+	}
+	return "";
+}
+
+/** What an answer says of a window that ends inside a secret no window can hold (windowEnd's `runsOn`). */
+function secretRunsOn(start: number): string {
+	return `A secret-shaped run starts at offset ${start} and goes on past nextOffset: what was read of it is shown cut, and reading on shows the rest of it, which cannot be cut on its own.`;
 }
 
 /** A link's target as an answer shows it: `targetCut` when only its start fits. */
@@ -613,7 +659,15 @@ export function cloudFolderFileTools(options: {
 	 * is said so in its own answer; a company whose work stopped, or a defect, fails the call. */
 	type ManyPart = {
 		readonly answer: Record<string, JsonValue>;
-		readonly text?: { readonly field: "text" | "target"; readonly points: readonly string[]; readonly total: number };
+		/** The text left for the fitting: its code points, and `around`, the text and what follows it as far as read (a
+		 * window never ends inside a secret: windowEnd), with `more` when the file goes on past that. */
+		readonly text?: {
+			readonly field: "text" | "target";
+			readonly points: readonly string[];
+			readonly around: string;
+			readonly more: boolean;
+			readonly total: number;
+		};
 		readonly release?: CloudCompanyFolderRelease;
 	};
 	const readPart = async (
@@ -648,13 +702,21 @@ export function cloudFolderFileTools(options: {
 		if (entry.kind === "symlink")
 			return {
 				answer: { path: entry.path, kind: "symlink", version: entry.version, offset: 0 },
-				text: { field: "target", points: Array.from(entry.target), total: Buffer.byteLength(entry.target) },
+				text: {
+					field: "target",
+					points: Array.from(entry.target),
+					around: entry.target,
+					more: false,
+					total: Buffer.byteLength(entry.target),
+				},
 				release,
 			};
 		const total = entry.file.bytes;
 		let bytes: Uint8Array;
 		try {
-			bytes = await bytesTurn(() => folder.readRange(entry, 0, Math.max(MAX_READ_BYTES, IMAGE_HEAD_BYTES), signal));
+			bytes = await bytesTurn(() =>
+				folder.readRange(entry, 0, Math.max(MAX_READ_BYTES + SECRET_MARGIN, IMAGE_HEAD_BYTES), signal),
+			);
 		} catch (error) {
 			return failed(error);
 		}
@@ -703,7 +765,17 @@ export function cloudFolderFileTools(options: {
 				},
 				release,
 			};
-		return { answer: { ...named, offset: 0 }, text: { field: "text", points: Array.from(text), total }, release };
+		return {
+			answer: { ...named, offset: 0 },
+			text: {
+				field: "text",
+				points: Array.from(text),
+				around: text + AROUND.decode(bytes.subarray(Buffer.byteLength(text))),
+				more: bytes.byteLength < total,
+				total,
+			},
+			release,
+		};
 	};
 
 	/** Up to MAX_PATHS files in one result (keyholes S3): each read from its start, every text cut at the same number of
@@ -722,12 +794,16 @@ export function cloudFolderFileTools(options: {
 			return turn;
 		};
 		const parts = await Promise.all(paths.map((path) => readPart(path, context.signal, bytesTurn)));
+		// Every text is cut at the same number of characters, and then, where that end falls inside a secret, before it
+		// (windowEnd), so each file's own nextOffset says where it goes on.
 		const render = (cap: number): string =>
 			cloudToolJsonText(
 				{
 					files: parts.map((part): JsonValue => {
 						if (!part.text) return part.answer;
-						const shown = part.text.points.slice(0, cap).join("");
+						const room = part.text.points.slice(0, cap).join("").length;
+						const { end, runsOn } = windowEnd(part.text.around, room, part.text.more);
+						const shown = part.text.around.slice(0, end);
 						const bytesRead = Buffer.byteLength(shown);
 						return {
 							...part.answer,
@@ -735,16 +811,18 @@ export function cloudFolderFileTools(options: {
 							totalBytes: part.text.total,
 							[part.text.field]: shown,
 							nextOffset: bytesRead < part.text.total ? bytesRead : null,
+							...(runsOn ? { secretRun: secretRunsOn(0) } : {}),
 						};
 					}),
 				},
 				MANY_JSON_BYTES,
 			);
+		// The fit is of the answer as the model is shown it: the boundary cuts each secret out (releasedEach too).
 		let low = 0;
 		let high = Math.max(0, ...parts.map((part) => part.text?.points.length ?? 0));
 		while (low < high) {
 			const middle = Math.ceil((low + high) / 2);
-			if (fitsOneResult(render(middle))) low = middle;
+			if (fitsOneResult(redactCloudWebhookSecrets(render(middle)))) low = middle;
 			else high = middle - 1;
 		}
 		return releasedEach(
@@ -885,29 +963,45 @@ export function cloudFolderFileTools(options: {
 						throw new CloudToolRefusal(
 							"COMPANY_FILE_NOT_TEXT: this offset is inside a character of the link's target; read from an offset a window gave",
 						);
-					const render = (shown: string) => {
+					// The whole target is in hand: a window of it neither starts nor ends inside a secret either.
+					const after = whole.subarray(input.offset + Buffer.byteLength(text)).toString("utf8");
+					const lead = windowLead(whole.subarray(0, input.offset).toString("utf8"), text + after);
+					const start = input.offset - Buffer.byteLength(lead);
+					const around = lead + text + after;
+					const render = (room: string) => {
+						const shown = around.slice(0, windowEnd(around, room.length, false).end);
 						const included = Buffer.byteLength(shown);
 						return cloudToolJsonText({
 							path: entry.path,
 							kind: "symlink",
 							version: entry.version,
-							offset: input.offset,
+							offset: start,
 							bytesRead: included,
 							totalBytes: whole.byteLength,
 							target: shown,
-							nextOffset: input.offset + included < whole.byteLength ? input.offset + included : null,
+							nextOffset: start + included < whole.byteLength ? start + included : null,
 						});
 					};
-					return released(folder, identity.runId, context, fitted(text, 1, render), [
-						cloudCompanyFolderRelease(entry),
-					]);
+					return released(
+						folder,
+						identity.runId,
+						context,
+						fitted(lead + text, 1, (room) => redactCloudWebhookSecrets(render(room))),
+						[cloudCompanyFolderRelease(entry)],
+					);
 				}
-				// An offset at or past the end reads an empty window, which still shows the file's size and version.
+				// An offset at or past the end reads an empty window, which still shows the file's size and version. The read
+				// takes SECRET_MARGIN bytes before the window and after it too, so that the window neither starts nor ends
+				// inside a secret (windowLead, windowEnd).
 				const total = entry.file.bytes;
+				const behind = Math.min(SECRET_MARGIN, input.offset);
 				let bytes: Uint8Array;
 				try {
-					const head = input.offset === 0 ? Math.max(input.limit, IMAGE_HEAD_BYTES) : input.limit;
-					bytes = await folder.readRange(entry, input.offset, head, context.signal);
+					const head =
+						input.offset === 0
+							? Math.max(input.limit + SECRET_MARGIN, IMAGE_HEAD_BYTES)
+							: input.limit + SECRET_MARGIN;
+					bytes = await folder.readRange(entry, input.offset - behind, behind + head, context.signal);
 				} catch (error) {
 					return unavailable(error, "read");
 				}
@@ -925,31 +1019,44 @@ export function cloudFolderFileTools(options: {
 						throw new CloudToolRefusal(
 							`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${other ? `, and this one is ${other}` : ""}; open it on the company's computer`,
 						);
-					bytes = bytes.subarray(0, input.limit);
 				}
-				const atEnd = input.offset + bytes.byteLength >= total;
-				const text = windowText(bytes, atEnd);
+				const window = bytes.subarray(behind, behind + input.limit);
+				const atEnd = input.offset + window.byteLength >= total;
+				const text = windowText(window, atEnd);
 				if (text === null)
 					throw new CloudToolRefusal(
 						"COMPANY_FILE_NOT_TEXT: this file, or this offset, is not UTF-8 text; open such files on the company's computer",
 					);
-				const render = (shown: string) => {
+				const after = AROUND.decode(bytes.subarray(behind + Buffer.byteLength(text)));
+				const lead = behind === 0 ? "" : windowLead(AROUND.decode(bytes.subarray(0, behind)), text + after);
+				const start = input.offset - Buffer.byteLength(lead);
+				const around = lead + text + after;
+				const more = input.offset - behind + bytes.byteLength < total;
+				const render = (room: string) => {
+					const { end, runsOn } = windowEnd(around, room.length, more);
+					const shown = around.slice(0, end);
 					const included = Buffer.byteLength(shown);
 					return cloudToolJsonText({
 						path: entry.path,
 						kind: "file",
 						version: entry.version,
-						offset: input.offset,
+						offset: start,
 						bytesRead: included,
 						totalBytes: total,
 						text: shown,
-						nextOffset: input.offset + included < total ? input.offset + included : null,
+						nextOffset: start + included < total ? start + included : null,
+						...(runsOn ? { secretRun: secretRunsOn(start) } : {}),
 					});
 				};
-				// The window, cut at a code point so that its answer reaches the model whole (escaping can grow it).
-				return released(folder, identity.runId, context, fitted(text, 1, render), [
-					cloudCompanyFolderRelease(entry),
-				]);
+				// The window, cut at a code point so that its answer reaches the model whole (escaping can grow it, the
+				// boundary's cut of a secret shortens it: the fit is of the answer as the model is shown it).
+				return released(
+					folder,
+					identity.runId,
+					context,
+					fitted(lead + text, 1, (room) => redactCloudWebhookSecrets(render(room))),
+					[cloudCompanyFolderRelease(entry)],
+				);
 			},
 		},
 		{
@@ -1068,8 +1175,11 @@ export function cloudFolderFileTools(options: {
 					after = page.next;
 					if (looked >= LIST_SCAN_ENTRIES || performance.now() - started >= LIST_SCAN_MS) break;
 				}
-				const shownTo = (whole: string, shown: string) =>
-					`-> ${JSON.stringify(shown)}${shown.length < whole.length ? " (cut; company_read shows all)" : ""}`;
+				// A target shown in part never ends inside a secret: before it, or past it whole (windowEnd).
+				const shownTo = (whole: string, room: string) => {
+					const shown = whole.slice(0, windowEnd(whole, room.length, false).end);
+					return `-> ${JSON.stringify(shown)}${shown.length < whole.length ? " (cut; company_read shows all)" : ""}`;
+				};
 				const line = (entry: CloudCompanyFolderEntry, target?: string): string =>
 					entry.kind === "folder"
 						? `${entry.path}/`
