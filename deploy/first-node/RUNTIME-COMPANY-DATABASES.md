@@ -145,16 +145,23 @@ node's budget for agents' machines.
 - Each company gets one PostgreSQL database, named `c_` and the 32 hex digits of its folder's id (the environment
   id the folder core keys by), made from a template. Each `data/<name>/` is one schema in it. Database names say
   nothing about whose they are: a login can list them.
-- Three roles per database folder, none of which can log in: an owner role owns the schema and runs its steps, a
-  write role runs its changes, a read role runs its questions. A question so reads its own database only; reading
-  another of the company's databases from it comes later, with a check that the caller may read both.
-- The gateway has one login per door: `qorpera_data_read`, `qorpera_data_write`, `qorpera_data_owner`. Each is a
-  member only of the company roles of its own kind and inherits nothing, so a read cannot become a write by any
-  statement (proven, §11). A fourth, `qorpera_data_watch`, reads sizes and ends statements. Making and dropping
-  company databases is a fifth, used for nothing else.
-- Connecting to a company's database is revoked from everyone and granted to those logins only.
+- Three roles per database folder, each a login of its own: an owner role owns the schema and runs its steps, a
+  write role runs its changes, a read role runs its questions. The gateway connects **as the folder's own role**, with
+  a password it derives from one key it holds and stores nowhere. A session's login is then a member of no other
+  role, so no statement can become another folder's role, another company's, or a stronger one of its own folder:
+  PostgreSQL checks `SET ROLE` against the session's login, and a shared login that is a member of many roles would
+  let a step switch to any of them. A question so reads its own database only; reading another of the company's
+  databases from it comes later, with a check that the caller may read both.
+- The gateway's own logins are three: `qorpera_data_admin` makes and drops company databases and folder roles and
+  is used for nothing else; `qorpera_data_keeper` keeps the gateway's records beside the rows and listens for
+  notices, and never runs a company's SQL; `qorpera_data_watch` reads sizes and ends statements.
+- Connecting to a company's database is revoked from everyone and granted to its folders' roles, the keeper and the
+  watcher only.
 - The template holds the schema `qorpera_data`: the trigger that says a table changed, the triggers that record what
-  a step destroys, and the event triggers that put both on every new table, whoever makes it.
+  a step destroys, and the event triggers that put both on every new table, whoever makes it. A table's owner can
+  switch a table's triggers off, so further event triggers, which no company role can touch, refuse a statement at
+  the moment it disables, drops or replaces one of Qorpera's triggers. A table that is not kept logged is refused
+  too: its rows would be in no backup.
 - A company's roles cannot read or write server files, run programs, add an extension, a C function, a database or a
   role, or change server settings (proven). Extensions come from a short list Qorpera installs when `database.toml`
   asks; none in the first slice.
@@ -165,13 +172,13 @@ Defaults, in the gateway's configuration. They are starting values, not prices.
 
 | Limit | Value | Enforced by |
 | --- | --- | --- |
-| Connections | 8 a company database | PostgreSQL (`CONNECTION LIMIT`); the 9th is refused, other companies are not touched |
+| Connections | 12 a company database, and 1, 2 and 3 for a folder's owner, write and read role | PostgreSQL (`CONNECTION LIMIT`); one past it is refused, other companies are not touched |
 | A question from an interface | 2 s, 2,000 rows, 256 KiB | the gateway's transaction (`set local statement_timeout`), then the gateway |
 | A read by an agent | 15 s, 200 rows and 24 KiB a page | the same |
 | A change | 5 s | the same |
 | A step | 60 s, 5 s for a lock | the same |
-| Temp files | 256 MiB a statement | the role's `temp_file_limit`, which the role cannot lift |
-| Memory | `work_mem` 16 MiB, no parallel workers | role settings |
+| Temp files | 256 MiB a statement | the company database's `temp_file_limit`, which no company role can lift |
+| Memory | `work_mem` 16 MiB, no parallel workers | the company database's settings |
 | Size | 1 GiB a company | the watcher: agents are told at 80 %; at 100 % writes close and reads go on |
 | Calls | an app's bridge budget (120 a minute), and 50 statements a second a company | the web, then the gateway |
 
@@ -222,7 +229,8 @@ folder was put there by someone the folder let write it, and applying it only ma
 2. The text for the entry's hash, from the gateway's keep or from the caller (above). The gateway finds the `:name`
    parameters outside strings, quoted names, dollar quotes and comments, and sends the statement with numbered
    parameters through the extended protocol, so PostgreSQL refuses a second statement in the text.
-3. One transaction: `begin read only`, the time limit, the database's read role, the search path, the statement.
+3. One transaction on a connection logged in as the database folder's read role: `begin read only`, the time limit,
+   the search path, the statement.
 4. The answer: `{ columns, rows, more, asOf, etag }`. Rows are arrays in column order. Whole numbers and decimals a
    double holds exactly are JSON numbers, larger ones are text; booleans are booleans; JSON is JSON; times are ISO
    8601 text; everything else is text. `etag` is a hash of the answer.
@@ -232,8 +240,9 @@ only, as the read role.
 
 ### A step
 
-Steps are applied when `apply` is called for a database: by an agent's `data_apply` (§6), in order, by the owner
-role, one transaction each. The caller lists the step files with their hashes as the folder gave them; the gateway
+Steps are applied when `apply` is called for a database: by an agent's `data_apply` (§6), in order, on a connection
+logged in as the folder's owner role, one transaction each. A step runs inside a function, so it cannot end the
+transaction and go on outside it. The caller lists the step files with their hashes as the folder gave them; the gateway
 checks each entry as the caller and asks for the texts it does not hold.
 
 1. The step runs.
@@ -329,21 +338,27 @@ Every night Qorpera writes each database that changed since its last snapshot in
 data/shop/snapshot/
   snapshot.toml          when, each table's rows and files, how to load it back
   schema.sql             the shape as SQL
+  sequences.sql          where each sequence stood
   orders/0001.csv        rows in key order, cut at fixed key values, at most 16 MiB a part
   orders/0002.csv
   customers/0001.csv
 ```
 
-- A table is cut into parts at key values that stay fixed from night to night, so a usual day (new rows, edits among
-  the newest) changes a few parts: 3 % of the bytes for a 918 MiB database (§11, P4). A part past 32 MiB is cut in
-  two. A table without a primary key is written as one file of at most 64 MiB; a larger one is left out and its
-  owner agent is told to give it a key.
+- **Every table is written, whole.** A table with a primary key is cut into parts at key values that stay fixed from
+  night to night, so a usual day (new rows, edits among the newest) changes a few parts: 3 % of the bytes for a
+  918 MiB database (§11, P4). A part past 32 MiB is cut in two. A table without a primary key is cut by its rows'
+  place on disk; its parts are complete and may all change from night to night.
+- **One moment.** A database's whole snapshot, its shape, its sequences and every part, is read in one transaction
+  that sees one moment (`repeatable read`), however many rows are written meanwhile.
+- **Sequences.** `sequences.sql` puts each sequence where it stood, so the first row made after loading gets a new
+  number and not an old one.
 - The worst day, edits spread evenly over all history, changes every part. The folder keeps every version of a file
   for good, so **old versions under `data/<name>/snapshot/` are pruned after 7 days**, the way old versions of git's
   objects are (`20260928569140_folder_git_expiry`). The newest snapshot is always a full copy.
 - The platform writes it as the platform, in commits of its own, and replaces whatever else is there.
 - The folder then holds everything: the files that define the database and its rows as of last night. A database made
-  from `schema.sql` and the parts alone holds the same rows (proven). The steps stay the truth for the shape.
+  from `schema.sql`, the parts and `sequences.sql` alone holds the same rows and takes new rows (proven). The steps
+  stay the truth for the shape.
 - Writing 839 MiB took 7 to 9 s on a test machine. A database at the 1 GiB limit is about 60 parts.
 
 ## 8. Named changes and routines (slice 7)
