@@ -34,10 +34,16 @@ import {
 	lxdCompanyMachineName,
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
+import { type CompanyMachineDiskPlacement, CompanyMachineDiskReader } from "./company-machine-disk.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./company-machine-figure.ts";
 import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
-import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
+import type {
+	LxdInstanceExecPipeClient,
+	LxdInstanceExecStreamClient,
+	LxdStoragePoolUseClient,
+	LxdTrackedClient,
+} from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -589,6 +595,12 @@ const STARTING_WAKES = 3;
 const PASS_FLOOR_MS = 1000;
 /** The most time between passes. */
 export const COMPANY_MACHINE_PASS_EVERY_MS = 10000;
+/** How often a pass reads its storage pool's real use for the kernel (20260930757000), at most: the kernel decides on a
+ * report for 2 minutes, then on the paper budget. */
+export const COMPANY_MACHINE_DISK_REPORT_EVERY_MS = 30000;
+/** How long one disk report may take in all (its disk reads, within their own 10 s budget, the pool's and the kernel's
+ * call): it runs beside the passes and never holds up admission. */
+const DISK_REPORT_MS = 20000;
 /** How long a pass waits for its placements' steps by default. */
 const PASS_HOLD_MS = 2000;
 
@@ -633,6 +645,8 @@ const HELD = Object.freeze({
 
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
+	// The pool's real use, for the room a new machine's disk needs (20260930757000).
+	"qorpera_report_executor_disk",
 	"qorpera_list_executor_machines",
 	"qorpera_authorize_executor_machine",
 	"qorpera_mark_company_machine_running",
@@ -669,7 +683,10 @@ export interface CompanyMachineHostOptions {
 		| "execInstance"
 	> &
 		Partial<LxdInstanceExecStreamClient> &
-		Partial<LxdInstanceExecPipeClient>;
+		Partial<LxdInstanceExecPipeClient> &
+		// The pool's real use (20260930757000); without both reads the executor reports nothing and the kernel keeps the
+		// paper budget.
+		Partial<LxdStoragePoolUseClient>;
 	/** The node's folder service (F3 6d): each boot of a test machine gets its own company folder view, its commands'
 	 * windows and boundaries go through it, and their output leaves only once the machine's reads are released. Without
 	 * it, machines run without /company. It needs the client's execInstanceStream (the view's hand-over). */
@@ -707,7 +724,7 @@ export interface CompanyMachineHostOptions {
 	memberStartTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
-	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
+	/** The clock a desktop's busy grace and the disk report's 30 s are counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
 
@@ -1206,6 +1223,14 @@ export class LxdCompanyMachineHost {
 	/** Steps ended so far, and per placement the count when its last one ended: a list asked before a step ended may
 	 * show its placement as it was before that step, so that pass leaves the placement to the next. */
 	#stepEnds = 0;
+	/** The placements of the last listing: whose disks the next disk report reads (20260930757000). */
+	#listed: readonly CompanyMachineEntry[] = [];
+	/** When the last disk report began (the host's clock), whether or not it reached the kernel. */
+	#diskReadAt = Number.NEGATIVE_INFINITY;
+	/** The reader of the pool, which keeps sleeping disks' reads between reports; none without LXD's two reads. */
+	readonly #diskReader?: CompanyMachineDiskReader;
+	/** The disk report under way, beside the passes. */
+	#diskReport?: Promise<void>;
 	readonly #endedAt = new Map<string, number>();
 	/** What steps that outlasted their pass came to, for the next pass to hand over. */
 	readonly #late: CompanyMachineOutcome[] = [];
@@ -1275,6 +1300,16 @@ export class LxdCompanyMachineHost {
 			throw new Error("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
 		this.#policy = parseCompanyMachinePolicy(options.policy);
 		this.#storage = createCodingNasStorage(parseCloudCodingNasPolicy(options.storagePolicy));
+		const client = options.client;
+		if (typeof client.readStorageVolumeUse === "function" && typeof client.readStoragePoolSpace === "function")
+			this.#diskReader = new CompanyMachineDiskReader({
+				client: {
+					readStorageVolumeUse: client.readStorageVolumeUse.bind(client),
+					readStoragePoolSpace: client.readStoragePoolSpace.bind(client),
+				},
+				pool: this.#policy.storagePool,
+				...(options.now ? { now: options.now } : {}),
+			});
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("COMPANY_MACHINE_JOURNAL_NOT_ON_NAS");
 		this.#options = Object.freeze({ ...options });
 	}
@@ -2291,6 +2326,50 @@ export class LxdCompanyMachineHost {
 		).catch(() => undefined);
 	}
 
+	/** The pool's real use, for the kernel's room (20260930757000): at most every 30 s, one report at a time, beside the
+	 * passes (it never holds up admission). The reader reads the awake disks and the sleeping ones it keeps no read of
+	 * (each listed placement's disk of the policy's pool, by its own name), then the pool, and the report goes to the
+	 * kernel with qorpera_report_executor_disk. A report that fails is left (the kernel decides on the paper budget once
+	 * its last report is 2 minutes old); it never fails a pass. */
+	#startDiskReport(lasting: AbortSignal): void {
+		const reader = this.#diskReader;
+		const now = (this.#options.now ?? Date.now)();
+		if (!reader || this.#diskReport || now - this.#diskReadAt < COMPANY_MACHINE_DISK_REPORT_EVERY_MS) return;
+		this.#diskReadAt = now;
+		const pool = this.#policy.storagePool;
+		const placements: CompanyMachineDiskPlacement[] = [];
+		for (const e of this.#listed) {
+			if (e.binding.storagePool !== pool) continue;
+			try {
+				const { project, name } = this.#plan(e);
+				placements.push({ placementId: e.placementId, project, name, asleepSince: e.asleepSince });
+			} catch {
+				// A placement whose binding is not this executor's: its use stays unknown.
+			}
+		}
+		const report = (async () => {
+			try {
+				const checked = AbortSignal.any([lasting, AbortSignal.timeout(DISK_REPORT_MS)]);
+				const reading = await reader.read(placements, checked);
+				await this.#call(
+					"qorpera_report_executor_disk",
+					{
+						p_owner: this.#options.owner,
+						p_machine_id_sha256: this.#options.machineIdSha256,
+						p_report: reading.report,
+					},
+					checked,
+				);
+			} catch {
+				// Left for the next report: the kernel's paper budget stands in once the last report is old.
+			}
+		})();
+		const settled: Promise<void> = report.finally(() => {
+			if (this.#diskReport === settled) this.#diskReport = undefined;
+		});
+		this.#diskReport = settled;
+	}
+
 	/** One pass. Placements progress side by side; a failed step is recorded
 	 * on its machine and retried at the next pass, never hidden. Admission
 	 * takes one machine per call (one reservation per transaction) and never
@@ -2301,6 +2380,7 @@ export class LxdCompanyMachineHost {
 	/** `lasting` outlasts this pass: a step that outlasts it goes on under it, each step under a scope of its own. */
 	async #pass(signal: AbortSignal, lasting: AbortSignal): Promise<CompanyMachineOutcome[]> {
 		const admission: CompanyMachineOutcome[] = [];
+		this.#startDiskReport(lasting);
 		for (let admitted = 0; admitted < 8; admitted++) {
 			let taken: unknown;
 			try {
@@ -2323,6 +2403,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (!Array.isArray(listed)) throw new Error("COMPANY_MACHINE_LIST_INVALID");
 		const entries = listed.map(entry);
+		this.#listed = entries;
 		const outcomes: (CompanyMachineOutcome | undefined)[] = [];
 		let over = false;
 		const steps = Promise.all(
@@ -2530,7 +2611,7 @@ export class LxdCompanyMachineHost {
 	}
 	/** The steps still running, once they ended. */
 	async settled(): Promise<void> {
-		await Promise.allSettled([...this.#work.values()]);
+		await Promise.allSettled([...this.#work.values(), this.#diskReport]);
 	}
 
 	/**
