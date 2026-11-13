@@ -77,6 +77,7 @@ import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
+	type NativeProviderUsageSignal,
 	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -726,7 +727,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					// Contract 7.1: the final send is the member's answer. Nothing after it reaches them; only the run's
+					// bookkeeping still runs (the tool boundary, the 2026-11-13 amendment).
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
@@ -1232,6 +1234,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							);
 						});
 				});
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
+				// after it can lose it.
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
@@ -1257,7 +1263,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
-		if (!kind) return;
+		if (kind) await this.#recordUsageSignalKind(binding, kind);
+	}
+
+	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(
