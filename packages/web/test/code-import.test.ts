@@ -494,6 +494,64 @@ describe("the words of an import", () => {
 		setLanguagePreference("da");
 		for (const [imported, , danish] of lines) expect(importDoneWords(imported)).toBe(danish);
 	});
+
+	it("says the other lines of work that came with it, and that an agent can bring them in only while nothing changed since", () => {
+		const github = { from: "github", at, earlierChanges: 1, lastChange: 1 } as const;
+		const brought = "Brought in from GitHub on November 12, 2026. 1 earlier change came with it.";
+		const hentet = "Hentet ind fra GitHub den 12. november 2026. 1 tidligere ændring kom med.";
+		const next = "An agent can bring that work into the main version.";
+		const næste = "En agent kan føje det arbejde til hovedversionen.";
+		const github2 = "The copy on GitHub stays as it is.";
+		const github2da = "Kopien på GitHub forbliver, som den er.";
+		const lines: [Parameters<typeof importDoneWords>[0], string, string][] = [
+			[
+				{ ...github, otherWork: { lines: 1, changes: 1 } },
+				`${brought} It also brought 1 other line of work, with 1 change that was not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 1 andet arbejdsspor med, med 1 ændring, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				// saml-storefront's, as the plan reads it.
+				{ ...github, otherWork: { lines: 1, changes: 2 } },
+				`${brought} It also brought 1 other line of work, with 2 changes that were not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 1 andet arbejdsspor med, med 2 ændringer, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				{ ...github, otherWork: { lines: 3, changes: 1 } },
+				`${brought} It also brought 3 other lines of work, with 1 change that was not in the main version. ${next} ${github2}`,
+				`${hentet} Den havde også 3 andre arbejdsspor med, med 1 ændring, som ikke var i hovedversionen. ${næste} ${github2da}`,
+			],
+			[
+				// In the member's numbers; and once the place has a change after change 1, no next step.
+				{ ...github, otherWork: { lines: 1200, changes: 4321 }, lastChange: 2 },
+				`${brought} It also brought 1,200 other lines of work, with 4,321 changes that were not in the main version. ${github2}`,
+				`${hentet} Den havde også 1.200 andre arbejdsspor med, med 4.321 ændringer, som ikke var i hovedversionen. ${github2da}`,
+			],
+			[
+				// The last change not known: no next step either.
+				{ from: "file", at, earlierChanges: 1, otherWork: { lines: 2, changes: 5 } },
+				"Brought in from a file on November 12, 2026. 1 earlier change came with it. It also brought 2 other lines of work, with 5 changes that were not in the main version.",
+				"Hentet ind fra en fil den 12. november 2026. 1 tidligere ændring kom med. Den havde også 2 andre arbejdsspor med, med 5 ændringer, som ikke var i hovedversionen.",
+			],
+			[
+				// No other work: as before, whatever the last change.
+				github,
+				`${brought} ${github2}`,
+				`${hentet} ${github2da}`,
+			],
+		];
+		// A member never reads git, a branch, a commit, a ref, a merge or a repository, in either language.
+		const gitWords = /\bgit\b|git-|branch|commit|\bref|merge|repositor|bundle|\bgren|\bflet/i;
+		setLanguagePreference("en");
+		for (const [imported, english] of lines) {
+			expect(importDoneWords(imported)).toBe(english);
+			expect(importDoneWords(imported)).not.toMatch(gitWords);
+		}
+		setLanguagePreference("da");
+		for (const [imported, , danish] of lines) {
+			expect(importDoneWords(imported)).toBe(danish);
+			expect(importDoneWords(imported)).not.toMatch(gitWords);
+		}
+	});
 });
 
 describe("the import's keys and its ask, as the web reads them (cloud/code-downloads.ts)", () => {
@@ -555,7 +613,7 @@ describe("the import's keys and its ask, as the web reads them (cloud/code-downl
 			...kept,
 			repositories: [
 				{ owner: "qorpera", name: "notes" },
-				{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: 1204 } },
+				{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: 1204, lastChange: 1 } },
 				{ owner: "acme", name: "zipped", imported: { from: "file", at, earlierChanges: null } },
 			],
 			imports: {
@@ -640,6 +698,61 @@ describe("the import's keys and its ask, as the web reads them (cloud/code-downl
 				],
 			}).repositories,
 		).toEqual([{ owner: "acme", name: "shop", imported: { from: "github", at, earlierChanges: null } }]);
+	});
+
+	it("reads the other work that came with brought-in code, and the last change's number, each leniently", () => {
+		const shop = {
+			owner: "acme",
+			name: "shop",
+			changes: 1,
+			downloads: [],
+			importedFrom: { kind: "github", repository: "Acme/Shop", via: "public", branch: "main", commits: 1 },
+			importedAt: at,
+			earlierChanges: 1,
+		};
+		const read = (repository: Record<string, unknown>) =>
+			parseCodeRepositories({ ...answer, repositories: [repository] }).repositories[0];
+		const imported = { from: "github", at, earlierChanges: 1 } as const;
+		expect(read({ ...shop, otherWork: { lines: 1, changes: 2 } })).toEqual({
+			owner: "acme",
+			name: "shop",
+			imported: { ...imported, otherWork: { lines: 1, changes: 2 }, lastChange: 1 },
+		});
+		// None, a cloud from before the key, or a key not as expected: left out alone, the rest as it comes.
+		for (const otherWork of [
+			undefined,
+			null,
+			{},
+			{ lines: 1 },
+			{ changes: 2 },
+			{ lines: 0, changes: 2 },
+			{ lines: 1, changes: 0 },
+			{ lines: "1", changes: 2 },
+			{ lines: 1, changes: "2" },
+			{ lines: 1.5, changes: 2 },
+			{ lines: -1, changes: 2 },
+			{ lines: 1, changes: Number.MAX_SAFE_INTEGER + 2 },
+			[1, 2],
+			"1/2",
+			true,
+		])
+			expect(read({ ...shop, otherWork }), JSON.stringify(otherWork)).toEqual({
+				owner: "acme",
+				name: "shop",
+				imported: { ...imported, lastChange: 1 },
+			});
+		for (const changes of [undefined, null, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 2])
+			expect(read({ ...shop, changes, otherWork: { lines: 1, changes: 2 } }), JSON.stringify(changes)).toEqual({
+				owner: "acme",
+				name: "shop",
+				imported: { ...imported, otherWork: { lines: 1, changes: 2 } },
+			});
+		expect(read({ ...shop, changes: 7 })?.imported?.lastChange).toBe(7);
+		// Code begun here has no origin, so nothing of it is read.
+		expect(read({ owner: "acme", name: "shop", changes: 1, otherWork: { lines: 1, changes: 2 } })).toEqual({
+			owner: "acme",
+			name: "shop",
+		});
 	});
 
 	it("reads the ask's answer: on its way, refused with why, or one it does not know", () => {
@@ -1362,5 +1475,65 @@ describe("the place's folder while code is brought in", () => {
 		await below.go("code/acme/shop/restoring.json");
 		await settle();
 		expect(below.names()).toEqual(["restoring.json"]);
+	});
+});
+
+describe("the work that came along outside the main version, in Storage", () => {
+	const shop = {
+		owner: "acme",
+		name: "shop",
+		changes: 1,
+		downloads: [],
+		importedFrom: { kind: "github", repository: "Acme/Shop", via: "public", branch: "main", commits: 1204 },
+		importedAt: at,
+		earlierChanges: 1204,
+	};
+	/** The list as today's cloud answers it (migration 20260930736000): no otherWork key. */
+	const today = {
+		schema: "qorpera.code-repositories/v1",
+		canDownload: true,
+		repositories: [shop],
+		githubCopies: [],
+		bringing: [],
+		lastImport: null,
+	};
+	/** The line in the place's folder, the list read through the real call and parse. */
+	const said = async (repository: Record<string, unknown>) => {
+		const rpc = vi.fn(async (name: string): Promise<unknown> => {
+			if (name === "qorpera_list_code_repositories") return { ...today, repositories: [repository] };
+			throw new Error(`unexpected ${name}`);
+		});
+		const { go, line } = await storage(codeDownloadCalls({ rpc } as unknown as Cloud, profileA.profileId));
+		await go("code/acme/shop");
+		const text = visibleText(line());
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		return text;
+	};
+
+	it("reads exactly as before on a cloud whose list has no otherWork, or one it cannot read", async () => {
+		const before =
+			"Brought in from GitHub on November 12, 2026. 1,204 earlier changes came with it. The copy on GitHub stays as it is.";
+		expect(await said(shop)).toBe(before);
+		for (const otherWork of [null, {}, { lines: 0, changes: 0 }, { lines: 1 }, "1/2"])
+			expect(await said({ ...shop, otherWork }), JSON.stringify(otherWork)).toBe(before);
+		setLanguagePreference("da");
+		expect(await said(shop)).toBe(
+			"Hentet ind fra GitHub den 12. november 2026. 1.204 tidligere ændringer kom med. Kopien på GitHub forbliver, som den er.",
+		);
+	});
+
+	it("says what came along, and the next step until the place changes", async () => {
+		const storefront = { ...shop, earlierChanges: 1, otherWork: { lines: 1, changes: 2 } };
+		expect(await said(storefront)).toBe(
+			"Brought in from GitHub on November 12, 2026. 1 earlier change came with it. It also brought 1 other line of work, with 2 changes that were not in the main version. An agent can bring that work into the main version. The copy on GitHub stays as it is.",
+		);
+		expect(await said({ ...storefront, changes: 2 })).toBe(
+			"Brought in from GitHub on November 12, 2026. 1 earlier change came with it. It also brought 1 other line of work, with 2 changes that were not in the main version. The copy on GitHub stays as it is.",
+		);
+		setLanguagePreference("da");
+		expect(await said(storefront)).toBe(
+			"Hentet ind fra GitHub den 12. november 2026. 1 tidligere ændring kom med. Den havde også 1 andet arbejdsspor med, med 2 ændringer, som ikke var i hovedversionen. En agent kan føje det arbejde til hovedversionen. Kopien på GitHub forbliver, som den er.",
+		);
 	});
 });
