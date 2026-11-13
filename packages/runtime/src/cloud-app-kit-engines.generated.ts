@@ -2204,7 +2204,11 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	let lastText = null;
 	let lastLoad = 0;
 	let pending = 0;
+	// each load's number, and the latest whose result was shown or held for a drag: an older result never replaces it
+	let loads = 0;
+	let latest = 0;
 	async function load() {
+		const mine = ++loads;
 		lastLoad = Date.now();
 		// this read is the newest: a result held for a drag, or a read planned for later, gives way to it
 		clearTimeout(pending);
@@ -2228,13 +2232,15 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 			pending = setTimeout(load, 10000);
 			return;
 		}
-		show(text);
+		show(text, mine);
 	}
-	function show(text) {
+	function show(text, mine) {
+		if (mine < latest) return;
+		latest = mine;
 		// the member took hold of a slider while the read ran: keep what was read, and show it when they let go
 		if (ui && ui.dragging) {
 			clearTimeout(pending);
-			pending = setTimeout(() => show(text), 1500);
+			pending = setTimeout(() => show(text, mine), 1500);
 			return;
 		}
 		if (text === lastText) return;

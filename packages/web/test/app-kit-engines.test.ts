@@ -505,6 +505,36 @@ describe("the model kit's engine with live values", () => {
 		expect(shown("Visits")).toEqual(["4300", "known"]);
 	});
 
+	it("never shows an older read held for a drag over a newer one", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const { qorpera } = await openLive("model", orders, db);
+		const reads: ((text: string) => void)[] = [];
+		const pendingRead = () => new Promise<string>((done) => reads.push(done));
+		qorpera.read.mockImplementationOnce(pendingRead).mockImplementationOnce(pendingRead);
+		// Two values move one after the other: two loads, the second waiting on the first.
+		db.set("shop/month", { orders: 360 });
+		drawFrames();
+		await settle();
+		db.set("shop/visits", { visits: 4300 });
+		drawFrames();
+		await settle();
+		const range = document.querySelector<HTMLInputElement>('.mk-range[aria-label="Orders"]') as HTMLInputElement;
+		range.dispatchEvent(new Event("pointerdown"));
+		slide("Orders", 500);
+		// The older read ends during the drag and is held; the newer ends after the member lets go.
+		reads.shift()?.(JSON.stringify({ ...orders, title: "Older" }));
+		await settle();
+		expect(document.querySelector("h1")?.textContent).toBe("Orders");
+		range.dispatchEvent(new Event("pointerup"));
+		reads.shift()?.(JSON.stringify({ ...orders, title: "Newer" }));
+		await settle();
+		expect(document.querySelector("h1")?.textContent).toBe("Newer");
+		await settle(3000);
+		expect(document.querySelector("h1")?.textContent).toBe("Newer");
+		expect(shown("Visits")).toEqual(["4300", "known"]);
+		expect(qorpera.read).toHaveBeenCalledTimes(3);
+	});
+
 	it("neither stops nor moves a slider being dragged when a value moves, and keeps an open note open", async () => {
 		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
 		const noted = structuredClone(orders);
