@@ -26,6 +26,8 @@ const TEST_MACHINE = "/etc/qorpera-test-machine-versions";
 const SITES = "sites.qorpera.com";
 const API = "api.qorpera.com";
 const APP = "shop-preview.qorpera.com";
+/** A company site's own host (step 5, release 5.1; SITE-HOSTS.md). */
+const SITE = "look-shop.qorpera.com";
 
 /** The block as front-sites.py puts it in: from `virtual_hosts:` on, its comment header dropped. */
 function virtualHosts() {
@@ -123,13 +125,24 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 		);
 	});
 
-	it("answers 404 for every other name under qorpera.com, so none reaches the API", () => {
-		const others = virtualHost("others");
-		assert.match(others.join("\n"), /domains: \["\*\.qorpera\.com"\]/);
-		assert.deepEqual(
-			others.filter((line) => line.trimStart().startsWith("- { match:")).map((line) => line.trim()),
-			["- { match: { prefix: / }, direct_response: { status: 404 } }"],
+	it("sends every other name under qorpera.com to site-serve with the request's own name, no WebSocket, no API", () => {
+		const siteHosts = virtualHost("site-hosts").join("\n");
+		assert.match(siteHosts, /domains: \["\*\.qorpera\.com"\]/);
+		assert.match(siteHosts, /request_headers_to_remove: \[x-forwarded-host\]/);
+		assert.match(
+			siteHosts,
+			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
 		);
+		assert.deepEqual(
+			virtualHost("site-hosts")
+				.filter((line) => line.trimStart().startsWith("- { match:"))
+				.map((line) => line.trim()),
+			[
+				"- { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/, upgrade_configs: [{ upgrade_type: websocket, enabled: false }] } }",
+			],
+		);
+		// The 404 host it replaced is gone (Envoy refuses a name twice anyway).
+		assert.doesNotMatch(virtualHosts(), /- name: others\n/);
 		// Each name in exactly one virtual host (Envoy refuses a name twice).
 		const domains = [...virtualHosts().matchAll(/domains: \[(.*)\]/g)].flatMap((match) =>
 			JSON.parse(`[${match[1]}]`),
@@ -243,6 +256,10 @@ ${virtualHosts()}
                 merge_slashes: true
                 path_with_escaped_slashes_action: REJECT_REQUEST
                 use_remote_address: true
+                # As the stack's gateway (Realtime's WebSocket): an upgrade the front lets through reaches the echo, so a
+                # refusal seen here is the front's own.
+                upgrade_configs:
+                  - upgrade_type: websocket
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -571,26 +588,135 @@ describe(
 			}
 		});
 
-		it("answers 404 itself for every other name under qorpera.com, with a port or a trailing dot too", async () => {
+		it("gives site-serve every other name under qorpera.com on every path, with the request's own name only", async () => {
 			for (const host of [
+				SITE,
+				"webshop--next.qorpera.com",
+				"Look-Shop.Qorpera.COM",
 				`x${SITES}`,
-				"evil.qorpera.com",
+				`x${API}`,
 				"-preview.qorpera.com",
+				"shop-previewx.qorpera.com",
 				"a.b.qorpera.com",
-				"EVIL.Qorpera.com",
-				"evil.qorpera.com:8443",
-				"evil.qorpera.com:443",
-				"evil.qorpera.com.",
-				`x${SITES}.`,
 			])
-				for (const path of ["/", "/rest/v1/", "/functions/v1/event-intake/x", "/.qorpera/health"]) {
-					const answer = await raw(front, path, [
+				for (const sent of [[], [API], [SITES], ["other.qorpera.com", API]])
+					for (const path of [
+						"/",
+						"/a/b?c=1",
+						"/rest/v1/",
+						"/auth/v1/token?grant_type=password",
+						"/storage/v1/object/x",
+						"/functions/v1/event-intake/x",
+						"/functions/v1/site-serve/x",
+						"/.qorpera/unlock",
+						"/.qorpera/health",
+					]) {
+						const label = `${host} ${path} ${sent.join(",")}`;
+						const answer = seen(
+							await raw(front, path, [
+								["Host", host],
+								...sent.map((value) => ["X-Forwarded-Host", value]),
+								["CF-Connecting-IP", "203.0.113.9"],
+							]),
+						);
+						// Under site-serve's name, whatever the path names: never the API's own routes.
+						assert.equal(answer.path, `/site-serve${path}`, label);
+						assert.deepEqual(
+							answer.forwardedHost.map((value) => value.toLowerCase()),
+							[host.toLowerCase()],
+							label,
+						);
+						// Set by the front itself, not left to the gateway.
+						assert.deepEqual(
+							answer.fromFront.map((value) => value.toLowerCase()),
+							[host.toLowerCase()],
+							label,
+						);
+						assert.deepEqual(answer.client, ["203.0.113.9"], label);
+					}
+		});
+
+		it("matches a site host with a port or a trailing dot by its bare name, and forwards that", async () => {
+			for (const host of [`${SITE}:443`, `${SITE}:8443`, `${SITE}.`, "Look-Shop.Qorpera.com:443"]) {
+				const answer = seen(
+					await raw(front, "/a", [
 						["Host", host],
-						["X-Forwarded-Host", API],
-					]);
-					assert.equal(answer.status, 404, `${host} ${path}`);
-					assert.equal(answer.body, "", `${host} ${path}: Envoy's own answer, nothing reached`);
+						["X-Forwarded-Host", SITES],
+					]),
+				);
+				assert.equal(answer.path, "/site-serve/a", host);
+				assert.deepEqual(
+					answer.forwardedHost.map((value) => value.toLowerCase()),
+					[SITE],
+					host,
+				);
+			}
+		});
+
+		it("never lets a site host's path out of site-serve, however it is spelled", async () => {
+			for (const path of [
+				"/../rest/v1/",
+				"/a/../../functions/v1/event-intake/x",
+				"/%2e%2e/rest/v1/",
+				"/%2E%2E/%2e%2e/functions/v1/event-intake/x",
+				"/.%2e/rest/v1/",
+				"/a/%2e%2e/%2e%2e/x",
+				"/..\\..\\event-intake/x",
+				"/..%5c..%5cevent-intake/x",
+				"/..%2f..%2fevent-intake/x",
+				"//rest/v1/",
+				"/./rest/v1/",
+			]) {
+				const answer = await raw(front, path, [
+					["Host", SITE],
+					["X-Forwarded-Host", API],
+				]);
+				if (answer.status === 200) {
+					const reached = JSON.parse(answer.body);
+					// The functions runtime parses the path as a URL (dot segments, %2e and backslashes included) and runs the
+					// function its first segment names: that stays site-serve.
+					assert.equal(new URL(`http://runtime${reached.path}`).pathname.split("/")[1], "site-serve", path);
+					assert.deepEqual(reached.forwardedHost, [SITE], path);
+				} else assert.equal(answer.status, 400, `${path}: ${answer.status}`);
+			}
+		});
+
+		it("refuses a WebSocket upgrade on a site host itself (403), while the API's and an app's pass", async () => {
+			const upgrade = (host, path) =>
+				raw(
+					front,
+					path,
+					[
+						["Host", host],
+						["Upgrade", "websocket"],
+						["Connection", "Upgrade"],
+						["Sec-WebSocket-Version", "13"],
+						["Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="],
+					],
+					{ upgrade: true },
+				);
+			for (const host of [SITE, "webshop--next.qorpera.com", `${SITE}:443`])
+				for (const path of ["/", "/.qorpera/connect", "/realtime/v1/websocket"]) {
+					const answer = await upgrade(host, path);
+					assert.equal(answer.status, 403, `${host} ${path}: ${answer.head}`);
+					assert.doesNotMatch(answer.head, /x-seen-path/i, `${host} ${path}: nothing reached site-serve`);
 				}
+			// The model gateway passes upgrades on: the refusal above is the front's own.
+			const realtime = await upgrade(API, "/realtime/v1/websocket");
+			assert.equal(realtime.status, 101, realtime.head);
+			assert.match(realtime.head, /\r\nx-seen-path: \/realtime\/v1\/websocket(\r\n|$)/i);
+			const app = await upgrade(APP, "/.qorpera/connect");
+			assert.equal(app.status, 101, app.head);
+		});
+
+		it("keeps the exact names and app hosts ahead of the site hosts", async () => {
+			// The sites host: site-serve with the sites host, under the old path.
+			assert.deepEqual(seen(await raw(front, "/shop/", [["Host", SITES]])).forwardedHost, [SITES]);
+			// The api name: the API's own route, unrenamed.
+			assert.equal(seen(await raw(front, "/rest/v1/x", [["Host", API]])).path, "/rest/v1/x");
+			// An app host (the longer suffix) and not a site host: the relay, the path as it came.
+			for (const host of [APP, "shop--next-preview.qorpera.com", "a-preview-preview.qorpera.com"])
+				assert.equal(seen(await raw(front, "/x", [["Host", host]])).path, "/x", host);
 		});
 	},
 );
