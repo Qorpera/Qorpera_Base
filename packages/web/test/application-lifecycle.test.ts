@@ -1132,6 +1132,37 @@ describe("account and route ownership", () => {
 		expect(page.querySelector(".side-panel-header")).toBeNull();
 	});
 
+	it("draws an app's card in a chat as the drawer draws the app, with what it is about", async () => {
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nabout = "This week's sales, shop by shop"\nemblem = "chart"\ncolour = "blue"\nowner = "${staff.id}"\nposted = true\n`,
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("[Sales board](app:sales-board) has new numbers. So has [Old board](app:old-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		await draw();
+		const [card, gone] = prose.querySelectorAll<HTMLElement>(".app-cards > button.app-card");
+		// One line about the app, whole on a hover.
+		const note = card?.querySelector<HTMLElement>(".app-card-note");
+		expect([note?.textContent, note?.title]).toEqual(Array(2).fill("This week's sales, shop by shop"));
+		// The drawer's own colour for the app, and its emblem in place of the plain page's.
+		const tile = f.root.querySelector<HTMLElement>('.rail .rail-app[data-app-key="app:sales-board"]');
+		const colour = tile?.style.getPropertyValue("--app-colour");
+		expect(colour).toMatch(/^#[0-9a-f]{6}$/);
+		expect(card?.style.getPropertyValue("--app-colour")).toBe(colour);
+		const shapes = (root: Element | null | undefined) =>
+			[...(root?.querySelectorAll("svg.interface-emblem > g > *") ?? [])].map((part) => part.outerHTML);
+		expect(shapes(card)).not.toEqual([]);
+		expect(shapes(card)).toEqual(shapes(tile));
+		expect(shapes(card)).not.toEqual(shapes(gone));
+		// A card whose app the company does not have stays plain.
+		expect(gone?.querySelector(".app-card-note")?.textContent).toBe("App");
+		expect(gone?.style.getPropertyValue("--app-colour")).toBe("");
+	});
+
 	it("leads back to the conversation from a card whose app is gone", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);

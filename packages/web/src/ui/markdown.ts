@@ -1,6 +1,6 @@
 import { appLinkName } from "@qorpera/cloud-client/interface-apps";
 import { Lexer, type MarkedToken, type Tokens } from "marked";
-import { h } from "./dom.ts";
+import { h, icon } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
 import { interfaceEmblem } from "./interface-emblem.ts";
 import { t } from "./preferences.ts";
@@ -223,6 +223,25 @@ function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, b
 	}
 }
 
+/** An agent's interface app linked in a message (`app:<name>`): a card the app answers by opening the app's own page
+ * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). It is drawn plain here, as this has no company: a page's emblem
+ * and "App" under the name. Once the company's apps are read it shows the app as the drawer does, its own emblem in
+ * its own colour, and what the app is about in one line (app/application.ts). */
+function appCard(app: string, name: string | Node[]): HTMLElement {
+	return h(
+		"button",
+		{ type: "button", class: "app-card", "data-app-name": app, title: t("Open {name}", { name: app }) },
+		h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 34)),
+		h(
+			"span",
+			{ class: "app-card-copy" },
+			h("strong", { class: "app-card-title" }, name),
+			h("small", { class: "app-card-note" }, t("App")),
+		),
+		h("span", { class: "app-card-go", "aria-hidden": "true" }, icon("chevron")),
+	);
+}
+
 /** `links` false draws a link as its text and an image as its alt text: nothing leaves the page or is fetched. */
 function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
@@ -239,13 +258,25 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 			case "heading":
 				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];
 			case "paragraph": {
-				// An app's link among words: the sentence stays whole, with the name as a link, and the card stands under it.
+				// An app's link among words: the sentence stays whole, with the name as a link, and the app's card stands
+				// under it, once however often the sentence names the app. Cards stand in a row of their own
+				// (`.app-cards`), never in a paragraph: a thread draws that row under the words' bubble, not in it
+				// (`markdownBubbles`).
 				const parts = ("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[];
 				const appOf = (part: MarkedToken) =>
 					links && part.type === "link" ? appLinkName(decodeEntities(part.href)) : undefined;
-				const apps = parts.filter((part) => appOf(part) !== undefined);
-				if (!apps.length || parts.every((part) => appOf(part) !== undefined || !part.raw.trim()))
-					return [h("p", null, children())];
+				const inner = (part: MarkedToken) =>
+					renderTokens(("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[], depth + 1, links);
+				const named = new Set<string>();
+				const cards = parts.flatMap((part) => {
+					const app = appOf(part);
+					if (app === undefined || named.has(app)) return [];
+					named.add(app);
+					return [appCard(app, inner(part))];
+				});
+				if (!cards.length) return [h("p", null, children())];
+				const row = h("div", { class: "app-cards" }, cards);
+				if (parts.every((part) => appOf(part) !== undefined || !part.raw.trim())) return [row];
 				return [
 					h(
 						"p",
@@ -258,20 +289,16 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 									"button",
 									{
 										type: "button",
-										class: "folder-link",
+										class: "folder-link app-link",
 										"data-app-name": app,
 										title: t("Open {name}", { name: app }),
 									},
-									renderTokens(
-										("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[],
-										depth + 1,
-										links,
-									),
+									inner(part),
 								),
 							];
 						}),
 					),
-					...renderTokens(apps, depth + 1, links),
+					row,
 				];
 			}
 			case "blockquote":
@@ -344,28 +371,9 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
 						: children();
-				// An agent's interface app (`app:<name>`): a card the app answers by opening the app's own page
-				// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+				// An agent's interface app where no paragraph placed it (a list's item, a table's cell): its card, in place.
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
-				if (app !== undefined)
-					return [
-						h(
-							"button",
-							{
-								type: "button",
-								class: "app-card",
-								"data-app-name": app,
-								title: t("Open {name}", { name: app }),
-							},
-							h("span", { class: "app-card-emblem", "aria-hidden": "true" }, interfaceEmblem("page", 30)),
-							h(
-								"span",
-								{ class: "app-card-copy" },
-								h("strong", { class: "app-card-title" }, content),
-								h("small", { class: "app-card-note" }, t("App · opens on its own page")),
-							),
-						),
-					];
+				if (app !== undefined) return [appCard(app, content)];
 				// A file or folder of the company's own Company File: a button the app answers by opening Storage there.
 				const path = folderLinkPath(decodeEntities(token.href));
 				if (path !== undefined)
@@ -482,9 +490,24 @@ export function markdownBubbles(source: string): HTMLElement[] {
 			else previous.push(token);
 			boundary = /\n[\t ]*\n[\t ]*$/.test(token.raw);
 		}
-		return groups.length
-			? groups.map((group) => h("div", { class: "message-prose" }, renderTokens(group)))
-			: [markdown(source)];
+		if (!groups.length) return [markdown(source)];
+		// A row of app cards is a part of its own, after the words it followed: the thread draws it without a bubble.
+		const parts: HTMLElement[] = [];
+		for (const group of groups) {
+			let prose: Node[] = [];
+			const words = () => {
+				if (prose.length) parts.push(h("div", { class: "message-prose" }, prose));
+				prose = [];
+			};
+			for (const node of renderTokens(group)) {
+				if (node instanceof HTMLElement && node.classList.contains("app-cards")) {
+					words();
+					parts.push(node);
+				} else prose.push(node);
+			}
+			words();
+		}
+		return parts;
 	} catch {
 		return [h("div", { class: "text" }, source)];
 	}

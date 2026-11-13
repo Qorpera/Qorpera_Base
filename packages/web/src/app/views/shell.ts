@@ -386,6 +386,8 @@ interface RailParts {
 	appTiles: AppTile[];
 	/** The member's places the arrangement refused; the next change leaves them out. */
 	appRefused: ReadonlySet<string>;
+	/** Each of the agents' apps in the drawer as it is drawn there, by the app's name (`appLook`). */
+	appLooks: ReadonlyMap<string, AppLook>;
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
@@ -664,6 +666,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appTree: [],
 			appTiles: [],
 			appRefused: new Set(),
+			appLooks: new Map(),
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
@@ -1994,6 +1997,18 @@ function drawInterfaces(
 	// Apps in a group take the group's colour; the member's own colours over the drawer's (Jonas, 12 Nov 2026).
 	const resolved = appColours(tree, state.appLayout?.layout ?? EMPTY_APP_LAYOUT, (key) => colours.get(drawerKey(key)));
 	const colourOf = (key: string) => colourHex(resolved.get(key));
+	// Each agent's app as it is drawn here, for whatever else shows the app (`appLook`).
+	parts.appLooks = new Map(
+		apps.flatMap((app): [string, AppLook][] => {
+			const manifest = app.manifest;
+			if (!manifest) return [];
+			const key = `app:${app.name}`;
+			const choice = emblemChoice(key);
+			const colour = colourOf(key);
+			const emblem = choice.draw ?? (() => interfaceEmblem(manifest.emblem, 34));
+			return [[app.name, { key: JSON.stringify([choice.model || manifest.emblem, colour ?? ""]), colour, emblem }]];
+		}),
+	);
 	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
 	const drawn = tiles.map((tile) => {
 		let element: HTMLElement;
@@ -2040,6 +2055,31 @@ function countBadge(count: number): HTMLElement | null {
 	return count > 0
 		? h("span", { class: "rail-mention rail-count", "aria-hidden": "true" }, count > 99 ? "99+" : String(count))
 		: null;
+}
+
+/** How an agent's app is drawn: its emblem and the colour of it. `key` changes when either does. */
+export interface AppLook {
+	readonly key: string;
+	/** The emblem's colour, or undefined for the text's own. */
+	readonly colour: string | undefined;
+	/** The emblem, drawn anew at each call. */
+	readonly emblem: () => SVGSVGElement;
+}
+
+/** An agent's app as the drawer draws it, for its card in a message (app/application.ts): the member's own icon and
+ * colour for it, or its group's colour (Jonas, 12 Nov 2026). An app that is not in the drawer (not posted, a concept,
+ * or the rail not drawn yet) is drawn as its manifest says. Undefined for an app with no manifest. */
+export function appLook(company: CompanyController, app: CompanyApp): AppLook | undefined {
+	const manifest = app.manifest;
+	if (!manifest) return undefined;
+	const drawer = railParts.get(company)?.appLooks.get(app.name);
+	if (drawer) return drawer;
+	const colour = colourHex(manifest.colour ?? undefined);
+	return {
+		key: JSON.stringify([manifest.emblem, colour ?? ""]),
+		colour,
+		emblem: () => interfaceEmblem(manifest.emblem, 34),
+	};
 }
 
 /** Each page's colour; an agent's app takes the colour its manifest names (Jonas, 11 Nov 2026: black only had

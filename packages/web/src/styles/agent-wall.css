@@ -89,14 +89,16 @@
 	display: inline-flex; gap: 5px; width: auto; max-width: 100%; margin: 0 2px; padding: 1px 8px 1px 4px; vertical-align: 1px;
 	border-radius: var(--radius-pill); font-size: 12.5px; line-height: 1.4;
 }
-.agent-wall .app-card:hover { box-shadow: none; transform: none; }
-.agent-wall .app-card-emblem svg { width: 16px; height: 16px; }
-.agent-wall .app-card-title { font-size: inherit; }
-.agent-wall .app-card-note { display: none; }
+.agent-wall .app-card-emblem .interface-emblem { width: 16px; height: 16px; }
+.agent-wall .app-card:hover .app-card-emblem .interface-emblem { transform: none; }
+.agent-wall .app-card-title { font-size: inherit; line-height: inherit; }
+.agent-wall .app-card-note, .agent-wall .app-card-go { display: none; }
 /* An app an item links, opened: the message's own app card, whole. */
-.agent-wall-preview.is-app .app-card { display: flex; width: 100%; margin: 0; padding: 10px 12px; border-radius: var(--radius-lg); font-size: 13.5px; }
-.agent-wall-preview.is-app .app-card-emblem svg { width: 28px; height: 28px; }
+.agent-wall-preview.is-app .app-card { display: flex; gap: 12px; width: 100%; margin: 0; padding: 10px 12px; border-radius: var(--radius-lg); font-size: 13.5px; }
+.agent-wall-preview.is-app .app-card-emblem .interface-emblem { width: 28px; height: 28px; }
+.agent-wall-preview.is-app .app-card-title { line-height: 19px; }
 .agent-wall-preview.is-app .app-card-note { display: block; }
+.agent-wall-preview.is-app .app-card-go { display: grid; }
 
 /* One draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
  * its width, which a draft's preview is measured against. Several drafts, an open draft or a note take their own place

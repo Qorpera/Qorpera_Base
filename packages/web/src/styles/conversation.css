@@ -1306,19 +1306,43 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	}
 }
 @media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
-/* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */
+/* An app linked in a message (`app:<name>`): a card that opens the app's own page. It shows the app as the drawer
+ * does, its emblem in its colour, here on a tile of that colour, with its name and one line about it (the whole line
+ * on a hover). In a thread the cards stand in a row of their own under the words, on the thread itself and never in a
+ * bubble's grey (Jonas, 13 Nov 2026: a white box in a grey box, with a small icon and three lines of small print, was
+ * no visual). The row's holder stays a bubble, so it arrives, waits and tells its time as the message's other parts
+ * do; it only gives up the bubble's paint. */
+.app-cards { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.message-prose .app-cards { margin: 8px 0; }
+.bubble:has(> .app-cards) { padding: 0; border-radius: 0; background: none; box-shadow: none; }
 .app-card {
-	display: flex; align-items: center; gap: 12px; width: min(100%, 360px); margin: 6px 0; padding: 10px 14px 10px 10px;
-	border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
-	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
+	display: flex; align-items: center; gap: 12px; width: 360px; min-width: 0; max-width: 100%; padding: 11px 12px 11px 13px;
+	border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
-.app-card:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); box-shadow: 0 4px 14px rgb(18 18 17 / 8%); transform: translateY(-1px); }
+/* A card where no row holds it: in a list's item or a table's cell. */
+.message-prose :not(.app-cards) > .app-card { margin: 6px 0; }
+.app-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
 .app-card:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .app-card-emblem { display: grid; flex: none; place-items: center; }
-.app-card-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.app-card-title { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.app-card-note { color: var(--text-muted); font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .app-card { transition: none; } .app-card:hover { transform: none; } }
+.app-card-emblem .interface-emblem {
+	width: 34px; height: 34px; --emblem-ink: var(--app-colour, var(--text));
+	transition: transform var(--motion-base) var(--ease-spring);
+}
+.app-card:hover .app-card-emblem .interface-emblem { transform: scale(1.1); }
+.app-card-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.app-card-title, .app-card-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-card-title { font-size: 14px; font-weight: 600; line-height: 19px; }
+.app-card-note { color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.app-card-go { display: grid; flex: none; place-items: center; color: var(--text-muted); opacity: 0.5; transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring); }
+.app-card-go .icon { width: 15px; height: 15px; }
+.app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
+/* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
+.message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
+	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
+}
 
 /* Two agents' transcript: a sheet that slides in from the right over the thread, which waits dimmed behind it
  * (Jonas, 5 Nov 2026). A press on the dim area closes it, as Close and Escape do. */
