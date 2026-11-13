@@ -21,7 +21,7 @@ import {
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 /* The data kits of interface apps (RUNTIME-INTERFACE-APPS.md §3b; Jonas, 13 November 2026: apps "are supposed to be
@@ -191,6 +191,267 @@ it("writes a kit's page that names its pictures, reads its data, and opens outsi
 	expect(tricky).toContain("if(!window.qorpera){");
 	// A language the data does not give as a code leaves the page in English.
 	expect(kitPage("m", "model", "M", { ...MODEL, lang: "dansk<" }, () => true)).toContain('<html lang="en">');
+});
+
+/* Live values from the company's databases: where a kit takes a number, its data may name a question of a database
+ * instead. The page's own script, before the engine, puts the current number in its place. */
+
+const ORDERS = {
+	lang: "en",
+	title: "Orders",
+	groups: [
+		{
+			label: "Shop",
+			inputs: [
+				{
+					id: "orders",
+					label: "Orders",
+					min: 0,
+					max: 1000,
+					value: { query: "shop/month", column: "orders", example: 120 },
+				},
+				{
+					id: "revenue",
+					label: "Revenue",
+					min: 0,
+					max: 99000,
+					state: "assumed",
+					value: { query: "shop/month", column: "revenue" },
+				},
+				{
+					id: "visits",
+					label: "Visits",
+					min: 0,
+					max: 9000,
+					start: 500,
+					state: "unknown",
+					value: { query: "shop/visits", params: { days: 30 } },
+				},
+			],
+		},
+	],
+};
+const BOUND = ["/groups/0/inputs/0/value", "/groups/0/inputs/1/value", "/groups/0/inputs/2/value"];
+
+/** The script a kit's page runs before its engine, as kitPage writes it. */
+const pageScript = (page: string) => /<script>(window\.QORPERA_KIT = [^\n]*)<\/script>/.exec(page)?.[1] ?? "";
+
+interface LiveKit {
+	load(): Promise<string>;
+	onLive(listener: () => void): void;
+	live: string[];
+	changed: string[];
+}
+type Row = Record<string, number | string | null>;
+
+/** A company's databases as the bridge gives them to a page: each question's answer, given to a watch at once and
+ * again when it changed. `fail` is an ask that failed, as the bridge hands it on. */
+function databases(answers: Record<string, Row>) {
+	const now = new Map(Object.entries(answers));
+	const watches: { name: string; listener: (answer: unknown) => void; stopped: boolean }[] = [];
+	const answer = (row: Row) => ({
+		columns: Object.keys(row),
+		rows: [row],
+		more: false,
+		asOf: new Date().toISOString(),
+	});
+	const watch = vi.fn((name: string, _params: Record<string, unknown>, listener: (answer: unknown) => void) => {
+		const one = { name, listener, stopped: false };
+		watches.push(one);
+		const row = now.get(name);
+		if (row) queueMicrotask(() => listener(answer(row)));
+		return () => {
+			one.stopped = true;
+		};
+	});
+	const tell = (name: string, given: unknown) => {
+		for (const one of watches) if (one.name === name && !one.stopped) one.listener(given);
+	};
+	const set = (name: string, row: Row) => {
+		now.set(name, row);
+		tell(name, answer(row));
+	};
+	const fail = (name: string) => tell(name, { error: "The database is busy." });
+	return { watch, set, fail, watches };
+}
+
+/** A kit's page opened on a stand-in window, with the bridge it is given (none: outside Qorpera) and its frames, which
+ * are drawn by hand. */
+function openPage(data: Record<string, unknown>, qorpera?: Record<string, unknown>) {
+	const page = kitPage("orders", "model", "Orders", data, () => true);
+	const saved = /<script type="application\/json" id="kit-data">(.*)<\/script>/.exec(page)?.[1] ?? "";
+	const frames: (() => void)[] = [];
+	const window: Record<string, unknown> = {
+		qorpera,
+		requestAnimationFrame: (frame: () => void) => frames.push(frame),
+	};
+	new Function("window", "document", pageScript(page))(window, { getElementById: () => ({ textContent: saved }) });
+	const drawFrames = () => {
+		for (const frame of frames.splice(0)) frame();
+	};
+	return { kit: window.QORPERA_KIT as LiveKit, drawFrames };
+}
+const inside = (data: Record<string, unknown>, db: ReturnType<typeof databases>) =>
+	openPage(data, { read: vi.fn(async () => JSON.stringify(data)), watch: db.watch, onChange() {} });
+interface Input {
+	readonly id: string;
+	readonly value: unknown;
+	readonly state?: string;
+	readonly start?: number;
+}
+/** Each input of the model as the engine gets it: its id, value, state and start. */
+const inputs = (text: string) =>
+	(JSON.parse(text) as { groups: { inputs: Input[] }[] }).groups[0].inputs.map(({ id, value, state, start }) => ({
+		id,
+		value,
+		state,
+		start,
+	}));
+
+it("writes the live values' script into every kit's page, small and before the engine", () => {
+	const page = kitPage("orders", "model", "Orders", ORDERS, () => true);
+	const script = pageScript(page);
+	expect(script).toContain("if(!window.qorpera){");
+	expect(script).toContain("K.load=async()=>");
+	expect(script).toContain("K.onLive=");
+	expect(page.indexOf(script)).toBeLessThan(page.indexOf('<script src="engine.js"></script>'));
+	expect(() => new Script(script)).not.toThrow();
+	// Every app of a kit carries it.
+	expect(Buffer.byteLength(script)).toBeLessThan(3584);
+	expect(pageScript(kitPage("marked", "board", "Marked", BOARD, () => true))).toContain("K.load=async()=>");
+});
+
+it("puts each live value's number in its place and asks each question once", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: "51000.50" }, "shop/visits": { visits: 4200 } });
+	const { kit } = inside(ORDERS, db);
+	expect(inputs(await kit.load())).toEqual([
+		{ id: "orders", value: 340, state: "known" },
+		// A number the database gives as text is a number.
+		{ id: "revenue", value: 51000.5, state: "known" },
+		// With no column, the first column is the value.
+		{ id: "visits", value: 4200, state: "known", start: 500 },
+	]);
+	// Two values of one question are one watch; a question with params is its own.
+	expect(db.watch).toHaveBeenCalledTimes(2);
+	expect(db.watch.mock.calls.map(([name, params]) => [name, params])).toEqual([
+		["shop/month", {}],
+		["shop/visits", { days: 30 }],
+	]);
+	expect(kit.live).toEqual(BOUND);
+	expect(kit.changed).toEqual([]);
+	await kit.load();
+	expect(db.watch).toHaveBeenCalledTimes(2);
+	// Data with no live value is the text as it is stored, and its questions are no longer watched.
+	const plain = JSON.stringify(MODEL);
+	const read = vi.fn(async () => plain);
+	const { kit: kept } = openPage(MODEL, { read, watch: db.watch, onChange() {} });
+	expect(await kept.load()).toBe(plain);
+	expect(kept.live).toEqual([]);
+	let text = JSON.stringify(ORDERS);
+	const { kit: moving } = openPage(ORDERS, { read: async () => text, watch: db.watch, onChange() {} });
+	await moving.load();
+	text = JSON.stringify(MODEL);
+	await moving.load();
+	expect(db.watches.slice(2).map((one) => one.stopped)).toEqual([true, true]);
+});
+
+it("tells the engine once a frame when a value moved, and which moved", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const { kit, drawFrames } = inside(ORDERS, db);
+	const live = vi.fn();
+	const broken = vi.fn(() => {
+		throw new Error("An engine's own mistake");
+	});
+	kit.onLive(broken);
+	kit.onLive(live);
+	await kit.load();
+	db.set("shop/month", { orders: 350, revenue: 51000 });
+	db.set("shop/month", { orders: 360, revenue: 51000 });
+	expect(live).not.toHaveBeenCalled();
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 360, state: "known" });
+	expect(kit.changed).toEqual(["/groups/0/inputs/0/value"]);
+	// The same answer again is no change.
+	db.set("shop/month", { orders: 360, revenue: 51000 });
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	await kit.load();
+	expect(kit.changed).toEqual([]);
+});
+
+it("keeps the last good answer when a later ask fails", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const { kit, drawFrames } = inside(ORDERS, db);
+	const live = vi.fn();
+	kit.onLive(live);
+	await kit.load();
+	db.fail("shop/month");
+	drawFrames();
+	expect(live).not.toHaveBeenCalled();
+	expect(inputs(await kit.load()).slice(0, 2)).toEqual([
+		{ id: "orders", value: 340, state: "known" },
+		{ id: "revenue", value: 51000, state: "known" },
+	]);
+	expect(kit.changed).toEqual([]);
+	// A bridge whose watch throws gives the engine no value there, and no mistake.
+	const { kit: refused } = openPage(ORDERS, {
+		read: async () => JSON.stringify(ORDERS),
+		watch: () => {
+			throw new Error("Not now.");
+		},
+		onChange() {},
+	});
+	expect(inputs(await refused.load()).map(({ value, state }) => [value, state])).toEqual([
+		[null, "unknown"],
+		[null, "unknown"],
+		[null, "unknown"],
+	]);
+});
+
+it("waits a few seconds at most for the first answers, and a later one comes through onLive", async () => {
+	vi.useFakeTimers();
+	try {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		const { kit, drawFrames } = inside(ORDERS, db);
+		const live = vi.fn();
+		kit.onLive(live);
+		let text: string | null = null;
+		void kit.load().then((loaded) => {
+			text = loaded;
+		});
+		await vi.advanceTimersByTimeAsync(2999);
+		expect(text).toBeNull();
+		await vi.advanceTimersByTimeAsync(1);
+		// Not known yet, never the example inside Qorpera; an input's start stays where the slider waits.
+		expect(inputs(text ?? "")).toEqual([
+			{ id: "orders", value: null, state: "unknown" },
+			{ id: "revenue", value: null, state: "unknown" },
+			{ id: "visits", value: 4200, state: "known", start: 500 },
+		]);
+		db.set("shop/month", { orders: 340, revenue: 51000 });
+		drawFrames();
+		expect(live).toHaveBeenCalledTimes(1);
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		expect(kit.changed).toEqual(["/groups/0/inputs/0/value", "/groups/0/inputs/1/value"]);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("shows a live value's example outside Qorpera and in a web app with no watch, and else not known", async () => {
+	const examples = [
+		{ id: "orders", value: 120, state: "assumed" },
+		{ id: "revenue", value: null, state: "unknown" },
+		{ id: "visits", value: null, state: "unknown", start: 500 },
+	];
+	const { kit } = openPage(ORDERS);
+	expect(inputs(await kit.load())).toEqual(examples);
+	expect(kit.live).toEqual(BOUND);
+	const { kit: older } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), onChange() {} });
+	expect(inputs(await older.load())).toEqual(examples);
 });
 
 it("reads a kit's data, or says in words why it does not read", () => {

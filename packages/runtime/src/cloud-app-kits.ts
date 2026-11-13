@@ -100,6 +100,48 @@ export const KIT_FALLBACK_STYLE =
 const KIT_OUTSIDE_QORPERA =
 	'if(!window.qorpera){const saved=document.getElementById("kit-data").textContent;const no=()=>Promise.reject(new Error("Only inside Qorpera."));const none=()=>Promise.resolve([]);window.qorpera={read:(path)=>String(path).endsWith("/"+window.QORPERA_KIT.data)?Promise.resolve(saved):no(),list:no,table:no,todos:none,agents:none,questions:none,answer:no,setRow:no,addRow:no,onChange(){}};}';
 
+/**
+ * Run by the page after the stand-in above: live values from the company's databases. Where a kit takes a number, its
+ * data may hold `{"query": "<database>/<question>", "params", "column", "example"}` in its place. `QORPERA_KIT.load()`
+ * reads the data file, puts each such value's current number in its place and gives the engine the text it parses: a
+ * value with no answer yet is null, and a `state` beside it says `"unknown"` (an answered one says `"known"`). Each
+ * question with its params is watched once, however many values share it; a later answer that fails keeps the last good
+ * one. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
+ * `QORPERA_KIT.live` lists the places of the data that are bound and `QORPERA_KIT.changed` the ones that moved at the
+ * last load, each as a JSON pointer. Where `qorpera.watch` is missing (outside Qorpera, or an older web app), a value is
+ * its `example`, with `"assumed"` beside it, or not known when it has none.
+ */
+const KIT_LIVE_VALUES = [
+	"(()=>{const K=window.QORPERA_KIT,q=window.qorpera,asks=new Map(),fns=[];let seen=new Map(),frame=0,waiting=0;",
+	'K.live=[];K.changed=[];K.onLive=(f)=>{if(typeof f==="function")fns.push(f)};',
+	'const num=(v)=>{const n=typeof v==="number"?v:typeof v==="string"&&v.trim()?Number(v):NaN;return Number.isFinite(n)?n:null};',
+	'const bound=(v)=>v&&typeof v==="object"&&!Array.isArray(v)&&typeof v.query==="string"&&Object.keys(v).every((k)=>["query","params","column","example"].includes(k));',
+	"const tell=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
+	"if(window.requestAnimationFrame)window.requestAnimationFrame(go);else setTimeout(go,16)};",
+	// One watch for each question with its params. A failed answer is no answer: the last good one stays.
+	'const ask=(b)=>{const p=b.params&&typeof b.params==="object"?b.params:{},key=JSON.stringify([b.query,p]);let w=asks.get(key);',
+	"if(!w){w={};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w);",
+	"try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
+	"w.a=a;w.ready();if(s!==w.s){w.s=s;tell()}}catch(e){}})}catch(e){asks.delete(key);w.ready()}}w.used=1;return w};",
+	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
+	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
+	'for(const n of Object.keys(v))walk(v[n],v,n,path+"/"+n.replace(/~/g,"~0").replace(/\\//g,"~1"),out,d+1)};',
+	'K.load=async()=>{const raw=await q.read("apps/"+K.app+"/"+K.data);',
+	'const text=typeof raw==="string"?raw:raw&&(raw.text??(raw.content&&raw.content.text)??raw.content);',
+	'const found=[],ws=[],on=typeof q.watch==="function";let data=null;',
+	'try{if(typeof text==="string"&&text.includes("query")){data=JSON.parse(text);walk(data,null,null,"",found,0)}}catch(e){}',
+	// The first answers get a few seconds; what has not answered by then comes through onLive.
+	"waiting++;let t=0;try{for(const w of asks.values())w.used=0;if(on)for(const f of found)ws.push(ask(f.b));",
+	"if(ws.some((w)=>!w.a))await Promise.race([Promise.all(ws.map((w)=>w.first)),new Promise((r)=>{t=setTimeout(r,3000)})]);",
+	"}finally{waiting--;clearTimeout(t)}",
+	'for(const[key,w]of asks)if(!w.used){asks.delete(key);try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
+	"const now=new Map(),moved=[];found.forEach((f,i)=>{let v=null;const a=on&&ws[i].a,r=a&&a.rows[0];",
+	'if(r&&typeof r==="object")v=num(r[typeof f.b.column==="string"?f.b.column:Array.isArray(a.columns)&&a.columns.length?a.columns[0]:Object.keys(r)[0]]);',
+	'else if(!on)v=num(f.b.example);f.h[f.k]=v;if(f.s)f.h.state=v===null?"unknown":on?"known":"assumed";',
+	"now.set(f.p,v);if(seen.has(f.p)&&seen.get(f.p)!==v)moved.push(f.p)});",
+	"seen=now;K.live=found.map((f)=>f.p);K.changed=moved;return found.length?JSON.stringify(data):text}})();",
+].join("");
+
 /** A data file's text as the object an engine draws from, or what is wrong with it, in words for its maker. */
 export function parseKitData(
 	kit: DataKit,
@@ -164,6 +206,7 @@ export function kitMedia(data: unknown): string[] {
  * (packages/web/public/page-preview/index.html), and the engine reads the data file through it, as it stands now. Opened
  * anywhere else there is none: the page then answers the engine's read from the data it was saved with, and has
  * nothing a member could act on. That is how an agent looks at its app on a machine, with no stand-in to write.
+ * Before the engine, the page also gives it the company's live values in place of the data's bindings (KIT_LIVE_VALUES).
  */
 export function kitPage(
 	app: string,
@@ -196,7 +239,7 @@ export function kitPage(
 			),
 		"</div>",
 		`<script type="application/json" id="kit-data">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>`,
-		`<script>window.QORPERA_KIT = ${kitJson};${KIT_OUTSIDE_QORPERA}</script>`,
+		`<script>window.QORPERA_KIT = ${kitJson};${KIT_OUTSIDE_QORPERA}${KIT_LIVE_VALUES}</script>`,
 		`<script src="${KIT_ENGINE}"></script>`,
 		"</body>",
 		"</html>",

@@ -23,6 +23,8 @@ Write \`model.json\`. Every number comes from the company's files. What is not k
   - optional \`note\` (≤90, shown when the label is tapped), \`source\` link, \`marks\`: up to 6 reference points
     \`{label (≤24), value (number or formula), note (≤40)}\`, such as a competitor's public price.
   - A \`%\` input holds the number shown (8 means 8 %): write \`retur / 100\` in formulas.
+  - \`value\` may be live from a company database: \`{"query": "<database>/<question>", "params": {}, "column": "n",
+    "example": 49}\`. Known once it answers, else unknown. \`example\` shows only outside Qorpera.
 - \`computed\`: \`[{id, formula}]\` over input ids, other computed ids, numbers, \`+ - * / ( )\`, \`< > <= >= == !=\`,
   \`&& ||\`, \`min\`, \`max\`, \`round(x, digits)\`, \`abs\`, \`floor\`, \`ceil\`, \`clamp(x, lo, hi)\`, \`if(cond, a, b)\`,
   \`tiers(x, limit1, rate1, limit2, rate2, ..., rateRest)\` for a stepped share. x/0 shows "–". A wrong name or a
@@ -160,6 +162,8 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
   - \`source\`: an \`https:\` or \`folder:\` link. Shown as a small ↗.
 - \`figures\`: up to 3 numbers the data cannot give, \`{"value", "label", "unit", "state"}\`. \`value\` up to 10
   characters, \`label\` up to 28. Use \`"state": "unknown"\` for a number nobody knows: it shows "?".
+- A step's or a figure's \`value\` may be live from a company database: \`{"query": "<database>/<question>", "params": {},
+  "column": "n", "example": 120}\`. Known once it answers, else unknown. \`example\` shows only outside Qorpera.
 - \`next\`: what will fill the hole, drawn as a small flag in it: \`{"text", "step", "lane", "by"}\`. \`text\` up to 60.
   \`lane\` is a lane id or \`"all"\`. \`by\` is the agent who does it.
 
@@ -2205,7 +2209,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		try {
 			const q = window.qorpera;
 			if (!q || typeof q.read !== "function") throw new Error("no bridge");
-			const raw = await q.read(\`apps/\${KIT.app}/\${KIT.data || "model.json"}\`);
+			// the page puts the company's live values in place of the data's bindings
+			const raw = await (typeof KIT.load === "function" ? KIT.load() : q.read(\`apps/\${KIT.app}/\${KIT.data || "model.json"}\`));
 			text = typeof raw === "string" ? raw : raw && (raw.text ?? (raw.content && raw.content.text) ?? raw.content);
 			if (typeof text !== "string") throw new Error("no text");
 		} catch (e) {
@@ -2231,13 +2236,10 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		}
 		if (!next.inputs.length) return quiet(next.words.empty);
 		lastText = text;
-		// keep what the member chose: touched values stay where they were (clamped to the new range)
+		// keep what the member chose: every input they touched stays where they put it (clamped to the new range), whatever
+		// its new value or state, until they reset it
 		const keep = new Map();
-		for (const id of S.touched) {
-			const n = next.inp[id];
-			const o = M && M.inp[id];
-			if (n && (S.hand.has(id) || (o && o.state === n.state && o.value === n.value))) keep.set(id, S.values[id]);
-		}
+		for (const id of S.touched) if (next.inp[id]) keep.set(id, S.values[id]);
 		const hand = new Set([...S.hand].filter((id) => keep.has(id)));
 		const focused = D.activeElement && ui && ui.rows.find((r) => r.range === D.activeElement);
 		S.touched = new Set();
@@ -2272,6 +2274,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	}
 	function start() {
 		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
 		try {
 			if (window.qorpera && typeof qorpera.onChange === "function") qorpera.onChange(changed);
 		} catch (e) {
@@ -5437,7 +5441,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
 			const app = KIT.app || "";
 			const file = KIT.data || "path.json";
-			const res = await bridge.read(\`apps/\${app}/\${file}\`);
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${app}/\${file}\`));
 			txt = typeof res === "string" ? res : res && (res.text ?? res.content);
 			raw = JSON.parse(String(txt));
 			const next = normalize(raw);
@@ -5461,6 +5466,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	}
 	function start() {
 		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
 		try {
 			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
 		} catch (e) {

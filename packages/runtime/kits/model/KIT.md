@@ -19,6 +19,8 @@ Write `model.json`. Every number comes from the company's files. What is not kno
   - optional `note` (≤90, shown when the label is tapped), `source` link, `marks`: up to 6 reference points
     `{label (≤24), value (number or formula), note (≤40)}`, such as a competitor's public price.
   - A `%` input holds the number shown (8 means 8 %): write `retur / 100` in formulas.
+  - `value` may be live from a company database: `{"query": "<database>/<question>", "params": {}, "column": "n",
+    "example": 49}`. Known once it answers, else unknown. `example` shows only outside Qorpera.
 - `computed`: `[{id, formula}]` over input ids, other computed ids, numbers, `+ - * / ( )`, `< > <= >= == !=`,
   `&& ||`, `min`, `max`, `round(x, digits)`, `abs`, `floor`, `ceil`, `clamp(x, lo, hi)`, `if(cond, a, b)`,
   `tiers(x, limit1, rate1, limit2, rate2, ..., rateRest)` for a stepped share. x/0 shows "–". A wrong name or a

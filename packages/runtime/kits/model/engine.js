@@ -1937,7 +1937,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		try {
 			const q = window.qorpera;
 			if (!q || typeof q.read !== "function") throw new Error("no bridge");
-			const raw = await q.read(`apps/${KIT.app}/${KIT.data || "model.json"}`);
+			// the page puts the company's live values in place of the data's bindings
+			const raw = await (typeof KIT.load === "function" ? KIT.load() : q.read(`apps/${KIT.app}/${KIT.data || "model.json"}`));
 			text = typeof raw === "string" ? raw : raw && (raw.text ?? (raw.content && raw.content.text) ?? raw.content);
 			if (typeof text !== "string") throw new Error("no text");
 		} catch (e) {
@@ -1963,13 +1964,10 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 		}
 		if (!next.inputs.length) return quiet(next.words.empty);
 		lastText = text;
-		// keep what the member chose: touched values stay where they were (clamped to the new range)
+		// keep what the member chose: every input they touched stays where they put it (clamped to the new range), whatever
+		// its new value or state, until they reset it
 		const keep = new Map();
-		for (const id of S.touched) {
-			const n = next.inp[id];
-			const o = M && M.inp[id];
-			if (n && (S.hand.has(id) || (o && o.state === n.state && o.value === n.value))) keep.set(id, S.values[id]);
-		}
+		for (const id of S.touched) if (next.inp[id]) keep.set(id, S.values[id]);
 		const hand = new Set([...S.hand].filter((id) => keep.has(id)));
 		const focused = D.activeElement && ui && ui.rows.find((r) => r.range === D.activeElement);
 		S.touched = new Set();
@@ -2004,6 +2002,8 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 	}
 	function start() {
 		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
 		try {
 			if (window.qorpera && typeof qorpera.onChange === "function") qorpera.onChange(changed);
 		} catch (e) {

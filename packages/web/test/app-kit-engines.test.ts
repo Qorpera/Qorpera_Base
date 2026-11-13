@@ -57,6 +57,42 @@ function standIn(file: string | Error) {
 	return { qorpera, now, change };
 }
 
+/** The script a kit's page runs before its engine (packages/runtime/src/cloud-app-kits.ts `kitPage`): the stand-in
+ * bridge for outside Qorpera, then the live values from the company's databases. Read from the runtime's source, where
+ * the page's text is tested. */
+const kitsSource = readFileSync(resolve("../runtime/src/cloud-app-kits.ts"), "utf8");
+const constant = (name: string) =>
+	new Function(
+		`return ${new RegExp(`const ${name} =\\s*([\\s\\S]*?);\\n\\n`).exec(kitsSource)?.[1] ?? '""'}`,
+	)() as string;
+const PAGE_SCRIPT = constant("KIT_OUTSIDE_QORPERA") + constant("KIT_LIVE_VALUES");
+
+type Row = Record<string, number>;
+/** A company's databases as the bridge gives them to a page: each question's answer, given to a watch at once and
+ * again when it changed. `fail` is an ask that failed, as the bridge hands it on. */
+function databases(answers: Record<string, Row>) {
+	const now = new Map(Object.entries(answers));
+	const watches: { name: string; listener: (answer: unknown) => void }[] = [];
+	const answer = (row: Row) => ({ columns: Object.keys(row), rows: [row], more: false, asOf: "2026-11-13T12:00:00Z" });
+	const watch = vi.fn((name: string, _params: Record<string, unknown>, listener: (answer: unknown) => void) => {
+		watches.push({ name, listener });
+		const row = now.get(name);
+		if (row) queueMicrotask(() => listener(answer(row)));
+		return () => undefined;
+	});
+	const tell = (name: string, given: unknown) => {
+		for (const one of watches) if (one.name === name) one.listener(given);
+	};
+	return {
+		watch,
+		set: (name: string, row: Row) => {
+			now.set(name, row);
+			tell(name, answer(row));
+		},
+		fail: (name: string) => tell(name, { error: "The database is busy." }),
+	};
+}
+
 /** Lets what is due run: the page's reads, and its timers up to `ms` from now. */
 const settle = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
 
@@ -70,6 +106,31 @@ async function open(kit: Kit, file: string | Error, before?: (now: ReturnType<ty
 	await settle();
 	return bridge;
 }
+
+/** An app of the kit whose data holds live values, opened as the frame opens its page: the page's QORPERA_KIT and its
+ * own script, then the engine. With `db` the bridge watches the company's databases; with none it is an older web app's
+ * bridge, with no watch; `outside` opens the page with no bridge at all, as an agent does on a machine. */
+async function openLive(kit: Kit, data: object, db?: ReturnType<typeof databases> | "outside") {
+	const bridge = standIn(JSON.stringify(data));
+	page.QORPERA_KIT = { app: "demo", kit, data: `${kit}.json` };
+	if (db === "outside") {
+		const saved = document.createElement("script");
+		saved.type = "application/json";
+		saved.id = "kit-data";
+		saved.textContent = JSON.stringify(data);
+		document.body.append(saved);
+	} else page.qorpera = db ? { ...bridge.qorpera, watch: db.watch } : bridge.qorpera;
+	new Function(PAGE_SCRIPT)();
+	new Function(kitFile(kit, "engine.js"))();
+	await settle();
+	return bridge;
+}
+
+/** Where a page has no watch: outside Qorpera, and in an older web app. */
+const WITHOUT_WATCH = [
+	["outside Qorpera", "outside"],
+	["in a web app with no watch", undefined],
+] as const;
 
 // jsdom draws no frames: an engine's are kept here and drawn by hand.
 const frames = new Map<number, FrameRequestCallback>();
@@ -265,6 +326,186 @@ describe("the model kit's engine", () => {
 			"plan",
 			Object.fromEntries(inputs.map((input) => [input.id, input.id === "n1" ? 7 : 5])),
 		);
+	});
+});
+
+describe("the model kit's engine with live values", () => {
+	const orders = {
+		lang: "en",
+		title: "Orders",
+		groups: [
+			{
+				label: "Shop",
+				inputs: [
+					{
+						id: "orders",
+						label: "Orders",
+						min: 0,
+						max: 1000,
+						step: 1,
+						start: 100,
+						value: { query: "shop/month", column: "orders", example: 120 },
+					},
+					{ id: "visits", label: "Visits", min: 0, max: 9000, step: 1, value: { query: "shop/visits" } },
+				],
+			},
+		],
+		scenarios: [{ label: "Busy", values: { orders: 800 } }],
+	};
+	/** A slider's value and the state it is drawn in. */
+	const shown = (label: string) => {
+		const range = document.querySelector<HTMLInputElement>(`.mk-range[aria-label="${label}"]`);
+		return [range?.value, range?.closest<HTMLElement>(".mk-row")?.dataset.st];
+	};
+	/** Moves a slider as a member's hand does. */
+	function slide(label: string, value: number) {
+		const range = document.querySelector<HTMLInputElement>(`.mk-range[aria-label="${label}"]`) as HTMLInputElement;
+		range.value = String(value);
+		range.dispatchEvent(new Event("input"));
+	}
+	/** A live value moved: the page draws it in the next frame. */
+	async function moved(db: ReturnType<typeof databases>, name: string, row: Row) {
+		db.set(name, row);
+		drawFrames();
+		await settle();
+	}
+
+	it("draws a live value as known, and again at once when it moves, not after ten seconds", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const { qorpera, change } = await openLive("model", orders, db);
+		expect(shown("Orders")).toEqual(["340", "known"]);
+		expect(shown("Visits")).toEqual(["4200", "known"]);
+		expect(db.watch).toHaveBeenCalledTimes(2);
+		await moved(db, "shop/month", { orders: 360 });
+		expect(shown("Orders")).toEqual(["360", "known"]);
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(db.watch).toHaveBeenCalledTimes(2);
+		// A change in the folder still waits for its ten seconds.
+		change();
+		await settle(9000);
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		await settle(1000);
+		expect(qorpera.read).toHaveBeenCalledTimes(3);
+	});
+
+	it("draws a live value with no answer yet as not known, at its start, until it answers", async () => {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		await openLive("model", orders, db);
+		await settle(3000);
+		expect(shown("Orders")).toEqual(["100", "unknown"]);
+		expect(document.querySelector(".mk-val b")?.textContent).toBe("?");
+		expect(shown("Visits")).toEqual(["4200", "known"]);
+		await moved(db, "shop/month", { orders: 340 });
+		expect(shown("Orders")).toEqual(["340", "known"]);
+	});
+
+	it("keeps a live slider the member moved until they reset it, and moves the ones they did not touch", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		await openLive("model", orders, db);
+		slide("Orders", 500);
+		await moved(db, "shop/month", { orders: 360 });
+		expect(shown("Orders")).toEqual(["500", "yours"]);
+		await moved(db, "shop/visits", { visits: 4300 });
+		expect(shown("Visits")).toEqual(["4300", "known"]);
+		// Reset goes back to the live number, which it follows again.
+		document.querySelector<HTMLButtonElement>(".mk-row .mk-mine")?.click();
+		expect(shown("Orders")).toEqual(["360", "known"]);
+		await moved(db, "shop/month", { orders: 380 });
+		expect(shown("Orders")).toEqual(["380", "known"]);
+		// A scenario the member chose is theirs too.
+		[...document.querySelectorAll<HTMLButtonElement>(".mk-chip")]
+			.find((chip) => chip.textContent === "Busy")
+			?.click();
+		await moved(db, "shop/month", { orders: 400 });
+		expect(shown("Orders")).toEqual(["800", "yours"]);
+		document.querySelector<HTMLButtonElement>(".mk-plain")?.click();
+		expect(shown("Orders")).toEqual(["400", "known"]);
+	});
+
+	it("keeps the last live value when a later ask fails", async () => {
+		const db = databases({ "shop/month": { orders: 340 }, "shop/visits": { visits: 4200 } });
+		const { qorpera, change } = await openLive("model", orders, db);
+		db.fail("shop/month");
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(1);
+		change();
+		await settle(10000);
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(shown("Orders")).toEqual(["340", "known"]);
+	});
+
+	it.each(WITHOUT_WATCH)("draws a live value's example %s, and else not known", async (_where, db) => {
+		await openLive("model", orders, db);
+		expect(shown("Orders")).toEqual(["120", "assumed"]);
+		expect(shown("Visits")).toEqual(["4500", "unknown"]);
+	});
+});
+
+describe("the path kit's engine with live values", () => {
+	const funnel = {
+		lang: "en",
+		title: "Orders",
+		steps: [
+			{ id: "visit", name: "Visit" },
+			{ id: "buy", name: "Buy" },
+		],
+		lanes: [
+			{
+				id: "web",
+				name: "Web",
+				steps: {
+					visit: { value: { query: "shop/funnel", column: "visits" } },
+					buy: { value: { query: "shop/funnel", column: "orders", example: 12 } },
+				},
+			},
+		],
+		figures: [{ value: { query: "shop/revenue", example: 5000 }, label: "Revenue", unit: "kr" }],
+	};
+	const step = (id: string) => document.querySelector(`.pk-val[data-lane="web"][data-step="${id}"]`);
+	const revenue = () =>
+		[...document.querySelectorAll(".pk-fig")].find((figure) => figure.textContent?.includes("Revenue"));
+
+	it("draws a step's and a figure's live value, and again at once when they move", async () => {
+		const db = databases({ "shop/funnel": { visits: 1200, orders: 30 }, "shop/revenue": { revenue: 48000 } });
+		const { qorpera } = await openLive("path", funnel, db);
+		expect(step("visit")?.textContent).toBe("1,200");
+		expect(step("buy")?.className).toBe("pk-val");
+		expect(revenue()?.classList.contains("unk")).toBe(false);
+		db.set("shop/funnel", { visits: 1300, orders: 31 });
+		db.set("shop/revenue", { revenue: 49000 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(step("visit")?.textContent).toBe("1,300");
+		expect(step("buy")?.textContent).toBe("31");
+		expect(revenue()?.querySelector(".pk-fig-n")?.textContent).toBe("49,000");
+	});
+
+	it("draws a value with no answer yet as not known, and keeps the last one when a later ask fails", async () => {
+		const db = databases({ "shop/funnel": { visits: 1200, orders: 30 } });
+		const { change } = await openLive("path", funnel, db);
+		await settle(3000);
+		expect(step("visit")?.textContent).toBe("1,200");
+		expect(revenue()?.classList.contains("unk")).toBe(true);
+		db.set("shop/revenue", { revenue: 48000 });
+		drawFrames();
+		await settle();
+		expect(revenue()?.classList.contains("unk")).toBe(false);
+		db.fail("shop/funnel");
+		change();
+		await settle(10000);
+		expect(step("visit")?.textContent).toBe("1,200");
+		expect(revenue()?.querySelector(".pk-fig-n")?.textContent).toBe("48,000");
+	});
+
+	it.each(WITHOUT_WATCH)("draws a live value's example %s, and else not known", async (_where, db) => {
+		await openLive("path", funnel, db);
+		// A step with no example is a hole; one with an example is drawn as assumed.
+		expect(step("visit")).toBeNull();
+		expect(step("buy")?.textContent).toBe("12");
+		expect(step("buy")?.className).toBe("pk-val a");
+		expect(revenue()?.classList.contains("unk")).toBe(false);
 	});
 });
 
