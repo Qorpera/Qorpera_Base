@@ -122,6 +122,8 @@ const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_PIXELS = 16 * 1000 * 1000;
 /** How many areas decode at once across the view: a whole screen's 28 bands then go in four rounds of a few ms. */
 const MAX_DECODING = 8;
+/** What an await of a stream's work answers when that stream was dropped while it waited. */
+const GONE: unique symbol = Symbol("the stream is gone");
 
 /**
  * One live picture's own decoding (review r4 F1 of #1746). Everything in it belongs to that stream: the turns its areas
@@ -129,9 +131,6 @@ const MAX_DECODING = 8;
  * go at once and then SKIPS decoding (review r5 F1), and every bitmap of it is closed as it lands. `showing` turns true
  * only when pixels of it have reached the canvas, so until then the window keeps its own pictures.
  */
-/** What an await of a stream's work answers when that stream was dropped while it waited. */
-const GONE: unique symbol = Symbol("the stream is gone");
-
 interface StreamPaint {
 	readonly generation: number;
 	dropped: boolean;

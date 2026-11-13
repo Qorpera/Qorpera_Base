@@ -14,9 +14,10 @@ the executor's live-picture listener on node 1's loopback (`memberStreams`, `127
   credentials while it runs, readable by it alone). It does not start while no token is sealed. Installed off.
 - **What "sealed" is worth.** With the host key alone (`/var/lib/systemd/credential.secret`, on the same unencrypted
   disk), the seal keeps the token from being read in passing, from a backup or copy of that one file, and from other
-  hosts; it does not keep it from whoever holds the whole disk or root on the host. With the TPM as well, a copy of the
-  whole disk opens nothing, but root on the running host still can. `status` says which it is: `token sealed (host
-  key)` or `token sealed (host key + tpm)`.
+  hosts; it does not keep it from whoever holds the whole disk or root on the host. With the TPM as well, the seal is
+  bound to this TPM alone and to no measured boot state, so a firmware update or a Secure Boot change does not strand
+  it; a copy of the whole disk opens nothing, but root on the running host still can. `status` says which it is:
+  `token sealed (host key)` or `token sealed (host key + tpm)`.
 - `qorpera-screens-door`: the one place the token passes, and the switch. `token` reads it once (a hidden prompt, or
   one line of stdin; the whole install command Cloudflare shows may be pasted) and seals it to
   `/etc/credstore.encrypted/qorpera-screens-tunnel`; `on` enables and starts the connector and says `on` once it
@@ -58,8 +59,12 @@ serves; it never sees a member's bearer token (the ticket is all the stream carr
 
 `sudo -n qorpera-screens-door off`: within seconds the hostname answers only Cloudflare's own error, every open
 stream ends, and every window falls back to its pictures through the member bridge. `on` again brings it back with the
-sealed token. A new token (Cloudflare's "refresh token"): `token` again; a running connector takes it at once. If the
-host's credential key is ever replaced, the sealed token no longer opens: `token` again.
+sealed token. A new token (Cloudflare's "refresh token"): `token` again; a running connector takes it at once.
+
+If the connector cannot start while a token is sealed, `status` (and the end of `on`) says so in one line: the sealed
+token may no longer open on this host, because the host's credential key was replaced or its TPM was reset or
+replaced. The way back is `token` again (paste the same install command), then `on`: `on` clears a failed unit and its
+start limit first, and starts the connector with the new seal.
 
 ## Checks
 

@@ -16,6 +16,8 @@ const unit = read("qorpera-screens-tunnel.service");
 const sudoers = read("qorpera-screens-door.sudoers");
 const installer = read("install-screens-door.sh");
 const SEALED = "/etc/credstore.encrypted/qorpera-screens-tunnel";
+/** The one line that hands the token to systemd-creds (through bash's own printf, down a pipe). */
+const SEAL = 'seal() { printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${SEALED}.new" 2>&1; }';
 const sha256 = (name) => createHash("sha256").update(readFileSync(join(here, name))).digest("hex");
 
 test("the installer pins every file it installs, and the connector to the binary our database stack already runs", () => {
@@ -90,19 +92,14 @@ test("the door: root only, four verbs, the token in one variable that only bash 
 		'token=""',
 		"if [[ ${line} =~ (eyJ[A-Za-z0-9+/=_-]{40,4096}) ]]; then token=${BASH_REMATCH[1]}; fi",
 		"if [[ -z ${token} ]]; then",
-		'if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then',
-		'said=$(printf %s "${token}" | systemd-creds encrypt --with-key=host --name=token - "${SEALED}.new" 2>&1); then',
+		SEAL,
 	]);
 	const naming = door
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => !line.startsWith("#") && /\$\{?(token|line)\b|\b(token|line)=|read .*\bline\b/.test(line));
 	for (const line of naming) assert.ok(allowed.has(line), line);
-	assert.ok(
-		naming.includes(
-			'if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then',
-		),
-	);
+	assert.ok(naming.includes(SEAL));
 	// Sealed beside, then moved over: never half written; a failure leaves nothing.
 	assert.match(door, /chmod 0600 "\$\{SEALED\}\.new"\n\tmv -f -- "\$\{SEALED\}\.new" "\$\{SEALED\}"/);
 	// The kill switch: stopped, disabled and masked.
@@ -119,11 +116,19 @@ test("the door answers in its own words only, and says which key sealed the toke
 		assert.match(line, /systemctl --quiet /, line);
 	// systemd-creds' own words are kept and shown only when sealing failed.
 	assert.match(door, /echo "the token could not be sealed; nothing written \(systemd-creds said: \$\{said\}\)" >&2/);
-	const sealing = door.split("\n").filter((line) => line.includes("systemd-creds encrypt"));
-	assert.equal(sealing.length, 2);
-	for (const line of sealing) assert.match(line, /said=\$\(printf %s "\$\{token\}" \| systemd-creds encrypt .* 2>&1\)/, line);
-	// The key: the host's, and the TPM's too when systemd says it has a working one; recorded for status.
-	assert.match(door, /^\tkey=host\n\tif systemd-creds has-tpm2 >\/dev\/null 2>&1; then key=host\+tpm2; fi$/m);
+	// One place seals, and every call of it keeps what systemd-creds says.
+	assert.deepEqual(
+		door.split("\n").filter((line) => line.includes("systemd-creds encrypt")).map((line) => line.trim()),
+		[SEAL],
+	);
+	// The key: the host's, and the TPM's too when systemd says it has a working one — bound to that TPM alone, to no
+	// measured boot state (`--tpm2-pcrs=` empty: a firmware or Secure Boot change cannot strand the token; round 8 F1)
+	// — falling back to the host key; recorded for status.
+	assert.match(
+		door,
+		/^\tif systemd-creds has-tpm2 >\/dev\/null 2>&1 && said=\$\(seal --with-key=host\+tpm2 --tpm2-pcrs=\); then\n\t\tkey=host\+tpm2\n\telif said=\$\(seal --with-key=host\); then\n\t\tkey=host\n\telse$/m,
+	);
+	assert.doesNotMatch(door, /--tpm2-pcrs=[0-9]/);
 	assert.match(door, /^SEALED_WITH=\/var\/lib\/qorpera-screens-door\/sealed-with$/m);
 	assert.match(door, /printf '%s\\n' "\$\{key\}" >"\$\{SEALED_WITH\}"/);
 	for (const said of ['host) sealed="sealed (host key)"', 'host+tpm2) sealed="sealed (host key + tpm)"'])
@@ -131,7 +136,27 @@ test("the door answers in its own words only, and says which key sealed the toke
 	// And the README says what each is worth, in plain words.
 	const readme = read("README.md");
 	assert.match(readme, /from a backup or copy of that one file, and from other\n {2}hosts; it does not keep it from whoever holds the whole disk or root on the host/);
-	assert.match(readme, /`token sealed \(host\n {2}key\)` or `token sealed \(host key \+ tpm\)`/);
+	assert.match(readme, /`token sealed \(host key\)` or `token sealed \(host key \+ tpm\)`/);
+	assert.match(readme, /bound to this TPM alone and to no measured boot state, so a firmware update or a Secure Boot change does not strand\n {2}it/);
+});
+
+test("a seal that no longer opens is said plainly, and the way back is token again, then on (review r8 F1)", () => {
+	const hint = "the connector cannot start: the sealed token may no longer open on this host; run token again, then on";
+	// Said when the unit has failed, or keeps failing and being restarted, while a token is sealed.
+	assert.match(door, /^cannot_start\(\) \{\n\t\[\[ -s \$\{SEALED\} \]\] \|\| return 1$/m);
+	assert.match(door, /\[\[ \$\{active\} == failed \|\| \$\{sub\} == auto-restart \]\] \|\| return 1/);
+	assert.ok(door.includes(`echo "${hint}"`));
+	// By status, after its own line, and by on in place of its "not connected" line.
+	assert.match(door, /echo "\$\{UNIT\} \$\{state:-unknown\}, connector \$\{ready\}, token \$\{sealed\}"\n\tcannot_start \|\| true/);
+	assert.match(door, /if ! cannot_start >&2; then\n\t\techo "started, but not connected after 30 s:/);
+	// on works from a failed unit: its failed state and start limit cleared, and a unit not running (re)started now.
+	assert.match(
+		door,
+		/systemctl --quiet reset-failed "\$\{UNIT\}" >\/dev\/null 2>&1 \|\| true\n\tsystemctl --quiet enable "\$\{UNIT\}"\n\tif ! systemctl is-active --quiet "\$\{UNIT\}"; then systemctl --quiet restart "\$\{UNIT\}"; fi/,
+	);
+	// And the README's way back says the same.
+	const readme = read("README.md");
+	assert.match(readme, /The way back is `token` again \(paste the same install command\), then `on`: `on` clears a failed unit and its\nstart limit first/);
 });
 
 test("the door takes the token out of what Cloudflare shows, and nothing else", () => {

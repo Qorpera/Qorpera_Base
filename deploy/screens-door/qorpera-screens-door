@@ -5,16 +5,18 @@
 #           Cloudflare shows may be pasted, the token is taken out of it), seals it with this host's own key into
 #           /etc/credstore.encrypted/qorpera-screens-tunnel (systemd-creds, from memory: never a file in the clear,
 #           never an argument, never printed), and says `written` or why not. A connector that runs takes it at once.
-#   on      enables and starts the connector, and says `on` once it reached Cloudflare (its own readiness), within 30 s;
-#           else it says why not (exit 3) and stays enabled until `off`.
+#   on      enables and starts the connector (from a failed unit too: its failed state and start limit are cleared
+#           first), and says `on` once it reached Cloudflare (its own readiness), within 30 s; else it says why not
+#           (exit 3) and stays enabled until `off`.
 #   off     stops, disables and masks it: within seconds the hostname answers only Cloudflare's own error, and every
 #           window falls back to its pictures through the member bridge. The kill switch.
 #   status  the connector's state, whether it reached Cloudflare, and whether a token is sealed and with which key
-#           (`host key`, or `host key + tpm`); never the token.
+#           (`host key`, or `host key + tpm`); never the token. A connector that cannot start while a token is sealed
+#           is told plainly: the seal may no longer open on this host, and the way back is `token` again, then `on`.
 # What "sealed" is worth: with the host key alone, the key is a file on this same unencrypted disk, so the seal keeps the
 # token from being read in passing, from a backup or copy of that one file, and from other hosts — not from whoever holds
-# the whole disk or root here. With the TPM as well, a copy of the whole disk opens nothing; root on the running host
-# still can.
+# the whole disk or root here. With the TPM as well (bound to this TPM alone, to no measured boot state, so a firmware or
+# Secure Boot change does not strand it), a copy of the whole disk opens nothing; root on the running host still can.
 # Each verb answers in one word or one line of its own: systemd's own messages are not shown unless something failed.
 # Run as root (its sudoers line names exactly these four). It never traces itself, and keeps the token in one shell
 # variable, emptied as soon as it is sealed.
@@ -27,6 +29,15 @@ STORE=/etc/credstore.encrypted
 SEALED=$STORE/qorpera-screens-tunnel
 # Which key sealed it (`host` or `host+tpm2`), for `status`: not a secret, kept apart from the credential store.
 SEALED_WITH=/var/lib/qorpera-screens-door/sealed-with
+# The connector cannot start (failed, or failing and being restarted) while a token is sealed: what to do, in one line.
+cannot_start() {
+	[[ -s ${SEALED} ]] || return 1
+	local active sub
+	active=$(systemctl show -p ActiveState --value "${UNIT}" 2>/dev/null || true)
+	sub=$(systemctl show -p SubState --value "${UNIT}" 2>/dev/null || true)
+	[[ ${active} == failed || ${sub} == auto-restart ]] || return 1
+	echo "the connector cannot start: the sealed token may no longer open on this host; run token again, then on"
+}
 if [[ ${EUID} -ne 0 ]]; then
 	echo "run it as root (sudo -n)" >&2
 	exit 1
@@ -52,21 +63,21 @@ token:1)
 	fi
 	install -d -o root -g root -m 0700 "${STORE}" "${SEALED_WITH%/*}"
 	rm -f -- "${SEALED}.new"
-	# The key: this host's own, and its TPM as well when it has a working one (then a copy of the disk is not enough).
-	key=host
-	if systemd-creds has-tpm2 >/dev/null 2>&1; then key=host+tpm2; fi
 	# printf is bash's own: the token goes down the pipe, never into an argument or a file. What systemd-creds says (a
 	# warning that the host key is not on encrypted media, for one) is kept, and shown only if sealing fails.
-	if ! said=$(printf %s "${token}" | systemd-creds encrypt --with-key="${key}" --name=token - "${SEALED}.new" 2>&1); then
-		if [[ ${key} == host+tpm2 ]] &&
-			said=$(printf %s "${token}" | systemd-creds encrypt --with-key=host --name=token - "${SEALED}.new" 2>&1); then
-			key=host
-		else
-			token=""
-			rm -f -- "${SEALED}.new"
-			echo "the token could not be sealed; nothing written (systemd-creds said: ${said})" >&2
-			exit 1
-		fi
+	seal() { printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${SEALED}.new" 2>&1; }
+	# The key: this host's own, and its TPM as well when it has a working one (then a copy of the disk is not enough),
+	# bound to that TPM alone (`--tpm2-pcrs=` empty), never to a measured boot state, so a firmware or Secure Boot
+	# change cannot strand the token. Should the TPM refuse, the host key alone; `status` says which.
+	if systemd-creds has-tpm2 >/dev/null 2>&1 && said=$(seal --with-key=host+tpm2 --tpm2-pcrs=); then
+		key=host+tpm2
+	elif said=$(seal --with-key=host); then
+		key=host
+	else
+		token=""
+		rm -f -- "${SEALED}.new"
+		echo "the token could not be sealed; nothing written (systemd-creds said: ${said})" >&2
+		exit 1
 	fi
 	token=""
 	chmod 0600 "${SEALED}.new"
@@ -81,7 +92,11 @@ on:1)
 		exit 2
 	fi
 	systemctl --quiet unmask "${UNIT}" >/dev/null 2>&1 || true
-	systemctl --quiet enable --now "${UNIT}"
+	# From a failed unit too: its failed state and its start limit go first, and a unit that is not running is
+	# (re)started now — after `token` again, that is what makes the new seal count at once.
+	systemctl --quiet reset-failed "${UNIT}" >/dev/null 2>&1 || true
+	systemctl --quiet enable "${UNIT}"
+	if ! systemctl is-active --quiet "${UNIT}"; then systemctl --quiet restart "${UNIT}"; fi
 	# "on" only once the connector reached Cloudflare (its own readiness), not once it was started: a connector that
 	# cannot run or connect says so, and stays enabled until `off`.
 	for _ in $(seq 1 30); do
@@ -91,7 +106,9 @@ on:1)
 		fi
 		sleep 1
 	done
-	echo "started, but not connected after 30 s: $(systemctl is-active "${UNIT}" 2>/dev/null || true); see status, or off" >&2
+	if ! cannot_start >&2; then
+		echo "started, but not connected after 30 s: $(systemctl is-active "${UNIT}" 2>/dev/null || true); see status, or off" >&2
+	fi
 	exit 3
 	;;
 off:1)
@@ -111,6 +128,7 @@ status:1)
 		esac
 	fi
 	echo "${UNIT} ${state:-unknown}, connector ${ready}, token ${sealed}"
+	cannot_start || true
 	;;
 *)
 	echo "usage: qorpera-screens-door token|on|off|status" >&2
