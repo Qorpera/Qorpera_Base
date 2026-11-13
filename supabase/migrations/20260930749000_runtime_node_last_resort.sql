@@ -26,30 +26,20 @@
 --      node only when no other enabled executor serves the harness.
 --    Sticky choices are untouched: a warm conversation's node, a machine that wakes on its own node, a member's coding
 --    machine, storage or turn, a sign-in routed to its node.
---    A run's claim is held too (review r1 F1): ranking the placement is not enough, because a claim reaches the node
---    around the chooser. qorpera_runtime_claim_turn answers true at once for an orchestrator with no dispatch role (how
---    both nodes run today), after 1.5 seconds for a fast host and after 10 seconds for an overflow host, and a run
---    claimed with a dispatch role records the claim turn's node instead of asking the chooser. The guard therefore sits
---    at the top of the claim turn, so every path passes it: an orchestrator whose nodes are all last resort claims a run
---    only when no node that is not a last resort could take it right now. A regular node counts as able to take it when
---    it is eligible, fits, takes the run's bundle, may hold the run's identity, and still has a live host that has not
---    refused this run's admission within the last minute. A refusal is evidence about the host that refused and about
---    nothing else (review r2 F1), so it takes that host out of the set instead of opening the guard: while another
---    regular host has room, that host is preferred and the last-resort node stays out; once every regular host has
---    refused or gone ineligible the set is empty and the last-resort node passes on the ordinary rule. The run's own
---    placement naming this node (a warm conversation, or the only node left) passes as before, and the node where this
---    run's last start failed never counts as able, so the failed-start rule still prefers a healthy last-resort node.
---    The minute is not qorpera_runtime_refused_recently's 15 seconds, and must not be (review r3 F1). A release after a
---    refusal also defers the whole job, and the last-resort node cannot bypass that deferral: 2 seconds for a full or
---    retiring sandbox when a member waits for the run, 5 seconds for NODE_NOT_PREFERRED and NODE_IDENTITY_ELSEWHERE, and
---    15 seconds for every other refusal, the node ledger's NODE_CAPACITY_EXHAUSTED among them (20260928249240). With a
---    memory of 15 seconds the two windows end at the same instant, so the last-resort node could never see both "the
---    deferral is over" and "the regular hosts have refused": two regular hosts refusing in turn left the run queued while
---    the spare sat idle, which is the opposite of r2's failure and the worse one. A minute clears the longest such
---    deferral four times over, and is the window in which a node's own report counts at all (the candidates ask for an
---    observation younger than 60 seconds), so a refusal never outlives the report that makes its node eligible. The
---    backoff after an infrastructure failure reaches 5 minutes (qorpera_runner_dispatch_wait) and is deliberately not
---    outlasted: a failure is not a refusal, the host stays in the set, and the regular hosts retry when it ends.
+--    AGENT RUNS ARE A PREFERENCE, NOT A GUARANTEE. The choosers above rank a last-resort node last for a run, but a run
+--    reaches a node through its orchestrator's claim, and the claim turn is not gated on the flag: it answers yes at once
+--    for an orchestrator with no dispatch role (how both nodes run today), after 1.5 seconds for a fast host and after 10
+--    seconds for an overflow host, and a run claimed with a dispatch role records the claim turn's node instead of asking
+--    the chooser. A last-resort node's orchestrator can therefore still pick up a waiting run. For a hard rule on runs,
+--    give that node's orchestrator dispatch_role = 'overflow' (qorpera_set_runner_orchestrator_dispatch_role, which
+--    exists today and is in production): it then waits for the fast hosts. A guard in front of the claim turn was carried
+--    in this migration through three review rounds and is deliberately not here (review r4): each round closed one gate
+--    and found the next one downstream -- the claim turn's three answers, then the reservation, which asks the chooser
+--    again and answers NODE_NOT_PREFERRED. Making the flag itself binding for runs needs one design pass over the claim
+--    turn and the reservation together, not another guard in front of them.
+--    For every other kind of work the flag IS a guarantee, because those paths choose the node themselves through the
+--    functions below: Company Computers, agents' machines (both the push and the pull path), member coding machines and
+--    the executor a company's coding is enrolled with, sign-ins and account refreshes.
 -- 4. The pull path (qorpera_admit_executor_machines): a last-resort node's executor admits a waiting machine, or gives up
 --    a stopped machine's disk for one, only when no node that is not a last resort could fit it now
 --    (qorpera_company_machine_candidates, the push path's own test, with the machine's own disk given back). One asleep on
@@ -94,6 +84,11 @@ security definer
 set search_path = ''
 set lock_timeout = '5s'
 as $$
+-- What this promises: a node marked last resort takes a new Company Computer, a new or moving agent's machine, a
+-- member's new coding machine or a sign-in only when no other node has room. For AGENT RUNS it is a preference, not a
+-- guarantee: the choosers rank this node last, but the claim turn is not gated on the flag, so this node's orchestrator
+-- can still pick up a waiting run. Give that orchestrator dispatch_role = 'overflow' when runs must wait too
+-- (20260930749000).
 declare v_node public.qorpera_runtime_nodes%rowtype;
 begin
 	if auth.role() is distinct from 'service_role' or p_node_id is null or p_last_resort is null
@@ -177,53 +172,6 @@ select pg_temp.node_last_resort_patch(
 		|| E'\t\t-- A last-resort node (20260930749000) ranks below every other fast host''s node; the failed node still ranks last.\n'
 		|| E'\t\tcoalesce((select last_resort_node.last_resort from public.qorpera_runtime_nodes last_resort_node\n'
 		|| E'\t\t\twhere last_resort_node.id = nodes.node_id), false),\n', '1']);
-
--- The claim path itself (review r1 F1): every answer of the claim turn passes this guard first.
-select pg_temp.node_last_resort_patch(
-	'public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure, array[
-	$claim_old$	if v_role is null then return true; end if;
-$claim_old$,
-	$claim_new$	-- A last-resort node (20260930749000) claims a run only when no node that is not a last resort could take it right
-	-- now. This sits before every answer below, because each one reaches the node around the chooser: no dispatch role
-	-- answers true at once, a fast host after 1.5 seconds, an overflow host after 10 seconds, and a run claimed with a
-	-- role records the claim turn's node instead of asking the chooser. An adapter whose nodes are not all last resort
-	-- is not a last-resort host (the bundle declaration refuses an adapter that serves two nodes anyway).
-	if exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
-			join public.qorpera_runtime_nodes spare on spare.id = mine.node_id where spare.last_resort)
-		and not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
-			join public.qorpera_runtime_nodes spare on spare.id = mine.node_id where not spare.last_resort) then
-		v_placement := public.qorpera_runtime_run_placement(p_job, p_run);
-		-- The run's own placement names this node (a warm conversation, or the only node left once the failed node and
-		-- the regular nodes are passed over): nothing else can take it, so the claim stands. Otherwise ask whether a
-		-- node that is not a last resort could take it right now: eligible, fits, takes the run's bundle, may hold the
-		-- run's identity, and with a live host that has not refused this run's admission in the last 15 seconds. A
-		-- refusal says a host is full or retiring and says nothing about the others (review r2), so it takes that host
-		-- out of the set, and the set is empty only once every regular host has refused or gone ineligible. The node
-		-- where this run's last start failed never counts, so the failed-start rule still prefers this node over it.
-		if not exists (select 1 from public.qorpera_runtime_orchestrator_nodes(v_adapter) mine
-				where mine.node_id = (v_placement ->> 'nodeId')::uuid)
-			and exists (select 1 from jsonb_array_elements(public.qorpera_runtime_node_placement_candidates('native')) regular
-				where (regular ->> 'eligible')::boolean and (regular ->> 'fits')::boolean
-					and not coalesce((regular ->> 'lastResort')::boolean, false)
-					and (regular ->> 'nodeId')::uuid is distinct from (select failure.node_id
-						from public.qorpera_runtime_run_start_failures failure where failure.run_id = p_run.id)
-					and public.qorpera_runtime_adapter_takes_bundle(regular ->> 'providerId', p_run.runtime_bundle_sha256)
-					and public.qorpera_runtime_run_adapter_allowed(p_run, regular ->> 'providerId')
-					and exists (select 1 from public.qorpera_runner_orchestrators host
-						where host.provider_adapter = regular ->> 'providerId' and host.status = 'active'
-							-- A minute, not qorpera_runtime_refused_recently's 15 seconds: a refusal defers the whole job
-							-- for up to 15 seconds and this node cannot bypass that, so an equal window would always have
-							-- aged out by the time the deferral let it ask (review r3). A node's report must be younger
-							-- than a minute for it to be eligible at all, so this never outlives that.
-							and not exists (select 1 from public.qorpera_runner_job_claims refusal
-								where refusal.run_id = p_job.run_id and refusal.orchestrator_id = host.id
-									and refusal.status = 'released' and refusal.release_reason like 'ADMISSION_REFUSED:%'
-									and refusal.released_at > clock_timestamp() - interval '60 seconds'))) then
-			return false;
-		end if;
-	end if;
-	if v_role is null then return true; end if;
-$claim_new$, '1']);
 
 select pg_temp.node_last_resort_patch('public.qorpera_place_runtime_office_fleet(jsonb,bigint)'::regprocedure, array[
 	$o$  order by (rank.value->>'freeSlots')::bigint desc,$o$,
