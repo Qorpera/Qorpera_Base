@@ -15,11 +15,12 @@
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
- * - `app_guide` answers how one part of an app is made (cloud-app-guides.ts): what a kit's one file holds, how a page
- *   written by hand is styled, reads the company's live data and lets a member act, and how an app's own icons are
- *   drawn. It reads nothing of the company and changes nothing. `save_app` saves a kit's file only in a run that has
- *   read the kit's guide: until 14 November 2026 the guides were the descriptions of save_app's fields, which no
- *   model ever received (cloud-app-guides.ts says why), so nothing is left to a description being read.
+ * - `app_guide` answers how one part of an app is made (cloud-app-guides.ts): the look every app is held to, what a
+ *   kit's one file holds, how a page written by hand is styled, reads the company's live data and lets a member act,
+ *   and how an app's own icons are drawn. It reads nothing of the company and changes nothing. `save_app` saves a
+ *   kit's file only in a run that has read the kit's guide: until 14 November 2026 the guides were the descriptions of
+ *   save_app's fields, which no model ever received (cloud-app-guides.ts says why), so nothing is left to a
+ *   description being read.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
  * (cloud-folder-file-tools.ts, `appManifestCheck`).
  */
@@ -149,6 +150,7 @@ const SAVE_APP_DESIGN =
 /** What app_guide tells the agent (at most 4096 bytes, as every tool's description). */
 const APP_GUIDE_DESCRIPTION =
 	"Read how one part of an interface app is made, before you make it with save_app. " +
+	"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app. " +
 	"about a kit (model, board, path, object, curve, stack, shelf or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
 	"For a page written by hand: style is the base style every page starts from, the company's colours as CSS variables, and light and dark; reads is how the page's script reads the company's live data through the qorpera object, and how often; writes is how it lets a member answer a question or change a table's row. " +
 	"icons is how an app's own icons are drawn. " +
