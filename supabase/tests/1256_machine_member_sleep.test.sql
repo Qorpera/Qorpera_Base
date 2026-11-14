@@ -5,12 +5,15 @@
 -- (no run started it); `m-1256`, a machine Alice's run started; `bob-desktop`, made for Bob and not come up yet.
 -- 1. Awake only for a member: a member's computer is; an agent's machine is not; each agent's use since the member's
 --    start ends it (a command that still runs, one started since, the screen, a going run that asked for it by
---    machine_start, took it again or started it), and the same use before that start does not; another start than a
---    member's, an always-on machine and one not wanted running are not.
--- 2. The member's last sign: each of the real member calls moves it (the wake, a confirmed look, a take-over, a shared
---    action, a pointer pass, turning the screen on); a look counts only for the window after the member's word, and a
---    watch that never said it is no sign; a take-over's heartbeat and a busy machine are no sign, though both move the
---    machine's last use.
+--    machine_start, took it again or started it), and the same use before that start does not; the screen's stamp is
+--    renewed at most every 30 seconds, so one up to 30 seconds older than the start counts (an agent at the screen right
+--    after a member's quick stop and wake); an earlier asker that still goes counts when a later one took its place and
+--    ended; another start than a member's, an always-on machine and one not wanted running are not.
+-- 2. The member's last sign: each of the real member calls moves it (the wake, a confirmed look, a take-over, a private
+--    input, a shared action, a pointer pass, turning the screen on); a look counts only for the window after the
+--    member's word, and a watch that never said it is no sign; a hand-back clears the machine's own time of private
+--    typing and is itself the sign, by the hold's own record; a hold that ran out counts its last input, not the time
+--    its lease ended; a take-over's heartbeat and a busy machine are no sign, though both move the machine's last use.
 -- 3. Due: not at 9 minutes 50 after the last sign, due at 10, by the executor's list and by the stop's custody, which
 --    then stops it as the kernel (cause slept); not before the machine came up, and its 10 minutes start when it does; a
 --    busy machine a run started, woken by a member who is gone, is due though its last use is now.
@@ -22,6 +25,10 @@
 
 select pg_temp.base_claims('service_role');
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'gm-ack') \g /dev/null
+-- Bob's thread gets a post: his run is queued, a second run that still goes (1241).
+select set_config('qorpera_test.gm_bob', (select (pg_temp.base_materialize() -> 'run_ids' ->> 0)
+	from (select pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Look at it.')) post),
+	true) \g /dev/null
 
 -- 628's agent, as 1223 drives it: the machine_start envelope Alice's run hashes, a start, a machine_run, a screen action.
 create function pg_temp.gm_binding() returns jsonb language sql as $$ select current_setting('qorpera_test.base_binding')::jsonb $$;
@@ -37,7 +44,10 @@ begin
 	perform public.qorpera_native_machine_start(pg_temp.gm_binding(), v_envelope, 'authorize');
 	perform public.qorpera_begin_native_tool_operation(pg_temp.gm_binding(), p_receipt, 'machine_start:' || p_key, v_sha, repeat('9', 64), false);
 	v_result := public.qorpera_native_machine_start(pg_temp.gm_binding(), v_envelope, 'begin', p_receipt, repeat('9', 64));
-	perform public.qorpera_complete_native_tool_operation(pg_temp.gm_binding(), p_receipt, v_sha, v_result);
+	-- Completed as the runtime completes it: the answer is the operation result's json content (1241).
+	perform public.qorpera_complete_native_tool_operation(pg_temp.gm_binding(), p_receipt, v_sha,
+		jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'inputSha256', v_sha,
+			'content', jsonb_build_object('kind', 'json', 'value', v_result)));
 	return v_result;
 end $$;
 create function pg_temp.gm_machine(p_name text) returns public.qorpera_company_machines language sql as $$
@@ -172,15 +182,36 @@ begin
 	where machine_id = v_id;
 	update public.qorpera_company_machine_desktop_pointers set begun_at = v_at where machine_id = v_id;
 	update public.qorpera_company_machine_desktop_starts set begun_at = v_at where machine_id = v_id;
+	-- The holds' own records (each began at its own instant: machine and beginning are unique) and their actions.
+	update public.qorpera_company_machine_desktop_controls control
+	set began_at = v_at - make_interval(secs => ordered.n * 0.001), ended_at = case when control.ended_at is not null then v_at end
+	from (select id, row_number() over (order by began_at desc) as n from public.qorpera_company_machine_desktop_controls
+		where machine_id = v_id) ordered
+	where control.id = ordered.id;
+	-- A hold that stands is found by when it began (the machine's desktop_member_since).
+	update public.qorpera_company_machines machine set desktop_member_since = control.began_at
+	from public.qorpera_company_machine_desktop_controls control
+	where machine.id = v_id and control.machine_id = v_id and control.ended_at is null and machine.desktop_member_since is not null;
+	update public.qorpera_company_machine_desktop_actions set begun_at = v_at where machine_id = v_id;
 	set local session_replication_role = origin;
 end $$;
--- Alice's run ended (only ever inside a block that is undone).
-create function pg_temp.gm_alice_ended() returns void language plpgsql as $$
+-- A run ended: Alice's, or the one named (only ever inside a block that is undone).
+create function pg_temp.gm_ended(p_run uuid default null) returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
 	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
 		lease_token_sha256 = null, lease_expires_at = null
-	where id = (select run.job_id from public.qorpera_execution_runs run where run.id = (pg_temp.gm_binding() ->> 'runId')::uuid);
+	where id = (select run.job_id from public.qorpera_execution_runs run
+		where run.id = coalesce(p_run, (pg_temp.gm_binding() ->> 'runId')::uuid));
+	set local session_replication_role = origin;
+end $$;
+-- A completed machine_start of Alice's run as if its answer were not kept yet: its receipt names no machine (1241).
+create function pg_temp.gm_unkept(p_key text) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_run_operation_receipts set result = result #- '{content,value,machine}'
+	where run_id = (pg_temp.gm_binding() ->> 'runId')::uuid and logical_operation_key = 'machine_start:' || p_key;
+	if not found then raise exception 'Machine member sleep: no receipt machine_start:%', p_key; end if;
 	set local session_replication_role = origin;
 end $$;
 
@@ -267,8 +298,9 @@ end $$;
 
 -- 1. Awake only for a member -------------------------------------------------------------------------------------------------
 do $$
-declare v jsonb;
+declare v jsonb; v_stamp timestamptz; v_bob uuid := current_setting('qorpera_test.gm_bob')::uuid;
 begin
+	perform pg_temp.base_assert(v_bob is not null, '0: Bob''s run is there');
 	perform pg_temp.base_assert(pg_temp.gm_only('carol-desktop'), '1: a computer a member made is awake only for a member');
 	perform pg_temp.base_assert(not pg_temp.gm_only('m-1256'), '1: a machine an agent started is not');
 	perform pg_temp.base_assert(public.qorpera_company_machine_member_only(null) is false, '1: no machine is none');
@@ -331,11 +363,33 @@ begin
 			'1: an agent at the screen since the member''s start');
 		perform pg_temp.gm_quiet('carol-desktop');
 		perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop'), '1: and still, half an hour on');
-		perform pg_temp.gm_shift('carol-desktop', $s$screen_agent_used_at = wanted_at - interval '1 second'$s$);
+		perform pg_temp.gm_shift('carol-desktop', $s$screen_agent_used_at = wanted_at - interval '31 seconds'$s$);
 		perform pg_temp.base_assert(pg_temp.gm_only('carol-desktop') and pg_temp.gm_due('carol-desktop'),
-			'1: an agent at the screen before the member''s start is no use since');
+			'1: an agent at the screen more than half a minute before the member''s start is no use since');
 		perform pg_temp.gm_shift('carol-desktop', $s$screen_agent_used_at = wanted_at$s$);
 		perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop'), '1: at the very start counts');
+		-- The stamp is renewed at most every 30 seconds: one that young may stand for a use after the start.
+		perform pg_temp.gm_shift('carol-desktop', $s$screen_agent_used_at = wanted_at - interval '29 seconds'$s$);
+		perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop') and not pg_temp.gm_due('carol-desktop'),
+			'1: a stamp within the half minute before the start counts as a use since');
+		raise sqlstate 'P1256';
+	exception when sqlstate 'P1256' then null;
+	end;
+	-- As it happens: Alice at the screen, the owner stops and wakes the computer at once (it never went down), Alice at
+	-- the screen again within the half minute. The stamp is not renewed, and the computer is still hers.
+	begin
+		v := pg_temp.gm_screen('12560000-0000-4000-8000-0000000000f3', 'gm-key-3', 'carol-desktop', '{"type":"key","keys":["ctrl+s"]}');
+		v_stamp := (pg_temp.gm_machine('carol-desktop')).screen_agent_used_at;
+		perform pg_temp.gm_member('owner', 'qorpera_member_manage_company_machine', 'carol-desktop', $s$, 'stop'$s$);
+		perform pg_temp.gm_member('owner', 'qorpera_member_manage_company_machine', 'carol-desktop', $s$, 'start'$s$);
+		perform pg_temp.base_assert(v ->> 'state' = 'authorized' and (pg_temp.gm_machine('carol-desktop')).desired_by = 'member'
+			and (pg_temp.gm_machine('carol-desktop')).desired_state = 'running'
+			and (pg_temp.gm_machine('carol-desktop')).wanted_at > v_stamp, '1: the owner stopped and woke it after Alice''s use');
+		v := pg_temp.gm_screen('12560000-0000-4000-8000-0000000000f4', 'gm-key-4', 'carol-desktop', '{"type":"key","keys":["ctrl+s"]}');
+		perform pg_temp.base_assert(v ->> 'state' = 'authorized' and (pg_temp.gm_machine('carol-desktop')).screen_agent_used_at = v_stamp,
+			'1: Alice''s second use within the half minute did not renew the stamp: ' || v::text);
+		perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop') and not pg_temp.gm_due('carol-desktop'),
+			'1: an agent at the screen after the member''s start, on a stamp from before it');
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
 	end;
@@ -349,7 +403,26 @@ begin
 		perform pg_temp.gm_quiet('carol-desktop');
 		perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop') and not pg_temp.gm_due('carol-desktop'),
 			'1: a going run that asked for it');
-		perform pg_temp.gm_alice_ended();
+		-- By taken_by_run_id alone, as while its answer is not kept yet.
+		begin
+			perform pg_temp.gm_unkept('gm-wake');
+			perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop'), '1: a going run that asked for it, its answer not kept yet');
+			raise sqlstate 'P1257';
+		exception when sqlstate 'P1257' then null;
+		end;
+		-- A later asker took its place (Bob's run) and ended: Alice's run still goes, and her kept answer names the machine.
+		begin
+			perform pg_temp.gm_shift('carol-desktop', format('taken_by_run_id = %L', v_bob));
+			perform pg_temp.gm_ended(v_bob);
+			perform pg_temp.base_assert(not pg_temp.gm_only('carol-desktop') and not pg_temp.gm_due('carol-desktop'),
+				'1: an earlier asker that still goes, after a later one that ended');
+			perform pg_temp.gm_ended();
+			perform pg_temp.base_assert(pg_temp.gm_only('carol-desktop') and pg_temp.gm_due('carol-desktop'),
+				'1: both askers ended: the member''s again');
+			raise sqlstate 'P1257';
+		exception when sqlstate 'P1257' then null;
+		end;
+		perform pg_temp.gm_ended();
 		perform pg_temp.base_assert(pg_temp.gm_only('carol-desktop') and pg_temp.gm_due('carol-desktop'),
 			'1: that run ended without using it: the member''s again');
 		raise sqlstate 'P1256';
@@ -362,7 +435,7 @@ begin
 			where receipt.run_id = (pg_temp.gm_binding() ->> 'runId')::uuid and receipt.logical_operation_key = 'machine_start:gm-own')));
 		perform pg_temp.base_assert((pg_temp.gm_machine('carol-desktop')).reused_by_receipt_id is not null
 			and not pg_temp.gm_only('carol-desktop') and not pg_temp.gm_due('carol-desktop'), '1: a going run that took it again');
-		perform pg_temp.gm_alice_ended();
+		perform pg_temp.gm_ended();
 		perform pg_temp.base_assert(pg_temp.gm_only('carol-desktop'), '1: until that run ends');
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
@@ -375,7 +448,13 @@ begin
 	perform pg_temp.gm_quiet('m-1256');
 	perform pg_temp.base_assert(not pg_temp.gm_only('m-1256') and not pg_temp.gm_due('m-1256'), '1: a going run that started it');
 	begin
-		perform pg_temp.gm_alice_ended();
+		perform pg_temp.gm_unkept('gm-own');
+		perform pg_temp.base_assert(not pg_temp.gm_only('m-1256'), '1: a going run that started it, by the machine''s own word of it');
+		raise sqlstate 'P1256';
+	exception when sqlstate 'P1256' then null;
+	end;
+	begin
+		perform pg_temp.gm_ended();
 		perform pg_temp.base_assert(pg_temp.gm_only('m-1256') and pg_temp.gm_due('m-1256'), '1: once that run ended it is the member''s');
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
@@ -457,7 +536,8 @@ begin
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
 	end;
-	-- Private typing: the take-over is a sign; its heartbeat is none, though it moves the machine's last use.
+	-- Private typing: the take-over and each input are signs; the heartbeat is none, though it moves the machine's last
+	-- use; the hand-back clears the machine's own time of it, and the hold's own record keeps it.
 	begin
 		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
 			format(', 0, %L', '12560000-0000-4000-8000-0000000000e1'));
@@ -465,12 +545,67 @@ begin
 		perform pg_temp.base_assert(v ->> 'state' = 'ok' and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop'))
 			and not pg_temp.gm_due('carol-desktop'), '2: a take-over: ' || v::text);
 		perform pg_temp.gm_quiet('carol-desktop', '20 minutes');
-		perform pg_temp.base_assert(pg_temp.gm_due('carol-desktop'), '2: 20 minutes after the take-over''s last input it is due');
+		perform pg_temp.base_assert(pg_temp.gm_due('carol-desktop'), '2: 20 minutes after the take-over it is due');
+		v := pg_temp.gm_member('owner', 'qorpera_member_machine_desktop_act_begin', 'carol-desktop',
+			format($s$, '{"type": "click", "x": 4, "y": 4}', 0, %s$s$, v_seat));
+		perform pg_temp.base_assert(v ->> 'state' = 'ok' and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop'))
+			and not pg_temp.gm_due('carol-desktop'), '2: a private input: ' || v::text);
+		perform pg_temp.gm_quiet('carol-desktop', '20 minutes');
+		perform pg_temp.base_assert(pg_temp.gm_due('carol-desktop'), '2: 20 minutes after the last input it is due');
 		v := pg_temp.gm_member('owner', 'qorpera_member_keep_machine_desktop', 'carol-desktop', format(', 0, %s', v_seat));
 		perform pg_temp.base_assert(v ->> 'state' = 'ok' and pg_temp.gm_now((pg_temp.gm_machine('carol-desktop')).last_used_at)
 			and not pg_temp.gm_now(pg_temp.gm_seen('carol-desktop')) and pg_temp.gm_due('carol-desktop')
 			and pg_temp.gm_stop('carol-desktop') = 'agreed:stopped:kernel:slept',
 			'2: a heartbeat moves the last use and is no sign: ' || v::text);
+		-- The hand-back: the machine's own time of the typing is gone, and the hand-back is the member's sign.
+		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop',
+			format($s$, 'handed_back', 0, %s$s$, v_seat));
+		perform pg_temp.base_assert((v ->> 'handedBack')::boolean and (pg_temp.gm_machine('carol-desktop')).desktop_member_input_at is null
+			and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop')) and not pg_temp.gm_due('carol-desktop')
+			and pg_temp.gm_stop('carol-desktop') = 'MACHINE_IN_USE', '2: a hand-back keeps the typing''s sign: ' || v::text);
+		perform pg_temp.gm_quiet('carol-desktop', '9 minutes 50 seconds');
+		perform pg_temp.base_assert(not pg_temp.gm_due('carol-desktop'), '2: not due 9 minutes 50 after the hand-back');
+		perform pg_temp.gm_quiet('carol-desktop', '10 minutes');
+		perform pg_temp.base_assert(pg_temp.gm_due('carol-desktop'), '2: due 10 minutes after the hand-back');
+		-- A hold that ran out is closed later, with the time its lease ended (which its heartbeat set): its last input
+		-- is the sign, not that time; with no input, its take-over.
+		perform pg_temp.gm_quiet('carol-desktop');
+		set local session_replication_role = replica;
+		update public.qorpera_company_machine_desktop_controls set ended_by = 'lapsed', ended_at = clock_timestamp() - interval '1 minute'
+		where machine_id = (pg_temp.gm_machine('carol-desktop')).id;
+		update public.qorpera_company_machine_desktop_actions set begun_at = clock_timestamp() - interval '9 minutes'
+		where machine_id = (pg_temp.gm_machine('carol-desktop')).id and not shared;
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.gm_seen('carol-desktop') between clock_timestamp() - interval '9 minutes 5 seconds'
+				and clock_timestamp() - interval '9 minutes' and not pg_temp.gm_due('carol-desktop'),
+			'2: a hold that ran out: its last input is the sign');
+		set local session_replication_role = replica;
+		update public.qorpera_company_machine_desktop_actions set begun_at = clock_timestamp() - interval '11 minutes'
+		where machine_id = (pg_temp.gm_machine('carol-desktop')).id and not shared;
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.gm_due('carol-desktop'), '2: and not the time its lease ended, a minute ago');
+		set local session_replication_role = replica;
+		delete from public.qorpera_company_machine_desktop_actions
+		where machine_id = (pg_temp.gm_machine('carol-desktop')).id and not shared;
+		update public.qorpera_company_machine_desktop_controls set began_at = clock_timestamp() - interval '9 minutes'
+		where machine_id = (pg_temp.gm_machine('carol-desktop')).id;
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.gm_seen('carol-desktop') between clock_timestamp() - interval '9 minutes 5 seconds'
+				and clock_timestamp() - interval '9 minutes' and not pg_temp.gm_due('carol-desktop'),
+			'2: a hold that ran out with no input: its take-over is the sign');
+		raise sqlstate 'P1256';
+	exception when sqlstate 'P1256' then null;
+	end;
+	-- A hold taken long ago and given back now: the hand-back counts, whenever the hold began.
+	begin
+		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
+			format(', 0, %L', '12560000-0000-4000-8000-0000000000e2'));
+		v_seat := (v ->> 'seat')::bigint;
+		perform pg_temp.gm_quiet('carol-desktop', '20 minutes');
+		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop',
+			format($s$, 'closed', 0, %s$s$, v_seat));
+		perform pg_temp.base_assert((v ->> 'handedBack')::boolean and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop'))
+			and not pg_temp.gm_due('carol-desktop'), '2: a hold of 20 minutes given back as its page closed: ' || v::text);
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
 	end;
@@ -519,7 +654,7 @@ begin
 
 	-- A busy page on a machine a run started, woken by a member who is gone: its last use is now, and it is due.
 	begin
-		perform pg_temp.gm_alice_ended();
+		perform pg_temp.gm_ended();
 		perform pg_temp.gm_quiet('m-1256');
 		perform pg_temp.base_assert(pg_temp.gm_busy('m-1256', '12560000-0000-4000-8000-0000000000b2') ->> 'state' = 'recorded'
 			and pg_temp.gm_now((pg_temp.gm_machine('m-1256')).last_used_at) and pg_temp.gm_now((pg_temp.gm_machine('m-1256')).busy_at),
@@ -650,6 +785,18 @@ begin
 			'(v_machine.last_used_at > clock_timestamp() - make_interval(secs => v_executor.sleep_after_seconds)') > 0
 		and strpos((select prosrc from pg_proc where oid = 'public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure), '20260930744000') > 0,
 		'6: the patched bodies keep what they had');
+	-- What the rule leans on in bodies it does not patch: the agent's screen stamp is renewed at most every 30 seconds
+	-- (the half minute qorpera_company_machine_member_only allows for), and only a hand-back clears the machine's own time
+	-- of private typing (qorpera_company_machine_member_seen_at reads the hold's record for it).
+	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
+			where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure),
+			'or screen_agent_used_at is null or screen_agent_used_at < clock_timestamp() - interval ''30 seconds'')') > 0,
+		'6: the agent''s screen stamp is renewed at most every 30 seconds: member_only allows for exactly that');
+	perform pg_temp.base_assert((select array_agg(distinct proc.proname::text order by proc.proname::text)
+			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
+			where namespace.nspname = 'public' and proc.prosrc ~ 'desktop_member_input_at\s*=\s*null')
+			= array['qorpera_member_hand_back_machine_desktop'],
+		'6: only a hand-back clears the machine''s own time of private typing');
 	-- Every function that moves a machine's last use. The member rule reads the member's signs from the rows these write,
 	-- not from the last use: a NEW function here that is a member's sign must write a row that
 	-- qorpera_company_machine_member_seen_at reads (or be added to it), or a member who is there is taken for gone. Look at

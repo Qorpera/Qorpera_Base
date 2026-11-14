@@ -13,18 +13,21 @@
 -- * Awake only for a member (qorpera_company_machine_member_only): a task machine wanted running whose start that
 --   stands was a member's (desired_by 'member': the window's wake, or a computer a member made from it), with since that
 --   start (wanted_at) no agent's command on it (none that still runs, none started since; a worker's and a coding
---   conversation's are commands too), no agent at its screen (screen_agent_used_at, a look or an action), and no run
---   that still goes (its job queued or leased) that started it, asked for it by machine_start (taken_by_run_id) or took
+--   conversation's are commands too), no agent at its screen (screen_agent_used_at, a look or an action; that stamp is
+--   renewed at most every 30 seconds, so one up to 30 seconds older than the start counts), and no run that still goes
+--   (its job queued or leased) that started it, asked for it by machine_start (taken_by_run_id, and every completed
+--   machine_start of such a run that answered it, so an earlier asker counts when a later one took its place) or took
 --   it again (reused_by_receipt_id): that run may come back to it, as qorpera_company_machine_takeable reads it. Once an
 --   agent uses the machine it is the agent's until it has slept and a member wakes it again. An always-on machine is
 --   never one.
 -- * The member's last sign (qorpera_company_machine_member_seen_at), read from the rows the member's own paths write, so
 --   none of them is patched: the wake (wanted_at); a look, for as long as the member's word that they watch is at most
 --   the window old (the watch's last_look_at, no later than its confirmed_at plus the window: a tab nobody touches stops
---   counting); private typing (desktop_member_input_at: the take-over and each input, never its heartbeat, which goes on
---   in a tab nobody touches); an action on the desktop shared with the agent (desktop_shared_at); the pointer over the
---   desktop (a pass, renewed while it moves); the screen turned on (a desktop start). A busy program is no sign: a page
---   left open on the desktop does not hold the machine.
+--   counting); private typing (the take-over and each input, never its heartbeat, which goes on in a tab nobody touches:
+--   desktop_member_input_at while the hold stands, and after a hand-back, which clears it, the newest hold's own record,
+--   qorpera_company_machine_desktop_controls and its actions); an action on the desktop shared with the agent
+--   (desktop_shared_at); the pointer over the desktop (a pass, renewed while it moves); the screen turned on (a desktop
+--   start). A busy program is no sign: a page left open on the desktop does not hold the machine.
 -- * Due (qorpera_company_machine_member_sleep_due): such a machine that has come up, once the newer of its boot and the
 --   member's last sign is the node's member_sleep_after_seconds old (new, 600 by default, beside sleep_after_seconds;
 --   qorpera_configure_machine_member_sleep sets it). The node's list says sleepDue for it, and the stop's custody agrees
@@ -41,9 +44,10 @@ do $$ begin
 		raise exception '20260930759000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_company_machine_takeable(public.qorpera_company_machines,jsonb,jsonb,text)') is null
 		or to_regclass('public.qorpera_company_machine_desktop_pointers') is null
+		or to_regclass('public.qorpera_company_machine_desktop_controls') is null
 		or to_regclass('public.qorpera_company_machine_desktop_starts') is null
 		or to_regclass('public.qorpera_company_machine_screen_watches') is null then
-		raise exception '20260930759000 needs the member''s watch, start and pointer (20260930712000, 714000, 744000) and a machine taken again (20260930747000)';
+		raise exception '20260930759000 needs the member''s watch, take-over, start and pointer (20260930712000, 713000, 714000, 744000) and a machine taken again (20260930747000)';
 	end if;
 end $$;
 
@@ -100,8 +104,11 @@ begin
 	if p_machine.id is null or p_machine.removed_at is not null or p_machine.lifetime is distinct from 'task'
 		or p_machine.desired_state is distinct from 'running' or p_machine.desired_by is distinct from 'member' then
 		return false; end if;
-	-- An agent at its screen since that start (a look or an action).
-	if p_machine.screen_agent_used_at >= p_machine.wanted_at then return false; end if;
+	-- An agent at its screen since that start (a look or an action). The stamp is renewed at most every 30 seconds
+	-- (qorpera_authorize_machine_screen), so a use at or after the start may have left one up to 30 seconds older: a
+	-- stamp that young counts as a use since (an agent at the screen in the half minute before a member's start keeps the
+	-- machine an agent's; the stamp cannot tell that from a use after it).
+	if p_machine.screen_agent_used_at >= p_machine.wanted_at - interval '30 seconds' then return false; end if;
 	-- An agent's command on it: one that still runs, or one started since that start.
 	if exists (select 1 from public.qorpera_company_machine_commands command
 		where command.machine_id = p_machine.id
@@ -118,6 +125,16 @@ begin
 		join public.qorpera_execution_runs run on run.id = asked.run_id
 		join public.qorpera_runner_jobs job on job.id = run.job_id
 		where job.status in ('queued', 'leased')) then
+		return false; end if;
+	-- Nor an earlier asker that still goes, when a later one is taken_by_run_id: any completed machine_start of a run that
+	-- still goes that answered this machine, as the runtime keeps its answer (the operation result's content,
+	-- qorpera.cloud-tool-operation-result/v1), exactly as qorpera_company_machine_takeable reads it.
+	if exists (select 1 from public.qorpera_runner_jobs job
+		join public.qorpera_execution_runs run on run.job_id = job.id
+		join public.qorpera_run_operation_receipts receipt on receipt.run_id = run.id
+		where job.status in ('queued', 'leased') and run.profile_id = p_machine.profile_id
+			and receipt.logical_operation_key like 'machine_start:%' and receipt.status = 'completed'
+			and receipt.result #>> '{content,value,machine,machineId}' = p_machine.id::text) then
 		return false; end if;
 	return true;
 end $$;
@@ -137,8 +154,18 @@ returns timestamptz language sql stable security definer set search_path = '' as
 		(select max(least(watch.last_look_at, watch.confirmed_at + p_window))
 			from public.qorpera_company_machine_screen_watches watch
 			where watch.machine_id = p_machine.id and watch.confirmed_at is not null),
-		-- Private typing: the take-over and each input. Never its heartbeat.
+		-- Private typing: the take-over and each input, never its heartbeat. While the hold stands, or ran out and is not
+		-- closed yet, the machine's own row has it.
 		p_machine.desktop_member_input_at,
+		-- A hand-back clears that. The newest hold's own record keeps it: the hand-back itself when the member gave the
+		-- desktop back or their page closed (a live hold ended by them, at that moment), else the hold's last input (one
+		-- that ran out is closed later with the time its lease ended, which its heartbeat set).
+		(select case when control.ended_at is null then control.began_at
+				when control.ended_by in ('handed_back', 'closed') then control.ended_at
+				else greatest(control.began_at, (select max(act.begun_at)
+					from public.qorpera_company_machine_desktop_actions act where act.control_id = control.id)) end
+			from public.qorpera_company_machine_desktop_controls control
+			where control.machine_id = p_machine.id order by control.began_at desc limit 1),
 		-- An action on the desktop shared with the agent.
 		p_machine.desktop_shared_at,
 		-- The pointer over the desktop.

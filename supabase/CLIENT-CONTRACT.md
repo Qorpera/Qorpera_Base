@@ -1510,7 +1510,7 @@ always-on machine is never one. There is no new call:
   for every other.
 - The member's signs are what their own calls already record: the wake (`qorpera_member_manage_company_machine`
   `start`, `qorpera_member_start_agent_computer`), a look (`qorpera_member_machine_screen_begin`), private typing (the
-  take-over and each action, never the heartbeat), an action or a pointer pass on the desktop shared with the agent, and
+  take-over, each action and the hand-back, never the heartbeat), an action or a pointer pass on the desktop shared with the agent, and
   a start of the desktop. A look counts only for as long after the member's word (`watch.confirmed: true`) as the
   machine's seconds: looks that go on in a tab nobody touches stop counting.
 - So, for a machine with `memberSleepSeconds`: a window stops looking and asks whether the member still watches after
