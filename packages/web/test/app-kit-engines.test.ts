@@ -1358,6 +1358,59 @@ describe("the stack kit's engine", () => {
 		expect(document.querySelector(".st-wait")?.textContent).toBe("Not asked yet");
 	});
 
+	it("finds a card's question by its whole title, also one longer than a card shows", async () => {
+		const title = "Pay the October parts bill from Nordic Supply AS?";
+		const { qorpera } = await open(
+			"stack",
+			JSON.stringify({ lang: "en", title: "Wants your yes", cards: [{ id: "parts", title, value: 4200, unit: "kr" }] }),
+			(bridge) => {
+				bridge.questions = [ask("q-long", title)];
+			},
+		);
+		// The card shows its title cut, and still holds the question: one card, not a second one for the question.
+		expect(front()).toBe("Pay the October parts bill from Nordic Supply A…");
+		expect(document.querySelector(".st-dots")).toBeNull();
+		expect(document.querySelector(".st-wait")).toBeNull();
+		expect(buttons().map((button) => button.textContent)).toEqual(["No", "Yes"]);
+		buttons()[1]?.click();
+		await settle(1200);
+		expect(qorpera.answer).toHaveBeenCalledWith("q-long", "yes");
+		expect(document.querySelector(".st-done h2")?.textContent).toBe("Nothing waits on you");
+	});
+
+	it("gives a new question of a done card's title a card of its own", async () => {
+		const { now, change, qorpera } = await open(
+			"stack",
+			JSON.stringify({
+				lang: "en",
+				title: "Wants your yes",
+				cards: [
+					{ id: "box", title: "Order new boxes?", answer: "Yes" },
+					{ id: "parts", title: "Pay the parts bill?" },
+				],
+			}),
+			(bridge) => {
+				bridge.questions = [ask("q-box-2", "Order new boxes?"), PARTS];
+			},
+		);
+		// The done card keeps its answer; this month's ask of the same title is open, a card of its own.
+		expect(document.querySelectorAll(".st-dot.done")).toHaveLength(1);
+		expect(document.querySelectorAll(".st-dot:not(.done)")).toHaveLength(2);
+		expect(front()).toBe("Pay the parts bill?");
+		buttons()[2]?.click();
+		await settle(1200);
+		expect(qorpera.answer).toHaveBeenLastCalledWith("q-parts", "yes");
+		expect(front()).toBe("Order new boxes?");
+		expect(buttons().map((button) => button.textContent)).toEqual(["No", "Yes"]);
+		// A card answered on this page is done too: the next ask of its title is again a card of its own.
+		now.questions = [ask("q-box-2", "Order new boxes?"), ask("q-parts-2", "Pay the parts bill?")];
+		change();
+		await settle(10000);
+		expect(document.querySelectorAll(".st-dot.done")).toHaveLength(2);
+		expect(document.querySelectorAll(".st-dot:not(.done)")).toHaveLength(2);
+		expect(buttons()).toHaveLength(2);
+	});
+
 	it("takes a card whose question was answered in the chat as done, and shows an open question no card names", async () => {
 		const { now, change } = await open("stack", stack, (bridge) => {
 			bridge.questions = [PARTS, ask("q-other", "Hire a photographer?")];

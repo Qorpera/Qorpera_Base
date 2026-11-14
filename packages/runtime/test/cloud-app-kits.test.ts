@@ -1383,6 +1383,37 @@ it("gives a stack's app the open questions and their answers, which its buttons 
 	);
 	expect(manifestOf(f, "yes")).toMatchObject({ reads: ["questions"], writes: ["answers"] });
 	expect(taken.look).toContain(LOOK);
+	// Writes already full without answers: questions is still added, answers cannot be, and the look says why.
+	const FULL =
+		"answers could not be added to the app's writes, which already hold 16 entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.";
+	const tables = Array.from({ length: 16 }, (_, k) => `table:t${k + 1}`);
+	const full = read(
+		await f.call(
+			"save_app",
+			save("full", "make-3", { title: "Full", kit: "stack", reads: ["files"], writes: tables }, [
+				{ path: "stack.json", text: JSON.stringify(STACK) },
+			]),
+		),
+	);
+	expect(full.state).toBe("applied");
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["files", "questions"], writes: tables });
+	expect(full.look).toContain(FULL);
+	expect(full.look).not.toContain(LOOK);
+	// Saved again, the manifest is not written, and the look says it again until answers has room.
+	const fullAgain = read(
+		await f.call("save_app", save("full", "change-3", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }])),
+	);
+	expect(fullAgain.files.map((file: { path: string }) => file.path)).not.toContain("apps/full/app.toml");
+	expect(fullAgain.look).toContain(FULL);
+	// Given room, answers joins: the look names only what was added.
+	const roomy = read(
+		await f.call("save_app", save("full", "change-4", { title: "Full", reads: ["questions"], writes: tables.slice(1) }, [])),
+	);
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["questions"], writes: [...tables.slice(1), "answers"] });
+	expect(roomy.look).toContain(
+		"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.",
+	);
+	expect(roomy.look).not.toContain(FULL);
 	// The other shape kits ask for nothing of the kind.
 	const shelf = read(
 		await f.call(

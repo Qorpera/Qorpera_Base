@@ -400,11 +400,20 @@ const DATA_READ_ADDED =
 /** What the answer's look says when save_app gave a stack's page the open questions and their answers. */
 const STACK_ASKS_ADDED =
 	"questions was added to the app's reads and answers to its writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the open questions only. */
+const STACK_QUESTIONS_ADDED =
+	"questions was added to the app's reads: a stack's cards show the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the answers only. */
+const STACK_ANSWERS_ADDED =
+	"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when a stack's writes are full and hold no `answers`, which save_app cannot add. */
+const STACK_WRITES_FULL = `answers could not be added to the app's writes, which already hold ${APP_WRITES_MAX} entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.`;
 
 /**
  * A kit app's manifest with what its page needs and its maker may not think of, and the look's line for each: `data`
  * in reads where its data names a question of the company's databases, and for a stack `questions` in reads and
- * `answers` in writes, since its cards' buttons answer the open questions that point at the app. Never taken away.
+ * `answers` in writes, since its cards' buttons answer the open questions that point at the app. Never taken away: when `writes` is full without `answers`, a
+ * look line tells the agent to make room.
  */
 function kitNeeds(
 	kit: DataKit,
@@ -417,17 +426,21 @@ function kitNeeds(
 		out = { ...out, reads: [...out.reads, "data"] };
 		notes.push(DATA_READ_ADDED);
 	}
-	if (
-		kit === "stack" &&
-		!(out.reads.includes("questions") && out.writes.includes(APP_WRITE_ANSWERS)) &&
-		(out.writes.includes(APP_WRITE_ANSWERS) || out.writes.length < APP_WRITES_MAX)
-	) {
-		out = {
-			...out,
-			reads: out.reads.includes("questions") ? out.reads : [...out.reads, "questions"],
-			writes: out.writes.includes(APP_WRITE_ANSWERS) ? out.writes : [...out.writes, APP_WRITE_ANSWERS],
-		};
-		notes.push(STACK_ASKS_ADDED);
+	if (kit === "stack") {
+		const addQuestions = !out.reads.includes("questions");
+		const hasAnswers = out.writes.includes(APP_WRITE_ANSWERS);
+		const addAnswers = !hasAnswers && out.writes.length < APP_WRITES_MAX;
+		if (addQuestions || addAnswers)
+			out = {
+				...out,
+				reads: addQuestions ? [...out.reads, "questions"] : out.reads,
+				writes: addAnswers ? [...out.writes, APP_WRITE_ANSWERS] : out.writes,
+			};
+		if (addQuestions && addAnswers) notes.push(STACK_ASKS_ADDED);
+		else if (addQuestions) notes.push(STACK_QUESTIONS_ADDED);
+		else if (addAnswers) notes.push(STACK_ANSWERS_ADDED);
+		// writes are full without answers: the agent must make room, since save_app never takes an entry away
+		if (!hasAnswers && !addAnswers) notes.push(STACK_WRITES_FULL);
 	}
 	return { manifest: out, notes };
 }
@@ -1047,10 +1060,8 @@ export function cloudAppTools(options: {
 				const reading = manifestOut ?? before;
 				if (reading !== null) {
 					const needs = kitNeeds(kit, data, reading);
-					if (needs.notes.length > 0) {
-						manifestOut = needs.manifest;
-						look.push(...needs.notes);
-					}
+					if (needs.manifest !== reading) manifestOut = needs.manifest;
+					look.push(...needs.notes);
 				}
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },

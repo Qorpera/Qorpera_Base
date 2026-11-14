@@ -227,6 +227,8 @@ span.st-dot{cursor:default}
 			cards.push({
 				id,
 				title,
+				// the whole title, normalised before the cut: a question's title is matched against it
+				match: norm(c.title),
 				value: state === "unknown" ? null : value,
 				state: value === null && c.value !== undefined && typeof c.value !== "string" ? "unknown" : state,
 				valueText: typeof c.value === "string" && value === null ? cut(c.value, MAX.valueText) : "",
@@ -340,12 +342,14 @@ span.st-dot{cursor:default}
 		first: true,
 	};
 
-	// Each card with the open question that is its own: by the question's id, or by its title, which is the card's.
+	// Each card with the open question that is its own: by the question's id, or by its whole title, which is the
+	// card's. A card already done takes none: the same ask again (each month's bill) is a new question, not the old card's.
 	function deal() {
 		const m = S.model;
 		const used = new Set();
 		const cards = m.cards.map((c) => {
-			const q = S.qs.find((x) => !used.has(x.id) && ((c.question && x.id === c.question) || norm(x.title) === norm(c.title))) || null;
+			if (c.answer !== null || S.answered.has(c.id)) return { ...c, q: null };
+			const q = S.qs.find((x) => !used.has(x.id) && ((c.question && x.id === c.question) || norm(x.title) === c.match)) || null;
 			if (q) used.add(q.id);
 			return { ...c, q };
 		});
