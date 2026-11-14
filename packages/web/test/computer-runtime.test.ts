@@ -5,8 +5,10 @@ import { isUuid } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ASK_LASTS_MS,
+	COMPUTER_SHOWN,
 	ComputerPanel,
 	ComputerPanels,
+	computerOpenOffered,
 	INPUT_MAX_AGE_MS,
 	inputSpanTooOld,
 	inputTooOld,
@@ -1708,6 +1710,109 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		// As a click's refusal: the list is read again, and nothing more is started by itself.
 		await advance(SCREEN_OFF_EVERY_MS * 2);
 		expect(s.starts).toHaveLength(2);
+	});
+
+	it("sends the member's newest choice: one made while a request is under way goes when it answers, the older answer dropped (review r1 F3 of #1781)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		let open = () => {};
+		s.state.startGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NOT_FOUND" });
+		choose(p, 0);
+		await flush();
+		// Under way: the member changes their mind twice; the control stays as it is, no spinner.
+		choose(p, 1, frameOpener(p));
+		choose(p, 0, frameOpener(p));
+		choose(p, 1, frameOpener(p));
+		expect(frameOpener(p).disabled).toBe(false);
+		await flush();
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		s.state.startGate = undefined;
+		open();
+		await flush();
+		// The first answer (a refusal) is the older choice's: not said. The newest goes, once.
+		expect(s.opens).toEqual(["apps/brooks-overblik", "apps/kort/pages/kort.html"]);
+		expect(note(p)).toBe("");
+	});
+
+	it("never sends an older choice's retry after a newer choice or a switch (review r1 F4 of #1781)", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		// Another page's start a moment ago: the open is tried again after a wait, unless something newer came.
+		s.state.startAnswers.push({ code: "DESKTOP_START_TOO_SOON" });
+		choose(p, 0);
+		await flush();
+		choose(p, 1, frameOpener(p));
+		await flush();
+		await advance(START_AGAIN_MS * 2);
+		expect(s.opens).toEqual(["apps/brooks-overblik", "apps/kort/pages/kort.html"]);
+		// A switch to the other computer and back while a retry waits: the old choice does not open there.
+		s.state.startAnswers.push({ code: "DESKTOP_START_TOO_SOON" });
+		choose(p, 0, frameOpener(p));
+		await flush();
+		for (const row of [1, 0]) {
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+			await flush();
+		}
+		await advance(START_AGAIN_MS * 2);
+		expect(s.opens).toEqual(["apps/brooks-overblik", "apps/kort/pages/kort.html", "apps/brooks-overblik"]);
+	});
+
+	it("asks for the same open again from the state's own button when it failed without a picture (review r1 F5 of #1781)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_DID_NOT_OPEN" });
+		choose(p, 1);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(detail(p)).toBe("The computer could not open it. Try again.");
+		expect(action(p)?.textContent).toBe("Try again");
+		action(p)!.click();
+		await flush();
+		expect(s.opens).toEqual(["apps/kort/pages/kort.html", "apps/kort/pages/kort.html"]);
+		// A plain press after a refusal without a retry starts the screen alone.
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NO_FOLDER" });
+		await advance(START_AGAIN_MS);
+		choose(p, 0);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(action(p)?.textContent).toBe("Turn it on");
+		const before = s.starts.length;
+		await advance(START_AGAIN_MS);
+		action(p)!.click();
+		await flush();
+		expect(s.starts).toHaveLength(before + 1);
+		expect(s.opens).toHaveLength(3);
+	});
+
+	it("offers Open in the states where the press is the wish, and in none other (review r1 F6 of #1781)", async () => {
+		const offered = COMPUTER_SHOWN.filter((shown) => computerOpenOffered(shown));
+		expect(offered).toEqual(["asleep", "starting", "off", "turning", "startFailed"]);
+		expect(computerOpenOffered(null)).toBe(true);
+		// Someone else types privately: the window says so, and Open is not offered.
+		const until = new Date(Date.now() + 120_000).toISOString();
+		const s = setup({
+			machines: [machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } })],
+		});
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("Ada is typing privately. The screen is hidden until they're done.");
+		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.dataset.state).toBe("controlled");
+		expect(opener(p).hidden).toBe(true);
+		expect(frameOpener(p).hidden).toBe(true);
 	});
 
 	it("drops the open with the wish at a switch or a close", async () => {

@@ -1,7 +1,7 @@
 # Changelog
 
 ## [Unreleased]
-- A member opens something of the company folder on an agent's desktop (migration `20260930758000`): `memberStart` with `open` runs today's start script, then `COMPANY_MACHINE_MEMBER_OPEN` in a transient unit of its own (`companyMachineMemberOpenCommand`: `--pipe`, 8 s, a fixed description), the path on stdin and nowhere else; `/company` must be a mount of its own (89, `DESKTOP_OPEN_NO_FOLDER`), the path's real place inside it and there (91, `DESKTOP_OPEN_NOT_FOUND`), then the image's own `desktop open` with that place as one word (0 `opened`, else `DESKTOP_DID_NOT_OPEN`). A path the plain rule refuses (`memberOpenPathValid`) runs nothing. No image change.
+- A member opens something of the company folder on an agent's desktop (migration `20260930758000`): `memberStart` with `open` runs today's start script, then `COMPANY_MACHINE_MEMBER_OPEN` in a transient unit of its own (`companyMachineMemberOpenCommand`: `--pipe`, 8 s, a fixed description), the path on stdin (nothing of ours carries it; the image's helper names the opened folder in the machine's own journal, as for an agent's open); before it touches the desktop, the host's one-actor rule, the pointer's fence and SQL's single-use `qorpera_member_machine_desktop_open_check` (no other member typing privately, none since the open was begun); `/company` must be a mount of its own (89, `DESKTOP_OPEN_NO_FOLDER`), the path's real place inside it and there (91, `DESKTOP_OPEN_NOT_FOUND`), then the image's own `desktop open` with that place as one word (0 `opened`, else `DESKTOP_DID_NOT_OPEN`). A path the plain rule refuses (`memberOpenPathValid`) runs nothing. No image change.
 
 ### Breaking Changes
 

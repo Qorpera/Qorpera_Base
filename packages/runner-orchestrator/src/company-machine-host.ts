@@ -623,7 +623,9 @@ const MEMBER_START_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutco
 /** A member opens something of the company folder on the desktop (20260930758000), once the desktop runs: the image's own
  * `desktop open` with ONE word, the path's real place in the machine. The path comes on stdin, whole (the x keeps its
  * last line breaks from the command substitution; a path with a line break, which SQL's rule and the host's check never
- * let through, opens nothing): no shell parses it, and it is in no argument, unit name, description or log. On the boot
+ * let through, opens nothing): no shell parses it, and nothing of ours carries it (our unit's name, its description and
+ * its arguments, our log lines). The image's own helper does name the opened folder in the machine's own journal (the
+ * `systemd-run` lines of the page's server and the browser it starts), exactly as for an agent's `desktop open`. On the boot
  * named in `$0` (else 97), with the helper (else 98). The company folder is there when `/company` is a mount of its own
  * (else 89: a machine on an earlier helper has no `/company`, and one whose view is not mounted has an empty directory on
  * the root's device). The path's real place (every link
@@ -653,6 +655,12 @@ const MEMBER_OPEN_UNIT_SECONDS = 8;
 const MEMBER_OPEN_MS = 10000;
 /** What an open's unit is called in the journal: a fixed few words, never its path. */
 const MEMBER_OPEN_DESCRIPTION = "qorpera member desktop open";
+/** How long an open waits for the desktop's one actor (an agent's action, a member's) to be done before it says the
+ * desktop is busy. */
+const MEMBER_OPEN_WAIT_MS = 3000;
+/** How long the desktop stays held after an open's unit ended: what it opened maps its window and takes the focus within
+ * about this, so a member's next input waits for it rather than landing in it. */
+const MEMBER_OPEN_SETTLE_MS = 2000;
 /**
  * How a member's open runs (20260930758000): COMPANY_MACHINE_MEMBER_OPEN as a transient service, as a member's typed text
  * runs (companyMachineMemberTypeCommand): `--pipe` hands it the path on stdin; its command line holds the constant
@@ -819,6 +827,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_machine_desktop_clipboard_cleared",
 	// A member's live picture, one release cycle (20260930745000).
 	"qorpera_member_machine_stream_release",
+	// A member's open, right before it touches the desktop (20260930758000, review r1 F1 of #1781).
+	"qorpera_member_machine_desktop_open_check",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -3318,7 +3328,29 @@ export class LxdCompanyMachineHost {
 		}
 		const started = MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
 		if (start.open === undefined || "refused" in started) return started;
-		// The desktop runs: what the member chose opens on it (20260930758000), in a unit of its own.
+		// The desktop runs. What the member chose opens on it (20260930758000), and an open is a member's action on the
+		// desktop (review r1 F1 of #1781): right before it touches the desktop it passes what a member's click passes on
+		// this host and in SQL. The one-actor rule (#holdDesktop, its grace as it stands: an agent's action or a member's
+		// on its way is waited for a moment, else DESKTOP_BUSY), the pointer's fence as a click moves and confirms it, and
+		// SQL's decision now, under the machine's lock (qorpera_member_machine_desktop_open_check, once): no other member
+		// types privately and none did since the open was begun, the member may still act and still reads the path. Else
+		// nothing opens, and the desktop the start started stays on.
+		if (!(await this.#holdDesktopWithin(start.placementId, MEMBER_OPEN_WAIT_MS, signal)))
+			return { refused: "DESKTOP_BUSY" };
+		this.#moveFence(start.placementId);
+		let checked: string;
+		try {
+			checked = await this.#openAllowed(start, signal);
+			if (checked === "ok") await this.#confirmFence(pipe, start.placementId, start.bootId, signal);
+		} catch (error) {
+			this.#releaseDesktop(start.placementId, true);
+			throw error;
+		}
+		if (checked !== "ok") {
+			this.#releaseDesktop(start.placementId, true);
+			return { refused: checked };
+		}
+		let ended = false;
 		try {
 			exitCode = (
 				await pipe(
@@ -3335,11 +3367,45 @@ export class LxdCompanyMachineHost {
 					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberOpenTimeoutMs ?? MEMBER_OPEN_MS)]),
 				)
 			).exitCode;
+			// systemd-run answered: its unit ended (by itself, or at its limit) with everything in it.
+			ended = exitCode < 128;
 		} catch {
 			signal.throwIfAborted();
 			return { refused: "DESKTOP_DID_NOT_OPEN" };
+		} finally {
+			// What it opened gets a moment to show before the next action (its window takes the focus as it maps); a unit
+			// that did not answer keeps the desktop for the grace, as a member's action that did not end cleanly does.
+			const now = this.#options.now ?? Date.now;
+			this.#screenBusy.set(start.placementId, now() + (ended ? MEMBER_OPEN_SETTLE_MS : SCREEN_ACTION_GRACE_MS));
 		}
 		return MEMBER_OPEN_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_OPEN" };
+	}
+
+	/** SQL's decision right before an open touches the desktop (20260930758000, review r1 F1 of #1781): "ok", or why not. */
+	async #openAllowed(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<string> {
+		const answer = record(
+			await this.#call(
+				"qorpera_member_machine_desktop_open_check",
+				{ p_start_id: start.startId, p_placement_id: start.placementId, p_boot_id: start.bootId },
+				signal,
+			),
+			"COMPANY_MACHINE_OPEN_CHECK_INVALID",
+		);
+		if (answer.schema !== "qorpera.member-machine-desktop-open-check/v1")
+			throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
+		if (answer.state === "ok" && Object.keys(answer).length === 2) return "ok";
+		if (
+			answer.state === "refused" &&
+			typeof answer.reason === "string" &&
+			[
+				"DESKTOP_MEMBER_IN_CONTROL",
+				"DESKTOP_OPEN_NOT_FOUND",
+				"MACHINE_NOT_RUNNING",
+				"MACHINE_BOOT_CHANGED",
+			].includes(answer.reason)
+		)
+			return answer.reason;
+		throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
 	}
 
 	/**

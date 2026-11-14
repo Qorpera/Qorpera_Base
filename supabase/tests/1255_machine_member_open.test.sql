@@ -18,7 +18,11 @@
 -- 6. the executor's read: served once, by the machine's own executor, the path in its answer; the path made unreadable
 --    or another member's private hold since the begin refuse it; a plain start's answer exactly as before (no `open`)
 --    and its row without a path;
--- 7. the grants, the column's check and the marker; the plain begin untouched.
+-- 7. the grants, the column's check and the marker; the plain begin untouched;
+-- 8. the host's check right before the open (review r1 F1 of #1781): only a served open start, once, within a minute,
+--    on its placement and boot; refused DESKTOP_MEMBER_IN_CONTROL for another member's private hold begun during the
+--    start (now, or one begun and ended since), not for the member's own; the path no longer theirs; a member no longer
+--    allowed; the service role's alone.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -236,6 +240,20 @@ end $$;
 create function pg_temp.dc_unhold(p_machine text) returns void language sql as $$
 	select pg_temp.dc_shift(p_machine, 'desktop_member_until = null')
 $$;
+-- The host's check right before the open, on the machine's placement and boot unless the test names others.
+create function pg_temp.dc_check(p_start uuid, p_machine text default 'a1', p_placement uuid default null,
+	p_boot uuid default null) returns text language sql as $$
+	select pg_temp.dc_service(format('select public.qorpera_member_machine_desktop_open_check(%L, %L, %L)', p_start,
+		coalesce(p_placement, (pg_temp.dc_placement(p_machine)).id), coalesce(p_boot, (pg_temp.dc_placement(p_machine)).boot_id)))
+$$;
+-- An open begun and served (the start ran), its id.
+create function pg_temp.dc_served(p_who text, p_machine text, p_path text) returns uuid language plpgsql as $$
+declare v_start uuid := pg_temp.dc_open_id(p_who, p_machine, p_path); v text;
+begin
+	v := pg_temp.dc_auth(v_start);
+	if pg_temp.dc_answer(v) ->> 'served' is distinct from 'true' then raise exception 'Not served: %', v; end if;
+	return v_start;
+end $$;
 
 -- 1. Who may ------------------------------------------------------------------------------------------------------------------
 
@@ -410,10 +428,112 @@ begin
 		'7: the column takes a path of the folder only');
 	perform pg_temp.base_assert((select array_agg(oid::regprocedure::text order by oid::regprocedure::text) from pg_proc
 			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930758000') > 0)
-		= array['qorpera_member_machine_desktop_start_authority(uuid,text,text)',
+		= array['qorpera_member_machine_desktop_open_check(uuid,uuid,uuid)',
+			'qorpera_member_machine_desktop_start_authority(uuid,text,text)',
 			'qorpera_member_machine_desktop_start_begin(uuid,uuid,text)'],
 		'7: the bodies that name 20260930758000');
 	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
 			where oid = 'public.qorpera_member_machine_desktop_start_begin(uuid,uuid)'::regprocedure), 'open_path') = 0,
 		'7: the plain begin is as 20260930714000 left it');
+	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+		perform pg_temp.base_assert(has_function_privilege(v_role,
+				'public.qorpera_member_machine_desktop_open_check(uuid,uuid,uuid)', 'execute') = (v_role = 'service_role'),
+			'7: the open''s check is the service role''s alone: ' || v_role);
+	end loop;
+end $$;
+
+-- 8. The host's check right before the open ----------------------------------------------------------------------------------
+
+do $$
+declare v_start uuid; v text;
+begin
+	-- Only once the start was served, and once.
+	v_start := pg_temp.dc_open_id('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start) = '42501:Machine desktop open is unavailable',
+		'8: an open not served yet is checked by no one');
+	perform pg_temp.dc_auth(v_start);
+	v := pg_temp.dc_check(v_start);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok'
+			and pg_temp.dc_answer(v) ->> 'schema' = 'qorpera.member-machine-desktop-open-check/v1',
+		'8: the served open passes: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start) = '42501:Machine desktop open is unavailable', '8: once');
+	-- A plain start has nothing to open.
+	perform pg_temp.base_assert(pg_temp.dc_check((select pg_temp.dc_start_id('contributor', 'a1')))
+			= '42501:Machine desktop open is unavailable',
+		'8: a plain start is no open');
+	-- Too old: a start's check comes within a minute of its serving.
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	update public.qorpera_company_machine_desktop_starts set served_at = served_at - interval '2 minutes' where id = v_start;
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start) = '42501:Machine desktop open is unavailable', '8: too old');
+	-- Another placement, another boot.
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start, 'a1', pg_temp.dc_id('b4'))
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-open-check/v1', 'MACHINE_NOT_RUNNING'),
+		'8: not on the placement the start ran on');
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start, 'a1', null, pg_catalog.gen_random_uuid())
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-open-check/v1', 'MACHINE_BOOT_CHANGED'),
+		'8: another boot');
+	-- The service role's alone.
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.base_assert(pg_temp.dc_as(pg_temp.dc_user('contributor'), format(
+			'select public.qorpera_member_machine_desktop_open_check(%L, %L, %L)', v_start, (pg_temp.dc_placement('a1')).id,
+			(pg_temp.dc_placement('a1')).boot_id)) like '42501:permission denied%',
+		'8: no member calls it');
+end $$;
+
+-- A take-over begun while the start ran: the open does not run; begun and ended since: neither; the member's own: it runs.
+do $$
+declare v_start uuid;
+begin
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.dc_hold('admin', 'a1');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start)
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-open-check/v1', 'DESKTOP_MEMBER_IN_CONTROL'),
+		'8: the admin typing privately since the begin stops the open');
+	perform pg_temp.dc_unhold('a1');
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.dc_shift('a1', 'desktop_member_generation = desktop_member_generation + 1');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start)
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-open-check/v1', 'DESKTOP_MEMBER_IN_CONTROL'),
+		'8: another member''s private typing begun and ended since the begin stops it too');
+	raise exception 'dc-rollback';
+exception when raise_exception then
+	if sqlerrm <> 'dc-rollback' then raise; end if;
+end $$;
+do $$
+declare v_start uuid; v text;
+begin
+	v_start := pg_temp.dc_served('admin', 'a1', 'apps/brooks');
+	perform pg_temp.dc_hold('admin', 'a1');
+	v := pg_temp.dc_check(v_start);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok', '8: the member''s own private hold: it runs: ' || v);
+	raise exception 'dc-rollback';
+exception when raise_exception then
+	if sqlerrm <> 'dc-rollback' then raise; end if;
+end $$;
+-- The path no longer the member's to read; the member no longer allowed.
+do $$
+declare v_start uuid;
+begin
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	perform pg_temp.dc_no_root();
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start)
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-open-check/v1', 'DESKTOP_OPEN_NOT_FOUND'),
+		'8: the folder''s root taken away since');
+	raise exception 'dc-rollback';
+exception when raise_exception then
+	if sqlerrm <> 'dc-rollback' then raise; end if;
+end $$;
+do $$
+declare v_start uuid;
+begin
+	v_start := pg_temp.dc_served('contributor', 'a1', 'apps/brooks');
+	update public.qorpera_profile_members set role = 'viewer'
+	where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = pg_temp.dc_user('contributor');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_start) = '42501:Machine desktop open is unavailable',
+		'8: a member made a viewer since');
+	raise exception 'dc-rollback';
+exception when raise_exception then
+	if sqlerrm <> 'dc-rollback' then raise; end if;
 end $$;

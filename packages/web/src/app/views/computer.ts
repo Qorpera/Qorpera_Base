@@ -195,28 +195,38 @@ export interface ComputerOpen {
 }
 
 /** What the window shows instead of a picture. */
-type Shown =
-	| "loading"
-	| "unavailable"
-	| "none"
-	| "headless"
-	| "asleep"
-	| "starting"
-	| "off"
-	| "hidden"
-	| "updating"
-	| "image"
-	| "error"
-	| "paused"
+export const COMPUTER_SHOWN = [
+	"loading",
+	"unavailable",
+	"none",
+	"headless",
+	"asleep",
+	"starting",
+	"off",
+	"hidden",
+	"updating",
+	"image",
+	"error",
+	"paused",
 	// Another member holds the desktop (20260930713000).
-	| "controlled"
+	"controlled",
 	// The member turns the screen on (20260930714000): on its way, refused as too small, or failed.
-	| "turning"
-	| "small"
-	| "startFailed"
+	"turning",
+	"small",
+	"startFailed",
 	// The member starts a computer for an agent that has none (20260930730000): on its way, or made none.
-	| "making"
-	| "noStart";
+	"making",
+	"noStart",
+] as const;
+type Shown = (typeof COMPUTER_SHOWN)[number];
+/** Where Open is offered without a picture (20260930758000, review r1 F6 of #1781): a computer asleep, on its way up,
+ * with its screen off, turning on or failed to: the press is the wish "on, with this open". Not while someone else types
+ * privately (controlled), the screen is hidden, too small, cannot show, loads, waits, pauses or fails to be reached, nor
+ * where there is no computer. With a picture (null) it is offered. */
+const OPEN_OFFERED: ReadonlySet<Shown> = new Set<Shown>(["asleep", "starting", "off", "turning", "startFailed"]);
+export function computerOpenOffered(shown: Shown | null): boolean {
+	return shown === null || OPEN_OFFERED.has(shown);
+}
 
 /** One hold of a desktop on the page (release review r1 of #1667, F25 of #1661): its machine, the hand-back epoch it was
  * taken under and its seat (every heartbeat and every action captured under it goes with both, and SQL runs it only
@@ -480,7 +490,9 @@ export class ComputerPanel {
 	/** The member's wish that the desktop be on (20260930714000): this page's, for one machine, until its picture shows,
 	 * the member chooses another machine or closes the window, a refusal comes, or WANT_ON_MS pass. While it stands a
 	 * screen that is off is turned on by itself (after Wake it too), without a second press. */
-	#wantOn: { readonly machineId: string; readonly until: number; readonly open?: string } | undefined;
+	#wantOn:
+		| { readonly machineId: string; readonly until: number; readonly open?: string; readonly openGen?: number }
+		| undefined;
 	/** Open (20260930758000): the company's apps as last read; an open on its way while the picture shows; the large view
 	 * to enter at the first picture after Open was chosen in the small window; and what the last open that did not go
 	 * through says (with the path to try again, where trying again can help). */
@@ -488,6 +500,11 @@ export class ComputerPanel {
 	readonly #opener: HTMLButtonElement;
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
+	/** The member's newest choice (review r1 F3 and F4 of #1781): every choice takes the next generation, a switch of
+	 * machine or the window's close ends the one standing, and an answer, a delayed retry or a choice kept while a request
+	 * was under way goes on only while its generation is the newest and its machine the one chosen. */
+	#choiceGen = 0;
+	#queued: { readonly gen: number; readonly machineId: string; readonly path: string } | undefined;
 	#enterOnOpen = false;
 	#openNote: { readonly machineId: string; readonly words: string } | undefined;
 	#openRetry: { readonly machineId: string; readonly path: string; readonly words: string } | undefined;
@@ -1148,8 +1165,10 @@ export class ComputerPanel {
 					// (20260930758000: the screen came on by another's start).
 					if (this.#wantOn?.machineId === machine.machineId) {
 						const open = this.#wantOn.open;
+						const openGen = this.#wantOn.openGen ?? this.#choiceGen;
 						this.#wantOn = undefined;
-						if (open !== undefined) void this.#openNow(computer, machine.machineId, open, signal);
+						if (open !== undefined && openGen === this.#choiceGen)
+							void this.#openNow(computer, machine.machineId, open, signal, openGen);
 					}
 					if (this.#startEnded?.machineId === machine.machineId) this.#startEnded = undefined;
 					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
@@ -2430,15 +2449,22 @@ export class ComputerPanel {
 	/** Wakes a sleeping machine (Wake it, or the click that opened the window): one call, joined while it is on its way;
 	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
 	 * again; the list says where it stands. */
-	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal, open?: string): Promise<void> {
+	async #wake(
+		computer: WebCompanyComputer,
+		machineId: string,
+		signal: AbortSignal,
+		open?: string,
+		openGen?: number,
+	): Promise<void> {
 		this.claim();
+		const opens = open !== undefined && openGen !== undefined ? { open, openGen } : {};
 		if (this.#waking) {
 			// Joined: what the member chose to open goes with the wish (20260930758000).
 			if (open !== undefined && this.#wantOn?.machineId === machineId)
-				this.#wantOn = { machineId, until: this.#wantOn.until, open };
+				this.#wantOn = { machineId, until: this.#wantOn.until, ...opens };
 			return;
 		}
-		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, ...(open === undefined ? {} : { open }) };
+		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, ...opens };
 		this.#startEnded = undefined;
 		this.#startAnswered = undefined;
 		this.#wakeFailed = undefined;
@@ -2652,9 +2678,24 @@ export class ComputerPanel {
 		const said = note !== undefined && note.machineId === this.#machineId ? note.words : detail;
 		this.#detail.hidden = said === null;
 		this.#detail.textContent = said ?? "";
+		// An open that failed and may be tried again: the state's own button asks for that same open again (review r1 F5 of
+		// #1781), not a plain start.
+		const again = this.#openAgainHere(shown);
 		this.#syncOpeners();
-		this.#action.hidden = action === null;
-		this.#action.textContent = action ?? "";
+		this.#action.hidden = action === null && !again;
+		this.#action.textContent = again ? t("Try again") : (action ?? "");
+	}
+
+	/** The open the state's own button asks for again, where it does: one that failed and may be tried again, on this
+	 * computer, in a state Open is offered in. */
+	#openAgainHere(shown: Shown): { readonly path: string } | undefined {
+		const retry = this.#openRetry;
+		return retry !== undefined &&
+			retry.machineId === this.#machineId &&
+			this.#openNote?.machineId === this.#machineId &&
+			(shown === "asleep" || shown === "off" || shown === "startFailed")
+			? retry
+			: undefined;
 	}
 
 	/** The state's own button: wake the machine, keep watching, or try again. */
@@ -2662,7 +2703,15 @@ export class ComputerPanel {
 		this.claim();
 		const state = this.#loading.dataset.state;
 		this.#touched();
+		// Try again after an open that failed: that same open (start and open), as the member chose it.
+		const again = state === undefined ? undefined : this.#openAgainHere(state as Shown);
+		if (again) {
+			this.#choose(again.path, signal);
+			return;
+		}
+		// Any other press is a plain one: the open that failed is let go.
 		this.#openNote = undefined;
+		this.#openRetry = undefined;
 		if (state === "paused") {
 			this.#paused = false;
 			this.#confirm = true;
@@ -2779,6 +2828,7 @@ export class ComputerPanel {
 		// What the wish is to open goes with this start (20260930758000); the wish itself goes on to the picture.
 		const wish = this.#wantOn?.machineId === machineId ? this.#wantOn : undefined;
 		const open = wish?.open;
+		const openGen = wish?.openGen ?? this.#choiceGen;
 		if (wish && open !== undefined) this.#wantOn = { machineId, until: wish.until };
 		let answer: MachineStartAnswer | undefined;
 		try {
@@ -2789,7 +2839,12 @@ export class ComputerPanel {
 			this.#turningOn = false;
 		}
 		if (signal.aborted || this.#machineId !== machineId) return;
-		// An open's own answer: opened, or why not (said whether the wish stands or not).
+		// An open's own answer: opened, or why not (said whether the wish stands or not); one a newer choice replaced is
+		// dropped.
+		if (open !== undefined && openGen !== this.#choiceGen) {
+			if (answer?.kind !== "refused") this.#startAnswered = { machineId, at: Date.now() };
+			return;
+		}
 		if (open !== undefined && this.#openAnswered(machineId, open, answer, false)) return;
 		if (this.#wantOn?.machineId !== machineId) return;
 		// A start that may be tried again keeps what it was to open.
@@ -2800,7 +2855,7 @@ export class ComputerPanel {
 				answer.code === "MACHINE_NOT_RUNNING" ||
 				answer.code === "MACHINE_BOOT_CHANGED")
 		)
-			this.#wantOn = { machineId, until: this.#wantOn.until, open };
+			this.#wantOn = { machineId, until: this.#wantOn.until, open, openGen };
 		if (answer?.kind === "refused") {
 			if (answer.code === "DESKTOP_MACHINE_TOO_SMALL") {
 				this.#endStart(machineId, "small");
@@ -2824,8 +2879,9 @@ export class ComputerPanel {
 			// Open was chosen while this start was on its way without it: it goes now, the desktop running.
 			const later = this.#wantOn.open;
 			if (later !== undefined) {
+				const laterGen = this.#wantOn.openGen ?? this.#choiceGen;
 				this.#wantOn = { machineId, until: this.#wantOn.until };
-				void this.#openNow(computer, machineId, later, signal);
+				if (laterGen === this.#choiceGen) void this.#openNow(computer, machineId, later, signal, laterGen);
 			}
 		}
 		// Started, running already, or another start on its way: look at once (the helper waited until it was drawn).
@@ -2897,6 +2953,8 @@ export class ComputerPanel {
 								this.#enterOnOpen = false;
 								this.#openRetry = undefined;
 								this.#openNote = undefined;
+								this.#choiceGen++;
+								this.#queued = undefined;
 								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
 								// Shared input of the last computer goes no further, even while the loop waits on a request
 								// (review r1 F1 of #1701); the next one's screen is not seen yet (review r3).
@@ -2956,23 +3014,12 @@ export class ComputerPanel {
 	 * someone's private typing, or hidden. */
 	#syncOpeners(): void {
 		const machine = this.#pick();
-		const state = this.#loading.hidden ? undefined : this.#loading.dataset.state;
+		const state = this.#loading.hidden ? null : ((this.#loading.dataset.state ?? "loading") as Shown);
 		const offered =
 			machine?.desktopCapable === true &&
 			this.#listed?.canTakeOver === true &&
 			this.#apps().length > 0 &&
-			![
-				"member",
-				"hidden",
-				"small",
-				"image",
-				"unavailable",
-				"error",
-				"none",
-				"headless",
-				"noStart",
-				"making",
-			].includes(state ?? "");
+			computerOpenOffered(state);
 		for (const button of [this.#opener, this.#frameOpener]) {
 			if (button.hidden === offered) button.hidden = !offered;
 			if (button.title !== t("Open on this computer")) button.title = t("Open on this computer");
@@ -2989,6 +3036,8 @@ export class ComputerPanel {
 		this.claim();
 		this.#touched();
 		const machineId = machine.machineId;
+		const gen = ++this.#choiceGen;
+		this.#queued = undefined;
 		this.#openNote = undefined;
 		this.#openRetry = undefined;
 		if (this.#lostShown) {
@@ -2997,15 +3046,15 @@ export class ComputerPanel {
 		}
 		if (!this.#view?.entered) this.#enterOnOpen = this.el.parentElement !== null;
 		if (machine.state === "stopped" || machine.state === "stopping") {
-			void this.#wake(computer, machineId, signal, path);
+			void this.#wake(computer, machineId, signal, path, gen);
 		} else if (machine.state !== "running") {
-			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path };
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path, openGen: gen };
 			this.#startEnded = undefined;
 			this.#startAnswered = undefined;
 		} else if (this.#picturing() && this.#screenSeen) {
-			void this.#openNow(computer, machineId, path, signal);
+			void this.#openNow(computer, machineId, path, signal, gen);
 		} else {
-			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path };
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path, openGen: gen };
 			this.#startEnded = undefined;
 			this.#startAnswered = undefined;
 			if (!this.#turningOn) void this.#turnOn(computer, machineId, signal);
@@ -3021,9 +3070,15 @@ export class ComputerPanel {
 		machineId: string,
 		path: string,
 		signal: AbortSignal,
+		gen: number,
 		again = true,
 	): Promise<void> {
-		if (this.#opening) return;
+		// One request at a time: a choice made meanwhile is kept (the newest only) and goes when this one answers.
+		if (this.#opening) {
+			this.#queued = { gen, machineId, path };
+			return;
+		}
+		const newest = () => !signal.aborted && gen === this.#choiceGen && this.#machineId === machineId;
 		this.#opening = true;
 		let answer: MachineStartAnswer | undefined;
 		try {
@@ -3033,14 +3088,19 @@ export class ComputerPanel {
 		} finally {
 			this.#opening = false;
 		}
-		if (signal.aborted || this.#machineId !== machineId) return;
-		if (again && answer?.kind === "refused" && answer.code === "DESKTOP_START_TOO_SOON") {
-			await new Promise((resolve) => setTimeout(resolve, START_AGAIN_MS));
-			if (!signal.aborted && this.#machineId === machineId)
-				await this.#openNow(computer, machineId, path, signal, false);
-			return;
+		if (newest()) {
+			if (again && answer?.kind === "refused" && answer.code === "DESKTOP_START_TOO_SOON") {
+				await new Promise((resolve) => setTimeout(resolve, START_AGAIN_MS));
+				if (newest()) await this.#openNow(computer, machineId, path, signal, gen, false);
+				return;
+			}
+			this.#openAnswered(machineId, path, answer, true);
 		}
-		this.#openAnswered(machineId, path, answer, true);
+		// A newer choice made while this one was under way goes now, while it is still the newest.
+		const next = this.#queued;
+		this.#queued = undefined;
+		if (next && !signal.aborted && next.gen === this.#choiceGen && next.machineId === this.#machineId)
+			await this.#openNow(computer, next.machineId, next.path, signal, next.gen);
 	}
 
 	/** What an open's answer means for the window: opened (look at once), someone else typing privately (as a click's
