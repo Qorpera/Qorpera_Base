@@ -18,7 +18,7 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
 import { attachComputerPlace } from "../../ui/computer-place.ts";
 import { ComputerScene, type ScenePhase } from "../../ui/computer-scene.ts";
-import { openContextMenu } from "../../ui/context-menu.ts";
+import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import {
@@ -179,6 +179,9 @@ export interface ComputerPanelOptions {
 	readonly timeZone?: () => string | null | undefined;
 	/** The company's apps, as last read, that a member may open on the computer (20260930758000); none without it. */
 	readonly apps?: () => readonly ComputerOpenApp[] | undefined;
+	/** Open's "A file…": the company folder's own browser in its choose mode (company-folder-choose.ts), answering the
+	 * path of the file or folder the member picked, or null; without it, Open lists the apps alone. */
+	readonly chooseFile?: (signal: AbortSignal) => Promise<string | null>;
 }
 
 /** The member's choice of something to open (20260930758000): which, on which computer, its generation, and whether a
@@ -547,6 +550,8 @@ export class ComputerPanel {
 	 * enter at the first picture after Open was chosen in the small window; and what the last open that did not go
 	 * through says (with the path to try again, where trying again can help). */
 	readonly #apps: () => readonly ComputerOpenApp[];
+	/** Open's "A file…" (the company folder's browser in choose mode); a pick there is one more choice. */
+	readonly #chooseFile: ((signal: AbortSignal) => Promise<string | null>) | undefined;
 	readonly #opener: HTMLButtonElement;
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
@@ -651,6 +656,7 @@ export class ComputerPanel {
 		this.#switcher = this.#switcherButton(signal);
 		this.#frameSwitcher = this.#switcherButton(signal);
 		this.#apps = () => options.apps?.() ?? [];
+		this.#chooseFile = options.chooseFile;
 		this.#opener = this.#openerButton(signal);
 		this.#frameOpener = this.#openerButton(signal);
 		this.#openAgain.addEventListener(
@@ -2975,7 +2981,7 @@ export class ComputerPanel {
 		return button;
 	}
 
-	/** Open (20260930758000): a button that lists the company's apps; choosing one is the ask. */
+	/** Open (20260930758000): a button that lists the company's apps, then "A file…"; choosing one is the ask. */
 	#openerButton(signal: AbortSignal): HTMLButtonElement {
 		const button = h(
 			"button",
@@ -2996,7 +3002,7 @@ export class ComputerPanel {
 					y: rect.bottom + 4,
 					opener: button,
 					...(full instanceof HTMLElement && full.contains(button) ? { container: full } : {}),
-					items: this.#apps().map((app) => ({ label: app.name, select: () => this.#choose(app.path, signal) })),
+					items: this.#openItems(signal),
 				});
 			},
 			{ signal },
@@ -3006,16 +3012,43 @@ export class ComputerPanel {
 		return button;
 	}
 
-	/** Open shows for a member who may act on the computer shown, when it can have a screen and the company has an app,
-	 * whatever it does now (asleep and off too: the press is the wish "on, with this open"); not while its screen is
-	 * someone's private typing, or hidden. */
+	/** Open's menu: the company's apps, then, apart, "A file…". */
+	#openItems(signal: AbortSignal): MenuEntry[] {
+		const apps: MenuEntry[] = this.#apps().map((app) => ({
+			label: app.name,
+			select: () => this.#choose(app.path, signal),
+		}));
+		const choose = this.#chooseFile;
+		if (!choose) return apps;
+		return [
+			...apps,
+			...(apps.length ? [{ kind: "separator" } as const] : []),
+			{ label: t("A file…"), select: () => void this.#chooseAFile(choose, signal) },
+		];
+	}
+
+	/** "A file…": the company folder's browser picks a file or a folder; that path is a choice like an app's. Cancel
+	 * chooses nothing, and leaves any choice standing as it was. */
+	async #chooseAFile(choose: (signal: AbortSignal) => Promise<string | null>, signal: AbortSignal): Promise<void> {
+		let path: string | null;
+		try {
+			path = await choose(signal);
+		} catch {
+			return;
+		}
+		if (path !== null && !signal.aborted) this.#choose(path, signal);
+	}
+
+	/** Open shows for a member who may act on the computer shown, when it can have a screen and the company has an app or
+	 * a folder to pick from ("A file…"), whatever it does now (asleep and off too: the press is the wish "on, with this
+	 * open"); not while its screen is someone's private typing, or hidden. */
 	#syncOpeners(): void {
 		const machine = this.#pick();
 		const state = this.#loading.hidden ? null : ((this.#loading.dataset.state ?? "loading") as Shown);
 		const offered =
 			machine?.desktopCapable === true &&
 			this.#listed?.canTakeOver === true &&
-			this.#apps().length > 0 &&
+			(this.#apps().length > 0 || this.#chooseFile !== undefined) &&
 			computerOpenOffered(state);
 		for (const button of [this.#opener, this.#frameOpener]) {
 			if (button.hidden === offered) button.hidden = !offered;

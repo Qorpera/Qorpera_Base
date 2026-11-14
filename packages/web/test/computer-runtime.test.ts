@@ -148,6 +148,8 @@ function setup(
 		startAnswers: [] as ({ outcome: "started" | "running" | "opened" } | { code: string } | { status: number })[],
 		/** The company's apps the window offers to open (20260930758000): none unless a test names some. */
 		apps: [] as { name: string; path: string }[],
+		/** Open's "A file…": what the company folder's browser answers (a path, or null for Cancel); none unless named. */
+		chooseFile: undefined as ((signal: AbortSignal) => Promise<string | null>) | undefined,
 		startGate: undefined as Promise<void> | undefined,
 		/** A gate the next look waits on before it is answered (review r1 F3 of #1681): a look in flight. */
 		lookGate: undefined as Promise<void> | undefined,
@@ -619,6 +621,7 @@ function panel(s: Setup, attach = true) {
 		hints: s.hints,
 		decode: s.decode,
 		apps: () => s.state.apps,
+		...(s.state.chooseFile ? { chooseFile: s.state.chooseFile } : {}),
 	});
 	if (attach) value.attach(document.body, () => value.dispose());
 	cleanup.push(() => value.dispose());
@@ -1637,6 +1640,113 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(opener(r).hidden).toBe(true);
 	});
 
+	const menuRows = () =>
+		[...openMenu()!.el.querySelectorAll("[role^=menuitem]")].map((row) => row.textContent?.trim());
+
+	it('ends the menu with "A file…", apart from the apps; a company with no apps gets Open with that one item', async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.chooseFile = async () => null;
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		opener(p).click();
+		expect(menuRows()).toEqual(["Brooks overblik", "Kort", "A file…"]);
+		expect(openMenu()!.el.querySelectorAll("[role=separator]")).toHaveLength(1);
+		openMenu()!.close();
+		p.dispose();
+		const none = setup();
+		none.state.chooseFile = async () => null;
+		none.state.fallback = { picture: 1 };
+		const q = panel(none);
+		await flush();
+		expect(opener(q).hidden).toBe(false);
+		expect(frameOpener(q).hidden).toBe(false);
+		opener(q).click();
+		expect(menuRows()).toEqual(["A file…"]);
+		expect(openMenu()!.el.querySelectorAll("[role=separator]")).toHaveLength(0);
+		openMenu()!.close();
+		q.dispose();
+		// Who may not act still gets no Open, with or without apps.
+		const viewer = setup({ canWake: false, canTakeOver: false, role: "viewer" });
+		viewer.state.chooseFile = async () => null;
+		viewer.state.fallback = { picture: 1 };
+		const r = panel(viewer);
+		await flush();
+		expect(opener(r).hidden).toBe(true);
+	});
+
+	it("opens the file or folder picked as it opens an app: one start, no second press; Cancel chooses nothing", async () => {
+		const s = setup();
+		const asked: AbortSignal[] = [];
+		const answers = ["notes/plan.md", null, "Salg/2026 rapporter"];
+		s.state.chooseFile = async (signal) => {
+			asked.push(signal);
+			return answers.shift() ?? null;
+		};
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		choose(p, 0);
+		await flush();
+		expect(s.opens).toEqual(["notes/plan.md"]);
+		expect(s.starts).toHaveLength(1);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(p.choices.map((choice) => [choice.path, choice.ended])).toEqual([["notes/plan.md", "answered"]]);
+		// Cancel: nothing is chosen, nothing sent, nothing said.
+		choose(p, 0, frameOpener(p));
+		await flush();
+		expect(s.opens).toEqual(["notes/plan.md"]);
+		expect(p.choices).toHaveLength(1);
+		// A folder is a path like a file's.
+		await advance(START_AGAIN_MS);
+		choose(p, 0, frameOpener(p));
+		await flush();
+		expect(s.opens).toEqual(["notes/plan.md", "Salg/2026 rapporter"]);
+		expect(asked).toHaveLength(3);
+	});
+
+	it("a Cancel leaves the choice standing as it was, and a pick after the window closed is no choice", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		let answer: (path: string | null) => void = () => {};
+		let asked: AbortSignal | undefined;
+		s.state.chooseFile = (signal) => {
+			asked = signal;
+			return new Promise((resolve) => {
+				answer = resolve;
+			});
+		};
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		let release = () => {};
+		s.state.startGate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		choose(p, 0);
+		await flush();
+		expect(p.choices.map((choice) => choice.ended)).toEqual([undefined]);
+		choose(p, 2);
+		answer(null);
+		await flush();
+		// The app's choice still stands, unreplaced, and goes on to its answer.
+		expect(p.choices.map((choice) => choice.ended)).toEqual([undefined]);
+		release();
+		s.state.startGate = undefined;
+		await flush();
+		expect(p.choices.map((choice) => [choice.path, choice.ended])).toEqual([["apps/brooks-overblik", "answered"]]);
+		// The window closes while the folder is open: the browser is told (its signal), and a late pick is no choice.
+		choose(p, 2);
+		await flush();
+		p.dispose();
+		expect(asked?.aborted).toBe(true);
+		answer("notes/plan.md");
+		await flush();
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		expect(p.choices).toHaveLength(1);
+	});
+
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;
@@ -1946,6 +2056,8 @@ describe("every answer to an open, from both callers, with and without a picture
 	async function at(caller: "turnOn" | "openNow") {
 		const s = setup();
 		s.state.apps = apps;
+		// "A file…" (the menu's third row) picks a file of the company folder: one more path, answered as an app's.
+		s.state.chooseFile = async () => "notes/plan 2026.md";
 		s.state.fallback = caller === "turnOn" ? { code: "DESKTOP_NOT_RUNNING" } : { picture: 1 };
 		const p = panel(s);
 		await flush();
@@ -1957,39 +2069,43 @@ describe("every answer to an open, from both callers, with and without a picture
 			for (const [name, answer] of answers) {
 				const want = expected(name, caller);
 				if (want.noPicture && picture) continue;
-				it(`${caller}, ${picture ? "a picture after" : "no picture after"}: ${name}`, async () => {
-					const { s, p } = await at(caller);
-					s.state.startAnswers.push(answer);
-					choose(p, 0);
-					await flush();
-					// After the answer, the screen is as the row's world has it.
-					s.state.fallback = picture ? { picture: 1 } : { code: "DESKTOP_NOT_RUNNING" };
-					await advance(LOOK_EVERY_MS);
-					await advance(LOOK_EVERY_MS);
-					if (want.again) {
-						// Tried again by itself, with the same open (and opened then).
-						await advance(START_AGAIN_MS * 2);
-						expect(s.opens).toEqual(["apps/a", "apps/a"]);
-						expect(says(p)).not.toContain(FAILED);
-						return;
-					}
-					if (want.words !== null) expect(says(p)).toContain(want.words);
-					for (const words of [NOT_THERE, NO_FOLDER, FAILED])
-						if (words !== want.words) expect(says(p)).not.toContain(words);
-					expect(tryAgain(p) !== null && want.retry).toBe(want.retry);
-					if (want.retry) {
-						await advance(START_AGAIN_MS);
-						tryAgain(p)!.click();
+				for (const [way, row, first] of [
+					["an app", 0, "apps/a"],
+					["a file", 2, "notes/plan 2026.md"],
+				] as const)
+					it(`${caller}, ${picture ? "a picture after" : "no picture after"}, ${way}: ${name}`, async () => {
+						const { s, p } = await at(caller);
+						s.state.startAnswers.push(answer);
+						choose(p, row);
 						await flush();
-						expect(s.opens).toEqual(["apps/a", "apps/a"]);
-					} else {
-						// No Try again carries the path: a press of the state's own button sends no open.
-						await advance(START_AGAIN_MS);
-						action(p)?.click();
-						await flush();
-						expect(s.opens).toEqual(["apps/a"]);
-					}
-				});
+						// After the answer, the screen is as the row's world has it.
+						s.state.fallback = picture ? { picture: 1 } : { code: "DESKTOP_NOT_RUNNING" };
+						await advance(LOOK_EVERY_MS);
+						await advance(LOOK_EVERY_MS);
+						if (want.again) {
+							// Tried again by itself, with the same open (and opened then).
+							await advance(START_AGAIN_MS * 2);
+							expect(s.opens).toEqual([first, first]);
+							expect(says(p)).not.toContain(FAILED);
+							return;
+						}
+						if (want.words !== null) expect(says(p)).toContain(want.words);
+						for (const words of [NOT_THERE, NO_FOLDER, FAILED])
+							if (words !== want.words) expect(says(p)).not.toContain(words);
+						expect(tryAgain(p) !== null && want.retry).toBe(want.retry);
+						if (want.retry) {
+							await advance(START_AGAIN_MS);
+							tryAgain(p)!.click();
+							await flush();
+							expect(s.opens).toEqual([first, first]);
+						} else {
+							// No Try again carries the path: a press of the state's own button sends no open.
+							await advance(START_AGAIN_MS);
+							action(p)?.click();
+							await flush();
+							expect(s.opens).toEqual([first]);
+						}
+					});
 				// The same answer to a choice a newer one replaced: once per caller.
 				if (picture) continue;
 				it(`${caller}: ${name} to a choice a newer one replaced changes nothing, and the newer goes out`, async () => {
@@ -2229,6 +2345,12 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 			const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
 			const s = setup({ machines: [machine(1), machine(2)], stream: true });
 			s.state.apps = apps;
+			// "A file…" is one more move: the folder's browser answers a file, a folder, or Cancel.
+			let files = 0;
+			s.state.chooseFile = async () => {
+				files++;
+				return pick(["notes/plan.md", "Salg/2026", null]);
+			};
 			// Half the seeds begin with the screen off: a plain Turn it on is then the state's own button.
 			s.state.fallback = first % 2 === 1 ? { code: "DESKTOP_NOT_RUNNING" } : { picture: 1 };
 			const u16 = (value: number) => [value >> 8, value & 0xff];
@@ -2286,7 +2408,7 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 			for (let step = 0; step < 240; step++) {
 				const move = random();
 				const socket = s.sockets.at(-1);
-				if (move < 0.25 && !opener(p).hidden) choose(p, pick([0, 1]));
+				if (move < 0.25 && !opener(p).hidden) choose(p, pick([0, 1, 2]));
 				else if (move < 0.45 && pending.length > 0) {
 					const at = Math.floor(random() * pending.length);
 					const [resolve] = pending.splice(at, 1);
@@ -2343,6 +2465,7 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 			await drain(s);
 			for (const one of seen) allEnded(one);
 			expect(seen.flatMap((one) => one.choices).length).toBeGreaterThan(10);
+			expect(files).toBeGreaterThan(0);
 		},
 		60_000,
 	);

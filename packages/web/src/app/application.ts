@@ -63,6 +63,7 @@ import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -837,6 +838,23 @@ export function mountApplication(
 									? app.path
 									: `${app.path}/${app.manifest.entry}`,
 						})),
+				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+				chooseFile: (signal) => {
+					const role = controller.store.get().team?.role;
+					if (!role) return Promise.resolve(null);
+					return chooseInCompanyFolder(
+						new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						}),
+						signal,
+					);
+				},
 			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
