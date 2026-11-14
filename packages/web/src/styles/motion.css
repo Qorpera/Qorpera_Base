@@ -218,10 +218,10 @@
 @keyframes decided-answer { from { opacity: 0; transform: translateY(14px) scale(0.9); } 35% { opacity: 1; } }
 .interaction-card.is-exchange.is-decided > .is-done > .review-mark { animation: decided-mark var(--motion-base) var(--ease-out) 140ms both; }
 
-/* ---- the agent's computer: it opens out of the thread's top right corner ---- */
+/* ---- the agent's computer: it opens out of the agent's figure beside it in the thread ---- */
 
 .computer-panel {
-	transform-origin: calc(100% - 12px) -32px;
+	transform-origin: -32px 26px;
 	animation: computer-open var(--motion-spring) var(--ease-spring) both;
 }
 @keyframes computer-open {

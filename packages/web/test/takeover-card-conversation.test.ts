@@ -77,6 +77,7 @@ function setup() {
 		focus: vi.fn(),
 		retitle: vi.fn(),
 		dispose: vi.fn(),
+		coverAgain: vi.fn(),
 		takeOver: vi.fn(() => {
 			order.push("takeOver");
 		}),
