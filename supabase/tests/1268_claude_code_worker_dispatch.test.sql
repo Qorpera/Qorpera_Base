@@ -344,8 +344,14 @@ begin
 	v_drain := pg_temp.c4_drain();
 	perform pg_temp.base_assert((pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b2')).occurrence_id is null,
 		'4: still waiting while the first''s run goes on: ' || v_drain::text);
-	-- That run dies: its job is failed (as the reaper fails a lost run). The lease ends with it; the second starts.
+	-- That run dies: its job is failed (as the reaper fails a lost run). The lease ends with the job itself, also while
+	-- nothing has marked the wake yet (the job's triggers set aside here, so the wake still reads materialized); the
+	-- second starts.
+	set local session_replication_role = replica;
 	perform pg_temp.c4_end_job(v_wake.run_id, 'failed');
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert((select status from public.qorpera_wake_occurrences where id = v_wake.id) = 'materialized',
+		'4: the wake is not marked yet');
 	perform pg_temp.base_assert(not public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '4: a dead run holds nothing');
 	v_drain := pg_temp.c4_drain();
 	w2 := pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b2');
