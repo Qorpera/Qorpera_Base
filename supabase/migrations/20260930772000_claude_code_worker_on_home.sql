@@ -144,6 +144,8 @@ end $$;
 revoke all on function public.qorpera_claude_worker_run_facts(jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_claude_worker_run_facts(jsonb) to service_role;
+-- A call the native host makes inside the run's job (cloud-native-host-dispatch.ts, NATIVE_HOST_CALLS).
+insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_claude_worker_run_facts', 'binding');
 
 -- The patched functions may have a private owner in production: it reaches what their new text uses.
 do $$ declare v_owner name; begin

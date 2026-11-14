@@ -395,25 +395,29 @@ class ClaudeWorkerLoginKeeper {
 		this.#held = opened.fileSha256[".credentials.json"];
 	}
 
-	/** Seals the credentials back when they changed since what the vault holds. One at a time. */
-	sync(signal: AbortSignal): Promise<void> {
+	/** Seals the credentials back when they changed since what the vault holds. One at a time. Resolves true when the
+	 * vault holds what the folder holds now (or nothing more can be sealed); rejects when the vault could not be asked. */
+	sync(signal: AbortSignal): Promise<boolean> {
 		const next = this.#queue.then(() => this.#sync(signal));
-		this.#queue = next.catch(() => undefined);
+		this.#queue = next.then(
+			() => undefined,
+			() => undefined,
+		);
 		return next;
 	}
 
-	async #sync(signal: AbortSignal): Promise<void> {
-		if (this.#lost || this.refused) return;
+	async #sync(signal: AbortSignal): Promise<boolean> {
+		if (this.#lost || this.refused) return true;
 		let credentials: Buffer;
 		try {
 			credentials = await claudeLoginFile(join(this.#folder, ".credentials.json"));
 		} catch {
 			// Gone, a link or out of bounds: nothing of it is sent.
-			return;
+			return true;
 		}
 		try {
 			const digest = sha256(credentials);
-			if (digest === this.#held) return;
+			if (digest === this.#held) return true;
 			let answer: ClaudeWorkerSealAnswer;
 			try {
 				answer = await this.#logins.seal(this.#base, credentials, signal);
@@ -424,17 +428,17 @@ class ClaudeWorkerLoginKeeper {
 			}
 			if (answer.state === "unchanged") {
 				this.#held = digest;
-				return;
+				return true;
 			}
 			if (answer.state === "refused") {
 				this.refused = answer.reason;
-				return;
+				return true;
 			}
 			if (answer.state === "sealed") {
 				this.sealed++;
 				this.#held = digest;
 				this.#base = answer.base ?? (await this.#reopened(digest, signal)) ?? this.#base;
-				return;
+				return true;
 			}
 			// Stale: another seal came first. One version past ours may be our own, its answer lost: the vault's copy
 			// says so when its credentials are the ones sent.
@@ -444,12 +448,13 @@ class ClaudeWorkerLoginKeeper {
 					this.sealed++;
 					this.#held = digest;
 					this.#base = ours;
-					return;
+					return true;
 				}
 			}
 			// Another run's renewal won: its token is the member's now, and this run seals nothing more. Not an error.
 			this.stale++;
 			this.#lost = true;
+			return true;
 		} finally {
 			credentials.fill(0);
 		}
@@ -592,8 +597,13 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 250).unref?.());
 					const now = await credentialsStamp(folder);
 					if (now !== null && now !== seen) {
+						// The early seal is the one that counts for a run that is stopped later (its job's end closes the
+						// vault to it): a failed one is tried again, a few times, while the run goes on.
+						for (let attempt = 0; attempt < 5 && !watching.signal.aborted; attempt++) {
+							if (await (keeper?.sync(signal) ?? Promise.resolve(true)).catch(() => false)) break;
+							await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)).unref?.());
+						}
 						seen = now;
-						await keeper?.sync(signal).catch(() => undefined);
 					}
 				}
 			})();
@@ -688,7 +698,8 @@ export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelL
 			);
 			if (answer.state === "unchanged") return { state: "unchanged" };
 			if (answer.state === "refused") return { state: "refused", reason: answer.reason };
-			return { state: answer.state, version: answer.version };
+			if (answer.state === "sealed") return { state: "sealed", version: answer.version, base: answer.opened };
+			return { state: "stale", version: answer.version };
 		},
 	};
 }

@@ -441,6 +441,44 @@ describe("a Claude Code worker's run", () => {
 		await rm(runRoot, { recursive: true });
 	});
 
+	it("tries a failed early seal again while the run goes on, so a run stopped later leaves the renewal sealed", async () => {
+		const v = vault();
+		const seal = v.logins.seal;
+		let failures = 3;
+		v.logins.seal = async (base, bytes, signal) => {
+			if (failures-- > 0) throw new Error("vault unavailable");
+			return seal(base, bytes, signal);
+		};
+		const controller = new AbortController();
+		const box = standInBox(
+			[init(), use("t1", "Bash", { command: "long" })],
+			async (folder) => {
+				await writeFile(join(folder, ".credentials.json.tmp"), credentials("renewed"), { mode: 0o600 });
+				await rename(join(folder, ".credentials.json.tmp"), join(folder, ".credentials.json"));
+				// The member's stop comes once the vault holds the renewal; from then on the vault would refuse this run.
+				for (let i = 0; i < 400 && v.state.seals.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+				v.logins.seal = async () => ({ state: "refused", reason: "NOT_OPEN" });
+				controller.abort();
+			},
+			true,
+		);
+		const runRoot = await root();
+		await expect(
+			runClaudeWorker({
+				brief,
+				member: "Ada",
+				logins: v.logins,
+				launch: box.launch,
+				root: runRoot,
+				signal: controller.signal,
+				pollMs: 5,
+			}),
+		).rejects.toThrow();
+		expect(v.state.seals).toEqual([{ base: 1, credentials: sha(credentials("renewed")) }]);
+		expect(await readdir(runRoot)).toEqual([]);
+		await rm(runRoot, { recursive: true });
+	});
+
 	it("seals back and removes the folder when the run is stopped in the middle", async () => {
 		const v = vault();
 		const controller = new AbortController();

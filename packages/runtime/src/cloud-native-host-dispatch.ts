@@ -21,7 +21,7 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * 20260930618000 (the run's check around a tool call), 20260930702000 (the Co-Founder's offers of agents),
  * 20260930720000 (an agent's undo and description of a change in the company's code), 20260930736000 (an agent's
  * import of existing code into it), 20260930750000 (a run's data pass for the company data gateway) and
- * 20260930761000 (a light ask's answer) list them,
+ * 20260930761000 (a light ask's answer) and 20260930772000 (a Claude Code worker's facts of its own run) list them,
  * without the two
  * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
  * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model request's
@@ -44,6 +44,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_bind_native_company_context", "standard"],
 	["qorpera_check_company_path_mutation", "standard"],
 	["qorpera_check_native_run", "standard"],
+	["qorpera_claude_worker_run_facts", "standard"],
 	["qorpera_cofounder_crew", "standard"],
 	["qorpera_commit_company_path_mutation", "standard"],
 	["qorpera_company_machines_available", "standard"],

@@ -381,7 +381,7 @@ export function cloudWorkerTools(
 					// The tool's description is at its 4,096 bytes (20260930770000): this field says it, in a schema the model
 					// receives with its field descriptions (under 5,000 bytes as sent).
 					description:
-						"On a worker without species coding, claude-code hands the work to Claude Code instead of a run of you: use it when a member asks for Claude Code to do work in the company's files or on your own machine. It runs on your machine, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. Leave it out otherwise.",
+						"On a worker without species coding, claude-code hands the work to Claude Code instead of a run of you: use it when a member asks for Claude Code to do work in the company's files or on your own machine. Give it access write: it runs on your machine with your own rights there and in the company's files (its output folder is where its files go, not a limit), on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. Leave it out otherwise.",
 				},
 				repository: {
 					type: "object",

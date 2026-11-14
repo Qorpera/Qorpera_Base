@@ -29,6 +29,7 @@ import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/r
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
+import { NATIVE_HOST_CALLS } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type NativeCompanyExecutionRequest,
@@ -1653,6 +1654,51 @@ it("takes a Claude Code worker's run into its own composition, never Codex", asy
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	expect(launched).not.toHaveBeenCalled();
 	expect(fetched).not.toHaveBeenCalled();
+});
+
+// Every database call the Claude Code worker's run makes through the runtime's path control is one a real host can make:
+// in HttpCloudCompanyPathControl's list and in the native host dispatch's (NATIVE_HOST_CALLS). The suite's stand-in path
+// control takes any name, so this asks the real two. The home's own two calls are added to both at the bottom of the
+// stack (#1761); until that base is merged here they are named apart, and this test says so.
+it("makes only calls a real host can make, through the path control and the native host dispatch", async () => {
+	const f = await fixture("company-claude-worker", false, undefined, false, false, 10_000, false, {
+		homeChannel: () => ({ open: vi.fn() }) as never,
+		claudeWorker: {
+			logins: {
+				origin: "https://vault.example",
+				runtimeToken: "t".repeat(43),
+				companyId: randomUUID(),
+				holder: () => "h",
+			},
+		},
+	});
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
+		if (method === "qorpera_claude_worker_run_facts")
+			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).catch(() => undefined);
+	const names = [...new Set(f.pathCall.mock.calls.map(([method]) => String(method)))];
+	expect(names).toContain("qorpera_claude_worker_run_facts");
+	expect(names).toContain("qorpera_begin_native_company_execution_v3");
+	const homeCallsAddedBy1761 = new Set(["qorpera_company_home_available", "qorpera_close_home_session"]);
+	const real = new HttpCloudCompanyPathControl({
+		supabaseUrl: "https://authority.example/",
+		serviceRoleKey: "synthetic-service-key",
+		fetch: async () => Response.json({}),
+	});
+	for (const name of names.filter((name) => !homeCallsAddedBy1761.has(name))) {
+		await expect(
+			real.call(name as CloudCompanyPathRpc, {}, AbortSignal.timeout(5000)).then(
+				() => "listed",
+				(error: Error) => error.message,
+			),
+			name,
+		).resolves.not.toBe("Unknown Company File control operation");
+		expect(NATIVE_HOST_CALLS.has(name), name).toBe(true);
+	}
 });
 
 it("asks a reply's save again while its answer is lost, by the same key", async () => {
@@ -3429,6 +3475,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// again.
 	// On 14 November 2026 manage_worker's harness field says when a worker is Claude Code's (a plain worker on a member's
 	// Claude sign-in, 20260930770000); the names and descriptions are as before, so only the catalog text moved.
+	// The same day that field also says to give Claude Code write access and what it means: the agent's own rights on its
+	// machine and in the company's files, its output folder where its files go and not a limit (20260930772000).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3483,7 +3531,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"80f97c0eb30a3ce84c82dc531ca69b609fcb46a66fafa02f8728fe3f62ce636a",
+		"62aaa8f8329a3e85cd2b86b5daa149b718614f6fe6b8e131f1c5b5a59deb0530",
 	);
 });
 

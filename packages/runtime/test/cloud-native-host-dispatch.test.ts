@@ -113,6 +113,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_company_data_pass.sql",
 			// A light ask's run stores its answer (light asks, 20260930761000).
 			"_light_asks.sql",
+			// A Claude Code worker's run reads its member's name and what its home changed (20260930772000).
+			"_claude_code_worker_on_home.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -145,7 +147,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(134);
+	expect(rows).toHaveLength(135);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",
