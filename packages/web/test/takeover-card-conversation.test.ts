@@ -9,9 +9,10 @@ import type { SessionExecutionSponsor } from "../src/cloud/session-input.ts";
 import type { TranscriptInteraction } from "../src/cloud/transcript.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
-/* The agent's take-over card in its thread (migration 20260930713000): nothing on it begins private typing any more
- * (Jonas, 14 Nov 2026: "Yes, remove it"); I'm done gives back any desktop the member may still hold before the answer,
- * which wakes the agent, goes. */
+/* The agent's take-over card in its thread (migration 20260930713000): Open computer opens the agent's computer window
+ * (a sleeping one wakes) and its large view once a picture shows; nothing on it begins private typing any more (Jonas,
+ * 14 Nov 2026: "Yes, remove it"). I'm done gives back any desktop the member may still hold before the answer, which
+ * wakes the agent, goes. */
 
 const card: TranscriptInteraction = {
 	kind: "interaction",
@@ -82,6 +83,7 @@ function setup() {
 		takeOver: vi.fn(() => {
 			order.push("takeOver");
 		}),
+		enterWhenShown: vi.fn(),
 		handBack: vi.fn(),
 	};
 	const panels = {
@@ -131,19 +133,22 @@ function pill(view: ConversationView, label: string) {
 }
 
 describe("an agent's take-over card", () => {
-	it("offers no Take over: I'm done and Skip alone, and nothing on it takes the desktop over (Jonas, 14 Nov 2026)", async () => {
+	it("opens the agent's computer from Open computer, asked (a sleeping one wakes), and its large view once shown; it takes nothing over (review r1 F1 of #1812)", async () => {
 		const f = setup();
 		await settle();
 		const labels = [...f.view.el.querySelectorAll<HTMLButtonElement>(".interaction-card button")].map(
 			(button) => button.textContent,
 		);
+		expect(labels).toEqual(expect.arrayContaining(["Open computer", "I'm done", "Skip"]));
 		expect(labels).not.toContain("Take over");
-		expect(labels).toEqual(expect.arrayContaining(["I'm done", "Skip"]));
-		for (const button of f.view.el.querySelectorAll<HTMLButtonElement>(".interaction-card button")) {
-			if (button.textContent !== "I'm done" && button.textContent !== "Skip") button.click();
-		}
-		await settle();
+		pill(f.view, "Open computer")!.click();
+		// The member's own click: a sleeping computer wakes for it (COMPUTER-OPEN-BRIEF).
+		expect(f.panels.open).toHaveBeenCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
+		expect(f.panel.attach).toHaveBeenCalled();
+		expect(f.panel.focus).toHaveBeenCalled();
+		expect(f.panel.enterWhenShown).toHaveBeenCalledOnce();
 		expect(f.panel.takeOver).not.toHaveBeenCalled();
+		expect(f.answer).not.toHaveBeenCalled();
 	});
 
 	it("gives the desktop back before I'm done answers, so the agent it wakes may look again", async () => {

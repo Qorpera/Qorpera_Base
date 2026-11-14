@@ -1624,6 +1624,16 @@ export class ConversationView {
 		}
 	}
 
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
+		if (this.#panel) this.#panels.open(agent, { asked: true });
+		const panel = this.#panel ?? this.#showPanel(agent, true);
+		panel?.focus();
+		panel?.enterWhenShown();
+	}
+
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
 	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
 	#computerByItself(agent: HostedStaffAgent | undefined): void {
@@ -3050,6 +3060,14 @@ export class ConversationView {
 									? {
 											actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
 												this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
+										}
+									: {}),
+								...(takeOver
+									? {
+											openComputer: () => {
+												const current = currentAgent();
+												if (current) this.#openComputer(current);
+											},
 										}
 									: {}),
 								...(item.request.surface === "secret" && answers

@@ -336,8 +336,8 @@ function togetherWords(names: readonly string[]): string {
 	});
 }
 
-/** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
- * answer it waits for (review r12 F19). */
+/** A take-over (the one kept for the tests: nothing in the web begins one since 14 Nov 2026): the machine chosen at it,
+ * and the ledger's answer it waits for (review r12 F19). */
 interface TakeAttempt {
 	readonly machineId: string | undefined;
 	/** The press's stamp in the ledger (review r13 F20). */
@@ -503,16 +503,20 @@ export class ComputerPanel {
 	/** The hold of the desktop on this page, while there is one (review r17 F25): a new object at every take-over that
 	 * succeeds, gone at every release. */
 	#hold: PageHold | undefined;
-	/** A press of Take over waiting for the machine to run (its stamp in the ledger): dropped, silently, once any release
-	 * came after it (review r13 F20). */
+	/** A take-over (kept for the tests) waiting for the machine to run (its stamp in the ledger): dropped, silently, once
+	 * any release came after it (review r13 F20). */
 	#wantTakeOver: number | undefined;
 	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
 	#handBackFailed = false;
-	/** A take-over of this page's (its button, the agent's take-over card) enters the large view once a picture shows: the
-	 * picture takes input there only. Once: back in the preview it stays there until the member presses Enter. Only in a
-	 * thread: leaving it cancels the entry, and a take-over answered out of one enters nothing (review r1 F1 of #1685);
-	 * back in the thread the member has the preview, the hold and the words that say how to use it. */
+	/** A take-over of this page's (kept for the tests; nothing in the web begins one) enters the large view once a
+	 * picture shows: the picture takes input there only. Once: back in the preview it stays there until the member
+	 * presses Enter. Only in a thread: leaving it cancels the entry, and a take-over answered out of one enters nothing
+	 * (review r1 F1 of #1685); back in the thread the member has the preview, the hold and the words that say how to use
+	 * it. */
 	#enterOnHold = false;
+	/** The take-over card's Open computer (enterWhenShown): the large view once a picture shows, with no hold. Once, and
+	 * only in a thread, as entering on a hold is. */
+	#enterOnShow = false;
 	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
 	 * for (review r12 F19). An older attempt's answer is not the window's. */
 	#taking: TakeAttempt | undefined;
@@ -782,6 +786,16 @@ export class ComputerPanel {
 		this.#poke();
 	}
 
+	/** The take-over card's Open computer (review r1 F1 of #1812): the large view once a picture shows, at once when one
+	 * shows now; the member uses the computer there as it is shared. It begins no hold. */
+	enterWhenShown(): void {
+		if (this.#stop.signal.aborted) return;
+		this.#enterOnShow = true;
+		this.#touched();
+		this.#poke();
+		this.#syncControls();
+	}
+
 	/** Take the desktop over, at once when the window shows a running desktop, or as soon as it does. NOTHING IN THE WEB
 	 * CALLS THIS since private typing was taken out of it (Jonas, 14 Nov 2026: "Yes, remove it"): no button, card or key
 	 * begins a hold. It stays, with the ledger's take, only as the way the tests of a hold (Done, its end, its input, its
@@ -877,6 +891,7 @@ export class ComputerPanel {
 		// A member who left mid-screen returns to a preview; the thread it covered is gone. An entry still pending is
 		// cancelled: nothing enters out of a thread (review r1 F1 of #1685).
 		this.#enterOnHold = false;
+		this.#enterOnShow = false;
 		this.#view?.back();
 		this.el.remove();
 		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
@@ -2143,19 +2158,22 @@ export class ComputerPanel {
 	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at
 	 * once, the first time a quiet line says that they share it with the agent (nothing begins private typing any more:
 	 * Jonas, 14 Nov 2026); in the preview nothing but who else uses it (a click on the picture opens the large view). A
-	 * private hold (one an older page of the member's still has): what it means and Done, in both. A viewer is told they watch. Who else used the shared desktop in the
-	 * last minute is said in every case. The picture takes input only in the large view; a private hold of this page's
-	 * enters the frame in the thread once a picture shows. Without a picture, the same words, label and state stand in
-	 * the state's place for a private hold or its end (review r2 F1 of #1681). */
+	 * private hold (one an older page of the member's still has): what it means and Done, in both. A viewer is told they
+	 * watch. Who else used the shared desktop in the last minute is said in every case. The picture takes input only in
+	 * the large view; a private hold of this page's, or the take-over card's Open computer, enters the frame in the thread
+	 * once a picture shows. Without a picture, the same words, label and state stand in the state's place for a private
+	 * hold or its end (review r2 F1 of #1681). */
 	#syncControls(): void {
 		// The predicate is checked at every change the window draws: once false, the sharing and its queue are gone, and a
 		// new one is made only when it holds again (review r3 of #1701). Input that was waiting is said lost.
 		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared(true);
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
-		const entering = this.#enterOnHold && holding && picture && this.el.parentElement !== null;
+		const entering =
+			((this.#enterOnHold && holding) || this.#enterOnShow) && picture && this.el.parentElement !== null;
 		if (entering) {
 			this.#enterOnHold = false;
+			this.#enterOnShow = false;
 			this.#view?.enterFrame();
 		}
 		const entered = this.#view?.entered === true;

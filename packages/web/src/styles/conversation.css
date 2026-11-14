@@ -803,8 +803,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-mark.is-updating::before { background: #f0c27a; }
 .computer-panel .machine-screen-mark[hidden] { display: none; }
 .computer-panel.is-entered .machine-screen-mark { left: 12px; bottom: 12px; }
-/* A member's take-over (20260930713000): under the picture, Take over; while they hold the desktop, what that means and
-   Hand back across the foot of the picture, and a green edge round it while it takes their clicks and keys. */
+/* A member's take-over (20260930713000; nothing in the web begins one since 14 Nov 2026): while they hold the desktop,
+   what that means and Done across the foot of the picture. */
 .computer-panel .machine-screen-control-slot { position: absolute; inset: auto 8px 8px; z-index: 5; display: flex; justify-content: flex-end; pointer-events: none; }
 /* In the large view nothing of ours sits on the desktop's picture (its dock and its clock; v239 real test, 13 Nov 2026):
    the controls stand in a slim row of the frame between the titlebar and the picture, and the Live mark is the title's.
@@ -826,13 +826,12 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-control-button { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #1d1d1f; background: #fff; box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .computer-panel .machine-screen-control-button:hover { background: #e9e9ec; }
 .computer-panel .machine-screen-control-button:disabled { opacity: 0.6; cursor: default; }
-/* The member holds the desktop in another window (review r14): what that means, Take over, and Hand back. */
+/* The member holds the desktop in another window (review r14): what that means, and Done. */
 .computer-panel .machine-screen-control.is-elsewhere { padding-left: 10px; }
 .computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .computer-panel .machine-screen-control-hand-back[hidden] { display: none; }
 .computer-panel .machine-screen-control-hand-back:hover { background: rgb(255 255 255 / 26%); }
-/* Shared control (20260930734000): who else uses the computer, in a quieter line; Type privately is the secondary control,
-   with a lock, as the hand-back beside it is; typing privately keeps the white Done. */
+/* Shared control (20260930734000): who else uses the computer, in a quieter line; a private hold keeps the white Done. */
 .computer-panel .machine-screen-control-who { color: rgb(255 255 255 / 72%); }
 .computer-panel .machine-screen-control-who:empty { display: none; }
 .computer-panel .machine-screen-control-button[hidden] { display: none; }

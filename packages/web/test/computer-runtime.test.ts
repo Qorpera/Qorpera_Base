@@ -1495,6 +1495,27 @@ describe("an agent's computer window", () => {
 		expect(full).not.toHaveBeenCalled();
 	});
 
+	it("enters the large view once a picture shows for the take-over card's Open computer, and begins no hold (review r1 F1 of #1812)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		p.enterWhenShown();
+		await flush();
+		// No picture yet: nothing enters.
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		s.state.fallback = { picture: 1 };
+		await advance(SCREEN_OFF_EVERY_MS);
+		await flush();
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(p.holding).toBe(false);
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([]);
+		// Once: back in the preview, the next picture enters nothing by itself.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await advance(LOOK_EVERY_MS);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+
 	it("keeps the thread's foot (the composer, the notices above it) reachable while entered, and a key typed there never reaches the computer", async () => {
 		const s = setup();
 		s.state.answers.push({ picture: 1 });

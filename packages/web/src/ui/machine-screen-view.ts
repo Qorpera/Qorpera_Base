@@ -229,7 +229,7 @@ export class MachineScreenView {
 	/** "Live" while the pictures come, "Updating…" while the last one is held. */
 	readonly #mark = h("span", { class: "machine-screen-mark", hidden: true });
 	readonly #switcherSlot = h("span", { class: "machine-screen-switcher-slot" });
-	/** The take-over controls under the picture (the panel's: Take over, or what holding means and Hand back). */
+	/** The controls under the picture (the panel's: the words of sharing, or what a private hold means and Done). */
 	readonly #controlSlot = h("div", { class: "machine-screen-control-slot" });
 	/** Where the take-over controls stand in the large view: a slim row of the frame under its titlebar, never on the
 	 * desktop's picture (its dock and clock; v239 real test, 13 Nov 2026). */
