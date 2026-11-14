@@ -41,6 +41,8 @@ export const CLOUD_RUNTIME_ENTRY_POINTS = Object.freeze({
 	"qorpera-sandbox-probe": "packages/runtime/src/cloud-runner-container-main.ts",
 	"qorpera-lxd-runner-bootstrap": "packages/runtime/src/lxd-runner-bootstrap-main.ts",
 	"qorpera-lxd-native-login-bootstrap": "packages/runtime/src/lxd-native-login-bootstrap-main.ts",
+	// The Claude Code box's shell prefix and `rg` bridge (cloud-claude-box.ts runs it inside the box by its path).
+	"qorpera-claude-home-shell": "packages/runtime/src/cloud-claude-home-shell-client.ts",
 });
 
 /** PostgreSQL jsonb::text for this generated ASCII-key/string/integer manifest.
@@ -125,6 +127,8 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const path of [
 		"deploy/first-node/native-codex/source.json", "deploy/first-node/native-codex/0001-cloud-result-fence.patch",
 		"deploy/first-node/native-codex/linux-x64-artifact.json",
+		"deploy/first-node/native-claude/linux-x64-artifact.json", "deploy/claude-box/qorpera-claude-box-stage.sh",
+		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
 		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",

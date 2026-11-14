@@ -813,7 +813,11 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
      allow-list is empty and the web offers no Claude button.
   2. On both vault hosts, the pinned Claude Code binary: `@anthropic-ai/claude-code-linux-x64@2.1.231` (npm integrity
      `sha512-ou1X+6JWOgbY5pUerfdOmeyPwKwEN515sx9it2sxsYEqKRTvOOHkiN94enRxge9/Z1J2Iqhd4VdkQIl6UoUvYw==`, the guest
-     image's pin), its `package/claude` installed root-owned 0555 as `/opt/qorpera-model-login-helper/claude`.
+     image's pin then), its `package/claude` installed root-owned 0555 as `/opt/qorpera-model-login-helper/claude`.
+     Since the Claude Code box (slice C2), the guest image's one Claude Code is the build
+     `deploy/first-node/native-claude/linux-x64-artifact.json` pins (2.1.325, never older than 2.1.311); install that
+     build here the same way, and set `claudeSha256` to its `artifact.sha256`. The sign-in reads the same link and takes
+     the code the same way on both (C2i, `deploy/claude-box/test/signin.sh`).
   3. On both vault hosts, the release's vault and helper build (`npm run pack:model-login-helper`, and the shared
      vault's broker build); the helper's `config.json` gains `"claudePath": "/opt/qorpera-model-login-helper/claude"`
      and `"claudeSha256": "<its sha256>"` (both or neither). Restart the helper, then the broker, and look for

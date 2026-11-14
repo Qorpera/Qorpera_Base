@@ -37,6 +37,8 @@ interface ProofConfig {
 	node?: string;
 	/** The machine the channels name (the route's stood-in SQL answers for one machine id). */
 	machineId?: string;
+	/** A run host the execution host image's recipe set up (image.sh): every part at the runtime's own paths. */
+	image?: true;
 }
 const PROOF = JSON.parse(readFileSync(join(BASE, "proof.json"), "utf8")) as ProofConfig;
 const [mode = "shell", label = "x"] = process.argv.slice(2);
@@ -46,18 +48,20 @@ const CANARY = new RegExp(`${"C2CAN"}ARY-(FD|FILE|RFR|FD2)-[0-9a-f]{16}`, "g");
 const tags = (text: string): string[] => [...new Set([...text.matchAll(CANARY)].map((m) => m[1]))].sort();
 const MACHINE = PROOF.machineId ?? "00000000-0000-4000-8000-00000000c2c2";
 
-const configuration = {
-	...CLAUDE_BOX_CONFIGURATION,
-	binary: `${P}/claude`,
-	entryPoint: `${P}/src/cloud-native-isolation-child.ts`,
-	shellClient: `${P}/src/cloud-claude-home-shell-client.ts`,
-	stage: `${P}/qorpera-claude-box-stage.sh`,
-	// On the test VM unprivileged user namespaces are not restricted (sysctl 0), so util-linux's own unshare stands in
-	// for the run host's profiled copy; the stock host's proof names the profiled copy (stock.sh).
-	namespaceHelper: PROOF.namespaceHelper ?? "/usr/bin/unshare",
-	sshfs: `${P}/sshfs`,
-	node: PROOF.node ?? process.execPath,
-};
+const configuration = PROOF.image
+	? { ...CLAUDE_BOX_CONFIGURATION }
+	: {
+			...CLAUDE_BOX_CONFIGURATION,
+			binary: `${P}/claude`,
+			entryPoint: `${P}/src/cloud-native-isolation-child.ts`,
+			shellClient: `${P}/src/cloud-claude-home-shell-client.ts`,
+			stage: `${P}/qorpera-claude-box-stage.sh`,
+			// On the test VM unprivileged user namespaces are not restricted (sysctl 0), so util-linux's own unshare stands
+			// in for the run host's profiled copy; the stock host's proof names the profiled copy (stock.sh).
+			namespaceHelper: PROOF.namespaceHelper ?? "/usr/bin/unshare",
+			sshfs: `${P}/sshfs`,
+			node: PROOF.node ?? process.execPath,
+		};
 
 /** The home's channels through the gateway: the kind and the session in the first line, as C1's handshake carries them. */
 const gatewayChannel: CloudClaudeHomeChannel = {

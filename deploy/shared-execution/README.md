@@ -43,6 +43,7 @@ What does **not** change:
 | `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
 | `/srv/qorpera-folder/<id>` | root 0755 in a root 0700 `/srv/qorpera-folder` | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
 | `/etc/systemd/system/qorpera-folder-relay@.{socket,service}`, `/run/qorpera-folder-relay/<n>.sock` | the slot's native host account, 0600 | the node's folder search: the slot's relay to the node's folder service (F3, "Light threads"; started by the service before the host unless `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off`; on by default since keyholes S4) |
+| the `qorpera-claude-box` group (the image's), `/dev/fuse` in `qorpera-shared-run-host@` | root | the Claude Code box (slice C2): the image's namespace helper `/opt/qorpera-runner/qorpera-claude-box-ns` runs for root and this group alone; the installer adds each slot's host account (only on an image that has the group, else it warns), and the slot's host unit lets in the FUSE device alone (`DeviceAllow=/dev/fuse rw`, `BindPaths=/dev/fuse`) for the box's sshfs mount in the run's own namespace |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
 (assignment inbox), both loopback. The runner configuration is written into

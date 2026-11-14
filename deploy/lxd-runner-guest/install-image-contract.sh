@@ -6,6 +6,8 @@ NATIVE_EXECUTION_GROUP="qorpera-native-execution"
 NATIVE_EXECUTION_GID=42041
 RUNNER_USER="qorpera-runner"
 NATIVE_USER="qorpera-native-provider"
+# The Claude Code box's group: the run host accounts that may start the box's namespace helper (slice C2).
+CLAUDE_BOX_GROUP="qorpera-claude-box"
 SUBID_START=200000
 SUBID_COUNT=65536
 SELF_UPDATE_UNITS=(apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service)
@@ -52,7 +54,8 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\n' > /etc/systemd/journ
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
+# sshfs (with fuse3) mounts an agent's home for the Claude Code box, in the run's own namespace (slice C2).
+apt-get install --yes bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns sshfs uidmap
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then
@@ -129,6 +132,10 @@ const expected = new Set([
   "runner-image/qorpera-sandbox-probe.oci.tar",
   "qorpera-sandbox-probe.mjs",
   "run-job",
+  "qorpera-claude-home-shell.mjs",
+  "qorpera-claude-box-stage.sh",
+  "qorpera-claude-box-ns.apparmor",
+  "native-claude/artifact.json",
 ]);
 if (manifest.nativeCompany) {
   const native = manifest.nativeCompany;
@@ -193,6 +200,8 @@ if [[ $(getent passwd "${RUNNER_USER}" | cut -d: -f6) != /var/lib/qorpera-runner
 	exit 1
 fi
 usermod -aG "${NATIVE_EXECUTION_GROUP}" "${RUNNER_USER}"
+# Nobody joins it here: the shared execution package adds each slot's host account (install-shared-execution-guest.sh).
+getent group "${CLAUDE_BOX_GROUP}" >/dev/null || groupadd --system "${CLAUDE_BOX_GROUP}"
 
 # Governed execution never joins the NAS sharing group or the legacy
 # cross-process workspace group. These accounts are private to the new lane.
@@ -242,7 +251,8 @@ for artifact in \
 	qorpera-identity-recovery-restore.mjs \
 	qorpera-native-isolation-child.mjs \
 	qorpera-lxd-runner-bootstrap.mjs \
-	qorpera-lxd-native-login-bootstrap.mjs; do
+	qorpera-lxd-native-login-bootstrap.mjs \
+	qorpera-claude-home-shell.mjs; do
 	install -o root -g root -m 0555 "${PACKAGE_ROOT}/${artifact}" "/opt/qorpera-runner/${artifact}"
 	node --check "/opt/qorpera-runner/${artifact}"
 done
@@ -261,14 +271,81 @@ install -o root -g root -m 0644 "${PACKAGE_ROOT}/harness/package.json" /opt/qorp
 install -o root -g root -m 0644 "${PACKAGE_ROOT}/harness/package-lock.json" /opt/qorpera-harnesses/package-lock.json
 npm ci --prefix /opt/qorpera-harnesses --ignore-scripts --include=optional --omit=dev
 ln -sfn /opt/qorpera-harnesses/node_modules/.bin/codex /usr/local/bin/codex
-ln -sfn /opt/qorpera-harnesses/node_modules/@anthropic-ai/claude-code-linux-x64/claude /usr/local/bin/claude
 
 codex_version=$(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version)
-claude_version=$(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)
-if [[ ${codex_version} != *"0.147.0"* || ${claude_version} != 2.1.231* ]]; then
+if [[ ${codex_version} != *"0.147.0"* ]]; then
 	echo "The installed native harness versions do not match their package lock." >&2
 	exit 1
 fi
+
+# One Claude Code on the image: the unmodified build native-claude/artifact.json pins (never older than 2.1.311),
+# fetched by its npm integrity, checked by size and sha-256, root's and read-only. The Claude Code box runs it
+# (CLAUDE_BOX_CONFIGURATION.binary in packages/runtime/src/cloud-claude-box.ts); /usr/local/bin/claude, which the
+# node's own Claude sign-in path names (QORPERA_CLAUDE_PATH), is a link to the same file.
+CLAUDE_DIR=/opt/qorpera-harnesses/native-claude
+install -d -o root -g root -m 0755 "${CLAUDE_DIR}"
+claude_fetch=$(mktemp -d /root/qorpera-native-claude.XXXXXX)
+claude_version=$(PACKAGE_ROOT=${PACKAGE_ROOT} FETCH_ROOT=${claude_fetch} node <<'NODE'
+const { createHash } = require("node:crypto");
+const { createWriteStream, lstatSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { Readable, Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
+
+const metadata = lstatSync(join(process.env.PACKAGE_ROOT, "native-claude/artifact.json"));
+if (!metadata.isFile() || metadata.size > 65536) throw new Error("Claude Code pin metadata is unsafe");
+const pin = JSON.parse(readFileSync(join(process.env.PACKAGE_ROOT, "native-claude/artifact.json"), "utf8"));
+const version = (text) => (/^\d+\.\d+\.\d+$/.test(text ?? "") ? text.split(".").map(Number) : undefined);
+const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const current = version(pin.source?.version);
+const minimum = version(pin.minimumVersion);
+if (pin.schema !== "qorpera.native-claude-artifact/v1" || !current || !minimum || compare(minimum, [2, 1, 311]) < 0 ||
+    compare(current, minimum) < 0 || pin.source.package !== "@anthropic-ai/claude-code-linux-x64" ||
+    pin.source.tarball !== `https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${pin.source.version}.tgz` ||
+    !/^sha512-[A-Za-z0-9+/]{86}==$/.test(pin.source.integrity) || !Number.isSafeInteger(pin.source.tarballBytes) ||
+    pin.artifact?.path !== "package/claude" || !Number.isSafeInteger(pin.artifact.bytes) ||
+    !/^[0-9a-f]{64}$/.test(pin.artifact.sha256) || pin.artifact.modified !== false) {
+  throw new Error("Claude Code pin is invalid");
+}
+(async () => {
+  const response = await fetch(pin.source.tarball, { redirect: "error" });
+  if (!response.ok || !response.body) throw new Error(`Claude Code tarball fetch failed: ${response.status}`);
+  const digest = createHash("sha512");
+  let bytes = 0;
+  const count = new Transform({
+    transform(chunk, _encoding, done) {
+      bytes += chunk.length;
+      if (bytes > pin.source.tarballBytes) return done(new Error("Claude Code tarball is larger than its pin"));
+      digest.update(chunk);
+      done(null, chunk);
+    },
+  });
+  await pipeline(Readable.fromWeb(response.body), count, createWriteStream(join(process.env.FETCH_ROOT, "claude.tgz"), { flags: "wx", mode: 0o600 }));
+  if (bytes !== pin.source.tarballBytes || `sha512-${digest.digest("base64")}` !== pin.source.integrity) {
+    throw new Error("Claude Code tarball does not match its npm integrity");
+  }
+  process.stdout.write(pin.source.version);
+})().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+NODE
+)
+tar --extract --gzip --file "${claude_fetch}/claude.tgz" --directory "${claude_fetch}" --no-same-owner package/claude
+install -o root -g root -m 0555 "${claude_fetch}/package/claude" "${CLAUDE_DIR}/claude"
+install -o root -g root -m 0444 "${PACKAGE_ROOT}/native-claude/artifact.json" "${CLAUDE_DIR}/artifact.json"
+rm -rf -- "${claude_fetch}"
+ln -sfn "${CLAUDE_DIR}/claude" /usr/local/bin/claude
+
+# The rest of the box's parts: its mount stage, its shell prefix (installed with the runtime above), and its namespace
+# helper, a copy of util-linux unshare that root and the box's group alone may run, with the AppArmor profile that lets
+# it make a user namespace with its capabilities (Ubuntu denies that to every other unprivileged program). The
+# profile is in /etc/apparmor.d, so apparmor.service loads it at every boot; it is loaded now for the checks below.
+install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-claude-box-stage.sh" /opt/qorpera-runner/qorpera-claude-box-stage.sh
+bash -n /opt/qorpera-runner/qorpera-claude-box-stage.sh
+install -o root -g "${CLAUDE_BOX_GROUP}" -m 0750 /usr/bin/unshare /opt/qorpera-runner/qorpera-claude-box-ns
+install -o root -g root -m 0644 "${PACKAGE_ROOT}/qorpera-claude-box-ns.apparmor" /etc/apparmor.d/qorpera-claude-box-ns
+apparmor_parser --replace --write-cache /etc/apparmor.d/qorpera-claude-box-ns
 
 native_company_enabled=$(PACKAGE_ROOT=${PACKAGE_ROOT} node -e '
 const { readFileSync } = require("node:fs");
@@ -358,11 +435,81 @@ printf '%s\n' \
 	"  \"node_version\": \"${node_version}\"," \
 	"  \"podman_version\": \"${podman_version}\"," \
 	'  "codex_version": "0.147.0",' \
-	'  "claude_code_version": "2.1.231",' \
+	"  \"claude_code_version\": \"${claude_version}\"," \
 	"  \"runner_image\": \"${runner_image}\"," \
 	"  \"native_execution_gid\": ${NATIVE_EXECUTION_GID}" \
 	'}' > /etc/qorpera/lxd-runner-image.json
 chmod 0644 /etc/qorpera/lxd-runner-image.json
+
+# The Claude Code box's parts, checked as the image will hold them (a later image that loses one fails here).
+# --- the Claude Code box's checks: begin
+claude_box_refuse() {
+	echo "The Claude Code box's parts do not match the image contract: $1" >&2
+	exit 1
+}
+for part in "${CLAUDE_DIR}/claude:0:0:555" "${CLAUDE_DIR}/artifact.json:0:0:444" \
+	/opt/qorpera-runner/qorpera-claude-box-stage.sh:0:0:555 /opt/qorpera-runner/qorpera-claude-home-shell.mjs:0:0:555 \
+	"/opt/qorpera-runner/qorpera-claude-box-ns:0:$(getent group "${CLAUDE_BOX_GROUP}" | cut -d: -f3):750" \
+	/etc/apparmor.d/qorpera-claude-box-ns:0:0:644 /usr/bin/sshfs:0:0:755 /usr/bin/bwrap:0:0:755 /usr/bin/node:0:0:755; do
+	path=${part%%:*}
+	# Each folder above the part is root's and no one else may write it (the runtime's rootOwnedFile, at start).
+	[[ ! -L ${path} && -f ${path} && $(stat -c "%u:%g:%a:%h" "${path}") == "${part#*:}:1" ]] || claude_box_refuse "${path}"
+	folder=$(dirname "${path}")
+	while true; do
+		[[ ! -L ${folder} && $(stat -c %u "${folder}") == 0 && $((0$(stat -c %a "${folder}") & 022)) == 0 ]] ||
+			claude_box_refuse "${folder}"
+		[[ ${folder} == / ]] && break
+		folder=$(dirname "${folder}")
+	done
+done
+cmp -s /usr/bin/unshare /opt/qorpera-runner/qorpera-claude-box-ns || claude_box_refuse "the namespace helper is not util-linux unshare"
+CLAUDE_DIR=${CLAUDE_DIR} node -e '
+const { createHash } = require("node:crypto");
+const { readFileSync, statSync } = require("node:fs");
+const pin = JSON.parse(readFileSync(`${process.env.CLAUDE_DIR}/artifact.json`, "utf8")).artifact;
+const binary = `${process.env.CLAUDE_DIR}/claude`;
+if (statSync(binary).size !== pin.bytes || createHash("sha256").update(readFileSync(binary)).digest("hex") !== pin.sha256) process.exit(1);
+' || claude_box_refuse "Claude Code is not the pinned build"
+[[ $(readlink -f /usr/local/bin/claude) == "${CLAUDE_DIR}/claude" ]] || claude_box_refuse "/usr/local/bin/claude"
+[[ ! -e /opt/qorpera-harnesses/node_modules/@anthropic-ai ]] || claude_box_refuse "a second Claude Code in the harness packages"
+claude_home=$(mktemp -d /root/qorpera-claude-version.XXXXXX)
+installed_claude=$(env -i HOME="${claude_home}" CLAUDE_CONFIG_DIR="${claude_home}" DISABLE_AUTOUPDATER=1 PATH=/usr/bin:/bin \
+	"${CLAUDE_DIR}/claude" --version)
+rm -rf -- "${claude_home}"
+[[ ${installed_claude} == "${claude_version} "* ]] || claude_box_refuse "Claude Code says ${installed_claude}"
+[[ $(sysctl -n kernel.apparmor_restrict_unprivileged_userns) == 1 ]] ||
+	claude_box_refuse "unprivileged user namespaces are not restricted, so the helper's profile cannot be checked"
+[[ $(systemctl is-enabled apparmor.service) == enabled ]] || claude_box_refuse "apparmor.service would not load the profile at boot"
+grep -Fxq "qorpera-claude-box-ns (unconfined)" /sys/kernel/security/apparmor/profiles || claude_box_refuse "the helper's profile is not loaded"
+# The box's own start, as an account of the box's group in a unit hardened like the run host's: the helper makes the
+# run's namespaces and mounts there (its /proc, and a made-up tmpfs); util-linux's own unshare, the same in all else,
+# cannot; an account outside the group cannot run the helper.
+claude_box_unit() {
+	local group=$1
+	shift
+	systemd-run --quiet --pipe --wait --collect --uid=nobody --gid="${group}" \
+		-p NoNewPrivileges=yes -p PrivateDevices=yes -p "DeviceAllow=/dev/fuse rw" -p BindPaths=/dev/fuse \
+		-p CapabilityBoundingSet= -p AmbientCapabilities= -p "RestrictNamespaces=user mnt pid net ipc uts cgroup" \
+		-p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p ProtectProc=invisible -p ProcSubset=all \
+		-p ProtectKernelTunables=no -p ProtectControlGroups=yes -p RestrictSUIDSGID=yes -p LockPersonality=yes "$@" </dev/null
+}
+for helper in /opt/qorpera-runner/qorpera-claude-box-ns /usr/bin/unshare; do
+	box_start=$(claude_box_unit "${CLAUDE_BOX_GROUP}" "${helper}" --user --map-current-user --keep-caps --mount --pid --fork \
+		--kill-child --mount-proc -- /bin/sh -c 'test -c /dev/fuse && cat /proc/self/attr/current' 2>&1) && box_rc=0 || box_rc=$?
+	made_up=$(claude_box_unit "${CLAUDE_BOX_GROUP}" "${helper}" --user --map-root-user --mount -- \
+		/bin/sh -c 'mount -t tmpfs qorpera-claude-box-check /mnt && findmnt -n -r -o FSTYPE,SOURCE /mnt' 2>&1) && mount_rc=0 || mount_rc=$?
+	echo "Claude Code box namespace check with ${helper}: start rc=${box_rc} (${box_start}); made-up mount rc=${mount_rc} (${made_up})"
+	if [[ ${helper} == /usr/bin/unshare ]]; then
+		((box_rc != 0 && mount_rc != 0)) || claude_box_refuse "util-linux unshare mounts in a new user namespace too"
+	elif ((box_rc != 0 || mount_rc != 0)) || [[ ${box_start} != "qorpera-claude-box-ns (unconfined)" ]] ||
+		[[ ${made_up} != "tmpfs qorpera-claude-box-check" ]]; then
+		claude_box_refuse "the helper cannot start the box's namespace"
+	fi
+done
+if claude_box_unit nogroup /opt/qorpera-runner/qorpera-claude-box-ns --user -- /bin/true 2>/dev/null; then
+	claude_box_refuse "an account outside ${CLAUDE_BOX_GROUP} can run the helper"
+fi
+# --- the Claude Code box's checks: end
 
 for unit in "${SELF_UPDATE_UNITS[@]}"; do
 	if [[ $(readlink "/etc/systemd/system/${unit}") != /dev/null ]] ||

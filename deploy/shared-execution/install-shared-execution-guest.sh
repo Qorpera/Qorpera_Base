@@ -9,7 +9,7 @@ set -euo pipefail
 
 EXPECTED_SERVICE_SHA256="16229d9a5a2c1d96ff92e1566fed79c3f4fe486dce8fbb083aa286862f66b56c"
 EXPECTED_SERVICE_UNIT_SHA256="915fef453788ce0c0c788b4139814b15ccfdb717f877e790da7b191ae99c3479"
-EXPECTED_HOST_UNIT_SHA256="5292e3a269bd0e446f81d0f3a1df88ab80d391eea1e067079077a2ebc6881141"
+EXPECTED_HOST_UNIT_SHA256="891d1e75372f055c82f9d547a9fb034d45d7afcf24d173bd33f57735faf0ab51"
 EXPECTED_RUNNER_UNIT_SHA256="09070c9dd6d8f1a4c2dd5aab25f251e5e3da1735ce9dab50f6591d9b59becbfd"
 EXPECTED_ENV_EXAMPLE_SHA256="47abe9a094939f786b25cf51c24f6b857b63a1591beb85996877d99d6286b0dc"
 EXPECTED_ORCHESTRATOR_SHA256="4aa0461aa23647f860d4c97f09b0b544576ab48c39e64276b3f26a19c4c0b6b9"
@@ -104,6 +104,11 @@ for ((slot = 0; slot < SLOT_COUNT; slot++)); do
 			useradd --system --no-create-home --home-dir "${STATE_ROOT}/slots/${slot}" --shell /usr/sbin/nologin "${account}"
 		fi
 	done
+	# The slot's native host starts a run's Claude Code box: its namespace helper is the image's, root and this group
+	# only (install-image-contract.sh). An image without the box has no such group, and the slot gets nothing.
+	if getent group qorpera-claude-box >/dev/null; then
+		usermod -aG qorpera-claude-box "qorpera-shared-host-${slot}"
+	fi
 	install -d -o root -g root -m 0711 "${STATE_ROOT}/slots/${slot}"
 	install -d -o "qorpera-shared-host-${slot}" -g "qorpera-shared-host-${slot}" -m 0700 "${STATE_ROOT}/slots/${slot}/host"
 	install -d -o "qorpera-shared-runner-${slot}" -g "qorpera-shared-runner-${slot}" -m 0700 \
@@ -137,6 +142,12 @@ install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mount
 if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
 	# Runs do not need it yet; a folder mount will not start until the image has FUSE.
 	echo "Warning: this host has no FUSE (/dev/fuse or the fuse filesystem is missing); folder mounts cannot start."
+fi
+
+if ! getent group qorpera-claude-box >/dev/null ||
+	! grep -Fxq "qorpera-claude-box-ns (unconfined)" /sys/kernel/security/apparmor/profiles 2>/dev/null; then
+	# Runs do not need it yet (no Claude Code run is dispatched); a box will not start until the image has its parts.
+	echo "Warning: this image has no Claude Code box (its group or its namespace helper's AppArmor profile is missing)."
 fi
 
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-shared-execution-service.mjs"
