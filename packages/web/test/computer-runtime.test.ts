@@ -1959,6 +1959,8 @@ describe("every answer to an open, from both callers, with and without a picture
 						expect(s.opens).toEqual(["apps/a"]);
 					}
 				});
+				// The same answer to a choice a newer one replaced: once per caller.
+				if (picture) continue;
 				it(`${caller}: ${name} to a choice a newer one replaced changes nothing, and the newer goes out`, async () => {
 					const { s, p } = await at(caller);
 					let release = () => {};
