@@ -106,29 +106,51 @@ const KIT_OUTSIDE_QORPERA =
  * reads the data file, puts each such value's current number in its place and gives the engine the text it parses: a
  * value with no answer yet is null, and a `state` beside it says `"unknown"` (an answered one says `"known"`). Each
  * question with its params is watched once, however many values share it; a later answer that fails keeps the last good
- * one, and a watch the bridge could not start is no answer at once and is tried again at the next load. Loads run one
- * after another. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
- * `QORPERA_KIT.live` lists the places of the data that are bound and `QORPERA_KIT.changed` the ones that moved at the
- * last load, each as a JSON pointer. Where `qorpera.watch` is missing (outside Qorpera, or an older web app), a value is
- * its `example`, with `"assumed"` beside it, or not known when it has none.
+ * one. A watch the bridge could not start is no answer at once and is tried again after a wait: 10 seconds after the
+ * first refusal, twice as long after each one in a row (10 minutes at most). No load starts it before then, and at
+ * the wait's end the script asks for a load itself (as for a changed value), so a database made meanwhile shows
+ * without anything else changing. A page makes at most 100 refused starts, counting the ones still out (one the data
+ * drops while it is out stays counted until it answers), and then starts no watch that is not running: its value
+ * stays not known until the page is opened again. Each refusal is a
+ * refused call to the app's frame, which stops a page that makes too many (the web's `MAX_REFUSED`), and the engine
+ * loads again at every live value's change: so a question that does not answer must not be asked at every load.
+ * Loads run one after another. When a watched value changes, or a refused question's wait ends, the functions given
+ * to `QORPERA_KIT.onLive` run, at most once a frame. `QORPERA_KIT.live` lists the places of the data that are bound
+ * and `QORPERA_KIT.changed` the ones that moved at the last load, each as a JSON pointer. Where `qorpera.watch` is
+ * missing (outside Qorpera, or an older web app), a value is its `example`, with `"assumed"` beside it, or not known
+ * when it has none.
  */
 const KIT_LIVE_VALUES = [
-	"(()=>{const K=window.QORPERA_KIT,q=window.qorpera,asks=new Map(),fns=[];let seen=new Map(),frame=0,waiting=0;",
+	"(()=>{const K=window.QORPERA_KIT,q=window.qorpera,asks=new Map(),fns=[];let seen=new Map(),frame=0,waiting=0,left=100;",
 	'K.live=[];K.changed=[];K.onLive=(f)=>{if(typeof f==="function")fns.push(f)};',
 	'const num=(v)=>{const n=typeof v==="number"?v:typeof v==="string"&&v.trim()?Number(v):NaN;return Number.isFinite(n)?n:null};',
 	'const bound=(v)=>v&&typeof v==="object"&&!Array.isArray(v)&&typeof v.query==="string"&&Object.keys(v).every((k)=>["query","params","column","example"].includes(k));',
 	"const ping=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
 	"if(window.requestAnimationFrame)window.requestAnimationFrame(go);else setTimeout(go,16)};",
 	// One watch for each question with its params. A failed answer is no answer: the last good one stays. A watch that
-	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again
-	// (once, however many values share it).
+	// could not start (the bridge calls `failed`, or it throws) is no answer at once. A later load starts it again
+	// (once, however many values share it), but not before its wait is over (`w.t`: 10 s, doubled by each refusal in a
+	// row, `w.n`, up to 10 min; an answer ends the row). At the wait's end `again` asks for a load, unless the data no
+	// longer names the question, a newer refusal has its own wait, or the page has no starts left; it waits for a load
+	// that is running. `left` is the starts the page may still have refused: a start takes one (`w.o`: it is out, and
+	// which one) and its own first answer gives it back, so starts that are out together cannot pass the limit. A
+	// start still out when the data drops its question stays out and stays counted (below, `w.x`): its watch is not
+	// stopped until the start's own answer comes, which gives the start back and stops it; a refusal keeps it
+	// counted. So the frame never counts a refused start the page's count did not hold, however often a question is
+	// named and dropped, and a dropped question moves no value, asks for no load and waits for nothing. A question
+	// that cannot start is not waited for.
 	// A question's key: its name and its params, in the order of their names (kitBindings keys it the same way).
 	'const prm=(b)=>b.params&&typeof b.params==="object"?b.params:{};',
 	"const keyOf=(b)=>{const p=prm(b);return JSON.stringify([b.query,Object.keys(p).sort().map((k)=>[k,p[k]])])};",
 	"const ask=(b,key)=>{const p=prm(b);let w=asks.get(key);",
-	"if(!w){w={dead:1};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}const dead=()=>{w.dead=1;w.ready()};",
-	"if(w.dead&&!w.used){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
-	"w.a=a;w.ready();if(s!==w.s){w.s=s;ping()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
+	"if(!w){w={dead:1,n:0,t:0,m:0};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}",
+	"if(w.dead&&!w.used&&Date.now()>=w.t){if(left<1)w.ready();else{w.dead=0;left--;const m=w.o=++w.m,",
+	"dead=()=>{if(w.o===m)w.o=0;if(asks.get(key)!==w)return;w.dead=1;const n=++w.n,d=Math.min(6e5,5e3*2**n),",
+	"again=()=>{if(asks.get(key)===w&&w.dead&&w.n===n&&left>0){if(waiting)setTimeout(again,1e3);else{w.t=0;ping()}}};",
+	"w.t=Date.now()+d;setTimeout(again,d);w.ready()};",
+	"try{w.stop=q.watch(b.query,p,(a)=>{try{if(w.o===m){w.o=0;left++}if(asks.get(key)!==w){if(w.x){w.x=0;w.stop()}return}",
+	"if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
+	"w.a=a;w.n=0;w.ready();if(s!==w.s){w.s=s;ping()}}catch(e){}},dead)}catch(e){dead()}}}w.used=1;return w};",
 	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
 	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
 	'for(const n of Object.keys(v))walk(v[n],v,n,path+"/"+n.replace(/~/g,"~0").replace(/\\//g,"~1"),out,d+1)};',
@@ -138,8 +160,10 @@ const KIT_LIVE_VALUES = [
 	'try{if(typeof text==="string"&&text.includes("query")){data=JSON.parse(text);walk(data,null,null,"",found,0)}}catch(e){}',
 	// The first answers get a few seconds; what has not answered by then comes through onLive.
 	// The watches the data no longer names stop before new ones start, so a bridge's limit on watches has room for them.
+	// Not one whose start is still out: it is stopped when that start answers, and keeps its place in the bridge's
+	// limit until then. A new question the bridge refuses for that reason waits and is asked again, as any refused one.
 	"const keys=found.map((f)=>keyOf(f.b)),want=new Set(on?keys:[]);",
-	'for(const[key,w]of asks)if(!want.has(key)){asks.delete(key);try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
+	'for(const[key,w]of asks)if(!want.has(key)){asks.delete(key);if(w.o)w.x=1;else try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
 	"waiting++;let t=0;try{for(const w of asks.values())w.used=0;if(on)found.forEach((f,i)=>ws.push(ask(f.b,keys[i])));",
 	"if(ws.some((w)=>!w.a))await Promise.race([Promise.all(ws.map((w)=>w.first)),new Promise((r)=>{t=setTimeout(r,3000)})]);",
 	"}finally{waiting--;clearTimeout(t)}",
