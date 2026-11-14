@@ -7482,11 +7482,12 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		).toHaveLength(1);
 	});
 
-	it("releases each answer of a file channel as soon as the release before it ended, not 200 ms after it began (slice C1)", async () => {
+	it("releases a file channel's answers one after another at once, and an exec channel's short exchange too, but not a stream (slice C1)", async () => {
 		const { f, exec, session } = await home();
 		f.homeSessions.push(session(), session());
-		// Two answers one after another, each only after a release of its own: on the file channel the second's release
-		// begins when the first's ended; on the exec-server's, 200 ms after the first's began.
+		// Five answers one after another, each only after a release of its own. The file channel has no spacing; the
+		// exec-server's has four releases in hand and one more every 200 ms (a shell command's start answer, output and
+		// exit pass at once; the fifth in a row waits).
 		const roundTrips = async (kind: "exec" | "sftp") => {
 			const channel = await f.host.execServer(
 				{ placementId: id(6), sessionId: id(30), bootId: f.boot, kind },
@@ -7497,20 +7498,22 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 				f.order.filter((step) => step === "sql:qorpera_folder_test_machine_inherit_reads").length;
 			const before = releases();
 			const at = performance.now();
-			for (const answer of ["first", "second"]) {
+			const times: number[] = [];
+			for (const answer of ["one", "two", "three", "four", "five"]) {
 				exec.request?.stdout?.(Buffer.from(`${answer}\n`));
 				await lines.next();
+				times.push(performance.now() - at);
 			}
-			const ms = performance.now() - at;
 			const released = releases() - before;
 			await channel.close();
-			return { ms, released };
+			return { times, released };
 		};
 		const files = await roundTrips("sftp");
 		const shell = await roundTrips("exec");
-		expect([files.released, shell.released]).toEqual([2, 2]);
-		expect(files.ms).toBeLessThan(150);
-		expect(shell.ms).toBeGreaterThanOrEqual(190);
+		expect([files.released, shell.released]).toEqual([5, 5]);
+		expect(files.times[4]).toBeLessThan(150);
+		expect(shell.times[3]).toBeLessThan(150);
+		expect(shell.times[4]).toBeGreaterThanOrEqual(150);
 	});
 
 	it("refuses a file channel on a machine without sftp-server, and asks again at the next one (slice C1)", async () => {

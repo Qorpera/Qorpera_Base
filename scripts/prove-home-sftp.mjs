@@ -84,6 +84,7 @@ async function executor() {
 							pass: request.stdout,
 							fail: () => undefined,
 							spacingMs: config.gate.spacingMs,
+							...(config.gate.burst ? { burst: config.gate.burst } : {}),
 							limitBytes: 16 * 1024 * 1024,
 						})
 					: undefined;
@@ -376,6 +377,116 @@ async function driver() {
 		await time("write-200", `mkdir -p ${c}/c1w/${mode} && for i in $(seq 1 200); do echo "c1 write $i" > ${c}/c1w/${mode}/f$i.txt; done; ls ${c}/c1w/${mode} | wc -l`, (got) => got === "200");
 		return out;
 	};
+
+	/** The exec-server's side of a channel, as Codex's harness speaks it: requests by id, a process's notifications. */
+	const execRpc = (stream) => {
+		const pending = new Map();
+		const procs = new Map();
+		let next = 0;
+		const proc = (id) => {
+			if (!procs.has(id)) procs.set(id, { out: [], closedAt: undefined, exitCode: undefined, wake: undefined });
+			return procs.get(id);
+		};
+		void (async () => {
+			try {
+				for await (const line of stream.lines) {
+					const message = JSON.parse(line);
+					if (message.id !== undefined && pending.has(message.id)) {
+						pending.get(message.id)(message);
+						pending.delete(message.id);
+						continue;
+					}
+					const params = message.params ?? {};
+					if (params.processId === undefined) continue;
+					const p = proc(String(params.processId));
+					if (message.method === "process/output") p.out.push(Buffer.from(String(params.chunk ?? ""), "base64"));
+					else if (message.method === "process/exited") p.exitCode = params.exitCode;
+					else if (message.method === "process/closed") p.closedAt = performance.now();
+					p.wake?.();
+				}
+			} catch {}
+		})();
+		const request = (method, params) =>
+			new Promise((resolve) => {
+				const id = ++next;
+				pending.set(id, resolve);
+				stream.write(JSON.stringify({ id, method, params }));
+			});
+		let n = 0;
+		return {
+			request,
+			notify: (method, params) => stream.write(JSON.stringify({ method, params })),
+			/** One command, from its start's request to its process's close, in ms. */
+			run: async (argv) => {
+				const processId = `c1-${++n}`;
+				const p = proc(processId);
+				const at = performance.now();
+				await request("process/start", {
+					processId, argv, cwd: "file:///company", env: {},
+					envPolicy: { inherit: "all", ignoreDefaultExcludes: true, exclude: [], set: {}, includeOnly: [] },
+					tty: false, pipeStdin: false, arg0: null, sandbox: null, enforceManagedNetwork: false, managedNetwork: null,
+				});
+				while (p.closedAt === undefined) await new Promise((resolve) => { p.wake = resolve; setTimeout(resolve, 200); });
+				return { ms: Math.round(p.closedAt - at), exitCode: p.exitCode, out: Buffer.concat(p.out).toString("utf8") };
+			},
+		};
+	};
+	if (only === "exec") {
+		// One shell command through the exec-server, and a grep over 2,000 files as ONE command: without a gate, through
+		// the host's gate with one release in hand (as first built) and with four (the exec channel now), each release
+		// answering after 10 ms. The median of 7 after one warm-up.
+		const results = {};
+		const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+		try {
+			for (const [mode, gate] of [
+				["route", undefined],
+				["burst1r10", { spacingMs: 200, releaseMs: 10, burst: 1 }],
+				["burst4r10", { spacingMs: 200, releaseMs: 10, burst: 4 }],
+			]) {
+				const exM = await startExecutor(mode, gate);
+				const stream = await createCloudHomeChannel({ url: `http://127.0.0.1:${exM.port}`, token, binding, holder: () => holder, allowLoopback: true })
+					.open({ sessionId: session(), machineId: ids.machineId }, AbortSignal.timeout(30000));
+				const rpc = execRpc(stream);
+				await rpc.request("initialize", { clientName: "home-sftp-proof" });
+				rpc.notify("initialized", {});
+				const out = {};
+				// "after-quiet": each command after a second of quiet, as an agent's next command comes after the model's
+				// turn; "back-to-back": one right after the other, which is a stream to the gate.
+				for (const [name, argv, expect, quietMs] of [
+					["shell-command after-quiet", ["/bin/bash", "-c", "echo one; echo two; echo three"], (r) => r.out === "one\ntwo\nthree\n", 1000],
+					["grep-2000-one-command after-quiet", ["/bin/bash", "-c", "grep -rl P4NEEDLE /company/tree/d0* /company/tree/d1* | wc -l"], (r) => r.out.trim() === "15", 1000],
+					["shell-command back-to-back", ["/bin/bash", "-c", "echo one; echo two; echo three"], (r) => r.out === "one\ntwo\nthree\n", 0],
+				]) {
+					await rpc.run(argv);
+					const runs = [];
+					for (let i = 0; i < 7; i++) {
+						if (quietMs) await sleep(quietMs);
+						runs.push(await rpc.run(argv));
+					}
+					const ok = runs.every((r) => r.exitCode === 0 && expect(r));
+					out[name] = { median: median(runs.map((r) => r.ms)), all: runs.map((r) => r.ms), ok };
+					say(`EXECBENCH ${mode} ${name}: median ${out[name].median} ms (${out[name].all.join(" ")})${ok ? "" : ` WRONG ${JSON.stringify(runs[0])}`}`);
+				}
+				results[mode] = out;
+				await stream.close();
+				exM.child.kill("SIGTERM");
+				await sleep(500);
+			}
+			say(`EXECRESULTS ${JSON.stringify(results)}`);
+			const r = results;
+			check("E1", Object.values(r).every((m) => Object.values(m).every((one) => one.ok)), "every command answered right in every mode");
+			const q = "shell-command after-quiet";
+			check("E2", r.burst4r10[q].median < r.burst1r10[q].median && r.burst4r10[q].median < r.route[q].median + 100,
+				`a shell command after a quiet second: ${r.route[q].median} ms without the gate, ${r.burst1r10[q].median} with one release in hand, ${r.burst4r10[q].median} with four`);
+			const left = await goneWithin(performance.now(), 10000);
+			check("E3", left !== null, `nothing of any channel is left on the machine (${left} ms)`);
+		} finally {
+			for (const child of executors) child.kill("SIGTERM");
+			say(`CHECKS ${checks.filter((one) => one.ok).length} of ${checks.length} passed: ${checks.filter((one) => !one.ok).map((one) => one.id).join(" ") || "none failed"}`);
+			say("PROOF-END");
+		}
+		return;
+	}
 
 	try {
 		const ex = await startExecutor("route", undefined);

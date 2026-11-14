@@ -74,6 +74,9 @@ const WINDOWS_MS = 30000;
 /** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
  * often a release that did not answer is tried before the channel ends, and what may wait for one. */
 const HOME_RELEASE_SPACING_MS = 200;
+/** How many of those releases an exec channel may start without waiting (HomeOutputGateOptions.burst): a shell command's
+ * start answer, output and exit pass at once; a stream is still held to one release per 200 ms. */
+const HOME_RELEASE_BURST = 4;
 /** The file channel's (slice C1): none. SFTP is a request and its answer, one after another for most of what Claude
  * Code's file tools do (a Read is a stat, an open, a read and a close), and a release may come at most once per spacing,
  * so 200 ms there made each of those round trips 200 ms (C1's proof: 200 small files read one after another took 105 s
@@ -4015,7 +4018,9 @@ export class LxdCompanyMachineHost {
 				run.abort();
 				fromMachine.end();
 			},
-			kind === "sftp" ? HOME_SFTP_RELEASE_SPACING_MS : HOME_RELEASE_SPACING_MS,
+			kind === "sftp"
+				? { spacingMs: HOME_SFTP_RELEASE_SPACING_MS, burst: 1 }
+				: { spacingMs: HOME_RELEASE_SPACING_MS, burst: HOME_RELEASE_BURST },
 		);
 		const pipe = exec(
 			this.#policy.project,
@@ -4145,7 +4150,11 @@ export class LxdCompanyMachineHost {
 		session: HomeFolderSession,
 		signal: AbortSignal,
 	): Promise<{
-		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void, spacingMs: number): HomeOutputGate;
+		gate(
+			pass: (chunk: Buffer) => void,
+			fail: (why: string) => void,
+			pace: { readonly spacingMs: number; readonly burst: number },
+		): HomeOutputGate;
 		close(): Promise<void>;
 	}> {
 		const folder = this.#options.folder as FolderControl;
@@ -4216,12 +4225,13 @@ export class LxdCompanyMachineHost {
 			throw new Error("HOME_FOLDER_HELD");
 		}
 		return {
-			gate: (pass, fail, spacingMs) =>
+			gate: (pass, fail, pace) =>
 				new HomeOutputGate({
 					release,
 					pass,
 					fail,
-					spacingMs,
+					spacingMs: pace.spacingMs,
+					burst: pace.burst,
 					limitBytes: HOME_OUTPUT_WAIT_BYTES,
 				}),
 			close,
