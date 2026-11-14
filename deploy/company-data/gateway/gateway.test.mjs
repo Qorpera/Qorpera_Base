@@ -1094,13 +1094,27 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		const otherServer = await serve(other);
 		const mainPort = port;
 		port = otherServer.address().port;
+		let failed = false;
 		try {
 			return await work(other);
+		} catch (error) {
+			failed = true;
+			throw error;
 		} finally {
 			port = mainPort;
 			otherServer.close();
 			otherServer.closeAllConnections();
-			await other.close();
+			// A pool ends only when every connection it lent is back: a gateway that kept one would never close, and the
+			// run would wait on it for ever. Say so instead (the work's own failure, if it had one, is the one shown).
+			let timer;
+			const closed = await Promise.race([
+				other.close().then(() => true),
+				new Promise((resolve) => {
+					timer = setTimeout(resolve, 10_000, false);
+				}),
+			]);
+			clearTimeout(timer);
+			if (!closed && !failed) assert.fail("the gateway did not close within 10 s: it never gave a connection back");
 		}
 	};
 
