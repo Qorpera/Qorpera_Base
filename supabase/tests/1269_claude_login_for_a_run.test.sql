@@ -3,7 +3,7 @@
 -- ONE run of a Claude Code worker and seals the credentials file back. On 1268's fixture (924's base, 1246's machine,
 -- the shared vault serving the company): a Claude Code worker of the owner's word is dispatched, started by the drain,
 -- materialized and started on a real runner with a native lease, and its run's binding asks.
--- 1. The open: the sealed files with their digest, the member and key, version 1; the description without the files.
+-- 1. The open: the sealed files with their digest, the member and key, version 1.
 -- 2. Who may ask, each refused whole (42501) and naming nothing: another company's broker authority, a wrong capability,
 --    the agent's own conversation run, a plain worker's run, the run once its member's lease is not its own (taken by
 --    another wake, or its wake ended), and a seal naming another login.
@@ -12,7 +12,7 @@
 --    login's, an envelope that is not its digest, and shapes out of bounds are invalid (22023).
 -- 4. What the login must be now: signed out (the member signed in again) answers SIGNED_OUT to the open and the seal;
 --    the member taken off the Claude list between the dispatch and the open answers NOT_OPEN; on again, open.
--- 5. Only the vault's own role calls the three functions; the inner check is nobody's.
+-- 5. Only the vault's own role calls the two functions; the inner check is nobody's.
 -- The vault's calls run in the vault's own session (qorpera_model_login_authority asks session_user): each section's
 -- checks run as that session, through a function that may also change rows to set up a case.
 
@@ -82,10 +82,6 @@ begin
 		and v ->> 'envelopeSha256' = pg_temp.c4b_sha('canary-c4b-sealed-1')
 		and convert_from(decode(v ->> 'encryptedEnvelopeBase64', 'base64'), 'UTF8') = 'canary-c4b-sealed-1',
 		'1: the run opens its member''s login: ' || (v - 'encryptedEnvelopeBase64')::text);
-	v := public.qorpera_describe_claude_login_for_run('12680000-0000-4000-8000-000000000040', repeat('c', 64), pg_temp.c4b_binding());
-	perform pg_temp.base_assert(v ->> 'state' = 'described' and not v ? 'encryptedEnvelopeBase64'
-		and v ->> 'envelopeSha256' = pg_temp.c4b_sha('canary-c4b-sealed-1') and (v ->> 'version')::bigint = 1,
-		'1: the description holds no sealed files: ' || v::text);
 end $$;
 grant execute on function pg_temp.c4b_s1() to qorpera_secret_broker;
 set local session authorization qorpera_secret_broker;
@@ -243,7 +239,6 @@ do $$
 declare v_role text; v_function text;
 begin
 	foreach v_function in array array['public.qorpera_open_claude_login_for_run(uuid,text,jsonb)',
-		'public.qorpera_describe_claude_login_for_run(uuid,text,jsonb)',
 		'public.qorpera_seal_claude_login_back(uuid,text,jsonb,uuid,bigint,text,text,text,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			if has_function_privilege(v_role, v_function, 'execute') then raise exception '5: % may call %', v_role, v_function; end if;

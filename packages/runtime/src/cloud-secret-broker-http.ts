@@ -688,10 +688,6 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Usage of the logins the vault keeps (change 2C): `/v1/model-logins/<company>/account-refresh`
 	 * under the account refresh's own capability. Absent means the route answers 404. */
 	readonly modelLoginUsage?: CloudModelLoginUsage;
-	/** A Claude Code worker's run's Claude login (20260930771000): `/v1/claude-logins/open` and `/seal` under the runtime
-	 * token, the run's lease proof and the database's checks. Only the shared vault keeps Claude logins; absent means the
-	 * routes answer 404. */
-	readonly claudeLogins?: CloudClaudeLoginVault;
 }
 
 /** What a request's company gets: a single-company broker's own services (some may be off), or one
@@ -703,7 +699,9 @@ interface RequestScope {
 	readonly modelLogins: CloudModelLoginVault | undefined;
 	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	readonly modelLoginUsage: CloudModelLoginUsage | undefined;
-	readonly claudeLogins?: CloudClaudeLoginVault | undefined;
+	/** A Claude Code worker's run's Claude login (20260930771000): `/v1/claude-logins/open` and `/seal`. Only the shared
+	 * vault keeps Claude logins (its company scopes carry them); without it the routes answer 404. */
+	readonly claudeLogins?: CloudClaudeLoginVault;
 }
 
 /**
@@ -1925,9 +1923,10 @@ export async function openClaudeLoginForRun(
 }
 
 /** Sends back the login files the run host read from the box after the run, when any changed (Claude Code renewed its
- * token): `unchanged` sends nothing. Only Claude Code's login files may be sent (`.credentials.json`, and
- * `.claude.json` when it keeps one); the vault seals them as the login's next version only if the version opened is
- * still the login's, else `stale` (the newer one stays). */
+ * token): `unchanged` sends nothing. Only Claude Code's login files may be sent, `.credentials.json` always (C4c sends
+ * only it), `.claude.json` when the caller passes it; a file not sent stays as the run opened it. The vault seals them as
+ * the login's next version only if the version opened is still the login's, else `stale` (the newer one stays). Call it
+ * before the worker's report: the database lets a run seal back only while its worker is at work. */
 export async function sealClaudeLoginBack(
 	options: ClaudeLoginRunClient,
 	request: {
@@ -1937,14 +1936,16 @@ export async function sealClaudeLoginBack(
 	},
 	signal: AbortSignal,
 ): Promise<{ readonly state: "unchanged" } | ClaudeLoginSealAnswer> {
-	for (const name of request.files.keys())
-		if (!(CLAUDE_LOGIN_FILES as readonly string[]).includes(name))
-			throw new Error("Only Claude Code's login files are sealed back");
+	if (
+		!request.files.has(".credentials.json") ||
+		[...request.files.keys()].some((name) => !(CLAUDE_LOGIN_FILES as readonly string[]).includes(name))
+	)
+		throw new Error("Only Claude Code's login files are sealed back");
 	const digests = new Map(
 		[...request.files].map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")] as const),
 	);
-	const opened = Object.entries(request.opened.fileSha256);
-	if (opened.length === digests.size && opened.every(([name, digest]) => digests.get(name) === digest))
+	// Unchanged: every file sent is byte for byte the one the run opened (a file it did not open counts as a change).
+	if ([...digests].every(([name, digest]) => request.opened.fileSha256[name as ClaudeLoginFileName] === digest))
 		return { state: "unchanged" };
 	const files: Record<string, string> = {};
 	for (const [name, bytes] of request.files) files[name] = Buffer.from(bytes).toString("base64");

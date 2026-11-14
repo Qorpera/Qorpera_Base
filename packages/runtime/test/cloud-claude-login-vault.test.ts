@@ -15,6 +15,7 @@ import {
 	openClaudeLoginForRun,
 	sealClaudeLoginBack,
 } from "@qorpera/runtime/cloud-secret-broker-http";
+import type { CloudSecretBrokerCompanies } from "@qorpera/runtime/cloud-secret-broker-shared";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -63,9 +64,8 @@ function standIn() {
 	);
 	const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 	const refusal = () => ({ schema: "qorpera.claude-login-for-run/v1", state: "refused", reason: login.refusal });
-	const described = () => ({
+	const loginHead = () => ({
 		schema: "qorpera.claude-login-for-run/v1",
-		state: "described",
 		claudeLoginId: login.id,
 		ownerUserId: login.owner,
 		keyId: login.keyId,
@@ -76,9 +76,8 @@ function standIn() {
 		openClaudeLoginForRun: vi.fn(async () =>
 			login.refusal
 				? refusal()
-				: { ...described(), state: "open", encryptedEnvelopeBase64: envelope.toString("base64") },
+				: { ...loginHead(), state: "open", encryptedEnvelopeBase64: envelope.toString("base64") },
 		),
-		describeClaudeLoginForRun: vi.fn(async () => (login.refusal ? refusal() : described())),
 		sealClaudeLoginBack: vi.fn(async (seal) => {
 			if (login.refusal) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: login.refusal };
 			if (seal.baseVersion !== login.version || seal.baseEnvelopeSha256 !== sha(envelope))
@@ -178,7 +177,7 @@ describe("the vault opens a run's Claude login", () => {
 		}
 		await expect(
 			f.vault.open({ binding: { ...binding(), runId: "nope" } }, AbortSignal.timeout(5000)),
-		).rejects.toThrow("Model login run binding is invalid");
+		).rejects.toThrow("Model login run is invalid");
 	});
 });
 
@@ -224,6 +223,29 @@ describe("the vault seals back what Claude Code changed", () => {
 				AbortSignal.timeout(5000),
 			),
 		).toMatchObject({ state: "stale", version: 3 });
+	});
+
+	it("keeps a login file the run host did not send as the run opened it", async () => {
+		captureOutput();
+		const f = standIn();
+		const sealed = await f.vault.sealBack(
+			{
+				binding: binding(),
+				claudeLoginId: f.login.id,
+				baseVersion: 1,
+				baseEnvelopeSha256: f.sha(),
+				files: { ".credentials.json": b64(RENEWED_CREDENTIALS) },
+			},
+			AbortSignal.timeout(5000),
+		);
+		expect(sealed).toMatchObject({ state: "sealed", version: 2 });
+		expect((await f.sealed()).files).toEqual({
+			".credentials.json": b64(RENEWED_CREDENTIALS),
+			".claude.json": b64(CANARY_SETTINGS),
+		});
+		// The vault opened the version the run opened once more for it, and sealed nothing else.
+		expect(f.authority.openClaudeLoginForRun).toHaveBeenCalledTimes(1);
+		expect(f.authority.sealClaudeLoginBack).toHaveBeenCalledTimes(1);
 	});
 
 	it("seals only Claude Code's login files, the credentials among them", async () => {
@@ -332,13 +354,37 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 		});
 		expect(requests[0]?.headers.authorization).toBe(`Bearer ${client.runtimeToken}`);
 		expect(requests[0]?.headers["x-qorpera-identity"]).toBe("holder-c4b");
-		// Nothing changed in the box: nothing is sent.
+		// Nothing changed in the box: nothing is sent, also when only the credentials file is read back (as C4c does).
 		const unchanged = await sealClaudeLoginBack(
 			client,
 			{ binding: run, opened, files: opened.files },
 			AbortSignal.timeout(5000),
 		);
 		expect(unchanged).toEqual({ state: "unchanged" });
+		expect(
+			await sealClaudeLoginBack(
+				client,
+				{
+					binding: run,
+					opened,
+					files: new Map([[".credentials.json", opened.files.get(".credentials.json") ?? Buffer.alloc(0)]]),
+				},
+				AbortSignal.timeout(5000),
+			),
+		).toEqual({ state: "unchanged" });
+		expect(requests).toHaveLength(1);
+		// Without the credentials file nothing is sent either: it is refused.
+		await expect(
+			sealClaudeLoginBack(
+				client,
+				{
+					binding: run,
+					opened,
+					files: new Map([[".claude.json", Buffer.from(CANARY_SETTINGS)]]),
+				},
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toThrow("Only Claude Code's login files are sealed back");
 		expect(requests).toHaveLength(1);
 		// A file other than Claude Code's login files is never sent.
 		await expect(
@@ -417,13 +463,29 @@ describe("the vault's two routes on the broker service", () => {
 		const run = binding();
 		const holder = `job.${run.jobId}.${randomBytes(32).toString("base64url")}`;
 		const proveBinding = vi.fn(async (_binding: object, _holder: string) => undefined);
-		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { claudeLogins: f.vault, proveBinding });
+		// Only the shared vault keeps Claude logins: the company's scope carries them.
+		const companyId = randomUUID();
+		const companies: CloudSecretBrokerCompanies = {
+			resolve: async (id) =>
+				id === companyId
+					? {
+							companyId,
+							broker,
+							modelLogins: {} as never,
+							modelLoginSignIns: undefined,
+							modelLoginUsage: {} as never,
+							claudeLogins: f.vault,
+						}
+					: undefined,
+			signingIn: () => undefined,
+		};
+		const service = new HttpCloudSecretBrokerService(companies, runtimeToken, { proveBinding });
 		const port = await service.start();
 		try {
 			const client = {
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken,
-				companyId: randomUUID(),
+				companyId,
 				holder: () => holder,
 				allowLoopback: true,
 			};
@@ -456,6 +518,11 @@ describe("the vault's two routes on the broker service", () => {
 			expect((await post({ authorization: `Bearer ${runtimeToken}`, "x-qorpera-identity": holder })).status).toBe(
 				403,
 			);
+			expect(vi.mocked(f.authority.openClaudeLoginForRun).mock.calls.length).toBe(opens);
+			// A company this vault does not serve gets nothing.
+			await expect(
+				openClaudeLoginForRun({ ...client, companyId: randomUUID() }, run, AbortSignal.timeout(5000)),
+			).rejects.toThrow("Cloud secret broker refused the Claude login");
 			expect(vi.mocked(f.authority.openClaudeLoginForRun).mock.calls.length).toBe(opens);
 			const fine = await post({ authorization: `Bearer ${runtimeToken}`, "x-qorpera-identity": holder });
 			expect(fine.status).toBe(200);

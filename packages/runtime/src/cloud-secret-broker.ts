@@ -2566,19 +2566,10 @@ export class PostgresCloudSecretBrokerAuthority
 	}
 
 	/** A Claude Code worker's run (20260930771000): its member's sealed Claude login, when the database says this run
-	 * may have it now. */
+	 * may have it now (for the open, and again for a seal-back, which keeps the files the run did not send). */
 	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
-			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
-			signal,
-		);
-	}
-
-	/** The same run's login without its sealed files: what a seal-back is sealed for. */
-	describeClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"select public.qorpera_describe_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
 			signal,
 		);

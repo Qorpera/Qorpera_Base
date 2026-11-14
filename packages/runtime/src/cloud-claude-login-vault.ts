@@ -15,7 +15,8 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * Nothing here renews a token, calls Anthropic or reads the files for its own use: their shape is checked
  * (checkClaudeLoginFiles) and nothing else. Nothing here logs. The plaintext exists only inside `open` (the opened
  * envelope's field, as the keyring hands it, and the answer built from it) and inside `sealBack` (the files the run host
- * sent, until they are sealed); envelope bytes are zeroed once used.
+ * sent and the version it opened, opened once more, until the next version is sealed); envelope bytes are zeroed once
+ * used.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -32,7 +33,6 @@ export type ClaudeLoginRefusal = "SIGNED_OUT" | "NOT_OPEN";
 /** The database's side (the company's broker authority on the shared vault). */
 export interface ClaudeLoginRunAuthority {
 	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
-	describeClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
 	sealClaudeLoginBack(
 		seal: {
 			binding: ModelLoginRunBinding;
@@ -70,7 +70,7 @@ export interface ClaudeLoginSealRequest {
 	readonly baseVersion: number;
 	readonly baseEnvelopeSha256: string;
 	/** The login files as the run host read them back from the box, base64: `.credentials.json`, and `.claude.json`
-	 * when Claude Code keeps one. No other file is sealed. */
+	 * when the run host sends one. No other file is sealed; a login file it does not send stays as the run opened it. */
 	readonly files: Readonly<Record<string, string>>;
 }
 
@@ -156,11 +156,110 @@ export class CloudClaudeLoginVault {
 
 	/** The run's login files, only when the database says this run may have them now. */
 	async open(request: { readonly binding: ModelLoginRunBinding }, signal: AbortSignal): Promise<ClaudeLoginForRun> {
+		const opened = await this.#opened(parseModelLoginRunBinding(request.binding), "Claude login for a run", signal);
+		if ("reason" in opened)
+			return { schema: "qorpera.claude-login-files-for-run/v1", state: "refused", reason: opened.reason };
+		return {
+			schema: "qorpera.claude-login-files-for-run/v1",
+			state: "open",
+			claudeLoginId: opened.claudeLoginId,
+			version: opened.version,
+			envelopeSha256: opened.envelopeSha256,
+			files: opened.files,
+		};
+	}
+
+	/** Seals the files the run host read back as the login's next version, if the version it opened is still the
+	 * login's: else `stale`, and the newer envelope stays. A login file the run host did not send is kept as it was in
+	 * the version it opened (C4c sends only `.credentials.json`). */
+	async sealBack(request: ClaudeLoginSealRequest, signal: AbortSignal): Promise<ClaudeLoginSealAnswer> {
 		const binding = parseModelLoginRunBinding(request.binding);
-		const label = "Claude login for a run";
+		const label = "Claude login seal-back";
+		const claudeLoginId = uuid(request.claudeLoginId, label);
+		const baseVersion = version(request.baseVersion, label);
+		if (typeof request.baseEnvelopeSha256 !== "string" || !SHA.test(request.baseEnvelopeSha256))
+			throw new Error(`${label} is invalid`);
+		const sent = claudeLoginSealFiles(request.files);
+		const current = await this.#opened(binding, label, signal);
+		if ("reason" in current)
+			return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: current.reason };
+		if (current.claudeLoginId !== claudeLoginId) throw new Error("Claude login seal-back names another login");
+		// Another seal came first: nothing is sealed, the newer envelope stays.
+		if (current.version !== baseVersion || current.envelopeSha256 !== request.baseEnvelopeSha256)
+			return { schema: "qorpera.claude-login-seal/v1", state: "stale", claudeLoginId, version: current.version };
+		const files: Partial<Record<ClaudeLoginFileName, string>> = {};
+		for (const name of CLAUDE_LOGIN_FILES) {
+			const text = sent[name] ?? current.files[name];
+			if (text !== undefined) files[name] = text;
+		}
+		const text = JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files });
+		checkClaudeLoginFiles(text);
+		const envelope = this.#keys.sealMember(
+			{ [CLAUDE_LOGIN_FIELD]: text },
+			{ memberId: current.memberId, loginId: claudeLoginId, version: baseVersion + 1, keyId: current.keyId },
+		);
+		let answer: Record<string, unknown>;
+		try {
+			answer = record(
+				await this.#authority.sealClaudeLoginBack(
+					{
+						binding,
+						claudeLoginId,
+						baseVersion,
+						baseEnvelopeSha256: request.baseEnvelopeSha256,
+						keyId: current.keyId,
+						encryptedEnvelope: envelope,
+						envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+					},
+					signal,
+				),
+				label,
+			);
+		} finally {
+			envelope.fill(0);
+		}
+		const sealReason = refused(answer, "qorpera.claude-login-seal/v1", label);
+		if (sealReason) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: sealReason };
+		if (answer.state === "stale") {
+			exactKeys(answer, ["schema", "state", "claudeLoginId", "version"], label);
+			if (uuid(answer.claudeLoginId, label) !== claudeLoginId) throw new Error(`${label} is invalid`);
+			return {
+				schema: "qorpera.claude-login-seal/v1",
+				state: "stale",
+				claudeLoginId,
+				version: version(answer.version, label),
+			};
+		}
+		exactKeys(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256"], label);
+		if (
+			answer.state !== "sealed" ||
+			uuid(answer.claudeLoginId, label) !== claudeLoginId ||
+			version(answer.version, label) !== baseVersion + 1
+		)
+			throw new Error(`${label} is invalid`);
+		return { schema: "qorpera.claude-login-seal/v1", state: "sealed", claudeLoginId, version: baseVersion + 1 };
+	}
+
+	/** The run's login as the database hands it now, opened under the member's key with the version in its identity; or
+	 * the database's refusal of the login now. A run the database does not let have it is refused before (an error). */
+	async #opened(
+		binding: ModelLoginRunBinding,
+		label: string,
+		signal: AbortSignal,
+	): Promise<
+		| { readonly reason: ClaudeLoginRefusal }
+		| {
+				readonly claudeLoginId: string;
+				readonly memberId: string;
+				readonly keyId: string;
+				readonly version: number;
+				readonly envelopeSha256: string;
+				readonly files: Partial<Record<ClaudeLoginFileName, string>>;
+		  }
+	> {
 		const answer = record(await this.#authority.openClaudeLoginForRun(binding, signal), label);
 		const reason = refused(answer, "qorpera.claude-login-for-run/v1", label);
-		if (reason) return { schema: "qorpera.claude-login-files-for-run/v1", state: "refused", reason };
+		if (reason) return { reason };
 		exactKeys(
 			answer,
 			[
@@ -203,9 +302,9 @@ export class CloudClaudeLoginVault {
 						throw new Error("Claude login envelope is another kind of login");
 					checkClaudeLoginFiles(text);
 					return {
-						schema: "qorpera.claude-login-files-for-run/v1",
-						state: "open",
 						claudeLoginId,
+						memberId,
+						keyId,
 						version: loginVersion,
 						envelopeSha256,
 						files: claudeLoginSealFiles((JSON.parse(text) as { files: unknown }).files),
@@ -215,81 +314,5 @@ export class CloudClaudeLoginVault {
 		} finally {
 			envelope.fill(0);
 		}
-	}
-
-	/** Seals the files the run host read back as the login's next version, if the version it opened is still the
-	 * login's: else `stale`, and the newer envelope stays. */
-	async sealBack(request: ClaudeLoginSealRequest, signal: AbortSignal): Promise<ClaudeLoginSealAnswer> {
-		const binding = parseModelLoginRunBinding(request.binding);
-		const label = "Claude login seal-back";
-		const claudeLoginId = uuid(request.claudeLoginId, label);
-		const baseVersion = version(request.baseVersion, label);
-		if (typeof request.baseEnvelopeSha256 !== "string" || !SHA.test(request.baseEnvelopeSha256))
-			throw new Error(`${label} is invalid`);
-		const files = claudeLoginSealFiles(request.files);
-		const described = record(await this.#authority.describeClaudeLoginForRun(binding, signal), label);
-		const reason = refused(described, "qorpera.claude-login-for-run/v1", label);
-		if (reason) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason };
-		exactKeys(
-			described,
-			["schema", "state", "claudeLoginId", "ownerUserId", "keyId", "version", "envelopeSha256"],
-			label,
-		);
-		if (described.state !== "described" || typeof described.keyId !== "string" || !KEY_ID.test(described.keyId))
-			throw new Error(`${label} is invalid`);
-		if (uuid(described.claudeLoginId, label) !== claudeLoginId)
-			throw new Error("Claude login seal-back names another login");
-		const memberId = uuid(described.ownerUserId, label);
-		const current = version(described.version, label);
-		// Another seal came first: nothing is sealed, the newer envelope stays.
-		if (current !== baseVersion || described.envelopeSha256 !== request.baseEnvelopeSha256)
-			return { schema: "qorpera.claude-login-seal/v1", state: "stale", claudeLoginId, version: current };
-		if (!this.#keys.hasMemberKey(described.keyId)) throw new Error("The vault does not keep Claude logins");
-		const text = JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files });
-		checkClaudeLoginFiles(text);
-		const envelope = this.#keys.sealMember(
-			{ [CLAUDE_LOGIN_FIELD]: text },
-			{ memberId, loginId: claudeLoginId, version: baseVersion + 1, keyId: described.keyId },
-		);
-		let answer: Record<string, unknown>;
-		try {
-			answer = record(
-				await this.#authority.sealClaudeLoginBack(
-					{
-						binding,
-						claudeLoginId,
-						baseVersion,
-						baseEnvelopeSha256: request.baseEnvelopeSha256,
-						keyId: described.keyId,
-						encryptedEnvelope: envelope,
-						envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-					},
-					signal,
-				),
-				label,
-			);
-		} finally {
-			envelope.fill(0);
-		}
-		const sealReason = refused(answer, "qorpera.claude-login-seal/v1", label);
-		if (sealReason) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: sealReason };
-		if (answer.state === "stale") {
-			exactKeys(answer, ["schema", "state", "claudeLoginId", "version"], label);
-			if (uuid(answer.claudeLoginId, label) !== claudeLoginId) throw new Error(`${label} is invalid`);
-			return {
-				schema: "qorpera.claude-login-seal/v1",
-				state: "stale",
-				claudeLoginId,
-				version: version(answer.version, label),
-			};
-		}
-		exactKeys(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256"], label);
-		if (
-			answer.state !== "sealed" ||
-			uuid(answer.claudeLoginId, label) !== claudeLoginId ||
-			version(answer.version, label) !== baseVersion + 1
-		)
-			throw new Error(`${label} is invalid`);
-		return { schema: "qorpera.claude-login-seal/v1", state: "sealed", claudeLoginId, version: baseVersion + 1 };
 	}
 }

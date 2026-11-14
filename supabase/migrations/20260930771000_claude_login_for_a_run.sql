@@ -15,7 +15,9 @@
 -- * What the login must be now: active (a signed-out or replaced login answers SIGNED_OUT), and its member on the
 --   Claude list with the sign-in open in this company (else NOT_OPEN): the run host tells the agent so in words.
 -- * The seal-back is a compare-and-swap on the version and envelope the run opened: the version goes up by one; a stale
---   swap answers `stale` and the newer envelope stays; a repeat of a saved seal (a lost answer) answers it again.
+--   swap answers `stale` and the newer envelope stays; a repeat of a saved seal (a lost answer) answers it again. The
+--   vault opens the version the run opened once more for it: the files the run host sends (only `.credentials.json`, and
+--   `.claude.json` in the shape #1428's sign-in keeps it) replace theirs, and a file it does not send stays as it was.
 -- * The vault seals each version under the member's key with the version in the envelope's identity, as the sign-in
 --   sealed version 1 (qorpera_complete_claude_login_sign_in): the column `version` is new, 1 for every login so far.
 --
@@ -111,25 +113,6 @@ begin
 		'encryptedEnvelopeBase64', encode(v_login.encrypted_envelope, 'base64'));
 end $$;
 
--- The same without the sealed files: what the vault seals a seal-back for.
-create function public.qorpera_describe_claude_login_for_run(p_broker_authority_id uuid, p_broker_capability_sha256 text,
-	p_binding jsonb)
-returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_login public.qorpera_claude_logins%rowtype; v_refusal text;
-begin
-	-- 20260930771000.
-	v_login := public.qorpera_claude_login_run(p_broker_authority_id, p_broker_capability_sha256, p_binding, false);
-	v_refusal := public.qorpera_claude_login_run_refusal(v_login,
-		(select authority.profile_id from public.qorpera_cloud_secret_broker_authorities authority
-			where authority.id = p_broker_authority_id));
-	if v_refusal is not null then
-		return jsonb_build_object('schema', 'qorpera.claude-login-for-run/v1', 'state', 'refused', 'reason', v_refusal);
-	end if;
-	return jsonb_build_object('schema', 'qorpera.claude-login-for-run/v1', 'state', 'described',
-		'claudeLoginId', v_login.id, 'ownerUserId', v_login.owner_user_id, 'keyId', v_login.key_id,
-		'version', v_login.version, 'envelopeSha256', v_login.envelope_sha256);
-end $$;
-
 -- The credentials Claude Code renewed during the run, sealed by the vault under the member's key as version
 -- p_base_version + 1, replacing the version the run opened: a compare-and-swap on that version and its envelope.
 create function public.qorpera_seal_claude_login_back(p_broker_authority_id uuid, p_broker_capability_sha256 text,
@@ -179,10 +162,8 @@ begin
 end $$;
 
 revoke all on function public.qorpera_open_claude_login_for_run(uuid, text, jsonb),
-	public.qorpera_describe_claude_login_for_run(uuid, text, jsonb),
 	public.qorpera_seal_claude_login_back(uuid, text, jsonb, uuid, bigint, text, text, text, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_open_claude_login_for_run(uuid, text, jsonb),
-	public.qorpera_describe_claude_login_for_run(uuid, text, jsonb),
 	public.qorpera_seal_claude_login_back(uuid, text, jsonb, uuid, bigint, text, text, text, text)
 	to qorpera_secret_broker;
