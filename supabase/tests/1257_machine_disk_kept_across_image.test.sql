@@ -18,8 +18,9 @@
 -- 8. The way out when the executor refuses a kept machine's guest helper (review r1 F2 of #1788): its record of
 --    start:COMPANY_MACHINE_HELPER_DIFFERS for a placement of an earlier policy retires it, once: the machine's open
 --    commands end lost, it is told (disk_freed_at, diskFreed), the executor stops and deletes the old one, and the next
---    admission places it fresh on the current policy, which that record never retires (no loop); awake or asleep; one not
---    wanted running stays unplaced. Any other code, a placement on the current policy, another executor's or node's
+--    admission places it fresh on the current policy, which that record never retires (no loop); one not wanted running
+--    stays unplaced. A RUNNING machine, task or always-on, is never retired so (review r2 F1); a refusing company fence
+--    retires nothing and the record goes through (r2 F2). Any other code, a placement on the current policy, another executor's or node's
 --    record, or a removed placement change nothing but what the record always did.
 
 select pg_temp.base_claims('service_role');
@@ -460,7 +461,8 @@ create function pg_temp.k_refused(p_old uuid) returns text language sql as $$
 $$;
 do $$
 declare v_old uuid := (pg_temp.k_current('k')).id; v_command uuid; v_freed timestamptz; v jsonb; v_out text; v_again text;
-	v_fresh text; v_listed text; v_other text; v_current text; v_running text; v_stopped text; v_foreign text;
+	v_fresh text; v_listed text; v_other text; v_current text; v_running text; v_stopped text; v_foreign text; v_fence text;
+	v_lifetime text;
 begin
 	-- Woken on its own disk after a new image; the executor refuses its helper (the old one was dropped from its list).
 	begin
@@ -513,16 +515,46 @@ begin
 	perform pg_temp.base_assert(v_other = 'kept start:COMPANY_MACHINE_DRIFTED true / kept start:COMPANY_MACHINE_GUEST_REPLY_INVALID'
 		and v_current = 'kept start:COMPANY_MACHINE_HELPER_DIFFERS true',
 		'8: another error, or the current policy''s placement: kept, recorded as before: ' || v_other || ' | ' || v_current);
-	-- Running on an earlier policy: retired too (stopped and deleted by its executor); still wanted, it is placed fresh.
+	-- Running on an earlier policy, a task machine and an always-on one (review r2 F1): never taken by one refusal. The error
+	-- is recorded as before each pass; its commands, its placement and its disk stay; the executor keeps it (no stop due).
+	foreach v_lifetime in array array['task', 'always-on'] loop
+		begin
+			update public.qorpera_company_machines set lifetime = v_lifetime where id = (pg_temp.k_machine('k')).id;
+			perform pg_temp.k_wake('k');
+			perform pg_temp.k_run('k');
+			v_command := pg_temp.k_command();
+			perform pg_temp.k_switch(jsonb_build_object('imageFingerprint', repeat('d', 64), 'providerPolicySha256', repeat('e', 64)));
+			perform pg_temp.k_record('COMPANY_MACHINE_HELPER_DIFFERS');
+			perform pg_temp.k_record('COMPANY_MACHINE_HELPER_DIFFERS');
+			select pg_temp.k_refused(v_old) || ' ' || concat_ws(',', e ->> 'stopDue', e ->> 'removeDue', e ->> 'reserved') into v_out
+			from jsonb_array_elements(public.qorpera_list_executor_machines('mx-1257', repeat('c', 64))) e where e ->> 'placementId' = v_old::text;
+			v_out := v_out || ' ' || coalesce((select state from public.qorpera_company_machine_commands where id = v_command), 'open')
+				|| ' ' || ((pg_temp.k_machine('k')).disk_freed_at is null)::text || ' ' || (pg_temp.k_view('k') ->> 'state');
+			raise exception 'take back' using errcode = 'P0D01';
+		exception when sqlstate 'P0D01' then null;
+		end;
+		v_running := concat_ws(' | ', v_running, v_out);
+	end loop;
+	-- Being woken (reserved, its guest not ready yet) is no usable boot: retired, and told, as above.
 	begin
-		perform pg_temp.k_wake('k');
-		perform pg_temp.k_run('k');
 		perform pg_temp.k_switch(jsonb_build_object('imageFingerprint', repeat('d', 64), 'providerPolicySha256', repeat('e', 64)));
+		perform pg_temp.k_wake('k');
 		perform pg_temp.k_record('COMPANY_MACHINE_HELPER_DIFFERS');
-		select pg_temp.k_refused(v_old) || ' ' || concat_ws(',', e ->> 'stopDue', e ->> 'reserved') into v_running
-		from jsonb_array_elements(public.qorpera_list_executor_machines('mx-1257', repeat('c', 64))) e where e ->> 'placementId' = v_old::text;
-		v_running := v_running || ' ' || pg_temp.k_admit();
-		v_running := v_running || ' ' || (pg_temp.k_view('k') ->> 'state');
+		v_out := pg_temp.k_refused(v_old) || ' ' || ((select reserved_at is not null from public.qorpera_runtime_node_demands where allocation_id = v_old))::text;
+		v_out := v_out || ' ' || pg_temp.k_admit();
+		v_out := v_out || ' ' || (pg_temp.k_view('k') ->> 'state');
+		raise exception 'take back' using errcode = 'P0D01';
+	exception when sqlstate 'P0D01' then null;
+	end;
+	v_running := concat_ws(' | ', v_running, v_out);
+	-- The company's machine fence refuses (a company being deleted: its folder fence is gone): nothing is retired, and the
+	-- record itself goes through (review r2 F2).
+	begin
+		perform pg_temp.k_switch(jsonb_build_object('imageFingerprint', repeat('d', 64), 'providerPolicySha256', repeat('e', 64)));
+		perform pg_temp.k_wake('k');
+		delete from public.qorpera_folder_fences where profile_id = '92400000-0000-4000-8000-000000000010';
+		perform pg_temp.k_record('COMPANY_MACHINE_HELPER_DIFFERS');
+		v_fence := pg_temp.k_refused(v_old);
 		raise exception 'take back' using errcode = 'P0D01';
 	exception when sqlstate 'P0D01' then null;
 	end;
@@ -537,8 +569,11 @@ begin
 		raise exception 'take back' using errcode = 'P0D01';
 	exception when sqlstate 'P0D01' then null;
 	end;
-	perform pg_temp.base_assert(v_running = 'retired - true,true 1 starting' and v_stopped = 'retired - 0 none stopped',
-		'8: running: retired, stopped, placed fresh; not wanted: retired, unplaced: ' || v_running || ' | ' || v_stopped);
+	perform pg_temp.base_assert(v_running = 'kept start:COMPANY_MACHINE_HELPER_DIFFERS false,false,true open true running'
+			|| ' | kept start:COMPANY_MACHINE_HELPER_DIFFERS false,false,true open true running | retired - true 1 starting'
+		and v_stopped = 'retired - 0 none stopped' and v_fence = 'kept start:COMPANY_MACHINE_HELPER_DIFFERS',
+		'8: running (task, always-on): kept, recorded; being woken: retired, placed fresh; not wanted: retired, unplaced; a refusing '
+		|| 'fence: kept, recorded: ' || v_running || ' | ' || v_stopped || ' | ' || coalesce(v_fence, 'null'));
 	-- Another executor's record, another node's, or one for a removed placement: nothing.
 	begin
 		perform pg_temp.k_switch(jsonb_build_object('imageFingerprint', repeat('d', 64), 'providerPolicySha256', repeat('e', 64)));

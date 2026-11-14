@@ -33,16 +33,21 @@
 -- machine of its image fail each start with COMPANY_MACHINE_HELPER_DIFFERS, for good, as SQL keeps its placement now. The
 -- executor already records that code on the placement (qorpera_record_company_machine_error, stage start). From now on
 -- that record also retires the placement when it was made under an EARLIER policy of its executor (its binding does not
--- hold the executor's policy now), awake or asleep, wanted running or not, under the same check the record makes (the
--- placement's executor and node, not retired, not removed): its commands end lost (the runs that asked are told), and
--- the machine keeps when its disk went (disk_freed_at), so its view says diskFreed and a take-again says it starts empty.
--- The executor then stops it if it holds room and deletes its VM and disk (removeDue), as any retired placement. A
--- machine still wanted running starts on a new disk at its next admission, on the current policy; one not wanted running
--- stays without a placement until it is asked for again. It cannot loop: a placement on the current policy is never
--- retired this way (its image's helper is the executor's current one; were the executor configured with another, every
--- new machine would fail alike, and retiring would only make one VM after another). Once retired, a second record is
--- a no-op. A company whose fence is busy past its brief wait is retired at the next record; the record itself goes on.
--- Any other code, and the error's recording, are as before.
+-- hold the executor's policy now) and has no usable boot (not marked running: asleep and being woken, or a start whose
+-- guest never became ready), under the same check the record makes (the placement's executor and node, not retired, not
+-- removed): its commands end lost (the runs that asked are told), and the machine keeps when its disk went
+-- (disk_freed_at), so its view says diskFreed and a take-again says it starts empty. The executor then stops it if it
+-- holds room and deletes its VM and disk (removeDue), as any retired placement. A machine still wanted running starts on
+-- a new disk at its next admission, on the current policy; one not wanted running stays without a placement until it is
+-- asked for again. A machine that is RUNNING (always-on ones too) is never retired this way (review r2 F1 of #1788): a
+-- helper dropped from the executor's list by mistake would otherwise take every running disk of that image at the next
+-- pass; it keeps recording the error each pass, as before, until the helper is listed again or someone stops it, and
+-- only then, asleep, does it start on a new disk. It cannot loop: a placement on the current policy is never retired
+-- this way (its image's helper is the executor's current one; were the executor configured with another, every new
+-- machine would fail alike, and retiring would only make one VM after another). Once retired, a second record is a
+-- no-op. The way out takes the company's machine fence briefly, then the machine and the placement; when the fence is
+-- busy past its brief wait, or refuses (a company being deleted), nothing is retired by that record and the record itself
+-- goes on. Any other code, and the error's recording, are as before.
 --
 -- No table changes. The two functions are replaced in place (create or replace through their own definition): no table
 -- lock; calls running meanwhile finish on the old body. Patched by exact text: the migration fails unless each old text
@@ -87,6 +92,8 @@ begin
 	-- Only one made under an earlier policy of its executor: a new placement, on the current policy, is never retired so.
 	select policy into v_policy from public.qorpera_machine_executors where owner = v_placement.owner;
 	if v_placement.binding @> v_policy then return false; end if;
+	-- Only one without a usable boot: a running machine (always-on ones too) is never taken by one refusal (review r2 F1).
+	if v_placement.running_at is not null then return false; end if;
 	-- Its programs stop with it; the runs that asked are told.
 	perform public.qorpera_end_company_machine_commands(v_machine, 'lost');
 	update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = v_placement.id;
@@ -102,12 +109,13 @@ declare v_definition text := pg_get_functiondef('public.qorpera_record_company_m
 	v_old text := $old$		raise exception 'Machine error invalid' using errcode = '22023'; end if;
 $old$;
 	v_new text := $new$		raise exception 'Machine error invalid' using errcode = '22023'; end if;
-	-- 20260930760000: a guest helper its executor refuses, on a placement of an earlier policy, retires that placement (the
-	-- machine is told; it starts on a new disk when asked). A busy company is retired at a later record; this one goes on.
+	-- 20260930760000: a guest helper its executor refuses, on a placement of an earlier policy that is not running, retires
+	-- that placement (the machine is told; it starts on a new disk when asked). A company whose fence is busy, or that is
+	-- being deleted, is not retired by this record; the record goes on.
 	if p_code = 'COMPANY_MACHINE_HELPER_DIFFERS' then
 		begin
 			perform public.qorpera_company_machine_helper_refused(p_placement_id, p_owner, p_machine_id_sha256);
-		exception when lock_not_available then null;
+		exception when lock_not_available or insufficient_privilege then null;
 		end;
 	end if;
 $new$;
