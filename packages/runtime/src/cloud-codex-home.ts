@@ -68,9 +68,10 @@ export const CLOUD_HOME_NOT_RUNNING =
 export const CLOUD_HOME_BUSY =
 	"HOME_BUSY: this agent's machine is busy with another run's work, so nothing ran there. Use the company's own tools, or try again when that work is done.";
 /** What the model is told when its machine's Codex is not the build its run speaks to: a machine that slept through an
- * image switch keeps its disk, and with it the tools of the image it was made from. */
+ * image switch keeps its disk, and with it the tools of the image it was made from (20260930760000), so a wake does not
+ * bring the home; a new machine has it, in the words the machine tools use for an earlier image (FOLDER_VIEWLESS). */
 export const CLOUD_HOME_OUTDATED =
-	"HOME_OUTDATED: this agent's machine has an older build of the tools this run uses on it, so the home is unavailable on this machine and nothing ran there. Start a new machine for this agent to have it, or use the company's own tools.";
+	"HOME_OUTDATED: this agent's machine was made from an earlier image, with an older build of the tools this run uses on it, so the home is unavailable on this machine and nothing ran there. Start a new machine for this agent (a new machine has it), or use the company's own tools.";
 /** What the model is told when its home went away while it was working on it. */
 export const CLOUD_HOME_LOST =
 	"HOME_LOST: the connection to this agent's machine broke while that was running there, so there is no answer to it. Part of it may have happened on the machine. Look at the machine's own state before doing it again, or use the company's own tools.";
