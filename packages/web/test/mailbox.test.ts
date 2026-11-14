@@ -1131,6 +1131,51 @@ describe("Sent, Addresses and Write", () => {
 		expect(save.mock.calls.at(-1)?.[0].prompt).toBe(base);
 	});
 
+	it("keeps the words typed on how an agent answers when the menu closes without Save, until Save or Cancel", async () => {
+		const { main, manage } = await mailbox(() => {});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const field = () => howPanel()!.querySelector("textarea")!;
+		let panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		type(field(), "Answer in Danish.");
+		// The menu closes as the window is left: the words wait for the panel to open again.
+		window.dispatchEvent(new Event("blur"));
+		expect(howPanel()).toBeNull();
+		panel = openHow(chip(), "Tell Ada how to answer");
+		expect(field().value).toBe("Answer in Danish.");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		expect(field().value).toBe("Answer in Danish.");
+		// Cancel lets them go: the panel opens on the routine's words again.
+		button(panel, "Cancel")!.click();
+		panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		expect(field().value).toBe("");
+		// Saved, they are the routine's, and no draft is left.
+		type(field(), "Answer in English.");
+		button(panel, "Save")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Saved how Ada answers hello@acme.example"),
+		);
+		vi.mocked(manage.routines!.open).mockClear();
+		panel = openHow(chip(), "How Ada answers");
+		await vi.waitFor(() => expect(manage.routines!.open).toHaveBeenCalled());
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		expect(field().value).toBe("Answer in English.");
+		openMenu()!.close();
+		// The Add form's words are kept the same way.
+		button(main, "Add mailbox")!.click();
+		const answers = () => main.querySelector<HTMLButtonElement>("[data-focus-key='add-answerer']")!;
+		answers().click();
+		menuRow("Bo").click();
+		panel = openHow(answers(), "Tell Bo how to answer");
+		type(field(), "Answer orders.");
+		window.dispatchEvent(new Event("blur"));
+		expect(openHow(answers(), "Tell Bo how to answer").querySelector("textarea")?.value).toBe("Answer orders.");
+	});
+
 	it("finds a change made to how an agent answers while its panel was open, and writes nothing over it", async () => {
 		const { main, manage, routines } = await mailbox(() => {});
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());

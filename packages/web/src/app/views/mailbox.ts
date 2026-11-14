@@ -131,6 +131,9 @@ interface MailboxUi {
 	pendingHow: Record<string, string>;
 	/** Whether Digital Post's card is open under its pill. */
 	postOpen: boolean;
+	/** Words on how an agent answers that were typed and not yet saved or let go, by `hookId:agent` (`add` for the Add
+	 * form's): a menu that closes without Save keeps them, and the panel opens on them again. */
+	howDrafts: Record<string, string>;
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
@@ -428,6 +431,7 @@ export function renderMailbox(
 			addHow: "",
 			pendingHow: {},
 			postOpen: false,
+			howDrafts: {},
 			busy: false,
 			error: null,
 			toast: null,
@@ -816,6 +820,7 @@ function manageOf(page: Page): ManageViews | null {
 					const how = now.ui.addHow;
 					now.ui.addAgent = null;
 					now.ui.addHow = "";
+					dropDraft(now, "add");
 					if (agent && hook.email)
 						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true, how);
 				},
@@ -2385,10 +2390,16 @@ function answeringRoutine(page: Page, hookId: string, agentId: string): WebRouti
 		.sort(newestFirst)[0];
 }
 
+/** Lets go of the words typed on how an agent answers, `key` as `MailboxUi.howDrafts` names them. */
+function dropDraft(page: Page, key: string): void {
+	const { [key]: _draft, ...rest } = page.ui.howDrafts;
+	page.ui.howDrafts = rest;
+}
+
 /** The field the member writes how an agent answers in: it grows with the words, and takes the focus as the panel
- * opens. ⌘/Ctrl-Enter is `submit`. */
-function howField(name: string, text: string, submit: () => void): HTMLTextAreaElement {
-	const field = h("textarea", {
+ * opens. What is typed is kept as the draft `key` until it is saved or let go. ⌘/Ctrl-Enter is `submit`. */
+function howField(page: Page, key: string, name: string, text: string, submit: () => void): HTMLTextAreaElement {
+	const field: HTMLTextAreaElement = h("textarea", {
 		rows: "4",
 		maxlength: "4000",
 		placeholder: t(
@@ -2396,6 +2407,9 @@ function howField(name: string, text: string, submit: () => void): HTMLTextAreaE
 		),
 		"aria-label": t("How {name} answers", { name }),
 		"data-autofocus": "",
+		oninput: () => {
+			page.ui.howDrafts = { ...page.ui.howDrafts, [key]: field.value };
+		},
 		onkeydown: (event: KeyboardEvent) => {
 			if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
 				event.preventDefault();
@@ -2428,7 +2442,10 @@ function howPanel(
 	// One save id while the file stays as it was opened: a request whose answer was lost is sent again as it was.
 	let saveId = crypto.randomUUID();
 	const save = () => void store();
-	const field = howField(name, "", save);
+	// Words typed before and not saved, when a menu closed on them: the panel opens on them again.
+	const draftKey = `${target.hookId}:${agentId}`;
+	const draft = page.ui.howDrafts[draftKey];
+	const field = howField(page, draftKey, name, draft ?? "", save);
 	field.readOnly = true;
 	const note = h("p", { class: "mailbox-how-note", hidden: true });
 	const error = h("p", { class: "mailbox-error", role: "alert", hidden: true });
@@ -2456,7 +2473,7 @@ function howPanel(
 		const payer = await routines.payer(routine.routineId).catch(() => null);
 		if (gone) return;
 		opened = file;
-		if (!keepWords) field.value = splitHow(file.file.instructions).how;
+		if (!keepWords && page.ui.howDrafts[draftKey] === undefined) field.value = splitHow(file.file.instructions).how;
 		const other =
 			payer?.payer === "member" && payer.payerUserId && payer.payerUserId !== company.userId
 				? (company.store.get().team?.members.find((member) => member.userId === payer.payerUserId)?.displayName ??
@@ -2522,6 +2539,8 @@ function howPanel(
 			tell(said);
 			return;
 		}
+		// Saved: the words are the routine's now (the field could not be changed while they went).
+		dropDraft(page, draftKey);
 		if (!gone) close();
 		await readRoutines(page);
 		say(
@@ -2550,7 +2569,18 @@ function howPanel(
 			"div",
 			{ class: "mailbox-how-foot" },
 			button,
-			h("button", { type: "button", class: "mailbox-text is-quiet", onclick: close }, t("Cancel")),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-quiet",
+					onclick: () => {
+						dropDraft(page, draftKey);
+						close();
+					},
+				},
+				t("Cancel"),
+			),
 		),
 	);
 	return {
@@ -2567,10 +2597,11 @@ function newHowPanel(page: Page, name: string, close: () => void): { el: HTMLEle
 	const { ui } = page;
 	const done = () => {
 		ui.addHow = field.value.trim();
+		dropDraft(page, "add");
 		close();
 		page.redraw("add-answerer");
 	};
-	const field = howField(name, ui.addHow, done);
+	const field = howField(page, "add", name, ui.howDrafts.add ?? ui.addHow, done);
 	const el = h(
 		"div",
 		{ class: "mailbox-how-panel" },
@@ -2580,7 +2611,18 @@ function newHowPanel(page: Page, name: string, close: () => void): { el: HTMLEle
 			"div",
 			{ class: "mailbox-how-foot" },
 			h("button", { type: "button", class: "mailbox-text is-send", onclick: done }, t("Save")),
-			h("button", { type: "button", class: "mailbox-text is-quiet", onclick: close }, t("Cancel")),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-quiet",
+					onclick: () => {
+						dropDraft(page, "add");
+						close();
+					},
+				},
+				t("Cancel"),
+			),
 		),
 	);
 	return { el };
