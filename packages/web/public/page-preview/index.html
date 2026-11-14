@@ -292,6 +292,12 @@
 	// nothing here: the app shows the member what it would save or send, outside this frame, and the promise settles
 	// once the member chose. A link the
 	// member clicked goes out on it too (`follow`), from this document alone: the page's object has no call for it.
+	// A question of the company's databases the page watches (`watch`) is asked once and its listener called with the
+	// answer; the app then sends each new answer with the watch's id, and only that watch's listener hears it. Its
+	// answers are handled here with plain callbacks, never a promise, so nothing the page changes on Promise or Object
+	// stands between an answer and its listener. A watch the app refuses to start calls the page's `failed`, when it
+	// gave one, once with the app's words; what goes wrong after a watch started is not shown (the page keeps what it
+	// shows).
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
 	// through it the port.
@@ -299,9 +305,11 @@
 	const startPort = MessagePort.prototype.start;
 	const freeze = Object.freeze;
 	const PromiseOf = Promise;
+	const ErrorOf = Error;
 	const bridge = (port) => {
 		const pending = new Map();
 		const changes = [];
+		const watchers = new Map();
 		let next = 0;
 		const get = Map.prototype.get;
 		const set = Map.prototype.set;
@@ -319,12 +327,20 @@
 						} catch {}
 					return;
 				}
+				if (data.type === "qorpera-app-data") {
+					const listener = apply(get, watchers, [data.watch]);
+					if (listener)
+						try {
+							listener(data.value);
+						} catch {}
+					return;
+				}
 				if (data.type !== "qorpera-app-answer") return;
 				const waiting = apply(get, pending, [data.id]);
 				if (!waiting) return;
 				apply(drop, pending, [data.id]);
 				if (data.ok === true) waiting[0](data.value);
-				else waiting[1](new Error(typeof data.error === "string" ? data.error : "The app could not read that"));
+				else waiting[1](new ErrorOf(typeof data.error === "string" ? data.error : "The app could not read that"));
 			},
 		]);
 		apply(startPort, port, []);
@@ -334,6 +350,55 @@
 				apply(set, pending, [id, [resolve, reject]]);
 				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
 			});
+		// A call answered to plain callbacks. One that can't be sent (its values can't be copied) is answered at once.
+		const ask = (method, params, done, failed) => {
+			const id = ++next;
+			apply(set, pending, [id, [done, failed]]);
+			try {
+				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
+			} catch {
+				apply(drop, pending, [id]);
+				failed(new ErrorOf("The app could not read that"));
+			}
+		};
+		const nothing = () => {};
+		const watchQuestion = (name, params, listener, failed) => {
+			let stopped = false;
+			let id = null;
+			if (typeof listener === "function")
+				ask(
+					"watch",
+					{ name: String(name), params: params === undefined ? {} : params },
+					(started) => {
+						const watching = started && typeof started === "object" ? started.watch : null;
+						if (typeof watching !== "number") return;
+						if (stopped) {
+							ask("unwatch", { watch: watching }, nothing, nothing);
+							return;
+						}
+						id = watching;
+						apply(set, watchers, [id, listener]);
+						try {
+							listener(started.answer);
+						} catch {}
+					},
+					(error) => {
+						if (stopped) return;
+						stopped = true;
+						if (typeof failed === "function")
+							try {
+								failed(error);
+							} catch {}
+					},
+				);
+			return freeze(() => {
+				if (stopped) return;
+				stopped = true;
+				if (id === null) return;
+				apply(drop, watchers, [id]);
+				ask("unwatch", { watch: id }, nothing, nothing);
+			});
+		};
 		const page = freeze({
 			read: freeze((path) => call("read", { path: String(path) })),
 			list: freeze((path) => call("list", { path: path === undefined ? "" : String(path) })),
@@ -344,6 +409,8 @@
 			answer: freeze((id, value) => call("answer", { id: String(id), value })),
 			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
 			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
+			query: freeze((name, params) => call("query", { name: String(name), params: params === undefined ? {} : params })),
+			watch: freeze(watchQuestion),
 			// A note to the app's owner, about a thing in the app: the member writes it on the app's bar, where `text` is
 			// only the draft they start from.
 			tell: freeze((note) => {
