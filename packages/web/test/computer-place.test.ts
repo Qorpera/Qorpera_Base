@@ -36,7 +36,13 @@ function setup() {
 	]);
 	const zero = Element.prototype.getBoundingClientRect;
 	vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-		if (this.hasAttribute("data-computer-place-probe")) return frame.rect;
+		// The probe says where the frame is only where it has the panel's containing block: beside the panel, in its
+		// parent. Attached anywhere else (the document's body, say) it would measure another frame, the live fault again
+		// (review r1 of #1800): there it answers nothing.
+		if (this.hasAttribute("data-computer-place-probe"))
+			return this.parentElement === panel.parentElement && this.nextElementSibling === panel
+				? frame.rect
+				: zero.call(this);
 		return rects.get(this) ?? zero.call(this);
 	});
 	let resized = () => {};
