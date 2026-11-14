@@ -3281,7 +3281,6 @@ export class ComputerPanel {
 		this.#sayOpen(choice, words, retry);
 		this.#lookNow();
 	}
-
 }
 
 /**

@@ -1377,7 +1377,9 @@ describe("an agent's computer window", () => {
 		expect(s.looks.at(-1)?.url).toContain(machine(1).machineId);
 		// Nothing in the window names a machine or opens a list of them, in the row and in the large view.
 		const pickers = () =>
-			p.el.querySelectorAll(".computer-switcher, .machine-screen-switcher-slot, [aria-haspopup=menu]:not(.computer-opener)");
+			p.el.querySelectorAll(
+				".computer-switcher, .machine-screen-switcher-slot, [aria-haspopup=menu]:not(.computer-opener)",
+			);
 		expect(pickers()).toHaveLength(0);
 		expect(p.el.textContent).not.toMatch(/desk-\d/);
 		press(canvas(p), 400, 250);
