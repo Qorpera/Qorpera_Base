@@ -375,7 +375,14 @@ export function cloudWorkerTools(
 				saveTo: { type: "string", minLength: 1, maxLength: 512 },
 				revival: { type: "string", enum: ["batch", "each"] },
 				species: { type: "string", enum: ["in-house", "coding"] },
-				harness: { type: "string", enum: ["codex", "claude-code"] },
+				harness: {
+					type: "string",
+					enum: ["codex", "claude-code"],
+					// The tool's description is at its 4,096 bytes (20260930770000): this field says it, in a schema the model
+					// receives with its field descriptions (under 5,000 bytes as sent).
+					description:
+						"On a worker without species coding, claude-code hands the work to Claude Code instead of a run of you: use it when a member asks for Claude Code to do work in the company's files or on your own machine. It runs on your machine, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. Leave it out otherwise.",
+				},
 				repository: {
 					type: "object",
 					additionalProperties: false,
@@ -527,8 +534,10 @@ export function cloudWorkerTools(
 							baseBranch: text(repository.baseBranch, 200, true),
 						},
 					});
-				} else if (a.harness !== undefined || a.repository !== undefined)
-					throw new Error("harness and repository belong to a coding session");
+				} else if (a.repository !== undefined) throw new Error("repository belongs to a coding session");
+				// A plain worker names a harness only for Claude Code (20260930770000); codex is its unsaid default.
+				else if (a.harness === "claude-code") request.harness = "claude-code";
+				else if (a.harness !== undefined && a.harness !== "codex") throw new Error("Invalid worker harness");
 			} else if (action === "followup") request.text = text(a.text, 4000);
 			else if (action === "decide") {
 				if (a.decision !== "accept" && a.decision !== "reject") throw new Error("Invalid worker decision");

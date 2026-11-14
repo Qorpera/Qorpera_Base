@@ -543,6 +543,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// Contract 13: a blank child with a complete dispatch, no conversation and no sender.
 		// A coding session (13.1) carries its scope under "coding"; an in-house child never does.
 		const coding = (payloadBody as { species?: unknown } | null)?.species === "coding";
+		// A plain worker Claude Code does names its harness (20260930770000); a Codex worker never does.
+		const harnessNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "harness");
 		const work = closed(payloadBody, [
 			"schema",
 			"workerId",
@@ -556,6 +558,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"outputFolder",
 			"dispatch",
 			...(coding ? ["coding"] : []),
+			...(harnessNamed ? ["harness"] : []),
 		]);
 		const dispatch = closed(work.dispatch, [
 			"goal",
@@ -575,6 +578,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(work.species !== "in-house" && work.species !== "coding") ||
 			(work.access !== "read" && work.access !== "write") ||
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
+			(harnessNamed && (coding || work.harness !== "claude-code")) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||

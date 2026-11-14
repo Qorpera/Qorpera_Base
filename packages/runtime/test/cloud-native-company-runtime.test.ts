@@ -26,7 +26,7 @@ import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-
 import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
-import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
+import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
@@ -108,7 +108,7 @@ async function fixture(
 	const f = nativeCompanyContextFixture();
 	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
 	const light = mode.startsWith("compact");
-	if (mode === "company-silent" || mode === "company-worker" || light) {
+	if (mode === "company-silent" || mode === "company-worker" || mode === "company-claude-worker" || light) {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
@@ -451,7 +451,15 @@ async function fixture(
 				return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
 			}
 			if (method === "qorpera_read_native_wake")
-				return structuredClone(mode === "company-worker" ? workerWake : light ? lightWake : wake);
+				return structuredClone(
+					mode === "company-worker"
+						? workerWake
+						: mode === "company-claude-worker"
+							? { ...workerWake, payload: { ...workerWake.payload, harness: "claude-code" } }
+							: light
+								? lightWake
+								: wake,
+				);
 			if (method === "qorpera_native_light_ask_answer") {
 				expect(Object.keys(args).sort()).toEqual(["p_answer", "p_binding"]);
 				lightAnswers.push(args.p_answer);
@@ -1583,6 +1591,21 @@ it("asks a worker whose turn ended without its report for it, once", async () =>
 	expect(corrected.turns).toBe(2);
 	expect(corrected.turn.input[0].text).toContain("Your turn ended without report_work");
 	expect(corrected.turn.input[0].text).not.toContain("send_message");
+});
+
+// A plain worker Claude Code does (20260930770000) on a node without its composition: refused at the divert, in its own
+// stage, before anything of the company is read for a prompt and before Codex starts.
+it("refuses a Claude Code worker's run here, never running it on Codex", async () => {
+	const f = await fixture("company-claude-worker");
+	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect((error as Error).message).toBe(CLAUDE_WORKER_NOT_CARRIED);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker", category: "unknown" });
+	expect(nativeProviderFailureCode(error)).toBe("NATIVE_CLAUDE_WORKER:UNKNOWN");
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
 });
 
 it("asks a reply's save again while its answer is lost, by the same key", async () => {
@@ -3357,6 +3380,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
 	// again.
+	// On 14 November 2026 manage_worker's harness field says when a worker is Claude Code's (a plain worker on a member's
+	// Claude sign-in, 20260930770000); the names and descriptions are as before, so only the catalog text moved.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3411,7 +3436,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c750ea6f9ecbbb9613b3249b1b0306c00d3109311de4b8f6ef8c28ecc29213d0",
+		"80f97c0eb30a3ce84c82dc531ca69b609fcb46a66fafa02f8728fe3f62ce636a",
 	);
 });
 

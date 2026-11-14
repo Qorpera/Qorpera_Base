@@ -296,6 +296,26 @@ it("dispatches a coding session: its brief names the harness and repository, and
 	expect(Object.keys(plain.workerRequests[0] ?? {})).not.toContain("species");
 });
 
+it("dispatches a plain worker Claude Code does: its brief and request name the harness, nothing else (20260930770000)", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const result = parse(
+		await f.workers().change({ ...DISPATCH, operationKey: "claude-1", harness: "claude-code" }, f.context),
+	);
+	expect(result).toMatchObject({ action: "dispatch", outcome: "saved" });
+	expect(result.coding).toBeUndefined();
+	expect(f.workerRequests).toEqual([expect.objectContaining({ action: "dispatch", harness: "claude-code" })]);
+	expect(Object.keys(f.workerRequests[0] ?? {})).not.toContain("species");
+	expect(Object.keys(f.workerRequests[0] ?? {})).not.toContain("repository");
+	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
+	expect(parsed?.ok && parsed.file).toMatchObject({
+		kind: "worker-brief",
+		species: "in-house",
+		harness: "claude-code",
+		...workerStandingTexts({ species: "in-house", access: "read", revival: "batch" }),
+	});
+	expect(parsed?.ok && Object.hasOwn(parsed.file, "repository")).toBe(false);
+});
+
 it("follows a worker up: its brief with one more follow-up, and its earlier results removed, under review", async () => {
 	const f = await fixture({
 		files: { [TODO]: todoText(), [`${FOLDER}/brief.md`]: briefText(), [`${FOLDER}/results.md`]: resultsText() },

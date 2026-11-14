@@ -1637,12 +1637,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // three were measured once more.
 // With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
 // received; 20260930762000, 14 November 2026), all three instructions were measured once more.
+// With a line on handing work a member asks Claude Code to do to a worker with harness claude-code (20260930770000,
+// 14 November 2026; staff runs only), the conversation's and the private conversation's instructions moved.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "2fca3d4e2cb343c068931d5485293a91fd56b4aafa1b353c029f99ba8253e483",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1658,7 +1660,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "2fca3d4e2cb343c068931d5485293a91fd56b4aafa1b353c029f99ba8253e483",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

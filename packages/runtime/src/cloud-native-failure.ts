@@ -8,6 +8,8 @@ const STAGES = [
 	"prompt-composition",
 	// A coding session's turn, which runs in its own composition (21 October 2026).
 	"coding-session",
+	// A plain worker Claude Code does (20260930770000): its own composition, never a Codex turn.
+	"claude-worker",
 	"native-tools",
 	"public-completion",
 	"codex-artifact",

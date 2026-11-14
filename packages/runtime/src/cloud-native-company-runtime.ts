@@ -160,6 +160,10 @@ import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
 import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
+/** A plain worker Claude Code does (20260930770000) on a node without its composition: refused, never run on Codex. */
+export const CLAUDE_WORKER_NOT_CARRIED =
+	"Claude Code workers run in their own composition, which this node does not carry; nothing ran on Codex";
+
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -418,6 +422,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					wake,
 					observability,
 				});
+			}
+			// A plain worker Claude Code does (20260930770000) is never a Codex turn: until this node carries its composition
+			// (slice C4c), its run is refused here, in its own stage, and the worker ends without running on Codex.
+			if (
+				wake.kind === "agent" &&
+				wake.source.kind === "worker-dispatch" &&
+				wake.payload.species === "in-house" &&
+				wake.payload.harness === "claude-code"
+			) {
+				stage = "claude-worker";
+				throw new Error(CLAUDE_WORKER_NOT_CARRIED);
 			}
 			// A light ask is its own composition too (deploy/first-node/RUNTIME-LIGHT-ASK.md §3): no tools, nothing of the
 			// company read, one call to the small model, the answer stored, nothing said.

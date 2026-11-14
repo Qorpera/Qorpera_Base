@@ -656,6 +656,20 @@ describe("worker dispatch and completion envelopes", () => {
 		).toThrow();
 		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
 	});
+	it("admits a plain worker Claude Code does by its harness, claude-code alone (20260930770000)", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const claude = { ...wake, payload: { ...wake.payload, harness: "claude-code" } };
+		expect(parseCloudWakeEnvelope(claude, identity).payload.harness).toBe("claude-code");
+		// Codex is never named, nothing else is a plain worker's harness, and a coding turn's harness is in its scope.
+		for (const harness of ["codex", "claude", null, ""])
+			expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, harness } }, identity)).toThrow(
+				"Invalid worker dispatch wake",
+			);
+		expect(() =>
+			parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, species: "coding" } }, identity),
+		).toThrow();
+		expect(Object.hasOwn(parseCloudWakeEnvelope(wake, identity).payload, "harness")).toBe(false);
+	});
 	it("admits a completion as an internal continuation that may speak in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);
