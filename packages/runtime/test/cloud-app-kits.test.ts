@@ -745,6 +745,74 @@ it("gives a start back when the data drops a question whose start is still out",
 	}
 });
 
+it("counts a refusal a bridge tells of after the data dropped its question, and hears nothing else of it", async () => {
+	vi.useFakeTimers();
+	try {
+		// A bridge that keeps telling a stopped watch: each start's callbacks are kept and called late.
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		const kept: { listener: (answer: unknown) => void; failed: (error: Error) => void }[] = [];
+		const watch = vi.fn(
+			(
+				name: string,
+				params: Record<string, unknown>,
+				listener: (answer: unknown) => void,
+				failed: (error: Error) => void,
+			) => {
+				if (name === "shop/visits") return db.watch(name, params, listener);
+				kept.push({ listener, failed });
+				return () => undefined;
+			},
+		);
+		const many = (queries: string[]) => ({
+			lang: "en",
+			title: "Shop",
+			groups: [
+				{
+					label: "Shop",
+					inputs: queries.map((query, at) => ({
+						id: `q${at}`,
+						label: `Q${at}`,
+						min: 0,
+						max: 10,
+						value: { query },
+					})),
+				},
+			],
+		});
+		let data = many(["shop/slow0"]);
+		const { kit, drawFrames } = openPage(data, { read: async () => JSON.stringify(data), watch, onChange() {} });
+		const live = vi.fn();
+		kit.onLive(live);
+		for (let edit = 0; edit < 100; edit++) {
+			data = many([`shop/slow${edit}`]);
+			const load = kit.load();
+			await vi.advanceTimersByTimeAsync(3_000);
+			await load;
+		}
+		expect(watch).toHaveBeenCalledTimes(100);
+		// A late answer of a dropped question moves nothing and asks for no load.
+		kept[0].listener({ columns: ["n"], rows: [{ n: 7 }], more: false, asOf: "" });
+		drawFrames();
+		expect(live).not.toHaveBeenCalled();
+		// The 99 dropped ones are refused late: with shop/slow99 still out, the page's 100 starts are spent.
+		for (const one of kept.slice(0, 99)) one.failed(new Error("No such database."));
+		data = many(["shop/slow99", "shop/visits"]);
+		const load = kit.load();
+		await vi.advanceTimersByTimeAsync(3_000);
+		expect(inputs(await load).map(({ value, state }) => [value, state])).toEqual([
+			[null, "unknown"],
+			[null, "unknown"],
+		]);
+		// And a dropped question is never asked again at a wait's end.
+		await vi.advanceTimersByTimeAsync(600_000);
+		drawFrames();
+		expect(live).not.toHaveBeenCalled();
+		expect(watch).toHaveBeenCalledTimes(100);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("loads one at a time, so a load asked for while one waits on its read ends in the newer answer", async () => {
 	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
 	const reads: ((text: string) => void)[] = [];
