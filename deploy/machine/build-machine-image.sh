@@ -153,7 +153,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config sudo \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
-		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
+		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg openssh-sftp-server \
 		imagemagick webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1 \
 		poppler-utils python3-fonttools python3-brotli python3-pypdf \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
@@ -351,6 +351,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	rm -f /company/root-owned-check
 	! runuser -u desktop -- sudo -n true 2>/dev/null ||
 		{ echo "the desktop account can reach root" >&2; exit 1; }
+	# Claude Code on the home (slice C1): its file tools reach the machine through sftp-server, which the executor starts
+	# as the agent account in a unit of its own for each file channel (nothing listens for it: no daemon is started).
+	# It answers the SFTP version 3 handshake as that account (its input stays open a moment: sftp-server ends at the end
+	# of its input before it writes what it still holds).
+	{ printf "\000\000\000\005\001\000\000\000\003"; sleep 1; } | runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out
+	[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \n") == ????????0200000003 ]] ||
+		{ echo "sftp-server does not answer the SFTP handshake as the agent account: Claude Code has no file tools on the home" >&2; exit 1; }
+	rm -f /tmp/sftp-check.out
 	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
 	# every machine without compressed memory, with only a line in each journal to say so.
 	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }

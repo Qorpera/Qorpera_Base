@@ -80,9 +80,17 @@ export interface HomeOutputGateOptions {
 	pass(chunk: Buffer): void;
 	/** A release held: nothing more leaves, and the channel ends (once). */
 	fail(why: string): void;
-	/** The least time between the starts of two releases, so a stream of output makes at most a few boundaries a second
-	 * (each one publishes what the machine changed). The first after a quiet spell starts at once. */
+	/** What a sustained stream of output may make: one release every `spacingMs` at most, so it makes at most a few
+	 * boundaries a second (each one publishes what the machine changed). 0: no bound, one release as soon as the one
+	 * before it ended. */
 	spacingMs: number;
+	/** How many releases may start without waiting, one given back every `spacingMs` up to this many (a token bucket;
+	 * default 1: the first after a quiet spell at once, each later one `spacingMs` after the one before began). One shell
+	 * command is three messages close together (the start's answer, its output, its exit): with 1, the second and the
+	 * third each waited for the spacing, about 350 ms a command with nothing protected by the wait (C2's measurement,
+	 * 14 Nov 2026: a `grep -rl` 479 ms through the gate against 130 ms without). A few in hand let such a short exchange
+	 * pass at once, and a stream is still held to one release per `spacingMs`. */
+	burst?: number;
 	/** What may wait for a release before the channel ends instead. */
 	limitBytes: number;
 	now?: () => number;
@@ -100,12 +108,27 @@ export class HomeOutputGate {
 	#bytes = 0;
 	#draining: Promise<void> | undefined;
 	#closed = false;
-	#lastStart = Number.NEGATIVE_INFINITY;
+	readonly #burst: number;
+	/** The releases in hand, and when they were last counted up. */
+	#tokens: number;
+	#counted: number;
 
 	constructor(options: HomeOutputGateOptions) {
 		this.#options = options;
 		this.#now = options.now ?? Date.now;
 		this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms)));
+		this.#burst = Math.max(1, Math.floor(options.burst ?? 1));
+		this.#tokens = this.#burst;
+		this.#counted = this.#now();
+	}
+
+	/** How long until a release may start: 0 when one is in hand, counted up to the burst since it was last counted. */
+	#wait(): number {
+		const now = this.#now();
+		const spacing = this.#options.spacingMs;
+		this.#tokens = spacing > 0 ? Math.min(this.#burst, this.#tokens + (now - this.#counted) / spacing) : this.#burst;
+		this.#counted = now;
+		return this.#tokens >= 1 ? 0 : Math.ceil((1 - this.#tokens) * spacing);
 	}
 
 	push(chunk: Buffer): void {
@@ -141,11 +164,13 @@ export class HomeOutputGate {
 	async #drain(): Promise<void> {
 		try {
 			while (this.#waiting.length && !this.#closed) {
-				const wait = this.#lastStart + this.#options.spacingMs - this.#now();
-				if (wait > 0) await this.#sleep(wait);
+				for (let wait = this.#wait(); wait > 0; wait = this.#wait()) {
+					await this.#sleep(wait);
+					if (this.#closed) return;
+				}
 				if (this.#closed) return;
+				this.#tokens -= 1;
 				const batch = this.#waiting.splice(0);
-				this.#lastStart = this.#now();
 				let held: string | undefined;
 				try {
 					held = await this.#options.release();

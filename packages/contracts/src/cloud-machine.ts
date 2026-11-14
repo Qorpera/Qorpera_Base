@@ -264,6 +264,10 @@ export const CLOUD_MACHINE_HOME = /* @__PURE__ */ Object.freeze({
 	 * keeps the two equal). The executor runs a machine's Codex only when it is this build: a machine that sleeps keeps
 	 * its disk across image switches, so it can wake with an earlier Codex than the run's slot speaks to. */
 	codexSha256: "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4",
+	/** The file channel (Claude Code on the home, slice C1): OpenSSH's `sftp-server` from Ubuntu's `openssh-sftp-server`
+	 * (deploy/machine/build-machine-image.sh), run as the agent's account in a unit of its own, as the exec-server is. Not
+	 * pinned: SFTP version 3 does not change between builds, and the agent is root on its home anyway. */
+	sftpServer: "/usr/lib/openssh/sftp-server",
 	/** Each channel's exec-server runs as a transient unit of its own in the machines' slice (`qorpera-machine.slice`),
 	 * named by this prefix, the session and a per-channel suffix: what the agent starts in its shell is the machine's
 	 * work, as a `machine_run` command's is (the idle rule, the slice's memory bound, the memory guard, the watchdog and
