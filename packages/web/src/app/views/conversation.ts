@@ -1663,9 +1663,10 @@ export class ConversationView {
 		// A window that comes into the thread stands at its end; one already here stays where it is.
 		if (!this.#computerSlot.contains(panel.el)) this.#computerAfter = undefined;
 		this.#panel = panel;
-		panel.attach(this.#computerSlot, () => this.#toggleComputer());
-		// In the thread at once (at its end, where a new window stands); the redraw puts it in its place with its figure.
+		// In the thread at once (at its end, where a new window stands), before the window comes into it: one that comes
+		// back entered covers the thread from there (review r1 F3 of #1787). The redraw puts the row in its place.
 		if (!this.#computerRow.isConnected) this.#log.append(this.#computerRow);
+		panel.attach(this.#computerSlot, () => this.#toggleComputer());
 		this.#autosize();
 		this.#redrawComputer();
 		return panel;
@@ -3170,9 +3171,12 @@ export class ConversationView {
 		);
 		if (computer) this.#drawComputerFigure(agent, agentName, atComputer, locale);
 		if (computer && !atComputer) {
-			this.#computerAfter ??= latest;
+			// Its place is fixed once the thread has read what it holds; while it reads, the row waits at the end (review r1
+			// F1 of #1787).
+			if (!conversation.loading) this.#computerAfter ??= latest;
 			const after = this.#computerAfter;
-			const next = this.#timestampRows.find((row) => row.date.getTime() > after)?.node;
+			const next =
+				after === undefined ? undefined : this.#timestampRows.find((row) => row.date.getTime() > after)?.node;
 			const at = next ? nodes.indexOf(next) : -1;
 			const index = at < 0 ? nodes.length : at;
 			nodes.splice(index, 0, this.#computerRow);
@@ -3440,6 +3444,8 @@ export class ConversationView {
 		// message gone from the thread leaves it on the thread.
 		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
 			this.#focusMessage(focusedMessage);
+		// Rows drawn now beside the computer's way are covered while its large view is open.
+		this.#panel?.coverAgain();
 		this.#pinToBottom();
 	}
 

@@ -416,6 +416,8 @@ export class ComputerPanel {
 	readonly #frameSwitcher: HTMLButtonElement;
 	readonly #fitPreview: () => void;
 	readonly #setExpanded: (expanded: boolean) => void;
+	/** What the large view covers in its thread, and whether each was inert before. */
+	readonly #covered = new Map<HTMLElement, boolean>();
 	#view: MachineScreenView | undefined;
 	/** The attached thread's way of putting the panel away for good. */
 	#close: () => void = () => {};
@@ -585,7 +587,6 @@ export class ComputerPanel {
 		// The window stands in its thread (computer-place.ts): a press marks its focus, which keeps the hover controls down
 		// after it; entered, it is fixed over the thread it stands in.
 		this.#fitPreview = attachComputerPlace(this.el, signal);
-		const covered = new Map<HTMLElement, boolean>();
 		this.#setExpanded = (expanded: boolean) => {
 			// Going full size and back is one zoom from the box it had (styles/motion.css has the open).
 			const from =
@@ -595,20 +596,10 @@ export class ComputerPanel {
 			this.el.classList.toggle("is-entered", expanded);
 			this.#fitPreview();
 			zoomFrom(this.el, from);
-			if (expanded) {
-				// The window stands in the thread's log: everything of the conversation but the header and the way down to
-				// the window is covered, so nothing under the large view is reachable.
-				const pane = this.el.closest(".thread-conversation");
-				for (let node: Element = this.el; pane && node !== pane && node.parentElement; node = node.parentElement)
-					for (const child of node.parentElement.children) {
-						if (child === node || !(child instanceof HTMLElement)) continue;
-						if (child.classList.contains("thread-header") || covered.has(child)) continue;
-						covered.set(child, child.inert);
-						child.inert = true;
-					}
-			} else {
-				for (const [element, inert] of covered) element.inert = inert;
-				covered.clear();
+			if (expanded) this.#coverThread();
+			else {
+				for (const [element, inert] of this.#covered) element.inert = inert;
+				this.#covered.clear();
 				this.#fitPreview();
 			}
 		};
@@ -753,6 +744,25 @@ export class ComputerPanel {
 	/** Whether a thread holds the panel right now (the thread itself may not be in the page yet). */
 	get attached(): boolean {
 		return this.el.parentElement !== null;
+	}
+
+	/** The window stands in the thread's log: while the large view is open, everything of the conversation but the header
+	 * and the way down to the window is covered, so nothing under it is reachable (review r1 F1 of #1685). */
+	#coverThread(): void {
+		const pane = this.el.closest(".thread-conversation");
+		for (let node: Element = this.el; pane && node !== pane && node.parentElement; node = node.parentElement)
+			for (const child of node.parentElement.children) {
+				if (child === node || !(child instanceof HTMLElement)) continue;
+				if (child.classList.contains("thread-header") || this.#covered.has(child)) continue;
+				this.#covered.set(child, child.inert);
+				child.inert = true;
+			}
+	}
+
+	/** The thread drew new rows beside the window's way (a message, a card, the working figure): while the large view is
+	 * open they are covered too (review r1 F2 of #1787). */
+	coverAgain(): void {
+		if (this.el.classList.contains("is-entered")) this.#coverThread();
 	}
 
 	/** The agent was renamed: only the title follows. */

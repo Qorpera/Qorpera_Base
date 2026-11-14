@@ -1487,6 +1487,12 @@ describe("an agent's computer window", () => {
 		expect(figure.inert).toBe(true);
 		expect(header.inert).not.toBe(true);
 		expect([log, row, slot].some((element) => element.inert === true)).toBe(false);
+		// A row the thread draws while the view is open (a message, a card, the working figure) is covered too
+		// (review r1 F2 of #1787).
+		const arrived = document.createElement("div");
+		log.append(arrived);
+		p.coverAgain();
+		expect(arrived.inert).toBe(true);
 		const back = p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
 		expect(back.hidden).toBe(false);
 		expect(back.getAttribute("aria-label")).toBe("Back to thread");
@@ -1494,6 +1500,12 @@ describe("an agent's computer window", () => {
 		expect(p.el.classList.contains("is-entered")).toBe(false);
 		expect(message.inert).not.toBe(true);
 		expect(figure.inert).not.toBe(true);
+		expect(arrived.inert).not.toBe(true);
+		// Back in the preview, a new row is nobody's to cover.
+		const later = document.createElement("div");
+		log.append(later);
+		p.coverAgain();
+		expect(later.inert).not.toBe(true);
 		expect(close).not.toHaveBeenCalled();
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(close).toHaveBeenCalledOnce();

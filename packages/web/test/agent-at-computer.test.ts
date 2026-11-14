@@ -565,6 +565,25 @@ describe("the agent's thread", () => {
 		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
 	});
 
+	it("waits at the end while the thread reads, and takes its place from what the read brought (review r1 F1 of #1787)", async () => {
+		const f = thread();
+		await settle();
+		// The member opens the computer of an agent not at it while the thread is still reading.
+		f.controller.conversation(session.sessionId).set({
+			loading: true,
+			projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+		});
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.panel()?.closest(".messages-log")).not.toBeNull();
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2), said(3, 4)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer", "Message 3"]);
+	});
+
 	it("does not show it for another agent, for an agent that does not work, or while the member is busy", async () => {
 		const f = thread();
 		f.controller.store.set({ activity: [run(other.id)], atComputers: { [other.id]: at() } });
