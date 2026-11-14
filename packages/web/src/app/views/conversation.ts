@@ -3171,9 +3171,9 @@ export class ConversationView {
 		);
 		if (computer) this.#drawComputerFigure(agent, agentName, atComputer, locale);
 		if (computer && !atComputer) {
-			// Its place is fixed once the thread has read what it holds; while it reads, the row waits at the end (review r1
-			// F1 of #1787).
-			if (!conversation.loading) this.#computerAfter ??= latest;
+			// Its place is fixed once the thread has read what it holds; while it reads, or after a read that failed, the row
+			// waits at the end (review r1 F1, r2 F1 of #1787).
+			if (!conversation.loading && !conversation.error) this.#computerAfter ??= latest;
 			const after = this.#computerAfter;
 			const next =
 				after === undefined ? undefined : this.#timestampRows.find((row) => row.date.getTime() > after)?.node;

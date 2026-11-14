@@ -576,12 +576,34 @@ describe("the agent's thread", () => {
 		expect(f.view.show(staff.id, "computer")).toBe(true);
 		expect(f.panel()?.closest(".messages-log")).not.toBeNull();
 		await settle();
-		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		// The read fails first (review r2 F1): nothing is fixed by it.
+		f.controller.conversation(session.sessionId).set({ loading: false, error: "Could not load" });
+		await settle();
+		f.controller.conversation(session.sessionId).set({ ...items(said(1, 0), said(2, 2)), error: undefined });
 		await settle();
 		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
 		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2), said(3, 4)));
 		await settle();
 		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer", "Message 3"]);
+	});
+
+	it("covers what the thread draws while its large view is open, and what stood there when it comes back entered (review r2 F2)", async () => {
+		const panels = new ComputerPanels(undefined, company().controller.signal);
+		const f = thread({ computerPanels: panels });
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		await settle();
+		// A window left entered in another thread comes into this one: what stands in the thread is covered at once.
+		panels.open(staff)!.el.classList.add("is-entered");
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		const first = f.view.el.querySelector<HTMLElement>(".messages-log > .message")!;
+		expect(first.inert).toBe(true);
+		// A message drawn while it is open is covered too.
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		await settle();
+		const messages = [...f.view.el.querySelectorAll<HTMLElement>(".messages-log > .message")];
+		expect(messages.map((message) => message.inert)).toEqual([true, true]);
+		expect(f.panel()?.closest<HTMLElement>(".thread-computer")?.inert).not.toBe(true);
 	});
 
 	it("does not show it for another agent, for an agent that does not work, or while the member is busy", async () => {
