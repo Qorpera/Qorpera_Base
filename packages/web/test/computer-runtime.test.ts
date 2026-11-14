@@ -14,6 +14,7 @@ import {
 	LOOK_EVERY_MS,
 	MACHINES_EVERY_MS,
 	type MachineHints,
+	MEMBER_CONFIRM_EVERY_MS,
 	OPEN_STARTS,
 	PAUSE_AFTER_MS,
 	SCREEN_OFF_EVERY_MS,
@@ -53,6 +54,7 @@ function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAge
 		epoch: 0,
 		others: [],
 		generation: 0,
+		memberSleepSeconds: null,
 		...change,
 	};
 }
@@ -6711,5 +6713,214 @@ describe("a window that showed by itself (20260930742000)", () => {
 		expect(action(p)?.textContent).toBe("Wake it");
 		expect(calls(s, "qorpera_member_manage_company_machine")).toEqual([]);
 		expect(s.starts).toEqual([]);
+	});
+});
+
+describe("a computer that is awake only for a member pauses, and is seen, by its own seconds (20260930759000)", () => {
+	const PAUSED = "Paused to save power. Still watching?";
+	const said = (s: Setup) => s.looks.filter((look) => look.url.endsWith("/watching")).length;
+	const wakes = (s: Setup) => calls(s, "qorpera_member_manage_company_machine");
+	const u16 = (value: number) => [value >> 8, value & 0xff];
+	/** A window showing machine 1's picture in the large view, shared, with the live picture up (as the stream's tests). */
+	async function live(s: Setup) {
+		s.state.seats.set(machine(1).machineId, 3);
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		inBox(p, 800, 500);
+		canvas(p).width = 1600;
+		canvas(p).height = 1000;
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		await flush();
+		const socket = s.sockets.at(-1)!;
+		socket.message(new Uint8Array([1, ...u16(1600), ...u16(1000)]).buffer);
+		socket.message(
+			new Uint8Array([
+				2,
+				...u16(1),
+				...u16(0),
+				...u16(0),
+				...u16(1600),
+				...u16(1000),
+				0,
+				0,
+				0,
+				8,
+				137,
+				80,
+				78,
+				71,
+				13,
+				10,
+				26,
+				10,
+			]).buffer,
+		);
+		await flush();
+		expect(mark(p)).toBe("Live");
+		return p;
+	}
+
+	it("stops looking after the seconds its list names without a touch, where every other computer keeps 30 minutes", async () => {
+		const s = setup({ machines: [machine(1, { memberSleepSeconds: 600 })] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		// 9 minutes without a touch: it still looks.
+		vi.setSystemTime(Date.now() + 9 * 60_000);
+		const before = s.looks.length;
+		await advance(3000);
+		expect(status(p)).not.toBe(PAUSED);
+		expect(s.looks.length).toBeGreaterThan(before);
+		// 10 minutes: paused, the picture gone, no more looks, and the member is asked.
+		vi.setSystemTime(Date.now() + 60_000);
+		await advance(3000);
+		expect(status(p)).toBe(PAUSED);
+		expect(screen(p)?.hidden).toBe(true);
+		const seen = s.looks.length;
+		await advance(60_000);
+		expect(s.looks).toHaveLength(seen);
+		expect(action(p)?.textContent).toBe("Keep watching");
+		// A touch on the page alone does not start it again: the member says so.
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(s.looks).toHaveLength(seen);
+		p.dispose();
+		// A computer an agent works on (no seconds in its list) is still looked at after 10 minutes, and after 29.
+		const t = setup();
+		t.state.answers.push({ picture: 1 });
+		const q = panel(t);
+		await flush();
+		vi.setSystemTime(Date.now() + 11 * 60_000);
+		await advance(3000);
+		expect(status(q)).not.toBe(PAUSED);
+		vi.setSystemTime(Date.now() + 18 * 60_000);
+		const late = t.looks.length;
+		await advance(3000);
+		expect(status(q)).not.toBe(PAUSED);
+		expect(t.looks.length).toBeGreaterThan(late);
+		vi.setSystemTime(Date.now() + 60_000);
+		await advance(3000);
+		expect(status(q)).toBe(PAUSED);
+	});
+
+	it("never waits longer than 30 minutes, whatever seconds the list names", async () => {
+		const s = setup({ machines: [machine(1, { memberSleepSeconds: 7200 })] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(3000);
+		expect(status(p)).toBe(PAUSED);
+	});
+
+	it("says the member's word within a minute of their touch for such a computer, every 5 minutes for another", async () => {
+		const s = setup({ machines: [machine(1, { memberSleepSeconds: 600 })] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		// The first look said it.
+		expect(said(s)).toBe(1);
+		// A touch half a minute on says nothing new; one a minute after the word says it again, once.
+		vi.setSystemTime(Date.now() + MEMBER_CONFIRM_EVERY_MS / 2);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(said(s)).toBe(1);
+		vi.setSystemTime(Date.now() + MEMBER_CONFIRM_EVERY_MS / 2);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(said(s)).toBe(2);
+		// No touch, no word: the looks go on without it.
+		vi.setSystemTime(Date.now() + 2 * MEMBER_CONFIRM_EVERY_MS);
+		const looked = s.looks.length;
+		await advance(3000);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		expect(said(s)).toBe(2);
+		p.dispose();
+		// Another computer: a touch a minute on says nothing new, and one 5 minutes on says it.
+		const t = setup();
+		t.state.answers.push({ picture: 1 });
+		panel(t);
+		await flush();
+		expect(said(t)).toBe(1);
+		vi.setSystemTime(Date.now() + MEMBER_CONFIRM_EVERY_MS + 1000);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(said(t)).toBe(1);
+		vi.setSystemTime(Date.now() + 4 * MEMBER_CONFIRM_EVERY_MS);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(said(t)).toBe(2);
+	});
+
+	it("wakes a computer that fell asleep under the paused window when the member keeps watching: one press", async () => {
+		const s = setup({ machines: [machine(1, { memberSleepSeconds: 600 })] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.setSystemTime(Date.now() + 10 * 60_000);
+		await advance(3000);
+		expect(status(p)).toBe(PAUSED);
+		// Ten minutes on it sleeps (the kernel's stop); the paused window reads nothing and wakes nothing.
+		s.state.machines = [machine(1, { state: "stopped" })];
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe(PAUSED);
+		expect(wakes(s)).toEqual([]);
+		action(p)!.click();
+		await flush();
+		expect(wakes(s)).toHaveLength(1);
+		expect(wakes(s)[0]?.body).toMatchObject({ p_machine_id: machine(1).machineId, p_action: "start" });
+		expect(status(p)).toBe("The computer is starting…");
+		p.dispose();
+		// One that still runs is only looked at again, with the member's word; nothing is woken.
+		const t = setup({ machines: [machine(1, { memberSleepSeconds: 600 })] });
+		t.state.answers.push({ picture: 1 });
+		const q = panel(t);
+		await flush();
+		vi.setSystemTime(Date.now() + 10 * 60_000);
+		await advance(3000);
+		expect(status(q)).toBe(PAUSED);
+		const seen = t.looks.length;
+		action(q)!.click();
+		await flush();
+		expect(t.looks).toHaveLength(seen + 1);
+		expect(t.looks.at(-1)).toMatchObject({ url: expect.stringMatching(/\/watching$/), etag: null });
+		expect(wakes(t)).toEqual([]);
+		expect(t.starts).toEqual([]);
+	});
+
+	it("still says the member's word while the live picture shows such a computer: one look, not drawn, and none for another", async () => {
+		const s = setup({ stream: true, machines: [machine(1, { memberSleepSeconds: 600 })] });
+		const p = await live(s);
+		// No looks while the stream shows the screen and no word is due.
+		const looked = s.looks.length;
+		await advance(MEMBER_CONFIRM_EVERY_MS);
+		expect(s.looks).toHaveLength(looked);
+		// A touch on the page, off the desktop: the word is due, and one look carries it under the live picture.
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(MACHINES_EVERY_MS);
+		expect(s.looks).toHaveLength(looked + 1);
+		expect(s.looks.at(-1)?.url).toMatch(/\/watching$/);
+		expect(mark(p)).toBe("Live");
+		expect(s.sockets).toHaveLength(1);
+		expect(s.sockets[0]!.closedWith).toBeUndefined();
+		// Said: a touch right after sends no look.
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(MACHINES_EVERY_MS);
+		expect(s.looks).toHaveLength(looked + 1);
+		// 10 minutes without a touch end the live picture and pause the window, as the looks would.
+		await advance(10 * 60_000);
+		expect(status(p)).toBe(PAUSED);
+		expect(s.sockets[0]!.closedWith).toBeDefined();
+		p.dispose();
+		// Another computer under the live picture: a touch a minute on sends no look.
+		const t = setup({ stream: true });
+		await live(t);
+		const other = t.looks.length;
+		await advance(MEMBER_CONFIRM_EVERY_MS);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(MACHINES_EVERY_MS);
+		expect(t.looks).toHaveLength(other);
 	});
 });

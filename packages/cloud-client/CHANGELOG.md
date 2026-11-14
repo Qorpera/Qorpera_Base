@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `MemberAgentMachine.memberSleepSeconds` (migration `20260930759000`): for a machine that is awake only because a member woke it, how many seconds after that member's last sign it sleeps (whole seconds, a minute to a week); null for every other machine and from a database before it. Anything else fails the read.
 - `APP_KITS` names four data kits beside `explainer`: `model`, `board`, `path` and `object` (`deploy/first-node/RUNTIME-INTERFACE-APPS.md` §3b, 13 Nov 2026). An `app.toml` with `kit = "model"` reads; a client from before it reports that manifest as having a problem.
 - `MemberAgentMachine.others` takes at most the first 50 names of a list (the newest first, as SQL orders them from `20260930744000`): a longer list from before it is never a failed read any more (release review of v239, #1723 r1 F1).
 - `MemberAgentMachine.generation` (migration `20260930738000`): the desktop's lease generation, which moves at every seating of a member and every hand-back that ends a lease, named to owners, admins and contributors; null for a viewer and from a database before it; a value that is not a safe whole number from 0 fails the read.
