@@ -1,3 +1,4 @@
+import { CloudMemberData } from "@qorpera/cloud-client/cloud-member-data";
 import {
 	CloudMemberFolderClient,
 	CloudMemberFolderFileCache,
@@ -51,6 +52,7 @@ export class WebCompanyFiles {
 	readonly #options: MemberFolderOptions;
 	readonly #current: () => void;
 	readonly #code: CodeDownloadCalls;
+	readonly #dataGateway: string | undefined;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -64,6 +66,7 @@ export class WebCompanyFiles {
 		this.signal = signal;
 		this.#current = current;
 		this.#code = codeDownloadCalls(cloud, profile.profileId);
+		this.#dataGateway = cloud.config.memberCompanyGatewayUrl;
 		this.#options = {
 			environmentId: profile.environmentId,
 			supabaseUrl: cloud.config.projectUrl,
@@ -124,6 +127,37 @@ export class WebCompanyFiles {
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
 			files: this.#options.files,
+		});
+	}
+	/** The company's databases, asked as the member through the member gateway (RUNTIME-COMPANY-DATABASES.md §3);
+	 * undefined where the build names no member gateway. A question's file the gateway asks for is read with the
+	 * member's own folder client, its bytes as they are (a leading byte order mark kept), so its hash is the entry's. */
+	data(): CloudMemberData | undefined {
+		this.current();
+		const gatewayUrl = this.#dataGateway;
+		if (!gatewayUrl) return undefined;
+		const folder = this.folder();
+		return new CloudMemberData({
+			environmentId: this.#options.environmentId,
+			gatewayUrl,
+			accessToken: this.#options.accessToken,
+			fetch: this.#options.fetch,
+			readText: async (path, maximumBytes, signal) => {
+				const entry = (await folder.read(path, signal)).entry;
+				const file = entry?.kind === "file" ? entry.file : null;
+				if (!file || file.bytes > maximumBytes) return null;
+				try {
+					const bytes = await folder.readFile(file, signal, maximumBytes);
+					return {
+						text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+						sha256: file.fileSha256,
+					};
+				} catch (error) {
+					signal.throwIfAborted();
+					if (error instanceof TypeError) return null;
+					throw error;
+				}
+			},
 		});
 	}
 	/** The company's code kept in Qorpera: its repositories, and a download of one (cloud/code-downloads.ts). */
