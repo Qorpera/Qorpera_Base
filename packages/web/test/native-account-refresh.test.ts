@@ -370,6 +370,7 @@ describe("account metadata refresh transport", () => {
 				throw new Error("Unexpected route");
 			});
 			const retried = f.client.refreshAccountMetadata!();
+			await vi.waitFor(() => expect(urls).toHaveLength(1));
 			await vi.advanceTimersByTimeAsync(60_000);
 			await retried;
 			// Read at once, after 2 s and after 3 s more; neither admission nor the guest is asked.
