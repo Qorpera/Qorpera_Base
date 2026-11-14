@@ -73,10 +73,20 @@ export interface ClaudeLoginSealRequest {
 	readonly files: Readonly<Record<string, string>>;
 }
 
+/** A seal-back's answer. `sealed` names the new version and its envelope's digest, the base a later seal of the same
+ * run starts from. `stale`: the login is not at the version the run named, so nothing was sealed; after a lost answer
+ * the retry of a seal that was saved answers `stale` too, with the version named plus one. */
 export type ClaudeLoginSealAnswer =
 	| {
 			readonly schema: "qorpera.claude-login-seal/v1";
-			readonly state: "sealed" | "stale";
+			readonly state: "sealed";
+			readonly claudeLoginId: string;
+			readonly version: number;
+			readonly envelopeSha256: string;
+	  }
+	| {
+			readonly schema: "qorpera.claude-login-seal/v1";
+			readonly state: "stale";
 			readonly claudeLoginId: string;
 			readonly version: number;
 	  }
@@ -158,8 +168,9 @@ export class CloudClaudeLoginVault {
 		};
 	}
 
-	/** Seals the files the run host read back as the login's next version, if the version it opened is still the
-	 * login's: else `stale`, and the newer envelope stays. A login file the run host did not send is kept as it was in
+	/** Seals the files the run host read back as the login's next version, if the version it named is still the
+	 * login's: else `stale`, and the newer envelope stays (a retry after a lost answer included: the vault opens the
+	 * login again first and finds the version it sealed). A login file the run host did not send is kept as it was in
 	 * the version it opened (C4c sends only `.credentials.json`). */
 	async sealBack(request: ClaudeLoginSealRequest, signal: AbortSignal): Promise<ClaudeLoginSealAnswer> {
 		const binding = parseModelLoginRunBinding(request.binding);
@@ -187,6 +198,7 @@ export class CloudClaudeLoginVault {
 			{ [CLAUDE_LOGIN_FIELD]: text },
 			{ memberId: current.memberId, loginId: claudeLoginId, version: baseVersion + 1, keyId: current.keyId },
 		);
+		const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 		let answer: Record<string, unknown>;
 		try {
 			answer = parseRecord(
@@ -198,7 +210,7 @@ export class CloudClaudeLoginVault {
 						baseEnvelopeSha256: request.baseEnvelopeSha256,
 						keyId: current.keyId,
 						encryptedEnvelope: envelope,
-						envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+						envelopeSha256,
 					},
 					signal,
 				),
@@ -223,10 +235,17 @@ export class CloudClaudeLoginVault {
 		if (
 			answer.state !== "sealed" ||
 			parseUuid(answer.claudeLoginId, label) !== claudeLoginId ||
-			version(answer.version, label) !== baseVersion + 1
+			version(answer.version, label) !== baseVersion + 1 ||
+			answer.envelopeSha256 !== envelopeSha256
 		)
 			throw new Error(`${label} is invalid`);
-		return { schema: "qorpera.claude-login-seal/v1", state: "sealed", claudeLoginId, version: baseVersion + 1 };
+		return {
+			schema: "qorpera.claude-login-seal/v1",
+			state: "sealed",
+			claudeLoginId,
+			version: baseVersion + 1,
+			envelopeSha256,
+		};
 	}
 
 	/** The run's login as the database hands it now, opened under the member's key with the version in its identity; or

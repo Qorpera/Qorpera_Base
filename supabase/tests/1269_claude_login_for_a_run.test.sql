@@ -6,7 +6,9 @@
 -- 1. The open: the sealed files with their digest, the member and key, version 1.
 -- 2. Who may ask, each refused whole (42501) and naming nothing: another company's broker authority, a wrong capability,
 --    the agent's own conversation run, a plain worker's run, the run once its member's lease is not its own (taken by
---    another wake, or its wake ended), the run once its worker has reported, and a seal naming another login.
+--    another wake, or its wake ended), the run once its worker has reported or was cancelled (it opens nothing, but
+--    still seals back while its lease is this run's and live; once the wake or the job ended it seals nothing), and a
+--    seal naming another login.
 -- 3. The seal-back: a compare-and-swap on the version and envelope opened; the version goes up by one; a repeat of the
 --    saved seal answers it again; a stale base answers stale and the newer envelope stays; a key other than the
 --    login's, an envelope that is not its digest, and shapes out of bounds are invalid (22023).
@@ -90,7 +92,7 @@ reset session authorization;
 
 -- 2. Who may ask ----------------------------------------------------------------------------------------------------
 create function pg_temp.c4b_s2() returns void language plpgsql security definer set search_path = pg_catalog, public as $$
-declare v_other uuid := extensions.gen_random_uuid();
+declare v_other uuid := extensions.gen_random_uuid(); v_state text; v jsonb;
 begin
 	-- A broker authority of another company, and a wrong capability.
 	insert into public.qorpera_profiles(id, name, created_by_user_id)
@@ -136,19 +138,49 @@ begin
 		raise exception 'c4b-undo';
 	exception when raise_exception then if sqlerrm <> 'c4b-undo' then raise; end if;
 	end;
-	-- The worker has reported (its run goes on, its lease still holds): its login is no longer this run's to open.
-	begin
-		set local session_replication_role = replica;
-		update public.qorpera_runtime_workers set state = 'succeeded', result = '{}'::jsonb, reported_at = clock_timestamp()
-		where id = '12690000-0000-4000-8000-0000000000b1';
-		set local session_replication_role = origin;
-		perform pg_temp.base_assert(public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: its lease still holds');
-		perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_open()') = '42501', '2: a worker that has reported');
-		perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(1, %L, %L)',
-			pg_temp.c4b_sha('canary-c4b-sealed-1'), 'canary-c4b-renewed')) = '42501', '2: nor its seal-back');
-		raise exception 'c4b-undo';
-	exception when raise_exception then if sqlerrm <> 'c4b-undo' then raise; end if;
-	end;
+	-- The worker has reported, or was cancelled, while its run goes on and its lease still holds: its login is no longer
+	-- this run's to open, but the run still seals back what Claude Code renewed. Once the lease ends (its wake ended, or
+	-- its run's job ended) neither is possible.
+	foreach v_state in array array['succeeded', 'cancelled'] loop
+		begin
+			set local session_replication_role = replica;
+			update public.qorpera_runtime_workers set state = v_state, result = '{}'::jsonb,
+				reported_at = case when v_state = 'succeeded' then clock_timestamp() end
+			where id = '12690000-0000-4000-8000-0000000000b1';
+			set local session_replication_role = origin;
+			perform pg_temp.base_assert(public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: its lease still holds');
+			perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_open()') = '42501', '2: a worker ' || v_state
+				|| ' does not open');
+			v := pg_temp.c4b_seal(1, pg_temp.c4b_sha('canary-c4b-sealed-1'), 'canary-c4b-renewed');
+			perform pg_temp.base_assert(v ->> 'state' = 'sealed' and (v ->> 'version')::bigint = 2,
+				'2: a worker ' || v_state || ' still seals back: ' || v::text);
+			-- Its wake ended: the lease is over, and nothing more is sealed.
+			begin
+				update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
+				where id = (pg_temp.c4_worker('12690000-0000-4000-8000-0000000000b1')).occurrence_id;
+				perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(2, %L, %L)',
+					pg_temp.c4b_sha('canary-c4b-renewed'), 'canary-c4b-renewed-2')) = '42501',
+					'2: a worker ' || v_state || ' whose wake ended seals nothing');
+				raise exception 'c4b-undo-inner';
+			exception when raise_exception then if sqlerrm <> 'c4b-undo-inner' then raise; end if;
+			end;
+			-- Its run's job ended (as the reaper ends a lost run): the lease is over, and nothing more is sealed.
+			begin
+				set local session_replication_role = replica;
+				perform pg_temp.c4_end_job((pg_temp.c4b_binding() ->> 'runId')::uuid, 'failed');
+				set local session_replication_role = origin;
+				perform pg_temp.base_assert(not public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: the job ended');
+				perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(2, %L, %L)',
+					pg_temp.c4b_sha('canary-c4b-renewed'), 'canary-c4b-renewed-2')) = '42501',
+					'2: a worker ' || v_state || ' whose job ended seals nothing');
+				raise exception 'c4b-undo-inner';
+			exception when raise_exception then if sqlerrm <> 'c4b-undo-inner' then raise; end if;
+			end;
+			raise exception 'c4b-undo';
+		exception when raise_exception then if sqlerrm <> 'c4b-undo' then raise; end if;
+		end;
+	end loop;
+	perform pg_temp.base_assert((pg_temp.c4b_login()).version = 1, '2: every seal of those cases was undone');
 	-- No lease row at all.
 	begin
 		delete from public.qorpera_claude_worker_leases where owner_user_id = pg_temp.c4_owner_id();

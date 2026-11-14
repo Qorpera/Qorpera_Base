@@ -10,10 +10,11 @@
 -- 3. The accepted dispatch: the worker row names the harness and the member's Claude login (the payer, fixed: a newer
 --    sign-in later does not move it); no wake yet; the replay answers the same.
 -- 4. The drain starts it with a wake that names the harness, and takes the member's lease under that wake's id; a second
---    Claude Code worker of the same member waits (skipped, no wake) while the first's lease is live, and so does it while
+--    Claude Code worker of the same member waits (not due, no wake) while the first's lease is live, and so does it while
 --    the first's run is leased; when that run dies (its job failed, as the reaper fails a lost one) the second starts and
 --    the lease is its; a worker cancelled before its run ends its lease too, and a plain worker beside them never waits.
 -- 5. A follow-up: by the same member, it records that member's login as it is now; by another member, it is refused.
+--    More Claude Code workers of that member waiting than a drain takes at once never hold back a newer plain worker.
 -- 6. Nothing here is the API's: no role but the database's own may call the new functions or touch the lease table.
 
 select pg_temp.base_claims('service_role');
@@ -329,12 +330,18 @@ begin
 		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b3', null, 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4: the plain dispatch: ' || v_result::text);
 	v_drain := pg_temp.c4_drain();
-	perform pg_temp.base_assert((v_drain ->> 'started')::integer = 1 and (v_drain ->> 'skipped')::integer = 1
+	perform pg_temp.base_assert((v_drain ->> 'started')::integer = 1 and (v_drain ->> 'skipped')::integer = 0
+		and not public.qorpera_folder_worker_due(pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b2'))
 		and (pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b3')).occurrence_id is not null
 		and (pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b2')).occurrence_id is null
 		and not exists (select 1 from public.qorpera_wake_occurrences where source_id = '12680000-0000-4000-8000-0000000000b2'),
 		'4: the plain worker starts; the second Claude Code worker waits, with no wake: ' || v_drain::text);
 	perform pg_temp.base_assert((pg_temp.c4_lease()).wake_id = w.occurrence_id, '4: the lease stays the first''s');
+	-- A take that raced past the due check (another company's drain read the worker as due first) does not take over a
+	-- live lease.
+	perform pg_temp.base_assert(not public.qorpera_claude_worker_lease_take(
+		pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b2'), extensions.gen_random_uuid())
+		and (pg_temp.c4_lease()).wake_id = w.occurrence_id, '4: a live lease is never taken over');
 	-- The first's run: materialized and leased, the lease still holds and the second still waits.
 	v_pass := pg_temp.base_materialize();
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = w.occurrence_id;
@@ -433,6 +440,27 @@ begin
 		'5: its next run takes the lease and names the harness: ' || v_drain::text);
 end $$;
 
+-- 5b. Many waiting: the follow-up's run holds the member's lease; 33 more Claude Code workers of that member wait (more
+-- than the drain's 32), and a plain worker dispatched after them still starts on the next pass.
+do $$
+declare v_alice jsonb := pg_temp.c4_alice(); v_result jsonb; v_drain jsonb; v_i integer;
+begin
+	perform pg_temp.base_assert(public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '5b: the member''s lease is held');
+	for v_i in 1..33 loop
+		v_result := pg_temp.c4_dispatch(v_alice, 'c4-many-' || v_i, 'QorperaOS/agents/alice/todos/onboarding/page-' || v_i,
+			pg_temp.c4_brief(('12680000-0000-4000-8000-' || lpad(to_hex(4096 + v_i), 12, '0'))::uuid, p_title => 'Page ' || v_i));
+		perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5b: dispatch ' || v_i || ': ' || v_result::text);
+	end loop;
+	v_result := pg_temp.c4_dispatch(v_alice, 'c4-many-plain', 'QorperaOS/agents/alice/todos/onboarding/summary',
+		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b9', null, 'Write the summary'));
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5b: the plain dispatch: ' || v_result::text);
+	v_drain := pg_temp.c4_drain();
+	perform pg_temp.base_assert((pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b9')).occurrence_id is not null
+		and not exists (select 1 from public.qorpera_runtime_workers w where w.harness = 'claude-code'
+			and w.occurrence_id is null and w.title like 'Page %' and public.qorpera_folder_worker_due(w)),
+		'5b: the plain worker starts behind 33 waiting Claude Code workers, none of them due: ' || v_drain::text);
+end $$;
+
 -- 6. Whose these are ----------------------------------------------------------------------------------------------------
 do $$
 declare v_role text; v_function text;
@@ -443,6 +471,7 @@ begin
 		foreach v_function in array array['public.qorpera_claude_worker_lease_live(public.qorpera_claude_worker_leases)',
 			'public.qorpera_claude_worker_lease_take(public.qorpera_runtime_workers,uuid)',
 			'public.qorpera_claude_worker_member_name(uuid,uuid)', 'public.qorpera_claude_worker_home(uuid,uuid,uuid,uuid)',
+			'public.qorpera_claude_worker_waits(public.qorpera_runtime_workers)',
 			'public.qorpera_claude_worker_problem(uuid,uuid,uuid)', 'public.qorpera_claude_worker_login(uuid,uuid)'] loop
 			if has_function_privilege(v_role, v_function, 'execute') then
 				raise exception '6: % may call %', v_role, v_function; end if;
@@ -453,7 +482,8 @@ begin
 		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)',
 		'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)',
 		'public.qorpera_folder_worker_dispatch_payload(public.qorpera_runtime_workers,public.qorpera_runtime_agent_todos)',
-		'public.qorpera_folder_workers_company(uuid,integer)'] loop
+		'public.qorpera_folder_workers_company(uuid,integer)',
+		'public.qorpera_folder_worker_due(public.qorpera_runtime_workers)'] loop
 		if position('20260930770000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
 			raise exception '6: % does not name 20260930770000', v_function; end if;
 	end loop;

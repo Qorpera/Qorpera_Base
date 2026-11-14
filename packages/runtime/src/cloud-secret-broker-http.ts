@@ -6,7 +6,6 @@ import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	type ClaudeLoginFileName,
-	type ClaudeLoginSealAnswer,
 	type CloudClaudeLoginVault,
 	claudeLoginSealFiles,
 } from "./cloud-claude-login-vault.ts";
@@ -1922,20 +1921,56 @@ export async function openClaudeLoginForRun(
 	return { claudeLoginId: claudeLoginId.toLowerCase(), version, envelopeSha256, files, fileSha256 };
 }
 
-/** Sends back the login files the run host read from the box after the run, when any changed (Claude Code renewed its
- * token): `unchanged` sends nothing. Only Claude Code's login files may be sent, `.credentials.json` always (C4c sends
- * only it), `.claude.json` when the caller passes it; a file not sent stays as the run opened it. The vault seals them as
- * the login's next version only if the version opened is still the login's, else `stale` (the newer one stays). Call it
- * before the worker's report: the database lets a run seal back only while its worker is at work. */
+/** What a run seals from: the login's version and envelope digest the run holds now, and each login file's digest in
+ * it. `openClaudeLoginForRun` gives the first; each `sealed` answer gives the next. */
+export type ClaudeLoginSealBase = Pick<
+	OpenedClaudeLogin,
+	"claudeLoginId" | "version" | "envelopeSha256" | "fileSha256"
+>;
+
+/** `unchanged` and `sealed` carry the base the run seals from next (`opened`). `stale`: nothing was sealed, and the
+ * login is at `version`; when that is the base's version plus one after a lost answer, it may be this run's own seal,
+ * and the run has no base to seal from again. `refused`: the login is signed out or not open now. */
+export type ClaudeLoginSealResult =
+	| { readonly state: "unchanged"; readonly opened: ClaudeLoginSealBase }
+	| {
+			readonly schema: "qorpera.claude-login-seal/v1";
+			readonly state: "sealed";
+			readonly claudeLoginId: string;
+			readonly version: number;
+			readonly envelopeSha256: string;
+			readonly opened: ClaudeLoginSealBase;
+	  }
+	| {
+			readonly schema: "qorpera.claude-login-seal/v1";
+			readonly state: "stale";
+			readonly claudeLoginId: string;
+			readonly version: number;
+	  }
+	| {
+			readonly schema: "qorpera.claude-login-seal/v1";
+			readonly state: "refused";
+			readonly reason: "SIGNED_OUT" | "NOT_OPEN";
+	  };
+
+/** Sends back the login files the run host read from the box, when any changed since `opened` (Claude Code renewed its
+ * token): `unchanged` sends nothing. A run may seal more than once (C4c: right after Claude Code's start when the file
+ * changed, and again at the end), each time from the `opened` the last answer gave. Only Claude Code's login files may
+ * be sent, `.credentials.json` always (C4c sends only it), `.claude.json` when the caller passes it; a file not sent
+ * stays as it is in the login. The vault seals them as the login's next version only if `opened`'s version and
+ * envelope are still the login's, else `stale` (the newer one stays). A retry after a lost answer (a 503 or a cut
+ * connection after the vault saved the seal) answers `stale` with `opened.version + 1`: the caller treats that as
+ * possibly its own seal. The database takes a seal-back while the member's lease is this run's and live, also after
+ * the worker reported or was cancelled. */
 export async function sealClaudeLoginBack(
 	options: ClaudeLoginRunClient,
 	request: {
 		readonly binding: ModelLoginRunBinding;
-		readonly opened: Pick<OpenedClaudeLogin, "claudeLoginId" | "version" | "envelopeSha256" | "fileSha256">;
+		readonly opened: ClaudeLoginSealBase;
 		readonly files: ReadonlyMap<string, Uint8Array>;
 	},
 	signal: AbortSignal,
-): Promise<{ readonly state: "unchanged" } | ClaudeLoginSealAnswer> {
+): Promise<ClaudeLoginSealResult> {
 	if (
 		!request.files.has(".credentials.json") ||
 		[...request.files.keys()].some((name) => !(CLAUDE_LOGIN_FILES as readonly string[]).includes(name))
@@ -1944,9 +1979,9 @@ export async function sealClaudeLoginBack(
 	const digests = new Map(
 		[...request.files].map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")] as const),
 	);
-	// Unchanged: every file sent is byte for byte the one the run opened (a file it did not open counts as a change).
+	// Unchanged: every file sent is byte for byte the one in `opened` (a file it does not hold counts as a change).
 	if ([...digests].every(([name, digest]) => request.opened.fileSha256[name as ClaudeLoginFileName] === digest))
-		return { state: "unchanged" };
+		return { state: "unchanged", opened: request.opened };
 	const files: Record<string, string> = {};
 	for (const [name, bytes] of request.files) files[name] = Buffer.from(bytes).toString("base64");
 	const answer = record(
@@ -1974,17 +2009,41 @@ export async function sealClaudeLoginBack(
 			throw new Error("Claude login seal-back is invalid");
 		return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: answer.reason };
 	}
-	exact(answer, ["schema", "state", "claudeLoginId", "version"], "Claude login seal-back");
-	const { state, version } = answer;
+	const claudeLoginId = request.opened.claudeLoginId;
+	const { version } = answer;
 	if (
-		(state !== "sealed" && state !== "stale") ||
-		answer.claudeLoginId !== request.opened.claudeLoginId ||
+		answer.claudeLoginId !== claudeLoginId ||
 		typeof version !== "number" ||
 		!Number.isSafeInteger(version) ||
 		version < 1
 	)
 		throw new Error("Claude login seal-back is invalid");
-	return { schema: "qorpera.claude-login-seal/v1", state, claudeLoginId: request.opened.claudeLoginId, version };
+	if (answer.state === "stale") {
+		exact(answer, ["schema", "state", "claudeLoginId", "version"], "Claude login seal-back");
+		return { schema: "qorpera.claude-login-seal/v1", state: "stale", claudeLoginId, version };
+	}
+	exact(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256"], "Claude login seal-back");
+	const { envelopeSha256 } = answer;
+	if (
+		answer.state !== "sealed" ||
+		version !== request.opened.version + 1 ||
+		typeof envelopeSha256 !== "string" ||
+		!SHA.test(envelopeSha256)
+	)
+		throw new Error("Claude login seal-back is invalid");
+	return {
+		schema: "qorpera.claude-login-seal/v1",
+		state: "sealed",
+		claudeLoginId,
+		version,
+		envelopeSha256,
+		opened: {
+			claudeLoginId,
+			version,
+			envelopeSha256,
+			fileSha256: { ...request.opened.fileSha256, ...Object.fromEntries(digests) },
+		},
+	};
 }
 
 /** Typed member capture path. The plaintext body goes to the broker origin,

@@ -636,7 +636,7 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
-| `harness` | a coding session's: `codex` or `claude-code` (only in a coding brief, C3a) |
+| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only as `claude-code`, for a worker Claude Code does (20260930770000), and Codex is its unsaid default |
 | `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
 | `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
@@ -2365,7 +2365,10 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      the locked rows; a lock it waits on past 2 seconds answers `busy`;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
-  4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
+  4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
+     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: one
+     Claude Code run per member at a time; a take lost to another drain is `skipped`, and the worker starts on a later
+     pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries); a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
@@ -2375,7 +2378,9 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      55000), or whose wake is cancelled at insert, marks its workers undeliverable. An erased worker's waiting
      results are suppressed (their text is gone). Coding workers are started by their coding turns and only
      revived here. The drain never touches a todo row. A pass handles at most 32 due workers, within core §3's 64
-     subtransactions.
+     subtransactions. A Claude Code worker whose member's lease another run holds is not due to start
+     (`qorpera_claude_worker_waits` in `qorpera_folder_worker_due`, 20260930770000) until that lease ends (its wake or
+     its run's job ends), so waiting workers never fill a pass.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used (legacy sweep
@@ -2429,7 +2434,8 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
 `qorpera_folder_worker_commit`, and the worker row is the brief's index.
 - **C3a (migration 20260930077000, SQL test 928; the parser):**
   - **The brief.** A coding brief names `harness`, `repository` and `base_branch`; an in-house brief names none of
-    them. The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
+    them (since 20260930770000 an in-house brief may name `harness: claude-code`, for a worker Claude Code does on a
+    member's own Claude sign-in; never a repository or a base branch). The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
     for a coding brief only, and the database's parse check holds both to their rules.
   - **The request.** A dispatch may carry `species`, `harness`, `repository` and `owner`. The worker rules check a
     coding dispatch as `qorpera_manage_agent_worker` did, in its order and with its words, as rule refusals that write
