@@ -30,6 +30,7 @@ import {
 	readMyGoodWill,
 	startGoodWillCard,
 } from "./good-will.ts";
+import { type LightAsk, parseLightAsk } from "./light-asks.ts";
 import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
@@ -552,6 +553,30 @@ export class CloudApi {
 				p_expected: expected,
 			})
 			.then(parseMemberAppLayoutRead);
+	}
+
+	/** A light ask (20260930761000): a closed kind and that kind's input, never a prompt. The member's own login pays.
+	 * The same `clientAskId` with the same kind and input answers the ask already made. A cloud before the migration
+	 * has no such call (`CloudRpcError.missing`). */
+	requestLightAsk(profileId: string, clientAskId: string, kind: string, input: object): Promise<LightAsk> {
+		return this.cloud
+			.rpc("qorpera_request_light_ask", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_client_ask_id: requiredUuid(clientAskId, "Ask id"),
+				p_kind: kind,
+				p_input: input,
+			})
+			.then(parseLightAsk);
+	}
+
+	/** The member's own light ask as it stands; undefined when the cloud has none of that id. */
+	readLightAsk(profileId: string, askId: string): Promise<LightAsk | undefined> {
+		return this.cloud
+			.rpc("qorpera_read_light_ask", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_ask_id: requiredUuid(askId, "Ask id"),
+			})
+			.then((value) => (value === null || value === undefined ? undefined : parseLightAsk(value)));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
