@@ -786,6 +786,42 @@ test("the agent's home: Codex's own home folder is the agent account's, where th
 	);
 });
 
+test("the agent's home: Claude Code's file channel has sftp-server on every machine, at the path the executor runs", () => {
+	// lanes/agent-box-20261113, slice C1 (P4: Claude Code's Read/Edit/Write on the home went through OpenSSH's sftp-server
+	// in a unit of the machines' slice, as the agent's account). The executor refuses a file channel on a machine without
+	// it (HOME_SFTP_MISSING), so the image must carry it.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("openssh-sftp-server"), "apt installs openssh-sftp-server");
+	// No daemon: nothing listens for SFTP on a machine; only the executor's unit starts it.
+	assert.ok(!apt.includes("openssh-server"), "no sshd");
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes('\tsftpServer: "/usr/lib/openssh/sftp-server",\n'));
+	assert.ok(
+		read("packages/runner-orchestrator/src/company-machine-host.ts").includes("[CLOUD_MACHINE_HOME.sftpServer]"),
+		"the executor's unit runs that path, with no argument and no shell",
+	);
+	const check = [
+		'\t{ printf "\\000\\000\\000\\005\\001\\000\\000\\000\\003"; sleep 1; } | runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out\n',
+		'\t[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]] ||\n',
+	];
+	for (const line of check) assert.ok(imageScript.includes(line), line);
+	// The image's own check, run here against this computer's sftp-server where it has one (without the account
+	// switch): an SFTP version 3 answer passes it, and a program that answers anything else fails it.
+	const run = (program) =>
+		spawnSync(
+			"bash",
+			[
+				"-euo",
+				"pipefail",
+				"-c",
+				`out=$(mktemp); ${check[0].trim().replace("runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out", `${program} >"$out"`)}
+				[[ $(head -c 9 "$out" | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]]; rc=$?; rm -f "$out"; exit $rc`,
+			],
+			{ encoding: "utf8" },
+		);
+	if (existsSync("/usr/lib/openssh/sftp-server")) assert.equal(run("/usr/lib/openssh/sftp-server").status, 0);
+	assert.notEqual(run("cat").status, 0);
+});
+
 test("every machine has compressed memory from its boot on and a guard at the edge of its memory", () => {
 	// deploy/machine/README.md, "Memory" (12 Nov 2026): without them a 4 GiB desktop froze past 7 tabs and nothing was
 	// ended in time; with compressed memory it carried 24.

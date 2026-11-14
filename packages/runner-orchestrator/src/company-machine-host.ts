@@ -54,7 +54,7 @@ import type {
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
-import { LINE_PIPE_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { LINE_PIPE_BYTES, LinePipe, sftpBytes, sftpLines } from "./machine-exec-server.ts";
 import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -74,6 +74,13 @@ const WINDOWS_MS = 30000;
 /** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
  * often a release that did not answer is tried before the channel ends, and what may wait for one. */
 const HOME_RELEASE_SPACING_MS = 200;
+/** The file channel's (slice C1): none. SFTP is a request and its answer, one after another for most of what Claude
+ * Code's file tools do (a Read is a stat, an open, a read and a close), and a release may come at most once per spacing,
+ * so 200 ms there made each of those round trips 200 ms (C1's proof: 200 small files read one after another took 105 s
+ * through the gate against 1.8 s without it). Every answer still leaves only after a release that began after it came:
+ * one release at a time, each as soon as the one before it ended, so the round trip costs one release, and answers that
+ * come while one is out leave together after the next. */
+const HOME_SFTP_RELEASE_SPACING_MS = 0;
 const HOME_RELEASE_TRIES = 3;
 const HOME_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
 /** A boot's final boundary: what an unanswered final held is not applied, and the stop goes on. */
@@ -99,6 +106,10 @@ const HOME_CODEX_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
 /** How long the hash of the machine's Codex (319 MB) may take, once per boot. */
 const HOME_CODEX_HASH_MS = 60000;
+/** The file channel (slice C1): whether the machine has sftp-server, as root on the boot SQL named (`$0`; else exit 97);
+ * exit 98 where the image has none (an earlier image's disk), 0 where it has it. */
+const HOME_SFTP_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -x "$1" ] || exit 98';
 
 /**
  * The agent's home (lanes/agent-box-20261113): one channel's `codex exec-server --listen stdio`, started as root on the
@@ -110,9 +121,24 @@ const HOME_CODEX_HASH_MS = 60000;
  * (KillMode=control-group), a process the agent detached included. `--pipe` hands the exec's stdin and stdout to the
  * service itself; the environment is the service's, never expanded by systemd. Proven on a real machine of the live
  * image (home-lxd, 14 Nov 2026).
+ *
+ * A channel of kind `sftp` (Claude Code on the home, slice C1) runs OpenSSH's `sftp-server` in the same shape, its unit
+ * named `…-sftp-<channel>`: P4's file channel (lanes/agent-box-20261113/p4-claude-home), so what Claude Code's file
+ * tools write is the agent's, in the company folder through the machine's own `/company` mount, as the exec-server's.
+ * No shell is around either program: systemd starts it with the environment below and the channel's pipe as stdio.
  */
-export function companyMachineHomeCommand(bootId: string, sessionId: string, channel: string): string[] {
-	if (!UUID.test(bootId) || !UUID.test(sessionId) || !/^[0-9a-f]{8,32}$/.test(channel))
+export function companyMachineHomeCommand(
+	bootId: string,
+	sessionId: string,
+	channel: string,
+	kind: "exec" | "sftp" = "exec",
+): string[] {
+	if (
+		!UUID.test(bootId) ||
+		!UUID.test(sessionId) ||
+		!/^[0-9a-f]{8,32}$/.test(channel) ||
+		(kind !== "exec" && kind !== "sftp")
+	)
 		throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 	const environment = {
 		HOME: CLOUD_MACHINE_HOME.home,
@@ -136,7 +162,7 @@ export function companyMachineHomeCommand(bootId: string, sessionId: string, cha
 		"--collect",
 		"--service-type=exec",
 		"--expand-environment=no",
-		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${channel}`,
+		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${kind === "sftp" ? "sftp-" : ""}${channel}`,
 		`--slice=${PATHS.slice}`,
 		`--uid=${CLOUD_MACHINE_HOME.uid}`,
 		`--gid=${CLOUD_MACHINE_HOME.gid}`,
@@ -144,10 +170,9 @@ export function companyMachineHomeCommand(bootId: string, sessionId: string, cha
 		"--property=KillMode=control-group",
 		"--property=TimeoutStopSec=10",
 		...Object.entries(environment).map(([key, value]) => `--setenv=${key}=${value}`),
-		CLOUD_MACHINE_HOME.codex,
-		"exec-server",
-		"--listen",
-		"stdio",
+		...(kind === "sftp"
+			? [CLOUD_MACHINE_HOME.sftpServer]
+			: [CLOUD_MACHINE_HOME.codex, "exec-server", "--listen", "stdio"]),
 	];
 }
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
@@ -1103,6 +1128,8 @@ interface BootFolder {
 	/** The windows this process opened for the boot's home sessions (slice 3, 20260930754000), until their channel
 	 * ends: opened again each pass as the commands' are (#reopen). */
 	homes: Map<string, FolderCommandWindow>;
+	/** How many channels each of those sessions has open (slice C1): its window closes with the last one. */
+	homeChannels: Map<string, number>;
 	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
@@ -1452,6 +1479,9 @@ export class LxdCompanyMachineHost {
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
 	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
 	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
+	/** The boot of each placement whose machine was found to have sftp-server (#homeSftp); a missing one is asked again,
+	 * since the agent, root on its home, may install it. */
+	readonly #homeSftps = new Map<string, string>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -1849,6 +1879,7 @@ export class LxdCompanyMachineHost {
 				held: false,
 				windows: new Map(),
 				homes: new Map(),
+				homeChannels: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
 				stillNotSaved: new Map(),
@@ -1881,6 +1912,7 @@ export class LxdCompanyMachineHost {
 					held: false,
 					windows: new Map(),
 					homes: new Map(),
+					homeChannels: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
 					stillNotSaved: new Map(),
@@ -3931,12 +3963,28 @@ export class LxdCompanyMachineHost {
 	 * On a machine with a folder (slice 3, 20260930754000) the session first gets its own folder window, so those
 	 * changes are credited to its run, and what the machine sends back leaves only once the folder released the
 	 * machine's reads and the run took them in (#homeFolder).
+	 *
+	 * Kind `sftp` (Claude Code on the home, slice C1): the same session, ask, boot check, unit, window and release, but
+	 * the program is OpenSSH's `sftp-server` (refused HOME_SFTP_MISSING on a machine whose image has none, #homeSftp) and
+	 * its byte stream travels as lines of base64 (sftpLines, sftpBytes): a line that is not base64 ends the channel. Every
+	 * channel of one session shares the session's one window, which closes with the last of them.
 	 */
 	async execServer(
-		input: { readonly placementId: string; readonly sessionId: string; readonly bootId: string },
+		input: {
+			readonly placementId: string;
+			readonly sessionId: string;
+			readonly bootId: string;
+			readonly kind?: "exec" | "sftp";
+		},
 		signal: AbortSignal,
 	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
-		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId) || !UUID.test(input.bootId))
+		const kind = input.kind ?? "exec";
+		if (
+			!UUID.test(input.placementId) ||
+			!UUID.test(input.sessionId) ||
+			!UUID.test(input.bootId) ||
+			(kind !== "exec" && kind !== "sftp")
+		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
@@ -3948,7 +3996,12 @@ export class LxdCompanyMachineHost {
 		);
 		if (answer.state === "refused") throw new Error(answer.reason);
 		if (answer.session.bootId !== input.bootId) throw new Error("HOME_SESSION_ENDED");
-		if ((await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256)
+		if (kind === "sftp") {
+			if (!(await this.#homeSftp(input.placementId, input.bootId, exec, signal)))
+				throw new Error("HOME_SFTP_MISSING");
+		} else if (
+			(await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256
+		)
 			throw new Error("HOME_CODEX_NOT_PINNED");
 		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
 		const toMachine = new LinePipe();
@@ -3962,13 +4015,14 @@ export class LxdCompanyMachineHost {
 				run.abort();
 				fromMachine.end();
 			},
+			kind === "sftp" ? HOME_SFTP_RELEASE_SPACING_MS : HOME_RELEASE_SPACING_MS,
 		);
 		const pipe = exec(
 			this.#policy.project,
 			lxdCompanyMachineName(input.placementId),
 			{
-				// Root only to hand the exec-server to systemd; the unit runs it as the agent's account.
-				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex")),
+				// Root only to hand the program to systemd; the unit runs it as the agent's account.
+				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex"), kind),
 				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
 				cwd: "/",
 				stdin: toMachine.read(),
@@ -3990,13 +4044,24 @@ export class LxdCompanyMachineHost {
 				toMachine.end();
 				await home?.close();
 			});
+		const ended = (): void => {
+			toMachine.end();
+			gate?.close();
+			run.abort();
+		};
 		return {
-			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
-			lines: fromMachine.lines(),
+			write:
+				kind === "sftp"
+					? (line) => {
+							// Not the stream: nothing of it reaches sftp-server, and the channel ends.
+							const bytes = sftpBytes(line);
+							if (bytes) toMachine.push(bytes);
+							else ended();
+						}
+					: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
+			lines: kind === "sftp" ? sftpLines(fromMachine.read()) : fromMachine.lines(),
 			close: async () => {
-				toMachine.end();
-				gate?.close();
-				run.abort();
+				ended();
 				await pipe;
 			},
 		};
@@ -4039,6 +4104,34 @@ export class LxdCompanyMachineHost {
 			throw error;
 		}
 	}
+	/** Whether the machine has sftp-server on this boot (the file channel, slice C1), asked as root on the boot SQL named.
+	 * Kept once found for the boot; a machine without it is asked again at its next channel. A boot that is not the
+	 * machine's is HOME_SESSION_ENDED. */
+	async #homeSftp(
+		placementId: string,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (this.#homeSftps.get(placementId) === bootId) return true;
+		const result = await exec(
+			this.#policy.project,
+			lxdCompanyMachineName(placementId),
+			{
+				command: ["/bin/sh", "-c", HOME_SFTP_ON_BOOT, bootId, CLOUD_MACHINE_HOME.sftpServer],
+				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+				cwd: "/",
+				maxStdoutBytes: 1024,
+				stderrTailBytes: 512,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+		);
+		if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+		if (result.exitCode === 98) return false;
+		if (result.exitCode !== 0) throw new Error("HOME_SFTP_UNREADABLE");
+		this.#homeSftps.set(placementId, bootId);
+		return true;
+	}
 	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
 	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
 	 * while they read the whole folder) and named the ids its window carries (execServer). Once the boot's folder
@@ -4052,12 +4145,24 @@ export class LxdCompanyMachineHost {
 		session: HomeFolderSession,
 		signal: AbortSignal,
 	): Promise<{
-		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
+		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void, spacingMs: number): HomeOutputGate;
 		close(): Promise<void>;
 	}> {
 		const folder = this.#options.folder as FolderControl;
 		const boot = await this.#settled(session, signal);
 		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
+		// One window per session, however many channels it has open (slice C1: Claude Code's shell and files are two
+		// channels of one session; a reconnect may overlap the channel it replaces): opened by each (said again, it
+		// changes nothing), closed only with the last, so a change made over one channel is credited while another ends.
+		let counted = false;
+		const leave = (): boolean => {
+			if (!counted) return false;
+			counted = false;
+			const left = (boot.homeChannels.get(session.sessionId) ?? 1) - 1;
+			if (left > 0) boot.homeChannels.set(session.sessionId, left);
+			else boot.homeChannels.delete(session.sessionId);
+			return left === 0;
+		};
 		if (boot.state === "open") {
 			const window: FolderCommandWindow = {
 				commandId: session.sessionId,
@@ -4065,15 +4170,21 @@ export class LxdCompanyMachineHost {
 				staffAgentId: session.staffAgentId,
 				requestedByUserId: session.requestedByUserId,
 			};
+			boot.homeChannels.set(session.sessionId, (boot.homeChannels.get(session.sessionId) ?? 0) + 1);
+			counted = true;
 			try {
 				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
 			} catch (error) {
 				// The service may have taken the open although it did not answer in time: no channel starts, so the
-				// window is closed again, at best, as a window whose channel ended (review r11 F1).
-				const answered = await folder
-					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
-					.catch(() => undefined);
-				noted(boot, answered);
+				// window is closed again, at best, as a window whose channel ended (review r11 F1), unless another channel
+				// of the session still has it open.
+				if (leave()) {
+					boot.homes.delete(session.sessionId);
+					const answered = await folder
+						.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+						.catch(() => undefined);
+					noted(boot, answered);
+				}
 				throw error;
 			}
 			boot.homes.set(session.sessionId, window);
@@ -4081,7 +4192,7 @@ export class LxdCompanyMachineHost {
 		let closing: Promise<void> | undefined;
 		const close = (): Promise<void> => {
 			closing ??= (async () => {
-				if (!boot.homes.delete(session.sessionId)) return;
+				if (!leave() || !boot.homes.delete(session.sessionId)) return;
 				const answered = await folder
 					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
 					.catch(() => undefined);
@@ -4105,12 +4216,12 @@ export class LxdCompanyMachineHost {
 			throw new Error("HOME_FOLDER_HELD");
 		}
 		return {
-			gate: (pass, fail) =>
+			gate: (pass, fail, spacingMs) =>
 				new HomeOutputGate({
 					release,
 					pass,
 					fail,
-					spacingMs: HOME_RELEASE_SPACING_MS,
+					spacingMs,
 					limitBytes: HOME_OUTPUT_WAIT_BYTES,
 				}),
 			close,
