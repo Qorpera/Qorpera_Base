@@ -79,6 +79,13 @@ const DELIVERY_MS = 30000;
 /** A start on a machine with a folder runs in its guest only on the boot it was let in on (`$0`): the guest's shell
  * compares the kernel's boot id at the exec, then runs the helper (`$@`). The helper's own start takes no boot. */
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
+/** The agent's home (lanes/agent-box-20261113): the same boot check, then the exec-server gives up the LXD agent's
+ * shield from the memory guard. Everything LXD starts on the machine inherits the agent's OOMScoreAdjust=-900
+ * (deploy/machine/lxd-agent-memory.conf), which is right for the executor's helpers and wrong for the agent's own shell:
+ * a job the agent starts there is its work and must be what the guard ends first, as a machine_run command is (score 0).
+ * Raising one's own score needs no privilege. Proven on a real machine of the live image (home-lxd, 14 Nov 2026). */
+export const COMPANY_MACHINE_HOME_ON_BOOT =
+	'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && echo 0 > /proc/self/oom_score_adj && exec "$@"';
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
@@ -3549,7 +3556,9 @@ export class LxdCompanyMachineHost {
 	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
 	 * with its lines carried both ways for as long as the run's channel lasts. The ingress has proven the run's holder
 	 * and SQL has authorized this session on this boot; the guest's own shell checks that boot again at the exec
-	 * (ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start never does.
+	 * (COMPANY_MACHINE_HOME_ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start
+	 * never does; there it also leaves the LXD agent's shield from the memory guard, which the agent's own work must not
+	 * have.
 	 *
 	 * It starts no unit, writes no inbox file and leaves no command row. What the model does through it is reviewed by
 	 * the run's own host before a line gets here (slice 4) and kept as the run's steps (slice 2); the changes it makes
@@ -3594,7 +3603,7 @@ export class LxdCompanyMachineHost {
 				command: [
 					"/bin/sh",
 					"-c",
-					ON_BOOT,
+					COMPANY_MACHINE_HOME_ON_BOOT,
 					input.bootId,
 					CLOUD_MACHINE_HOME.codex,
 					"exec-server",

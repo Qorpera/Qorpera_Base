@@ -19,6 +19,7 @@ import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachine
 import {
 	COMPANY_MACHINE_CLIPBOARD_CLEAR,
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
+	COMPANY_MACHINE_HOME_ON_BOOT,
 	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
 	COMPANY_MACHINE_MEMBER_POINTER,
@@ -6631,6 +6632,48 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		]);
 		await f.host.pass(f.signal);
 		expect(opens()).toBe(2);
+	});
+
+	it("starts the exec-server as the agent's account, on the boot SQL named, without the LXD agent's shield from the memory guard", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		expect(exec.request?.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_HOME_ON_BOOT,
+			f.boot,
+			"/opt/qorpera-machine/codex",
+			"exec-server",
+			"--listen",
+			"stdio",
+		]);
+		expect([exec.request?.user, exec.request?.group, exec.request?.cwd]).toEqual([2000, 2000, "/company"]);
+		expect(exec.request?.environment.CODEX_HOME).toBe("/var/lib/qorpera-agent/.codex");
+		await channel.close();
+		// The guest's own shell, for real (home-lxd, 14 Nov 2026: LXD's processes inherit OOMScoreAdjust=-900 from the
+		// LXD agent's unit). From a raised score, which needs no privilege to lower again to 0, as -900 needs none to
+		// raise: on this boot the program runs with 0; on another nothing runs.
+		const boot = existsSync("/proc/sys/kernel/random/boot_id")
+			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+			: undefined;
+		if (!boot) return;
+		const run = (bootId: string) =>
+			spawnSync(
+				"/bin/sh",
+				[
+					"-c",
+					'echo 500 > /proc/self/oom_score_adj && exec /bin/sh -c "$@"',
+					"raised",
+					COMPANY_MACHINE_HOME_ON_BOOT,
+					bootId,
+					"/bin/cat",
+					"/proc/self/oom_score_adj",
+				],
+				{ encoding: "utf8" },
+			);
+		expect(run(boot)).toMatchObject({ status: 0, stdout: "0\n" });
+		expect(run("00000000-0000-4000-8000-000000000000")).toMatchObject({ status: 1, stdout: "" });
 	});
 
 	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {

@@ -473,6 +473,14 @@ async function driver() {
 		const who = await shell(a.rpc, "pwd; id -un; hostname");
 		check("1a", who.exitCode === 0 && who.output === `/company\nqorpera-agent\n${machine}\n`,
 			`pwd; id -un; hostname -> exit ${who.exitCode}, ${JSON.stringify(who.output)} in ${who.ms} ms`);
+		// 8. Where the agent's work runs: its memory-guard score and its cgroup, against a plain LXD exec as the same
+		// account and a machine_run-like unit in the machines' slice.
+		const placed = await shell(a.rpc, "cat /proc/self/oom_score_adj /proc/self/cgroup");
+		const plainExec = local ? "" : String((await run("lxc", ["--project", project, "exec", machine, "--user", "2000", "--group", "2000", "--",
+			"/bin/cat", "/proc/self/oom_score_adj", "/proc/self/cgroup"]).catch((error) => error)).stdout ?? "");
+		const unitRun = await inMachine("systemd-run --quiet --wait --pipe -p Slice=qorpera-machine.slice /bin/cat /proc/self/oom_score_adj /proc/self/cgroup");
+		say(`NOTE 8 a plain LXD exec as qorpera-agent: ${JSON.stringify(plainExec)}; a unit in the machines' slice (as machine_run's): ${JSON.stringify(unitRun)}`);
+		check("8", placed.output.split("\n")[0] === "0", `the home's shell: oom_score_adj and cgroup ${JSON.stringify(placed.output)}`);
 		const ticks = await shell(a.rpc, "for i in 1 2 3 4 5; do echo tick $i; sleep 1; done", { timeoutMs: 20000 });
 		const chunkTimes = ticks.chunks.map((chunk) => Math.round(chunk.at - ticks.asked));
 		const beforeExit = ticks.chunks.filter((chunk) => chunk.at < (a.rpc.process(ticks.processId).exitedAt ?? Infinity)).length;
