@@ -638,10 +638,11 @@ begin
 		and (pg_temp.mc_machine('filler')).id is not null,'Once it is deleted, the waiting machine gets the disk; the stopped one lives on without it');
 end $$;
 
--- 15. A new image: a placement made under a machine policy its node no longer uses is never woken;
---     the machine starts fresh from the current image, on the same node too.
+-- 15. A new image (20260930760000): a placement made under an earlier machine policy of its node, in the same place
+--     (project, pool, network, provider), wakes on its own disk, from the image it was made with, through its own
+--     provider row; it is not moved (test 1257 covers the place keys, which still move it).
 do $$
-declare v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements;
+declare v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements; v_freed timestamptz;
 	v_policy jsonb := jsonb_build_object('providerId','machine-fixture-b','providerPolicySha256',repeat('9',64),'project','machines',
 		'imageFingerprint',repeat('8',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0');
 begin
@@ -649,6 +650,7 @@ begin
 	perform pg_temp.mc_custody('big','stop');
 	perform pg_temp.mc_suspend('big');
 	v_old := pg_temp.mc_placement('big');
+	v_freed := (pg_temp.mc_machine('big')).disk_freed_at;
 	perform public.qorpera_enroll_runtime_node_provider('62800000-0000-4000-8000-000000000420',repeat('d',64),'machine','machine-fixture-b',
 		repeat('9',64),8000,34359738368);
 	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),true,v_policy,322122547200);
@@ -656,10 +658,26 @@ begin
 	perform pg_temp.mc_start('m-wake-big-2','{"machine":"big"}');
 	v_new := pg_temp.mc_placement('big');
 	select * into strict v_old from public.qorpera_company_machine_placements where id = v_old.id;
-	perform pg_temp.base_assert(v_new.id <> v_old.id and v_new.owner = 'mx-b' and v_new.binding @> v_policy
-		and v_old.retired_at is not null and v_old.binding ->> 'imageFingerprint' = repeat('a',64)
+	perform pg_temp.base_assert(v_new.id = v_old.id and v_new.owner = 'mx-b' and not (v_new.binding @> v_policy)
+		and v_old.retired_at is null and v_new.binding ->> 'imageFingerprint' = repeat('a',64)
+		and (pg_temp.mc_machine('big')).disk_freed_at is not distinct from v_freed
 		and public.qorpera_company_machine_state(pg_temp.mc_machine('big')) = 'starting',
-		'Woken fresh from the new image: '||v_new.binding::text);
+		'Woken on its own disk, from its own image: '||v_new.binding::text);
+	-- Asleep again, its node's executor in another project: that placement is never woken; the machine starts fresh
+	-- under the current policy, on the same node too.
+	perform public.qorpera_native_machine_manage(pg_temp.mc_binding(),'{"action":"stop","machine":"big"}');
+	perform pg_temp.mc_custody('big','stop');
+	perform pg_temp.mc_suspend('big');
+	v_policy := v_policy || '{"project":"machines-b"}';
+	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),true,v_policy,322122547200);
+	perform pg_temp.mc_observe('62800000-0000-4000-8000-000000000420',repeat('d',64),16000,68719476736);
+	perform pg_temp.mc_start('m-wake-big-3','{"machine":"big"}');
+	v_new := pg_temp.mc_placement('big');
+	select * into strict v_old from public.qorpera_company_machine_placements where id = v_old.id;
+	perform pg_temp.base_assert(v_new.id <> v_old.id and v_new.owner = 'mx-b' and v_new.binding @> v_policy
+		and v_old.retired_at is not null and (pg_temp.mc_machine('big')).disk_freed_at is not null
+		and public.qorpera_company_machine_state(pg_temp.mc_machine('big')) = 'starting',
+		'Another project: woken fresh, and told: '||v_new.binding::text);
 end $$;
 
 -- 16. The observation ledger names the new tools; the binding text is the executor's exactly
