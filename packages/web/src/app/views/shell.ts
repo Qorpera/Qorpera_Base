@@ -366,9 +366,11 @@ export function renderTopbar(
  * the list keeps its scroll position, and a row is rebuilt only when what it shows
  * has changed. */
 interface RailParts {
-	/** The company's name at the start of the top row; it opens the menu of the member's companies (Jonas, 5 Nov 2026). */
-	readonly company: HTMLButtonElement;
-	readonly companyName: HTMLElement;
+	/** The company's name and its arrow at the start of the top row (Jonas, 5 Nov 2026). The name opens the company's
+	 * page, its reading of itself (`#/c/{id}/now`); the arrow opens the menu of the member's companies (14 Nov 2026). */
+	readonly company: HTMLElement;
+	readonly companyName: HTMLAnchorElement;
+	readonly companyMenu: HTMLButtonElement;
 	/** The four-windows button: it opens the company's interfaces as icons under the top row, and stays open until
 	 * pressed again (Jonas, 5 Nov 2026; it replaced the Agents | Interfaces tabs). */
 	readonly apps: HTMLButtonElement;
@@ -630,13 +632,13 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
-		const companyName = h("span", { class: "rail-company-name" });
+		const companyName = h("a", { class: "rail-company-name", href: `#/c/${company.profile.profileId}/now` });
 		const companyButton = h(
 			"button",
-			{ type: "button", class: "rail-company", "aria-haspopup": "menu", "aria-expanded": "false" },
-			companyName,
-			h("span", { class: "rail-company-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+			{ type: "button", class: "rail-company-chevron", "aria-haspopup": "menu", "aria-expanded": "false" },
+			icon("chevron-down"),
 		);
+		const companyPlace = h("div", { class: "rail-company" }, companyName, companyButton);
 		const apps = h(
 			"button",
 			{
@@ -655,8 +657,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			h("div", null, appsGrid),
 		);
 		const created: RailParts = {
-			company: companyButton,
+			company: companyPlace,
 			companyName,
+			companyMenu: companyButton,
 			apps,
 			appsDrawer,
 			appsGrid,
@@ -673,7 +676,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appKeysShown: undefined,
 			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
-			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
+			toolbar: h("div", { class: "rail-toolbar" }, close, companyPlace, apps, search, add),
 			close,
 			add,
 			search,
@@ -760,9 +763,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
-		// The name opens the member's companies, this one checked, and New company under them. A press on the name
-		// while its menu is open only closes it: the menu shuts on the press, before the click, so the press is noted
-		// first (this listener is older than the menu's) and its click skipped.
+		// The arrow beside the name opens the member's companies, this one checked, and New company under them. A press
+		// on the arrow while its menu is open only closes it: the menu shuts on the press, before the click, so the press
+		// is noted first (this listener is older than the menu's) and its click skipped.
 		let pressClosesMenu = false;
 		document.addEventListener(
 			"pointerdown",
@@ -782,7 +785,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 					return;
 				}
 				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
-				const box = companyButton.getBoundingClientRect();
+				const box = companyPlace.getBoundingClientRect();
 				const profiles = created.context?.profiles ?? [company.profile];
 				companyButton.setAttribute("aria-expanded", "true");
 				openContextMenu({
@@ -910,7 +913,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	const locale = presentationLocale();
 	if (parts.locale !== locale) {
 		parts.locale = locale;
-		parts.company.title = t("Your companies");
+		parts.companyMenu.title = t("Your companies");
+		parts.companyMenu.setAttribute("aria-label", t("Your companies"));
 		parts.apps.setAttribute("aria-label", t("Apps"));
 		parts.apps.title = t("Apps");
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
@@ -934,7 +938,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	return parts;
 }
 
-function statusDisc(look: AgentLook, className: string): HTMLElement | null {
+/** An agent's status dot beside its figure, or the red "!" of a failed run; the company's page draws it too. */
+export function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	if (!look.disc) return null;
 	// A failed run: the figure gives way to a red "!" until the failure is dealt with (styles/motion.css).
 	if (look.disc === "failed") return h("span", { class: "alert-mark", "aria-hidden": "true" });
@@ -1248,6 +1253,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.inert = !appsOpen;
 	if (parts.companyName.textContent !== company.profile.profileName)
 		parts.companyName.textContent = company.profile.profileName;
+	// The company's page stands lit in the name while it is open; no agent's row is then.
+	const companyPage = section === "now";
+	parts.company.classList.toggle("is-current", companyPage);
+	if (companyPage) parts.companyName.setAttribute("aria-current", "page");
+	else parts.companyName.removeAttribute("aria-current");
 	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
 	parts.toolbar.classList.toggle("is-searching", parts.searchOpen);

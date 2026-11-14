@@ -9,7 +9,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). "concepts" is the
  * company's concepts of its product, full screen with a side panel to pick one, `#/c/{id}/concepts` (the most
  * recently changed one) or `#/c/{id}/concepts/{name}` (Jonas, 8 November 2026). "whats-new" is What's new, the
- * changes to the company's sites made from its code, ready to go live, `#/c/{id}/whats-new` (own code storage step 4). */
+ * changes to the company's sites made from its code, ready to go live, `#/c/{id}/whats-new` (own code storage step 4).
+ * "now" is the company's reading of itself as a picture, `#/c/{id}/now`; the company's name in the rail opens it (Jonas,
+ * 14 November 2026: "It should feel like the company is conscious almost"). */
 export type CompanySection =
 	| "home"
 	| "chat"
@@ -23,6 +25,7 @@ export type CompanySection =
 	| "concepts"
 	| "sites"
 	| "whats-new"
+	| "now"
 	| "member";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -65,7 +68,7 @@ export function parseRoute(hash: string): Route {
 			return { name: "company", profileId, section, id };
 		}
 		// The pages named by their section alone, as one pattern: shorter in theme.js than a comparison each.
-		if (/^(file|team|new|meet|sites|whats-new)$/.test(section))
+		if (/^(file|team|new|now|meet|sites|whats-new)$/.test(section))
 			return { name: "company", profileId, section: section as CompanySection };
 		return { name: "company", profileId, section: "home" };
 	}

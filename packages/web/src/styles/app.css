@@ -9,6 +9,7 @@
 @import "./interfaces.css";
 @import "./bank.css";
 @import "./members.css";
+@import "./company-now.css";
 @import "./mailbox.css";
 @import "./sites.css";
 @import "./agent-routines.css";
@@ -310,18 +311,30 @@ label > input, label > select { font-weight: 400; }
 	position: relative; z-index: 1;
 }
 .rail-add { grid-area: 1 / 5; width: var(--rail-control); height: var(--rail-control); margin-left: 2px; border-radius: 10px; color: #676664; }
+/* The name and its arrow stand where the one button stood, in its look: the name opens the company's page, the arrow
+ * the member's companies (14 Nov 2026). While the page is open the two stand on a soft tint, the rail's selected look
+ * for its top row. */
 .rail-company {
-	grid-area: 1 / 2; justify-self: start; display: flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0;
-	height: 32px; margin-left: -6px; padding: 0 7px 0 6px; border: 0; border-radius: 9px; background: transparent;
-	color: var(--text); font: inherit; cursor: pointer;
+	grid-area: 1 / 2; justify-self: start; display: flex; align-items: center; max-width: 100%; min-width: 0;
+	height: 32px; margin-left: -6px; border-radius: 9px; background: transparent;
 	transition: background-color var(--motion-fast) ease, opacity var(--motion-fast) ease 80ms;
 }
-.rail-company:hover, .rail-company[aria-expanded="true"] { background: var(--rail-hover); }
-.rail-company:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
-.rail-company-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-.rail-company-chevron { flex: none; display: grid; color: var(--rail-small); }
+.rail-company.is-current { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.rail-company-name {
+	min-width: 0; height: 32px; padding: 0 2px 0 6px; border-radius: 9px 0 0 9px; color: var(--text); cursor: pointer;
+	overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 32px;
+	transition: background-color var(--motion-fast) ease;
+}
+.rail-company-name:hover { text-decoration: none; }
+.rail-company-chevron {
+	flex: none; display: grid; place-items: center; width: 22px; height: 32px; padding: 0 5px 0 1px; border: 0; border-radius: 0 9px 9px 0;
+	background: transparent; color: var(--rail-small); font: inherit; cursor: pointer;
+	transition: background-color var(--motion-fast) ease;
+}
+.rail-company:not(.is-current) :is(.rail-company-name, .rail-company-chevron):hover, .rail-company-chevron[aria-expanded="true"] { background: var(--rail-hover); }
+.rail-company :is(.rail-company-name, .rail-company-chevron):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-company-chevron .icon { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-spring); }
-.rail-company[aria-expanded="true"] .rail-company-chevron .icon { transform: rotate(180deg); }
+.rail-company-chevron[aria-expanded="true"] .icon { transform: rotate(180deg); }
 .rail-toolbar.is-searching :is(.rail-company, .rail-apps) { opacity: 0; pointer-events: none; transition-delay: 0s; }
 .rail-add svg { width: 18px; height: 18px; }
 .rail-mobile-close { display: none; grid-area: 1 / 1; margin-right: 6px; }
