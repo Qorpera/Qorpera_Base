@@ -126,7 +126,10 @@ export class HomeOutputGate {
 	#wait(): number {
 		const now = this.#now();
 		const spacing = this.#options.spacingMs;
-		this.#tokens = spacing > 0 ? Math.min(this.#burst, this.#tokens + (now - this.#counted) / spacing) : this.#burst;
+		// Only time that moved forward counts: a clock set back gives nothing and takes nothing, so the longest wait
+		// stays one spacing whatever the clock does (review r2 of #1821).
+		const elapsed = Math.max(0, now - this.#counted);
+		this.#tokens = spacing > 0 ? Math.min(this.#burst, this.#tokens + elapsed / spacing) : this.#burst;
 		this.#counted = now;
 		return this.#tokens >= 1 ? 0 : Math.ceil((1 - this.#tokens) * spacing);
 	}
