@@ -15,7 +15,6 @@
 //   are overwritten and the folder removed, also when the run is stopped or fails.
 // - Members see no step list: each tool call becomes one step of the run's own work log, never shown as a log.
 
-import { createHash } from "node:crypto";
 import { lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -26,6 +25,7 @@ import {
 } from "./cloud-claude-box.ts";
 import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
+import { sha256 } from "./cloud-company-folder-client.ts";
 import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
 import { claudeLoginFile } from "./cloud-model-login-sign-in.ts";
 import type { ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
@@ -316,7 +316,6 @@ export interface ClaudeWorkerLogins {
 	seal(base: ClaudeWorkerLoginBase, credentials: Uint8Array, signal: AbortSignal): Promise<ClaudeWorkerSealAnswer>;
 }
 
-const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
 /** Overwrites every regular file under `folder` (no link followed) with zeros of its own size, then removes the folder.
  * The run's login folder lives in the run host's own temporary root; whether that is memory or disk, what Claude Code
