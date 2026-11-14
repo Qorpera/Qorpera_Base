@@ -334,6 +334,8 @@ span.st-dot{cursor:default}
 		seen: new Map(),
 		// card id -> { label, main }: answered on this page, or elsewhere while it was open
 		answered: new Map(),
+		// ids of the questions answered on this page: a read that began before the answer may still list them
+		gone: new Set(),
 		// the card in front, by id, and the one being answered or leaving
 		at: null,
 		busy: null,
@@ -543,6 +545,7 @@ span.st-dot{cursor:default}
 		// answered: the card is stamped with the answer, then leaves, and the next comes forward
 		S.busy = null;
 		S.answered.set(card.id, { label: card.stamp || cut(option.label, MAX.stamp), main });
+		S.gone.add(card.q.id);
 		S.qs = S.qs.filter((q) => q.id !== card.q.id);
 		const el = S.root && S.root.querySelector(`.st-card[data-id="${esc(card.id)}"]`);
 		if (el) el.append(h("span", `st-stamp${main ? " main" : ""}`, null, card.stamp || cut(option.label, MAX.stamp)));
@@ -576,7 +579,7 @@ span.st-dot{cursor:default}
 		if (!bridge || typeof bridge.questions !== "function") return;
 		let qs;
 		try {
-			qs = list(await bridge.questions()).filter((q) => isObj(q) && q.id && Array.isArray(q.options));
+			qs = list(await bridge.questions()).filter((q) => isObj(q) && q.id && Array.isArray(q.options) && !S.gone.has(String(q.id)));
 		} catch {
 			// keep the questions the page shows, and ask again ten seconds later, until a read works
 			S.retry = setTimeout(ask, 10000);

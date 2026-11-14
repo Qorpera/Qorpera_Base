@@ -1382,6 +1382,31 @@ describe("the stack kit's engine", () => {
 		expect(document.querySelector(".st-done h2")?.textContent).toBe("Nothing waits on you");
 	});
 
+	it("keeps a question answered on the page gone when a read still lists it", async () => {
+		const { change, qorpera } = await open(
+			"stack",
+			JSON.stringify({
+				lang: "en",
+				title: "Wants your yes",
+				cards: [{ id: "parts", title: "Pay the parts bill?" }],
+			}),
+			(bridge) => {
+				bridge.questions = [PARTS];
+			},
+		);
+		buttons()[2]?.click();
+		await settle(1200);
+		expect(qorpera.answer).toHaveBeenCalledWith("q-parts", "yes");
+		// The read began before the answer: it still lists the question, which is drawn as no card of its own.
+		change();
+		await settle(10000);
+		expect(qorpera.questions.mock.calls.length).toBeGreaterThan(1);
+		expect(document.querySelector(".st-done h2")?.textContent).toBe("Nothing waits on you");
+		expect(document.querySelector(".st-done p")?.textContent).toBe("1 answered");
+		expect(buttons()).toHaveLength(0);
+		expect(qorpera.answer).toHaveBeenCalledTimes(1);
+	});
+
 	it("gives a new question of a done card's title a card of its own", async () => {
 		const { now, change, qorpera } = await open(
 			"stack",

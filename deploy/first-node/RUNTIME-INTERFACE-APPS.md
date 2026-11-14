@@ -397,6 +397,11 @@ call the web does not already answer.
   `question` names), a press is `qorpera.answer(id, value)`, an open question no card names is drawn as a plain card,
   and a card whose question closed elsewhere counts as answered. So `save_app` adds `questions` to a stack's reads and
   `answers` to its writes (never takes them away), as it adds `data` where the data names a database's question.
+  A card is matched by its whole title, also one longer than the card shows; a card already answered (its `answer`, or
+  pressed on the page) takes no open question, so the same title asked again is a card of its own, and a question
+  answered on the page stays gone even when a read that began before the answer still lists it. When `writes`
+  already holds 16 entries without `answers`, `save_app` adds only `questions`, and its look says one entry must give
+  way to `answers`.
 - **The agents' figures.** A field `figure` whose text is a figure's id (`crown`, `rocket`, …) puts that figure in the
   page (`kitFigures`): a small WebP of the web's artwork as a data: URL, under `#kit-media` as
   `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
