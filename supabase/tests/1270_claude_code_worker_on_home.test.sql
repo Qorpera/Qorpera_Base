@@ -108,6 +108,40 @@ begin
 	perform pg_temp.base_assert(pg_temp.h1_has_home(), '1: Alice''s own run keeps home-a');
 end $$;
 
+-- 1b. What the worker's run reads of itself: its member's name, and what its home changed (not its own report) ------------
+do $$
+declare v jsonb; v_run uuid := pg_temp.c4c_run('claude');
+begin
+	v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
+	perform pg_temp.base_assert(v = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1', 'member', pg_temp.c4_name(),
+		'outputs', '[]'::jsonb), '1b: the member''s name and no outputs yet: ' || v::text);
+	begin
+		set local session_replication_role = replica;
+		-- The home's commits under the run (no receipt), and a tool's commit under a receipt (its report).
+		insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id, receipt_id, units, created_at)
+		values (extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-home-1', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, jsonb_build_array(
+					jsonb_build_object('op', 'write', 'path', 'onboarding/a.pdf', 'outcome', 'saved'),
+					jsonb_build_object('op', 'delete', 'path', 'onboarding/old.pdf', 'outcome', 'saved'),
+					jsonb_build_object('op', 'write', 'path', 'onboarding/refused.md', 'outcome', 'refused')), clock_timestamp() - interval '1 minute'),
+			(extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-home-2', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, jsonb_build_array(
+					jsonb_build_object('op', 'write', 'path', 'onboarding/b.md', 'outcome', 'saved'),
+					jsonb_build_object('op', 'write', 'path', 'onboarding/a.pdf', 'outcome', 'saved')), clock_timestamp()),
+			(extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-report', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), jsonb_build_array(
+					jsonb_build_object('op', 'write', 'path', 'onboarding/pdf/results.md', 'outcome', 'saved')), clock_timestamp());
+		set local session_replication_role = origin;
+		v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
+		perform pg_temp.base_assert(v -> 'outputs' = '["onboarding/a.pdf", "onboarding/b.md"]'::jsonb,
+			'1b: what its home saved, newest first, without deletes, refusals or its report: ' || v::text);
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	perform pg_temp.base_error(format('select public.qorpera_claude_worker_run_facts(%L)', pg_temp.c4c_binding('codex_write')),
+		'42501');
+end $$;
+
 -- 2. Each rule alone ---------------------------------------------------------------------------------------------------
 do $$
 declare v_m public.qorpera_company_machines := pg_temp.h1_machine('home-a'); v_x public.qorpera_company_machines;
@@ -237,6 +271,9 @@ begin
 			if has_function_privilege(v_role, v_function, 'execute') then
 				raise exception '5: % may call %', v_role, v_function; end if;
 		end loop;
+		if has_function_privilege(v_role, 'public.qorpera_claude_worker_run_facts(jsonb)', 'execute')
+			<> (v_role = 'service_role') then
+			raise exception '5: only the runtime reads a worker run''s facts (%)', v_role; end if;
 	end loop;
 	foreach v_function in array array['public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)',
 		'public.qorpera_claude_worker_home(uuid,uuid,uuid,uuid)',
