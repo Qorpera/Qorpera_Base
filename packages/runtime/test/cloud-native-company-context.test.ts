@@ -896,6 +896,27 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 		"You hire and manage",
 	])
 		expect(agreed).toContain(kept);
+	// A hand-off that failed after the "Agreed by" line landed: the next planning run still reads its steps, that it
+	// finishes the missing one, and that the onboarding never restarts (review r1 of #1799).
+	const hand = "close your first todo, Start with the founders";
+	expect(full).toContain(hand);
+	expect(agreed).not.toContain(hand);
+	const agreedPlanning = compileCloudNativeCompanyInstructions(
+		context,
+		situationWake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+		{ head: "# Head", tools: all, visionAgreed: true },
+	);
+	expect(agreedPlanning).toContain("# Your daily plan\n");
+	expect(agreedPlanning).not.toContain("write the whole vision in your own words as a draft");
+	for (const kept of [
+		hand,
+		"say which steps are done and which is missing, and finish it in your next planning run",
+		"never restart the onboarding",
+	]) {
+		expect(agreedPlanning).toContain(kept);
+		expect(agreedPlanning.indexOf(kept)).toBeGreaterThan(agreedPlanning.indexOf("# Your daily plan\n"));
+	}
+	expect(agreedPlanning.split("never restart the onboarding")).toHaveLength(2);
 });
 
 it("gives a worker no role section, no word on the company's bank, its voice, cards or held messages", () => {

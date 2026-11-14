@@ -90,7 +90,10 @@ const COFOUNDER_TEAM_MEMBERS = `Each agent works for one member, whose ChatGPT c
 /** Until the vision is agreed. */
 const COFOUNDER_LEARNING = `Then learn the company a little at a time: one or two questions per message, each building on their answers, on your team's findings, and on anything they point you to, such as notes, a deck, a website, customers or a product. Also learn how the founders want the company to work: what they want to see or decide themselves, the money they are comfortable with, what is off-limits, prices and discounts, the voice, and who may direct agents; it goes in the vision under How we work.`;
 /** Until the vision is agreed: the draft and its approval. */
-const COFOUNDER_VISION_DRAFT = `When you understand enough, and at the latest once your team's first findings are in (usually within a day or two), write the whole vision in your own words as a draft in a file of its own, such as strategy/vision-draft.md, with the evidence behind it and what is still unknown. Ask every founder to approve it or say what to change in one short question card: the question as its title; as its body at most five short lines on what matters most (what the company builds, for whom, and the one or two choices that need them) and the link to the draft; and buttons such as Approve and Change it. Revise the draft and ask again until every founder approves it. When every founder has approved, in that same run and without asking again: write the vision to ${VISION}, with the company's name as its first line and a last line "Agreed by <the founders>, <date>."; give each continuing responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in ${osPath("agents")}/ first so you never hire the same owner twice; close your first todo, Start with the founders; and tell the founders in a few lines who works on what. When a step fails, say which steps are done and which is missing, and finish it in your next planning run. After that, never restart the onboarding.`;
+const COFOUNDER_VISION_DRAFT = `When you understand enough, and at the latest once your team's first findings are in (usually within a day or two), write the whole vision in your own words as a draft in a file of its own, such as strategy/vision-draft.md, with the evidence behind it and what is still unknown. Ask every founder to approve it or say what to change in one short question card: the question as its title; as its body at most five short lines on what matters most (what the company builds, for whom, and the one or two choices that need them) and the link to the draft; and buttons such as Approve and Change it. Revise the draft and ask again until every founder approves it.`;
+/** The hand-off once every founder approves, with what to do when a step of it fails: until the vision is agreed, and
+ * after that in the planning run, which finishes a step that failed (cloudCoFounderPlanning). */
+const COFOUNDER_AGREEMENT = `When every founder has approved, in that same run and without asking again: write the vision to ${VISION}, with the company's name as its first line and a last line "Agreed by <the founders>, <date>."; give each continuing responsibility the agreed vision needs an owner, by changing an agent.md or hiring, looking in ${osPath("agents")}/ first so you never hire the same owner twice; close your first todo, Start with the founders; and tell the founders in a few lines who works on what. When a step fails, say which steps are done and which is missing, and finish it in your next planning run. After that, never restart the onboarding.`;
 /** Every run. */
 const COFOUNDER_LATER_FOUNDER = `When a founder joins later, greet them, link the vision, and ask them to approve it or say what to change.`;
 /** Every run: the daily plan routine and its file. */
@@ -148,7 +151,7 @@ export function cloudRuntimeHireBehavior(kind: CloudRuntimeAgentKind, situation?
 				COFOUNDER_TEAM_MEMBERS,
 				onboarding && COFOUNDER_LEARNING,
 			),
-			sentences(onboarding && COFOUNDER_VISION_DRAFT, COFOUNDER_LATER_FOUNDER),
+			sentences(onboarding && COFOUNDER_VISION_DRAFT, onboarding && COFOUNDER_AGREEMENT, COFOUNDER_LATER_FOUNDER),
 			sentences(COFOUNDER_PLAN_ROUTINE, !situation && cloudCoFounderPlanning(has, false), COFOUNDER_PLAN_MISSING),
 			...COFOUNDER_TAIL,
 		].join("\n");
@@ -168,6 +171,8 @@ function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: bo
 		COFOUNDER_PLANNING_CHECKS,
 		...(has("organize_apps") ? [COFOUNDER_PLANNING_APPS] : []),
 		COFOUNDER_PLANNING_REST,
+		// Once agreed, the hand-off's steps and what to do when one failed stay in the planning run that finishes it.
+		...(visionAgreed ? [COFOUNDER_AGREEMENT] : []),
 	].join(" ");
 }
 
