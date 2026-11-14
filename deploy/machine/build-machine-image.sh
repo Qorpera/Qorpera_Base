@@ -192,6 +192,10 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# executor names them to LXD without reading anything of the guest.
 	groupadd --gid 2000 qorpera-agent
 	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
+	# The home of Codex in that account (CODEX_HOME, which the executor names): the exec-server makes its PATH aliases
+	# there at every start. Without the folder it only warns and goes on, and `apply_patch` typed in the shell, as models
+	# often do, is "command not found" (proven on a real machine of the live image, 14 Nov 2026).
+	install -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
@@ -302,6 +306,8 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	visudo -cf /etc/sudoers.d/qorpera-agent
 	[[ $(stat -c "%U:%G %a" /etc/sudoers.d/qorpera-agent) == "root:root 440" ]] ||
 		{ echo "the sudo rule of the agent account is not a root file of mode 0440" >&2; exit 1; }
+	[[ $(stat -c "%U:%G %a" /var/lib/qorpera-agent/.codex) == "qorpera-agent:qorpera-agent 700" ]] ||
+		{ echo "the home of Codex in the agent account is not its own: Codex makes no PATH aliases, apply_patch in its shell fails" >&2; exit 1; }
 	[[ $(runuser -u qorpera-agent -- sudo -n id -u) == 0 ]] ||
 		{ echo "the agent account cannot reach root: the shell of Codex would be weaker than machine_run" >&2; exit 1; }
 	runuser -u qorpera-agent -- sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-agent-root-check ||

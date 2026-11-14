@@ -124,6 +124,8 @@ Where the two identities meet, the file's owner decides:
 - A file Codex's shell wrote is `qorpera-agent`'s, and a later `machine_run` command (root) changes it with nothing special.
 - The smallest way out of the confusion, when it is worth doing (a later slice, not slice 1): run a machine's commands as the same account, so one machine has one writer. Until then the plain words are "use sudo for a file root made".
 
+Codex's own home in that account, `/var/lib/qorpera-agent/.codex` (`CODEX_HOME`, which the executor names), is made by the image as the account's own (`0700`): the exec-server writes its PATH aliases there at every start, so `apply_patch` typed in the shell works as it does in Codex anywhere. Without it the exec-server only warns and the shell answers "command not found" (proven on a real machine of the live image, 14 Nov 2026, `lanes/agent-box-20261113/home-lxd/`).
+
 The desktop's account gets none of this: it stays unprivileged, so Chromium keeps its sandbox and the root helpers' hardening against that account holds. The security rule for a home is that **the agent may be root there**: nothing on the machine may be worth more than what that agent's run already may do. No sign-in is there, and the company folder's rights on the machine are the run's own, enforced in the folder service, never on the machine.
 
 ### A coding session's work

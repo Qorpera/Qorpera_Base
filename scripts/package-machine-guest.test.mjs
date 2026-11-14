@@ -644,6 +644,22 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 		assert.ok(imageScript.includes(line), line);
 });
 
+test("the agent's home: Codex's own home folder is the agent account's, where the executor points CODEX_HOME", () => {
+	// lanes/agent-box-20261113/home-lxd (14 Nov 2026): on a real machine without it the exec-server warned "could not
+	// create PATH aliases" and `apply_patch` typed in its shell was "command not found"; with it, the patch applied.
+	const host = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	assert.ok(host.includes("CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,"), "the executor's CODEX_HOME");
+	assert.match(read("packages/contracts/src/cloud-machine.ts"), /\thome: "\/var\/lib\/qorpera-agent",\n/);
+	const made = imageScript.indexOf("\tinstall -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex\n");
+	assert.ok(made > imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent "), "made after the account");
+	assert.ok(
+		imageScript.includes(
+			'\t[[ $(stat -c "%U:%G %a" /var/lib/qorpera-agent/.codex) == "qorpera-agent:qorpera-agent 700" ]] ||\n',
+		),
+		"the image's own check",
+	);
+});
+
 test("every machine has compressed memory from its boot on and a guard at the edge of its memory", () => {
 	// deploy/machine/README.md, "Memory" (12 Nov 2026): without them a 4 GiB desktop froze past 7 tabs and nothing was
 	// ended in time; with compressed memory it carried 24.
