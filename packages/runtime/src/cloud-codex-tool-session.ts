@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BigIntStats, Dirent, Stats } from "node:fs";
 import { createReadStream, existsSync, constants as fsConstants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, rmdir, writeFile } from "node:fs/promises";
@@ -1386,7 +1386,7 @@ class CodexBoundaryRpc {
 	async compact(
 		input: { model: string; effort: CloudRuntimeReasoningEffort; instructions: string; cwd: string },
 		signal: AbortSignal,
-	): Promise<MemoryCompactThread> {
+	): Promise<MemoryCompactThread & { readonly threadId: string }> {
 		signal.throwIfAborted();
 		if (this.#failure || this.#closed || !this.#boundary) throw this.#compactStop();
 		const started = this.#startSide("compact", signal, {
@@ -1415,6 +1415,7 @@ class CodexBoundaryRpc {
 		const thread: CompactThread = { threadId };
 		this.#compactions.set(threadId, thread);
 		return {
+			threadId,
 			send: (text, sendSignal) => this.#compactSend(thread, text, input.effort, sendSignal),
 			// What the thread's failed sends used: its usage grown since the last reply carried it.
 			unreported: () => {
@@ -3255,6 +3256,11 @@ async function pruneCodexHome(codexHome: string): Promise<void> {
 /** What a run's Codex session gives back. `usageSignal`: the provider failed the turn after the run's answer (which left
  * the run delivered) with a usage limit, rate limit or outage, which the caller records against the run's login as it
  * records a failed run's (the 2026-11-13 amendment). */
+/** A light ask's one question (deploy/first-node/RUNTIME-LIGHT-ASK.md §3): the instructions and the text in, the model's
+ * reply out. It throws what a compactor thread throws: a `MemoryCompactStop` for the payer's usage limit, a rate limit
+ * or an outage, any other error for a reply that did not come. */
+export type CloudCodexLightAsk = (instructions: string, text: string, signal: AbortSignal) => Promise<string>;
+
 export interface CloudCodexToolSessionResult {
 	providerSessionId: string;
 	toolCalls: number;
@@ -3315,6 +3321,11 @@ export async function runCloudCodexToolSession(options: {
 	 * submission). The text it answers is the input of one more turn in the same thread, a few sentences saying what
 	 * is missing; undefined ends the run as it stands. What that turn leaves undone is the caller's to judge. */
 	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
+	/** A light ask's run (RUNTIME-LIGHT-ASK.md §3): after beforeModelStart this runs in place of the agent's thread, which
+	 * never starts, and the run ends when it ends. It asks through fresh tool-less side threads on the compactor's model
+	 * and effort, on the run's payer. A run with it has no prompt, no opening and no instructions of its own. What it
+	 * throws fails the run. */
+	light?: (ask: CloudCodexLightAsk, signal: AbortSignal) => Promise<void>;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;
 	recordContextView?: (
@@ -3342,9 +3353,13 @@ export async function runCloudCodexToolSession(options: {
 	const sized = (input: CloudCodexOpening): boolean =>
 		Buffer.byteLength(input.prompt) <= MAX_PROMPT_BYTES &&
 		Buffer.byteLength(input.runtimeInstructions ?? "") <= MAX_RUNTIME_INSTRUCTIONS_BYTES;
-	const oneInput = options.opening
-		? [options.prompt, options.runtimeInstructions, options.composeContext].every((value) => value === undefined)
-		: options.prompt !== undefined && sized({ ...options, prompt: options.prompt });
+	const oneInput = options.light
+		? [options.prompt, options.runtimeInstructions, options.composeContext, options.opening].every(
+				(value) => value === undefined,
+			)
+		: options.opening
+			? [options.prompt, options.runtimeInstructions, options.composeContext].every((value) => value === undefined)
+			: options.prompt !== undefined && sized({ ...options, prompt: options.prompt });
 	if (
 		process.platform === "win32" ||
 		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
@@ -3432,6 +3447,37 @@ export async function runCloudCodexToolSession(options: {
 		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
+		if (options.light) {
+			// A light ask: each question is one fresh tool-less side thread, as a compactor's line is; the agent's thread
+			// never starts. The run's provider session is the last thread it asked in.
+			stage = "codex-turn-completion";
+			let asked: string | undefined;
+			await options.light(async (instructions, text, askSignal) => {
+				if (
+					!instructions.trim() ||
+					!text.trim() ||
+					Buffer.byteLength(instructions) > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
+					Buffer.byteLength(text) > MAX_PROMPT_BYTES
+				)
+					throw new Error("Invalid native boundary input");
+				const thread = await rpc.compact({ ...compaction, instructions }, askSignal);
+				asked = thread.threadId;
+				try {
+					return (await thread.send(text, askSignal)).text;
+				} finally {
+					thread.close?.();
+				}
+			}, signal);
+			signal.throwIfAborted();
+			rpc.finishObservations(true, signal);
+			return {
+				// A light run that asked nothing (an ask past its time) has no thread: its own name, by the process.
+				providerSessionId: asked ?? `light:${randomUUID()}`,
+				toolCalls: rpc.toolCalls,
+				codexVersion: CLOUD_CODEX_BOUNDARY_VERSION,
+				fencedRequests: rpc.fencedRequests,
+			};
+		}
 		const opening: CloudCodexOpening = options.opening
 			? await options.opening(signal)
 			: {
