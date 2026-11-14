@@ -25,6 +25,16 @@
 --   still reads the path (else DESKTOP_OPEN_NOT_FOUND) and no other member types privately now (else
 --   DESKTOP_MEMBER_IN_CONTROL), both decided under the machine's lock with everything the read decided before; and the
 --   answer then carries `open`, the path. A plain start's answer is exactly as before.
+-- * qorpera_member_machine_desktop_open_check(start, placement, boot), the host's own read RIGHT BEFORE the open touches
+--   the desktop (review r1 F1 of #1781: an open is a member's action on the desktop, and the start before it may take
+--   seconds). The host asks it holding the desktop under its one-actor rule, after the start: under the machine's lock,
+--   the start that opens something, served (by the machine's own executor), within the last minute and not checked
+--   before (single use: `open_checked_at`); its member still an owner, admin or contributor of a company not being
+--   deleted and still reading the path; the machine running on that placement and that boot; and, as a member's action
+--   decides it, no OTHER member typing privately now, and no other member's private hold begun since the open was
+--   begun (the lease generation the begin saw, `open_generation`, stands, or it moved under this member's own hold).
+--   Else DESKTOP_MEMBER_IN_CONTROL (or DESKTOP_OPEN_NOT_FOUND, MACHINE_NOT_RUNNING, MACHINE_BOOT_CHANGED), and nothing
+--   opens; a desktop the start started stays on.
 -- Every new or patched body names this migration (20260930758000), for the deploy guards.
 
 do $$ begin
@@ -43,6 +53,12 @@ set local lock_timeout = '3s';
 alter table public.qorpera_company_machine_desktop_starts add column open_path text
 	constraint qorpera_company_machine_desktop_starts_open_path check (open_path is null
 		or (octet_length(open_path) between 1 and 500 and public.qorpera_company_path_valid(open_path)));
+-- The lease generation the open's begin saw, and when the host's check before the open took it (once).
+alter table public.qorpera_company_machine_desktop_starts add column open_generation bigint,
+	add column open_checked_at timestamptz,
+	add constraint qorpera_company_machine_desktop_starts_open_fields check (
+		(open_path is null and open_generation is null and open_checked_at is null)
+		or (open_path is not null and open_generation is not null and open_generation >= 0));
 
 -- 2. The begin of a start that opens something, as the member ----------------------------------------------------------------
 
@@ -83,7 +99,8 @@ begin
 	-- The start itself, exactly as a plain one: its refusals, its marks and its floor.
 	v_answer := public.qorpera_member_machine_desktop_start_begin(p_profile_id, p_machine_id);
 	if v_answer ->> 'state' = 'ok' then
-		update public.qorpera_company_machine_desktop_starts set open_path = p_open
+		update public.qorpera_company_machine_desktop_starts set open_path = p_open,
+			open_generation = v_machine.desktop_member_generation
 		where id = (v_answer ->> 'startId')::uuid;
 		-- The agent is told at its next look that a member used its desktop (who and when, never what).
 		update public.qorpera_company_machines set desktop_shared_user_id = v_user, desktop_shared_at = clock_timestamp()
@@ -96,7 +113,64 @@ revoke all on function public.qorpera_member_machine_desktop_start_begin(uuid, u
 	from public, anon, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_member_machine_desktop_start_begin(uuid, uuid, text) to authenticated;
 
--- 3. The executor's read: the path again, and its answer ---------------------------------------------------------------------
+-- 3. The host's check right before the open --------------------------------------------------------------------------------
+
+create function public.qorpera_member_machine_desktop_open_check(p_start_id uuid, p_placement_id uuid, p_boot_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_start public.qorpera_company_machine_desktop_starts%rowtype;
+	v_machine public.qorpera_company_machines%rowtype;
+	v_placement public.qorpera_company_machine_placements%rowtype;
+begin
+	-- 20260930758000
+	if auth.role() is distinct from 'service_role' or p_start_id is null or p_placement_id is null or p_boot_id is null then
+		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
+	select start.* into v_start from public.qorpera_company_machine_desktop_starts as start where start.id = p_start_id;
+	if not found then
+		raise exception 'Machine desktop open is unavailable' using errcode = '42501'; end if;
+	-- Under the machine's lock, as a take-over and a member's action take it: one decided before or after the other.
+	select machine.* into v_machine from public.qorpera_company_machines as machine
+	where machine.id = v_start.machine_id and machine.removed_at is null
+	for no key update;
+	if not found then
+		raise exception 'Machine desktop open is unavailable' using errcode = '42501'; end if;
+	select start.* into v_start from public.qorpera_company_machine_desktop_starts as start where start.id = p_start_id;
+	if not found or v_start.open_path is null or v_start.served_at is null or v_start.open_checked_at is not null
+		or v_start.served_at < clock_timestamp() - interval '1 minute'
+		or not exists (select 1 from public.qorpera_profile_members as member
+			where member.profile_id = v_machine.profile_id and member.user_id = v_start.user_id
+				and member.role::text in ('owner', 'admin', 'contributor'))
+		or public.qorpera_company_deleting(v_machine.profile_id) then
+		raise exception 'Machine desktop open is unavailable' using errcode = '42501'; end if;
+	update public.qorpera_company_machine_desktop_starts set open_checked_at = clock_timestamp() where id = v_start.id;
+	v_placement := public.qorpera_company_machine_placement(v_machine.id);
+	if v_machine.desired_state <> 'running' or v_placement.id is distinct from p_placement_id
+		or v_placement.running_at is null then
+		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-open-check/v1', 'state', 'refused',
+			'reason', 'MACHINE_NOT_RUNNING'); end if;
+	if v_placement.boot_id is distinct from p_boot_id then
+		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-open-check/v1', 'state', 'refused',
+			'reason', 'MACHINE_BOOT_CHANGED'); end if;
+	-- As a member's action: no other member types privately now, and none took the desktop privately since the open was
+	-- begun (its lease generation stands, or it moved under this member's own hold).
+	if (coalesce(v_machine.desktop_member_until > clock_timestamp(), false)
+			and v_machine.desktop_member_user_id is distinct from v_start.user_id)
+		or (v_machine.desktop_member_generation is distinct from v_start.open_generation
+			and v_machine.desktop_member_user_id is distinct from v_start.user_id) then
+		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-open-check/v1', 'state', 'refused',
+			'reason', 'DESKTOP_MEMBER_IN_CONTROL'); end if;
+	if not coalesce(public.qorpera_folder_actor_allowed(v_machine.environment_id, v_machine.profile_id,
+			jsonb_build_object('kind', 'member', 'userId', v_start.user_id), v_start.open_path, 'read'), false) then
+		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-open-check/v1', 'state', 'refused',
+			'reason', 'DESKTOP_OPEN_NOT_FOUND'); end if;
+	return jsonb_build_object('schema', 'qorpera.member-machine-desktop-open-check/v1', 'state', 'ok');
+end
+$$;
+revoke all on function public.qorpera_member_machine_desktop_open_check(uuid, uuid, uuid)
+	from public, anon, authenticated, qorpera_secret_broker;
+grant execute on function public.qorpera_member_machine_desktop_open_check(uuid, uuid, uuid) to service_role;
+
+-- 4. The executor's read: the path again, and its answer ---------------------------------------------------------------------
 
 -- (old, new) pairs, applied in order: each old text occurs exactly once in the definition as the earlier pairs left it,
 -- and the definition does not name this migration yet. The result, not executed here.
@@ -139,13 +213,14 @@ do $$ begin execute pg_temp.machine_member_open_patched(
 		|| case when v_start.open_path is not null then jsonb_build_object('open', v_start.open_path) else '{}'::jsonb end;$new$
 	]); end $$;
 
--- 4. The deploy guard: every new or patched body carries the marker ------------------------------------------------------
+-- 5. The deploy guard: every new or patched body carries the marker ------------------------------------------------------
 
 do $guard$
 declare v_function regprocedure;
 begin
 	foreach v_function in array array[
 		'public.qorpera_member_machine_desktop_start_begin(uuid,uuid,text)',
+		'public.qorpera_member_machine_desktop_open_check(uuid,uuid,uuid)',
 		'public.qorpera_member_machine_desktop_start_authority(uuid,text,text)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930758000') = 0 then

@@ -421,6 +421,8 @@ export const CLOUD_MEMBER_MACHINE_START_REFUSALS = [
 	"DESKTOP_MEMBER_IN_CONTROL",
 	"DESKTOP_OPEN_NO_FOLDER",
 	"DESKTOP_DID_NOT_OPEN",
+	// The desktop's one actor (an agent's action, a member's) did not let the open through in time (review r1 F1 of #1781).
+	"DESKTOP_BUSY",
 ] as const;
 export type CloudMemberMachineStartRefusalCode = (typeof CLOUD_MEMBER_MACHINE_START_REFUSALS)[number];
 export class CloudMemberMachineStartRefusal extends Error {

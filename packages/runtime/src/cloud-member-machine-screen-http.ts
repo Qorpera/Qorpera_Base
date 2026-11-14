@@ -42,7 +42,8 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 // code). With {"open": "<path>"} instead (20260930758000) it also opens that path of the company folder (relative to its
 // root, as the web names it; at most 500 bytes, the folder's own rule decided by SQL) on the desktop once it runs:
 // "opened", or why not (409: not in the company folder for this member, someone else types privately, no company folder
-// on that computer, or the computer could not open it). The path is passed on and never logged or answered.
+// on that computer, or the computer could not open it). The path is passed on; nothing of ours logs it or answers it (the
+// image's own helper names the opened folder in the machine's own journal, as it does for an agent's `desktop open`).
 // A member who may act moves the desktop's pointer with their own (20260930744000):
 //   POST /v1/member-machine-screens/<companyId>/<machineId>/pointer
 // (application/json, at most 256 bytes). `{"begin": {"generation": g}}` (shared, at the lease generation the window

@@ -159,6 +159,8 @@ async function fixture(
 	const memberReads: unknown[] = [];
 	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
 	const pictureChecks: unknown[] = [];
+	/** The host's check right before a member's open (20260930758000), in turn (then ok). */
+	const openChecks: unknown[] = [];
 	/** What a live picture's release cycle answers, in turn (then ok; 20260930745000). */
 	const streamReleases: unknown[] = [];
 	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
@@ -249,6 +251,11 @@ async function fixture(
 				const next = memberReads.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.folder-member-reads/v1", viewId: null, reads: 0 };
+			}
+			if (method === "qorpera_member_machine_desktop_open_check") {
+				const next = openChecks.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.member-machine-desktop-open-check/v1", state: "ok" };
 			}
 			if (method === "qorpera_machine_desktop_picture_check") {
 				const next = pictureChecks.shift();
@@ -514,6 +521,7 @@ async function fixture(
 		inherits,
 		memberReads,
 		pictureChecks,
+		openChecks,
 		streamReleases,
 		clipboardClears,
 		busy,
@@ -6688,8 +6696,11 @@ describe("a member opens something on a desktop (20260930758000)", () => {
 	const answer = (exitCode: number) => ({ exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
 	const open = "apps/a;b $(x) 'q'.txt";
 	const start = (path: string = open) => ({ placementId: id(6), bootId: id(7), startId: id(40), open: path });
-	async function piped(reply: (given: LxdExecPipeRequest) => Promise<ReturnType<typeof answer>>) {
-		const f = await fixture();
+	async function piped(
+		reply: (given: LxdExecPipeRequest) => Promise<ReturnType<typeof answer>>,
+		options: Parameters<typeof fixture>[0] = {},
+	) {
+		const f = await fixture(options);
 		const calls: LxdExecPipeRequest[] = [];
 		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest) => {
 			calls.push(given);
@@ -6783,6 +6794,143 @@ describe("a member opens something on a desktop (20260930758000)", () => {
 			);
 			expect(never.pipe).not.toHaveBeenCalled();
 		}
+	});
+
+	it("asks SQL right before the open, holding the desktop: a take-over begun during a delayed start opens nothing (review r1 F1 of #1781)", async () => {
+		let release = () => {};
+		const delayed = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { f, calls } = await piped(async (given) => {
+			if (given.command.includes(COMPANY_MACHINE_MEMBER_START)) await delayed;
+			return answer(0);
+		});
+		const opening = f.host.memberStart(start(), f.signal);
+		// While the start runs, another member takes the desktop over: SQL's check right before the open says so.
+		await vi.waitFor(() => expect(calls).toHaveLength(1));
+		expect(f.methods()).not.toContain("qorpera_member_machine_desktop_open_check");
+		f.openChecks.push({
+			schema: "qorpera.member-machine-desktop-open-check/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		release();
+		expect(await opening).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		// The start ran and its desktop stays on; the open never ran; the check came after the start, with its ids.
+		expect(calls.map((call) => call.command)).toEqual([companyMachineMemberStartCommand(id(7))]);
+		expect(f.calls.find((call) => call.method === "qorpera_member_machine_desktop_open_check")?.args).toEqual({
+			p_start_id: id(40),
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+		});
+		// Nothing holds the desktop after it: a member's next action goes.
+		f.pictureChecks.push({ schema: "qorpera.machine-desktop-picture/v1", state: "ok" });
+		expect(
+			await f.host
+				.memberAct(
+					{
+						placementId: id(6),
+						bootId: id(7),
+						actionId: id(31),
+						action: { type: "key", keys: ["Return"] },
+						seat: 0,
+						shared: true,
+						userId: id(21),
+					},
+					f.signal,
+				)
+				.catch(() => "ran"),
+		).not.toEqual({ refused: "DESKTOP_BUSY" });
+		// The check's other refusals are the member's too; an answer of another shape fails.
+		for (const reason of ["DESKTOP_OPEN_NOT_FOUND", "MACHINE_NOT_RUNNING", "MACHINE_BOOT_CHANGED"]) {
+			const one = await piped(async () => answer(0));
+			one.f.openChecks.push({ schema: "qorpera.member-machine-desktop-open-check/v1", state: "refused", reason });
+			expect(await one.f.host.memberStart(start(), one.f.signal)).toEqual({ refused: reason });
+			expect(one.calls).toHaveLength(1);
+		}
+		const odd = await piped(async () => answer(0));
+		odd.f.openChecks.push({ schema: "qorpera.member-machine-desktop-open-check/v1", state: "ok", more: 1 });
+		await expect(odd.f.host.memberStart(start(), odd.f.signal)).rejects.toThrow("COMPANY_MACHINE_OPEN_CHECK_INVALID");
+		expect(odd.calls).toHaveLength(1);
+	});
+
+	it("holds the desktop while the open runs and a moment after: input that comes meanwhile waits, then goes", async () => {
+		let clock = Date.parse("2026-11-14T06:00:00Z");
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { f } = await piped(
+			async (given) => {
+				if (given.command.includes(COMPANY_MACHINE_MEMBER_OPEN)) await held;
+				return answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 92 : 0);
+			},
+			{ now: () => clock },
+		);
+		const act = () =>
+			f.host.memberAct(
+				{
+					placementId: id(6),
+					bootId: id(7),
+					actionId: randomUUID(),
+					action: { type: "key", keys: ["a"] },
+					seat: 1,
+					userId: id(22),
+				},
+				f.signal,
+			);
+		const opening = f.host.memberStart(start(), f.signal);
+		await vi.waitFor(() => expect(f.methods()).toContain("qorpera_member_machine_desktop_open_check"));
+		// A member who began typing privately while the open's unit runs: their keys wait (the window says the computer
+		// is finishing a step and sends them again), never land while it opens.
+		expect(await act()).toEqual({ refused: "DESKTOP_BUSY" });
+		release();
+		expect(await opening).toEqual({ outcome: "opened" });
+		// For a moment after, while what it opened maps its window and takes the focus.
+		clock += 1999;
+		expect(await act()).toEqual({ refused: "DESKTOP_BUSY" });
+		clock += 2;
+		expect(await act().catch(() => "ran")).not.toEqual({ refused: "DESKTOP_BUSY" });
+	});
+
+	it("waits a moment for the desktop's one actor, and says it is busy past that, opening nothing", async () => {
+		let clock = Date.parse("2026-11-14T06:00:00Z");
+		const { f, calls } = await piped(
+			async (given) => {
+				// An action that never answers keeps the desktop.
+				if (
+					given.command.includes(COMPANY_MACHINE_MEMBER_START) ||
+					given.command.includes(COMPANY_MACHINE_MEMBER_OPEN)
+				)
+					return answer(0);
+				return new Promise<never>(() => {});
+			},
+			{ now: () => clock },
+		);
+		void f.host
+			.memberAct(
+				{
+					placementId: id(6),
+					bootId: id(7),
+					actionId: randomUUID(),
+					action: { type: "key", keys: ["a"] },
+					seat: 0,
+					shared: true,
+					userId: id(22),
+				},
+				f.signal,
+			)
+			.catch(() => undefined);
+		await vi.waitFor(() => expect(calls).toHaveLength(1));
+		const opening = f.host.memberStart(start(), f.signal);
+		// The start ran; the open now waits for the desktop (a few of its looks, real time), then its time is up.
+		await vi.waitFor(() =>
+			expect(calls.some((call) => call.command.includes(COMPANY_MACHINE_MEMBER_START))).toBe(true),
+		);
+		await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+		clock += 3001;
+		expect(await opening).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(calls.filter((call) => call.command.includes(COMPANY_MACHINE_MEMBER_OPEN))).toEqual([]);
 	});
 
 	it.skipIf(process.platform !== "linux")(
