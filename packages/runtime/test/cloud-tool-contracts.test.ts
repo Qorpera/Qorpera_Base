@@ -335,5 +335,9 @@ it("writes every description as a contract: short, in lines, and without the rul
 		expect(words, tool.name).not.toMatch(/do not wait or poll/);
 		// A description of more than two sentences is in lines, not one block.
 		if (Buffer.byteLength(words) > 1200) expect(words, tool.name).toContain("\n");
-	}
+	} // Review r1 of #1802: the catalog above has ask_member as a run without Gmail has it; a run with Gmail's tools gets
+	// the draft's steps too, held to the same bound.
+	const gmail = cloudAskMemberInstructions(true);
+	expect(gmail).toContain("Gmail: for an email draft, call gmail_get_profile");
+	expect(Buffer.byteLength(gmail)).toBeLessThanOrEqual(3600);
 });

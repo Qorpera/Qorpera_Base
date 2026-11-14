@@ -52,7 +52,10 @@ import {
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
-import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
+import {
+	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
+	cloudAskMemberInstructions,
+} from "@qorpera/runtime/cloud-thread-interactions";
 import { MEMORY_BRANCHES_SCHEMA } from "@qorpera/runtime/memory-tree/branches";
 import { MEMORY_VIEW_RECORD_SCHEMA, MEMORY_VIEW_SCHEMA } from "@qorpera/runtime/memory-tree/compose";
 import { MEMORY_COMPACTION_RECORD_SCHEMA } from "@qorpera/runtime/memory-tree/conversation-lines";
@@ -275,6 +278,8 @@ async function fixture(
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
+	/** More connector tools the catalog lists in a company-secret run (a test adds them before it runs). */
+	const moreConnectors: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
@@ -426,7 +431,9 @@ async function fixture(
 				};
 			}
 			if (method === "qorpera_list_native_connector_tools") {
-				return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
+				return mode === "company-secret"
+					? [structuredClone(connectorDescriptor), ...structuredClone(moreConnectors)]
+					: [];
 			}
 			if (method === "qorpera_assert_native_connector_operation") {
 				expect(args).toMatchObject({
@@ -751,6 +758,7 @@ async function fixture(
 		request,
 		secretBroker,
 		connectorGrantId,
+		moreConnectors,
 		observations,
 		officeCall,
 		officeSession,
@@ -1404,6 +1412,39 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(JSON.stringify(tool)).not.toContain(f.connectorGrantId);
 	expect(JSON.stringify(tool)).not.toContain("https://api.linear.app");
 	expect(JSON.stringify(evidence)).not.toMatch(/encryptedEnvelope|captureCapability|secret:\/\//i);
+	// Without Gmail's tools, ask_member says nothing of a Gmail draft (review r1 of #1802).
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(candidate: { name: string }) => candidate.name === "ask_member",
+	);
+	expect(ask.description).toBe(cloudAskMemberInstructions(false));
+	expect(ask.description).not.toContain("gmail_get_profile");
+});
+
+// Review r1 of #1802: a run that has Gmail's tools (a connection made before 10 November 2026) gets the Gmail draft's
+// steps in ask_member; the catalog pin covers only a run without them.
+it("gives ask_member the Gmail draft's steps only in a run that has Gmail's tools", async () => {
+	const f = await fixture("company-secret");
+	f.moreConnectors.push({
+		schema: "qorpera.native-connector-tool/v1",
+		grantId: randomUUID(),
+		toolName: "gmail_get_profile",
+		description: "Get the connected mailbox email_address.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		connectorId: "gmail",
+		operationId: "get_profile",
+		operationVersion: 1,
+		adapterSha256: "c".repeat(64),
+		destinationOrigin: "https://gmail.googleapis.com",
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const tools = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools as {
+		name: string;
+		description: string;
+	}[];
+	expect(tools.map((tool) => tool.name)).toContain("gmail_get_profile");
+	const ask = tools.find((tool) => tool.name === "ask_member");
+	expect(ask?.description).toBe(cloudAskMemberInstructions(true));
+	expect(ask?.description).toContain("Gmail: for an email draft, call gmail_get_profile for the real sender");
 });
 
 it("still rejects extra configuration passed directly to the native runtime", async () => {
