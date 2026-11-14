@@ -407,7 +407,7 @@ export function createWebNativeSubscription(
 	};
 	let pendingMetadataRefresh: Promise<void> | undefined;
 	let metadataAdmission:
-		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
+		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean; requestId?: string }
 		| undefined;
 	const admit = () => {
 		const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -691,11 +691,49 @@ export function createWebNativeSubscription(
 							).join(""),
 						};
 						let authority: NativeAccountRefreshDescription;
-						// Another attempt of this member is pending (another tab, or one this page left behind).
-						// Begin answers 55000 until it settles or expires, so watch that attempt with the read
-						// and ask begin again only once it is gone: a steady retry is an error storm.
+						// Another attempt of this member may be pending (another tab, or one an earlier page left
+						// behind), and begin answers 55000 until it settles or expires: a server error in the browser's
+						// console at each company open. So the read goes first: a pending attempt is watched with the
+						// read, and begin is asked only when none is pending. If begin still answers busy (two pages
+						// asked at once), it is asked again only after a pause: a steady retry is an error storm.
 						let wait = 2000;
+						let watched = false;
+						let busy = false;
 						for (;;) {
+							const receipt = await rpc(
+								"qorpera_get_native_account_refresh",
+								{ p_profile_id: profileId },
+								deadline,
+							);
+							let pending = false;
+							if (receipt !== null) {
+								const observed = parseNativeAccountRefreshDescription(receipt);
+								if (
+									observed.profileId !== profileId ||
+									observed.requestedByUserId !== memberId ||
+									observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
+								)
+									throw new Error("Account refresh authority changed");
+								if (Date.parse(observed.expiresAt) > Date.now()) {
+									// The attempt this page waited for has completed. One that had completed before
+									// this page looked is admission's to judge: it knows whether it is still fresh.
+									if (observed.status === "completed" && watched) {
+										settle(observed.expiresAt);
+										return;
+									}
+									// A pending attempt that is this page's own (an uncertain guest answer left it so) is
+									// admission's to answer again: it answers the same request, never busy, and the page
+									// asks the guest again. Only another's pending attempt is watched.
+									pending = observed.status !== "completed" && observed.requestId !== admission.requestId;
+								}
+							}
+							if (pending || busy) {
+								watched = true;
+								busy = false;
+								await pause(wait);
+								wait = Math.min(Math.round(wait * 1.5), 10_000);
+								if (pending) continue;
+							}
 							try {
 								authority = parseNativeAccountRefreshDescription(
 									await rpc("qorpera_begin_native_account_refresh", args, deadline),
@@ -703,31 +741,9 @@ export function createWebNativeSubscription(
 								break;
 							} catch (error) {
 								if (!(error instanceof CloudRpcError) || error.code !== "55000") throw error;
-							}
-							for (;;) {
-								const receipt = await rpc(
-									"qorpera_get_native_account_refresh",
-									{ p_profile_id: profileId },
-									deadline,
-								);
-								let settled = receipt === null;
-								if (receipt !== null) {
-									const observed = parseNativeAccountRefreshDescription(receipt);
-									if (
-										observed.profileId !== profileId ||
-										observed.requestedByUserId !== memberId ||
-										observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
-									)
-										throw new Error("Account refresh authority changed");
-									settled = Date.parse(observed.expiresAt) <= Date.now();
-									if (!settled && observed.status === "completed") {
-										settle(observed.expiresAt);
-										return;
-									}
-								}
-								await pause(wait);
-								wait = Math.min(Math.round(wait * 1.5), 10_000);
-								if (settled) break;
+								// Busy means an attempt is pending: the next read may already show it completed.
+								watched = true;
+								busy = true;
 							}
 						}
 						if (
@@ -738,6 +754,7 @@ export function createWebNativeSubscription(
 						)
 							throw new Error("Account refresh authority changed");
 						admission.expiresAt = Date.parse(authority.expiresAt);
+						admission.requestId = authority.requestId;
 						if (authority.status === "completed") {
 							settle(authority.expiresAt);
 							return;

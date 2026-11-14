@@ -140,6 +140,7 @@ function executionTransport() {
 			if (method === "qorpera_request_session_turn_v2") return send(init);
 			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
 			if (method === "qorpera_select_member_session_account") return Response.json(id(81));
+			if (method === "qorpera_get_native_account_refresh") return Response.json(null);
 			if (method === "qorpera_begin_native_account_refresh")
 				return Response.json({
 					request_id: id(83),

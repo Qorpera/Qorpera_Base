@@ -87,6 +87,7 @@ async function setup() {
 		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
 		if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 		if (url.endsWith("/qorpera_select_member_session_account")) return Response.json(id(81));
+		if (url.endsWith("/qorpera_get_native_account_refresh")) return Response.json(null);
 		if (url.endsWith("/qorpera_begin_native_account_refresh"))
 			return Response.json({
 				request_id: id(83),
@@ -190,6 +191,7 @@ async function setup() {
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_select_member_session_account") &&
+				!String(url).endsWith("/qorpera_get_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_begin_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
 		);

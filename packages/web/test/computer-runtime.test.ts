@@ -1481,30 +1481,53 @@ describe("an agent's computer window", () => {
 	it("enters and goes back as the old viewer did, and Escape goes back before it closes", async () => {
 		const s = setup();
 		s.state.answers.push({ picture: 1 });
+		// The window stands in a row of the thread's log (conversation.ts #computerRow).
 		const thread = document.createElement("div");
 		const conversation = document.createElement("div");
 		conversation.className = "thread-conversation";
 		const header = document.createElement("div");
 		header.className = "thread-header";
+		const log = document.createElement("div");
 		const message = document.createElement("div");
-		conversation.append(header, message);
+		const row = document.createElement("div");
+		const figure = document.createElement("div");
+		const slot = document.createElement("div");
+		row.append(figure, slot);
+		log.append(message, row);
+		conversation.append(header, log);
 		thread.append(conversation);
 		document.body.append(thread);
 		const close = vi.fn();
 		const p = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
 		cleanup.push(() => p.dispose());
-		p.attach(thread, close);
+		p.attach(slot, close);
 		await flush();
 		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
 		expect(p.el.classList.contains("is-entered")).toBe(true);
+		// Everything but the header and the way down to the window is covered; the row and log it stands in are not.
 		expect(message.inert).toBe(true);
+		expect(figure.inert).toBe(true);
 		expect(header.inert).not.toBe(true);
+		expect([log, row, slot].some((element) => element.inert === true)).toBe(false);
+		// A row the thread draws while the view is open (a message, a card, the working figure) is covered too
+		// (review r1 F2 of #1787).
+		const arrived = document.createElement("div");
+		log.append(arrived);
+		p.coverAgain();
+		expect(arrived.inert).toBe(true);
 		const back = p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
 		expect(back.hidden).toBe(false);
 		expect(back.getAttribute("aria-label")).toBe("Back to thread");
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(p.el.classList.contains("is-entered")).toBe(false);
 		expect(message.inert).not.toBe(true);
+		expect(figure.inert).not.toBe(true);
+		expect(arrived.inert).not.toBe(true);
+		// Back in the preview, a new row is nobody's to cover.
+		const later = document.createElement("div");
+		log.append(later);
+		p.coverAgain();
+		expect(later.inert).not.toBe(true);
 		expect(close).not.toHaveBeenCalled();
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(close).toHaveBeenCalledOnce();
@@ -2914,21 +2937,25 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(s.acts.at(-1)).toMatchObject({ action: { type: "click", x: 800, y: 500 }, epoch: null, seat: null });
 	});
 
-	/** A thread for the window: its conversation's header stays reachable, a message and the composer are covered while
-	 * the window is entered. */
+	/** A thread for the window, standing in a row of its log (`element` is that row's slot): its conversation's header
+	 * stays reachable, a message and the composer are covered while the window is entered. */
 	function thread() {
 		const element = document.createElement("div");
 		const conversation = document.createElement("div");
 		conversation.className = "thread-conversation";
 		const header = document.createElement("div");
 		header.className = "thread-header";
+		const log = document.createElement("div");
 		const message = document.createElement("div");
+		// The window's row in the log (conversation.ts #computerRow): the window is attached into its slot.
+		const slot = document.createElement("div");
+		log.append(message, slot);
 		const composer = document.createElement("textarea");
-		conversation.append(header, message, composer);
+		conversation.append(header, log, composer);
 		element.append(conversation);
 		document.body.append(element);
 		cleanup.push(() => element.remove());
-		return { element, header, message, composer };
+		return { element: slot, header, message, composer };
 	}
 
 	it("enters nothing for a take-over answered after the window left its thread, and comes back in the preview (review r1 F1 of #1685)", async () => {

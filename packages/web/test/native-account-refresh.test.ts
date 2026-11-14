@@ -112,13 +112,18 @@ describe("account metadata refresh transport", () => {
 		const first = f.client.refreshAccountMetadata!(),
 			second = f.client.refreshAccountMetadata!();
 		await f.guestStarted.promise;
-		expect(f.calls).toHaveLength(2);
-		const admission = JSON.parse(String(f.calls[0]?.init?.body)),
-			request = JSON.parse(String(f.calls[1]?.init?.body));
+		// The read of a pending attempt, the admission, the guest.
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+		]);
+		const admission = JSON.parse(String(f.calls[1]?.init?.body)),
+			request = JSON.parse(String(f.calls[2]?.init?.body));
 		expect(request.schema).toBe("qorpera.native-account-refresh/v1");
 		expect(request.refresh_capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
-		expect(new Headers(f.calls[1]?.init?.headers).get("authorization")).toBe(`Bearer ${request.refresh_capability}`);
-		expect(new Headers(f.calls[1]?.init?.headers).has("apikey")).toBe(false);
+		expect(new Headers(f.calls[2]?.init?.headers).get("authorization")).toBe(`Bearer ${request.refresh_capability}`);
+		expect(new Headers(f.calls[2]?.init?.headers).has("apikey")).toBe(false);
 		const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(request.refresh_capability));
 		expect(admission.p_capability_sha256).toBe(
 			Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join(""),
@@ -128,30 +133,46 @@ describe("account metadata refresh transport", () => {
 	});
 	it("polls the same admitted request while its guest is preparing", async () => {
 		const f = setup();
-		f.fetcher.mockResolvedValueOnce(Response.json(f.receipt)).mockResolvedValueOnce(
-			Response.json({
-				schema: "qorpera.native-account-refresh-result/v1",
-				request_id: f.receipt.request_id,
-				status: "preparing",
-			}),
-		);
+		f.fetcher
+			.mockResolvedValueOnce(Response.json(null))
+			.mockResolvedValueOnce(Response.json(f.receipt))
+			.mockResolvedValueOnce(
+				Response.json({
+					schema: "qorpera.native-account-refresh-result/v1",
+					request_id: f.receipt.request_id,
+					status: "preparing",
+				}),
+			);
 		const pending = f.client.refreshAccountMetadata!();
 		await f.guestStarted.promise;
-		expect(f.fetcher).toHaveBeenCalledTimes(3);
-		expect(f.fetcher.mock.calls[1]?.[1]?.body).toBe(f.fetcher.mock.calls[2]?.[1]?.body);
+		expect(f.fetcher).toHaveBeenCalledTimes(4);
+		expect(f.fetcher.mock.calls[2]?.[1]?.body).toBe(f.fetcher.mock.calls[3]?.[1]?.body);
 		f.finish();
 		await pending;
 	});
 	it("retains admission authority after an uncertain guest response", async () => {
 		const f = setup();
 		f.fetcher
+			.mockResolvedValueOnce(Response.json(null))
 			.mockResolvedValueOnce(Response.json(f.receipt))
 			.mockResolvedValueOnce(Response.json({}, { status: 503 }));
 		await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
+		// The server still shows the page's own attempt as pending: nothing marks a failed guest route.
+		f.fetcher.mockResolvedValueOnce(Response.json(f.receipt));
 		const retried = f.client.refreshAccountMetadata!();
 		await f.guestStarted.promise;
-		expect(f.fetcher.mock.calls[0]?.[1]?.body).toBe(f.fetcher.mock.calls[2]?.[1]?.body);
-		expect(f.fetcher.mock.calls[1]?.[1]?.body).toBe(f.fetcher.mock.calls[3]?.[1]?.body);
+		// Each attempt is a read, the admission and the guest. The retry does not watch its own pending attempt: it
+		// sends the same admission, which answers the same request, and asks the guest again.
+		expect(f.fetcher.mock.calls.map(([url]) => String(url).split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+		]);
+		expect(f.fetcher.mock.calls[1]?.[1]?.body).toBe(f.fetcher.mock.calls[4]?.[1]?.body);
+		expect(f.fetcher.mock.calls[2]?.[1]?.body).toBe(f.fetcher.mock.calls[5]?.[1]?.body);
 		f.finish();
 		await retried;
 	});
@@ -165,7 +186,8 @@ describe("account metadata refresh transport", () => {
 		await f.guestStarted.promise;
 		view.abort();
 		await failed;
-		expect(f.calls[1]?.init?.signal?.aborted).toBe(false);
+		expect(f.calls[2]?.url.endsWith("/account-refresh")).toBe(true);
+		expect(f.calls[2]?.init?.signal?.aborted).toBe(false);
 		f.finish();
 		await second;
 	});
@@ -200,7 +222,10 @@ describe("account metadata refresh transport", () => {
 		f.receipt.status = "completed";
 		f.list.mockResolvedValueOnce(accounts());
 		await f.client.refreshAccountMetadata!();
-		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual(["qorpera_begin_native_account_refresh"]);
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+		]);
 	});
 	it("asks admission at most once per expiry window, however often views ask", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
@@ -210,7 +235,7 @@ describe("account metadata refresh transport", () => {
 			await f.guestStarted.promise;
 			f.finish();
 			await first;
-			expect(f.calls).toHaveLength(2);
+			expect(f.calls).toHaveLength(3);
 			// The thread view and the Connections page ask again every minute; the
 			// completed attempt answers them until it expires, without any request,
 			// even though the attempt observed no usage for this account.
@@ -218,15 +243,15 @@ describe("account metadata refresh transport", () => {
 				vi.setSystemTime(Date.now() + 60_000);
 				await f.client.refreshAccountMetadata!();
 			}
-			expect(f.calls).toHaveLength(2);
+			expect(f.calls).toHaveLength(3);
 			expect(f.list).toHaveBeenCalledTimes(5);
 			vi.setSystemTime(Date.parse(f.receipt.expires_at) + 1);
 			f.receipt.status = "completed";
 			f.receipt.expires_at = new Date(Date.now() + 300_000).toISOString();
 			await f.client.refreshAccountMetadata!();
-			expect(f.calls).toHaveLength(3);
-			const before = JSON.parse(String(f.calls[0]?.init?.body)),
-				after = JSON.parse(String(f.calls[2]?.init?.body));
+			expect(f.calls).toHaveLength(5);
+			const before = JSON.parse(String(f.calls[1]?.init?.body)),
+				after = JSON.parse(String(f.calls[4]?.init?.body));
 			expect(after.p_client_request_id).not.toBe(before.p_client_request_id);
 		} finally {
 			vi.useRealTimers();
@@ -241,20 +266,22 @@ describe("account metadata refresh transport", () => {
 			const f = setup();
 			f.receipt.status = "completed";
 			await f.client.refreshAccountMetadata!();
-			expect(f.calls).toHaveLength(1);
+			expect(f.calls).toHaveLength(2);
 			vi.setSystemTime(Date.now() + 120_000);
 			const fresh = new Date().toISOString();
 			f.list.mockResolvedValue(observed(fresh));
 			await f.client.refreshAccountMetadata!();
-			expect(f.calls).toHaveLength(1);
+			expect(f.calls).toHaveLength(2);
 			if (!force) f.list.mockResolvedValue(observed(fresh, new Date(Date.now() - 1_000).toISOString()));
 			await f.client.refreshAccountMetadata!(undefined, force);
 			expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+				"qorpera_get_native_account_refresh",
 				"qorpera_begin_native_account_refresh",
+				"qorpera_get_native_account_refresh",
 				"qorpera_begin_native_account_refresh",
 			]);
-			const before = JSON.parse(String(f.calls[0]?.init?.body)),
-				after = JSON.parse(String(f.calls[1]?.init?.body));
+			const before = JSON.parse(String(f.calls[1]?.init?.body)),
+				after = JSON.parse(String(f.calls[3]?.init?.body));
 			expect(after.p_client_request_id).not.toBe(before.p_client_request_id);
 		} finally {
 			vi.useRealTimers();
@@ -264,15 +291,38 @@ describe("account metadata refresh transport", () => {
 		const f = setup();
 		f.receipt.status = "completed";
 		await f.client.refreshAccountMetadata!();
-		expect(f.calls).toHaveLength(1);
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+		]);
+	});
+	it("does not join an attempt that had completed before it looked: admission says whether it is fresh", async () => {
+		const f = setup();
+		// The read shows a completed attempt that has not run out; nothing was watched, so admission is asked.
+		const pending = f.client.refreshAccountMetadata!();
+		await f.guestStarted.promise;
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+		]);
+		f.finish();
+		await pending;
 	});
 	it("rejects admission for a different compute identity before guest contact", async () => {
 		const f = setup();
 		f.receipt.compute_identity_id = id(999);
+		f.fetcher.mockResolvedValueOnce(Response.json(null));
 		await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
-		expect(f.calls).toHaveLength(1);
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual(["qorpera_begin_native_account_refresh"]);
 	});
-	it("watches a pending attempt with backed-off reads instead of re-asking busy admission", async () => {
+	it("rejects a watched attempt of a different compute identity before admission", async () => {
+		const f = setup();
+		f.receipt.compute_identity_id = id(999);
+		await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual(["qorpera_get_native_account_refresh"]);
+	});
+	it("watches a pending attempt with backed-off reads and never asks admission while it is pending", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		try {
 			const f = setup();
@@ -287,20 +337,53 @@ describe("account metadata refresh transport", () => {
 				throw new Error("Unexpected route");
 			});
 			const pending = f.client.refreshAccountMetadata!();
-			await vi.waitFor(() => expect(urls).toHaveLength(2));
+			await vi.waitFor(() => expect(urls).toHaveLength(1));
 			await vi.advanceTimersByTimeAsync(1900);
-			// One admission and one read; nothing again inside the first two seconds.
-			expect(urls).toEqual(["qorpera_begin_native_account_refresh", "qorpera_get_native_account_refresh"]);
+			// One read; nothing again inside the first two seconds, and no admission: it would answer busy (a 500).
+			expect(urls).toEqual(["qorpera_get_native_account_refresh"]);
 			await vi.advanceTimersByTimeAsync(60_000);
 			await pending;
-			// The pending attempt is only read (2 s, 3 s, 4.5 s, 6.75 s, then every 10 s); admission is never re-asked.
-			expect(urls.filter((url) => url === "qorpera_begin_native_account_refresh")).toHaveLength(1);
+			// The pending attempt is only read (2 s, 3 s, 4.5 s, 6.75 s, then every 10 s); admission is never asked.
+			expect(urls.filter((url) => url === "qorpera_begin_native_account_refresh")).toHaveLength(0);
 			expect(reads).toBe(6);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
-	it("asks admission again only after the watched attempt is gone", async () => {
+	it("after an uncertain guest answer, still only watches a pending attempt that is not its own", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = setup();
+			f.fetcher
+				.mockResolvedValueOnce(Response.json(null))
+				.mockResolvedValueOnce(Response.json(f.receipt))
+				.mockResolvedValueOnce(Response.json({}, { status: 503 }));
+			await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
+			// Another tab's attempt is pending now (the page's own has run out on the server, say).
+			const other = { ...f.receipt, request_id: id(111) };
+			const urls: string[] = [];
+			let reads = 0;
+			f.fetcher.mockImplementation(async (url: string | URL | Request) => {
+				urls.push(String(url).split("/").pop()!);
+				if (String(url).endsWith("qorpera_get_native_account_refresh"))
+					return Response.json(++reads < 3 ? other : { ...other, status: "completed" });
+				throw new Error("Unexpected route");
+			});
+			const retried = f.client.refreshAccountMetadata!();
+			await vi.waitFor(() => expect(urls).toHaveLength(1));
+			await vi.advanceTimersByTimeAsync(60_000);
+			await retried;
+			// Read at once, after 2 s and after 3 s more; neither admission nor the guest is asked.
+			expect(urls).toEqual([
+				"qorpera_get_native_account_refresh",
+				"qorpera_get_native_account_refresh",
+				"qorpera_get_native_account_refresh",
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("asks busy admission again only after a pause, once the read shows no attempt", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		try {
 			const f = setup();
@@ -318,7 +401,8 @@ describe("account metadata refresh transport", () => {
 				throw new Error("Unexpected route");
 			});
 			const pending = f.client.refreshAccountMetadata!();
-			await vi.waitFor(() => expect(reads).toBe(1));
+			// A read that shows no attempt, the admission that answers busy, and the read after it.
+			await vi.waitFor(() => expect(reads).toBe(2));
 			await vi.advanceTimersByTimeAsync(1900);
 			expect(begins).toBe(1);
 			await vi.advanceTimersByTimeAsync(200);
@@ -330,7 +414,11 @@ describe("account metadata refresh transport", () => {
 	});
 	it("joins another tab's completed scoped attempt after busy admission", async () => {
 		const f = setup();
-		f.fetcher.mockResolvedValueOnce(Response.json({ code: "55000", message: "busy" }, { status: 400 }));
+		// Nothing pending at the read, then admission answers busy (another tab asked in between): the next read
+		// shows that attempt completed, and it is joined without a pause.
+		f.fetcher
+			.mockResolvedValueOnce(Response.json(null))
+			.mockResolvedValueOnce(Response.json({ code: "55000", message: "busy" }, { status: 400 }));
 		await f.client.refreshAccountMetadata!();
 		expect(f.calls.map((c) => c.url)).toEqual([
 			"https://fixture.invalid/rest/v1/rpc/qorpera_get_native_account_refresh",

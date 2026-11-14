@@ -134,15 +134,16 @@ function mount(
 }
 
 describe("before the recorded motion arrives", () => {
-	it("shows the still artwork, then plays from the first frame, under reduced motion too", async () => {
+	it("leaves its place empty, never in the still artwork's old colour, then fades in and plays from the first frame, under reduced motion too", async () => {
 		const idle = mount("Idle", "late"),
 			still = mount("Working", "late-still");
 		await settle();
 		show([idle, still]);
 		advance(5000);
 		for (const host of [idle, still]) {
-			expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(false);
+			expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(true);
 			expect(host.querySelector("canvas")!.hidden).toBe(true);
+			expect(host.querySelector("canvas")!.dataset.arrive).toBe("");
 		}
 		expect(frames.size).toBe(0);
 		reduced.matches = true;
@@ -506,6 +507,70 @@ describe("2D studio playback in the shell", () => {
 		advance(3000);
 		expect(replacement.querySelector("canvas")!.dataset.frame).toBe("221");
 		expect(frames.size).toBe(0);
+	});
+	it("draws a view built anew at once when its artwork in that colour is here, and keeps a new colour's place empty until it is", async () => {
+		let resized: ResizeObserverCallback | undefined;
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: ResizeObserverCallback) {
+					resized = callback;
+				}
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		const resize = (target: HTMLElement, width: number) =>
+			resized!([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+		const first = mount("Idle", "rebuilt");
+		await settle();
+		show([first]);
+		advance(1000);
+		// A row built anew: drawn before the browser shows it, with no fade, no old-colour still and no frame advanced.
+		const rebuilt = mount("Idle", "rebuilt");
+		const canvas = rebuilt.querySelector("canvas")!;
+		expect(canvas.hidden).toBe(false);
+		expect(canvas.dataset.arrive).toBeUndefined();
+		expect(canvas.dataset.frame).toBe("60");
+		expect(rebuilt.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(true);
+		// It moves only once it is known to be in view; the view it replaces goes on.
+		advance(500);
+		expect(canvas.dataset.frame).toBe("60");
+		expect(first.querySelector("canvas")!.dataset.frame).toBe("90");
+		// Its size, reported before the browser shows it and before any visibility report, redraws it at that size.
+		resize(rebuilt, 100);
+		expect(canvas.width).toBe(112);
+		// Once it is known to be out of view, a new size waits until it is back.
+		show([rebuilt], false);
+		resize(rebuilt, 60);
+		expect(canvas.width).toBe(112);
+		show([rebuilt]);
+		expect(canvas.width).toBe(67);
+		// The same figure in a colour not prepared yet: empty, then it fades in, in that colour.
+		const host = document.createElement("span");
+		document.body.append(host);
+		mounted.push(mountFigureMotion(host, "crown", "#2047bd", artwork, { identity: "recoloured" }));
+		expect(host.querySelector("canvas")!.hidden).toBe(true);
+		expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(true);
+		await settle();
+		show([host]);
+		expect(host.querySelector("canvas")!.hidden).toBe(false);
+		expect(host.querySelector("canvas")!.dataset.arrive).toBe("");
+		expect(context.fillStyle).toBe("#2047bd");
+		// The fade is the figure's own: its end reaches no view around it, and it plays once.
+		const heard = vi.fn();
+		host.addEventListener("animationend", heard);
+		host.querySelector("canvas")!.dispatchEvent(new Event("animationend", { bubbles: true }));
+		expect(heard).not.toHaveBeenCalled();
+		expect(host.querySelector("canvas")!.dataset.arrive).toBeUndefined();
+		// A fade cut short (its panel hidden mid-way) does not play again either.
+		const other = document.createElement("span");
+		document.body.append(other);
+		mounted.push(mountFigureMotion(other, "crown", "#0fbd59", artwork, { identity: "cut-short" }));
+		await settle();
+		other.querySelector("canvas")!.dispatchEvent(new Event("animationcancel", { bubbles: true }));
+		expect(other.querySelector("canvas")!.dataset.arrive).toBeUndefined();
 	});
 	it("stops offscreen playback and holds a non-animated pose under reduced motion", async () => {
 		const host = mount("Working");

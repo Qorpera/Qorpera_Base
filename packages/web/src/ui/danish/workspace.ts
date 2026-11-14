@@ -502,8 +502,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Close computer": "Luk computer",
 	"{name} · Computer": "{name} · Computer",
 	"Agent computer": "Agentens computer",
-	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
-		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
 	"Computer access is not available yet.": "Adgang til computeren er ikke tilgængelig endnu.",
 	"{name} is not using a computer right now.": "{name} bruger ikke en computer lige nu.",
 	"{name} gets one when a task needs a screen.": "{name} får en, når en opgave kræver en skærm.",

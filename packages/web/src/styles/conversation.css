@@ -708,21 +708,23 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .file-preview-placeholder .icon { width: 48px; height: 48px; color: var(--text-soft); }
 
-.computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
+/* The agent's computer is a row of its thread, beside the agent's figure (Jonas, 14 Nov 2026; conversation.ts #computerRow): the window takes the thread's width, up to a size where the desktop reads well, and a line under it says what the agent does there. */
+.thread-computer { display: flex; flex: none; align-items: flex-start; gap: 12px; width: 100%; max-width: 980px; margin-block: 6px; }
+.thread-computer-figure { flex: none; display: grid; place-items: center; width: 52px; height: 52px; }
+.thread-computer-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.thread-computer-window { position: relative; }
+.thread-computer-caption { margin: 0; padding: 0 2px; color: var(--text-muted); font-size: 13px; line-height: 1.4; }
+.thread-computer-caption[hidden] { display: none; }
+.computer-panel { position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 0; overflow: hidden; border: 1px solid var(--sidebar-divider); border-radius: 12px; background: #24262a; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); user-select: none; }
 /* The hover controls of the preview: the shade along its edges and the ink of the buttons over it, light on the light theme and dark on the dark one (dark.css). */
 .computer-panel { --computer-hover-shade: rgb(255 255 255 / 84%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
 /* The minimized preview keeps the size it had before the app was drawn larger (tokens.css --ui-scale): its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
-.computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; cursor: grab; touch-action: none; }
-.computer-panel.is-dragging { cursor: grabbing; user-select: none; }
-/* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
-.computer-panel:not(.is-entered):is([data-resize=n], [data-resize=s]) { cursor: ns-resize; }
-.computer-panel:not(.is-entered):is([data-resize=e], [data-resize=w]) { cursor: ew-resize; }
-.computer-panel:not(.is-entered):is([data-resize=nw], [data-resize=se]) { cursor: nwse-resize; }
-.computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
-.computer-panel.is-resizing { user-select: none; }
-/* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
+.computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; }
 /* Entered, the browser goes full screen and the guest screen sits in a thin bezel: a computer inside a computer. The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. The same frame stays inside the thread when the browser refuses full screen. */
-.computer-panel.is-entered { --computer-frame-bg: #121316; top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); }
+/* The thread's edge fade (app.css .scroll-quiet) is a mask, which would hold the large view under the thread's foot and fade its top: off while the computer is entered. */
+.messages:has(.computer-panel.is-entered) { -webkit-mask-image: none; mask-image: none; }
+/* The row scrolls with the thread, so the large view is fixed over the box of the thread it stands in (computer-place.ts sets it). */
+.computer-panel.is-entered { --computer-frame-bg: #121316; position: fixed; z-index: 20; top: calc(var(--computer-box-top, 0px) + var(--titlebar-height) + 8px); left: calc(var(--computer-box-left, 0px) + 8px); right: calc(var(--computer-box-right, 0px) + 8px); bottom: calc(var(--computer-box-bottom, 0px) + 8px); width: auto; height: auto; max-height: none; aspect-ratio: auto; border-radius: 8px; border-color: rgb(255 255 255 / 8%); box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: var(--computer-frame-bg); }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
 .computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px auto minmax(0, 1fr); }
@@ -761,12 +763,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .computer-close::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center / contain no-repeat; }
 .computer-panel .computer-close:hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
 .computer-panel:hover .computer-close, .computer-panel:focus-within:not(.is-pointer-focus) .computer-close { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) .computer-close { opacity: 0; pointer-events: none; }
 .computer-panel.is-entered .computer-close { display: none; }
 .computer-panel .screen-viewer-enter[hidden] { display: none; }
 /* Hover shows the controls, and so does keyboard focus. A click or a drag focuses the panel as well (is-pointer-focus, set in computer.ts); that focus must not keep the controls up once the pointer has left. */
 .computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-enter { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) .screen-viewer-enter { opacity: 0; pointer-events: none; }
 .computer-panel:not(.is-entered) .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel:not(.is-entered) .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel:not(.is-entered) .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }
@@ -862,7 +862,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .computer-switcher .icon { flex: none; width: 14px; height: 14px; }
 .computer-panel > .computer-switcher { position: absolute; top: 6px; left: 6px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
 .computer-panel:hover > .computer-switcher, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-switcher, .computer-panel > .computer-switcher.menu-open { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) > .computer-switcher { opacity: 0; pointer-events: none; }
 .computer-panel.is-entered > .computer-switcher, .computer-panel:not(.is-entered) .machine-screen-switcher-slot { display: none; }
 .computer-panel.is-entered .machine-screen-switcher-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
 .computer-panel.is-entered .machine-screen .computer-switcher { max-width: 100%; }
