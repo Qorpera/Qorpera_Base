@@ -1,7 +1,9 @@
 -- The company's days by kind (migration 20260930769000): only the vault's own function, called by the broker with the
 -- company's authority under the sync's live lease, writes them; a call replaces the company's rows of its range and
--- leaves the other days and companies alone; the cover tells which days were counted; a malformed call changes
--- nothing; nothing personal has a column.
+-- leaves the other days and companies alone; the cover tells which days were counted and under which bank secret, and a
+-- write under another bank secret clears the company's days; the days are dates in the company's time zone (Copenhagen
+-- without one), which the kept transactions' answer tells the vault; a malformed call changes nothing; nothing personal
+-- has a column.
 begin;
 
 insert into auth.users(id, email) values ('12670000-0000-4000-8000-000000000001', 'bank-days@example.test');
@@ -30,23 +32,25 @@ begin
 	if p_ok is not true then raise exception 'Failed: %', p_what; end if;
 end
 $$;
+-- The company has no time zone yet: its days are Copenhagen's.
 create function pg_temp.today() returns date language sql as $$
 	select (clock_timestamp() at time zone 'Europe/Copenhagen')::date
 $$;
--- The company's bank connection, sealed for its own authority, as the capture leaves it.
-do $$
+-- A company bank connection, sealed for the company's own authority, as the capture leaves it.
+create function pg_temp.connect(p_secret uuid, p_label text) returns void language plpgsql as $$
 declare v_envelope bytea := extensions.gen_random_bytes(64);
 begin
 	insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, connector_id,
 		secret_name, purpose, current_version, created_by_user_id, account_label)
-	values ('12670000-0000-4000-8000-0000000000e1', '12670000-0000-4000-8000-000000000010',
-		'12670000-0000-4000-8000-000000000020', '12670000-0000-4000-8000-0000000000d1', 'company', 'bank', 'primary',
-		'Company bank', 1, '12670000-0000-4000-8000-000000000001', 'Danske Bank');
+	values (p_secret, '12670000-0000-4000-8000-000000000010', '12670000-0000-4000-8000-000000000020',
+		'12670000-0000-4000-8000-0000000000d1', 'company', 'bank', 'primary', 'Company bank', 1,
+		'12670000-0000-4000-8000-000000000001', p_label);
 	insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
 		envelope_sha256, created_by_user_id)
-	values ('12670000-0000-4000-8000-0000000000e1', 1, '12670000-0000-4000-8000-0000000000d1', 'key-1', v_envelope,
+	values (p_secret, 1, '12670000-0000-4000-8000-0000000000d1', 'key-1', v_envelope,
 		encode(extensions.digest(v_envelope, 'sha256'), 'hex'), '12670000-0000-4000-8000-000000000001');
 end $$;
+select pg_temp.connect('12670000-0000-4000-8000-0000000000e1', 'Danske Bank');
 -- The broker's calls, under its own database login.
 create function pg_temp.claim() returns jsonb language plpgsql as $$
 declare v jsonb;
@@ -60,30 +64,44 @@ $$;
 create function pg_temp.lease() returns uuid language sql as $$
 	select lease_id from public.qorpera_bank_syncs where profile_id = '12670000-0000-4000-8000-000000000010'
 $$;
+-- The sync's own secret unless a test names another.
+create function pg_temp.secret() returns uuid language sql as $$
+	select secret_id from public.qorpera_bank_syncs where profile_id = '12670000-0000-4000-8000-000000000010'
+$$;
 create function pg_temp.days(p_from date, p_to date, p_days jsonb, p_lease uuid default null,
-	p_capability text default repeat('1', 64)) returns jsonb language plpgsql as $$
-declare v jsonb; v_lease uuid := coalesce(p_lease, pg_temp.lease());
+	p_capability text default repeat('1', 64), p_secret uuid default null) returns jsonb language plpgsql as $$
+declare v jsonb; v_lease uuid := coalesce(p_lease, pg_temp.lease()); v_secret uuid := coalesce(p_secret, pg_temp.secret());
 begin
 	set local session authorization qorpera_secret_broker;
 	v := public.qorpera_record_bank_days('12670000-0000-4000-8000-0000000000d1', p_capability,
-		'12670000-0000-4000-8000-0000000000e1', 1, v_lease, p_from, p_to, p_days);
+		v_secret, 1, v_lease, p_from, p_to, p_days);
+	reset session authorization;
+	return v;
+end
+$$;
+create function pg_temp.kept_answer() returns jsonb language plpgsql as $$
+declare v jsonb; v_lease uuid := pg_temp.lease(); v_secret uuid := pg_temp.secret();
+begin
+	set local session authorization qorpera_secret_broker;
+	v := public.qorpera_record_bank_transactions('12670000-0000-4000-8000-0000000000d1', repeat('1', 64), v_secret, 1,
+		v_lease, jsonb_build_array(repeat('a', 64)), '[]');
 	reset session authorization;
 	return v;
 end
 $$;
 create function pg_temp.finish() returns jsonb language plpgsql as $$
-declare v jsonb; v_lease uuid := pg_temp.lease();
+declare v jsonb; v_lease uuid := pg_temp.lease(); v_secret uuid := pg_temp.secret();
 begin
 	set local session authorization qorpera_secret_broker;
 	v := public.qorpera_finish_bank_sync('12670000-0000-4000-8000-0000000000d1', repeat('1', 64),
-		'12670000-0000-4000-8000-0000000000e1', 1, v_lease, 'current',
+		v_secret, 1, v_lease, 'current',
 		jsonb_build_object('schema', 'qorpera.bank-summary/v1', 'saldo', 1), null, 'deep', null);
 	reset session authorization;
 	return v;
 end
 $$;
-grant execute on function pg_temp.claim(), pg_temp.lease(), pg_temp.today(), pg_temp.days(date, date, jsonb, uuid, text),
-	pg_temp.finish() to qorpera_secret_broker;
+grant execute on function pg_temp.claim(), pg_temp.lease(), pg_temp.secret(), pg_temp.today(),
+	pg_temp.days(date, date, jsonb, uuid, text, uuid), pg_temp.kept_answer(), pg_temp.finish() to qorpera_secret_broker;
 create function pg_temp.row(p_day date, p_direction text, p_kind text, p_amount numeric, p_count integer)
 returns jsonb language sql as $$
 	select jsonb_build_object('day', p_day, 'direction', p_direction, 'kind', p_kind, 'amount', p_amount, 'count', p_count)
@@ -97,6 +115,9 @@ $$;
 create function pg_temp.cover() returns text language sql as $$
 	select format('%s..%s', pg_temp.today() - first_day, pg_temp.today() - last_day)
 	from public.qorpera_bank_days_cover where profile_id = '12670000-0000-4000-8000-000000000010'
+$$;
+create function pg_temp.cover_secret() returns uuid language sql as $$
+	select secret_id from public.qorpera_bank_days_cover where profile_id = '12670000-0000-4000-8000-000000000010'
 $$;
 
 -- 1. Nobody reads or writes the tables; only the broker may call the function, and only with the company's authority.
@@ -131,7 +152,7 @@ select pg_temp.check((select array_agg(attname::text order by attnum) from pg_at
 	= array['profile_id', 'day', 'direction', 'kind', 'amount', 'count'], 'the days'' columns');
 select pg_temp.check((select array_agg(attname::text order by attnum) from pg_attribute
 	where attrelid = 'public.qorpera_bank_days_cover'::regclass and attnum > 0 and not attisdropped)
-	= array['profile_id', 'first_day', 'last_day', 'written_at'], 'the cover''s columns');
+	= array['profile_id', 'secret_id', 'first_day', 'last_day', 'written_at'], 'the cover''s columns');
 select pg_temp.check((select bool_and(confdeltype = 'c' and confrelid = 'public.qorpera_profiles'::regclass) from pg_constraint
 	where contype = 'f' and conrelid in ('public.qorpera_bank_days'::regclass, 'public.qorpera_bank_days_cover'::regclass))
 	and (select count(*) = 2 from pg_constraint where contype = 'f'
@@ -158,7 +179,8 @@ begin
 		'lastDay', pg_temp.today(), 'rows', 5), 'the answer: ' || v::text);
 	perform pg_temp.check(pg_temp.kept() = '0 in other 40.00 1; 2 out other 6150.00 3; 5 in tax 2500.50 1; '
 		|| '10 in sales 4450.00 2; 10 out salaries 64000.00 1', 'the rows: ' || pg_temp.kept());
-	perform pg_temp.check(pg_temp.cover() = '10..0', 'the cover: ' || pg_temp.cover());
+	perform pg_temp.check(pg_temp.cover() = '10..0' and pg_temp.cover_secret() = '12670000-0000-4000-8000-0000000000e1',
+		'the cover: ' || pg_temp.cover());
 end $$;
 
 -- 5. A write replaces the rows of its range only: the days before it stay, and the cover keeps them.
@@ -233,9 +255,53 @@ begin
 	perform pg_temp.check(pg_temp.cover() = '5..0' and pg_temp.kept() = '5 out taxes 3.00 1', 'a new cover: ' || pg_temp.kept());
 end $$;
 
--- 8. Once the sync is finished, its lease is gone and so is the right to write.
+-- 8. The kept transactions' answer tells the vault the company's zone: Copenhagen while it has none.
+select pg_temp.check(pg_temp.kept_answer() ->> 'timeZone' = 'Europe/Copenhagen'
+	and pg_temp.kept_answer() ->> 'schema' = 'qorpera.bank-transactions-kept/v1', 'no zone is Copenhagen''s');
+
+-- 9. Once the sync is finished, its lease is gone and so is the right to write.
 select pg_temp.check(pg_temp.finish() ->> 'status' = 'current', 'the sync finishes');
 select pg_temp.refused($q$select pg_temp.days(pg_temp.today(), pg_temp.today(), '[]')$q$, '55000');
 select pg_temp.check(pg_temp.kept() = '5 out taxes 3.00 1', 'the days stay after the sync');
+
+-- 10. Another bank: the company disconnects and connects again under a new bank secret. Its first write clears every
+-- day counted under the earlier one, even days its range does not reach and a range that touches the old cover.
+update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = statement_timestamp(),
+	revoked_by_user_id = '12670000-0000-4000-8000-000000000001'
+where id = '12670000-0000-4000-8000-0000000000e1';
+select pg_temp.connect('12670000-0000-4000-8000-0000000000e2', 'Nordea');
+select pg_temp.check((pg_temp.claim() ->> 'secretId')::uuid = '12670000-0000-4000-8000-0000000000e2', 'the new bank is claimed');
+-- The old bank's secret is not the sync's now: a days write under it is refused, even with the live lease.
+select pg_temp.refused($q$select pg_temp.days(pg_temp.today(), pg_temp.today(), '[]', null, repeat('1', 64),
+	'12670000-0000-4000-8000-0000000000e1')$q$, '55000');
+do $$
+begin
+	perform pg_temp.days(pg_temp.today() - 1, pg_temp.today(), jsonb_build_array(
+		pg_temp.row(pg_temp.today(), 'in', 'sales', 11, 1)));
+	perform pg_temp.check(pg_temp.kept() = '0 in sales 11.00 1' and pg_temp.cover() = '1..0'
+		and pg_temp.cover_secret() = '12670000-0000-4000-8000-0000000000e2', 'another bank starts over: ' || pg_temp.kept());
+	-- Under the same secret again, the cover grows as before.
+	perform pg_temp.days(pg_temp.today() - 3, pg_temp.today() - 2, jsonb_build_array(
+		pg_temp.row(pg_temp.today() - 3, 'out', 'rent', 5, 1)));
+	perform pg_temp.check(pg_temp.kept() = '0 in sales 11.00 1; 3 out rent 5.00 1' and pg_temp.cover() = '3..0',
+		'the same bank grows its cover: ' || pg_temp.kept());
+end $$;
+
+-- 11. With a zone of its own, the company's days are its own dates: the kept answer names the zone, and the newest day
+-- a write may end on is tomorrow there. A zone the database does not know counts as none.
+update public.qorpera_profiles set time_zone = 'Pacific/Kiritimati' where id = '12670000-0000-4000-8000-000000000010';
+select pg_temp.check(pg_temp.kept_answer() ->> 'timeZone' = 'Pacific/Kiritimati', 'the company''s own zone');
+select pg_temp.check(pg_temp.days(
+	(clock_timestamp() at time zone 'Pacific/Kiritimati')::date + 1, (clock_timestamp() at time zone 'Pacific/Kiritimati')::date + 1,
+	'[]') ->> 'schema' = 'qorpera.bank-days-result/v1', 'tomorrow in the company''s zone');
+select pg_temp.refused(format('select pg_temp.days(%L, %L, %L)',
+	(clock_timestamp() at time zone 'Pacific/Kiritimati')::date + 2, (clock_timestamp() at time zone 'Pacific/Kiritimati')::date + 2,
+	'[]'), '22023');
+update public.qorpera_profiles set time_zone = 'Pacific/Pago_Pago' where id = '12670000-0000-4000-8000-000000000010';
+select pg_temp.refused(format('select pg_temp.days(%L, %L, %L)',
+	(clock_timestamp() at time zone 'Pacific/Pago_Pago')::date + 2, (clock_timestamp() at time zone 'Pacific/Pago_Pago')::date + 2,
+	'[]'), '22023');
+update public.qorpera_profiles set time_zone = 'Mars/Olympus' where id = '12670000-0000-4000-8000-000000000010';
+select pg_temp.check(pg_temp.kept_answer() ->> 'timeZone' = 'Europe/Copenhagen', 'an unknown zone is Copenhagen''s');
 
 rollback;

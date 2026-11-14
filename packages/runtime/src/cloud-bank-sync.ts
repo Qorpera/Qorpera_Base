@@ -92,6 +92,7 @@ const SHA = /^[0-9a-f]{64}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const CURRENCY = /^[A-Z]{3}$/;
+const TIME_ZONE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
 /** When the consent ends, as Enable Banking writes it (microseconds and an offset); the database parses it. */
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 const DATABASE_DEADLINE_MS = 10_000;
@@ -157,7 +158,9 @@ function parseClaim(value: unknown): Claim | null {
 	};
 }
 
-function parseKept(value: unknown): Omit<KeptBankTransaction, "key">[] {
+/** What the database kept, and the company's time zone (20260930769000; absent from an earlier database, and then
+ * the reduction's fallback). A zone of another shape is taken as none. */
+function parseKept(value: unknown): { transactions: Omit<KeptBankTransaction, "key">[]; timeZone: string | null } {
 	const input = value as Record<string, unknown>;
 	if (
 		!input ||
@@ -166,7 +169,11 @@ function parseKept(value: unknown): Omit<KeptBankTransaction, "key">[] {
 		!Array.isArray(input.transactions)
 	)
 		throw new Error("Kept bank transactions are invalid");
-	return input.transactions.map((item) => {
+	const timeZone =
+		typeof input.timeZone === "string" && input.timeZone.length <= 64 && TIME_ZONE.test(input.timeZone)
+			? input.timeZone
+			: null;
+	const transactions = input.transactions.map((item) => {
 		const row = item as Record<string, unknown>;
 		if (
 			!row ||
@@ -192,6 +199,7 @@ function parseKept(value: unknown): Omit<KeptBankTransaction, "key">[] {
 			text: row.text as string | null,
 		};
 	});
+	return { transactions, timeZone };
 }
 
 /** The sealed session: its id, the accounts the member shared, the bank's name and when the consent ends. */
@@ -375,13 +383,14 @@ export class CloudBankSyncs {
 			const reading: BankSummaryInput = {
 				bank: fetched.bank,
 				now: this.#now(),
+				timeZone: kept.timeZone,
 				pausedSince: null,
 				payTo,
 				accounts: fetched.accounts.map((account) => ({
 					balances: account.balances,
 					// What the database keeps (booked, from every fetch so far) and what is still pending now.
 					transactions: [
-						...kept
+						...kept.transactions
 							.filter((transaction) => transaction.accountKey === account.key)
 							.map((transaction) => ({
 								reference: null,

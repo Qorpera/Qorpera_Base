@@ -1,6 +1,6 @@
 import {
 	BANK_DAYS_MAX,
-	copenhagenDay,
+	companyDay,
 	danishAccount,
 	reduceBankDays,
 	reduceBankSummary,
@@ -428,11 +428,12 @@ describe("the days by kind", () => {
 	});
 });
 
-describe("today is the Copenhagen date", () => {
-	const at = (moment: string, transactions: EnableBankingTransaction[] = []) => {
+describe("today is the company's date, in Copenhagen when it has no zone", () => {
+	const at = (moment: string, transactions: EnableBankingTransaction[] = [], timeZone?: string | null) => {
 		const reading = {
 			bank: "Danske Bank",
 			now: new Date(moment),
+			timeZone,
 			pausedSince: null,
 			payTo: null,
 			accounts: [{ balances: [], transactions }],
@@ -452,20 +453,20 @@ describe("today is the Copenhagen date", () => {
 
 	it("turns at midnight in Copenhagen, summer and winter, not at midnight UTC", () => {
 		// Summer (UTC+2): 23:59 and 00:00 in Copenhagen.
-		expect(copenhagenDay(new Date("2026-07-14T21:59:59Z"))).toBe("2026-07-14");
-		expect(copenhagenDay(new Date("2026-07-14T22:00:00Z"))).toBe("2026-07-15");
+		expect(companyDay(new Date("2026-07-14T21:59:59Z"))).toBe("2026-07-14");
+		expect(companyDay(new Date("2026-07-14T22:00:00Z"))).toBe("2026-07-15");
 		// Winter (UTC+1).
-		expect(copenhagenDay(new Date("2026-12-31T22:59:59Z"))).toBe("2026-12-31");
-		expect(copenhagenDay(new Date("2026-12-31T23:00:00Z"))).toBe("2027-01-01");
+		expect(companyDay(new Date("2026-12-31T22:59:59Z"))).toBe("2026-12-31");
+		expect(companyDay(new Date("2026-12-31T23:00:00Z"))).toBe("2027-01-01");
 		// The nights the clocks change: 29 March (02:00 becomes 03:00) and 25 October (03:00 becomes 02:00).
-		expect(copenhagenDay(new Date("2026-03-28T22:59:59Z"))).toBe("2026-03-28");
-		expect(copenhagenDay(new Date("2026-03-28T23:00:00Z"))).toBe("2026-03-29");
-		expect(copenhagenDay(new Date("2026-03-29T21:59:59Z"))).toBe("2026-03-29");
-		expect(copenhagenDay(new Date("2026-03-29T22:00:00Z"))).toBe("2026-03-30");
-		expect(copenhagenDay(new Date("2026-10-24T21:59:59Z"))).toBe("2026-10-24");
-		expect(copenhagenDay(new Date("2026-10-24T22:00:00Z"))).toBe("2026-10-25");
-		expect(copenhagenDay(new Date("2026-10-25T22:59:59Z"))).toBe("2026-10-25");
-		expect(copenhagenDay(new Date("2026-10-25T23:00:00Z"))).toBe("2026-10-26");
+		expect(companyDay(new Date("2026-03-28T22:59:59Z"))).toBe("2026-03-28");
+		expect(companyDay(new Date("2026-03-28T23:00:00Z"))).toBe("2026-03-29");
+		expect(companyDay(new Date("2026-03-29T21:59:59Z"))).toBe("2026-03-29");
+		expect(companyDay(new Date("2026-03-29T22:00:00Z"))).toBe("2026-03-30");
+		expect(companyDay(new Date("2026-10-24T21:59:59Z"))).toBe("2026-10-24");
+		expect(companyDay(new Date("2026-10-24T22:00:00Z"))).toBe("2026-10-25");
+		expect(companyDay(new Date("2026-10-25T22:59:59Z"))).toBe("2026-10-25");
+		expect(companyDay(new Date("2026-10-25T23:00:00Z"))).toBe("2026-10-26");
 	});
 
 	it("counts a payment booked on the new day just after midnight, in the summary and the days", () => {
@@ -496,6 +497,29 @@ describe("today is the Copenhagen date", () => {
 			].sort(),
 		);
 		expect(summary.updatedAt).toBe("2026-10-31T23:30:00.000Z");
+	});
+
+	it("takes the company's own zone, and Copenhagen when it has none or an unknown one", () => {
+		// 23:30 on 31 October in New York is 04:30 on 1 November in Copenhagen.
+		const moment = new Date("2026-11-01T03:30:00Z");
+		expect(companyDay(moment, "America/New_York")).toBe("2026-10-31");
+		expect(companyDay(moment, "Asia/Tokyo")).toBe("2026-11-01");
+		expect(companyDay(new Date("2026-10-31T15:30:00Z"), "Asia/Tokyo")).toBe("2026-11-01");
+		for (const none of [undefined, null, "", "Mars/Olympus_Mons", "../etc/passwd", "x".repeat(65)])
+			expect(companyDay(moment, none)).toBe("2026-11-01");
+		const york = at("2026-11-01T03:30:00Z", [on("2026-10-31", 100), on("2026-11-01", 40)], "America/New_York");
+		expect(york.days.to).toBe("2026-10-31");
+		expect(york.days.days.map((row) => row.day)).toEqual(["2026-10-31"]);
+		expect(york.summary.history.at(-1)?.date).toBe("2026-10-31");
+		expect(york.summary.moneyIn.month).toBe("2026-10");
+		const tokyo = at("2026-10-31T15:30:00Z", [on("2026-11-01", 40)], "Asia/Tokyo");
+		expect(tokyo.days).toMatchObject({ from: "2026-11-01", to: "2026-11-01" });
+		expect(tokyo.summary.moneyOut.month).toBe("2026-11");
+		// No zone (null) is Copenhagen's date.
+		const none = at("2026-11-01T03:30:00Z", [on("2026-11-01", 40)], null);
+		expect(none.days.to).toBe("2026-11-01");
+		expect(none.summary.months.at(-1)).toEqual({ month: "2026-11", in: 40, out: 0 });
+		expect(Object.keys(york.summary).sort()).toEqual(Object.keys(none.summary).sort());
 	});
 
 	it("leaves out a payment dated after today in Copenhagen", () => {

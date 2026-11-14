@@ -11,9 +11,10 @@ import type { EnableBankingBalance, EnableBankingTransaction } from "./cloud-con
  * short list of words (salaries, rent, taxes, utilities, subscriptions, fees) and by rhythm, the rest as Other. An agent
  * or the member can refine them later; this is the floor the page always has.
  *
- * The same reading also gives the company's days by kind (`reduceBankDays`): money in and out each Copenhagen day,
- * summed by a kind word, never by a name, for the company's numbers (`qorpera_bank_days`). "Today" is the Copenhagen
- * date for both: a booked transaction's date is the Danish bank's own day.
+ * The same reading also gives the company's days by kind (`reduceBankDays`): money in and out each day, summed by a
+ * kind word, never by a name, for the company's numbers (`qorpera_bank_days`). "Today" is the date in the company's
+ * own time zone for both (Europe/Copenhagen when it has none or an unknown one); a booked transaction's date is its
+ * bank's own day.
  */
 
 export const BANK_SUMMARY_SCHEMA = "qorpera.bank-summary/v1";
@@ -38,6 +39,8 @@ export interface BankSummaryInput {
 	readonly bank: string;
 	/** Now, as the broker sees it. */
 	readonly now: Date;
+	/** The company's time zone (an IANA name), whose date is today; Europe/Copenhagen when absent, null or unknown. */
+	readonly timeZone?: string | null;
 	/** The day the consent ended, or null while it lasts. */
 	readonly pausedSince: string | null;
 	readonly payTo: { readonly reg: string; readonly account: string } | null;
@@ -78,16 +81,31 @@ const NAME_MAX = 80;
 const kr = (value: number) => Math.round(value * 100) / 100;
 const iso = (time: number) => new Date(time).toISOString().slice(0, 10);
 const dayTime = (value: string) => Date.parse(`${value}T00:00:00Z`);
-const COPENHAGEN_DAY = new Intl.DateTimeFormat("en-CA", {
-	timeZone: "Europe/Copenhagen",
-	year: "numeric",
-	month: "2-digit",
-	day: "2-digit",
-});
-/** The calendar day in Copenhagen at a moment, as YYYY-MM-DD: the company's today (one zone until a company has its
- * own). The UTC date is a day behind from midnight until 01:00 (02:00 in summer). */
-export function copenhagenDay(moment: Date): string {
-	const parts = COPENHAGEN_DAY.formatToParts(moment);
+/** The zone of a company that has none, or one this runtime does not know (the database's rule is the same). */
+export const BANK_TIME_ZONE_FALLBACK = "Europe/Copenhagen";
+const ZONE_SHAPE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+
+function dayFormat(timeZone: string | null | undefined): Intl.DateTimeFormat {
+	const zone = timeZone && timeZone.length <= 64 && ZONE_SHAPE.test(timeZone) ? timeZone : BANK_TIME_ZONE_FALLBACK;
+	let format = dayFormats.get(zone);
+	if (!format) {
+		try {
+			format = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" });
+		} catch {
+			// A name this runtime's time zone data does not know.
+			return dayFormat(BANK_TIME_ZONE_FALLBACK);
+		}
+		// Bounded: a vault serves its companies' zones, a few hundred names at most exist.
+		if (dayFormats.size < 1000) dayFormats.set(zone, format);
+	}
+	return format;
+}
+
+/** The calendar day at a moment in the company's time zone, as YYYY-MM-DD: the company's today. The UTC date differs
+ * from it for part of every day (in Copenhagen from midnight until 01:00, 02:00 in summer). */
+export function companyDay(moment: Date, timeZone?: string | null): string {
+	const parts = dayFormat(timeZone).formatToParts(moment);
 	const part = (type: string) => parts.find((each) => each.type === type)?.value ?? "";
 	return `${part("year")}-${part("month")}-${part("day")}`;
 }
@@ -287,7 +305,7 @@ function partiesOf(
 }
 
 export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
-	const today = dayTime(copenhagenDay(input.now));
+	const today = dayTime(companyDay(input.now, input.timeZone));
 	// Each account on its own: its saldo today, and what is disponibel (its saldo when the bank gives no available
 	// balance); then the accounts together.
 	let saldoTotal = 0;
@@ -450,7 +468,7 @@ export type BankDay =
 
 export interface BankDays {
 	schema: typeof BANK_DAYS_SCHEMA;
-	/** The first and last day the reduction covers (Copenhagen dates): a day inside with no row had no money moving. */
+	/** The first and last day the reduction covers (the company's dates): a day inside with no row had no money moving. */
 	from: string;
 	to: string;
 	/** Each day's money in and money out by kind, in kroner (always positive) and how many payments; only kinds that
@@ -459,11 +477,11 @@ export interface BankDays {
 }
 
 /** The company's money in and out each day, by kind, from the same accounts and transactions as the summary: from
- * the first booked day it has (at most `BANK_DAYS_MAX` days back) to today in Copenhagen. Money out's kind is the
+ * the first booked day it has (at most `BANK_DAYS_MAX` days back) to the company's today. Money out's kind is the
  * summary's category of its receiver (read over the whole history, so this month's days add up to the summary's
  * categories); money in's is a word for what paid it. */
 export function reduceBankDays(input: BankSummaryInput): BankDays {
-	const to = copenhagenDay(input.now);
+	const to = companyDay(input.now, input.timeZone);
 	const today = dayTime(to);
 	const booked = input.accounts.flatMap((account) => bookedOf(account, today));
 	const first = booked.reduce((earliest, transaction) => Math.min(earliest, dayTime(transaction.date)), today);

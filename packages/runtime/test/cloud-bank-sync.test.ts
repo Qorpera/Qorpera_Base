@@ -58,6 +58,7 @@ function fixture(options: {
 	kept?: (sent: readonly KeptBankTransaction[]) => unknown[];
 	complete?: boolean;
 	daysError?: Error;
+	timeZone?: unknown;
 }) {
 	const finished: Parameters<BankSyncAuthority["finishBankSync"]>[0][] = [];
 	const recorded: Parameters<BankSyncAuthority["recordBankTransactions"]>[0][] = [];
@@ -69,7 +70,11 @@ function fixture(options: {
 			const kept = options.kept
 				? options.kept(input.transactions)
 				: input.transactions.map(({ key: _key, ...rest }) => rest);
-			return { schema: "qorpera.bank-transactions-kept/v1", transactions: kept };
+			return {
+				schema: "qorpera.bank-transactions-kept/v1",
+				transactions: kept,
+				...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
+			};
 		}),
 		recordBankDays: vi.fn(async (input: Parameters<BankSyncAuthority["recordBankDays"]>[0]) => {
 			days.push(input);
@@ -250,6 +255,33 @@ it("records the days by kind of the accounts shared now before the summary, unde
 	const recordDays = vi.mocked(f.authority.recordBankDays).mock.invocationCallOrder[0] ?? 0;
 	expect(recordDays).toBeGreaterThan(vi.mocked(f.authority.recordBankTransactions).mock.invocationCallOrder[0] ?? 0);
 	expect(recordDays).toBeLessThan(vi.mocked(f.authority.finishBankSync).mock.invocationCallOrder[0] ?? 0);
+});
+
+it("reads the company's days in the time zone the database names, and Copenhagen's without one", async () => {
+	// 12:00 UTC on 21 October is the 21st in Copenhagen and still the 21st in Honolulu (02:00); 23:30 UTC is the 22nd in
+	// Copenhagen and 13:30 on the 21st in Honolulu.
+	const late = new Date("2026-10-21T23:30:00.000Z");
+	const transactions = [booked("2026-10-21", 100, "Kunde"), booked("2026-10-22", 40, "Kunde")];
+	const run = async (timeZone: unknown) => {
+		const f = fixture({ transactions, timeZone });
+		const syncs = new CloudBankSyncs({
+			authority: f.authority,
+			keyring: f.keyring as never,
+			bank: f.bank,
+			now: () => late,
+		});
+		expect(await syncs.pass(signal)).toBe("current");
+		return { days: f.days[0], summary: f.finished[0]?.summary };
+	};
+	const honolulu = await run("Pacific/Honolulu");
+	expect(honolulu.days).toMatchObject({ from: "2026-10-21", to: "2026-10-21" });
+	expect(honolulu.days?.days.map((row) => row.day)).toEqual(["2026-10-21"]);
+	expect(honolulu.summary?.history.at(-1)?.date).toBe("2026-10-21");
+	for (const none of [undefined, null, "../../etc", 7]) {
+		const copenhagen = await run(none);
+		expect(copenhagen.days).toMatchObject({ from: "2026-10-21", to: "2026-10-22" });
+		expect(copenhagen.summary?.history.at(-1)?.date).toBe("2026-10-22");
+	}
 });
 
 it("records the summary when the days could not be recorded, and no days of a fetch that publishes no summary", async () => {

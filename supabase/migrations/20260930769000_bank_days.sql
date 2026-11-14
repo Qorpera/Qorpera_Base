@@ -1,8 +1,7 @@
 -- 20260930769000: the company's money in and out each day, by kind (company views, step 3, slice M2:
 -- lanes/company-views-20261114/DESIGN-3.md §B and §E). The vault's bank sync (20260930523000) reduces the booked
--- transactions of the accounts the member shares now to the bank summary; the same reading now also gives each
--- Copenhagen day's money in and money out, summed by a kind word, and the vault records them here before it finishes the
--- sync. Only the vault knows which accounts count now (the transactions table keeps an earlier bank's rows too), so SQL
+-- transactions of the accounts the member shares now to the bank summary; the same reading now also gives each day's
+-- money in and money out, summed by a kind word, and the vault records them here before it finishes the sync. Only the vault knows which accounts count now (the transactions table keeps an earlier bank's rows too), so SQL
 -- never makes these days itself. The company's numbers (`money-days`, `money-kinds` over any range) read them.
 --
 -- - qorpera_bank_days: one row a company, day, direction and kind, with the kroner (always positive) and how many
@@ -11,7 +10,13 @@
 --   other). No party, transfer text, account or single payment is kept: a day's kind with one payment is that payment's
 --   amount and day, which the members who may read it see on the Bank page anyway.
 -- - qorpera_bank_days_cover: the days a company's rows cover, so a reader tells a day without money moving (inside the
---   cover, no row) from a day nobody counted (outside it). Every row lies inside the cover.
+--   cover, no row) from a day nobody counted (outside it), and the bank secret they were counted under. Every row lies
+--   inside the cover; a write under another bank secret (another bank) clears the company's days first.
+-- - Days are the company's own: "today" and every day are dates in the company's time zone (qorpera_profiles.time_zone,
+--   20260930739000), Europe/Copenhagen when it has none or one the database does not know
+--   (qorpera_bank_days_time_zone, the rule the company's numbers read by too). The vault learns the zone from the answer
+--   that hands it the kept transactions: qorpera_record_bank_transactions gains `timeZone` (a vault from before this
+--   reads only the keys it knows).
 --
 -- Only the vault's own function reaches them (as the broker role, with the company's authority, under the sync's live
 -- lease); they go with the company. A vault from before this migration never calls it, so a company's days stay empty
@@ -19,7 +24,7 @@
 
 create table public.qorpera_bank_days (
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	-- A Copenhagen calendar day: a booked transaction's date is its Danish bank's day.
+	-- A calendar day in the company's time zone: a booked transaction's date is its bank's own day.
 	day date not null,
 	direction text not null check (direction in ('in', 'out')),
 	kind text not null check (
@@ -35,6 +40,8 @@ revoke all on public.qorpera_bank_days from public, anon, authenticated, service
 
 create table public.qorpera_bank_days_cover (
 	profile_id uuid primary key references public.qorpera_profiles(id) on delete cascade,
+	-- The bank secret (qorpera_cloud_secrets.id) whose sync wrote the days.
+	secret_id uuid not null,
 	first_day date not null,
 	last_day date not null,
 	written_at timestamptz not null,
@@ -43,11 +50,26 @@ create table public.qorpera_bank_days_cover (
 alter table public.qorpera_bank_days_cover enable row level security;
 revoke all on public.qorpera_bank_days_cover from public, anon, authenticated, service_role, qorpera_secret_broker;
 
+-- The company's time zone for its days: its own when the database knows the name, else Europe/Copenhagen.
+create function public.qorpera_bank_days_time_zone(p_profile_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select coalesce((select profile.time_zone from public.qorpera_profiles as profile
+		where profile.id = p_profile_id and profile.time_zone is not null
+			and public.qorpera_runtime_time_zone_name_valid(profile.time_zone)), 'Europe/Copenhagen')
+$$;
+revoke all on function public.qorpera_bank_days_time_zone(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- The leased sync's days (this claim's lease only): the company's rows from p_from to p_to are replaced by p_days in
--- one call. The cover grows by the range when it meets or touches it (older days stay, e.g. beyond the 13 months the
--- vault reads back); a range apart from it starts a new cover and the rows outside it go. At most 400 days, ending no
--- later than tomorrow in Copenhagen (the vault's clock may run a little ahead); each day in the range at most once a
--- direction and kind.
+-- one call. Under the cover's bank secret, the cover grows by the range when it meets or touches it (older days stay,
+-- e.g. beyond the 13 months the vault reads back); a range apart from it, or a write under another bank secret, starts
+-- a new cover and every row outside it goes. At most 400 days, ending no later than tomorrow in the company's time zone
+-- (the vault's clock may run a little ahead); each day in the range at most once a direction and kind.
 create function public.qorpera_record_bank_days(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -75,7 +97,7 @@ declare
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
 	if p_from is null or p_to is null or p_from > p_to or p_to - p_from >= 400
-		or p_to > (v_now at time zone 'Europe/Copenhagen')::date + 1
+		or p_to > (v_now at time zone public.qorpera_bank_days_time_zone(v_authority.profile_id))::date + 1
 		or jsonb_typeof(p_days) is distinct from 'array' or jsonb_array_length(p_days) > 4000
 		or exists (select 1 from jsonb_array_elements(p_days) as item(value)
 			where jsonb_typeof(item.value) <> 'object'
@@ -99,7 +121,8 @@ begin
 	from public.qorpera_bank_days_cover as cover
 	where cover.profile_id = v_authority.profile_id
 	for update;
-	if v_cover.profile_id is not null and v_cover.first_day <= p_to + 1 and v_cover.last_day >= p_from - 1 then
+	if v_cover.profile_id is not null and v_cover.secret_id = p_secret_id
+		and v_cover.first_day <= p_to + 1 and v_cover.last_day >= p_from - 1 then
 		v_first := least(v_cover.first_day, p_from);
 		v_last := greatest(v_cover.last_day, p_to);
 	else
@@ -123,10 +146,11 @@ begin
 		or numeric_value_out_of_range or check_violation or not_null_violation or unique_violation then
 		raise exception 'bank days are invalid' using errcode = '22023';
 	end;
-	insert into public.qorpera_bank_days_cover as cover (profile_id, first_day, last_day, written_at)
-	values (v_authority.profile_id, v_first, v_last, v_now)
+	insert into public.qorpera_bank_days_cover as cover (profile_id, secret_id, first_day, last_day, written_at)
+	values (v_authority.profile_id, p_secret_id, v_first, v_last, v_now)
 	on conflict (profile_id) do update
-	set first_day = excluded.first_day, last_day = excluded.last_day, written_at = excluded.written_at;
+	set secret_id = excluded.secret_id, first_day = excluded.first_day, last_day = excluded.last_day,
+		written_at = excluded.written_at;
 	return jsonb_build_object('schema', 'qorpera.bank-days-result/v1', 'firstDay', v_first, 'lastDay', v_last,
 		'rows', v_rows);
 end
@@ -135,3 +159,20 @@ revoke all on function public.qorpera_record_bank_days(uuid, text, uuid, bigint,
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_record_bank_days(uuid, text, uuid, bigint, uuid, date, date, jsonb)
 	to qorpera_secret_broker;
+
+-- The answer that hands the vault the kept transactions also says the company's time zone. A vault from before this
+-- reads only the keys it knows (cloud-bank-sync.ts, parseKept).
+do $$
+declare
+	v_definition text := pg_get_functiondef(
+		'public.qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)'::regprocedure);
+	v_old text := $old$return jsonb_build_object('schema', 'qorpera.bank-transactions-kept/v1', 'transactions', v_kept);$old$;
+begin
+	if position('20260930769000' in v_definition) > 0 then
+		raise exception '20260930769000 is already in qorpera_record_bank_transactions'; end if;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception '20260930769000 anchor differs in qorpera_record_bank_transactions'; end if;
+	execute replace(v_definition, v_old, $new$-- 20260930769000: the company's time zone, whose dates its days are.
+	return jsonb_build_object('schema', 'qorpera.bank-transactions-kept/v1', 'transactions', v_kept,
+		'timeZone', public.qorpera_bank_days_time_zone(v_authority.profile_id));$new$);
+end $$;
