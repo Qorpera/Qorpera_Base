@@ -681,7 +681,7 @@ const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
 /** Why a boot without a view of its own has no /company (#viewless). */
 const FOLDER_VIEWLESS = Object.freeze({
 	"old-helper":
-		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+		"this machine still runs an earlier image that is not handed the company folder; it gets /company once it sleeps or is stopped and starts again",
 	refused: "the company folder refused this machine's view",
 	closed: "the machine could not mount /company: the company folder closed each view it was handed",
 });
@@ -763,6 +763,11 @@ export interface CompanyMachineHostOptions {
 	/** Helpers of earlier images still on this node: their machines keep running until they sleep, and
 	 * wake fresh from the current image (their placement's policy is no longer the node's). */
 	previousHelperSha256s?: readonly string[];
+	/** Of those earlier helpers, the ones that take the company folder as the current one does (its `folder-mount` and the
+	 * folder program; every image's since v183, 19 Oct 2026): their boots get a view and keep the one the service holds,
+	 * as the current helper's do. Each is also in previousHelperSha256s. Any other earlier helper's boot gets none
+	 * (#settle). */
+	folderHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
 	/** How long a pass waits for its placements' steps (default 2 s; `Infinity`: for every step). One still running then
@@ -1382,6 +1387,7 @@ export class LxdCompanyMachineHost {
 			!SHA.test(options.machineIdSha256) ||
 			!SHA.test(options.helperSha256) ||
 			(options.previousHelperSha256s ?? []).some((sha) => !SHA.test(sha)) ||
+			(options.folderHelperSha256s ?? []).some((sha) => !options.previousHelperSha256s?.includes(sha)) ||
 			resolve(options.journalRoot) !== options.journalRoot ||
 			(options.folder !== undefined && typeof options.client.execInstanceStream !== "function")
 		)
@@ -1893,12 +1899,17 @@ export class LxdCompanyMachineHost {
 	 * start gets a view of its own: opened in SQL as the platform for this boot, then handed to the guest. After this
 	 * process restarted, a view the service still holds keeps the boot's /company (a new one would take it away from the
 	 * commands that run) and its boundaries keep fencing. A boot that gets no view of its own (a guest of an earlier
-	 * image, a refused open, views the guest answers closed) is left to #viewless; a busy or unconfirmed open, or a
-	 * hand-over without an answer, is tried again next pass, and starts wait meanwhile. */
+	 * image whose helper is not one of folderHelperSha256s, a refused open, views the guest answers closed) is left to
+	 * #viewless; a busy or unconfirmed open, or a hand-over without an answer, is tried again next pass, and starts wait
+	 * meanwhile. */
 	async #settle(e: CompanyMachineEntry, f: BootFolder, helperSha256: string, signal: AbortSignal): Promise<string> {
 		const folder = this.#options.folder as FolderControl;
-		// A guest of an earlier image is handed no view: whether its helper ever took one is not this image's to say.
-		if (helperSha256 !== this.#options.helperSha256) return this.#viewless(e, f, "old-helper", signal);
+		// A guest of an earlier image settles as any other only when its helper is one the node's configuration says takes
+		// the company folder as the current one does (folderHelperSha256s): after this process restarted, the views the
+		// service holds then keep its /company. Any other earlier helper is handed no view: whether it ever took one is not
+		// this image's to say.
+		if (helperSha256 !== this.#options.helperSha256 && !this.#options.folderHelperSha256s?.includes(helperSha256))
+			return this.#viewless(e, f, "old-helper", signal);
 		if (!f.asked) {
 			let held: string[];
 			try {
