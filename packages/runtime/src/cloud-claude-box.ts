@@ -496,6 +496,8 @@ export async function launchClaudeCodeBox(options: {
 			stdio: ["pipe", "pipe", "pipe", token !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
 			detached: true,
 		});
+		// Node's types name five descriptors; the box has six (3: the token, 4 and 5: the mount's SFTP stream).
+		const stdio = child.stdio as unknown as readonly (Readable | Writable | null)[];
 		const exited = new Promise<number>((resolve) => {
 			child.once("error", () => resolve(255));
 			child.once("close", (code, killed) => resolve(code ?? (killed ? 137 : 255)));
@@ -512,13 +514,13 @@ export async function launchClaudeCodeBox(options: {
 		});
 		// The sign-in: written once into descriptor 3 and closed; Claude Code reads it and the pipe is empty after.
 		if (token !== undefined) {
-			const tokenPipe = child.stdio[3] as Writable;
+			const tokenPipe = stdio[3] as Writable;
 			tokenPipe.on("error", () => undefined);
 			tokenPipe.end(token);
 		}
 		// sshfs <-> the home's sftp channel.
-		const toMount = child.stdio[4] as Writable;
-		const fromMount = child.stdio[5] as Readable;
+		const toMount = stdio[4] as Writable;
+		const fromMount = stdio[5] as Readable;
 		toMount.on("error", () => undefined);
 		fromMount.on("error", () => undefined);
 		void (async () => {
