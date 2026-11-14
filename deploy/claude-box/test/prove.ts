@@ -108,21 +108,22 @@ const channel: CloudClaudeHomeChannel = {
 		}),
 };
 
-const transport = {
+/** Anthropic's hosts, as the run's egress relay dials them, go to this run's stub. */
+const transport = (port: number) => ({
 	resolve: async () => ["93.184.216.34"],
-	connect: () => createConnection({ host: "127.0.0.1", port: STUB_PORT }),
-};
+	connect: () => createConnection({ host: "127.0.0.1", port }),
+});
 
-function stub(scenario: string, log: string): Promise<() => void> {
+function stub(scenario: string, log: string, port: number): Promise<() => void> {
 	const child = spawn(
 		"/usr/bin/python3",
-		["-I", `${P}/test/stub.py`, String(STUB_PORT), log, scenario, `${P}/tls/server.pem`, `${P}/tls/server.key`],
+		["-I", `${P}/test/stub.py`, String(port), log, scenario, `${P}/tls/server.pem`, `${P}/tls/server.key`],
 		{ stdio: ["ignore", "ignore", "inherit"] },
 	);
 	return new Promise((resolve) => {
 		const t0 = Date.now();
 		const tryConnect = (): void => {
-			const s = createConnection({ host: "127.0.0.1", port: STUB_PORT });
+			const s = createConnection({ host: "127.0.0.1", port });
 			s.once("connect", () => {
 				s.destroy();
 				resolve(() => child.kill("SIGKILL"));
@@ -228,11 +229,14 @@ interface RunOptions {
 	/** End the box this many ms after it starts (the run ends mid-command). */
 	endAfterMs?: number;
 	during?: (scratch: string) => Promise<void>;
+	/** The stub's port (two runs at once each have their own). */
+	port?: number;
 }
 
 async function run(options: RunOptions): Promise<Record<string, unknown>> {
 	const scratch = options.scratch ?? mkdtempSync(join(BASE, "run-"));
-	const stopStub = await stub(options.scenario, join(OUT, `stub-${options.tag}.jsonl`));
+	const port = options.port ?? STUB_PORT;
+	const stopStub = await stub(options.scenario, join(OUT, `stub-${options.tag}.jsonl`), port);
 	const sessionId = randomUUID();
 	const t0 = Date.now();
 	const controller = new AbortController();
@@ -249,7 +253,7 @@ async function run(options: RunOptions): Promise<Record<string, unknown>> {
 			machineId: MACHINE,
 			prompt: "Run the C2 scenario.",
 			signal: controller.signal,
-			proof: { transport, extraCa: `${P}/tls/ca.pem`, weakening: options.weakening },
+			proof: { transport: transport(port), extraCa: `${P}/tls/ca.pem`, weakening: options.weakening },
 		});
 		record.startMs = Date.now() - t0;
 		record.sshfsMountsInDriverNamespace = sshfsMountsHere();
@@ -360,6 +364,7 @@ async function main(): Promise<void> {
 			tag: "two-second",
 			scenario: `${P}/scen/second.json`,
 			login: { token: token("FD2") },
+			port: STUB_PORT + 1,
 		});
 		await firstRun;
 	}

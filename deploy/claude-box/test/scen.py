@@ -142,7 +142,7 @@ elif kind == "second":
         T("Write", "second-write", file_path=f"{R}/c2-second.txt", content="from the second member's box\n"),
     ]
 elif kind == "end":
-    steps = [B("sleep 600; echo should-not-print", "long", timeout=600000)]
+    steps = [B("python3 -c 'import time; time.sleep(600)'; echo should-not-print", "long", timeout=600000)]
 elif kind == "attack-next":
     steps = [B("echo second session; ls -la " + R + "/c2-trap", "next")]
 elif kind == "both-cc":

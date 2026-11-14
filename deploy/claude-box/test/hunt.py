@@ -77,7 +77,7 @@ if "--disk" in sys.argv:
 gw = subprocess.run(["sh", "-c", "ip route | awk '/^default/{print $3; exit}'"], capture_output=True, text=True).stdout.strip()
 reach = {}
 for host in filter(None, [gw, "10.201.0.2"]):
-    for port in (18443,):
+    for port in (18443, 18444):
         s = socket.socket()
         s.settimeout(2)
         try:

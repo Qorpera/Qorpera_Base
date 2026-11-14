@@ -85,7 +85,7 @@ echo "=== gateway"; tr -d '\n ' <$B/gateway-summary.json; echo
 grep -hE '"ev": "(CANARY|error|bad-line)' $B/gateway.jsonl | head -20
 
 echo "=== after the runs: the home's channel units, commands left, sshfs mounts and the proof account's processes on the run host"
-X sh -c 'systemctl list-units --all --no-legend --plain "qorpera-machine-home-*" | cut -d" " -f1,3,4 | head; pgrep -a -f "^sleep 600" || echo "no sleep 600 left on the home"'
+X sh -c 'systemctl list-units --all --no-legend --plain "qorpera-machine-home-*" | cut -d" " -f1,3,4 | head; pgrep -af "time.sleep.600" | grep -v pgrep || echo "no long command left on the home"'
 # Other lanes' namespaces on this shared test VM may hold sshfs mounts of their own: name the owner of each.
 mine=0
 for f in $(grep -l "fuse.sshfs" /proc/[0-9]*/mountinfo 2>/dev/null); do
