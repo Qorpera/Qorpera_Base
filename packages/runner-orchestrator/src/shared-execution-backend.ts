@@ -1230,6 +1230,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const coding = runtime.codingCommand;
 		if (coding && (Object.values(credentials).includes(coding.token) || coding.token === office?.token))
 			throw new Error("Governed coding command credential must be independent");
+		const data = runtime.companyData;
+		if (
+			data &&
+			(Object.values(credentials).includes(data.token) ||
+				data.token === office?.token ||
+				data.token === coding?.token)
+		)
+			throw new Error("Company data credential must be independent");
 		if (
 			[runtime.objectGatewayToken, runtime.secretBroker.runtimeToken].some((value) =>
 				Object.values(credentials).includes(value),
@@ -1331,6 +1339,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+			// The CA's path is the unit's own (%d/qorpera-company-data-ca); the URL alone turns the data tools on.
+			...(data ? [`QORPERA_COMPANY_DATA_URL=${data.origin}`] : []),
 			...(this.#config.folderSearch
 				? [`QORPERA_FOLDER_SEARCH_SOCKET=${FOLDER_RELAY_DIRECTORY}/${current.slot}.sock`]
 				: []),
@@ -1361,6 +1371,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// An unconfigured route has no authority; the credential source still exists and is empty.
 			[join(credentialDirectory, "qorpera-office-native"), office ? `${office.token}\n` : ""],
 			[join(credentialDirectory, "qorpera-coding-command"), coding ? `${coding.token}\n` : ""],
+			[join(credentialDirectory, "qorpera-company-data"), data ? `${data.token}\n` : ""],
+			[join(credentialDirectory, "qorpera-company-data-ca"), data ? data.caCertificate : ""],
 			[join(credentialDirectory, "qorpera-native-provider-master-key"), identity ? `${identity.masterKey}\n` : ""],
 			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity ? identity.epochCredential : ""],
 		];

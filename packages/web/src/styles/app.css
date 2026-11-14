@@ -280,20 +280,24 @@ label > input, label > select { font-weight: 400; }
 /* The V24 company rail. RailLayout sets its width on the rail and its edge, the only two
  * readers; not inheriting, a change never restyles what is inside the rail. */
 @property --rail-width { syntax: "*"; inherits: false; }
-.rail {
+/* The rail's own colours and type, shared with the Concepts viewer's side panel, which is the rail in that view
+ * (styles/conversation.css; Jonas, 13 Nov 2026: it should match the regular sidepanel's style and width). */
+:is(.rail, .concepts-side) {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
 	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px). */
 	--rail-waiting: #8f5000;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+.rail {
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
 	/* Messages' sidebar: 10px insets, a darker edge line than the other dividers (Jonas, 9 Nov 2026). */
 	padding: 0 10px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
 	--figure: 82px; --lift: 37px;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
 /* One top row (Jonas, 5 Nov 2026): the company's name, which opens the member's companies, then
@@ -567,15 +571,15 @@ label > input, label > select { font-weight: 400; }
 /* As in a Messages contact row: the name sits at the top of the row, 10px under the
  * selection's edge, in bold; the figure stays centered (Jonas, 9 Nov 2026). */
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; align-self: start; padding-top: 3px; }
-.rail-row-copy strong { font-size: 13px; font-weight: 700; line-height: 16px; }
-.rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
+:is(.rail-row-copy, .concepts-item-copy) strong { font-size: 13px; font-weight: 700; line-height: 16px; }
+:is(.rail-row-copy, .concepts-item-copy) small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
 /* The rail's names and lines draw with macOS's own text smoothing, as Messages' sidebar does:
  * body's "antialiased" draws them about a fifth lighter than the native row beside them
  * (Jonas, 9 Nov 2026). */
-.rail-row-copy, .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
+:is(.rail-row-copy, .concepts-item-copy), .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
-.cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+.cofounder-home strong, :is(.rail-row-copy, .concepts-item-copy) :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: rgba(255, 255, 255, 0.92); }
 /* A run that did not finish says so in red under the name; the selected row keeps its white. */
 .rail-row:not(.active) .rail-row-copy small.is-failed { color: #c4161c; }
 /* Stopped at the member ("Stopped: …", or "Needs you"): in the warning colour; the selected row keeps its white. */
@@ -652,6 +656,9 @@ label > input, label > select { font-weight: 400; }
 .figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
+/* A figure whose artwork was still loading fades into its empty place, in its own colour (ui/figure-motion.ts). */
+.figure-canvas[data-arrive] { animation: figure-arrive var(--motion-base) var(--ease-out) both; }
+@keyframes figure-arrive { from { opacity: 0; } }
 /* The figure acts (ui/figure-acts.ts): its body's jumps, spins and leans are a transform on the canvas, about the
  * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol,
  * the stars it juggles while it works, the stars of a cheer) fly and fade here, over the figure. */

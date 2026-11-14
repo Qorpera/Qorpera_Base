@@ -87,6 +87,14 @@ export type AppAsk =
 			readonly draft: string;
 			/** A note its thread could not take, kept for the app until it is sent or let go (`HeldNote`). */
 			readonly held?: true;
+	  }
+	| {
+			/** A web page the member clicked a link to in the app's page (Jonas, 13 November 2026: "Show the address first"):
+			 * it opens in a new tab only once the member has seen its whole address on the bar and pressed Open. */
+			readonly kind: "link";
+			/** The address as the browser will open it (`URL.href`, app/interface-apps.ts `appLink`): ASCII only, its host in
+			 * punycode, with no name or password in it. */
+			readonly href: string;
 	  };
 
 /** How a note went: sent as the member's message, or waiting in the agent's thread (`href`) for the member to send, or
@@ -108,11 +116,12 @@ export interface PreparedAsk {
 	readonly keep?: (words: string | undefined) => void;
 }
 
-/** How a request ended. `told`: the member sent the note, and it went (`sent`) or waits in the agent's thread. `busy`:
+/** How a request ended. `opened`: the member pressed Open, and the web page opened in a new tab. `told`: the member
+ * sent the note, and it went (`sent`) or waits in the agent's thread. `busy`:
  * another one was on the bar. `quiet`: the member said not now three times in a row, so the app asks no more until
  * they reload it. `gone`: the page it came from was put away, or its manifest changed, before the member chose. */
 export type AppGateOutcome =
-	| { readonly outcome: "saved" | "declined" | "busy" | "quiet" | "gone" }
+	| { readonly outcome: "saved" | "opened" | "declined" | "busy" | "quiet" | "gone" }
 	| { readonly outcome: "told"; readonly sent: boolean }
 	| { readonly outcome: "failed"; readonly message: string };
 

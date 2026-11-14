@@ -8,6 +8,7 @@ import {
 	CLOUD_HOME_LOST,
 	CLOUD_HOME_NO_RECORD,
 	CLOUD_HOME_NOT_RUNNING,
+	CLOUD_HOME_REQUEST_INVALID,
 	CLOUD_HOME_UNAVAILABLE,
 	CloudCodexHome,
 	type CloudCodexHomeAction,
@@ -472,7 +473,7 @@ describe("what the model is told when its home is not there", () => {
 });
 
 describe("a line typed into a running shell, whose request names no call", () => {
-	it("is the step of the write_stdin released next, and a refused one is told and kept too", async () => {
+	it("is kept under the host's own id with the machine's answer, and a refused one is kept and told at once", async () => {
 		const machine = fakeMachine();
 		const { steps, log } = runLog();
 		await withHome(
@@ -498,27 +499,87 @@ describe("a line typed into a running shell, whose request names no call", () =>
 					},
 				});
 				await until(() => machine.written.length === 1);
-				home.released("call-s", "env-s", true);
 				slot.send({ id: 2, method: "process/write", params: { processId: "5", chunk: base64("good\n") } });
 				await until(() => machine.written.length === 2);
-				expect(home.noteFor("call-w")).toBeUndefined();
-				home.released("call-w", "env-w", true);
+				machine.answer(JSON.stringify({ id: 2, result: { accepted: true } }));
+				expect(await slot.next()).toEqual({ id: 2, result: { accepted: true } });
 				const typed = steps.find((step) => step.tool === "write_stdin");
-				expect(typed?.result).toBe("env-w");
+				expect(typed?.call.startsWith("home:")).toBe(true);
+				expect(typed?.result).toBe(JSON.stringify({ id: 2, result: { accepted: true } }));
 				expect(JSON.parse(typed?.argumentsText ?? "{}")).toEqual({ chars: "good\n", into: "cat" });
 				slot.send({ id: 3, method: "process/write", params: { processId: "5", chunk: base64("bad\n") } });
 				expect(((await slot.next()).error as { message: string }).message).toBe("REVIEW_DENIED: not this line.");
-				expect(home.noteFor("call-x")).toBe("REVIEW_DENIED: not this line.");
-				home.released("call-x", "env-x", true);
-				expect(steps.filter((step) => step.tool === "write_stdin").map((step) => [step.call, step.result])).toEqual(
-					[
-						[typed?.call, "env-w"],
-						["call-x", "env-x"],
-					],
-				);
-				// A release of a tool of ours never takes a typed line's step.
-				home.released("call-ours", "env-ours", false);
+				const refused = steps.filter((step) => step.tool === "write_stdin")[1];
+				expect(JSON.parse(refused?.result ?? "{}")).toEqual({
+					status: "refused",
+					text: "REVIEW_DENIED: not this line.",
+				});
+				expect(machine.written).toHaveLength(2);
+				// No guess: a release of a call the host has no word of takes no typed line's step.
+				home.released("call-w", "env-w", true);
 				expect(steps).toHaveLength(3);
+			},
+		);
+	});
+});
+
+describe("what never reaches the machine", () => {
+	it("drops what the host cannot read, and answers a request it cannot read in words", async () => {
+		const machine = fakeMachine();
+		await withHome({ channel: { open: async () => machine.stream } }, async (home, slot) => {
+			slot.socket.write("this is not JSON\n");
+			slot.send({ method: "anything/else", params: {} });
+			slot.send({ id: null, method: "process/start", params: { argv: ["/bin/bash", "-lc", "ls"] } });
+			slot.send({ id: 4, method: "process/start", params: { argv: "ls", cwd: "file:///company" } });
+			expect(await slot.next()).toEqual({ id: 4, error: { code: -32600, message: CLOUD_HOME_REQUEST_INVALID } });
+			slot.send({ id: 5, method: "process/write", params: { processId: "1", chunk: 7 } });
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
+			// A method nobody named as needing no review is refused, so a later Codex's new acting method never slips by.
+			slot.send({ id: 6, method: "network/fetch", params: { url: "https://example.invalid" } });
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
+			slot.send({ id: 7, method: "process/signal", params: { processId: "1", signal: 9 } });
+			expect(((await slot.next()).error as { message: string }).message).toBe(CLOUD_HOME_REQUEST_INVALID);
+			slot.send({ jsonrpc: "2.0", method: "initialized" });
+			slot.send({ id: 8, method: "environmentConfig/read", params: {} });
+			await until(() => machine.written.length === 2);
+			expect(machine.written.map((line) => JSON.parse(line).method)).toEqual([
+				"initialized",
+				"environmentConfig/read",
+			]);
+			expect(home.counts.dropped).toBe(3);
+		});
+	});
+});
+
+describe("a file change no patch accounts for", () => {
+	it("is reviewed on its own with its text, and its step is finished with the machine's answer", async () => {
+		const machine = fakeMachine();
+		const { steps, log } = runLog();
+		const reviewed: CloudCodexHomeAction[] = [];
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				steps: new CloudCodexHomeSteps(log),
+				review: {
+					check: async (action) => {
+						reviewed.push(action);
+						return { run: true };
+					},
+				},
+			},
+			async (_home, slot) => {
+				slot.send({
+					id: 9,
+					method: "fs/writeFile",
+					params: { path: "file:///company/loose.txt", dataBase64: base64("by hand\n") },
+				});
+				await until(() => machine.written.length === 1);
+				expect(reviewed[0]?.contents).toBe("by hand\n");
+				expect(steps[0]?.call.startsWith("home:")).toBe(true);
+				expect(steps[0]?.result).toBeUndefined();
+				machine.answer(JSON.stringify({ id: 9, result: {} }));
+				expect(await slot.next()).toEqual({ id: 9, result: {} });
+				expect(steps[0]?.result).toBe(JSON.stringify({ id: 9, result: {} }));
 			},
 		);
 	});

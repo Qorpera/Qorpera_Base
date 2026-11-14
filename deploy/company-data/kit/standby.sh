@@ -4,8 +4,8 @@
 #   standby.sh allow ADDR[/BITS]   primary's machine: replication from the standby's address only, TLS only
 #                                  (postgres/hba-standby.conf), checked, then a reload. On machines: the standby's /32.
 #   standby.sh pack                primary's machine: a tar on stdout of what the standby needs: the server's TLS
-#                                  files (never the CA key), the gateway's secrets, the replication password. Pipe it
-#                                  to unpack over a channel only root on both machines reads (an ssh line).
+#                                  files (never the CA key), the gateway's secrets, the run door's, the replication
+#                                  password. Pipe it to unpack over a channel only root on both machines reads.
 #   standby.sh unpack              standby's machine, a new folder: takes pack's tar on stdin
 #   standby.sh seed HOST [PORT]    standby's machine, after unpack, on an empty volume: a base backup from HOST (a name
 #                                  in the server cert) over TLS with a new slot, then the standby starts and streams
@@ -41,7 +41,9 @@ allow() {
 
 pack() {
 	[ -e "$L/INITIALISED" ] || die "pack: this machine holds no initialised store"
-	tar -C "$L" -cf - postgres/tls/server.key postgres/tls/server.crt postgres/tls/ca.crt secrets/gateway secrets/replication
+	# The run door's token and cert too: the promoted gateway's door must take the token the nodes hold.
+	tar -C "$L" -cf - postgres/tls/server.key postgres/tls/server.crt postgres/tls/ca.crt secrets/gateway secrets/replication \
+		$([ ! -d "$L/secrets/run-door" ] || echo secrets/run-door)
 }
 
 unpack() {
@@ -57,7 +59,7 @@ unpack() {
 	(umask 077 && printf '*:*:replication:qorpera_data_replicator:%s\n' "$(cat "$L/secrets/replication")" >"$L/postgres/replication.pgpass")
 	chown "$PG_UID:$PG_UID" "$L/postgres/replication.pgpass"
 	date -u +%Y-%m-%dT%H:%M:%SZ >"$L/STANDBY"
-	echo "standby: unpacked $(find "$L/secrets/gateway" -type f | wc -l) gateway secrets and the TLS files"
+	echo "standby: unpacked $(find "$L/secrets/gateway" -type f | wc -l) gateway secrets, $(find "$L/secrets" -path '*/run-door/*' -type f | wc -l) of the run door and the TLS files"
 }
 
 seed() {

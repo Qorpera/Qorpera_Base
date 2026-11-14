@@ -27,6 +27,7 @@ import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
+import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -42,7 +43,7 @@ import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -99,6 +100,20 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
+
+/** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
+ * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
+function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): InteractionCardApp | undefined {
+	const found = apps?.find((app) => app.name === name);
+	const manifest = found?.manifest;
+	return manifest
+		? {
+				title: manifest.name,
+				emblem: manifest.emblem,
+				cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
+			}
+		: undefined;
+}
 
 export function mountApplication(
 	root: HTMLElement,
@@ -326,9 +341,13 @@ export function mountApplication(
 	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
 	// hover (ui/markdown.ts draws the card plain, as it has no company). The card a note from an app opens with keeps
 	// what the note is about as its line, and takes the app's own name as its title.
+	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
+	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
+	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
 		if (!company || !apps) return;
+		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
 			const app = apps.find((entry) => entry.name === card.dataset.appName);
 			const look = app && appLook(company, app);
@@ -476,6 +495,8 @@ export function mountApplication(
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
+	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
+	const appData = new WeakMap<CompanyController, CompanyData>();
 	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
 	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
 	const heldNotes = new WeakMap<
@@ -804,14 +825,6 @@ export function mountApplication(
 				// The machine's clock and backdrop follow the company's time zone (20260930739000).
 				timeZone: () => controller.store.get().team?.timeZone,
 			});
-			// A window that showed by itself follows its agent's use whatever thread is shown (20260930742000).
-			const panels = computerPanels;
-			const stopFeed = controller.store.subscribe(() =>
-				panels.byItself.refresh((agentId) =>
-					controller.agentState(agentId) === "computer" ? controller.atComputer(agentId)?.since : undefined,
-				),
-			);
-			controller.signal.addEventListener("abort", stopFeed, { once: true });
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;
@@ -1127,10 +1140,38 @@ export function mountApplication(
 				agent: (agentId) => controller.staffById(agentId),
 				memberName: (userId) => controller.memberName(userId),
 				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				app: (name) => cardApp(name),
 				conversation: (sessionId) => controller.conversation(sessionId, false),
-				chatHref: (sessionId) =>
-					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
 			};
+		};
+		// The company's databases, asked and watched as the member through the member gateway; none where the build
+		// names no member gateway.
+		const dataHost = (): CompanyData | undefined => {
+			if (!cloud.config.memberCompanyGatewayUrl) return undefined;
+			let data = appData.get(controller);
+			if (!data) {
+				data = new CompanyData(
+					() => {
+						const role = controller.store.get().team?.role;
+						const client = role
+							? new WebCompanyFiles(
+									cloud,
+									controller.profile,
+									controller.userId,
+									role,
+									controller.signal,
+									companyCurrent,
+								).data()
+							: undefined;
+						if (!client) throw new Error(t("Company access changed."));
+						return client;
+					},
+					controller.signal,
+					companyCurrent,
+				);
+				appData.set(controller, data);
+			}
+			return data;
 		};
 		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
 		// "tell"), written by the member on the bar: their own message in that agent's thread, or the Co-Founder's, on
@@ -1210,6 +1251,7 @@ export function mountApplication(
 			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
 			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
 			current: companyCurrent,
+			data: dataHost(),
 			tell: appNotes(),
 		});
 		sidePanel = (target) =>
@@ -1253,6 +1295,9 @@ export function mountApplication(
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
 		}
+		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
+		// were read is brought up to date by decorateAppCards.
+		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1970,6 +2015,7 @@ export function mountApplication(
 								},
 							},
 							folderImage: cardImage,
+							folderApp: cardApp,
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),

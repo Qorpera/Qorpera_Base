@@ -730,6 +730,9 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 				"table_write",
 				"save_app",
 				"post_app",
+				"make_picture",
+				// How an app is made, which only a run that may make one reads.
+				"app_guide",
 			].includes(tool.name),
 	};
 }

@@ -36,7 +36,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 // action, its native steps), the channel client, the coding executor's ingress route with its transport token, the
 // run's holder proven, and the session's authority in SQL (20260930752000).
 //
-// Stood in: the model (the scripted provider); the egress relay (a Unix socket that forwards only to it); the machine
+// Stood in: slice 3's sharing rule (20260930754000; a stand-in that lets the run share, unless the real one is there);
+// the model (the scripted provider); the egress relay (a Unix socket that forwards only to it); the machine
 // (`codex exec-server` in a second bubblewrap namespace on the same test VM, where production runs it inside the run's
 // own company machine over LXD, as the agent's user); `/usr/bin/node` in the namespace; and the sign-in (a made-up
 // auth.json and a made-up bearer, as a plan run's fallback passes its token).
@@ -482,7 +483,15 @@ function setup(on) {
 			? `insert into public.qorpera_home_settings(singleton, enabled) values (true, true);
 				insert into public.qorpera_home_companies(profile_id)
 				select (public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.base_binding')::jsonb)
-					#>> '{identity,companyId}')::uuid;`
+					#>> '{identity,companyId}')::uuid;
+				-- Slice 3's rule of which runs may share a machine (20260930754000), without which the switch stays off for
+				-- everyone: a stand-in that lets this run share, unless the real one is in this database.
+				do $$ begin
+					if to_regprocedure('public.qorpera_folder_home_shared(public.qorpera_company_machines, uuid, uuid, uuid)') is null then
+						create function public.qorpera_folder_home_shared(p_machine public.qorpera_company_machines,
+							p_staff_agent_id uuid, p_member_user_id uuid, p_run_id uuid) returns boolean language sql as 'select true';
+					end if;
+				end $$;`
 			: "",
 	].join("\n");
 }
@@ -1246,14 +1255,16 @@ async function main() {
 				pass(`the review covers what is typed and what is patched: ${writes.length} lines typed into a running shell were reviewed with the shell they went into (the declined one never reached the machine, and the model was told REVIEW_DENIED); a patch of 2 files was reviewed once, whole ("${allowedReviews[0].summary}"), and the declined patch wrote nothing${told ? ", its refusal reaching the model in the review's words" : ` (the model was shown ${JSON.stringify(refusedPatch.slice(0, 160))})`}`);
 				if (!told) note(`a declined patch: Codex gave the model ${JSON.stringify(refusedPatch.slice(0, 600))}`);
 				record.reviewDetail = { writes, allowedReviews, refusedPatch: refusedPatch.slice(0, 2000) };
-				// The run's record of all of it: every call of the model's that acted or was refused is a step, the typed
-				// lines included (the pinned Codex's stdin requests name no call; each is bound to its write_stdin).
+				// The run's record of all of it: every call of the model's that acted or was refused is a step. A typed
+				// line is a step too; the pinned Codex's stdin request names no call, so it is kept under the host's own id
+				// with the machine's answer (or its refusal), never guessed onto a call.
 				const tools = stored.steps.map((step) => step.tool);
-				assert.equal(tools.filter((tool) => tool === "write_stdin").length, 2, `both typed lines are steps: ${JSON.stringify(stored.steps)}`);
-				assert(stored.steps.some((step) => step.call === state.calls[5].callId && step.tool === "write_stdin"), "the refused line is the step of its own call");
+				const typedSteps = stored.steps.filter((step) => step.tool === "write_stdin");
+				assert.equal(typedSteps.length, 2, `both typed lines are steps: ${JSON.stringify(stored.steps)}`);
+				assert(typedSteps.every((step) => step.call.startsWith("home:")), "under the host's own ids");
 				assert(stored.steps.some((step) => step.call === state.calls[1].callId), "the refused command is a step of its own call");
 				assert(stored.steps.some((step) => step.call === state.calls[7].callId), "the refused patch is a step of its own call");
-				pass(`the run's record holds what was refused too: ${stored.steps.length} steps (${tools.join(", ")}), the refused command, typed line and patch each under its own call`);
+				pass(`the run's record holds what was refused too: ${stored.steps.length} steps (${tools.join(", ")}): the refused command and patch each under its own call, both typed lines (one refused) under the host's own ids`);
 			},
 		});
 		// 5. When the home is not there (the lead's question of 13 Nov 2026): what the agent sees and does. First a machine

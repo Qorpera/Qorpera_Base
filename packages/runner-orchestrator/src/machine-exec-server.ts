@@ -10,7 +10,7 @@ import { StringDecoder } from "node:string_decoder";
 
 /** What may wait unread in one direction before the channel is ended. A command's output can be large (P1 saw 2.4 MB
  * from one `seq`), but it is read as it comes; this bounds only what the other side has not taken yet. */
-const PIPE_BYTES = 16 * 1024 * 1024;
+export const LINE_PIPE_BYTES = 16 * 1024 * 1024;
 
 /**
  * One direction of the channel: bytes pushed in, read out as an async iterable (for LXD's stdin) or as complete lines
@@ -26,7 +26,7 @@ export class LinePipe {
 	push(chunk: Buffer): void {
 		if (this.#ended) return;
 		this.#bytes += chunk.byteLength;
-		if (this.#bytes > PIPE_BYTES) {
+		if (this.#bytes > LINE_PIPE_BYTES) {
 			this.#failed = true;
 			this.end();
 			return;
@@ -76,7 +76,7 @@ export class LinePipe {
 				rest = rest.slice(end + 1);
 				end = rest.indexOf("\n");
 			}
-			if (Buffer.byteLength(rest) > PIPE_BYTES) return;
+			if (Buffer.byteLength(rest) > LINE_PIPE_BYTES) return;
 		}
 	}
 }

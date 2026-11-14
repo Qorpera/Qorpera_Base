@@ -12,8 +12,10 @@
 --   run cannot take it; the same run coming back with a new session id supersedes its own; and a session of a boot
 --   that ended is refused: its home is gone with the boot, as a command's output is. The executor's guest shell
 --   checks the boot again when it starts the exec-server.
--- * The session row is where the folder window of slice 3 is named (folder_window_id), so a write that arrives from
---   a home can be credited to the call that made it. Slice 3 owns that column's use; nothing here writes it.
+-- * A home mounts its boot's company-wide view and its agent is root there, so a home may go only to runs that may
+--   read the whole folder and share the machine: slice 3's rule (qorpera_folder_home_shared, 20260930754000), which
+--   narrows the offer below and is asked again by the executor before every channel. Until that rule exists the
+--   switch cannot be on for any company, whatever its rows say (qorpera_company_home_allowed).
 -- * Nothing in this migration lets a command reach a sign-in, and nothing shows a member a command or a step.
 
 -- ---------------------------------------------------------------------------
@@ -38,11 +40,15 @@ alter table public.qorpera_home_settings enable row level security;
 alter table public.qorpera_home_companies enable row level security;
 revoke all on public.qorpera_home_settings, public.qorpera_home_companies from public, anon, authenticated, service_role;
 
--- Whether a company's runs may have a home now. Internal; both tables are operator-set.
+-- Whether a company's runs may have a home now. Internal; both tables are operator-set. And only once slice 3's rule of
+-- which runs may share a machine exists (20260930754000): without it a run whose agent or member may not read the
+-- whole folder would get a root shell on a machine whose /company shows all of it.
 create function public.qorpera_company_home_allowed(p_profile_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select coalesce((select s.enabled from public.qorpera_home_settings s where s.singleton), false)
-		and exists (select 1 from public.qorpera_home_companies c where c.profile_id = p_profile_id);
+		and exists (select 1 from public.qorpera_home_companies c where c.profile_id = p_profile_id)
+		and pg_catalog.to_regprocedure(
+			'public.qorpera_folder_home_shared(public.qorpera_company_machines, uuid, uuid, uuid)') is not null;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -90,8 +96,6 @@ create table public.qorpera_company_home_sessions (
 	-- As a machine's and a command's agent is: the agent lives in the Company File, not in a table of its own.
 	staff_agent_id uuid not null,
 	requested_by_user_id uuid references auth.users(id) on delete set null,
-	-- Slice 3 names the run's folder window here, so a write from this home is credited to the call that made it.
-	folder_window_id uuid,
 	opened_at timestamptz not null default clock_timestamp(),
 	closed_at timestamptz,
 	close_reason text check (close_reason is null or close_reason in ('ended','stopped','lost','boot_ended','superseded')),

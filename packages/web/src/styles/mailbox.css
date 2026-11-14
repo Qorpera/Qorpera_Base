@@ -412,12 +412,37 @@ span.mailbox-open { cursor: default; }
    chip does, and how much came to the address. Nobody yet: the chip asks, with a dashed edge. */
 .mailbox-answer-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; min-width: 0; }
 .mailbox-answer-line .mailbox-address-agent { flex-wrap: wrap; }
-.mailbox-answer-line .mailbox-address-week { white-space: nowrap; }
 .mailbox-answer-line .mailbox-error { flex-basis: 100%; margin: 0; }
 .mailbox-answerer { min-width: 0; padding-right: 9px; }
 .mailbox-answerer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
 .mailbox-answerer:not(.is-current) { border-style: dashed; color: var(--mailbox-accent-text); font-weight: 600; }
 .mailbox-answerer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+/* How an agent answers an address: a panel beside the chip's menu, the member's words in a soft field that grows with
+   them, and Save. It stands outside the page, so it takes the page's accent itself. */
+.mailbox-how-panel {
+	--mailbox-accent: var(--composer-accent);
+	--mailbox-on-accent: var(--composer-on-accent);
+	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent) 20%, var(--bg));
+}
+.context-panel:has(> .mailbox-how-panel) { width: 360px; padding: 8px; }
+.mailbox-how-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 4px 4px 2px; }
+.mailbox-how-title { color: var(--text-muted); font-size: 13px; font-weight: 600; }
+.mailbox-how-panel textarea {
+	box-sizing: border-box; width: 100%; min-width: 0; field-sizing: content; min-height: 6.2em; max-height: 16em;
+	padding: 10px 12px; border: 1px solid var(--border-strong);
+	border-radius: 10px; resize: none; background: var(--bg); color: var(--text); font: inherit; font-size: 14px;
+	font-weight: 400; line-height: 1.5; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.mailbox-how-panel textarea::placeholder { color: var(--text-muted); }
+.mailbox-how-panel textarea:focus-visible {
+	outline: none; border-color: var(--mailbox-accent); box-shadow: 0 0 0 3px var(--mailbox-tint-strong);
+}
+.mailbox-how-panel textarea:read-only { color: var(--text-muted); }
+:root[data-theme="dark"] .mailbox-how-panel textarea { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.mailbox-how-panel :is(.mailbox-how-note, .mailbox-error) { margin: 0; font-size: 13px; }
+.mailbox-how-note { color: var(--text-muted); }
+.mailbox-how-panel[hidden], .mailbox-how-panel [hidden] { display: none; }
+.mailbox-how-foot { display: flex; align-items: center; gap: 6px; }
 .mailbox-answerer:disabled { cursor: default; }
 .mailbox-answerer:disabled:not([aria-busy="true"]) { opacity: 0.5; }
 .mailbox-nobody {
@@ -464,6 +489,10 @@ span.mailbox-open { cursor: default; }
 	margin: 0; padding: 14px var(--manage-end) 0 var(--manage-start); font-size: 14px;
 }
 .mailbox-manage .connection-add-area { gap: 14px; padding: 14px var(--manage-end) 4px var(--manage-start); }
+/* Add mailbox first, under the page's name, with Digital Post beside it; what they open comes under them. */
+.mailbox-manage .connection-add-area.is-top { padding: 6px var(--manage-end) 6px var(--manage-start); }
+.mailbox-manage .connection-add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mailbox-manage .connection-add-area.is-top > .digital-post { margin: 4px calc(0px - var(--manage-end)) 0 calc(0px - var(--manage-start)); }
 .mailbox-manage .hook-form { gap: 10px; width: 100%; max-width: 520px; }
 .mailbox-manage :is(.hook-form-row, .service-token) {
 	min-height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--hover); color: var(--text);

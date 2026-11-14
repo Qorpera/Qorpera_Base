@@ -6,6 +6,8 @@
 #   secrets/gateway/   the gateway's secrets, one file each (lib.sh GATEWAY_PASSWORDS and GATEWAY_KEYS), nobody's 0400
 #   secrets/replication, secrets/superuser   the replication login's password; the superuser's (initdb only)
 #   postgres/tls/      the server's key and cert, mounted into the database
+#   secrets/run-door/  the run door's token and its TLS key and cert (lib.sh make_run_door), the gateway's user's 0400;
+#                      the door itself listens only when DATA_RUN_LISTEN is set (run-door.yml)
 # then the backup folder's wal/ and base/, starts the database, runs store/cluster.sql and store/template.sql, makes
 # the replication login, and starts the gateway. Refuses a second run, a used volume and a used WAL folder.
 # Prints names, counts and times only, never a secret.
@@ -34,6 +36,7 @@ put "$L/secrets/replication" 0 "$(new_secret 24)"
 put "$L/secrets/superuser" "$PG_UID" "$(new_secret 24)"
 "$K/tls.sh" ca "$L/ca"
 "$K/tls.sh" server "$L/ca" "$L/postgres/tls" "$@"
+make_run_door
 
 install -d -m 0700 -o "$PG_UID" -g "$PG_UID" "$B/wal" "$B/base"
 
@@ -56,4 +59,4 @@ q -d qorpera_company_template -f - <"$STORE/template.sql" >/dev/null
 date -u +%Y-%m-%dT%H:%M:%SZ >"$L/INITIALISED"
 
 dc up -d --wait --wait-timeout 120 data-gateway </dev/null
-echo "init: store and gateway up in $(($(date +%s) - t0))s; logins: $(qc "select count(*) from pg_roles where rolname like 'qorpera_data_%' and rolcanlogin"), template: $(qc "select count(*) from pg_database where datname = 'qorpera_company_template' and datistemplate")"
+echo "init: store and gateway up in $(($(date +%s) - t0))s; logins: $(qc "select count(*) from pg_roles where rolname like 'qorpera_data_%' and rolcanlogin"), template: $(qc "select count(*) from pg_database where datname = 'qorpera_company_template' and datistemplate"), run door: $([ -n "${DATA_RUN_LISTEN:-}" ] && echo on || echo off)"
