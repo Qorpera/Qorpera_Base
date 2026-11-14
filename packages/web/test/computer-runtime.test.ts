@@ -1782,6 +1782,8 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(action(p)?.textContent).toBe("Try again");
 		action(p)!.click();
 		await flush();
+		// The screen is turning on again, with the same open (a start's own 5 s apart from the last).
+		await advance(START_AGAIN_MS * 2);
 		expect(s.opens).toEqual(["apps/kort/pages/kort.html", "apps/kort/pages/kort.html"]);
 		// A plain press after a refusal without a retry starts the screen alone.
 		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NO_FOLDER" });
@@ -1983,6 +1985,237 @@ describe("every answer to an open, from both callers, with and without a picture
 					for (const words of [NOT_THERE, NO_FOLDER, FAILED]) expect(says(p)).not.toContain(words);
 				});
 			}
+});
+
+describe("a choice ends in exactly one of three ways, whatever comes (review r3 of #1781)", () => {
+	const apps = [
+		{ name: "A", path: "apps/a" },
+		{ name: "B", path: "apps/b" },
+	];
+	type StartAnswer = { outcome: "started" | "running" | "opened" } | { code: string } | { status: number };
+	const answers: [string, StartAnswer][] = [
+		...[...MACHINE_START_REFUSALS].map((code): [string, StartAnswer] => [code, { code }]),
+		["a failed request", { status: 503 }],
+		["started", { outcome: "started" }],
+		["running", { outcome: "running" }],
+		["opened", { outcome: "opened" }],
+	];
+	const ENDINGS = ["answered", "replaced", "said"];
+	const opener = (p: ComputerPanel) => p.el.querySelector<HTMLButtonElement>(":scope > .computer-opener")!;
+	function choose(p: ComputerPanel, row: number) {
+		opener(p).click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+	}
+	/** After every step: at most one choice stands, every other ended in one of the three ways (a said one with its
+	 * words), and none was sent more often than it was asked for (once, and once more for each answer that asks again),
+	 * nor twice at once. */
+	function holds(p: ComputerPanel) {
+		expect(p.choices.filter((choice) => choice.ended === undefined).length).toBeLessThanOrEqual(1);
+		for (const choice of p.choices) {
+			if (choice.ended !== undefined) expect(ENDINGS).toContain(choice.ended);
+			if (choice.ended === "said") expect(choice.said ?? "").not.toBe("");
+			expect(choice.out).toBeLessThanOrEqual(1);
+			expect(choice.sends, JSON.stringify(choice)).toBeLessThanOrEqual(1 + choice.retries);
+		}
+	}
+	/** And at the end, every choice has ended. */
+	function allEnded(p: ComputerPanel) {
+		holds(p);
+		for (const choice of p.choices) expect(ENDINGS, JSON.stringify(choice)).toContain(choice.ended);
+	}
+	/** Every request answers, and time runs past every wait, the wish's limit too. */
+	async function drain(s: Setup) {
+		s.state.startGate = undefined;
+		for (let n = 0; n < 8; n++) await advance(START_AGAIN_MS);
+		await advance(WANT_ON_MS);
+		await advance(LOOK_EVERY_MS * 4);
+	}
+
+	for (const [name, answer] of answers) {
+		it(`a picture comes BEFORE the answer: ${name}`, async () => {
+			const s = setup();
+			s.state.apps = apps;
+			s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+			const p = panel(s);
+			await flush();
+			let release = () => {};
+			s.state.startGate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			s.state.startAnswers.push(answer);
+			choose(p, 0);
+			await flush();
+			// While the start is out, a look already on its way brings a picture (another start turned the screen on).
+			s.state.fallback = { picture: 1 };
+			await advance(LOOK_EVERY_MS);
+			await advance(LOOK_EVERY_MS);
+			s.state.startGate = undefined;
+			release();
+			await flush();
+			holds(p);
+			await drain(s);
+			allEnded(p);
+			// Answered, every one (sent again where the answer asked for it: the wish re-armed though a picture met it).
+			expect(p.choices.map((choice) => choice.ended)).toEqual(["answered"]);
+		});
+
+		it(`a choice made while a PLAIN start is out, which answers: ${name}`, async () => {
+			const s = setup();
+			s.state.apps = apps;
+			s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+			const p = panel(s);
+			await flush();
+			let release = () => {};
+			s.state.startGate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			s.state.startAnswers.push(answer);
+			action(p)!.click();
+			await flush();
+			expect(s.starts).toHaveLength(1);
+			expect(s.opens).toEqual([]);
+			choose(p, 0);
+			await flush();
+			s.state.startGate = undefined;
+			// What the plain start's world then is: a picture where it says the desktop runs.
+			if ("outcome" in answer && answer.outcome !== "opened") s.state.fallback = { picture: 1 };
+			release();
+			await flush();
+			holds(p);
+			await drain(s);
+			allEnded(p);
+			const [choice] = p.choices;
+			// Sent and answered once the desktop runs, or the window said why, never dropped.
+			expect(choice?.ended === "answered" || choice?.ended === "said").toBe(true);
+			if (choice?.ended === "answered") expect(s.opens).toContain("apps/a");
+		});
+	}
+
+	it("the wish's time limit running out with a choice standing: said, with Try again", async () => {
+		const s = setup({ machines: [machine(1, { state: "starting" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		choose(p, 0);
+		await flush();
+		await advance(WANT_ON_MS);
+		await advance(LOOK_EVERY_MS * 4);
+		expect(p.choices.map((choice) => [choice.ended, choice.said])).toEqual([
+			["said", "The computer could not open it. Try again."],
+		]);
+		expect(detail(p)).toBe("The computer could not open it. Try again.");
+		expect(action(p)?.textContent).toBe("Try again");
+		expect(s.opens).toEqual([]);
+	});
+
+	it("a wake that fails with a choice standing: said, with Try again, which wakes it and opens the same", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		s.state.wakeFails = 1;
+		const p = panel(s);
+		await flush();
+		choose(p, 1);
+		await flush();
+		expect(p.choices.map((choice) => [choice.ended, choice.said])).toEqual([
+			["said", "The computer could not open it. Try again."],
+		]);
+		expect(action(p)?.textContent).toBe("Try again");
+		s.state.machines = [machine(1, { state: "starting" })];
+		action(p)!.click();
+		await flush();
+		s.state.machines = [machine(1)];
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		s.hint("machines");
+		await drain(s);
+		allEnded(p);
+		expect(s.opens).toEqual(["apps/b"]);
+		expect(p.choices.map((choice) => choice.ended)).toEqual(["said", "answered"]);
+	});
+
+	it("a plain press ends the choice and takes its words with it, wherever they show (review r3 F2 of #1781)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NO_FOLDER" });
+		choose(p, 0);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(detail(p)).toBe("This computer cannot see the company folder yet. It can after it has slept and woken.");
+		// Turn it on, plain: its words go, here and under the picture that then comes.
+		await advance(START_AGAIN_MS);
+		s.state.fallback = { picture: 1 };
+		action(p)!.click();
+		await flush();
+		await advance(LOOK_EVERY_MS * 2);
+		expect(mark(p)).toBe("Live");
+		expect(p.el.querySelector(".machine-screen-control-note")?.textContent ?? "").toBe("");
+		allEnded(p);
+	});
+
+	it("a seeded random walk over the member's moves, answers in any order: no choice lost silently, none sent twice", async () => {
+		let seed = 1781;
+		const random = () => {
+			seed = (seed + 0x6d2b79f5) | 0;
+			let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+			value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+			return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+		};
+		const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const pending: ((response: Response) => void)[] = [];
+		s.state.startHook = () => new Promise<Response>((resolve) => pending.push(resolve));
+		const respond = (answer: StartAnswer) =>
+			"code" in answer
+				? Response.json({ code: answer.code }, { status: 409 })
+				: "status" in answer
+					? new Response("", { status: answer.status })
+					: Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
+		let p = panel(s);
+		const seen: ComputerPanel[] = [p];
+		await flush();
+		for (let step = 0; step < 160; step++) {
+			const move = random();
+			if (move < 0.25 && !opener(p).hidden) choose(p, pick([0, 1]));
+			else if (move < 0.45 && pending.length > 0) {
+				const at = Math.floor(random() * pending.length);
+				const [resolve] = pending.splice(at, 1);
+				resolve?.(respond(pick(answers)[1]));
+			} else if (move < 0.55) {
+				const switcher = p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
+				if (switcher && !switcher.hidden) {
+					switcher.click();
+					[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][pick([0, 1])]!.click();
+				}
+			} else if (move < 0.62) {
+				const again = p.el.querySelector<HTMLButtonElement>(".machine-screen-open-again");
+				if (again && !again.hidden) again.click();
+				else action(p)?.click();
+			} else if (move < 0.67) {
+				// The window closes and opens again.
+				p.dispose();
+				p = panel(s);
+				seen.push(p);
+			} else if (move < 0.75) s.state.fallback = pick([{ picture: 1 }, { code: "DESKTOP_NOT_RUNNING" }] as const);
+			else await advance(pick([0, LOOK_EVERY_MS, 1000, START_AGAIN_MS]));
+			await flush();
+			for (const one of seen) holds(one);
+		}
+		// Every request answers, and time runs out: every choice of every window has ended.
+		for (let round = 0; round < 12 && pending.length > 0; round++) {
+			for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));
+			await advance(START_AGAIN_MS);
+		}
+		s.state.startHook = undefined;
+		await drain(s);
+		for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));
+		await drain(s);
+		for (const one of seen) allEnded(one);
+		expect(seen.flatMap((one) => one.choices).length).toBeGreaterThan(10);
+	}, 60_000);
 });
 
 describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPEN-BRIEF, 13 Nov 2026)", () => {

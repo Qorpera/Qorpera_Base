@@ -181,6 +181,15 @@ export interface ComputerPanelOptions {
 	readonly apps?: () => readonly ComputerOpenApp[] | undefined;
 }
 
+/** The member's choice of something to open (20260930758000): which, on which computer, its generation, and whether a
+ * request carrying it is out. */
+interface OpenChoice {
+	readonly gen: number;
+	readonly machineId: string;
+	readonly path: string;
+	sent: boolean;
+}
+
 /** One of the company's apps as Open offers it (20260930758000): its name, and the path of the company folder that opens
  * it on the desktop. */
 export interface ComputerOpenApp {
@@ -223,6 +232,8 @@ type Shown = (typeof COMPUTER_SHOWN)[number];
  * with its screen off, turning on or failed to: the press is the wish "on, with this open". Not while someone else types
  * privately (controlled), the screen is hidden, too small, cannot show, loads, waits, pauses or fails to be reached, nor
  * where there is no computer. With a picture (null) it is offered. */
+/** What a window says of an open that failed and may be tried again. Read where it is said (t() at that moment). */
+const FAILED_OPEN_WORDS = "The computer could not open it. Try again.";
 const OPEN_OFFERED: ReadonlySet<Shown> = new Set<Shown>(["asleep", "starting", "off", "turning", "startFailed"]);
 export function computerOpenOffered(shown: Shown | null): boolean {
 	return shown === null || OPEN_OFFERED.has(shown);
@@ -490,21 +501,39 @@ export class ComputerPanel {
 	/** The member's wish that the desktop be on (20260930714000): this page's, for one machine, until its picture shows,
 	 * the member chooses another machine or closes the window, a refusal comes, or WANT_ON_MS pass. While it stands a
 	 * screen that is off is turned on by itself (after Wake it too), without a second press. */
-	#wantOn:
-		| { readonly machineId: string; readonly until: number; readonly open?: string; readonly openGen?: number }
-		| undefined;
-	/** Open (20260930758000): the company's apps as last read; an open on its way while the picture shows; the large view
-	 * to enter at the first picture after Open was chosen in the small window; and what the last open that did not go
+	#wantOn: { readonly machineId: string; readonly until: number } | undefined;
+	/**
+	 * Open (20260930758000). THE INVARIANT (review r3 of #1781): A CHOICE THE MEMBER MADE ENDS IN EXACTLY ONE OF THREE
+	 * WAYS: IT WAS SENT AND ANSWERED (and the answer handled by #openAnswered), A NEWER CHOICE OR THE MEMBER'S OWN MOVE
+	 * REPLACED IT (another choice, a switch of machine, the window closed, a plain press), OR THE WINDOW SAID WHY IT DID
+	 * NOT OPEN, WITH TRY AGAIN WHERE TRYING AGAIN CAN HELP. IT IS NEVER DROPPED SILENTLY.
+	 *
+	 * By construction: the choice (its path, its generation, its machine) has ONE home, `#choice`, apart from the wish
+	 * that the desktop be on: nothing that ends or clears the wish takes the choice with it. It ends only in
+	 * #endChoice, with the way it ended; it is sent only by #turnOn (the start that turns an off screen on carries it)
+	 * and #openNow (a screen that runs), each marking it sent, and one request at a time; and while it waits, #pumpChoice
+	 * (after every answer, at a picture) sends it, or arms the wish that turns the screen on with it. An answer to a
+	 * choice no longer the one standing changes nothing but what a confirmed success tells (the desktop runs).
+	 */
+	#choice: OpenChoice | undefined;
+	#choiceGen = 0;
+	/** Every choice and how it ended, read by the tests alone (the invariant, step by step); the newest 64. */
+	readonly #choiceLog: {
+		gen: number;
+		path: string;
+		sends: number;
+		out: number;
+		retries: number;
+		ended?: "answered" | "replaced" | "said";
+		said?: string;
+	}[] = [];
+	/** The company's apps as last read; a request carrying a choice on its way while the picture shows; the large view to
+	 * enter at the first picture after Open was chosen in the small window; and what the last open that did not go
 	 * through says (with the path to try again, where trying again can help). */
 	readonly #apps: () => readonly ComputerOpenApp[];
 	readonly #opener: HTMLButtonElement;
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
-	/** The member's newest choice (review r1 F3 and F4 of #1781): every choice takes the next generation, a switch of
-	 * machine or the window's close ends the one standing, and an answer, a delayed retry or a choice kept while a request
-	 * was under way goes on only while its generation is the newest and its machine the one chosen. */
-	#choiceGen = 0;
-	#queued: { readonly gen: number; readonly machineId: string; readonly path: string } | undefined;
 	#enterOnOpen = false;
 	#openNote: { readonly machineId: string; readonly words: string } | undefined;
 	#openRetry: { readonly machineId: string; readonly path: string; readonly words: string } | undefined;
@@ -616,7 +645,7 @@ export class ComputerPanel {
 			"click",
 			() => {
 				const again = this.#openRetry;
-				if (again && again.machineId === this.#machineId) this.#choose(again.path, signal);
+				if (again && this.#openSaid(again)) this.#choose(again.path, signal);
 			},
 			{ signal },
 		);
@@ -971,6 +1000,8 @@ export class ComputerPanel {
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
+		// The window closes (the member's or the rule's): a choice standing ends with it, replaced.
+		this.#endChoice("replaced");
 		// The rule's close (closeByRule): nothing of the member's is here to give back or end; only the window goes.
 		if (this.#quiet) {
 			this.#teardown();
@@ -1061,11 +1092,16 @@ export class ComputerPanel {
 				}
 			}
 			const machine = this.#pick();
+			// The wish's time limit is kept at every turn of the loop, whatever the machine does (a choice standing in it is
+			// then said: review r3 of #1781).
+			if (this.#wantOn) this.#wishFor(this.#wantOn.machineId);
 			// The agent has a computer with a screen now: why none was made is told no more.
 			if (machine) this.#startRefused = undefined;
 			if (machine?.machineId !== this.#machineId) {
-				// The wish that a desktop be on is for the machine it was made for alone (20260930714000).
+				// The wish that a desktop be on is for the machine it was made for alone (20260930714000), and so is a choice
+				// of what to open on it: the window moved on (a switch, by the member or the list).
 				if (this.#wantOn && this.#wantOn.machineId !== machine?.machineId) this.#wantOn = undefined;
+				if (this.#choice && this.#choice.machineId !== machine?.machineId) this.#endChoice("replaced");
 				this.#startEnded = undefined;
 				this.#wakeFailed = undefined;
 				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
@@ -1163,13 +1199,9 @@ export class ComputerPanel {
 					this.#unchanged = 0;
 					// The desktop is on: the member's wish is met. What it was to open and has not been sent goes now
 					// (20260930758000: the screen came on by another's start).
-					if (this.#wantOn?.machineId === machine.machineId) {
-						const open = this.#wantOn.open;
-						const openGen = this.#wantOn.openGen ?? this.#choiceGen;
-						this.#wantOn = undefined;
-						if (open !== undefined && openGen === this.#choiceGen)
-							void this.#openNow(computer, machine.machineId, open, signal, openGen);
-					}
+					if (this.#wantOn?.machineId === machine.machineId) this.#wantOn = undefined;
+					// A choice that waits goes now, the desktop running (it does not live in the wish).
+					this.#pumpChoice(computer, signal);
 					if (this.#startEnded?.machineId === machine.machineId) this.#startEnded = undefined;
 					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
 					// controls show.
@@ -2447,22 +2479,10 @@ export class ComputerPanel {
 	/** Wakes a sleeping machine (Wake it, or the click that opened the window): one call, joined while it is on its way;
 	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
 	 * again; the list says where it stands. */
-	async #wake(
-		computer: WebCompanyComputer,
-		machineId: string,
-		signal: AbortSignal,
-		open?: string,
-		openGen?: number,
-	): Promise<void> {
+	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
 		this.claim();
-		const opens = open !== undefined && openGen !== undefined ? { open, openGen } : {};
-		if (this.#waking) {
-			// Joined: what the member chose to open goes with the wish (20260930758000).
-			if (open !== undefined && this.#wantOn?.machineId === machineId)
-				this.#wantOn = { machineId, until: this.#wantOn.until, ...opens };
-			return;
-		}
-		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, ...opens };
+		if (this.#waking) return;
+		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
 		this.#startEnded = undefined;
 		this.#startAnswered = undefined;
 		this.#wakeFailed = undefined;
@@ -2474,6 +2494,9 @@ export class ComputerPanel {
 			if (!signal.aborted && this.#wantOn?.machineId === machineId) {
 				this.#wantOn = undefined;
 				this.#wakeFailed = machineId;
+				// A choice that waited for it: said, with Try again (which wakes it again, with the same open).
+				if (this.#choice?.machineId === machineId && !this.#choice.sent)
+					this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
 			}
 		} finally {
 			this.#waking = false;
@@ -2694,11 +2717,7 @@ export class ComputerPanel {
 	 * computer, in a state Open is offered in. */
 	#openAgainHere(shown: Shown): { readonly path: string } | undefined {
 		const retry = this.#openRetry;
-		return retry !== undefined &&
-			this.#openSaid(retry) &&
-			(shown === "asleep" || shown === "off" || shown === "startFailed")
-			? retry
-			: undefined;
+		return retry !== undefined && this.#openSaid(retry) && computerOpenOffered(shown) ? retry : undefined;
 	}
 
 	/** The state's own button: wake the machine, keep watching, or try again. */
@@ -2712,9 +2731,9 @@ export class ComputerPanel {
 			this.#choose(again.path, signal);
 			return;
 		}
-		// Any other press is a plain one: the open that failed is let go.
-		this.#openNote = undefined;
-		this.#openRetry = undefined;
+		// Any other press is a plain one: the member's own move. A choice standing, or an open's words, end with it.
+		this.#endChoice("replaced");
+		this.#clearOpenWords();
 		if (state === "paused") {
 			this.#paused = false;
 			this.#confirm = true;
@@ -2814,7 +2833,13 @@ export class ComputerPanel {
 
 	/** Whether the member's wish that this machine's desktop be on stands (it ends after WANT_ON_MS). */
 	#wishFor(machineId: string): boolean {
-		if (this.#wantOn && Date.now() >= this.#wantOn.until) this.#wantOn = undefined;
+		if (this.#wantOn && Date.now() >= this.#wantOn.until) {
+			const ended = this.#wantOn.machineId;
+			this.#wantOn = undefined;
+			// The wish ran out with a choice still waiting for the screen: said, with Try again.
+			if (this.#choice?.machineId === ended && !this.#choice.sent)
+				this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
+		}
 		return this.#wantOn?.machineId === machineId;
 	}
 
@@ -2828,29 +2853,32 @@ export class ComputerPanel {
 		this.#turningOn = true;
 		this.#startedAt = Date.now();
 		this.#unpicture("turning");
-		// What the wish is to open goes with this start (20260930758000); the wish itself goes on to the picture.
-		const wish = this.#wantOn?.machineId === machineId ? this.#wantOn : undefined;
-		const open = wish?.open;
-		const openGen = wish?.openGen ?? this.#choiceGen;
-		if (wish && open !== undefined) this.#wantOn = { machineId, until: wish.until };
+		// A choice that waits goes with this start (20260930758000).
+		const choice = this.#choice?.machineId === machineId && !this.#choice.sent ? this.#choice : undefined;
+		if (choice) this.#sent(choice);
 		let answer: MachineStartAnswer | undefined;
 		try {
-			answer = await computer.screens.start(machineId, signal, open);
+			answer = await computer.screens.start(machineId, signal, choice?.path);
 		} catch {
 			answer = undefined;
 		} finally {
 			this.#turningOn = false;
+			if (choice) this.#back(choice);
 		}
 		if (signal.aborted || this.#machineId !== machineId) return;
-		// A start that opened something: every answer it can get is the one handler's (review r2 of #1781), for the
-		// member's newest choice; one a newer choice replaced tells only what a confirmed success tells.
-		if (open !== undefined) {
-			if (openGen === this.#choiceGen)
-				this.#openAnswered(computer, machineId, open, openGen, answer, "turnOn", signal);
-			else this.#replacedAnswer(computer, machineId, answer, signal);
+		if (choice) {
+			// Every answer to a start that carried a choice is the one handler's, while it is the choice standing; one a
+			// newer choice replaced tells only what a confirmed success tells.
+			if (this.#choice === choice) this.#openAnswered(choice, answer, "turnOn");
+			else this.#replacedAnswer(machineId, answer);
+			this.#pumpChoice(computer, signal);
 			return;
 		}
-		if (this.#wantOn?.machineId !== machineId) return;
+		if (this.#wantOn?.machineId !== machineId) {
+			// A plain start whose wish is gone (a picture met it): a success lets a choice made meanwhile go.
+			if (ComputerPanel.#ran(answer)) this.#pumpChoice(computer, signal);
+			return;
+		}
 		if (answer?.kind === "refused") {
 			if (answer.code === "DESKTOP_MACHINE_TOO_SMALL") {
 				this.#endStart(machineId, "small");
@@ -2859,6 +2887,14 @@ export class ComputerPanel {
 			if (answer.code === "MACHINE_NEEDS_COMPANY_VIEW") {
 				this.#wantOn = undefined;
 				this.#unpicture("hidden");
+				// A choice made while this start was out: the state says why it cannot open.
+				if (this.#choice?.machineId === machineId && !this.#choice.sent)
+					this.#endChoice(
+						"said",
+						t("The screen is hidden because it may show files you can't open."),
+						false,
+						false,
+					);
 				return;
 			}
 			if (answer.code === "MACHINE_NOT_RUNNING" || answer.code === "MACHINE_BOOT_CHANGED") this.#listStale = true;
@@ -2871,18 +2907,22 @@ export class ComputerPanel {
 			return;
 		} else {
 			this.#startAnswered = { machineId, at: Date.now() };
-			// Open was chosen while this start was on its way without it: it goes now, the desktop running.
-			this.#sendWished(computer, machineId, signal);
+			// A choice made while this start was out goes now, the desktop running.
+			this.#pumpChoice(computer, signal);
 		}
 		// Started, running already, or another start on its way: look at once (the helper waited until it was drawn).
-		this.#etag = null;
-		this.#lastLook = Number.NEGATIVE_INFINITY;
-		this.#quicken();
+		this.#lookNow();
 	}
 
 	/** A start that ends the member's wish: what it says stays until they press again. */
 	#endStart(machineId: string, shown: "small" | "startFailed"): void {
 		this.#wantOn = undefined;
+		// A choice that waited for this start: said (too small: the state says why; failed: with Try again).
+		if (this.#choice?.machineId === machineId && !this.#choice.sent) {
+			// The state says it (its own words), so no note is added.
+			if (shown === "small") this.#endChoice("said", t("This computer is too small for a screen."), false, false);
+			else this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
+		}
 		this.#startAnswered = undefined;
 		this.#startEnded = { machineId, shown };
 		this.#unpicture(shown);
@@ -2941,10 +2981,8 @@ export class ComputerPanel {
 							if (machine.machineId !== before) {
 								this.#wantTakeOver = undefined;
 								this.#enterOnOpen = false;
-								this.#openRetry = undefined;
-								this.#openNote = undefined;
-								this.#choiceGen++;
-								this.#queued = undefined;
+								this.#endChoice("replaced");
+								this.#clearOpenWords();
 								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
 								// Shared input of the last computer goes no further, even while the loop waits on a request
 								// (review r1 F1 of #1701); the next one's screen is not seen yet (review r3).
@@ -3016,9 +3054,10 @@ export class ComputerPanel {
 		}
 	}
 
-	/** The member chose something to open (20260930758000): that is the ask, with no second press. A computer asleep is
-	 * woken, one on its way up or with its screen off is turned on, each with the open in the wish; on a screen the member
-	 * sees, it opens at once. From the small window the large view comes at the first picture, as Take over's does. */
+	/** The member chose something to open (20260930758000): that is the ask, with no second press. The choice standing
+	 * before ends as replaced, and the new one is THE choice. A computer asleep is woken, one on its way up or with its
+	 * screen off is turned on with the choice going along; on a screen the member sees, it opens at once. From the small
+	 * window the large view comes at the first picture, as Take over's does. */
 	#choose(path: string, signal: AbortSignal): void {
 		const computer = this.#computer;
 		const machine = this.#pick();
@@ -3026,72 +3065,147 @@ export class ComputerPanel {
 		this.claim();
 		this.#touched();
 		const machineId = machine.machineId;
-		const gen = ++this.#choiceGen;
-		this.#queued = undefined;
-		this.#openNote = undefined;
-		this.#openRetry = undefined;
-		if (this.#lostShown) {
-			this.#lostShown = false;
-			this.#controlNote.textContent = "";
-		}
+		this.#endChoice("replaced");
+		this.#clearOpenWords();
+		const choice = { gen: ++this.#choiceGen, machineId, path, sent: false };
+		this.#choice = choice;
+		this.#choiceLog.push({ gen: choice.gen, path, sends: 0, out: 0, retries: 0 });
+		if (this.#choiceLog.length > 64) this.#choiceLog.shift();
 		if (!this.#view?.entered) this.#enterOnOpen = this.el.parentElement !== null;
-		if (machine.state === "stopped" || machine.state === "stopping") {
-			void this.#wake(computer, machineId, signal, path, gen);
-		} else if (machine.state !== "running") {
-			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path, openGen: gen };
+		if (machine.state === "stopped" || machine.state === "stopping") void this.#wake(computer, machineId, signal);
+		else {
 			this.#startEnded = undefined;
-			this.#startAnswered = undefined;
-		} else if (this.#picturing() && this.#screenSeen) {
-			void this.#openNow(computer, machineId, path, signal, gen);
-		} else {
-			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path, openGen: gen };
-			this.#startEnded = undefined;
-			this.#startAnswered = undefined;
-			if (!this.#turningOn) void this.#turnOn(computer, machineId, signal);
+			if (machine.state !== "running" || !(this.#picturing() && this.#screenSeen)) {
+				this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+				this.#startAnswered = undefined;
+			}
+			this.#pumpChoice(computer, signal);
 		}
 		this.#syncControls();
 		this.#poke();
 	}
 
-	/** Opens a path on a desktop that runs (the start route turns its screen on first when it is off). A start of another
-	 * page's a moment ago is waited out once. */
-	async #openNow(
-		computer: WebCompanyComputer,
-		machineId: string,
-		path: string,
-		signal: AbortSignal,
-		gen: number,
-		again = true,
-	): Promise<void> {
-		// One request at a time: a choice made meanwhile is kept (the newest only) and goes when this one answers.
-		if (this.#opening) {
-			this.#queued = { gen, machineId, path };
+	/** The choice that waits goes when it can, one request at a time: on a screen the member sees, at once (#openNow); on
+	 * a running computer whose screen is off, with the start that turns it on (#turnOn: the wish is armed for it);
+	 * otherwise the wish carries the computer to that point and the next look or answer sends it. */
+	#pumpChoice(computer: WebCompanyComputer, signal: AbortSignal): void {
+		const choice = this.#choice;
+		if (!choice || choice.sent || signal.aborted || choice.machineId !== this.#machineId) return;
+		if (this.#opening || this.#turningOn) return;
+		// The desktop runs: a screen the member sees, or a start that answered so (a confirmed success).
+		if ((this.#picturing() && this.#screenSeen) || this.#startAnswered?.machineId === choice.machineId) {
+			void this.#openNow(computer, choice, signal);
 			return;
 		}
-		const newest = () => !signal.aborted && gen === this.#choiceGen && this.#machineId === machineId;
+		if (this.#wantOn?.machineId !== choice.machineId)
+			this.#wantOn = { machineId: choice.machineId, until: Date.now() + WANT_ON_MS };
+		const machine = this.#pick();
+		if (
+			machine?.machineId === choice.machineId &&
+			machine.state === "running" &&
+			Date.now() >= this.#startedAt + START_AGAIN_MS
+		)
+			void this.#turnOn(computer, choice.machineId, signal);
+		else this.#poke();
+	}
+
+	/** A request carrying the choice goes out; and comes back. */
+	#sent(choice: OpenChoice): void {
+		choice.sent = true;
+		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
+		if (entry) {
+			entry.sends++;
+			entry.out++;
+		}
+	}
+	#back(choice: OpenChoice): void {
+		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
+		if (entry) entry.out--;
+	}
+
+	/** THE one way a choice ends (the invariant above): answered (its answer handled by #openAnswered), replaced (a newer
+	 * choice or the member's own move), or said (the window says why it did not open: `words`, with Try again where
+	 * `retry`). Ending none is nothing. */
+	#endChoice(how: "answered" | "replaced" | "said", words?: string, retry = false, shown = true): void {
+		const choice = this.#choice;
+		if (!choice) return;
+		this.#choice = undefined;
+		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
+		if (entry && !entry.ended) {
+			entry.ended = how;
+			if (words !== undefined) entry.said = words;
+		}
+		if (words !== undefined && shown) this.#sayOpen(choice, words, retry);
+	}
+
+	/** An open's words, under the picture or under the state (one text, until the member's next input or press). */
+	#sayOpen(choice: { readonly machineId: string; readonly path: string }, words: string, retry: boolean): void {
+		this.#openNote = { machineId: choice.machineId, words };
+		this.#openRetry = retry ? { machineId: choice.machineId, path: choice.path, words } : undefined;
+		this.#lostShown = true;
+		this.#controlNote.textContent = words;
+		this.#syncControls();
+	}
+
+	/** An open's words go (a new choice, a switch, a plain press): wherever they showed. */
+	#clearOpenWords(): void {
+		const said = this.#openNote;
+		this.#openNote = undefined;
+		this.#openRetry = undefined;
+		if (said && this.#controlNote.textContent === said.words) {
+			this.#lostShown = false;
+			this.#controlNote.textContent = "";
+		}
+	}
+
+	/** Every choice and how it ended (the tests' own window on the invariant): read by the tests and nothing else. */
+	get choices(): readonly {
+		readonly gen: number;
+		readonly path: string;
+		readonly sends: number;
+		readonly out: number;
+		readonly retries: number;
+		readonly ended?: "answered" | "replaced" | "said";
+		readonly said?: string;
+	}[] {
+		return this.#choiceLog;
+	}
+
+	/** Opens the choice on a desktop that runs (the start route turns its screen on first when it is off). A start of
+	 * another page's a moment ago is waited out once. */
+	async #openNow(computer: WebCompanyComputer, choice: OpenChoice, signal: AbortSignal, again = true): Promise<void> {
+		if (this.#opening || this.#turningOn || choice.sent) return;
 		this.#opening = true;
+		this.#sent(choice);
 		let answer: MachineStartAnswer | undefined;
 		try {
-			answer = await computer.screens.start(machineId, signal, path);
+			answer = await computer.screens.start(choice.machineId, signal, choice.path);
 		} catch {
 			answer = undefined;
 		} finally {
 			this.#opening = false;
+			this.#back(choice);
 		}
-		if (newest()) {
+		if (signal.aborted) return;
+		if (this.#choice === choice && choice.machineId === this.#machineId) {
 			if (again && answer?.kind === "refused" && answer.code === "DESKTOP_START_TOO_SOON") {
+				this.#retried(choice);
 				await new Promise((resolve) => setTimeout(resolve, START_AGAIN_MS));
-				if (newest()) await this.#openNow(computer, machineId, path, signal, gen, false);
+				if (this.#choice === choice && !signal.aborted) await this.#openNow(computer, choice, signal, false);
+				else this.#pumpChoice(computer, signal);
 				return;
 			}
-			this.#openAnswered(computer, machineId, path, gen, answer, "openNow", signal);
-		} else if (!signal.aborted && this.#machineId === machineId)
-			this.#replacedAnswer(computer, machineId, answer, signal);
-		// A newer choice made while this one was under way goes now, while it is still the newest.
-		const next = this.#queued;
-		this.#queued = undefined;
-		if (next && !signal.aborted && next.gen === this.#choiceGen && next.machineId === this.#machineId)
-			await this.#openNow(computer, next.machineId, next.path, signal, next.gen);
+			this.#openAnswered(choice, answer, "openNow");
+		} else if (choice.machineId === this.#machineId) this.#replacedAnswer(choice.machineId, answer);
+		// A newer choice that waited while this one was under way goes now.
+		this.#pumpChoice(computer, signal);
+	}
+
+	/** A choice answered with a code that asks for it again: it waits once more (and may be sent once more). */
+	#retried(choice: OpenChoice): void {
+		choice.sent = false;
+		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
+		if (entry) entry.retries++;
 	}
 
 	/** Whether an answer confirms the desktop runs: started, running, or opened. A refusal or a request that failed (no
@@ -3100,29 +3214,12 @@ export class ComputerPanel {
 		return answer !== undefined && answer.kind !== "refused";
 	}
 
-	/** An answer to a choice a newer one replaced (review r2 F1 of #1781): it changes nothing the member sees, and tells
-	 * only what a confirmed success tells, that the desktop runs; the newer choice standing in the wish then goes at
-	 * once. Anything else leaves the wish as it is, and the window's next look sends it as it would have. */
-	#replacedAnswer(
-		computer: WebCompanyComputer,
-		machineId: string,
-		answer: MachineStartAnswer | undefined,
-		signal: AbortSignal,
-	): void {
+	/** An answer to a choice no longer the one standing (review r2 F1 of #1781): it changes nothing the member sees, and
+	 * tells only what a confirmed success tells, that the desktop runs. */
+	#replacedAnswer(machineId: string, answer: MachineStartAnswer | undefined): void {
 		if (!ComputerPanel.#ran(answer)) return;
 		this.#startAnswered = { machineId, at: Date.now() };
-		this.#sendWished(computer, machineId, signal);
 		this.#lookNow();
-	}
-
-	/** What the wish was to open and has not been sent goes now, while it is the member's newest choice: the desktop
-	 * runs. The wish itself goes on to the picture. */
-	#sendWished(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): void {
-		const wish = this.#wantOn?.machineId === machineId ? this.#wantOn : undefined;
-		if (wish?.open === undefined) return;
-		const gen = wish.openGen ?? this.#choiceGen;
-		this.#wantOn = { machineId, until: wish.until };
-		if (gen === this.#choiceGen) void this.#openNow(computer, machineId, wish.open, signal, gen);
 	}
 
 	/** Looks at once. */
@@ -3133,39 +3230,33 @@ export class ComputerPanel {
 	}
 
 	/**
-	 * Every answer the start route can give a request that opens something, for the member's newest choice, from either
-	 * caller (review r2 of #1781: one table, so no code falls through): `turnOn` (the screen was off: the start turns it
-	 * on, then opens) and `openNow` (a screen the member sees). The client turns `started` or `running` for an open into
-	 * a failed request (no answer), as it does a throw.
+	 * Every answer the start route can give a request that carries the choice standing, from either caller (review r2
+	 * of #1781: one table, so no code falls through): `turnOn` (the screen was off: the start turns it on, then opens)
+	 * and `openNow` (a screen the member sees). The client turns `started` or `running` for an open into a failed
+	 * request (no answer), as it does a throw. Each ends the choice as answered, except those that ask for it again.
 	 * - opened: the desktop runs and it is open; look at once.
 	 * - someone else types privately (DESKTOP_MEMBER_IN_CONTROL): as a click's refusal: the list says who; nothing kept.
 	 * - not in the company folder (DESKTOP_OPEN_NOT_FOUND, DESKTOP_OPEN_PATH_INVALID), no company folder on that computer
 	 *   (DESKTOP_OPEN_NO_FOLDER): said in plain words; nothing to try again.
+	 * - asked for again (the choice waits once more, sent by #pumpChoice): from turnOn, a start a moment ago, the machine
+	 *   not running yet, or restarted; from openNow, a start a moment ago is waited out once in #openNow itself.
 	 * - turnOn only, the start's own answers that are no failure of this open: too small (the state says so), a disk it
-	 *   may not show (hidden), and those the wish tries again by itself with the same open (a start a moment ago, the
-	 *   machine not running yet, or restarted). From openNow (a screen the member sees) these are failures as below; a
-	 *   start a moment ago is waited out once there first.
+	 *   may not show (hidden).
 	 * - anything else, the open's own failures (DESKTOP_DID_NOT_OPEN, DESKTOP_BUSY: the host's hold), a screen that did
 	 *   not turn on, and a request that failed: "The computer could not open it. Try again.", with the path kept for Try
 	 *   again (under the picture, or the state's own button without one).
 	 */
-	#openAnswered(
-		computer: WebCompanyComputer,
-		machineId: string,
-		path: string,
-		gen: number,
-		answer: MachineStartAnswer | undefined,
-		caller: "turnOn" | "openNow",
-		signal: AbortSignal,
-	): void {
+	#openAnswered(choice: OpenChoice, answer: MachineStartAnswer | undefined, caller: "turnOn" | "openNow"): void {
+		const machineId = choice.machineId;
 		const code = answer?.kind === "refused" ? answer.code : undefined;
 		if (answer?.kind === "opened") {
+			this.#endChoice("answered");
 			this.#startAnswered = { machineId, at: Date.now() };
-			this.#sendWished(computer, machineId, signal);
 			this.#lookNow();
 			return;
 		}
 		if (code === "DESKTOP_MEMBER_IN_CONTROL") {
+			this.#endChoice("answered");
 			if (this.#wantOn?.machineId === machineId) this.#wantOn = undefined;
 			this.#screenSeen = false;
 			this.#listStale = true;
@@ -3173,21 +3264,24 @@ export class ComputerPanel {
 			return;
 		}
 		if (caller === "turnOn") {
+			if (code === "DESKTOP_START_TOO_SOON" || code === "MACHINE_NOT_RUNNING" || code === "MACHINE_BOOT_CHANGED") {
+				// Asked for again: the choice waits once more, and the wish that carries it stands (re-armed if a picture
+				// met it meanwhile).
+				this.#retried(choice);
+				if (this.#wantOn?.machineId !== machineId) this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+				if (code !== "DESKTOP_START_TOO_SOON") this.#listStale = true;
+				this.#lookNow();
+				return;
+			}
 			if (code === "DESKTOP_MACHINE_TOO_SMALL") {
+				this.#endChoice("answered");
 				this.#endStart(machineId, "small");
 				return;
 			}
 			if (code === "MACHINE_NEEDS_COMPANY_VIEW") {
+				this.#endChoice("answered");
 				this.#wantOn = undefined;
 				this.#unpicture("hidden");
-				return;
-			}
-			if (code === "DESKTOP_START_TOO_SOON" || code === "MACHINE_NOT_RUNNING" || code === "MACHINE_BOOT_CHANGED") {
-				// The wish tries again by itself, with the same open.
-				if (this.#wantOn?.machineId === machineId)
-					this.#wantOn = { machineId, until: this.#wantOn.until, open: path, openGen: gen };
-				if (code !== "DESKTOP_START_TOO_SOON") this.#listStale = true;
-				this.#lookNow();
 				return;
 			}
 		}
@@ -3198,15 +3292,12 @@ export class ComputerPanel {
 		else if (code === "DESKTOP_OPEN_NO_FOLDER")
 			words = t("This computer cannot see the company folder yet. It can after it has slept and woken.");
 		else {
-			words = t("The computer could not open it. Try again.");
+			words = t(FAILED_OPEN_WORDS);
 			retry = true;
 		}
 		if (this.#wantOn?.machineId === machineId) this.#wantOn = undefined;
-		this.#openNote = { machineId, words };
-		this.#openRetry = retry ? { machineId, path, words } : undefined;
-		this.#lostShown = true;
-		this.#controlNote.textContent = words;
-		this.#syncControls();
+		this.#endChoice("answered");
+		this.#sayOpen(choice, words, retry);
 		this.#lookNow();
 	}
 
