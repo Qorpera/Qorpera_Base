@@ -424,6 +424,8 @@ is text; `name:=<JSON>` gives a number, `true`, `false` or `null`. It ends 0 wit
 words on standard error), 2 for a call it cannot read, and 3 when the databases cannot be reached from this machine.
 A script, a build or a server on the machine calls it as it calls any program. No database login and no key is in
 the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
+`data change` is slice 7's named change (§8): this slice comes after slice 7 is on the store, and until then the
+command has the other three verbs.
 
 ### Who the command is
 
@@ -448,14 +450,31 @@ the machine. A step that is held is held here too: its yes is asked through `dat
 2. The node's bridge names the machine behind the connection (its CID, asked of LXD), as for every hello. The folder
    service takes a `data` hello only for a view it serves to that very machine now: a `test_machine` view, the
    caller its machine, the pass's hash the view's. Anything else gets the one refusal a hello has.
-3. A request is one frame, `{verb, body}`, at most 1 MiB. The folder service asks the core for a data pass as the
-   view (below) and sends the body with the pass to the gateway's run door on its own node, with the node's token
-   and the kit's CA pinned, as a provider host does for a run (§3). The answer goes back as one frame.
+3. A request is one frame, `{verb, body}`, at most 1 MiB: the `data` role alone takes a request that large (any
+   other role's requests stay at 64 KiB). The folder service asks the core for a data pass as the view (below) and
+   sends the body with the pass to the gateway's run door on its own node, with the node's token and the kit's CA
+   pinned, as a provider host does for a run (§3). The answer goes back as one frame, so it is at most 1 MiB (a
+   frame holds 2 MiB); a larger one is refused with words that say to name one database.
 4. The gateway redeems the pass: it names the company, the member and each file the view may read under the
    database's folder, with its hash. When the gateway asks for a file's text (`need`), the command reads it from
    `/company` and sends the call again. A text counts only by its hash, so nothing a machine sends is trusted. A
    file written a moment ago is used once it is saved to the folder (about two seconds after its last change): the
    command asks again for up to 10 s.
+
+**What a machine read is recorded.** Rows and a file's words leave the folder by this road, and a machine's output
+reaches models, so the road keeps RUNTIME-FOLDER-TEST-MACHINES.md's rules for reads ("Reads", rules 1, 3 and 4). The
+pass answers, beside itself, the entries it kept as the view read them. Before an answer frame leaves, the folder
+service records as reads served under the view, in memory, the files whose rows or words that answer can show:
+`data/<name>/database.toml` of each database it shows, and the question's, the change's or the steps' files the call
+used (for a describe, the questions' and changes' files whose words it lists). They are released as every recorded
+read of the machine is: before any boundary is answered and before any save of the machine commits. So a run that is
+handed a command's output with rows in it has taken in the read of that database, and output whose reads are no
+longer readable to the run is held back, as for a file read through `/company`.
+
+**What a machine writes is not a save of the folder.** A change and an applied step write rows, not files: they are
+not credited to a command and do not recheck the view's read set, as a commit does. They need the view to be valid
+and to read the change's or the step's file at that moment, which the pass proves. What a program learned earlier
+and writes into a row is not followed, as a copy on the machine's disk is not.
 
 The folder service gains two credentials on the node host, each a systemd credential of its own: the run door's token
 and the CA's pin, as the provider hosts hold them. It forwards nothing but the four verbs with a JSON body. Whether
@@ -468,16 +487,18 @@ hosts) is read on a node before this is built; if it does not, the folder servic
   `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine` view. It lists and keeps the
   files as `qorpera_run_data_pass` does (one listing, used by both), as the view may read them now, with the view,
   its machine, its agent and its member. `qorpera_data_passes.kind` gains `machine`; such a pass names no run and no
-  job.
+  job. It answers the pass and the entries it kept (above). It is refused while the company's execution is paused,
+  as a run's pass is: a machine that keeps running through a pause reads and writes no rows.
 - `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its view is open and valid, with
   `kind: "machine"`. The gateway takes it at the run door as it takes a run's, with an agent's limits. A machine's
   pass never carries an `allow`.
 
 ### Limits
 
-- At the folder service, a machine has 4 calls at once and 120 a minute (what an interface app has, §5); past them a
-  call is refused at once and may be made again. A body is at most 1 MiB, an answer 4 MiB, a call 30 s (an apply
-  120 s).
+- At the folder service, a machine has 4 calls at once and 120 a minute; past them a call is refused at once and may
+  be made again. 120 a minute is an interface app's (§5). 4 at once is half an app's 8: a database folder's read
+  login holds 3 connections and its write login 2 (§2), so more at once would only wait for them. A body and an
+  answer are at most 1 MiB each, a call 30 s (an apply 120 s).
 - Each call makes a pass, and a pass lists the database's folder in the platform's database. That cost is what the
   120 a minute bound. A server that asks many times a second needs the direct connection of §9, or a pass that serves
   a machine for a short while. Neither is in this slice.
@@ -497,15 +518,16 @@ hosts) is read on a node before this is built; if it does not, the folder servic
 
 | Part | What | Tests |
 | --- | --- | --- |
-| 1 | The machine's pass and its redeem (one migration); the gateway takes a `machine` pass | an SQL test; the gateway's tests against a real PostgreSQL |
-| 2 | The folder service's `data` role: the hello's check, the limits, the run door's client, the two credentials | the folder service's tests, with a stand-in door |
+| 1 | The machine's pass and its redeem (one migration); the gateway takes a `machine` pass | an SQL test, with a paused company's pass refused; the gateway's tests against a real PostgreSQL |
+| 2 | The folder service's `data` role: the hello's check, the limits, the reads it records, the run door's client, the two credentials | the folder service's tests, with a stand-in door |
 | 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`; one sentence in the agents' instructions | the program's tests; the image script's own checks |
-| 4 | A proof on a test machine: a machine in a nested VM asks, changes and applies, and a second machine with another view is refused | `scripts/` proof, on a test machine |
+| 4 | A proof on a test machine: a machine in a nested VM asks, changes and applies; a second machine with another view is refused; a `machine_run` whose output holds rows takes the database's read into its run | `scripts/` proof, on a test machine |
 
-A release rolls the migration, a later gateway on the store's machines, the node release with the folder service and
-its two credentials, the folder program's new build (its pin moves wherever it runs) and the machine image.
-RUNTIME-FOLDER-TEST-MACHINES.md's "The security line" gains the sentence that a machine reaches the company's
-databases through its one view, with part 2.
+The parts build on slice 7: `change`, and the proof's change, need slice 7's gateway on the store. A release rolls the
+migration, a later gateway on the store's machines, the node release with the folder service and its two credentials,
+the folder program's new build (its pin moves wherever it runs) and the machine image. With part 2,
+RUNTIME-FOLDER-TEST-MACHINES.md gains two sentences: in "The security line", that a machine reaches the company's
+databases through its one view; in "Reads", that what the `data` role answers is recorded as the view's reads.
 
 ## 10. Qorpera's own data (slice 9)
 
@@ -542,7 +564,7 @@ registry when a slice starts.
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
 | 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
 | 8 | The product's doors, each after its own design | | |
-| 8a | The `data` command on a company machine (§9a), in four parts | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
+| 8a | The `data` command on a company machine (§9a), in four parts, after slice 7 | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
 | 9 | Qorpera's own data as tables | | |
 
 Slices 2 to 5 together are "live reads": a fresh company's agents make a database and an interface shows its numbers
