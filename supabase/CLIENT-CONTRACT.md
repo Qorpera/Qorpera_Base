@@ -328,6 +328,25 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
   each colour and each icon as one.
+- Light asks (`20260930761000`, deploy/first-node/RUNTIME-LIGHT-ASK.md): one small
+  question a member's own action raises, answered by one call to the small model
+  with no tools, with nothing shown in a conversation.
+  `qorpera_request_light_ask(p_profile_id, p_client_ask_id, p_kind, p_input)` →
+  `qorpera.light-ask/v1` `{id, kind, state, answer, problem}`; owner, admin or
+  contributor of a folder-v2 company. `p_kind` is a closed list, today
+  `name-app-group`, whose `p_input` is `{apps: [{name, about?}], language}`: 2 to
+  12 apps, a name of 1 to 80 characters, `about` at most 200, `language` like `en`,
+  `da` or `en-GB`; never a prompt (22023 for anything else). `state` is `waiting`,
+  `answered` (with `answer`, one line of at most 200 characters) or `failed` (with
+  `problem`: `no_payer` when no Codex login of the member's own can pay,
+  `unavailable` for a company with no Co-Founder or one that is paused,
+  `too_many` at 8 waiting asks, `no_answer`, or `expired` after ten minutes).
+  A failed ask is never raised as an error. The same `p_client_ask_id` with the
+  same kind and input answers the ask already made (23505 with other content).
+  `qorpera_read_light_ask(p_profile_id, p_ask_id)` → the same shape, or null when
+  the caller has no ask of that id. The member's own login pays, a ChatGPT plan
+  too; no company account does. A cloud before `20260930761000` has neither
+  function, and the web then asks nothing.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,

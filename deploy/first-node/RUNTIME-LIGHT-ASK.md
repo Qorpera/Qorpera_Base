@@ -1,6 +1,8 @@
 # Light asks
 
-Status: design, 14 November 2026. Not built yet. Owner: the light-ask lane (branch `feat/light-ask`).
+Status: built, 14 November 2026: migration `20260930761000` (SQL test 1258) and the runtime; not live until a
+runtime release carries it. The web part (a new group asks for its name) is a change of its own. The contract's
+"2026-11-14 amendment: light asks" is the rule; this file is how it is built.
 
 Jonas, 14 November 2026, on a group just made in the apps drawer: "when a new group is created, I would like to run a
 light call, having an agent name it". Asked how, between a visible message in the Co-Founder's thread and a new hidden
@@ -40,30 +42,42 @@ It follows the human-task wake (P31, `20260928489200_folder_state_human_task_wak
 | Conversation | the agent's thread | none (`session_id` null) |
 | Reply | optional, in the thread | none: the answer goes to the marker row |
 
-What it changes in existing functions, each an exact-text patch as P31's were:
+What it changes in existing functions, each an exact-text patch as P31's were (migration `20260930761000`):
 
 1. `qorpera_wake_occurrences_source_kind_check`: one more kind.
-2. `qorpera_pin_wake_occurrence()`: a `light-ask` branch that takes everything from the marker row.
-3. `qorpera_folder_wake_authorized(...)`: a `light-ask` branch (its marker, no parent).
-4. `qorpera_runtime_wake_policy_internal(uuid)`: an agent source that never replies.
-5. `qorpera_folder_read_wake(jsonb)`: the payload is the kind and its input, from the marker row.
-6. `qorpera_folder_materialize_company(uuid, integer)`: a light ask's payer need not allow unattended use (the member
-   is there), as a room post's need not.
+2. `qorpera_pin_wake_occurrence()`: a `light-ask` branch that takes everything from the ask's row.
+3. `qorpera_folder_wake_authorized(...)`: a `light-ask` branch (its ask, no parent, no conversation; before its run,
+   the ask still waits and is not past its time).
+4. `qorpera_runtime_wake_policy_internal(uuid)`: `light-ask` is an agent source; an agent wake's own policy forbids a
+   send.
+5. `qorpera_folder_read_wake(jsonb)`: a light run takes no held coworker messages (it would not read them).
+6. `qorpera_folder_materialize_company(uuid, integer)` and `qorpera_run_autonomous_authority(...)`: a light ask's payer
+   need not allow unattended use (the member is there), as a room post's need not.
+7. `qorpera_begin_native_company_execution_v3(...)` and `_v2(...)`: a light ask's run is admitted with an empty tool
+   catalog and only with one; every other run needs at least one tool, as before.
 
-New: the marker table, the member's two RPCs (ask, read), and the run's one call that stores the answer.
+New: `qorpera_light_asks`, the member's two calls (`qorpera_request_light_ask`, `qorpera_read_light_ask`), the run's
+one call that stores the answer (`qorpera_native_light_ask_answer`, a native host call of scope `binding`), and the
+payer's picker (`qorpera_light_ask_sponsor`).
 
 ## 3. The run
 
 The runtime sees a wake whose source is `light-ask`. It then:
 
-1. admits the run as any run (`qorpera_begin_native_company_execution_v3`);
-2. starts Codex with the member's login, offers no tools, composes no context;
+1. starts Codex with the member's login and admits the run with an empty tool catalog
+   (`qorpera_begin_native_company_execution_v3`);
+2. binds its one question (the kind's instructions and the input as data) as the run's context, which writes the
+   run's start (`qorpera_bind_native_company_context`);
 3. opens one side thread on the small model at low effort, with the kind's instructions, sends the input, and reads
-   the reply;
-4. stores the answer (or that there is none) through the run's call;
+   the reply (`runCloudCodexToolSession`'s `light`, in place of the agent's thread, which never starts);
+4. stores the answer, or that there is none, through the run's call;
 5. ends silent, as a routine with nothing to say ends.
 
-A usage limit, a refusal or an empty reply stores "no answer". The run never retries the model by itself.
+A usage limit, a reply that is no answer or no reply stores "no answer", and the run still ends. A usage limit or a
+rate limit is recorded against the login after the answer is stored. The run never asks twice. Code:
+`packages/runtime/src/cloud-light-ask.ts` (kinds, instructions, the reply's cleaning),
+`cloud-native-company-runtime.ts` (`#lightAsk`), `cloud-codex-tool-session.ts` (`light`), `cloud-wake-bus.ts` (the
+wake's shape).
 
 ## 4. The first kind: `name-app-group`
 
@@ -83,13 +97,13 @@ A usage limit, a refusal or an empty reply stores "no answer". The run never ret
 - An ask that is not answered within 10 minutes reads as "no answer". Asks older than a day are removed when the
   member asks again.
 
-## 6. Open points (to settle while building, each checked against the code)
+## 6. What is proven, and what is not
 
-- The run has no conversation. Silent routines already run that way; every function on the run's path must take a
-  null `session_id` for an agent wake too (the pin trigger, `qorpera_folder_read_wake`, completion, the memory tree).
-- The lock ranks of an authenticated call that inserts a wake (`qorpera_folder_post_room_message` is the model).
-- Which call stores the answer: a new native host call (`NATIVE_HOST_CALLS` is pinned) or the run's result.
-- The contract: §8's five entrypoints stay five; a light ask is an agent wake with a new source. A dated amendment
-  says so, and that §17's "a member's login pays only for work that member started" holds for it by construction.
-- Release: it changes the runtime, so it rides a runtime release the coordinator cuts. The web part detects a cloud
-  without the RPC and asks nothing.
+- SQL test 1258, on a company made by a real creation: the ask, its wake as the pin trigger makes it, the real
+  materializer's run on a login that allows no unattended use, the admission with no tool (and its refusal with one),
+  the wake as the run reads it, the stored answer, the run's real completion with no send and no conversation, and
+  each refusal and bound. Each rule was broken once on purpose and the test caught it.
+- Runtime tests: the wake's shape, the kind's instructions and the reply's cleaning, the session's light path against
+  the fake Codex server, and a whole light run through the run path.
+- Not proven: a real call on a real login. Tests that need a Codex subscription are deferred (6 October 2026), so the
+  first live light ask is the release's own check.
