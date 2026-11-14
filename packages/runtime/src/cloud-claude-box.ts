@@ -133,15 +133,36 @@ export function claudeBoxMountOptions(
 }
 
 /**
- * Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only.
- * `--allowedTools Grep,Glob` brings the two search tools back: 2.1.325 hides them unless a launch list names them
- * (`setSearchToolsOptIn`, search6.log) and tells the model to use grep and find through Bash. They run ripgrep, which
- * here is the home's own through the `rg` bridge (USE_BUILTIN_RIPGREP=0): one round trip on the home's disk, never a
- * walk of the mount. Allow rules never outweigh the deny rules (the attack suite runs with them).
+ * The tools a box may offer, and the list slice 1 gives: exactly the ones the proofs cover. `--tools` is the exclusive
+ * list: every other built-in tool (agents, schedules, triggers, web, worktrees, skills) is absent, not merely denied.
+ * Naming Grep and Glob in it also brings them back: 2.1.325 hides them unless a launch list names them
+ * (`setSearchToolsOptIn`, search6.log). They run ripgrep, which here is the home's own through the `rg` bridge
+ * (USE_BUILTIN_RIPGREP=0): one round trip on the home's disk, never a walk of the mount.
  */
-export function claudeBoxArguments(options: { model?: string } = {}): string[] {
+export const CLAUDE_BOX_TOOLS = Object.freeze([
+	"Bash",
+	"Read",
+	"Edit",
+	"Write",
+	"NotebookEdit",
+	"Grep",
+	"Glob",
+	"TaskStop",
+] as const);
+export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
+
+/** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only, and
+ * the tools named, no others. */
+export function claudeBoxArguments(options: { model?: string; tools?: readonly ClaudeBoxTool[] } = {}): string[] {
 	if (options.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(options.model))
 		throw new Error("Invalid Claude model");
+	const tools = options.tools ?? CLAUDE_BOX_TOOLS;
+	if (
+		tools.length === 0 ||
+		new Set(tools).size !== tools.length ||
+		tools.some((tool) => !(CLAUDE_BOX_TOOLS as readonly string[]).includes(tool))
+	)
+		throw new Error("Invalid Claude tools");
 	return [
 		"-p",
 		"--output-format",
@@ -154,8 +175,8 @@ export function claudeBoxArguments(options: { model?: string } = {}): string[] {
 		"--setting-sources",
 		"user",
 		"--strict-mcp-config",
-		"--allowedTools",
-		"Grep,Glob",
+		"--tools",
+		tools.join(","),
 		...(options.model ? ["--model", options.model] : []),
 	];
 }
@@ -220,6 +241,7 @@ export function claudeBoxInvocation(options: {
 	weakening?: ClaudeBoxProofWeakening;
 	extraCa?: string;
 	model?: string;
+	tools?: readonly ClaudeBoxTool[];
 }): { command: string; args: string[] } {
 	const c = options.configuration;
 	const s = scratchPaths(options.scratchRoot);
@@ -319,7 +341,7 @@ export function claudeBoxInvocation(options: {
 		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
 		options.relayPath,
 		CLAUDE_BOX_PATHS.binary,
-		...claudeBoxArguments({ model: options.model }),
+		...claudeBoxArguments({ model: options.model, tools: options.tools }),
 	);
 	return {
 		command: c.namespaceHelper,
@@ -388,11 +410,8 @@ export interface ClaudeCodeBox {
 	close(): Promise<void>;
 }
 
-/**
- * Starts one run's Claude Code box beside its home. No fallback: a part that is not root's, not the pin, a channel that
- * will not open or a mount that fails ends the start, and nothing of the box runs outside it.
- */
-export async function launchClaudeCodeBox(options: {
+/** What starting one run's box takes. */
+export interface ClaudeCodeBoxOptions {
 	configuration?: ClaudeBoxConfiguration;
 	/** The run's private scratch root (this account's, mode 0700), made for this run and removed by the caller. */
 	scratchRoot: string;
@@ -408,18 +427,23 @@ export async function launchClaudeCodeBox(options: {
 	/** What the model is asked; Claude Code reads it on stdin. */
 	prompt: string;
 	model?: string;
+	/** The tools Claude Code offers, no others (default and slice 1: CLAUDE_BOX_TOOLS). */
+	tools?: readonly ClaudeBoxTool[];
 	signal: AbortSignal;
 	/** Proofs only: the egress transport (as startNativeCodexEgress takes it), a CA file the box trusts for the stub's
 	 * TLS, and the positive controls' weaker set-ups. */
 	proof?: { transport?: NativeEgressTransport; extraCa?: string; weakening?: ClaudeBoxProofWeakening };
-}): Promise<ClaudeCodeBox> {
+}
+
+/**
+ * Starts one run's Claude Code box beside its home. No fallback: a part that is not root's, not the pin, a channel that
+ * will not open or a mount that fails ends the start, and nothing of the box runs outside it.
+ */
+export async function launchClaudeCodeBox(options: ClaudeCodeBoxOptions): Promise<ClaudeCodeBox> {
 	if (process.platform !== "linux" || !process.getuid?.())
 		throw new Error("The Claude Code box needs unprivileged Linux");
 	options.signal.throwIfAborted();
 	const configuration = options.configuration ?? CLAUDE_BOX_CONFIGURATION;
-	const login = options.login;
-	const token = "token" in login ? login.token : undefined;
-	if (token !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(token)) throw new Error("Invalid Claude sign-in token");
 	for (const file of [
 		configuration.binary,
 		configuration.entryPoint,
@@ -433,6 +457,22 @@ export async function launchClaudeCodeBox(options: {
 	])
 		await rootOwnedFile(file);
 	await checkClaudeCodePin(configuration.binary);
+	return startClaudeCodeBox({ ...options, configuration }, spawn);
+}
+
+/**
+ * The start itself, once launchClaudeCodeBox has checked every part (root's, the pin). Exported for the tests, which
+ * give it a stand-in for the box's process.
+ */
+export async function startClaudeCodeBox(
+	options: ClaudeCodeBoxOptions & { configuration: ClaudeBoxConfiguration },
+	spawnBox: typeof spawn,
+): Promise<ClaudeCodeBox> {
+	options.signal.throwIfAborted();
+	const configuration = options.configuration;
+	const login = options.login;
+	const token = "token" in login ? login.token : undefined;
+	if (token !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(token)) throw new Error("Invalid Claude sign-in token");
 	await privateDirectory(options.scratchRoot);
 	if ("folder" in login) {
 		if (!isAbsolute(login.folder) || login.folder.startsWith(`${options.scratchRoot}/`))
@@ -441,7 +481,7 @@ export async function launchClaudeCodeBox(options: {
 	}
 	const s = scratchPaths(options.scratchRoot);
 	for (const folder of [s.config, s.home, s.mount]) await mkdir(folder, { mode: 0o700 });
-	const uid = process.getuid();
+	const uid = process.getuid?.() ?? 0;
 	const gid = process.getgid?.() ?? uid;
 	await writeFile(s.settings, claudeBoxSettings(options.proof?.weakening), { mode: 0o400, flag: "wx" });
 	await writeFile(s.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
@@ -471,12 +511,16 @@ export async function launchClaudeCodeBox(options: {
 	const signal = AbortSignal.any([options.signal, controller.signal]);
 	const cleanups: (() => Promise<void>)[] = [];
 	let closing: Promise<void> | undefined;
+	// Whether a channel of the session ever opened: only then is there a session for SQL to close. A launch that failed
+	// before leaves the caller's id unused, to start again with (review round 1, F3).
+	let filesOpened = false;
+	let shellOf: CloudClaudeHomeShell | undefined;
 	const close = (): Promise<void> => {
 		closing ??= (async () => {
 			controller.abort();
 			for (const cleanup of cleanups.reverse()) await cleanup().catch(() => undefined);
-			// Both channels are closed now; then the one session that authorized them.
-			if (options.endSession)
+			// Both channels are closed now; then the one session that authorized them, if one ever opened.
+			if (options.endSession && (filesOpened || (shellOf?.counts.channels ?? 0) > 0))
 				await Promise.race([
 					options
 						.endSession(options.sessionId, options.signal.aborted ? "stopped" : "ended")
@@ -500,12 +544,14 @@ export async function launchClaudeCodeBox(options: {
 			signal,
 		});
 		await shell.listen(options.scratchRoot);
+		shellOf = shell;
 		cleanups.push(() => shell.close());
 		// The files: the sftp channel of the same session, open before sshfs says its first word.
 		const files: CloudClaudeHomeStream = await options.channel.open(
 			{ sessionId: options.sessionId, machineId: options.machineId, kind: "sftp" },
 			signal,
 		);
+		filesOpened = true;
 		cleanups.push(() => files.close());
 		const relay = await startNativeCodexEgress({
 			root: options.scratchRoot,
@@ -525,8 +571,9 @@ export async function launchClaudeCodeBox(options: {
 			weakening: options.proof?.weakening,
 			extraCa: options.proof?.extraCa,
 			model: options.model,
+			tools: options.tools,
 		});
-		const child = spawn(invocation.command, invocation.args, {
+		const child = spawnBox(invocation.command, invocation.args, {
 			cwd: options.scratchRoot,
 			env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
 			stdio: ["pipe", "pipe", "pipe", token !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
@@ -538,6 +585,13 @@ export async function launchClaudeCodeBox(options: {
 			child.once("error", () => resolve(255));
 			child.once("close", (code, killed) => resolve(code ?? (killed ? 137 : 255)));
 		});
+		// The run's stop ends the box at once, as close() does: the process group, the mount, both channels (so no write
+		// of the turn reaches the home after it, and the home ends the commands running there), the relay (review
+		// round 1, F1). close() takes the listener off again.
+		const stop = (): void => void close();
+		options.signal.addEventListener("abort", stop, { once: true });
+		cleanups.push(async () => options.signal.removeEventListener("abort", stop));
+		if (options.signal.aborted) stop();
 		cleanups.push(async () => {
 			if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
 				try {

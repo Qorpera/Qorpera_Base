@@ -221,15 +221,29 @@ export class CloudClaudeHomeShell {
 		return channel;
 	}
 
+	/**
+	 * The run's one channel: the open one, the one being opened, or a new one. Commands that waited on an opening that
+	 * failed open ONE new channel between them: after each wait it looks again, and an opening that failed clears
+	 * only itself (review round 1, F2: two waiters each opened one and the first leaked).
+	 */
 	async #channelNow(): Promise<Channel> {
-		const existing = this.#current ? await this.#current.catch(() => undefined) : undefined;
-		if (existing && !existing.closed) return existing;
-		this.#current = this.#open();
-		this.#current.catch((error) => {
+		for (;;) {
+			const waited = this.#current;
+			if (!waited) break;
+			const existing = await waited.catch(() => undefined);
+			if (existing && !existing.closed) return existing;
+			if (this.#current === waited) {
+				this.#current = undefined;
+				break;
+			}
+		}
+		const opening = this.#open();
+		this.#current = opening;
+		opening.catch((error) => {
 			this.cause = String((error as Error)?.message ?? error);
-			this.#current = undefined;
+			if (this.#current === opening) this.#current = undefined;
 		});
-		return this.#current;
+		return opening;
 	}
 
 	async #serve(socket: Socket): Promise<void> {
