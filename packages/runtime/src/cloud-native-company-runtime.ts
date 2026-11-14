@@ -128,11 +128,9 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
-	CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
-	CLOUD_ASK_MEMBER_INSTRUCTIONS,
-	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_ASK_MEMBER_SURFACES,
+	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
+	cloudAskMemberInstructions,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
@@ -759,21 +757,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const ask: CloudNativeTool = {
 				name: "ask_member" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
-				description: CLOUD_ASK_MEMBER_INSTRUCTIONS,
-				inputSchema: {
-					type: "object",
-					properties: {
-						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
-						title: { type: "string", minLength: 1, maxLength: 200 },
-						body: { type: "string", maxLength: CLOUD_ASK_MEMBER_BODY_MAX_BYTES },
-						expiresAt: { type: "string" },
-						payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-					},
-					required: ["idempotencyKey", "text", "surface", "title", "payload"],
-					additionalProperties: false,
-				},
+				// The Gmail draft's steps only where the run has Gmail's tools (a connection made before 10 November 2026).
+				description: cloudAskMemberInstructions(
+					connectorDescriptors.some((descriptor) => descriptor.toolName === "gmail_get_profile"),
+				),
+				inputSchema: CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 				parseArguments(value) {
 					const input = parseCloudAskMemberInput(value);
 					// A card ends with its final sentence, so it waits for the decision too.

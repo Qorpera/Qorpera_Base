@@ -2576,13 +2576,13 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	expect(todo).toContain("Each todo is a file in your folder");
 	expect(todo).not.toContain("Each todo is also a document in the shared Company File");
 	const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
-	expect(sidebar).toContain("the sections live in the file QorperaOS/agents/sections.md");
+	expect(sidebar).toContain("The sections are the file QorperaOS/agents/sections.md");
 	expect(sidebar).not.toContain("by its id or name");
 	// The 2026-11-11 amendment (each member's own sidebar), item 4: the change is the company's, not every member's at once.
-	expect(sidebar).toContain("every member sees your change, except where a member placed things themself");
+	expect(sidebar).toContain("every member sees a change, except where a member placed things themself");
 	expect(sidebar).not.toContain("everyone sees the change at once");
 	const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
-	expect(hire).toContain("saved as the agent's own folder");
+	expect(hire).toContain("The hire is the agent's own folder");
 	expect(hire).not.toContain("under organization/agents");
 	const chat = tools.find((tool) => tool.name === "create_group_chat")?.description ?? "";
 	expect(chat).toContain("QorperaOS/agents/groups/<name>/group.md");
@@ -3313,6 +3313,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	// On 14 November 2026 list_hooks, manage_hook and ask_member's secret card no longer name the Company Computer's
 	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
+	// The same day every description became its tool's contract, in lines, its fields' meanings on its schema and the
+	// rules every tool shares left to the instructions (track 3, T3-5), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3363,10 +3365,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"825fdc12e53f710b2a2a4731826483f195a07b69eb0dd7c70d53038ac9549362",
+		"57a32b46d4e96777252f7b40a5707614217da1f950de0fbed47a382ac2d58d56",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"63b1fd6332fa56dd67080e34e482f7d91b9ba68dd25bab98c89561e34293fdfb",
+		"d214108c27625b330550b72f84d8c25833d4efcb5bed4463168204ee81465447",
 	);
 });
 

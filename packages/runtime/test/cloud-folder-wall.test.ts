@@ -2,6 +2,7 @@ import { parseWall, renderWall } from "@qorpera/cloud-client/agent-wall";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import { CLOUD_WALL_TOOL_DESCRIPTION, cloudWallTools, nextWall, wallToday } from "@qorpera/runtime/cloud-folder-wall";
+import { CLOUD_COMPANY_RUNTIME_INSTRUCTIONS } from "@qorpera/runtime/cloud-native-company-context";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeTool,
@@ -386,7 +387,9 @@ it("keeps the line under the agent's name: needed once, kept by null, short when
 
 it("tells the agent to say what came of its work, and to keep the team's housekeeping off the wall", () => {
 	const description = CLOUD_WALL_TOOL_DESCRIPTION;
-	expect(description).toContain("now: the one line members read under your name in the sidebar");
-	expect(description).toContain("Never name the step you took instead of what came of it");
-	expect(description).toContain("Keep the team's own housekeeping off the wall");
+	expect(description).toContain("now, the line under your name in the sidebar");
+	expect(description).toContain("- now: where your work stands, as it stands after this call");
+	// What a line says is the instructions' to say, once (Writing to people; track 3, T3-5).
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("never the step you took");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("never the team's own housekeeping");
 });

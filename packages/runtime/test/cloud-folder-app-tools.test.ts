@@ -72,17 +72,18 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 	// is part of this one, so a longer list can push it over. The emblems are listed on the schema alone since there are
 	// 24 (12 November 2026), which put it at 4177.
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
-	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
+	// The emblems and colours are the schema's enums, which Codex sends; the description names the fields.
+	expect(tool.description).toContain("optionally about, emblem, colour, kit, entry");
 	for (const rule of [
 		// Jonas, 13 November 2026: pages that kept every rule of 10 November (a first screen that says how the area
 		// stands, about 300 words, a diagram) were still documents in boxes. A page written by hand now follows the kits.
-		"The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
-		"a title of two or three words, at most one short line under it, then the thing",
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
-		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
-		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: files says which",
+		"The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
+		"a title of two or three words, at most one short line, then the thing",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
+		"Give it something to do: a control that changes what it shows, or a choice a member makes (writes).",
+		"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+		"Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own.",
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
@@ -125,7 +126,9 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 it("tells on writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
-	expect(tool.description).toContain("writes: what it may ask a member to change");
+	expect(tool.description).toContain(
+		"asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them)",
+	);
 	const properties = (tool.inputSchema as { properties: { manifest: { properties: Record<string, unknown> } } })
 		.properties.manifest.properties;
 	const writes = JSON.stringify(properties.writes);

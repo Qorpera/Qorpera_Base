@@ -251,7 +251,7 @@ it("tells an agent on kit only what the engine can draw", async () => {
 	runs.push(f.run);
 	const [saveApp] = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
 	expect(saveApp?.description).toContain(
-		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
+		"you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js)",
 	);
 	const kit = (
 		saveApp?.inputSchema as {

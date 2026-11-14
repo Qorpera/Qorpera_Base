@@ -1,6 +1,7 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
@@ -413,18 +414,23 @@ describe("readable cards", () => {
 	// card says what is stopped; nothing optional does.
 	it("puts every answer the work waits for on a card that says what is stopped, and nothing optional", () => {
 		for (const rule of [
-			"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
-			"Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer.",
-			"Optional ideas, offers and news stay in chat.",
-			"The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen,",
+			"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
+			"ideas, offers and news stay in chat.",
 		])
 			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
+		// What a card says, and its options, are on the fields Codex sends (track 3, T3-5).
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_INPUT_SCHEMA)).toContain(
+			"what is stopped until they answer, what is being chosen, the one or two things that matter",
+		);
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain(
+			"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
+		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
 		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).not.toContain("belong in ordinary chat");
 		expect(schema).not.toContain("not a reason to turn an open-ended question");
-		expect(schema).toContain("add allowCustom for an open one");
+		expect(schema).toContain("allowCustom adds a field for the member's own");
 		// The tool boundary takes a description of at most 4096 bytes.
 		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
 		// The card takes a typed answer beside its options.
@@ -486,7 +492,7 @@ describe("ask_member card shapes", () => {
 					type: "string",
 					minLength: 1,
 					maxLength: 40,
-					description: "A button of 1 to 3 words that resolves the pending decision.",
+					description: "A button of 1 to 3 words (at most 40 bytes), such as Approve or Change it.",
 				},
 			};
 		expect(offered[CLOUD_ASK_MEMBER_SURFACES.indexOf(surface)]).toEqual(kernel);

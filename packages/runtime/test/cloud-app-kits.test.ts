@@ -122,13 +122,12 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 	for (const said of [
 		"lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch)",
-		"It is never a document or a report: text to read stays a file in the folder.",
-		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
-		"Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine",
+		"Text to read stays a file.",
+		"Kits draw nearly every app: you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit.",
 		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
 		// A page written by hand follows the kits.
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
 	])
 		expect(tool.description).toContain(said);
 	const kit = (
