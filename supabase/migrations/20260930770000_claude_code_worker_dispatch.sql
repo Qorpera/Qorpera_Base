@@ -16,13 +16,18 @@
 -- 4. The worker's wake carries `harness`, so the runtime diverts it (and an older runtime refuses the payload's unknown
 --    key: a Claude Code worker never runs on Codex by accident).
 -- 5. One Claude Code run per member at a time (qorpera_claude_worker_leases): F2's drain takes the member's lease when it
---    starts the worker, under the id its wake gets, and a worker whose member holds a live lease waits, due, until that
---    run has ended (the drain's skipped count, as for a busy lock). A lease is live until its wake ends or the job of the
---    wake's run ends (completed, failed or cancelled): a run whose host died is failed by the job's reaper, and its lease
---    ends with it. Nothing releases a lease by hand.
+--    starts the worker, under the id its wake gets. A worker whose member holds a live lease waits: it is not due
+--    (qorpera_claude_worker_waits in qorpera_folder_worker_due, as C3d keeps held coding results out), so waiting workers
+--    never fill a drain's window, and it starts on a pass after that run has ended. A take that loses a race (another
+--    company's drain took the member's lease first) is the drain's skipped count, as for a busy lock. A lease is live
+--    until its wake ends or the job of the wake's run ends (completed, failed or cancelled): a run whose host died is
+--    failed by the job's reaper, and its lease ends with it. Nothing releases a lease by hand.
 --
--- Locks: the lease row is the last lock the drain takes, after admission (core §3); nothing else locks it. The worker
--- row's two new columns are written under the index's rank-5 lock, as the rest of the row.
+-- Locks: a lease is taken after admission (core §3), inside the start's block of the drain, just before its wake's
+-- insert; one pass may take several members' leases in its workers' order, and account, worker and wake deletions lock
+-- lease rows too, so a take that meets contention past the drain's lock timeout, or a deadlock, is that block's skip
+-- and the worker starts on a later pass. The worker row's two new columns are written under the index's rank-5 lock,
+-- as the rest of the row.
 --
 -- Exact-text patches: each fails unless the function has the text given exactly once. Every new or patched body names
 -- this migration (20260930770000).
@@ -81,6 +86,18 @@ returns boolean language sql stable security definer set search_path = '' as $$
 					where run.id = wake.run_id and job.status in ('completed','failed','cancelled'))))
 $$;
 revoke all on function public.qorpera_claude_worker_lease_live(public.qorpera_claude_worker_leases)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- Whether a Claude Code worker waits for its member's lease: another run of that member holds a live one. Such a worker
+-- is not due until that run ends (qorpera_folder_worker_due below); the take decides again under the row's lock.
+create function public.qorpera_claude_worker_waits(p_worker public.qorpera_runtime_workers)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930770000.
+	select p_worker.harness is not distinct from 'claude-code' and exists (select 1
+		from public.qorpera_claude_worker_leases lease
+		where lease.owner_user_id = p_worker.requested_by_user_id and public.qorpera_claude_worker_lease_live(lease))
+$$;
+revoke all on function public.qorpera_claude_worker_waits(public.qorpera_runtime_workers)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- Takes the worker's member's lease for the wake about to be inserted under p_wake_id; false while another of that
@@ -276,6 +293,13 @@ $$;
 
 -- 7. The drain: one Claude Code run per member ------------------------------------------------------------------------
 
+-- A Claude Code worker waiting for its member's lease is not due to start (a stop of its parent or todo still is).
+select pg_temp.c4a_replace('public.qorpera_folder_worker_due(public.qorpera_runtime_workers)'::regprocedure,
+	$old$			or (p_worker.species = 'in-house' and (p_worker.occurrence_id is null$old$,
+	$new$			-- 20260930770000: a Claude Code worker that waits for its member's lease is not due to start.
+			or (p_worker.species = 'in-house' and ((p_worker.occurrence_id is null
+				and not public.qorpera_claude_worker_waits(p_worker))$new$);
+
 select pg_temp.c4a_replace('public.qorpera_folder_workers_company(uuid,integer)'::regprocedure,
 	$old$	v_undeliverable integer := 0; v_skipped integer := 0;$old$,
 	$new$	v_undeliverable integer := 0; v_skipped integer := 0;
@@ -285,8 +309,8 @@ select pg_temp.c4a_replace('public.qorpera_folder_workers_company(uuid,integer)'
 	$old$					elsif v_worker.occurrence_id is null then
 						-- Start it: the dispatch wake, admitted above. One the pin trigger cancels at insert fails the worker.$old$,
 	$new$					elsif v_worker.occurrence_id is null then
-						-- 20260930770000: a Claude Code worker first takes its member's lease, under the id its wake gets; while
-						-- another Claude Code run of that member goes on it waits here, due, and starts on a later pass.
+						-- 20260930770000: a Claude Code worker first takes its member's lease, under the id its wake gets; one
+						-- that lost it to another drain since it was read as due is skipped and starts on a later pass.
 						v_start := extensions.gen_random_uuid();
 						if v_worker.harness = 'claude-code' then
 							if not public.qorpera_claude_worker_lease_take(v_worker, v_start) then
