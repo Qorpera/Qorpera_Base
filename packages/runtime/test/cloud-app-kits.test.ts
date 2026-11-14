@@ -1034,6 +1034,37 @@ it("refuses a data kit's app with no data, or with data its engine cannot read",
 	expect(f.folders.has("apps/marked")).toBe(false);
 });
 
+it("refuses a model whose groups hold no input, and saves one where any group has one", async () => {
+	const f = await fixture();
+	const model = (key: string, data: JsonValue) =>
+		f.call(
+			"save_app",
+			save("economy", key, { title: "Economy", kit: "model" }, [{ path: "model.json", text: JSON.stringify(data) }]),
+		);
+	// What an agent saved on production on 13 November 2026, never having been given the kit's guide: its answer to
+	// "model.json has no groups". The engine draws one line for it, that there is nothing to show.
+	const empty: JsonValue[] = [
+		{ groups: [] },
+		{ groups: [{ label: "Costs", inputs: [] }] },
+		{ groups: [{ label: "Costs" }, "inputs"] },
+		{ groups: { inputs: [{ id: "price" }] } },
+	];
+	for (const [n, data] of empty.entries())
+		await refuses(
+			model(`empty-${n}`, data),
+			"APP_DATA_INVALID: model.json has no input in its groups: the model kit draws nothing without one",
+		);
+	expect(parseKitData("model", '{"groups":[]}')).toEqual({
+		problem: "model.json has no input in its groups: the model kit draws nothing without one",
+	});
+	expect(f.folders.has("apps/economy")).toBe(false);
+	// One group with an input is a model, whatever the others hold.
+	expect(read(await model("make-1", { groups: [{ label: "Later", inputs: [] }, ...MODEL.groups] }))).toMatchObject({
+		state: "applied",
+		created: true,
+	});
+});
+
 it("names in the page the pictures the folder holds, and says which it lacks", async () => {
 	// A machine wrote one of the two pictures into the app's folder before the app was saved.
 	const f = await fixture({
