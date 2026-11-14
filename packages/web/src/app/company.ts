@@ -299,8 +299,8 @@ export interface CompanyState {
 	/** The version What's new has live of each site made from a project's code, by the site's name in its link: the
 	 * Sites page names it on the site's row. Read with What's new. */
 	siteVersions?: Readonly<Record<string, number>>;
-	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
-	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
+	/** What the rail says of each agent between runs: its next planned run (app/agent-notes.ts). Unset until the first
+	 * read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
 	/** The agents using their desktop computers now, by agent (20260930742000; app/agents-at-computers.ts). Unset until
 	 * the first read lands. */
@@ -316,7 +316,8 @@ export interface CompanyState {
 
 export interface ConversationState {
 	sessionId: string;
-	/** The wall's question the member is answering: the next message opens with it (cloud/wall-reply.ts). */
+	/** The line the draft answers, an app's note's (app/tell-agent.ts): the next message opens with it
+	 * (cloud/wall-reply.ts). */
 	answering?: string;
 	events: HostedSessionEvent[];
 	pending: PendingSessionInput[];
@@ -700,7 +701,7 @@ export class CompanyController {
 						-by,
 					);
 					// The room's text says what the draft answers now: an app's line it opens with, or none any more
-					// (another tab sent the note, or left the app out). A wall question is this browser's alone.
+					// (another tab sent the note, or left the app out). A line that names no app is this browser's alone.
 					const answering = note
 						? { answering: note.line }
 						: state.answering !== undefined && appNoteHeader(state.answering)
@@ -3093,9 +3094,9 @@ export class CompanyController {
 		this.roomDrafts.input(sessionId);
 	}
 
-	/** What the conversation's draft answers: a question from the agent's wall, an app's line (a note from an app's
-	 * page, app/tell-agent.ts), or nothing. An app's line is part of the draft where it is shared, so it is shared at
-	 * once, as the draft's text would be. */
+	/** What the conversation's draft answers: an app's line (a note from an app's page, app/tell-agent.ts), or
+	 * nothing. An app's line is part of the draft where it is shared, so it is shared at once, as the draft's text
+	 * would be. */
 	setAnswering(sessionId: string, answering: string | undefined): void {
 		this.conversation(sessionId, false).set({ answering });
 		this.roomDrafts.input(sessionId);
