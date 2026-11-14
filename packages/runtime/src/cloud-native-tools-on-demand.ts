@@ -21,7 +21,10 @@ export type CloudToolKind = "cofounder" | "employee" | "worker";
 /** What an agent's own company run uses in most runs, from the receipts of the 14 days to 14 November 2026 (587 runs
  * that changed something: manage_todo 50 %, manage_worker 38 %, company_edit 29 %, coworker messages 25 %, machine_run
  * 19 %, machine_start 13 %, company_write 12 %, company_mkdir 7 %, save_app 5 %) and the reads and sends, which leave no
- * receipt and are in nearly every run. save_app and post_app are how an agent shows its work. */
+ * receipt and are in nearly every run. save_app and post_app are how an agent shows its work. update_memory is in 1 % of
+ * runs because agents barely write their notebooks, the fault to cure, not a sign it is not needed: behind a door it
+ * would be used even less (the lead, 14 November 2026); like hire_agent and save_app it is carried whatever its count. A
+ * worker keeps it on demand. */
 const STAFF_DIRECT = [
 	"company_read",
 	"company_list",
@@ -42,6 +45,7 @@ const STAFF_DIRECT = [
 	"machine_list",
 	"save_app",
 	"post_app",
+	"update_memory",
 ];
 
 /** The tools each kind of run carries in full. The Co-Founder hires, whatever the count says. A worker reads, writes

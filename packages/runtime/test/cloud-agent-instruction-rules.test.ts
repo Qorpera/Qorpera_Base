@@ -11,8 +11,10 @@ import { nativeCompanyContextFixture } from "./fixtures/native-company-context-f
 // now has, in the compiled instructions of every kind of run it applies to. A rule that leaves the text, or a kind of run
 // that stops receiving it, fails here by name. The founder rules of PLAN.md section 3 (P1-P7) are the first rows.
 
-/** The tools of the S0 captures (t3-2/after/*.request.json, 14 November 2026). */
+/** The tools of the S0 captures (t3-2/after/*.request.json, 14 November 2026), and more_tools, through which the runs
+ * have opened the ones they use less since track 3, T3-6. */
 const COFOUNDER_TOOLS = [
+	"more_tools",
 	"add_review_rule",
 	"ask_member",
 	"company_delete",
@@ -72,6 +74,7 @@ const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
 	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member",
 );
 const WORKER_TOOLS = [
+	"more_tools",
 	"company_delete",
 	"company_edit",
 	"company_list",
@@ -632,7 +635,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"only this run's tools exist",
-		"Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.",
+		"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.",
 		STAFF,
 	],
 	["5", "the size of the ask", "Do what they asked, at the size they asked: a file they ask for is the work.", STAFF],

@@ -78,6 +78,13 @@ Everything else is the company's work, kept so that a person finds anything in a
 - Delete your scratch. Moving, renaming or deleting someone else's work breaks their links and habits, so do it only when asked, and on an unclear instruction say exactly what you would change and wait for a yes.
 Images a member attaches are listed as company paths: open one with company_read before you say anything about it.`;
 
+/** Which tools exist, as How work gets done says it. */
+const TOOLS_EXIST =
+	"Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.";
+/** The same for a run that opens tools through more_tools (T3-6): a tool these texts name that it does not see is one. */
+const TOOLS_EXIST_ON_DEMAND =
+	"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.";
+
 /** How work gets done: a staff run's. A line about a tool the run lacks is left out (WORK_TOOL_LINES). */
 const HOW_WORK_GETS_DONE = `
 # How work gets done here
@@ -91,7 +98,7 @@ Results come back by themselves: a worker's report, a command started with notif
 - Commands (converting files, running code, looking at a page with Playwright): a machine, with the results saved in the company's files; for minutes of busy processors (a render, encoding, a big build), a machine sized for the job (machine_start says how), stopped when done.
 - Anything people use on a screen: try it once on a desktop machine (machine_start with desktop true, then machine_screen) before you call it done.
 - A server, database or app that must stay up: an always-on machine on Qorpera's own servers, never an outside host.
-Only this run's tools exist: when one you need is missing, say what you cannot do and what you can. A broken connection is reported or repaired, never replaced by a browser sign-in.`;
+${TOOLS_EXIST} A broken connection is reported or repaired, never replaced by a browser sign-in.`;
 /** How Work gets done's lines about a tool, by their first words, and the tool. */
 const WORK_TOOL_LINES: readonly (readonly [string, string])[] = [
 	["- Bigger work or many files", "manage_worker"],
@@ -210,7 +217,10 @@ function protocolCore(has: CloudOfferedTool, worker: boolean): string[] {
 		cloudRuntimeConstitution(has),
 		COMPANY_FILES,
 		results,
-		keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES),
+		// A run that opens tools through more_tools (T3-6) is told where the tools these texts name but it does not see are.
+		has("more_tools")
+			? keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES).replace(TOOLS_EXIST, TOOLS_EXIST_ON_DEMAND)
+			: keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES),
 		membersSee(has),
 		CARDS,
 		WRITING,

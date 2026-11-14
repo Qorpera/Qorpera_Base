@@ -17,7 +17,7 @@ import { finish, pass, proveCompanyRun, repositoryRoot } from "./prove-company-r
 // every call run (the company runtime's auto-review asks the same question of every call; its verdicts are not proved
 // here):
 // - Direct, as every run before T3-6 and as base: its catalog describes every tool; the model calls update_memory.
-// - On demand, as an employee's run is offered its tools: the catalog leaves update_memory, company_move and
+// - On demand, as a worker's run is offered its tools: the catalog leaves update_memory, company_move and
 //   company_delete to more_tools. The model describes update_memory, uses it with the same arguments, uses it with
 //   arguments that do not fit, uses a tool the run does not have, and calls update_memory by its own name (Codex
 //   answers that itself; the result fence turns its answer into the way to open it).
@@ -139,7 +139,8 @@ async function main() {
 			prompt: "Remember how Jonas likes his replies.",
 			setup: "",
 			objects: new Map(),
-			onDemand: "employee",
+			// As a worker's run is offered its tools: update_memory stays on demand there (a staff run carries it in full).
+			onDemand: "worker",
 			calls: [
 				() => ({ name: "more_tools", arguments: { action: "describe", names: ["update_memory"] } }),
 				() => ({ id: "call_change", name: "more_tools", arguments: { action: "use", name: "update_memory", arguments: WRITE } }),

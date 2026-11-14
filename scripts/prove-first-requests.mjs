@@ -258,7 +258,9 @@ async function dryNames(mine, kind) {
 			identity,
 		}),
 	];
-	return new Set(made.map((tool) => tool.name));
+	// more_tools too, as the company runtime compiles a run that opens tools through it (T3-6).
+	const onDemand = mine.cloudToolsOnDemand(made, onDemandKind(kind));
+	return new Set(onDemand.tools.map((tool) => tool.name));
 }
 
 /** The run's tools beside the folder file tools the harness gives, in the company runtime's order. */
@@ -494,7 +496,7 @@ async function main() {
 					for (const name of offered.deferred) assert(onDemand.includes(name), `more_tools lists ${name}`);
 					assert.deepEqual(
 						[...Object.keys(measured.perTool).filter((name) => name !== "more_tools"), ...onDemand].sort(),
-						[...names].sort(),
+						[...names].filter((name) => name !== "more_tools").sort(),
 						"the instructions were compiled for the run's own tools, every one in its catalog or in more_tools",
 					);
 					assert.equal(Object.hasOwn(measured.perTool, "more_tools"), onDemand.length > 0);

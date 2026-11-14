@@ -1212,15 +1212,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							// Listed only for a run that may raise their cards (composeContext).
 							...(proposals ? proposals.tools(operations) : []),
 						];
-						// Its instructions say only what fits these tools (track 3, T3-2): every one it has, also those it opens
-						// on demand.
-						offeredTools = new Set(runTools.map((tool) => tool.name));
 						// Every tool stays the run's; its catalog describes in full those its kind uses most, and more_tools
 						// lists and opens the rest (T3-6).
 						const offered = cloudToolsOnDemand(
 							runTools,
 							work.isWorker ? "worker" : context.agentKind === "cofounder" ? "cofounder" : "employee",
 						);
+						// Its instructions say only what fits these tools (track 3, T3-2): every one it has, also those it opens
+						// on demand, and more_tools, which tells it where those are.
+						offeredTools = new Set(offered.tools.map((tool) => tool.name));
 						return {
 							captures: computer?.captures,
 							folderReports: computer?.folderReports,

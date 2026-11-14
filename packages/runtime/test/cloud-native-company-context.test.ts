@@ -690,6 +690,8 @@ it("compiles the instructions an agent's runs share, up to the head and views, b
 // tools those runs share (CLOUD_WAKE_TOOLS left out), the agent's kind and the vision's state, never the wake.
 /** A Co-Founder's company run with every staff tool, as the company runtime makes it on a host with machines. */
 const STAFF_TOOLS = [
+	// Every staff run opens its less-used tools through it (track 3, T3-6).
+	"more_tools",
 	"company_read",
 	"company_list",
 	"company_write",
@@ -744,6 +746,7 @@ const STAFF_TOOLS = [
 ];
 /** An agent's worker with write access on such a host. */
 const WORKER_TOOLS = [
+	"more_tools",
 	"company_read",
 	"company_list",
 	"company_write",
@@ -805,6 +808,7 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 			["send_message", "ask_member", "apply_proposal", "discard_proposal"],
 		],
 		["a coworker's message", situationWake("agent", "coworker", "optional"), []],
+		["its first run", situationWake("first-run", "input", "required"), ["send_message", "ask_member"]],
 	];
 	const shared = new Set<string>();
 	const compiled = new Set<string>();
@@ -820,6 +824,18 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	expect(shared.size).toBe(1);
 	expect(compiled.size).toBe(wakes.length);
 	const [stable] = shared;
+	// Where the tools these texts name but a run does not see are (T3-6): in the shared part, the same for every wake.
+	expect(stable).toContain(
+		"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.",
+	);
+	expect(stable.indexOf("Only this run's tools exist")).toBeLessThan(stable.indexOf("\n# Your head\n"));
+	expect(
+		cloudNativeStableInstructions(context, {
+			head: "# Head\nBo's head.",
+			tools: new Set(STAFF_TOOLS.filter((tool) => tool !== "more_tools")),
+			visionAgreed: false,
+		}),
+	).toContain("Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.");
 	expect(stable).toContain("Your daily plan is a weekly routine");
 	expect(stable).toContain("If the routine is missing, set it up again.");
 	expect(stable).not.toContain("In a planning run, read the vision");
@@ -1912,12 +1928,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
 // no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
 // instructions were measured once more; a worker's never named the wall. Both, merged, measured once more.
+// Track 3, T3-6: a staff run that opens tools through more_tools reads where the tools its instructions name but it does
+// not see are, in How work gets done; the staff instructions were measured once more. A worker's core has no such line.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
+			instructions: "b9180d72bd17e3c1e14911a3c2a94bd85b0fded31593bd326e766e6ff04c4072",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1933,7 +1951,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
+			instructions: "b9180d72bd17e3c1e14911a3c2a94bd85b0fded31593bd326e766e6ff04c4072",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
