@@ -27,6 +27,7 @@ the four platform-written ones on 24 October 2026), and nothing outside `Qorpera
 | Path | Kind | Settings block |
 | --- | --- | --- |
 | `QorperaOS/vision/vision.md` | vision | none: the first line is `# <company name>` |
+| `QorperaOS/vision/reading.md` | reading | yes: `attention` only; the things are `## <name>` sections of `key: value` lines (20260930765000) |
 | `QorperaOS/agents/sections.md` | sections | none: `## <section>` then `- <id> …` lines |
 | `QorperaOS/agents/<handle>/agent.md` | agent | yes |
 | `QorperaOS/agents/groups/<handle>/group.md` | group | yes |
@@ -193,6 +194,85 @@ renaming the company means editing that line. The rest is free. The platform see
 
 Every agent reads the file in full at every run (contract 5.6, 9.1). Refused: no `#` name
 first; deleting or moving the file (seeded).
+
+### `QorperaOS/vision/reading.md`
+
+The company's reading of itself (Jonas, 14 November 2026: "It should feel like the company is
+conscious almost"; migration 20260930765000). The Co-Founder writes it, in the company's voice ("we"),
+and rewrites it whole; every agent gets it at every run, and members see it as a picture on the company
+page. It is not seeded and not undeletable: until the Co-Founder writes the first one there is none, and
+a member may delete it. At most 4,096 bytes (`READING_FILE_MAX_BYTES`), so it stays a reading.
+
+```
+---
+attention: sales
+---
+# We are finding our first ten clinics.
+The booking product works; nobody has paid yet.
+
+## Sales
+key: sales
+shape: handshake
+full: 20
+state: Three demos booked
+agents: [anna-berg]
+waits_for: []
+
+## Product
+key: product
+shape: screen
+full: 70
+state: Booking works
+agents: [tom-holm, ida-lund]
+waits_for: [founders]
+
+## Money
+key: money
+shape: coin
+full: 0
+state: No price yet
+agents: []
+waits_for: [5d2c8e41-0b7f-4a93-9c16-e2f4a8b0d375]
+
+## Changed
+- anna-berg joined: Sales joined to find the first clinics.
+- tom-holm changed: Product now owns the booking page too.
+
+## Notes
+- We do not know what a clinic pays.
+```
+
+| Part | Required | Values |
+| --- | --- | --- |
+| `attention` (settings) | yes | the `key` of one of the things: what the company attends to now |
+| `# <sentence>` | yes | the first line with text: the company's own sentence, 1–200 bytes |
+| the line under it | no | one line of text, at most 200 bytes, before the first `##` |
+| `## <name>` | 3 to 7 | one thing each, in the order the file gives; the name is 1–40 bytes |
+| `## Changed` | no | at most 6 lines `- <agent> joined\|ended\|changed: <what>`, the agent by its folder name, the text at most 120 bytes |
+| `## Notes` | no | at most 5 lines `- <note>`, each at most 160 bytes |
+
+A thing's section holds `key: value` lines, read by the settings reader (notes, quotes and lists
+over several lines as in a settings block):
+
+| Key | Required | Values |
+| --- | --- | --- |
+| `key` | yes | lowercase letters, digits and single hyphens, at most 32 bytes, once in the file |
+| `shape` | yes | one of `READING_SHAPES`: board, box, screen, phone, gear, code, person, people, heart, pin, globe, chart, coin, bank, drop, megaphone, cart, handshake, truck, factory, scale, document, chat, wrench, blob |
+| `full` | yes | a whole number 0–100: how much is known or built |
+| `state` | yes | a few words, one line, at most 40 bytes |
+| `agents` | no | 0–8 agent handles (their folder names), each once; checked for form only, the runtime checks they exist |
+| `waits_for` | no | 0–4 member user ids, or the single word `founders`; checked for form only |
+
+`## Changed` and `## Notes` are the two section names a thing cannot take. The parse is
+`ReadingFile` (`sentence`, `line`, `attention`, `things`, `changes`, `notes`), and
+`writeReadingFile` writes this form. Refused: every bound above, an unknown shape, a missing
+`attention` or one that names no thing, a key twice, any other key, a second `#` line or a second
+line under the sentence, a file over 4,096 bytes. The database stores the checked parse with the
+version and keeps no index; saving it is plain (review class), the company's own bookkeeping.
+
+The facts the Co-Founder writes it from are `qorpera_describe_company_senses` (§5), and whether the
+company can run at all is the member's read `qorpera_read_company_standing` (CLIENT-CONTRACT.md):
+a company whose routines stand still cannot write its own reading.
 
 ### `QorperaOS/agents/<handle>/agent.md`
 
@@ -990,6 +1070,8 @@ of the body, for readers that should not reach the storage server.
 | --- | --- | --- |
 | company name | `qorpera_profiles.name` | the vision index |
 | vision | not composed | `QorperaOS/vision/vision.md` in full, every run, version recorded |
+| the company's reading | none | `QorperaOS/vision/reading.md` in full, every run, when there is one (the runtime's step of 20260930765000) |
+| the company's senses | none | the Co-Founder's company runs only: `qorpera_describe_company_senses(binding)`, a host call (20260930765000; below) |
 | agent identity and instructions | staff row, charter | the agent index (settings, instructions copy) pinned to the path version, plus its folder path |
 | first task | kickoff session input | the first todo file (pending decision 2) |
 | coworkers | staff rows | the agent index, with handles |
@@ -999,6 +1081,19 @@ of the body, for readers that should not reach the storage server.
 | memory, skills | `agents/<id>/…` | `QorperaOS/agents/<handle>/…`, through one agent-folder helper (agreed with the coordinator and the #387/#400 session) |
 | rules (reviewer) | rule rows | the rule index, with the versions read; personal rules unchanged |
 | connections | vault rows and grants | the same, plus the purpose copy |
+
+**The company's senses (20260930765000).** `qorpera_describe_company_senses(binding)` answers
+`qorpera.company-senses/v1` to the Co-Founder's company run (the run check of
+`qorpera_describe_agent_open_work`, the Co-Founder check of `qorpera_cofounder_crew`; any other run gets
+42501). Plain facts, no advice: `agents` (at most 50, active, the Co-Founder first then by hire: `id`,
+`handle`, `name`, `cofounder`, `hiredAt`, `todos {open, blocked, doneLast7d}`, `runsLast7d`, `lastRunAt`,
+`routines {active, paused, pausedWhy, concluded, nextAt}`, `waitingWakes` and `oldestWaitingWakeAt`: its
+queued wakes that are due), `agentsTruncated`; `team {since, hired, ended, truncated}` (name, handle and
+time, at most 10 each, since the reading was saved or else the last 14 days); `questions {count, oldest}`
+(question cards nobody has answered, by `qorpera_list_member_open_questions`' rule for any member, the
+oldest ten with `agent`, `member` and `askedAt`); `members` (at most 20: `userId`, `role`, `login` as
+`qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null.
+The answer stays under 8 KiB: past that, the agents last in its order are left out.
 
 **Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a

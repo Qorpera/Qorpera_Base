@@ -1821,6 +1821,26 @@ with the member folder client. Storage → the repository's folder → "Download
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
+### The company's reading and standing (20260930765000_company_reading)
+
+The company keeps one short reading of itself, `QorperaOS/vision/reading.md` (Jonas, 14 Nov 2026: "It should feel
+like the company is conscious almost"). It is a structured file like the vision: members read it with the company
+folder reads above and parse it with `parseCompanyStateFile` (kind `reading`, format in
+deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2). There is none until the Co-Founder writes the first one; a
+member may delete it. A company whose routines stand still cannot write its own reading, so the platform says it:
+
+- `qorpera_read_company_standing(profile)`: `{schema: "qorpera.company-standing/v1", stopped, since, why, member,
+  resetsAt, waiting}`. `waiting` counts the company's routine wakes that are due and still queued; `since` is the
+  time the oldest of them has waited from (null when none waits). `stopped` is true when that one has waited more than
+  30 minutes and no run of the company has started since. `why` reads the login of the member each waiting wake would
+  be paid by (its routine's payer, the member who saved it; else the member its agent works for), in the order the
+  wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
+  `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
+  are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
+  unavailable". Read it when the company page opens and every 30 s while it is open.
+- The Co-Founder's facts for the reading are a host call of its run, never a member's:
+  `qorpera_describe_company_senses(binding)`.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
