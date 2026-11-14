@@ -232,8 +232,8 @@ type Shown = (typeof COMPUTER_SHOWN)[number];
  * with its screen off, turning on or failed to: the press is the wish "on, with this open". Not while someone else types
  * privately (controlled), the screen is hidden, too small, cannot show, loads, waits, pauses or fails to be reached, nor
  * where there is no computer. With a picture (null) it is offered. */
-/** What a window says of an open that failed and may be tried again. Read where it is said (t() at that moment). */
-const FAILED_OPEN_WORDS = "The computer could not open it. Try again.";
+/** What a window says of an open that failed and may be tried again, in the member's language at that moment. */
+const failedOpenWords = () => t("The computer could not open it. Try again.");
 const OPEN_OFFERED: ReadonlySet<Shown> = new Set<Shown>(["asleep", "starting", "off", "turning", "startFailed"]);
 export function computerOpenOffered(shown: Shown | null): boolean {
 	return shown === null || OPEN_OFFERED.has(shown);
@@ -2496,7 +2496,7 @@ export class ComputerPanel {
 				this.#wakeFailed = machineId;
 				// A choice that waited for it: said, with Try again (which wakes it again, with the same open).
 				if (this.#choice?.machineId === machineId && !this.#choice.sent)
-					this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
+					this.#endChoice("said", failedOpenWords(), true);
 			}
 		} finally {
 			this.#waking = false;
@@ -2837,8 +2837,7 @@ export class ComputerPanel {
 			const ended = this.#wantOn.machineId;
 			this.#wantOn = undefined;
 			// The wish ran out with a choice still waiting for the screen: said, with Try again.
-			if (this.#choice?.machineId === ended && !this.#choice.sent)
-				this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
+			if (this.#choice?.machineId === ended && !this.#choice.sent) this.#endChoice("said", failedOpenWords(), true);
 		}
 		return this.#wantOn?.machineId === machineId;
 	}
@@ -2921,7 +2920,7 @@ export class ComputerPanel {
 		if (this.#choice?.machineId === machineId && !this.#choice.sent) {
 			// The state says it (its own words), so no note is added.
 			if (shown === "small") this.#endChoice("said", t("This computer is too small for a screen."), false, false);
-			else this.#endChoice("said", t(FAILED_OPEN_WORDS), true);
+			else this.#endChoice("said", failedOpenWords(), true);
 		}
 		this.#startAnswered = undefined;
 		this.#startEnded = { machineId, shown };
@@ -3292,7 +3291,7 @@ export class ComputerPanel {
 		else if (code === "DESKTOP_OPEN_NO_FOLDER")
 			words = t("This computer cannot see the company folder yet. It can after it has slept and woken.");
 		else {
-			words = t(FAILED_OPEN_WORDS);
+			words = failedOpenWords();
 			retry = true;
 		}
 		if (this.#wantOn?.machineId === machineId) this.#wantOn = undefined;
