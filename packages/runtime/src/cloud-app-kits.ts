@@ -159,8 +159,9 @@ const KIT_LIVE_VALUES = [
 	'const found=[],ws=[],on=typeof q.watch==="function";let data=null;',
 	'try{if(typeof text==="string"&&text.includes("query")){data=JSON.parse(text);walk(data,null,null,"",found,0)}}catch(e){}',
 	// The first answers get a few seconds; what has not answered by then comes through onLive.
-	// The watches the data no longer names stop before new ones start, so a bridge's limit on watches has room for them;
-	// one whose start is still out is stopped when that start answers.
+	// The watches the data no longer names stop before new ones start, so a bridge's limit on watches has room for them.
+	// Not one whose start is still out: it is stopped when that start answers, and keeps its place in the bridge's
+	// limit until then. A new question the bridge refuses for that reason waits and is asked again, as any refused one.
 	"const keys=found.map((f)=>keyOf(f.b)),want=new Set(on?keys:[]);",
 	'for(const[key,w]of asks)if(!want.has(key)){asks.delete(key);if(w.o)w.x=1;else try{if(typeof w.stop==="function")w.stop()}catch(e){}}',
 	"waiting++;let t=0;try{for(const w of asks.values())w.used=0;if(on)found.forEach((f,i)=>ws.push(ask(f.b,keys[i])));",
