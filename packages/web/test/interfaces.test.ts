@@ -1913,13 +1913,13 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			const going = [...grid.querySelectorAll(".rail-app.is-leaving")];
 			expect(going).toHaveLength(2);
 			const taken: Node[] = [];
-			const record = (records: MutationRecord[]) => {
+			const collect = (records: MutationRecord[]) => {
 				for (const entry of records) taken.push(...entry.removedNodes);
 			};
-			const watch = new MutationObserver(record);
+			const watch = new MutationObserver(collect);
 			watch.observe(grid, { childList: true });
 			await vi.advanceTimersByTimeAsync(0);
-			record(watch.takeRecords());
+			collect(watch.takeRecords());
 			watch.disconnect();
 			expect(set).toHaveBeenCalledOnce();
 			expect(taken.filter((node) => going.includes(node as Element))).toEqual([]);
