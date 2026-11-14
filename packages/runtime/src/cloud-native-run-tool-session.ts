@@ -44,6 +44,8 @@ import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
+	/** Tools among `tools` that the run opens through more_tools instead of its catalog (T3-6, cloudToolsOnDemand). */
+	deferred?: ReadonlySet<string>;
 	captures?: CloudNativeCaptureImages;
 	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
 	folderReports?: CloudNativeFolderReports;
@@ -244,6 +246,7 @@ export async function runCloudNativeRunToolSession(options: {
 			runId: run.identity.runId,
 			identity: run.identity,
 			tools: adapters.tools,
+			...(adapters.deferred ? { deferred: adapters.deferred } : {}),
 			captures: adapters.captures,
 			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,

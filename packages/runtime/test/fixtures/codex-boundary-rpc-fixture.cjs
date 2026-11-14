@@ -57,6 +57,12 @@ const companyCalls = mode === "company-office"
 			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
 		]
+	: mode === "company-describe"
+	? [
+			// Tools on demand (T3-6): four tools' descriptions and forms through more_tools, then the answer.
+			{ tool: "more_tools", arguments: { action: "describe", names: ["organize_sidebar", "hire_agent", "create_group_chat", "manage_routine"] } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
+		]
 	: mode === "company-limit-after-answer"
 	? [{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } }]
 	: mode === "company-cards-unavailable"

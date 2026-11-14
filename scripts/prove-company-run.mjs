@@ -61,6 +61,7 @@ async function bundle(scratch) {
 				'export {COMPANY_STATE_PARSER_VERSION, companyStatePath, parseCompanyStateFile} from "./packages/cloud-client/src/company-state-files.ts";',
 				'export {MEMORY_RUN_STEP_FIELD_BYTES, MEMORY_RUN_STEP_READS_BYTES, MEMORY_RUN_STEP_RESULT_BYTES, parseMemoryRunFile} from "./packages/cloud-client/src/memory-run-files.ts";',
 				'export {nativeCodexFixtureCommand} from "./packages/runtime/test/fixtures/native-codex-fixture-command.ts";',
+				'export {cloudToolsOnDemand} from "./packages/runtime/src/cloud-native-tools-on-demand.ts";',
 			].join("\n"),
 		},
 		platform: "node",
@@ -377,8 +378,22 @@ function provider(state, calls, roundMs = 0) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, runtimeInstructions, interfaceTools, moreTools, tools } =
-		context;
+	const {
+		db,
+		binding,
+		objects,
+		binary,
+		port,
+		root,
+		nativeBinarySha256,
+		prompt,
+		runtimeInstructions,
+		interfaceTools,
+		moreTools,
+		tools,
+		onDemand,
+		review,
+	} = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -450,13 +465,18 @@ async function attempt(code, context) {
 			});
 			assert(opened?.log, "the run keeps a log (Shared context: its recorded memory mode is tree)");
 			runWork = opened.composeContext;
+			const made = [
+				...code.cloudFolderFileTools({ folder, operations, identity }),
+				...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
+				...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
+				...(tools ? tools(code, { db, binding, folder, operations, identity }) : []),
+			];
+			// The run's kind, when given: its catalog describes in full what the kind uses most, and more_tools opens the
+			// rest, as the company runtime offers them (T3-6).
+			const offered = onDemand ? code.cloudToolsOnDemand(made, onDemand) : { tools: made };
 			return {
-				tools: [
-					...code.cloudFolderFileTools({ folder, operations, identity }),
-					...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
-					...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
-					...(tools ? tools(code, { db, binding, folder, operations, identity }) : []),
-				],
+				tools: offered.tools,
+				...(offered.deferred ? { deferred: offered.deferred } : {}),
 				assertContext: (signal, timeoutMs) => gateway.assertReadableContext(signal, timeoutMs),
 				checkRun: (signal, timeoutMs) => gateway.checkRun(signal, timeoutMs),
 				recordContextView: (frame, outputs, signal) => gateway.recordContextView(frame, outputs, signal),
@@ -471,6 +491,7 @@ async function attempt(code, context) {
 		binarySha256: command.binarySha256,
 		prompt,
 		...(runtimeInstructions === undefined ? {} : { runtimeInstructions }),
+		...(review ? { actionReview: () => review } : {}),
 		signal: AbortSignal.timeout(240_000),
 		timeoutMs: 200_000,
 	});
@@ -515,7 +536,10 @@ export function answerOf(output) {
  * makes while the run goes on, with `platformChange`). The model's rounds take `roundMs` each. A run whose turn ends
  * before its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every
  * call and then the closing answer. `runtimeInstructions`, when given, are the run's developer instructions after the
- * tool-result rules, as the company runtime compiles them (by default none). Without the binary it prints NOT RUN. */
+ * tool-result rules, as the company runtime compiles them (by default none). `onDemand`, a kind of run (cofounder,
+ * employee or worker), offers the tools as the company runtime offers that kind's (T3-6): those it uses most in its
+ * catalog, the rest through more_tools. `review`, an action review (`check`), is asked before every call as the company
+ * runtime's auto-review is (by default none). Without the binary it prints NOT RUN. */
 export async function proveCompanyRun({
 	name,
 	prompt,
@@ -528,6 +552,8 @@ export async function proveCompanyRun({
 	moreTools,
 	beforeRpc,
 	tools,
+	onDemand,
+	review,
 	roundMs = 0,
 	requests = (count) => count === calls.length + 1,
 }) {
@@ -590,6 +616,8 @@ export async function proveCompanyRun({
 			interfaceTools,
 			moreTools,
 			tools,
+			onDemand,
+			review,
 		});
 		Object.assign(run, { startedAt, endedAt: Date.now() });
 		db.before = undefined;

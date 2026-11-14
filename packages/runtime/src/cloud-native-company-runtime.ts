@@ -103,6 +103,7 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
 import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
@@ -1218,12 +1219,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							// Listed only for a run that may raise their cards (composeContext).
 							...(proposals ? proposals.tools(operations) : []),
 						];
-						// Its instructions say only what fits these tools (track 3, T3-2).
+						// Its instructions say only what fits these tools (track 3, T3-2): every one it has, also those it opens
+						// on demand.
 						offeredTools = new Set(runTools.map((tool) => tool.name));
+						// Every tool stays the run's; its catalog describes in full those its kind uses most, and more_tools
+						// lists and opens the rest (T3-6).
+						const offered = cloudToolsOnDemand(
+							runTools,
+							work.isWorker ? "worker" : context.agentKind === "cofounder" ? "cofounder" : "employee",
+						);
 						return {
 							captures: computer?.captures,
 							folderReports: computer?.folderReports,
-							tools: runTools,
+							tools: offered.tools,
+							deferred: offered.deferred,
 							assertContext: (requestSignal, timeoutMs) =>
 								gateway.assertReadableContext(requestSignal, timeoutMs),
 							checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),

@@ -87,6 +87,16 @@ function folderVersion(path: string, text: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/** The names of every tool a run has (T3-6): those its catalog describes, and those more_tools lists and opens. */
+function offeredNames(evidence: {
+	threadParameters: { dynamicTools: { tools: { name: string; description: string }[] }[] };
+}) {
+	const tools = evidence.threadParameters.dynamicTools[0].tools;
+	const more = tools.find((tool) => tool.name === "more_tools");
+	const listed = more ? [...more.description.matchAll(/^- ([a-z][a-z0-9_]*)(?::|$)/gm)].map((match) => match[1]) : [];
+	return [...tools.map((tool) => tool.name).filter((name) => name !== "more_tools"), ...listed];
+}
+
 /** The run's head (RUNTIME-AGENT-MEMORY-TREE.md §5.6): its one line in the developer instructions. */
 function headLine(instructions: string): string {
 	const lines = instructions.split("\n").filter((line) => line.startsWith(`{"schema":"${CLOUD_AGENT_HEAD_SCHEMA}"`));
@@ -1066,10 +1076,9 @@ it.each([
 		expect(f.control.sendMessage).toHaveBeenCalledTimes(3);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const head = headLine(evidence.threadParameters.developerInstructions);
-		// Compiled for the run's own tools (T3-2), as its catalog names them; the fixture has no vision.
-		const tools = new Set<string>(
-			evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name),
-		);
+		// Compiled for the run's own tools (T3-2), as its catalog and more_tools name them (T3-6); the fixture has no
+		// vision.
+		const tools = new Set<string>(offeredNames(evidence));
 		expect(evidence.threadParameters.developerInstructions).toBe(
 			[
 				CLOUD_TOOL_RESULT_INSTRUCTIONS,
@@ -1098,7 +1107,7 @@ it.each([
 				.split("\n")
 				.filter((line: string) => line.includes(f.context.jobSpecification.content.text)),
 		).toEqual([head]);
-		expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual(
+		expect(offeredNames(evidence).sort()).toEqual(
 			[
 				"company_delete",
 				"company_edit",
@@ -1147,6 +1156,29 @@ it.each([
 				"update_wall",
 				// The Co-Founder deals the team out between the members (20260930702000).
 				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
+			].sort(),
+		);
+		// The catalog describes in full what the kind uses most; more_tools lists the rest (T3-6). The Co-Founder hires.
+		expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual(
+			[
+				"company_edit",
+				"company_list",
+				"company_mkdir",
+				"company_read",
+				"company_write",
+				"save_app",
+				"post_app",
+				"update_wall",
+				"read_context",
+				"send_coworker_message",
+				"recall_memory",
+				"read_skill",
+				"manage_todo",
+				"manage_worker",
+				"send_message",
+				"ask_member",
+				"more_tools",
+				...(agentKind === "cofounder" ? ["hire_agent"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1378,9 +1410,7 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
 	// The vault's company accounts are offered beside the connector (A1-7): every company run is on the company folder.
-	const offered = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
-		(tool: { name: string }) => tool.name,
-	);
+	const offered = offeredNames(JSON.parse(await readFile(f.evidence, "utf8")));
 	expect(offered).toContain("company_account");
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
@@ -1569,7 +1599,7 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	const names = offeredNames(evidence);
 	expect(names).toContain("decide_routine");
 	expect(names).toContain("manage_routine");
 	const early = evidence.fenced.outputs
@@ -1643,7 +1673,7 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 	// depth, glob, after and limit may be left out: one level, the first 500 entries.
 	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
-	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
+	for (const name of files) expect(offeredNames(evidence)).toContain(name);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
 	// Since the scope reset (C6b) a run neither reads a page nor saves an interface: the pages are the platform's.
 	expect(tools.filter((tool) => ["interface_read", "save_interface"].includes(tool.name))).toEqual([]);
@@ -2490,7 +2520,7 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(result.delivery).toEqual({ messageCount: 0, finalMessageId: null });
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+	expect(offeredNames(evidence).sort()).toEqual([
 		"company_list",
 		"company_read",
 		"read_context",
@@ -2499,6 +2529,16 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"report_work",
 		"search_skills",
 		"table_read",
+	]);
+	// Its catalog describes its reads and its report; more_tools opens the rest (T3-6).
+	expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+		"company_list",
+		"company_read",
+		"more_tools",
+		"read_context",
+		"read_skill",
+		"recall_memory",
+		"report_work",
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
 	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
@@ -2522,8 +2562,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 		inputSchema: { properties: object };
 	}[];
 	expect(
-		tools
-			.map((tool) => tool.name)
+		offeredNames(evidence)
 			.filter((name) => name.startsWith("machine_"))
 			.sort(),
 	).toEqual([
@@ -2539,11 +2578,11 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// It waits inside the call instead.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
-	// Still no mouth, coworkers or delegation.
-	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
-	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
-	expect(tools.map((tool) => tool.name)).not.toContain("manage_code");
-	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
+	// Still no mouth, coworkers or delegation, in its catalog or in more_tools.
+	expect(offeredNames(evidence)).not.toContain("send_message");
+	expect(offeredNames(evidence)).not.toContain("manage_worker");
+	expect(offeredNames(evidence)).not.toContain("manage_code");
+	expect(offeredNames(evidence)).not.toContain("send_coworker_message");
 });
 
 it("gives a company conversation's run the machine tools with notify, and a start that waits up to a minute", async () => {
@@ -2554,7 +2593,7 @@ it("gives a company conversation's run the machine tools with notify, and a star
 		name: string;
 		inputSchema: { properties: object };
 	}[];
-	expect(tools.filter((tool) => tool.name.startsWith("machine_"))).toHaveLength(7);
+	expect(offeredNames(evidence).filter((name) => name.startsWith("machine_"))).toHaveLength(7);
 	expect(tools.find((tool) => tool.name === "machine_run")?.inputSchema.properties).toHaveProperty("notify");
 	// agent-box B1: it waits in place while its machine starts, by default, for a minute at most; 0 asks for no wait.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds", {
@@ -2566,28 +2605,40 @@ it("gives a company conversation's run the machine tools with notify, and a star
 });
 
 it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manage_routine the state files' writers", async () => {
-	const f = await fixture("company-runtime");
+	// The run describes the four that more_tools may list (T3-6), then answers.
+	const f = await fixture("company-describe");
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	// Company accounts serve companies on the company folder (A1-7): every company run is.
-	expect(tools.some((tool) => tool.name === "company_account")).toBe(true);
+	expect(offeredNames(evidence)).toContain("company_account");
+	const described = JSON.parse(evidence.outputs[0].output);
+	expect(described).toMatchObject({ status: "ok", provenance: { tool: "more_tools" } });
+	expect(described.content.truncated).toBe(false);
+	// Each tool's description, as describe shows it: its name, then its description, then its form.
+	const description = (name: string) => {
+		const text = described.content.text as string;
+		const after = text.startsWith(`${name}\n`) ? -2 : text.indexOf(`\n\n${name}\n`);
+		expect(after).not.toBe(-1);
+		const start = after + 2;
+		return text.slice(start, text.indexOf("\nForm (JSON Schema): ", start));
+	};
 	const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
 	expect(todo).toContain("Each todo is a file in your folder");
 	expect(todo).not.toContain("Each todo is also a document in the shared Company File");
-	const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
+	const sidebar = description("organize_sidebar");
 	expect(sidebar).toContain("The sections are the file QorperaOS/agents/sections.md");
 	expect(sidebar).not.toContain("by its id or name");
 	// The 2026-11-11 amendment (each member's own sidebar), item 4: the change is the company's, not every member's at once.
 	expect(sidebar).toContain("every member sees a change, except where a member placed things themself");
 	expect(sidebar).not.toContain("everyone sees the change at once");
-	const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
+	const hire = description("hire_agent");
 	expect(hire).toContain("The hire is the agent's own folder");
 	expect(hire).not.toContain("under organization/agents");
-	const chat = tools.find((tool) => tool.name === "create_group_chat")?.description ?? "";
+	const chat = description("create_group_chat");
 	expect(chat).toContain("QorperaOS/agents/groups/<name>/group.md");
 	expect(chat).not.toContain("No member approval is needed");
-	const routine = tools.find((tool) => tool.name === "manage_routine")?.description ?? "";
+	const routine = description("manage_routine");
 	expect(routine).toContain("routines/<routineKey>.md");
 	expect(routine).not.toContain("No member approval is needed");
 	// The 2026-10-22 amendment, item 2: an agent's own routines are judged by its job, never held for a member.
@@ -2604,7 +2655,7 @@ async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise
 	expect(tools.find((tool) => tool.name === "manage_worker")?.description.includes("company's machines")).toBe(
 		machines,
 	);
-	return tools.map((tool) => tool.name).filter((name) => name.startsWith("machine_"));
+	return offeredNames(evidence).filter((name) => name.startsWith("machine_"));
 }
 const machinesAsked = (f: Awaited<ReturnType<typeof fixture>>) =>
 	f.pathCall.mock.calls.filter(([method]) => method === "qorpera_company_machines_available");
@@ -3315,26 +3366,39 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
 	// The same day every description became its tool's contract, in lines, its fields' meanings on its schema and the
 	// rules every tool shares left to the instructions (track 3, T3-5), so they moved again.
+	// The same day the catalog came to describe in full only the tools the Co-Founder's runs use most, and more_tools to
+	// list and open the rest, which the run still has (track 3, T3-6), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
 		"company_write",
 		"company_edit",
-		"company_move",
 		"company_mkdir",
+		"save_app",
+		"post_app",
+		"update_wall",
+		"read_context",
+		"send_coworker_message",
+		"recall_memory",
+		"read_skill",
+		"hire_agent",
+		"manage_todo",
+		"manage_worker",
+		"send_message",
+		"ask_member",
+		"more_tools",
+	]);
+	// more_tools lists every other tool the run has, in the order the run has them.
+	expect(offeredNames(evidence).slice(tools.length - 1)).toEqual([
+		"company_move",
 		"company_delete",
 		"table_read",
 		"table_write",
-		"save_app",
-		"post_app",
 		"make_picture",
-		"update_wall",
 		"data_describe",
 		"data_apply",
 		"data_query",
-		"read_context",
 		"company_account",
-		"send_coworker_message",
 		"manage_routine",
 		"organize_sidebar",
 		"organize_apps",
@@ -3352,31 +3416,24 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"unpublish_site",
 		"share_app",
 		"update_memory",
-		"recall_memory",
-		"read_skill",
 		"search_skills",
 		"update_skill",
-		"hire_agent",
 		"create_group_chat",
-		"manage_todo",
-		"manage_worker",
 		"manage_code",
-		"send_message",
-		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"57a32b46d4e96777252f7b40a5707614217da1f950de0fbed47a382ac2d58d56",
+		"593d9660c040dd354fd65ec194f1be0ceb8332ebcf7a0397ac2f5132ff0d093d",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"d214108c27625b330550b72f84d8c25833d4efcb5bed4463168204ee81465447",
+		"c3257e96737889b766a681ace0f727c69900d6782658e1a6d7b3b82ef2cf01c9",
 	);
 });
 
 it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {
 	const codex = await fixture("company-runtime");
 	await codex.runtime.execute(codex.request, codex.identityRoot, new AbortController().signal);
-	const offered = JSON.parse(await readFile(codex.evidence, "utf8")).threadParameters.dynamicTools[0].tools;
-	expect(offered.map((tool: { name: string }) => tool.name)).toContain("make_picture");
+	const offered = offeredNames(JSON.parse(await readFile(codex.evidence, "utf8")));
+	expect(offered).toContain("make_picture");
 	await rm(codex.identityRoot, { recursive: true, force: true });
 	await rm(codex.companyRoot, { recursive: true, force: true });
 	// A plan run's identity root holds the plan's token and an empty Codex home.
@@ -3385,9 +3442,7 @@ it("offers make_picture to a run on a Codex login, and never to one on a member'
 	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });
 	await writeFile(join(plan.identityRoot, "chatgpt-plan", "access-token"), "plan-access-1", { mode: 0o600 });
 	await plan.runtime.execute(plan.request, plan.identityRoot, new AbortController().signal);
-	const names = JSON.parse(await readFile(plan.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
-		(tool: { name: string }) => tool.name,
-	);
+	const names = offeredNames(JSON.parse(await readFile(plan.evidence, "utf8")));
 	expect(names).toContain("save_app");
 	expect(names).not.toContain("make_picture");
 });

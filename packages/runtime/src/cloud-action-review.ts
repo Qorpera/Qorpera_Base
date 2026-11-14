@@ -246,6 +246,9 @@ export function cloudActionEffect(
 		// Company databases (slice 5): what they hold, and a question or a read, as the database folder's read login.
 		case "data_describe":
 		case "data_query":
+		// more_tools' describe shows tools' descriptions and forms (T3-6). Its use is never classified as more_tools: the
+		// boundary runs it as the call of the tool it names.
+		case "more_tools":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
