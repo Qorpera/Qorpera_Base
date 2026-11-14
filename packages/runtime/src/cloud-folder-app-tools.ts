@@ -962,7 +962,7 @@ export function cloudAppTools(options: {
 				concept = manifest.concept;
 				if (stored === "unreadable")
 					throw new CloudToolRefusal(
-						`APP_MANIFEST_UNREADABLE: ${manifestPath} is not text; replace it on the company's computer`,
+						`APP_MANIFEST_UNREADABLE: ${manifestPath} is not text; replace it on a machine`,
 					);
 				manifestOut = manifest;
 			} else if (storedParse?.ok) entry = storedParse.manifest.entry;

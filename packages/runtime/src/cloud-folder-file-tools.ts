@@ -653,7 +653,7 @@ export function cloudFolderFileTools(options: {
 		const total = entry.file.bytes;
 		if (total > MAX_FOLDER_IMAGE_BYTES)
 			throw new CloudToolRefusal(
-				`COMPANY_IMAGE_TOO_LARGE: the file is larger than ${MAX_FOLDER_IMAGE_BYTES / 1024 / 1024} MiB; open it on the company's computer`,
+				`COMPANY_IMAGE_TOO_LARGE: the file is larger than ${MAX_FOLDER_IMAGE_BYTES / 1024 / 1024} MiB; open it on a machine`,
 			);
 		// One image at a time in this process: a call waits here, with nothing read, for the images before it.
 		const view = await oneImageAtATime(context.signal, async () => {
@@ -668,7 +668,7 @@ export function cloudFolderFileTools(options: {
 			} catch (error) {
 				if (!(error instanceof FolderImageRefusal)) throw error;
 				throw new CloudToolRefusal(
-					`${error.reason === "too_large" ? "COMPANY_IMAGE_TOO_LARGE" : "COMPANY_IMAGE_UNREADABLE"}: ${error.message}; open it on the company's computer`,
+					`${error.reason === "too_large" ? "COMPANY_IMAGE_TOO_LARGE" : "COMPANY_IMAGE_UNREADABLE"}: ${error.message}; open it on a machine`,
 				);
 			}
 		});
@@ -778,8 +778,7 @@ export function cloudFolderFileTools(options: {
 			return {
 				answer: {
 					...named,
-					refused:
-						"COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on the company's computer",
+					refused: "COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on a machine",
 				},
 				release,
 			};
@@ -787,7 +786,7 @@ export function cloudFolderFileTools(options: {
 			return {
 				answer: {
 					...named,
-					refused: `COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${other ? `, and this one is ${other}` : ""}; open it on the company's computer`,
+					refused: `COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${other ? `, and this one is ${other}` : ""}; open it on a machine`,
 				},
 				release,
 			};
@@ -797,7 +796,7 @@ export function cloudFolderFileTools(options: {
 			return {
 				answer: {
 					...named,
-					refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on the company's computer",
+					refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on a machine",
 				},
 				release,
 			};
@@ -1052,11 +1051,11 @@ export function cloudFolderFileTools(options: {
 					const { mediaType } = entry.file;
 					if (other === undefined && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mediaType))
 						throw new CloudToolRefusal(
-							"COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on the company's computer",
+							"COMPANY_IMAGE_UNREADABLE: the file is not the image its type says; open it on a machine",
 						);
 					if (other !== undefined || (mediaType.startsWith("image/") && mediaType !== "image/svg+xml"))
 						throw new CloudToolRefusal(
-							`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${other ? `, and this one is ${other}` : ""}; open it on the company's computer`,
+							`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${other ? `, and this one is ${other}` : ""}; open it on a machine`,
 						);
 				}
 				const window = bytes.subarray(behind, behind + input.limit);
@@ -1064,7 +1063,7 @@ export function cloudFolderFileTools(options: {
 				const text = windowText(window, atEnd);
 				if (text === null)
 					throw new CloudToolRefusal(
-						"COMPANY_FILE_NOT_TEXT: this file, or this offset, is not UTF-8 text; open such files on the company's computer",
+						"COMPANY_FILE_NOT_TEXT: this file, or this offset, is not UTF-8 text; open such files on a machine",
 					);
 				const after = AROUND.decode(bytes.subarray(behind + Buffer.byteLength(text)));
 				const lead = behind === 0 ? "" : windowLead(AROUND.decode(bytes.subarray(0, behind)), text + after);
@@ -1452,7 +1451,7 @@ export function cloudFolderFileTools(options: {
 					);
 				if (current.file.bytes > MAX_WRITE_BYTES)
 					throw new CloudToolRefusal(
-						`COMPANY_FILE_TOO_LARGE: company_edit changes files of at most ${MAX_WRITE_BYTES / 1024} KiB; change this one on the company's computer`,
+						`COMPANY_FILE_TOO_LARGE: company_edit changes files of at most ${MAX_WRITE_BYTES / 1024} KiB; change this one on a machine`,
 					);
 				let bytes: Uint8Array;
 				try {
@@ -1462,9 +1461,7 @@ export function cloudFolderFileTools(options: {
 				}
 				const text = windowText(bytes, true);
 				if (text === null || Buffer.byteLength(text) !== bytes.byteLength)
-					throw new CloudToolRefusal(
-						"COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; change it on the company's computer",
-					);
+					throw new CloudToolRefusal("COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; change it on a machine");
 				const at = text.indexOf(input.oldText);
 				if (at < 0)
 					throw new CloudToolRefusal(

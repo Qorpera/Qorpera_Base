@@ -434,9 +434,8 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 		false,
 	);
 	expect(instructions).toContain("# This wake: a busy program");
-	expect(instructions).toContain(
-		"find it with computer_shell action list and stop it, on a machine use machine_cancel",
-	);
+	// No company has had a Company Computer since 3 October 2026: its shell is named nowhere.
+	expect(instructions).not.toMatch(/computer_shell|Company Computer|your computer/);
 	expect(instructions).toContain("you are asked again later only while it stays busy");
 	expect(instructions).toContain(
 		"A coding session (machineKind coding) you archive with manage_worker action archive, using the todoKey and workerKey of its check-in",
@@ -459,10 +458,10 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 	expect(instructions).toContain("or an always-on machine you started ran another week");
 });
 
-it("tells the agent's next run what the platform stopped on its computer", () => {
+it("tells the agent's next run what the platform stopped on its machines", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
-	expect(instructions).toContain("openWork.computerStopped");
-	expect(instructions).toContain("reason slept (the computer went to sleep because nothing busy kept it awake)");
+	// The Company Computer's stopped commands are told nowhere: no company has had one since 3 October 2026.
+	expect(instructions).not.toContain("openWork.computerStopped");
 	expect(instructions).toContain("openWork.machineStopped");
 	expect(instructions).toContain(
 		"reason slept (the task machine went to sleep after an hour with nothing busy keeping it awake)",
@@ -719,9 +718,12 @@ it.each(["cofounder", "employee"] as const)(
 		expect(instructions).not.toContain(hostile);
 		expect(instructions.includes("# Your role: Co-Founder")).toBe(kind === "cofounder");
 		expect(instructions.includes("# Your role: employee")).toBe(kind === "employee");
-		for (const id of [context.identity.companyId, context.agent.id, context.runtimeBundle.sha256])
-			expect(instructions).toContain(id);
 		const encoded = composeCloudNativeCompanyPrompt(context);
+		// The run's ids are its records' and its context's, not the model's instructions (track 3, T3-1).
+		for (const id of [context.identity.companyId, context.agent.id, context.runtimeBundle.sha256]) {
+			expect(instructions).not.toContain(id);
+			expect(encoded).toContain(id);
+		}
 		const prompt = JSON.parse(encoded);
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Contract 15.1: the agent's notebook is composed before the hire overlay, unavailable when not supplied.
@@ -1635,12 +1637,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 // With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
 // three were measured once more.
+// Track 3, T3-1 (14 November 2026): the Company Computer, which no company has had since 3 October 2026, left the
+// words every run reads; laws 3 and 6 say what members see and which route is next today; and the run's ids and
+// versions (the bootstrap binding) left the instructions for the run's records. All three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "10c548f7c3a4afcc38afa679f21596eeabcd03246b0f1a55cf0c1f12160e92cb",
+			instructions: "de585ba78cc15d2f360422e3530da40dc4400e25f928985c812e6ee584539091",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1648,7 +1653,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "20a7e04501a91c4a9a2e456de8c47e11ee0728dda5152c158a7b08e3a10421d1",
+			instructions: "030292a5bf8902af4098a0627e7ce9a216ec30081e564eef78a8665f1a06f50c",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1656,7 +1661,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "10c548f7c3a4afcc38afa679f21596eeabcd03246b0f1a55cf0c1f12160e92cb",
+			instructions: "de585ba78cc15d2f360422e3530da40dc4400e25f928985c812e6ee584539091",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -2109,7 +2114,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- A question: answer it in chat",
 		"- One file, such as a page, a document, a plan, a prototype or an HTML mockup: write it yourself, right away",
 		"hand it to a worker with saveTo set to the folder where the results belong",
-		"use the company's computer or a machine when one is offered",
+		"use a machine when one is offered",
 		"It is the only work that needs a repository, and its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
 		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.

@@ -642,9 +642,9 @@ describe("cloud-owned native tool boundary", () => {
 		await call("call_5");
 		expect(next.mock.calls.map(([shown]) => shown)).toEqual(["", mark(2), mark(2), mark(3)]);
 		expect(execute).toHaveBeenCalledTimes(3);
-		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
-			"A result's companyFolder reports what the company folder did with your desktop's changes",
-		);
+		// Only a Company Computer's session gives folder reports, and no company has had one since 3 October 2026: the
+		// rules every run reads do not explain them.
+		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).not.toContain("your desktop's changes");
 	});
 
 	it("fits the content to what the folder report leaves, and escapes and redacts the report's words", async () => {

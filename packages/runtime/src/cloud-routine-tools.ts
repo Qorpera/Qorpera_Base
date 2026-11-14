@@ -342,7 +342,7 @@ export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: minutes to a few hours ahead while you can move the work without a member or a reply is due; the next day only when it all waits for someone or is quiet. A time on the hour or half hour moves a few minutes later per agent. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time (within 30 days). " +
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
 	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
-	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
+	"If you hand work to workers, decide first: this run must decide before it ends, and the continuation cannot. " +
 	"state settled means the routine already moved on, changed in another conversation or past its end date, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
 	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
 

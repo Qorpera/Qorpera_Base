@@ -3304,6 +3304,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured on the tree with the kits, the company databases and the answer-first change.
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
+	// On 14 November 2026 list_hooks, manage_hook and ask_member's secret card no longer name the Company Computer's
+	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3354,10 +3356,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"6c7ed1d1f3674e0e254b99a4dad106d89f93f51245c348831787a4213d841f68",
+		"825fdc12e53f710b2a2a4731826483f195a07b69eb0dd7c70d53038ac9549362",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"61e7ecace302195b65a18a0bd78ec14f50a4ae165f698cf24f22ed5fcde1e153",
+		"63b1fd6332fa56dd67080e34e482f7d91b9ba68dd25bab98c89561e34293fdfb",
 	);
 });
 

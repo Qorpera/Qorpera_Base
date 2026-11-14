@@ -22,7 +22,7 @@ describe("shared cloud runtime constitution", () => {
 		for (const topic of [
 			"one live company folder",
 			"no-change result",
-			"Only your sends are seen",
+			"Only what you put out is seen",
 			"typed wake",
 			"another audience",
 			"the checks made at the moment of every action",
