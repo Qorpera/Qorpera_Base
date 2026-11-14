@@ -31,6 +31,13 @@ const COMPANY_CONNECTIONS = 24;
 const CONNECT_MS = 5_000;
 /** A file of a database's API: a question is a named read in queries/, a change a named write in actions/. */
 const NAMED = { question: { folder: "queries", may: "read" }, change: { folder: "actions", may: "run" } };
+/** The rows this session added or changed, in every table (a catalog's and a large object's too) but Qorpera's own
+ * records beside a company's rows, as PostgreSQL counts them itself: no login of a company's can switch the counts
+ * off. They hold the current transaction's writes and those of the session's earlier transactions that it has not
+ * reported yet (it reports between transactions, at most once a second), so what one transaction wrote is the
+ * difference of two reads inside it. */
+const WRITTEN =
+	"select coalesce(sum(n_tup_ins + n_tup_upd), 0) as rows from pg_catalog.pg_stat_xact_all_tables where schemaname <> 'qorpera_data'";
 /** What a change's one statement may be, by the word PostgreSQL ends it with: a write to rows, or a select (which
  * may call a function a step made). */
 const CHANGE_COMMANDS = ["INSERT", "UPDATE", "DELETE", "MERGE", "SELECT"];
@@ -714,7 +721,13 @@ export class Gateway {
 	 *   may delete rows anyway. So work that a step's function defers a second time, past this check to the commit,
 	 *   is not seen; it can reach only the folder's own tables, whose every row a change may delete as it is;
 	 * - so is one that left a table without Qorpera's triggers;
-	 * - a company at its size limit runs only a delete, so it can make room.
+	 * - a company at its size limit runs only what writes nothing, so it can make room: a delete. That is judged by
+	 *   what the transaction wrote, as PostgreSQL counted it (`WRITTEN`, read before the statement and after: rows
+	 *   added or changed in any table, a `with` part's and a function's too), not by the statement's word: a delete
+	 *   can carry an insert.
+	 * Unlike a question, a change is committed, so what its statement left on its session (a setting, a session
+	 * advisory lock) would meet the next change on that connection: the connection is given back only after
+	 * `discard all`.
 	 * A write is no subquery, so the statement cannot be wrapped as a question's is, and what it sends back is counted
 	 * as it arrives: past `changeBytes` the connection is closed under it, which rolls the change back (it was never
 	 * committed), so one company's `returning *` cannot fill the gateway's memory. The rows it gives back are cut at an
@@ -752,6 +765,9 @@ export class Gateway {
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
 			);
+			// Whether the company is at its limit is what the watcher last found, as this change began.
+			const full = this.#full.has(ready.database);
+			const before = full ? Number((await client.query(WRITTEN)).rows[0].rows) : 0;
 			let result;
 			stream.on("data", counting);
 			try {
@@ -778,10 +794,10 @@ export class Gateway {
 					400,
 					`A change may not remove or switch off Qorpera's triggers (${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}): nothing was changed`,
 				);
-			if (this.#full.has(ready.database) && result.command !== "DELETE")
+			if (full && Number((await client.query(WRITTEN)).rows[0].rows) > before)
 				await undone(
 					507,
-					`This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: only a change that deletes rows runs until there is room`,
+					`This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: only a change that deletes rows and writes none runs until there is room`,
 				);
 			await client.query("commit");
 			// How many rows the statement itself wrote, as PostgreSQL counts them; a select says none.
@@ -811,7 +827,14 @@ export class Gateway {
 			} else if (!(error instanceof Refusal)) lost = error;
 			throw storeProblem(error);
 		} finally {
-			if (!cut) this.#release(client, lost);
+			if (!cut) {
+				// Nothing of this change stays on the session for the next one; a connection that cannot be cleaned is closed.
+				if (!lost)
+					await client.query("discard all").catch((error) => {
+						lost = error;
+					});
+				this.#release(client, lost);
+			}
 		}
 	}
 
@@ -1394,7 +1417,8 @@ export class Gateway {
 			// may be has neither.
 			const named = (folder) =>
 				[...caller.files]
-					.filter(([path]) => path.startsWith(`${root}/${folder}/`) && path.endsWith(".sql"))
+					// The files directly in the folder, as their texts were asked for: one in a folder below is no question.
+					.filter(([path]) => path.startsWith(`${root}/${folder}/`) && /^[^/]+\.sql$/.test(path.slice(`${root}/${folder}/`.length)))
 					.map(([path]) => {
 						const text = texts.get(path);
 						const statement = text === undefined ? null : readStatement(text);

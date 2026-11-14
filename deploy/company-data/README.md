@@ -8,6 +8,7 @@ data gateway is the one service that connects to the store. Nothing here is live
 | --- | --- |
 | `store/cluster.sql` | the store's logins and its template database, run once on a new server |
 | `store/template.sql` | the schema `qorpera_data` every company's database is copied from |
+| `store/update.sql` | what brings a store made from an earlier `template.sql` to today's: run in the template database and in every company's (`kit/update-store.sh`), safe to run again |
 | `gateway/gateway.mjs` | the gateway: questions, changes, steps, the held watch, the watcher, its HTTP side |
 | `gateway/sql-text.mjs` | reads one SQL file: its words, its `:name` parameters, one statement; a change's words with its values in place |
 | `gateway/*.test.mjs` | the tests (below) |
@@ -41,7 +42,8 @@ nothing, so no statement can switch to another folder's role. Their passwords ar
 key (HMAC-SHA256 of the role's name, base64url) and never stored.
 
 The template's event triggers put three triggers on every new table: `qorpera_changed` (a notice per statement),
-`qorpera_emptied` and `qorpera_rows_gone` (what a step destroys). A command that switches one off, replaces, renames
+`qorpera_emptied` and `qorpera_rows_gone` (what a step destroys; deleted rows are recorded only in a step's session, the
+folder's owner login, since a change's deletes are committed and their record would stay for good). A command that switches one off, replaces, renames
 or drops it, or that makes an unlogged table, is refused the moment it runs.
 
 ## The gateway
@@ -80,7 +82,12 @@ after it ran and before it is committed, and whatever is refused is rolled back 
   a seal is a row kept for good, and a change may delete rows anyway, so work a step's function defers a second time
   to the commit is not seen (it reaches only the folder's own tables, whose rows a change may delete as it is).
 - It may not leave a table without Qorpera's triggers.
-- While the company's database is at its size limit, only a delete runs.
+- While the company's database is at its size limit, only a change that writes nothing runs: a delete, so the company
+  can make room. It is judged by what the transaction wrote as PostgreSQL counted it (rows added or changed in any
+  table: a `with` part's, a function's and a large object's too), not by the statement's word, since a delete can
+  carry an insert.
+- Nothing of a change stays on its connection for the next one (a setting, a session's advisory lock): unlike a
+  question, a change is committed, so the connection is given back only after `discard all`.
 - What the statement sends back is counted as it arrives. Past 1 MiB (`changeBytes`) the gateway closes the
   connection under it, so the change is rolled back and nothing was changed. A write cannot be wrapped in a statement
   of the gateway's own as a question is, so this is what keeps one company's `returning *` out of the gateway's

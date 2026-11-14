@@ -274,6 +274,8 @@ $f$;
 create function drop_scratch() returns void language plpgsql security definer as $f$ begin drop table scratch; end $f$;
 create function empty_log() returns void language plpgsql security definer as $f$ begin truncate log; end $f$;
 create function forget_note() returns void language plpgsql security definer as $f$ begin alter table tickets drop column note; end $f$;
+-- A function that writes a row, for a delete that carries an insert.
+create function logged(what text) returns boolean language sql as $f$ insert into log (line) values (what) returning true $f$;
 `,
 	"data/desk/queries/open.sql": "-- How many tickets are open.\nselect count(*) as open from tickets where state = 'open';\n",
 	"data/desk/actions/open-ticket.sql": "-- Open a ticket called :title.\ninsert into tickets (title, opened_by) values (:title, :viewer::uuid) returning id, title;\n",
@@ -295,6 +297,14 @@ create function forget_note() returns void language plpgsql security definer as 
 	"data/desk/actions/empty-through.sql": "select empty_log();\n",
 	"data/desk/actions/column-through.sql": "select forget_note();\n",
 	"data/desk/actions/slow.sql": "select pg_sleep(3) as waited;\n",
+	// Deletes that also write: a `with` part, a function a step made, a large object. And a merge that only deletes.
+	"data/desk/actions/sneak.sql": "with added as (insert into log (line) values ('sneaked') returning 1) delete from tickets where id = -1;\n",
+	"data/desk/actions/remove-logged.sql": "delete from tickets where id = :id::bigint returning logged('removed ' || id) as logged;\n",
+	"data/desk/actions/blob.sql": "delete from tickets where id = :id::bigint and lo_from_bytea(0, 'x'::bytea) > 0;\n",
+	"data/desk/actions/merge-remove.sql": "merge into tickets t using (select :id::bigint as id) s on t.id = s.id when matched then delete;\n",
+	// What a change could leave on its session for the next one: a setting and a session's advisory lock.
+	"data/desk/actions/stick.sql":
+		"select set_config('default_transaction_read_only', 'on', false) as read_only, set_config('search_path', 'pg_catalog', false) as path, pg_advisory_lock(42) is not null as locked;\n",
 	"data/desk/actions/reach.sql": "insert into shop.orders (customer, amount) values ('x', 1);\n",
 	"data/desk/actions/records.sql": "delete from qorpera_data.steps;\n",
 	"data/hr/actions/raise.sql": "-- Raise :name by :by a month.\nupdate salaries set monthly = monthly + :by::numeric where name = :name returning monthly;\n",
@@ -1419,6 +1429,13 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	// ---- named changes (§8): a member's change, run as the database folder's write login
 	const desk = async (text) => (await asAdmin(companyDatabase(ENV_A), text))[0];
 	const change = (bearer, name, params = {}, more = {}) => ask(bearer, "change", { database: "desk", change: name, params, ...more });
+	/** A folder's write login holds two connections, and a gateway keeps the ones its changes used for a few seconds.
+	 * Before a second gateway runs changes here, the first has given them back. (One gateway runs on a store.) */
+	const writersGone = async () => {
+		const writers = async () =>
+			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and usename ~ '_w[0-9]+$'", [companyDatabase(ENV_A)]))[0].n;
+		assert.equal(await until(writers, 0, 10_000), 0, "the first gateway still holds the write login's connections");
+	};
 
 	it("runs a named change as the member who asks, and gives back what its statement returns", async () => {
 		assert.equal((await ask(contributor, "apply", { database: "desk" })).value.applied, true);
@@ -1446,6 +1463,10 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		const moved = await change(owner, "move", { id: 4 });
 		assert.deepEqual([moved.value.changed, moved.value.rows], [1, [["removed Ticket 4"]]], JSON.stringify(moved.value));
 		assert.equal((await desk("select count(*)::int as n from desk.tickets where id = 4")).n, 0);
+		// A change is committed, so a record of the rows it deleted would be kept for good: there is none. (A step's
+		// deletes are recorded, which is how it is held; its record is rolled back with it.)
+		assert.equal((await desk("select count(*)::int as n from qorpera_data.step_effects")).n, 0);
+		assert.equal((await desk("select count(*)::int as n from qorpera_data.sealed")).n, (await desk("select count(*)::int as n from qorpera_data.steps")).n, "a seal for each applied step, none for a change");
 		// A select that calls a function a step made: it says what the function gave, and no count of its own.
 		const open = (await desk("select count(*)::int as n from desk.tickets where state = 'open'")).n;
 		const all = await change(owner, "close-all");
@@ -1557,6 +1578,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	it("stops a change at its time, and one that sends back more than a change may, with nothing changed", async () => {
+		await writersGone();
 		await withGateway({ limits: { ...LIMITS_HERE, changeMs: 500 } }, async () => {
 			const began = Date.now();
 			const slow = await change(owner, "slow");
@@ -1586,6 +1608,77 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.equal((await desk("select count(*)::int as n from desk.tickets where note = repeat('x', 300)")).n, tickets + LIMITS_HERE.questionRows + 10);
 	});
 
+	it("keeps nothing of a change on its connection for the next one", async () => {
+		// Two at once, so each of the write login's two connections runs one: each sets its session read only, moves
+		// its search path and takes a session's advisory lock, and is committed.
+		const stuck = await Promise.all([change(owner, "stick"), change(owner, "stick")]);
+		assert.deepEqual(stuck.map((answer) => [answer.status, answer.value.rows]), [
+			[200, [["on", "pg_catalog", true]]],
+			[200, [["on", "pg_catalog", true]]],
+		]);
+		// The next changes write, find their tables, and take the same lock, on both connections.
+		const next = await Promise.all([
+			change(owner, "close-ticket", { id: 10 }),
+			change(owner, "close-ticket", { id: 11 }),
+			change(owner, "stick"),
+			change(owner, "open-ticket", { title: "After" }),
+		]);
+		assert.deepEqual(next.map((answer) => answer.status), [200, 200, 200, 200], JSON.stringify(next.map((answer) => answer.value)));
+		const locks = await asAdmin(companyDatabase(ENV_A), "select count(*)::int as n from pg_locks where locktype = 'advisory'");
+		assert.equal(locks[0].n, 0);
+	});
+
+	it("brings a store made before named changes to the template's delete record, with store/update.sql", async () => {
+		const database = companyDatabase(ENV_A);
+		const source = async (where) => (await asAdmin(where, "select prosrc from pg_proc where oid = 'qorpera_data.rows_gone()'::regprocedure"))[0].prosrc;
+		const made = await source("qorpera_company_template");
+		assert.equal(await source(database), made);
+		// The function as stores made before 14 November 2026 have it: every session's deleted rows are recorded.
+		await asAdmin(
+			database,
+			`create or replace function qorpera_data.rows_gone() returns trigger language plpgsql security definer set search_path = '' as $f$
+			declare v_rows bigint;
+			begin
+				if tg_op = 'TRUNCATE' then
+					if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+						raise exception 'A step may not destroy data after it was checked: % was emptied', tg_table_schema || '.' || tg_table_name;
+					end if;
+					insert into qorpera_data.step_effects (kind, object) values ('emptied table', tg_table_schema || '.' || tg_table_name);
+				else
+					select count(*) into v_rows from gone;
+					if v_rows > 0 and exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+						raise exception 'A step may not destroy data after it was checked: rows of % were deleted', tg_table_schema || '.' || tg_table_name;
+					end if;
+					if v_rows > 0 then
+						insert into qorpera_data.step_effects (kind, object, rows)
+						values ('deleted rows', tg_table_schema || '.' || tg_table_name, v_rows);
+					end if;
+				end if;
+				return null;
+			end $f$`,
+		);
+		assert.notEqual(await source(database), made);
+		const records = async () => (await desk("select count(*)::int as n from qorpera_data.step_effects")).n;
+		assert.equal((await change(owner, "remove-ticket", { id: 12 })).value.changed, 1);
+		assert.equal(await records(), 1, "the earlier store kept a record of a change's deleted rows");
+		// The update, twice: the function is the template's, and what was kept so far is gone.
+		psql(database, "update.sql");
+		psql(database, "update.sql");
+		psql("qorpera_company_template", "update.sql");
+		assert.equal(await source(database), made);
+		assert.equal(await source("qorpera_company_template"), made);
+		assert.equal(await records(), 0);
+		assert.equal((await change(owner, "remove-ticket", { id: 13 })).value.changed, 1);
+		assert.equal(await records(), 0);
+		// A step that deletes rows is still held, with their count.
+		put(ENV_A, { "data/desk/tables/002-trim.sql": "delete from log where id = 1;\n" });
+		const held = await ask(owner, "apply", { database: "desk" });
+		assert.deepEqual(states(held), ["001-tickets already", "002-trim held"], JSON.stringify(held.value));
+		assert.deepEqual(held.value.results.at(-1).destroys, [{ what: "deleted rows", object: "desk.log", rows: 1 }]);
+		remove(ENV_A, "data/desk/tables/002-trim.sql");
+		assert.equal(await records(), 0);
+	});
+
 	it("tells an open page when a change ran", async () => {
 		await asAdmin(companyDatabase(ENV_A), "update desk.tickets set state = 'open' where id = 8");
 		const current = (await ask(viewer, "query", { database: "desk", question: "open" })).value;
@@ -1599,22 +1692,44 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	it("runs only a change that deletes rows while a company's database is at its size limit", async () => {
+		await writersGone();
 		await withGateway({ limits: { ...LIMITS_HERE, companyBytes: 1024 ** 2 } }, async (other) => {
 			assert.equal((await change(owner, "open-ticket", { title: "Before the watcher looked" })).status, 200);
 			assert.ok((await other.watchOnce()).full.includes(companyDatabase(ENV_A)));
 			const tickets = (await desk("select count(*)::int as n from desk.tickets")).n;
+			const state = async () =>
+				JSON.stringify(
+					await desk(`select (select count(*) from desk.tickets) as tickets, (select count(*) from desk.log) as log,
+						(select count(*) from pg_largeobject_metadata) as blobs`),
+				);
+			const before = await state();
+			const full = "This company's database is at its size limit of 1 MiB: only a change that deletes rows and writes none runs until there is room";
 			const refused = await change(owner, "open-ticket", { title: "No room" });
-			assert.deepEqual(
-				[refused.status, refused.value.error],
-				[507, "This company's database is at its size limit of 1 MiB: only a change that deletes rows runs until there is room"],
-			);
-			assert.equal((await change(owner, "close-ticket", { id: 9 })).status, 507);
-			assert.equal((await change(owner, "move", { id: 9 })).status, 507, "a delete inside an insert is an insert");
-			assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, tickets);
+			assert.deepEqual([refused.status, refused.value.error], [507, full]);
+			// It is what the transaction wrote that counts, not the statement's word: an update, an insert that carries a
+			// delete, and a delete that carries an insert in a `with` part, in a function a step made, or in a large object.
+			for (const [name, params] of [
+				["close-ticket", { id: 9 }],
+				["move", { id: 9 }],
+				["sneak", {}],
+				["remove-logged", { id: 9 }],
+				["blob", { id: 9 }],
+			]) {
+				const tried = await change(owner, name, params);
+				assert.deepEqual([tried.status, tried.value.error], [507, full], `${name}: ${JSON.stringify(tried.value)}`);
+				assert.equal(await state(), before, `${name} wrote something`);
+			}
+			// What only deletes runs, whatever its word: a delete, and a merge that deletes.
 			const removed = await change(owner, "remove-ticket", { id: 9 });
 			assert.deepEqual([removed.status, removed.value.changed], [200, 1], JSON.stringify(removed.value));
-			assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, tickets - 1);
+			const merged = await change(owner, "merge-remove", { id: 14 });
+			assert.deepEqual([merged.status, merged.value.changed], [200, 1], JSON.stringify(merged.value));
+			assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, tickets - 2);
 		});
+		// With room (the first gateway's limit is its own), a delete that carries an insert runs: both land.
+		const logged = await change(owner, "remove-logged", { id: 15 });
+		assert.deepEqual([logged.status, logged.value.changed, logged.value.rows], [200, 1, [[true]]], JSON.stringify(logged.value));
+		assert.deepEqual(await desk("select count(*)::int as n from desk.log where line = 'removed 15'"), { n: 1 });
 	});
 
 	// ---- the run door (SLICE5): an agent's run, through the node's private token and a data pass
