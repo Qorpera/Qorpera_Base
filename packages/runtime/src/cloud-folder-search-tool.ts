@@ -865,7 +865,7 @@ export function cloudFolderSearchTool(options: {
 			'names_only searches the names of files, folders and links instead (a link as path -> "what it names"; a ' +
 			"link is never searched through); a glob with no query lists every path it matches. One call searches for " +
 			"up to about 10 s and shows up to about 30 KiB; when there is more, it gives a cursor to call again with. " +
-			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on the company's computer.",
+			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on a machine.",
 		source: "company_file",
 		inputSchema: {
 			type: "object",
