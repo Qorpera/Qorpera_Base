@@ -126,7 +126,7 @@ begin
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
-		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,date,date,jsonb)',
+		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',

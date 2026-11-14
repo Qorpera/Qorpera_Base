@@ -44,12 +44,14 @@ export interface BankSyncAuthority {
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
-	/** Replaces the company's days by kind from `from` to `to` (the leased sync's; 20260930769000). */
+	/** Replaces the company's days by kind from `from` to `to` (the leased sync's; 20260930769000), counted from the
+	 * accounts `accountKeys` names: days counted from another set of accounts are cleared first. */
 	recordBankDays(
 		input: {
 			secretId: string;
 			version: number;
 			lease: string;
+			accountKeys: readonly string[];
 			from: string;
 			to: string;
 			days: readonly BankDay[];
@@ -415,6 +417,7 @@ export class CloudBankSyncs {
 						secretId: claim.secretId,
 						version: claim.version,
 						lease: claim.lease,
+						accountKeys: fetched.accounts.map((account) => account.key),
 						from: days.from,
 						to: days.to,
 						days: days.days,

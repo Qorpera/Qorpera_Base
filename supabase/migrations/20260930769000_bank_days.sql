@@ -10,8 +10,10 @@
 --   other). No party, transfer text, account or single payment is kept: a day's kind with one payment is that payment's
 --   amount and day, which the members who may read it see on the Bank page anyway.
 -- - qorpera_bank_days_cover: the days a company's rows cover, so a reader tells a day without money moving (inside the
---   cover, no row) from a day nobody counted (outside it), and the bank secret they were counted under. Every row lies
---   inside the cover; a write under another bank secret (another bank) clears the company's days first.
+--   cover, no row) from a day nobody counted (outside it), and a digest of the accounts they were counted from (the
+--   sorted account keys the vault shares now). Every row lies inside the cover; a write from another set of accounts
+--   (another bank, or accounts added or no longer shared) clears the company's days first. A consent renewed at the same
+--   bank, a rotated secret over the same accounts, keeps them.
 -- - Days are the company's own: "today" and every day are dates in the company's time zone (qorpera_profiles.time_zone,
 --   20260930739000), Europe/Copenhagen when it has none or one the database does not know
 --   (qorpera_bank_days_time_zone, the rule the company's numbers read by too). The vault learns the zone from the answer
@@ -40,8 +42,8 @@ revoke all on public.qorpera_bank_days from public, anon, authenticated, service
 
 create table public.qorpera_bank_days_cover (
 	profile_id uuid primary key references public.qorpera_profiles(id) on delete cascade,
-	-- The bank secret (qorpera_cloud_secrets.id) whose sync wrote the days.
-	secret_id uuid not null,
+	-- The accounts the days were counted from: sha-256 (hex) of the distinct account keys, sorted, one a line.
+	accounts_sha256 text not null check (accounts_sha256 ~ '^[0-9a-f]{64}$'),
 	first_day date not null,
 	last_day date not null,
 	written_at timestamptz not null,
@@ -66,9 +68,10 @@ revoke all on function public.qorpera_bank_days_time_zone(uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- The leased sync's days (this claim's lease only): the company's rows from p_from to p_to are replaced by p_days in
--- one call. Under the cover's bank secret, the cover grows by the range when it meets or touches it (older days stay,
--- e.g. beyond the 13 months the vault reads back); a range apart from it, or a write under another bank secret, starts
--- a new cover and every row outside it goes. At most 400 days, ending no later than tomorrow in the company's time zone
+-- one call, counted from the accounts p_account_keys names (the keys the vault shares now, as it hands them to
+-- qorpera_record_bank_transactions). From the cover's accounts, the cover grows by the range when it meets or touches it
+-- (older days stay, e.g. beyond the 13 months the vault reads back); a range apart from it, or a write from another set
+-- of accounts, starts a new cover and every row outside it goes. At most 400 days, ending no later than tomorrow in the company's time zone
 -- (the vault's clock may run a little ahead); each day in the range at most once a direction and kind.
 create function public.qorpera_record_bank_days(
 	p_broker_authority_id uuid,
@@ -76,6 +79,7 @@ create function public.qorpera_record_bank_days(
 	p_secret_id uuid,
 	p_secret_version bigint,
 	p_lease_id uuid,
+	p_account_keys jsonb,
 	p_from date,
 	p_to date,
 	p_days jsonb
@@ -94,8 +98,17 @@ declare
 	v_first date;
 	v_last date;
 	v_rows integer;
+	v_accounts text;
 begin
 	v_authority := public.qorpera_bank_sync_authority(p_broker_authority_id, p_broker_capability_sha256);
+	if jsonb_typeof(p_account_keys) is distinct from 'array' or jsonb_array_length(p_account_keys) not between 1 and 32
+		or exists (select 1 from jsonb_array_elements(p_account_keys) as item(value)
+			where jsonb_typeof(item.value) <> 'string' or item.value #>> '{}' !~ '^[0-9a-f]{64}$') then
+		raise exception 'bank days are invalid' using errcode = '22023';
+	end if;
+	select encode(extensions.digest(string_agg(account.key, E'\n' order by account.key collate "C"), 'sha256'), 'hex')
+	into v_accounts
+	from (select distinct item.value #>> '{}' as key from jsonb_array_elements(p_account_keys) as item(value)) as account;
 	if p_from is null or p_to is null or p_from > p_to or p_to - p_from >= 400
 		or p_to > (v_now at time zone public.qorpera_bank_days_time_zone(v_authority.profile_id))::date + 1
 		or jsonb_typeof(p_days) is distinct from 'array' or jsonb_array_length(p_days) > 4000
@@ -121,7 +134,7 @@ begin
 	from public.qorpera_bank_days_cover as cover
 	where cover.profile_id = v_authority.profile_id
 	for update;
-	if v_cover.profile_id is not null and v_cover.secret_id = p_secret_id
+	if v_cover.profile_id is not null and v_cover.accounts_sha256 = v_accounts
 		and v_cover.first_day <= p_to + 1 and v_cover.last_day >= p_from - 1 then
 		v_first := least(v_cover.first_day, p_from);
 		v_last := greatest(v_cover.last_day, p_to);
@@ -146,18 +159,18 @@ begin
 		or numeric_value_out_of_range or check_violation or not_null_violation or unique_violation then
 		raise exception 'bank days are invalid' using errcode = '22023';
 	end;
-	insert into public.qorpera_bank_days_cover as cover (profile_id, secret_id, first_day, last_day, written_at)
-	values (v_authority.profile_id, p_secret_id, v_first, v_last, v_now)
+	insert into public.qorpera_bank_days_cover as cover (profile_id, accounts_sha256, first_day, last_day, written_at)
+	values (v_authority.profile_id, v_accounts, v_first, v_last, v_now)
 	on conflict (profile_id) do update
-	set secret_id = excluded.secret_id, first_day = excluded.first_day, last_day = excluded.last_day,
+	set accounts_sha256 = excluded.accounts_sha256, first_day = excluded.first_day, last_day = excluded.last_day,
 		written_at = excluded.written_at;
 	return jsonb_build_object('schema', 'qorpera.bank-days-result/v1', 'firstDay', v_first, 'lastDay', v_last,
 		'rows', v_rows);
 end
 $$;
-revoke all on function public.qorpera_record_bank_days(uuid, text, uuid, bigint, uuid, date, date, jsonb)
+revoke all on function public.qorpera_record_bank_days(uuid, text, uuid, bigint, uuid, jsonb, date, date, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_record_bank_days(uuid, text, uuid, bigint, uuid, date, date, jsonb)
+grant execute on function public.qorpera_record_bank_days(uuid, text, uuid, bigint, uuid, jsonb, date, date, jsonb)
 	to qorpera_secret_broker;
 
 -- The answer that hands the vault the kept transactions also says the company's time zone. A vault from before this

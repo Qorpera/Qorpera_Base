@@ -243,6 +243,8 @@ it("records the days by kind of the accounts shared now before the summary, unde
 		secretId: f.finished[0]?.secretId,
 		version: 1,
 		lease: "0c0c0c0c-0000-4000-8000-00000000c1a1",
+		// The accounts the days are counted from: the ones this session shares, not the earlier bank's.
+		accountKeys: [bankAccountKey(account)],
 		from: "2026-10-01",
 		to: "2026-10-21",
 	});
@@ -255,6 +257,28 @@ it("records the days by kind of the accounts shared now before the summary, unde
 	const recordDays = vi.mocked(f.authority.recordBankDays).mock.invocationCallOrder[0] ?? 0;
 	expect(recordDays).toBeGreaterThan(vi.mocked(f.authority.recordBankTransactions).mock.invocationCallOrder[0] ?? 0);
 	expect(recordDays).toBeLessThan(vi.mocked(f.authority.finishBankSync).mock.invocationCallOrder[0] ?? 0);
+});
+
+it("names every account the session shares as the days' accounts, so another set clears the days", async () => {
+	const savings = { ...account, uid: "uid-2", identificationHash: "hash-2", name: "Opsparing", iban: null };
+	const fields = (accounts: unknown[]) => ({
+		session_id: "session-7f3e",
+		accounts: JSON.stringify(accounts),
+		bank: "Danske Bank",
+		valid_until: "2027-01-19T11:59:00.000000+00:00",
+	});
+	const both = fixture({ fields: fields([account, savings]) });
+	expect(await both.syncs.pass(signal)).toBe("current");
+	expect(both.days[0]?.accountKeys).toEqual([bankAccountKey(account), bankAccountKey(savings)]);
+	expect(both.days[0]?.accountKeys).toEqual(both.recorded[0]?.accountKeys);
+	// The same accounts in a new session (a consent renewed, a secret rotated) name the same keys.
+	const renewed = fixture({ fields: fields([{ ...account, uid: "uid-new" }, { ...savings, uid: "uid-new-2" }]) });
+	expect(await renewed.syncs.pass(signal)).toBe("current");
+	expect(renewed.days[0]?.accountKeys).toEqual(both.days[0]?.accountKeys);
+	const one = fixture({ fields: fields([savings]) });
+	expect(await one.syncs.pass(signal)).toBe("current");
+	expect(one.days[0]?.accountKeys).toEqual([bankAccountKey(savings)]);
+	expect(JSON.stringify([both.days, one.days])).not.toMatch(/hash-1|hash-2|DK50|uid-/);
 });
 
 it("reads the company's days in the time zone the database names, and Copenhagen's without one", async () => {
