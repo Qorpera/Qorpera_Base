@@ -1928,7 +1928,13 @@ text, an account number, a single payment or the summary's items. Design: the co
   for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
   by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session; a visit is a
   view whose session had no view of that site in the 30 minutes before; at most 60 views a session an hour count. An
-  answer has at most 2000 rows (`more` true when it was cut).
+  answer has at most 2000 rows (`more` true when it was cut). The upkeep (pg_cron, every 10 minutes) adds finished
+  hours to days, keeps hours 35 days and deletes a session's last view time about an hour after it (70 minutes at most).
+  - Hours are UTC hours: in a zone offset by half an hour, an hour falls on the local day it starts in, so that day's
+    edges are off by up to 30 minutes.
+  - Days already added keep the zone the company had then; a later change of zone moves only days added after it.
+  - A count that waits more than 100 ms for a lock is dropped (never waited for), so a very busy page can lose a few
+    views.
   - `sites`: `site`, `title`, `url` (its own host while hosts are on), `live` (visitors can open it now).
   - `site-now` (`site`): `site`, `here_now` (sessions with a view in the last 5 minutes), `views_today`,
     `visits_today`; one row a site.

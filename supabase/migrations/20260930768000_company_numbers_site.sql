@@ -19,11 +19,12 @@
 --    * qorpera_site_count_days: the same a site, the company's calendar day and path, rolled up from the hours by the
 --      upkeep: kept as long as the site.
 --    * qorpera_site_session_seen: a password session's last view (it goes with the session, too), the hour its views are
---      capped in and how many it has there: deleted by the upkeep once an hour has passed since the last view.
+--      capped in and how many it has there: deleted by the upkeep once an hour has passed since the last view (it runs
+--      every 10 minutes, so a row lives at most about 70 minutes).
 --    * qorpera_site_count_upkeep: one row, how far the hours are rolled into days, and the last run.
 --    Nothing else is stored: never an IP address, a network, a user agent, a referrer, a query string, a country or any
 --    header, and no cookie is added (the session's cookie is the one the password gave).
--- 3. The upkeep, qorpera_site_count_upkeep(), by pg_cron hourly at minute 9 as its owner (job qorpera-site-counts; where
+-- 3. The upkeep, qorpera_site_count_upkeep(), by pg_cron every 10 minutes as its owner (job qorpera-site-counts; where
 --    pg_cron is absent or the role may not use it, nothing is scheduled and the migration still applies): adds every
 --    hour that ended at least 5 minutes ago and was not added before to its day (in the company's zone at that run),
 --    then deletes hour rows older than 35 days (never one not yet added) and seen rows whose last view is more than an
@@ -120,7 +121,7 @@ comment on table public.qorpera_site_count_days is
 	'qorpera_site_count_upkeep; kept as long as the site.';
 comment on table public.qorpera_site_session_seen is
 	'20260930768000: a site password session''s last view and its views this hour (the cap of 60), deleted an hour '
-	'after the last view by qorpera_site_count_upkeep.';
+	'after the last view by qorpera_site_count_upkeep (every 10 minutes).';
 comment on table public.qorpera_site_count_upkeep is
 	'20260930768000: how far qorpera_site_count_upkeep has added the hours into days, and its last run.';
 
@@ -373,7 +374,7 @@ begin
 		return jsonb_build_object('schema', 'qorpera.site-count-upkeep-schedule/v1', 'scheduled', false);
 	end if;
 	begin
-		v_job := cron.schedule('qorpera-site-counts', '9 * * * *', 'select public.qorpera_site_count_upkeep()');
+		v_job := cron.schedule('qorpera-site-counts', '*/10 * * * *', 'select public.qorpera_site_count_upkeep()');
 	exception when others then
 		raise warning 'Site counts upkeep was not scheduled (%): % may not use pg_cron', sqlerrm, current_user;
 		return jsonb_build_object('schema', 'qorpera.site-count-upkeep-schedule/v1', 'scheduled', false);

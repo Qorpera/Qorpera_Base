@@ -666,7 +666,7 @@ end $$;
 rollback to savepoint s_zone;
 
 -- 7. The schedule. pg_cron is not part of the test database: a stand-in with its schedule-by-name contract shows one job,
---    hourly at minute 9, whose command runs the upkeep.
+--    every 10 minutes (so a seen row lives at most about 70 minutes), whose command runs the upkeep.
 savepoint s_cron;
 do $$
 declare v_first jsonb; v_second jsonb; v_command text;
@@ -689,7 +689,7 @@ begin
 	perform pg_temp.s_same((v_first ->> 'scheduled') || ' ' || (v_second -> 'job' = v_first -> 'job')::text, 'true true',
 		'scheduled, once');
 	perform pg_temp.s_same((select count(*) || ' ' || min(schedule) || ' ' || min(command) from cron.job
-		where jobname = 'qorpera-site-counts'), '1 9 * * * * select public.qorpera_site_count_upkeep()', 'the job');
+		where jobname = 'qorpera-site-counts'), '1 */10 * * * * select public.qorpera_site_count_upkeep()', 'the job');
 	select command into v_command from cron.job where jobname = 'qorpera-site-counts';
 	execute v_command;
 end $$;
