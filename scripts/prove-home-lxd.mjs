@@ -676,7 +676,9 @@ async function driver() {
 		const h = await open(main.port, named.s7, "s7");
 		const aliasAfter = await shell(h.rpc, "command -v apply_patch || echo no-apply_patch-on-PATH; echo PATH=$PATH");
 		const viaShell = await shell(h.rpc, "printf '%s\\n' '*** Begin Patch' '*** Add File: shell-patch.md' '+made by apply_patch in the shell' '*** End Patch' | apply_patch; echo rc=$?; cat shell-patch.md 2>&1");
-		check("7", true, `with ~/.codex the account's own: ${JSON.stringify(aliasAfter.output)}; apply_patch typed in the shell: ${JSON.stringify(viaShell.output)} (without it: ${JSON.stringify(aliasBefore.output)})`);
+		// The alias is on PATH and a patch typed in the shell applies: without the folder neither holds (review r1, F1).
+		const patched = /rc=0\nmade by apply_patch in the shell/.test(viaShell.output) && !/no-apply_patch-on-PATH/.test(aliasAfter.output);
+		check("7", patched, `with ~/.codex the account's own:${JSON.stringify(aliasAfter.output)}; apply_patch typed in the shell: ${JSON.stringify(viaShell.output)} (without it: ${JSON.stringify(aliasBefore.output)})`);
 		await h.stream.close();
 		await h.rpc.done;
 		await sleep(1000);
