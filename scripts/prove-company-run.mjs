@@ -377,7 +377,8 @@ function provider(state, calls, roundMs = 0) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools, moreTools, tools } = context;
+	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, runtimeInstructions, interfaceTools, moreTools, tools } =
+		context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -469,6 +470,7 @@ async function attempt(code, context) {
 		command: command.command,
 		binarySha256: command.binarySha256,
 		prompt,
+		...(runtimeInstructions === undefined ? {} : { runtimeInstructions }),
 		signal: AbortSignal.timeout(240_000),
 		timeoutMs: 200_000,
 	});
@@ -512,10 +514,12 @@ export function answerOf(output) {
  * stored. `beforeRpc(method, args, db)`, if given, is called before each function call of the run's (a change the proof
  * makes while the run goes on, with `platformChange`). The model's rounds take `roundMs` each. A run whose turn ends
  * before its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every
- * call and then the closing answer. Without the binary it prints NOT RUN. */
+ * call and then the closing answer. `runtimeInstructions`, when given, are the run's developer instructions after the
+ * tool-result rules, as the company runtime compiles them (by default none). Without the binary it prints NOT RUN. */
 export async function proveCompanyRun({
 	name,
 	prompt,
+	runtimeInstructions,
 	setup,
 	objects,
 	calls,
@@ -581,6 +585,7 @@ export async function proveCompanyRun({
 			root: scratch,
 			nativeBinarySha256: made.nativeBinarySha256,
 			prompt,
+			runtimeInstructions,
 			lane: state.lane,
 			interfaceTools,
 			moreTools,
