@@ -1922,10 +1922,27 @@ text, an account number, a single payment or the summary's items. Design: the co
   - `money-kinds` (`month`, this month only, the default): `direction` (`in`, `out`), `kind`, `amount`, `count`. Out
     kinds `salaries`, `taxes`, `rent`, `utilities`, `subscriptions`, `fees`, `other`; money in is one kind, `all`.
     `count` is null for now (the summary keeps no count of payments).
-- `sites`, `site-now`, `site-hours`, `site-days`, `site-pages`: 0A000 "qorpera/<question> is not counted yet: the
-  sites' numbers come later". A name of another shape, a parameter the question does not take or a value out of its
-  bounds: 22023 in plain words (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at
-  most 366 days`, ...).
+- The `site-*` questions and `sites` (20260930768000_company_numbers_site) answer any member of the company (viewers
+  too) and any run of it, for the company's files sites (never an app link). `site` is a site's name (its slug),
+  optional: without it every files site of the company, in name order (22023 `:site is not one of the company's sites`
+  for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
+  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session; a visit is a
+  view whose session had no view of that site in the 30 minutes before; at most 60 views a session an hour count. An
+  answer has at most 2000 rows (`more` true when it was cut).
+  - `sites`: `site`, `title`, `url` (its own host while hosts are on), `live` (visitors can open it now).
+  - `site-now` (`site`): `site`, `here_now` (sessions with a view in the last 5 minutes), `views_today`,
+    `visits_today`; one row a site.
+  - `site-hours` (`site`, `from`, `to`; default the 48 hours to this one, at most 7 days): `site`, `hour` (ISO, UTC),
+    `hour_local` (`YYYY-MM-DDTHH:MI`, the company's), `views`, `visits`; every hour, zeros included. `from` and `to`
+    are a time with its zone (`2026-11-14T08:00Z`, `2026-11-14T09:00+01:00`) or a day of the company's (its first or
+    its last hour).
+  - `site-days` (`site`, `from`, `to`; default the 30 days to today, at most 400): `site`, `day`, `views`, `visits`;
+    every day, zeros included.
+  - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
+    the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
+    a site.
+- A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
+  (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
 - A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
   host's call (scope folder), with its own path authority.
 
@@ -2142,6 +2159,13 @@ machine.
   `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
   `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
   host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
+  Since 20260930768000 it counts a page view after answering it (`qorpera_site_count_view`, service role only): a GET
+  answered 200 or 304 with a `text/html` file of the live version for a visitor's session, with no `Range`,
+  `Sec-Fetch-Dest` `document` or absent and no `Sec-Purpose`/`Purpose` (prefetch), on the own host or the old host's
+  session path; never on a next host, for an asset, a HEAD, the password page or a refusal. It sends the host, the
+  file's path and the session token only; no address, user agent, referrer, query or other header is stored, and no
+  cookie is added. The count never changes the answer and delays it by at most 200 ms (none where the edge runtime
+  has `EdgeRuntime.waitUntil`).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
