@@ -877,7 +877,7 @@
     "packages/runtime/src/cloud-machine-screen.ts": "9185d2be7bd54a90bbfacc6c4ab769674c4a69bae232ef195d07fe89f91dc5af",
     "packages/runtime/src/cloud-machine-tools.ts": "6eb236e99dc846df3ecdf7a86fb5b0d06e7ea2777ebb9bc3b039e78a83d06418",
     "packages/runtime/src/cloud-member-machine-screen-http.ts": "4e1f2e913cefc0598fe05a6854ea3bcf663d0ffd324f74f85569f316de2bba8d",
-    "packages/runtime/src/cloud-member-machine-stream-http.ts": "e6b36b691fca8e0653c37cc8d7ffe73c46c2a991c455b1f8f5762b0428a134e3",
+    "packages/runtime/src/cloud-member-machine-stream-http.ts": "0932f4819ea1f776dcbb28d56b46de08bfd81533e5aa86ad355c1b81aeb21048",
     "packages/runtime/src/cloud-member-offer-tools.ts": "e21dce1056228cf89515108cbdb1db1bd1952cf22154aa09698638b2d1b5e389",
     "packages/runtime/src/cloud-memory-tools.ts": "11faac09844435b49821ed2914ae039569aa2d9c66eb4fa2d895fea4c7665e77",
     "packages/runtime/src/cloud-model-login-budget.ts": "20651a72f57aad394810aac81f70accb2d5fee91c6143c33c8e1cff307ecee34",
