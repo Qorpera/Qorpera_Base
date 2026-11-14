@@ -36,6 +36,11 @@ import type {
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../src/cloud-command-pages.ts";
 import {
+	CloudHomeChannelRefused,
+	type CloudHomeChannelSide,
+	type CloudHomeSessionAuthorized,
+} from "../src/cloud-home-channel.ts";
+import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCodingValueHttpRequest,
 	CloudMachineCodingValueRefusal,
@@ -850,6 +855,89 @@ describe("machine command authority", () => {
 			credential: async () => "",
 		});
 		await expect(noMachines.execute(f.request, f.signal)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+	});
+});
+
+// The agent's home: the router opens a session's channel on its own node's machine. The one failure the run is told
+// in words of its own (the machine's Codex is not the pinned build) leaves as a refusal with its reason, so the
+// ingress passes it on and the model reads HOME_OUTDATED, not "could not be reached"; any other failure stays as it
+// is (review r1 of #1817, F2).
+describe("a home session's channel through the router", () => {
+	const authority = (): CloudHomeSessionAuthorized => ({
+		state: "authorized",
+		sessionId: randomUUID(),
+		machineId: randomUUID(),
+		machine: "machine",
+		placementId: randomUUID(),
+		bootId: randomUUID(),
+		executorOwner: "mx-a",
+		providerId: "machine-node",
+	});
+	const request = () => ({ binding: nativeToolAuthorityFixture().binding, holder: undefined });
+	const router = (
+		execServerLocal?: (
+			authority: { sessionId: string; placementId: string; bootId: string },
+			signal: AbortSignal,
+		) => Promise<CloudHomeChannelSide>,
+	) =>
+		new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: {
+				call: async () => {
+					throw new Error("no SQL in this test");
+				},
+			},
+			credential: async () => "",
+			...(execServerLocal ? { execServerLocal } : {}),
+		});
+
+	it("opens the channel on its own node's machine with what SQL authorized", async () => {
+		const side: CloudHomeChannelSide = {
+			write: () => undefined,
+			lines: (async function* () {})(),
+			close: async () => undefined,
+		};
+		const execServerLocal = vi.fn(async () => side);
+		const session = authority();
+		const signal = AbortSignal.timeout(5_000);
+		expect(await router(execServerLocal).execServer(session, request(), signal)).toBe(side);
+		expect(execServerLocal).toHaveBeenCalledTimes(1);
+		expect(execServerLocal).toHaveBeenCalledWith(session, signal);
+	});
+
+	it("passes on that the machine's Codex is not the pinned build, as a refusal with its reason", async () => {
+		const failed = await router(async () => {
+			throw new Error("HOME_CODEX_NOT_PINNED");
+		})
+			.execServer(authority(), request(), AbortSignal.timeout(5_000))
+			.catch((error: unknown) => error);
+		expect(failed).toBeInstanceOf(CloudHomeChannelRefused);
+		expect((failed as CloudHomeChannelRefused).reason).toBe("HOME_CODEX_NOT_PINNED");
+	});
+
+	it("leaves any other failure of the machine's side as it is, and refuses a machine it does not hold", async () => {
+		const failure = new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(failure);
+		const refusal = new CloudHomeChannelRefused("HOME_SESSION_ENDED");
+		await expect(
+			router(async () => {
+				throw refusal;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(refusal);
+		await expect(router().execServer(authority(), request(), AbortSignal.timeout(5_000))).rejects.toThrow(
+			"MACHINE_COMMAND_WRONG_EXECUTOR",
+		);
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer({ ...authority(), executorOwner: "mx-b" }, request(), AbortSignal.timeout(5_000)),
+		).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 	});
 });
 
