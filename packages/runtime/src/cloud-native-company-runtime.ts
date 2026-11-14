@@ -636,6 +636,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					composed = {
 						prompt,
 						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
+						// The tool-result rules stand inside them, after the company's files (track 3, T3-3).
+						resultRulesInside: true,
 						// Every request of a run with the view shares its conversation's cache key (§6.2).
 						composeContext:
 							view && context.identity.sessionId !== null

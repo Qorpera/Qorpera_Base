@@ -39,17 +39,20 @@ const KINDS = [
 	"employee-routine",
 ];
 
-/** One phrase of today's text per founder rule (PLAN.md §3), and the kinds of run that read it. */
+/** The founder rules of PLAN.md §3, each by one phrase of the text and its count (track 3, T3-3 words). Every other rule
+ * the rewrite kept is checked per kind of run by packages/runtime/test/cloud-agent-instruction-rules.test.ts. */
 const FOUNDER_RULES = [
-	["P1 a capable colleague", "Carry authorized work through to a verified, recorded result without asking for permission you have"],
-	["P2 the gate is in code", "you can do what your tools allow, and the platform checks every call"],
-	["P3 fewer human touches", "Never hand them long reading or work the team can do"],
-	["P4 company first", "keep company facts in the company folder"],
+	["P1 a capable colleague", "Act; do not ask for permission you have."],
+	["P2 the gate is in code", "What you can do is what your tools allow"],
+	["P3 fewer human touches", "Never hand them long reading or work the team can do."],
+	["P4 company first", "The company is its files"],
 	["P5 the Co-Founder hires", "You hire and manage"],
-	["P5 from the first conversation", "The company starts with the first conversation"],
+	["P5 from the first conversation", "from the first conversation on"],
 	["P6 full ambition", "full ambition"],
-	["P7 show, do not tell", "Show more than you tell"],
-	["P7 the wall", "keep your wall with it"],
+	["P7 show, do not tell", "write little and show a lot"],
+	["P7 the wall", "Members follow you there instead of in messages"],
+	["P8 purpose before rules", "# Your company\n"],
+	["P9 the tool-result rules once", "# Tool results\n"],
 ];
 
 async function bundle(scratch) {
@@ -440,12 +443,14 @@ async function main() {
 				visionAgreed: agreed,
 			});
 			const prompt = mine.composeCloudNativeCompanyPrompt(shown, shownWake);
-			const developer = mine.redactCloudWebhookSecrets([mine.CLOUD_TOOL_RESULT_INSTRUCTIONS, instructions].join("\n"));
+			// A company run's instructions carry the tool-result rules after its purpose and files (track 3, T3-3).
+			const developer = mine.redactCloudWebhookSecrets(instructions);
 			let tools;
 			await proveCompanyRun({
 				name: `qorpera_prove_first_${kind.replaceAll("-", "_")}`,
 				prompt,
 				runtimeInstructions: instructions,
+				resultRulesInside: true,
 				// One read, so the run keeps a log (the harness reads it back); the first request comes before it.
 				setup: platformCommit("prove-first-notes", [
 					{ op: "mkdir", path: "notes" },

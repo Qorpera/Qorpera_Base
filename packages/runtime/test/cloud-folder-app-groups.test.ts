@@ -331,7 +331,7 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		expect(ORGANIZE_APPS_DESCRIPTION).toContain(rule);
 	// The Co-Founder's tidy pass takes a group without a colour as a sign to sort the drawer.
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
-		"more than eight apps loose, a group with one app or with more than twelve, a top-level group without a colour, or a new product or area with no group of its own.",
+		"more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.",
 	);
 	const f = await fixture();
 	const tool = f.tool();

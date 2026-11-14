@@ -326,6 +326,21 @@ it("cuts webhook signing secrets out of the instructions file and the thread's i
 	expect(recorded.bootstrap).toContain("HOST_LAW whsec_[REDACTED] END");
 });
 
+// Track 3, T3-3: a company run's instructions carry the tool-result rules at their own place, after the company's purpose
+// and files; the session then puts no second copy before them.
+it("puts no second copy of the tool-result rules before instructions that carry them", async () => {
+	const { result, evidence } = run("model-selection", {
+		opening: async () => ({
+			prompt: "Private test input",
+			runtimeInstructions: `# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`,
+			resultRulesInside: true,
+		}),
+	});
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.developerInstructions).toBe(`# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`);
+});
+
 it("cuts webhook signing secrets out of every turn input it sends Codex, whatever composed it", async () => {
 	const { result, evidence } = run("model-selection", {
 		opening: async () => ({

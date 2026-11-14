@@ -2799,6 +2799,9 @@ export interface CloudCodexOpening {
 	prompt: string;
 	runtimeInstructions?: string;
 	composeContext?: CloudCodexContextComposer;
+	/** The instructions already carry CLOUD_TOOL_RESULT_INSTRUCTIONS at their own place (a company run's, after its
+	 * purpose and its files: track 3, T3-3), so the session puts no second copy before them. */
+	resultRulesInside?: boolean;
 }
 
 /** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
@@ -3449,7 +3452,9 @@ export async function runCloudCodexToolSession(options: {
 		// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
 		// file and the thread's instructions are the same bytes.
 		const nativeInstructions = redactCloudWebhookSecrets(
-			[CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions].filter(Boolean).join("\n"),
+			[opening.resultRulesInside ? undefined : CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
+				.filter(Boolean)
+				.join("\n"),
 		);
 		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		stage = "codex-thread-start";
