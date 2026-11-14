@@ -398,9 +398,16 @@ function setup(
 				await gate;
 			}
 			const screen = state.screens?.get(url.slice(bridge.length).split("/")[4] as string);
+			// A queued answer is the test's own; the fallback picture answers as the real route does: 304 when the etag
+			// asked for is its own (review r4 of #1781: a fake that drew every look hid a stall).
+			const queued = screen === undefined ? state.answers.shift() : undefined;
+			const fallback = state.fallback;
 			const answer =
 				screen === undefined
-					? (state.answers.shift() ?? state.fallback)
+					? (queued ??
+						(typeof fallback === "object" && "picture" in fallback && asked === `"${etag(fallback.picture)}"`
+							? "unchanged"
+							: fallback))
 					: screen === "off"
 						? ({ code: "DESKTOP_NOT_RUNNING" } as const)
 						: asked === `"${etag(screen)}"`
@@ -2091,6 +2098,39 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 		});
 	}
 
+	for (const [name, answer] of answers.filter(([, one]) => !("outcome" in one) || one.outcome === "opened")) {
+		it(`a plain start out, a choice made, a picture before the plain start answers: ${name} (review r4 F1 of #1781)`, async () => {
+			const s = setup();
+			s.state.apps = apps;
+			s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+			const p = panel(s);
+			await flush();
+			let release = () => {};
+			s.state.startGate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			s.state.startAnswers.push(answer);
+			action(p)!.click();
+			await flush();
+			choose(p, 0);
+			await flush();
+			// Another start turns the screen on: a look draws it, and every look after it is unchanged (304).
+			s.state.fallback = { picture: 1 };
+			// (A screen that was off is looked at again every SCREEN_OFF_EVERY_MS.)
+			await advance(SCREEN_OFF_EVERY_MS);
+			await advance(SCREEN_OFF_EVERY_MS);
+			expect(mark(p)).toBe("Live");
+			s.state.startGate = undefined;
+			release();
+			await flush();
+			holds(p);
+			await advance(LOOK_EVERY_MS * 3);
+			// The choice goes out on the screen that runs, and is answered: it does not stand.
+			expect(s.opens, JSON.stringify(p.choices)).toEqual(["apps/a"]);
+			expect(p.choices.map((choice) => choice.ended)).toEqual(["answered"]);
+		});
+	}
+
 	it("the wish's time limit running out with a choice standing: said, with Try again", async () => {
 		const s = setup({ machines: [machine(1, { state: "starting" })] });
 		s.state.apps = apps;
@@ -2154,68 +2194,136 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 		allEnded(p);
 	});
 
-	it("a seeded random walk over the member's moves, answers in any order: no choice lost silently, none sent twice", async () => {
-		let seed = 1781;
-		const random = () => {
-			seed = (seed + 0x6d2b79f5) | 0;
-			let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-			value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
-			return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-		};
-		const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
-		const s = setup({ machines: [machine(1), machine(2)] });
-		s.state.apps = apps;
-		s.state.fallback = { picture: 1 };
-		const pending: ((response: Response) => void)[] = [];
-		s.state.startHook = () => new Promise<Response>((resolve) => pending.push(resolve));
-		const respond = (answer: StartAnswer) =>
-			"code" in answer
-				? Response.json({ code: answer.code }, { status: 409 })
-				: "status" in answer
-					? new Response("", { status: answer.status })
-					: Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
-		let p = panel(s);
-		const seen: ComputerPanel[] = [p];
-		await flush();
-		for (let step = 0; step < 160; step++) {
-			const move = random();
-			if (move < 0.25 && !opener(p).hidden) choose(p, pick([0, 1]));
-			else if (move < 0.45 && pending.length > 0) {
-				const at = Math.floor(random() * pending.length);
-				const [resolve] = pending.splice(at, 1);
-				resolve?.(respond(pick(answers)[1]));
-			} else if (move < 0.55) {
-				const switcher = p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
-				if (switcher && !switcher.hidden) {
-					switcher.click();
-					[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][pick([0, 1])]!.click();
-				}
-			} else if (move < 0.62) {
-				const again = p.el.querySelector<HTMLButtonElement>(".machine-screen-open-again");
-				if (again && !again.hidden) again.click();
-				else action(p)?.click();
-			} else if (move < 0.67) {
-				// The window closes and opens again.
-				p.dispose();
-				p = panel(s);
-				seen.push(p);
-			} else if (move < 0.75) s.state.fallback = pick([{ picture: 1 }, { code: "DESKTOP_NOT_RUNNING" }] as const);
-			else await advance(pick([0, LOOK_EVERY_MS, 1000, START_AGAIN_MS]));
+	it.each([1781, 1, 2, 3, 4, 5, 6, 7])(
+		"a seeded random walk over the member's moves, answers in any order: no choice lost silently, none sent twice, none standing past its limit (seed %i)",
+		async (first) => {
+			let seed = first;
+			const random = () => {
+				seed = (seed + 0x6d2b79f5) | 0;
+				let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+				value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+				return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+			};
+			const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
+			const s = setup({ machines: [machine(1), machine(2)], stream: true });
+			s.state.apps = apps;
+			// Half the seeds begin with the screen off: a plain Turn it on is then the state's own button.
+			s.state.fallback = first % 2 === 1 ? { code: "DESKTOP_NOT_RUNNING" } : { picture: 1 };
+			const u16 = (value: number) => [value >> 8, value & 0xff];
+			const size = () => new Uint8Array([1, ...u16(1600), ...u16(1000)]).buffer;
+			const whole = () =>
+				new Uint8Array([
+					2,
+					...u16(1),
+					...u16(0),
+					...u16(0),
+					...u16(1600),
+					...u16(1000),
+					0,
+					0,
+					0,
+					8,
+					137,
+					80,
+					78,
+					71,
+					13,
+					10,
+					26,
+					10,
+				]).buffer;
+			/** When each choice was made, by the walk's clock. */
+			const born = new Map<string, number>();
+			const stamp = () => {
+				for (const one of seen)
+					for (const choice of one.choices)
+						if (!born.has(`${seen.indexOf(one)}:${choice.gen}`))
+							born.set(`${seen.indexOf(one)}:${choice.gen}`, Date.now());
+			};
+			/** No choice stands unsent, with no request out, for longer than its limit and one turn of the walk's clock. */
+			const notStalled = () => {
+				for (const one of seen)
+					for (const choice of one.choices)
+						if (choice.ended === undefined && choice.out === 0)
+							expect(
+								Date.now() - (born.get(`${seen.indexOf(one)}:${choice.gen}`) ?? Date.now()),
+								`a choice stands unsent: ${JSON.stringify(choice)}`,
+							).toBeLessThanOrEqual(WANT_ON_MS + START_AGAIN_MS + SCREEN_OFF_EVERY_MS);
+			};
+			const pending: ((response: Response) => void)[] = [];
+			s.state.startHook = () => new Promise<Response>((resolve) => pending.push(resolve));
+			const respond = (answer: StartAnswer) =>
+				"code" in answer
+					? Response.json({ code: answer.code }, { status: 409 })
+					: "status" in answer
+						? new Response("", { status: answer.status })
+						: Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
+			let p = panel(s);
+			const seen: ComputerPanel[] = [p];
 			await flush();
-			for (const one of seen) holds(one);
-		}
-		// Every request answers, and time runs out: every choice of every window has ended.
-		for (let round = 0; round < 12 && pending.length > 0; round++) {
+			for (let step = 0; step < 240; step++) {
+				const move = random();
+				const socket = s.sockets.at(-1);
+				if (move < 0.25 && !opener(p).hidden) choose(p, pick([0, 1]));
+				else if (move < 0.45 && pending.length > 0) {
+					const at = Math.floor(random() * pending.length);
+					const [resolve] = pending.splice(at, 1);
+					resolve?.(respond(pick(answers)[1]));
+				} else if (move < 0.5) {
+					const switcher = p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
+					if (switcher && !switcher.hidden) {
+						switcher.click();
+						[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][pick([0, 1])]!.click();
+					}
+				} else if (move < 0.62) {
+					// Try again where it shows, else the state's own button (Turn it on, Wake it: a plain press).
+					const again = p.el.querySelector<HTMLButtonElement>(".machine-screen-open-again");
+					if (again && !again.hidden) again.click();
+					else action(p)?.click();
+				} else if (move < 0.67) {
+					// The window closes and opens again.
+					p.dispose();
+					p = panel(s);
+					seen.push(p);
+				} else if (move < 0.72) {
+					// The screen's own state changes now and then: a new picture, the same, or off.
+					if (random() < 0.4)
+						s.state.fallback = pick([{ picture: 1 }, { picture: 2 }, { code: "DESKTOP_NOT_RUNNING" }] as const);
+				} else if (move < 0.76 && socket && socket.readyState !== 3) {
+					// The live picture shows (no looks while it does), or ends.
+					if (random() < 0.7) {
+						socket.message(size());
+						socket.message(whole());
+					} else socket.closeWith(1006);
+				} else if (move < 0.78) await advance(WANT_ON_MS / 3);
+				else if (move < 0.81) {
+					// A quiet stretch: the member does nothing while time passes (a stall shows only then, review r4 of #1781:
+					// with a choice every few steps, a standing one was always replaced before its limit).
+					for (let n = 0; n < 4; n++) {
+						await advance(WANT_ON_MS / 4);
+						stamp();
+						notStalled();
+					}
+				} else await advance(pick([0, LOOK_EVERY_MS, 1000, START_AGAIN_MS]));
+				await flush();
+				stamp();
+				for (const one of seen) holds(one);
+				notStalled();
+			}
+			// Every request answers, and time runs out: every choice of every window has ended.
+			for (let round = 0; round < 12 && pending.length > 0; round++) {
+				for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));
+				await advance(START_AGAIN_MS);
+			}
+			s.state.startHook = undefined;
+			await drain(s);
 			for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));
-			await advance(START_AGAIN_MS);
-		}
-		s.state.startHook = undefined;
-		await drain(s);
-		for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));
-		await drain(s);
-		for (const one of seen) allEnded(one);
-		expect(seen.flatMap((one) => one.choices).length).toBeGreaterThan(10);
-	}, 60_000);
+			await drain(s);
+			for (const one of seen) allEnded(one);
+			expect(seen.flatMap((one) => one.choices).length).toBeGreaterThan(10);
+		},
+		60_000,
+	);
 });
 
 describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPEN-BRIEF, 13 Nov 2026)", () => {

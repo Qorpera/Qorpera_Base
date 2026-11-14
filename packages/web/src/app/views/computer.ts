@@ -187,8 +187,14 @@ interface OpenChoice {
 	readonly gen: number;
 	readonly machineId: string;
 	readonly path: string;
+	/** Its own time limit (review r4 of #1781): set when it is made, the wish's length. */
+	readonly until: number;
 	sent: boolean;
+	/** Not sent again before this (an answer that asked for it again: a start a moment ago is waited out). */
+	notBefore: number;
 }
+/** How long the window's loop waits at most while a choice stands unsent: it turns, and pumps, at least this often. */
+const CHOICE_TURN_MS = 1000;
 
 /** One of the company's apps as Open offers it (20260930758000): its name, and the path of the company folder that opens
  * it on the desktop. */
@@ -507,13 +513,21 @@ export class ComputerPanel {
 	 * WAYS: IT WAS SENT AND ANSWERED (and the answer handled by #openAnswered), A NEWER CHOICE OR THE MEMBER'S OWN MOVE
 	 * REPLACED IT (another choice, a switch of machine, the window closed, a plain press), OR THE WINDOW SAID WHY IT DID
 	 * NOT OPEN, WITH TRY AGAIN WHERE TRYING AGAIN CAN HELP. IT IS NEVER DROPPED SILENTLY.
+	 * WHILE A CHOICE STANDS UNSENT AND NO REQUEST IS OUT, THE PUMP RUNS AT EVERY TURN OF THE WINDOW'S LOOP, AND THE LOOP IS
+	 * WOKEN FOR IT (review r4 of #1781). A CHOICE HAS A TIME LIMIT OF ITS OWN: set when it is made (WANT_ON_MS), kept on
+	 * the choice and not on the wish; once it passes with the choice unsent and no request out, the choice ends said ("The
+	 * computer could not open it. Try again.", with Try again). A request out when it passes is let finish and its answer
+	 * handled as any. So no order of events leaves a choice standing for ever.
 	 *
 	 * By construction: the choice (its path, its generation, its machine) has ONE home, `#choice`, apart from the wish
 	 * that the desktop be on: nothing that ends or clears the wish takes the choice with it. It ends only in
 	 * #endChoice, with the way it ended; it is sent only by #turnOn (the start that turns an off screen on carries it)
 	 * and #openNow (a screen that runs), each marking it sent, and one request at a time; and while it waits, #pumpChoice
-	 * (after every answer, at a picture) sends it, or arms the wish that turns the screen on with it. An answer to a
-	 * choice no longer the one standing changes nothing but what a confirmed success tells (the desktop runs).
+	 * sends it, arms the wish that turns the screen on with it, or ends it at its limit. #pumpChoice is called in ONE
+	 * place, the top of every turn of the loop (and at a choice itself, so that choosing is the ask at once); the loop's
+	 * every wait is at most CHOICE_TURN_MS while a choice stands unsent (#wait), also while the live picture shows and no
+	 * look runs, and every answer to a request wakes it. An answer to a choice no longer the one standing changes
+	 * nothing but what a confirmed success tells (the desktop runs).
 	 */
 	#choice: OpenChoice | undefined;
 	#choiceGen = 0;
@@ -1048,6 +1062,9 @@ export class ComputerPanel {
 	async #loop(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
 		for (;;) {
 			signal.throwIfAborted();
+			// THE place a choice that waits is pumped: every turn of the loop, whatever else the turn does (review r4 of
+			// #1781). It sends it, arms the wish for it, or ends it at its limit.
+			this.#pumpChoice(computer, signal);
 			if (this.#ask && Date.now() - this.#ask.at >= ASK_LASTS_MS) this.#ask = undefined;
 			if (!this.attached || document.visibilityState === "hidden") {
 				await this.#wait(Number.POSITIVE_INFINITY, signal);
@@ -1092,9 +1109,6 @@ export class ComputerPanel {
 				}
 			}
 			const machine = this.#pick();
-			// The wish's time limit is kept at every turn of the loop, whatever the machine does (a choice standing in it is
-			// then said: review r3 of #1781).
-			if (this.#wantOn) this.#wishFor(this.#wantOn.machineId);
 			// The agent has a computer with a screen now: why none was made is told no more.
 			if (machine) this.#startRefused = undefined;
 			if (machine?.machineId !== this.#machineId) {
@@ -1200,8 +1214,6 @@ export class ComputerPanel {
 					// The desktop is on: the member's wish is met. What it was to open and has not been sent goes now
 					// (20260930758000: the screen came on by another's start).
 					if (this.#wantOn?.machineId === machine.machineId) this.#wantOn = undefined;
-					// A choice that waits goes now, the desktop running (it does not live in the wish).
-					this.#pumpChoice(computer, signal);
 					if (this.#startEnded?.machineId === machine.machineId) this.#startEnded = undefined;
 					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
 					// controls show.
@@ -2388,7 +2400,9 @@ export class ComputerPanel {
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */
-	#wait(ms: number, signal: AbortSignal): Promise<void> {
+	#wait(waitMs: number, signal: AbortSignal): Promise<void> {
+		// While a choice stands unsent, the loop turns at least every CHOICE_TURN_MS (it pumps it at every turn).
+		const ms = this.#choice && !this.#choice.sent ? Math.min(waitMs, CHOICE_TURN_MS) : waitMs;
 		return new Promise<void>((resolve) => {
 			if (signal.aborted) {
 				resolve();
@@ -2833,12 +2847,8 @@ export class ComputerPanel {
 
 	/** Whether the member's wish that this machine's desktop be on stands (it ends after WANT_ON_MS). */
 	#wishFor(machineId: string): boolean {
-		if (this.#wantOn && Date.now() >= this.#wantOn.until) {
-			const ended = this.#wantOn.machineId;
-			this.#wantOn = undefined;
-			// The wish ran out with a choice still waiting for the screen: said, with Try again.
-			if (this.#choice?.machineId === ended && !this.#choice.sent) this.#endChoice("said", failedOpenWords(), true);
-		}
+		// The wish's own limit: the screen's alone. A choice has its own (#pumpChoice).
+		if (this.#wantOn && Date.now() >= this.#wantOn.until) this.#wantOn = undefined;
 		return this.#wantOn?.machineId === machineId;
 	}
 
@@ -2863,6 +2873,8 @@ export class ComputerPanel {
 		} finally {
 			this.#turningOn = false;
 			if (choice) this.#back(choice);
+			// Every answer wakes the loop: a choice that waited for this request goes, or ends, at its next turn.
+			this.#poke();
 		}
 		if (signal.aborted || this.#machineId !== machineId) return;
 		if (choice) {
@@ -2870,14 +2882,11 @@ export class ComputerPanel {
 			// newer choice replaced tells only what a confirmed success tells.
 			if (this.#choice === choice) this.#openAnswered(choice, answer, "turnOn");
 			else this.#replacedAnswer(machineId, answer);
-			this.#pumpChoice(computer, signal);
 			return;
 		}
-		if (this.#wantOn?.machineId !== machineId) {
-			// A plain start whose wish is gone (a picture met it): a success lets a choice made meanwhile go.
-			if (ComputerPanel.#ran(answer)) this.#pumpChoice(computer, signal);
-			return;
-		}
+		// A plain start whose wish is gone (a picture met it): nothing more of it here; a choice made meanwhile goes at the
+		// loop's next turn, whatever this answer was (review r4 F1 of #1781).
+		if (this.#wantOn?.machineId !== machineId) return;
 		if (answer?.kind === "refused") {
 			if (answer.code === "DESKTOP_MACHINE_TOO_SMALL") {
 				this.#endStart(machineId, "small");
@@ -2905,9 +2914,8 @@ export class ComputerPanel {
 			this.#endStart(machineId, "startFailed");
 			return;
 		} else {
+			// The desktop runs: a choice made while this start was out goes at the loop's next turn.
 			this.#startAnswered = { machineId, at: Date.now() };
-			// A choice made while this start was out goes now, the desktop running.
-			this.#pumpChoice(computer, signal);
 		}
 		// Started, running already, or another start on its way: look at once (the helper waited until it was drawn).
 		this.#lookNow();
@@ -3066,7 +3074,14 @@ export class ComputerPanel {
 		const machineId = machine.machineId;
 		this.#endChoice("replaced");
 		this.#clearOpenWords();
-		const choice = { gen: ++this.#choiceGen, machineId, path, sent: false };
+		const choice: OpenChoice = {
+			gen: ++this.#choiceGen,
+			machineId,
+			path,
+			until: Date.now() + WANT_ON_MS,
+			sent: false,
+			notBefore: Number.NEGATIVE_INFINITY,
+		};
 		this.#choice = choice;
 		this.#choiceLog.push({ gen: choice.gen, path, sends: 0, out: 0, retries: 0 });
 		if (this.#choiceLog.length > 64) this.#choiceLog.shift();
@@ -3084,13 +3099,23 @@ export class ComputerPanel {
 		this.#poke();
 	}
 
-	/** The choice that waits goes when it can, one request at a time: on a screen the member sees, at once (#openNow); on
-	 * a running computer whose screen is off, with the start that turns it on (#turnOn: the wish is armed for it);
-	 * otherwise the wish carries the computer to that point and the next look or answer sends it. */
+	/** The choice that waits goes when it can, one request at a time: on a desktop that runs (a screen the member sees,
+	 * or a start that answered so), at once (#openNow); on a running computer whose screen is off, with the start that
+	 * turns it on (#turnOn: the wish is armed for it); otherwise the wish carries the computer to that point and a later
+	 * turn of the loop sends it. Its limit is kept here too. Called at the top of every turn of the loop, and at a
+	 * choice. */
 	#pumpChoice(computer: WebCompanyComputer, signal: AbortSignal): void {
 		const choice = this.#choice;
 		if (!choice || choice.sent || signal.aborted || choice.machineId !== this.#machineId) return;
+		// One request at a time: its answer wakes the loop, which pumps again.
 		if (this.#opening || this.#turningOn) return;
+		// Its own limit passed, unsent, with no request out: said, with Try again.
+		if (Date.now() >= choice.until) {
+			this.#endChoice("said", failedOpenWords(), true);
+			return;
+		}
+		// Asked for again: not before the wait the answer asked for.
+		if (Date.now() < choice.notBefore) return;
 		// The desktop runs: a screen the member sees, or a start that answered so (a confirmed success).
 		if ((this.#picturing() && this.#screenSeen) || this.#startAnswered?.machineId === choice.machineId) {
 			void this.#openNow(computer, choice, signal);
@@ -3172,7 +3197,7 @@ export class ComputerPanel {
 
 	/** Opens the choice on a desktop that runs (the start route turns its screen on first when it is off). A start of
 	 * another page's a moment ago is waited out once. */
-	async #openNow(computer: WebCompanyComputer, choice: OpenChoice, signal: AbortSignal, again = true): Promise<void> {
+	async #openNow(computer: WebCompanyComputer, choice: OpenChoice, signal: AbortSignal): Promise<void> {
 		if (this.#opening || this.#turningOn || choice.sent) return;
 		this.#opening = true;
 		this.#sent(choice);
@@ -3184,25 +3209,19 @@ export class ComputerPanel {
 		} finally {
 			this.#opening = false;
 			this.#back(choice);
+			// Every answer wakes the loop (a newer choice that waited goes at its next turn).
+			this.#poke();
 		}
 		if (signal.aborted) return;
-		if (this.#choice === choice && choice.machineId === this.#machineId) {
-			if (again && answer?.kind === "refused" && answer.code === "DESKTOP_START_TOO_SOON") {
-				this.#retried(choice);
-				await new Promise((resolve) => setTimeout(resolve, START_AGAIN_MS));
-				if (this.#choice === choice && !signal.aborted) await this.#openNow(computer, choice, signal, false);
-				else this.#pumpChoice(computer, signal);
-				return;
-			}
+		if (this.#choice === choice && choice.machineId === this.#machineId)
 			this.#openAnswered(choice, answer, "openNow");
-		} else if (choice.machineId === this.#machineId) this.#replacedAnswer(choice.machineId, answer);
-		// A newer choice that waited while this one was under way goes now.
-		this.#pumpChoice(computer, signal);
+		else if (choice.machineId === this.#machineId) this.#replacedAnswer(choice.machineId, answer);
 	}
 
 	/** A choice answered with a code that asks for it again: it waits once more (and may be sent once more). */
-	#retried(choice: OpenChoice): void {
+	#retried(choice: OpenChoice, wait: number): void {
 		choice.sent = false;
+		choice.notBefore = Date.now() + wait;
 		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
 		if (entry) entry.retries++;
 	}
@@ -3237,8 +3256,8 @@ export class ComputerPanel {
 	 * - someone else types privately (DESKTOP_MEMBER_IN_CONTROL): as a click's refusal: the list says who; nothing kept.
 	 * - not in the company folder (DESKTOP_OPEN_NOT_FOUND, DESKTOP_OPEN_PATH_INVALID), no company folder on that computer
 	 *   (DESKTOP_OPEN_NO_FOLDER): said in plain words; nothing to try again.
-	 * - asked for again (the choice waits once more, sent by #pumpChoice): from turnOn, a start a moment ago, the machine
-	 *   not running yet, or restarted; from openNow, a start a moment ago is waited out once in #openNow itself.
+	 * - asked for again (the choice waits once more, sent by #pumpChoice): a start a moment ago, from either caller,
+	 *   after START_AGAIN_MS; from turnOn, the machine not running yet, or restarted.
 	 * - turnOn only, the start's own answers that are no failure of this open: too small (the state says so), a disk it
 	 *   may not show (hidden).
 	 * - anything else, the open's own failures (DESKTOP_DID_NOT_OPEN, DESKTOP_BUSY: the host's hold), a screen that did
@@ -3262,13 +3281,19 @@ export class ComputerPanel {
 			this.#quicken();
 			return;
 		}
+		// A start a moment ago (the database takes one a machine every 5 s), from either caller: asked for again after
+		// that wait; its own limit bounds how often.
+		if (code === "DESKTOP_START_TOO_SOON") {
+			this.#retried(choice, START_AGAIN_MS);
+			return;
+		}
 		if (caller === "turnOn") {
-			if (code === "DESKTOP_START_TOO_SOON" || code === "MACHINE_NOT_RUNNING" || code === "MACHINE_BOOT_CHANGED") {
+			if (code === "MACHINE_NOT_RUNNING" || code === "MACHINE_BOOT_CHANGED") {
 				// Asked for again: the choice waits once more, and the wish that carries it stands (re-armed if a picture
 				// met it meanwhile).
-				this.#retried(choice);
+				this.#retried(choice, 0);
 				if (this.#wantOn?.machineId !== machineId) this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
-				if (code !== "DESKTOP_START_TOO_SOON") this.#listStale = true;
+				this.#listStale = true;
 				this.#lookNow();
 				return;
 			}
