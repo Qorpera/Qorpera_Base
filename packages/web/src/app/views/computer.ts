@@ -16,7 +16,7 @@ import type { MachineStreamMessage } from "../../cloud/machine-stream.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
-import { attachComputerDrag } from "../../ui/computer-drag.ts";
+import { attachComputerPlace } from "../../ui/computer-place.ts";
 import { ComputerScene, type ScenePhase } from "../../ui/computer-scene.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
@@ -572,9 +572,6 @@ export class ComputerPanel {
 			{
 				class: "computer-panel",
 				"aria-label": t("Agent computer"),
-				"aria-description": t(
-					"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.",
-				),
 				tabindex: "0",
 			},
 			this.#body,
@@ -585,8 +582,9 @@ export class ComputerPanel {
 		// Any touch of the window is the member's act on it (20260930742000), seen before the window's own handlers.
 		for (const event of ["pointerdown", "keydown", "wheel", "click", "focusin"] as const)
 			this.el.addEventListener(event, () => this.claim(), { capture: true, passive: true, signal });
-		// The drag also marks pointer focus on the panel, which keeps the hover controls down after a press.
-		this.#fitPreview = attachComputerDrag(this.el, signal);
+		// The window stands in its thread (computer-place.ts): a press marks its focus, which keeps the hover controls down
+		// after it; entered, it is fixed over the thread it stands in.
+		this.#fitPreview = attachComputerPlace(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
 		this.#setExpanded = (expanded: boolean) => {
 			// Going full size and back is one zoom from the box it had (styles/motion.css has the open).
@@ -595,14 +593,19 @@ export class ComputerPanel {
 					? this.el.getBoundingClientRect()
 					: undefined;
 			this.el.classList.toggle("is-entered", expanded);
+			this.#fitPreview();
 			zoomFrom(this.el, from);
 			if (expanded) {
-				for (const child of this.el.parentElement?.querySelector(".thread-conversation")?.children ?? []) {
-					if (!(child instanceof HTMLElement) || child.classList.contains("thread-header") || covered.has(child))
-						continue;
-					covered.set(child, child.inert);
-					child.inert = true;
-				}
+				// The window stands in the thread's log: everything of the conversation but the header and the way down to
+				// the window is covered, so nothing under the large view is reachable.
+				const pane = this.el.closest(".thread-conversation");
+				for (let node: Element = this.el; pane && node !== pane && node.parentElement; node = node.parentElement)
+					for (const child of node.parentElement.children) {
+						if (child === node || !(child instanceof HTMLElement)) continue;
+						if (child.classList.contains("thread-header") || covered.has(child)) continue;
+						covered.set(child, child.inert);
+						child.inert = true;
+					}
 			} else {
 				for (const [element, inert] of covered) element.inert = inert;
 				covered.clear();
@@ -682,8 +685,7 @@ export class ComputerPanel {
 		);
 		// A click in the window brings the looks back to every second.
 		this.el.addEventListener("pointerdown", () => this.#quicken(), { signal });
-		// A click on the preview's picture opens the large view, where the member uses the computer (20260930734000); a
-		// press that moves drags the window, as before (computer-drag.ts, which sees the same press first).
+		// A click on the preview's picture opens the large view, where the member uses the computer (20260930734000).
 		let tap: { readonly id: number; readonly x: number; readonly y: number } | undefined;
 		this.el.addEventListener(
 			"pointerdown",

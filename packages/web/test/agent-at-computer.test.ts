@@ -9,6 +9,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseScreensInUse, type ScreensInUse } from "../src/cloud/screens-in-use.ts";
+import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { atComputerFrame, atComputerSeed } from "../src/ui/at-computer-motion.ts";
 import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
@@ -480,6 +481,19 @@ describe("the window's rules", () => {
 });
 
 describe("the agent's thread", () => {
+	/** The agent's message `n`, written `minutes` after the first. */
+	const said = (n: number, minutes: number): TranscriptMessage => ({
+		kind: "agent",
+		id: id(180 + n),
+		sequence: n,
+		text: `Message ${n}`,
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: new Date(Date.parse("2026-11-14T08:00:00Z") + minutes * 60_000).toISOString(),
+		authorUserId: userA.id,
+	});
+	const items = (...list: TranscriptMessage[]) =>
+		({ loading: false, projection: { items: list, hiddenCount: 0, lastSequence: list.length } }) as const;
 	function thread(actions: { computerPanels?: ComputerPanels } = {}) {
 		const f = company([staff, other]);
 		const panels = actions.computerPanels ?? new ComputerPanels(undefined, f.controller.signal);
@@ -500,6 +514,55 @@ describe("the agent's thread", () => {
 		expect(f.panel()).not.toBeNull();
 		expect(f.panel()?.classList.contains("is-entered")).toBe(false);
 		expect(document.activeElement).toBe(f.composer);
+	});
+
+	/** The log's rows, without its day lines. */
+	const rows = (f: ReturnType<typeof thread>) =>
+		[...f.view.el.querySelectorAll(".messages-log > :not(time)")].map((row) =>
+			row.classList.contains("thread-computer") ? "computer" : (row.textContent ?? "").trim(),
+		);
+
+	it("stands as a row beside the working figure at the thread's end while the agent uses it (Jonas, 14 Nov 2026)", async () => {
+		const f = thread();
+		// The thread's own first read lands first; then the transcript it shows.
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		const row = f.panel()?.closest<HTMLElement>(".thread-computer");
+		expect(row?.parentElement?.classList.contains("messages-log")).toBe(true);
+		expect(rows(f)).toEqual(["Message 1", "computer"]);
+		// In the working figure's place, the figure beside the window, and the line under it says what it does.
+		expect(f.view.el.querySelector(".thread-activity")).toBeNull();
+		expect(row?.querySelector(".thread-computer-figure .figure")).not.toBeNull();
+		expect(row?.querySelector(".thread-computer-caption")?.textContent).toBe("Fixture agent is using its computer");
+		// A message while it works comes in above it: the row stays the live end.
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 3)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
+	});
+
+	it("stays where it stood once the agent stops using it, and what comes after goes under it", async () => {
+		const f = thread();
+		// The thread's own first read lands first; then the transcript it shows.
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		const panel = f.panel();
+		f.controller.store.set({ activity: [], atComputers: {} });
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 5)));
+		await settle();
+		expect(f.panel()).toBe(panel);
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+		expect(f.view.el.querySelector<HTMLElement>(".thread-computer-caption")?.hidden).toBe(true);
+		// Opened again by the member's click it stays where it is; used again, it is the live end once more.
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s2") } });
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
 	});
 
 	it("does not show it for another agent, for an agent that does not work, or while the member is busy", async () => {
