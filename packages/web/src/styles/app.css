@@ -656,6 +656,9 @@ label > input, label > select { font-weight: 400; }
 .figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
+/* A figure whose artwork was still loading fades into its empty place, in its own colour (ui/figure-motion.ts). */
+.figure-canvas[data-arrive] { animation: figure-arrive var(--motion-base) var(--ease-out) both; }
+@keyframes figure-arrive { from { opacity: 0; } }
 /* The figure acts (ui/figure-acts.ts): its body's jumps, spins and leans are a transform on the canvas, about the
  * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol,
  * the stars it juggles while it works, the stars of a cheer) fly and fade here, over the figure. */

@@ -130,6 +130,8 @@ interface LiveMotion {
 	still: boolean;
 	clock: Clock;
 	visible: boolean;
+	/** The visibility observer has reported on it: until then nobody knows whether it is in view. */
+	observed: boolean;
 	ready: boolean;
 	painted: string;
 	side: number;
@@ -1027,9 +1029,13 @@ export function mountFigureMotion(
 	const canvas = document.createElement("canvas");
 	canvas.className = "figure-canvas";
 	canvas.hidden = true;
+	// The still artwork is the figure's original look, in neither its saved colour nor its current own shade (the
+	// planet's is teal, its shade now sky): shown while the figure loads, every agent flashed a colour it does not
+	// have (Jonas, 14 Nov 2026). It stays hidden and is shown only when the drawn figure cannot come.
 	const fallback = new Image();
 	fallback.className = "figure-fallback";
 	fallback.alt = "";
+	fallback.hidden = true;
 	fallback.src = new URL(`${id}.webp`, base()).href;
 	host.append(fallback, canvas);
 	host.dataset.activity = options.activity ?? "Idle";
@@ -1051,6 +1057,7 @@ export function mountFigureMotion(
 		clock,
 		still: Boolean(options.still),
 		visible: false,
+		observed: false,
 		ready: false,
 		painted: "",
 		side: 36,
@@ -1116,6 +1123,7 @@ export function mountFigureMotion(
 						// Back in view: what went off around the agent's other views while it was away stays missed.
 						if (record.isIntersecting && !item.visible) item.cued = item.clock.elapsed;
 						item.visible = record.isIntersecting;
+						item.observed = true;
 						if (item.ready && item.visible) paint(item);
 					}
 			schedule();
@@ -1125,38 +1133,61 @@ export function mountFigureMotion(
 				for (const item of live)
 					if (item.host === record.target) {
 						item.side = record.contentRect.width * 1.12;
-						if (item.ready && item.visible) paint(item);
+						// Also before the first visibility report: a figure drawn at once is redrawn at its own size
+						// before the browser shows it (this observer reports before the paint, that one after).
+						if (item.ready && (item.visible || !item.observed)) paint(item);
 					}
 		});
 	}
 	visibility!.observe(host);
 	sizes!.observe(host);
-	// Until the motion's code and the artwork are both here the figure shows its still artwork; its clock
-	// starts at the first painted frame.
-	void Promise.all([prepare(entry), loadFigureMotion()])
-		.then(() => {
-			if (!live.has(entry)) return;
-			if (activity === "Idle" && entry.alive && !entry.still && !clock.life) {
-				// Its first move of its own comes after the opening blink has played.
-				clock.life = idleLife(clock.seed ^ Math.floor(Math.random() * 2 ** 32));
-				const drawn = nextIdle(clock.life);
-				clock.next = {
-					at: performance.now() + (Math.max(0, IDLE_OPENING - clock.elapsed) + drawn.wait) * 1000,
-					kind: drawn.kind,
-				};
-			}
-			entry.ready = true;
-			if (entry.visible) paint(entry);
-			schedule();
-			// The theme may have changed while the artwork loaded.
-			recolor(entry);
-		})
-		.catch(() => {
-			// Artwork that failed is fetched again by a figure built anew (the rail
-			// rebuilds these). The motion sampler cannot come back in this page, so
-			// without it the figure keeps its still artwork and asks for no rebuild.
-			if (live.has(entry) && !motionFailed) host.dataset.motionUnavailable = "true";
-		});
+	// Its clock starts at the first painted frame.
+	const begin = () => {
+		if (activity === "Idle" && entry.alive && !entry.still && !clock.life) {
+			// Its first move of its own comes after the opening blink has played.
+			clock.life = idleLife(clock.seed ^ Math.floor(Math.random() * 2 ** 32));
+			const drawn = nextIdle(clock.life);
+			clock.next = {
+				at: performance.now() + (Math.max(0, IDLE_OPENING - clock.elapsed) + drawn.wait) * 1000,
+				kind: drawn.kind,
+			};
+		}
+		entry.ready = true;
+		if (entry.visible) paint(entry);
+		schedule();
+		// The theme may have changed while the artwork loaded.
+		recolor(entry);
+	};
+	const shown = shownColor(entry);
+	if (motion && surfaces.has(id + shown)) {
+		// Its artwork in this colour and the motion are here already (a row built anew, another view of the agent):
+		// its first frame is drawn now, before the view is shown, so its place is never empty for a frame. It moves
+		// only once the observer says it is in view.
+		entry.shown = shown;
+		begin();
+		paint(entry);
+		// Drawn again in full once in view, as every figure is.
+		entry.painted = "";
+	} else {
+		// Until the motion's code and the artwork in this colour are both here the figure's place stays empty, and
+		// the figure then fades in.
+		canvas.dataset.arrive = "";
+		// Once: a panel shown again later must not fade its figures in anew.
+		canvas.addEventListener("animationend", () => delete canvas.dataset.arrive, { once: true });
+		void Promise.all([prepare(entry), loadFigureMotion()])
+			.then(() => {
+				if (live.has(entry)) begin();
+			})
+			.catch(() => {
+				if (!live.has(entry)) return;
+				// The still artwork in its old colour is better than no figure.
+				fallback.hidden = false;
+				// Artwork that failed is fetched again by a figure built anew (the rail
+				// rebuilds these). The motion sampler cannot come back in this page, so
+				// without it the figure keeps its still artwork and asks for no rebuild.
+				if (!motionFailed) host.dataset.motionUnavailable = "true";
+			});
+	}
 	return {
 		dispose() {
 			if (!live.delete(entry)) return;
