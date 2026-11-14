@@ -1,20 +1,14 @@
 import { appLinkName } from "@qorpera/cloud-client/interface-apps";
 
-/* An answer to a question on the agent's wall: the message opens with the question, quoted, so the agent reads what is
- * being answered and the thread shows it. It is plain text, so everything that carries a message carries this too.
- * A note from an interface app (`qorpera.tell`, RUNTIME-INTERFACE-APPS.md §5) opens the same way, with the app and the
+/* A message that opens with a quoted line: `> line`, an empty line, then the member's own words, so the agent reads what
+ * is being answered and the thread shows it. It is plain text, so everything that carries a message carries this too.
+ * A note from an interface app (`qorpera.tell`, RUNTIME-INTERFACE-APPS.md §5) opens this way, with the app and the
  * thing in it the note is about as its quoted line: `> app:<name>#<at> · <about>`. Until it is sent, that line is what
- * the draft answers (`answering`, as a wall question is), shown above the composer and never in it; the send puts it
- * first. The thread draws it as the app's card (views/conversation.ts). */
-
-/** The longest question a message repeats. */
-const QUESTION_MAX = 240;
-
-/** A wall headline as one quoted line. A name or a quote mark in it names nobody and quotes nothing in the message. */
-export function replyQuestion(words: string): string {
-	const line = words.replace(/[@«»]/g, "").replace(/\s+/g, " ").trim();
-	return line.length > QUESTION_MAX ? `${line.slice(0, QUESTION_MAX - 1).trimEnd()}…` : line;
-}
+ * the draft answers (`answering`), shown above the composer and never in it; the send puts it first. The thread draws it
+ * as the app's card (views/conversation.ts). Members answered the questions on an agent's wall the same way, with the
+ * question as the line, until the web dropped the wall (Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong
+ * medium for activity"); those messages stay in the threads, so the thread still shows such a line above the words.
+ * The file keeps its name. */
 
 /** The text a draft goes as. Nothing to say and nothing attached stays nothing, so it is not sent. */
 export function withReply(question: string | undefined, text: string, files: number): string {

@@ -35,7 +35,8 @@ export interface AgentCardActions extends CardFootActions {
  * from. It is written in Markdown and the card draws it so (Jonas, 10 November 2026: "the description isn't
  * rendering the markdown designs they are written in"); the text itself takes the drawing's place while it is
  * edited. Under it, the agent's computer and routines, then Copy, Hide and Delete. Latest notes
- * left the card again (Jonas, 10 November 2026): the wall stays above the agent's composer.
+ * left the card again (Jonas, 10 November 2026), and the agent's wall is gone from the web too (Jonas, 14 November
+ * 2026: "rather drop the wall - it's the wrong medium for activity").
  * Routines are a page of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
