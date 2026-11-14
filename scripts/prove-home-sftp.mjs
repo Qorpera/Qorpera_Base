@@ -416,20 +416,37 @@ async function driver() {
 			const want = createHash("sha256").update(random).digest("hex");
 			const binPath = `/run/c1-random-${randomBytes(3).toString("hex")}`;
 			writeFileSync(binPath, random);
-			const w = await sh(`set -e; mkdir -p ${c}/${mine}; printf 'hello from the box\\n' > ${c}/${mine}/note.txt; cp ${binPath} ${c}/${mine}/random.bin; mv ${c}/${mine}/note.txt ${c}/${mine}/renamed.txt; echo more >> ${c}/${mine}/renamed.txt; ln -s renamed.txt ${c}/${mine}/link.txt; echo all-done`);
+			const w = await sh(`set -e; mkdir -p ${c}/${mine}; printf 'hello from the box\\n' > ${c}/${mine}/note.txt; cp ${binPath} ${c}/${mine}/random.bin; mv ${c}/${mine}/note.txt ${c}/${mine}/renamed.txt; echo more >> ${c}/${mine}/renamed.txt; echo all-done`);
 			rmSync(binPath, { force: true });
-			const onHome = await inMachine(`stat -c '%U:%G %a %s %n' /company/${mine}/renamed.txt /company/${mine}/random.bin; cat /company/${mine}/renamed.txt; sha256sum /company/${mine}/random.bin | cut -d' ' -f1; ls /company/${mine}; readlink /company/${mine}/link.txt`);
-			const back = await sh(`sha256sum ${c}/${mine}/random.bin | cut -d' ' -f1; cat ${c}/${mine}/link.txt`);
+			const onHome = await inMachine(`stat -c '%U:%G %a %s %n' /company/${mine}/renamed.txt /company/${mine}/random.bin; cat /company/${mine}/renamed.txt; sha256sum /company/${mine}/random.bin | cut -d' ' -f1; ls /company/${mine}`);
+			const back = await sh(`sha256sum ${c}/${mine}/random.bin | cut -d' ' -f1; cat ${c}/${mine}/renamed.txt`);
 			check("4", w.stdout.includes("all-done") && seed.length > 0 && seed === homeSeed && onHome.includes(`qorpera-agent:qorpera-agent 644 24 /company/${mine}/renamed.txt`) &&
 				onHome.includes("hello from the box\nmore\n") && onHome.includes(want) && !/note\.txt/.test(onHome) && back.stdout.startsWith(want) &&
 				back.stdout.includes("hello from the box"),
-				`read (${seed.length} B, same as the home's), write + rename + append + 1 MiB binary + symlink as the agent: ${w.stdout.trim()} ${w.stderr.trim().slice(0, 200)} | home: ${onHome.replaceAll("\n", " | ").slice(0, 400)}`);
+				`read (${seed.length} B, same as the home's), write + rename + append + 1 MiB binary as the agent: ${w.stdout.trim()} ${w.stderr.trim().slice(0, 200)} | home: ${onHome.replaceAll("\n", " | ").slice(0, 400)}`);
 			// Root's file: the agent's account reads it, and its write is refused (EACCES), as P4 found for the file tools.
 			await inMachine(`echo root-made > /company/${mine}/root.txt && chown root:root /company/${mine}/root.txt && chmod 0644 /company/${mine}/root.txt`);
 			const rootRead = await sh(`cat ${c}/${mine}/root.txt`);
 			const rootWrite = await sh(`echo x >> ${c}/${mine}/root.txt`);
 			check("5", rootRead.stdout.trim() === "root-made" && rootWrite.code !== 0 && (await inMachine(`cat /company/${mine}/root.txt`)).trim() === "root-made",
 				`a root file: read (${rootRead.stdout.trim()}), a write refused (exit ${rootWrite.code}: ${rootWrite.stderr.trim().slice(0, 80)}), unchanged on the home`);
+			// 4b. A symlink made through sshfs: what the route gives must be what plain sshfs to the same sftp-server gives
+			// (the channel adds nothing; sshfs's own handling of OpenSSH's SYMLINK is sshfs's).
+			const linkVia = async (base, name) => {
+				const made = await sh(`ln -s renamed.txt ${base}/${mine}/${name}; echo rc=$?`);
+				const there = (await inMachine(`readlink /company/${mine}/${name}`)).trim();
+				const read = (await sh(`cat ${base}/${mine}/${name} 2>&1 | head -1`)).stdout.trim();
+				return `${made.stdout.trim()} ${made.stderr.trim().replace(/^.*: /, "")} | on the home -> ${there || "none"} | read: ${read}`;
+			};
+			const viaRouteLink = await linkVia(c, "link-route.txt");
+			const plainForLink = await viaPlain("plainlink");
+			const viaPlainLink = await linkVia(`${plainForLink.mnt}/company`, "link-plain.txt");
+			plainForLink.child.kill("SIGTERM");
+			await unmount(plainForLink);
+			say(`SYMLINK route: ${viaRouteLink}`);
+			say(`SYMLINK plain: ${viaPlainLink}`);
+			check("4b", viaRouteLink.replaceAll("link-route", "L") === viaPlainLink.replaceAll("link-plain", "L"),
+				`a symlink through the route behaves as through plain sshfs to the same sftp-server (route: ${viaRouteLink}; plain: ${viaPlainLink})`);
 			const list = await sh(`find ${c}/tree -type f | wc -l; ls ${c}/tree/d49 | wc -l`);
 			check("6", list.stdout.split("\n")[0].trim() === "5000", `the 5,000-file listing through the route: ${list.stdout.replaceAll("\n", " ")} in ${list.ms} ms`);
 
