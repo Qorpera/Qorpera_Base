@@ -247,6 +247,27 @@ const OPEN_OFFERED: ReadonlySet<Shown> = new Set<Shown>(["asleep", "starting", "
 export function computerOpenOffered(shown: Shown | null): boolean {
 	return shown === null || OPEN_OFFERED.has(shown);
 }
+/** While Open's file dialog is open (review r2 F1 of #1808), every state is on one side, so the next one added falls on
+ * a side by being listed. What only says the window is waiting to hear (OPEN_WAITS: a read that failed or is on its way,
+ * a pause, a picture held back) keeps the dialog, as the states where Open is offered do: a pick then is a choice, which
+ * waits through the pump and its own time limit as any does. What really takes Open away (OPEN_TAKEN_AWAY: someone
+ * else's private typing, a hidden screen, a computer that cannot show one, none at all, no access) closes it, choosing
+ * nothing; so does another computer shown, or the member no longer allowed to act (#fileDialogHolds). */
+export const OPEN_WAITS: ReadonlySet<Shown> = new Set<Shown>(["loading", "error", "paused", "updating"]);
+export const OPEN_TAKEN_AWAY: ReadonlySet<Shown> = new Set<Shown>([
+	"unavailable",
+	"none",
+	"headless",
+	"hidden",
+	"image",
+	"controlled",
+	"small",
+	"making",
+	"noStart",
+]);
+export function computerFileDialogStays(shown: Shown | null): boolean {
+	return computerOpenOffered(shown) || (shown !== null && OPEN_WAITS.has(shown));
+}
 
 /** One hold of a desktop on the page (release review r1 of #1667, F25 of #1661): its machine, the hand-back epoch it was
  * taken under and its seat (every heartbeat and every action captured under it goes with both, and SQL runs it only
@@ -3048,15 +3069,21 @@ export class ComputerPanel {
 		} finally {
 			if (this.#fileDialog === dialog) this.#fileDialog = undefined;
 		}
-		if (
-			path === null ||
-			signal.aborted ||
-			dialog.stop.signal.aborted ||
-			this.#pick()?.machineId !== machineId ||
-			!this.#openOffered()
-		)
-			return;
+		if (path === null || signal.aborted || dialog.stop.signal.aborted || !this.#fileDialogHolds(machineId)) return;
 		this.#choose(path, signal);
+	}
+
+	/** Whether a file dialog opened on this machine stays (computerFileDialogStays): it is still the one shown, it can have
+	 * a screen, the member may still act on it, and its state does not take Open away. */
+	#fileDialogHolds(machineId: string): boolean {
+		const machine = this.#pick();
+		const state = this.#loading.hidden ? null : ((this.#loading.dataset.state ?? "loading") as Shown);
+		return (
+			machine?.machineId === machineId &&
+			machine.desktopCapable &&
+			this.#listed?.canTakeOver === true &&
+			computerFileDialogStays(state)
+		);
 	}
 
 	/** Open is offered to a member who may act on the computer shown, when it can have a screen and the company has an app
@@ -3073,8 +3100,8 @@ export class ComputerPanel {
 		);
 	}
 
-	/** Open shows where it is offered; a file dialog open for a computer no longer shown, or where Open is no longer
-	 * offered, closes and chooses nothing. */
+	/** Open shows where it is offered; a file dialog closes, choosing nothing, only where something really took Open away
+	 * (#fileDialogHolds), never on a state that only waits to hear. */
 	#syncOpeners(): void {
 		const offered = this.#openOffered();
 		for (const button of [this.#opener, this.#frameOpener]) {
@@ -3082,7 +3109,7 @@ export class ComputerPanel {
 			if (button.title !== t("Open on this computer")) button.title = t("Open on this computer");
 		}
 		const dialog = this.#fileDialog;
-		if (dialog && (!offered || this.#pick()?.machineId !== dialog.machineId)) dialog.stop.abort();
+		if (dialog && !this.#fileDialogHolds(dialog.machineId)) dialog.stop.abort();
 	}
 
 	/** The member chose something to open (20260930758000): that is the ask, with no second press. The choice standing

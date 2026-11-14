@@ -8,6 +8,7 @@ import {
 	COMPUTER_SHOWN,
 	ComputerPanel,
 	ComputerPanels,
+	computerFileDialogStays,
 	computerOpenOffered,
 	INPUT_MAX_AGE_MS,
 	inputSpanTooOld,
@@ -17,6 +18,8 @@ import {
 	MACHINES_EVERY_MS,
 	type MachineHints,
 	OPEN_STARTS,
+	OPEN_TAKEN_AWAY,
+	OPEN_WAITS,
 	PAUSE_AFTER_MS,
 	SCREEN_OFF_EVERY_MS,
 	START_AGAIN_MS,
@@ -1821,6 +1824,48 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(p.choices).toHaveLength(0);
 	});
 
+	it("keeps the file dialog through every state that only waits to hear, and closes it on every one that takes Open away: each state on one side (review r2 F1 of #1808)", () => {
+		const offered = new Set(COMPUTER_SHOWN.filter((shown) => computerOpenOffered(shown)));
+		for (const shown of COMPUTER_SHOWN) {
+			const sides = [offered.has(shown), OPEN_WAITS.has(shown), OPEN_TAKEN_AWAY.has(shown)].filter(Boolean);
+			expect(sides, shown).toHaveLength(1);
+			expect(computerFileDialogStays(shown), shown).toBe(!OPEN_TAKEN_AWAY.has(shown));
+		}
+		expect(computerFileDialogStays(null)).toBe(true);
+		expect([...OPEN_WAITS]).toEqual(["loading", "error", "paused", "updating"]);
+	});
+
+	it("keeps the file dialog open through a failed read of an asleep computer, and a pick after it is a choice (review r2 F1 of #1808)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		choose(p, 2);
+		await flush();
+		expect(dialogs).toHaveLength(1);
+		// A Wi-Fi blip: one read of the machines fails, and the window only waits to hear.
+		s.state.listFails = 1;
+		s.hint("machines");
+		await flush();
+		const state = p.el.querySelector<HTMLElement>(".computer-loading")?.dataset
+			.state as (typeof COMPUTER_SHOWN)[number];
+		// The window says it is connecting: a state that only waits to hear, where Open itself is not offered.
+		expect(state).toBe("loading");
+		expect(computerOpenOffered(state)).toBe(false);
+		expect(OPEN_WAITS.has(state)).toBe(true);
+		expect(dialogs[0]!.signal.aborted).toBe(false);
+		// The next read answers: asleep again, the dialog still open, and the member's pick is a choice that wakes it.
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(dialogs[0]!.signal.aborted).toBe(false);
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(p.choices.map((choice) => choice.path)).toEqual(["notes/plan.md"]);
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+	});
+
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;
@@ -2419,7 +2464,6 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 			const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
 			const s = setup({ machines: [machine(1), machine(2)], stream: true });
 			s.state.apps = apps;
-			// "A file…" is one more move: the folder's browser answers a file, a folder, or Cancel.
 			// "A file…" is one more move: the folder's dialog stays open across moves and answers later, a file, a folder or
 			// Cancel; each a path of its own, so a pick from a dialog told to close is seen if it is ever sent (review r1 F1
 			// of #1808).
