@@ -1,9 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
+import {
+	type ClaudeLoginFileName,
+	type ClaudeLoginSealAnswer,
+	type CloudClaudeLoginVault,
+	claudeLoginSealFiles,
+} from "./cloud-claude-login-vault.ts";
 import {
 	CODING_VALUE_CAPTURE_REQUEST_SCHEMA,
 	CODING_VALUE_PREPARE_REQUEST_SCHEMA,
@@ -54,10 +60,12 @@ import {
 	parseEventHookFillRequest,
 	parseEventHookRequest,
 } from "./cloud-event-hook-vault.ts";
+import { CLAUDE_LOGIN_FILES } from "./cloud-model-login-sign-in.ts";
 import {
 	type CloudModelLoginVault,
 	type ModelLoginIssue,
 	type ModelLoginIssueRequest,
+	type ModelLoginRunBinding,
 	parseModelLoginRunBinding,
 } from "./cloud-model-login-vault.ts";
 import { ClaudeCodeRefused, type CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
@@ -382,6 +390,46 @@ function parseModelLoginRequest(value: unknown): ModelLoginIssueRequest {
 	return { binding: parseModelLoginRunBinding(input.binding), knownVersion: input.knownVersion };
 }
 
+function parseClaudeLoginOpenRequest(value: unknown): { binding: ModelLoginRunBinding } {
+	const input = record(value, "Claude login request");
+	exact(input, ["schema", "binding"], "Claude login request");
+	if (input.schema !== "qorpera.claude-login-open-request/v1") throw new Error("Claude login request is invalid");
+	return { binding: parseModelLoginRunBinding(input.binding) };
+}
+
+function parseClaudeLoginSealRequest(value: unknown): {
+	binding: ModelLoginRunBinding;
+	claudeLoginId: string;
+	baseVersion: number;
+	baseEnvelopeSha256: string;
+	files: Record<string, string>;
+} {
+	const input = record(value, "Claude login seal-back");
+	exact(
+		input,
+		["schema", "binding", "claudeLoginId", "baseVersion", "baseEnvelopeSha256", "files"],
+		"Claude login seal-back",
+	);
+	if (
+		input.schema !== "qorpera.claude-login-seal-request/v1" ||
+		typeof input.claudeLoginId !== "string" ||
+		!UUID.test(input.claudeLoginId) ||
+		typeof input.baseVersion !== "number" ||
+		!Number.isSafeInteger(input.baseVersion) ||
+		input.baseVersion < 1 ||
+		typeof input.baseEnvelopeSha256 !== "string" ||
+		!SHA.test(input.baseEnvelopeSha256)
+	)
+		throw new Error("Claude login seal-back is invalid");
+	return {
+		binding: parseModelLoginRunBinding(input.binding),
+		claudeLoginId: input.claudeLoginId.toLowerCase(),
+		baseVersion: input.baseVersion,
+		baseEnvelopeSha256: input.baseEnvelopeSha256,
+		files: claudeLoginSealFiles(input.files),
+	};
+}
+
 function parseModelLogin(value: unknown): ModelLoginIssue {
 	const input = record(value, "Model login");
 	// A ChatGPT plan login: the access token alone (null while the host holds this version).
@@ -640,6 +688,10 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Usage of the logins the vault keeps (change 2C): `/v1/model-logins/<company>/account-refresh`
 	 * under the account refresh's own capability. Absent means the route answers 404. */
 	readonly modelLoginUsage?: CloudModelLoginUsage;
+	/** A Claude Code worker's run's Claude login (20260930771000): `/v1/claude-logins/open` and `/seal` under the runtime
+	 * token, the run's lease proof and the database's checks. Only the shared vault keeps Claude logins; absent means the
+	 * routes answer 404. */
+	readonly claudeLogins?: CloudClaudeLoginVault;
 }
 
 /** What a request's company gets: a single-company broker's own services (some may be off), or one
@@ -651,6 +703,7 @@ interface RequestScope {
 	readonly modelLogins: CloudModelLoginVault | undefined;
 	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	readonly modelLoginUsage: CloudModelLoginUsage | undefined;
+	readonly claudeLogins?: CloudClaudeLoginVault | undefined;
 }
 
 /**
@@ -1238,6 +1291,25 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, { ...login });
 				return;
 			}
+			// A Claude Code worker's run's Claude login (20260930771000): the runtime token, the run's lease proof, and the
+			// database's check that this run is that worker's, its member's lease is this run's and the login is open now.
+			// Never cached, never logged; a refusal of who asks is the catch's opaque 403.
+			if (
+				(path === "/v1/claude-logins/open" || path === "/v1/claude-logins/seal") &&
+				scope.claudeLogins !== undefined &&
+				tokenMatches(this.#runtimeToken, request.headers.authorization)
+			) {
+				if (path === "/v1/claude-logins/open") {
+					const open = parseClaudeLoginOpenRequest(await readRequest(request));
+					await this.#proven(request, open.binding);
+					response(reply, 200, { ...(await scope.claudeLogins.open(open, AbortSignal.timeout(20_000))) });
+				} else {
+					const seal = parseClaudeLoginSealRequest(await readRequest(request));
+					await this.#proven(request, seal.binding);
+					response(reply, 200, { ...(await scope.claudeLogins.sealBack(seal, AbortSignal.timeout(20_000))) });
+				}
+				return;
+			}
 			// The coding executor's repository token (bundle v88): only the
 			// executor's own bearer (never the runtime token every guest holds), the
 			// kernel's lease check behind it, and an answer that is never cached.
@@ -1726,6 +1798,192 @@ export async function issueModelLogin(
 		65_000,
 		signal,
 	);
+}
+
+/** The run host's side of a Claude Code worker's run (20260930771000; C4c calls these): its member's Claude login
+ * files, opened for this run only, and the files Claude Code changed sealed back. Same origin, runtime token, holder and
+ * company routing as a model login; nothing is cached or logged. */
+export interface ClaudeLoginRunClient {
+	readonly origin: string;
+	readonly runtimeToken: string;
+	readonly companyId: string;
+	/** The run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+	readonly holder: () => string;
+	readonly allowLoopback?: boolean;
+	readonly fetch?: typeof fetch;
+}
+
+/** The run's Claude login as the run host holds it: the files to put in the box's config folder, and what it opened
+ * (the seal-back's compare-and-swap base and each file's digest). The caller zeroes the files once written. */
+export interface OpenedClaudeLogin {
+	readonly claudeLoginId: string;
+	readonly version: number;
+	readonly envelopeSha256: string;
+	readonly files: ReadonlyMap<ClaudeLoginFileName, Buffer>;
+	readonly fileSha256: Readonly<Partial<Record<ClaudeLoginFileName, string>>>;
+}
+
+/** A Claude login answer allows up to two 16 KiB files in base64. */
+const MAX_CLAUDE_LOGIN_RESPONSE_BYTES = 64 * 1024;
+
+async function claudeLoginCall(
+	options: ClaudeLoginRunClient,
+	route: "open" | "seal",
+	body: Buffer,
+	signal: AbortSignal,
+): Promise<unknown> {
+	const origin = brokerOrigin(options.origin, options.allowLoopback);
+	if (!TOKEN.test(options.runtimeToken) || typeof options.companyId !== "string" || !UUID.test(options.companyId))
+		throw new Error("Claude login client is invalid");
+	try {
+		return await withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await (options.fetch ?? fetch)(
+					`${origin}/v1/claude-logins/${route}?company=${options.companyId.toLowerCase()}`,
+					{
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${options.runtimeToken}`,
+							"x-qorpera-identity": options.holder(),
+							"content-type": "application/json",
+						},
+						body,
+						signal: requestSignal,
+					},
+				);
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					if (responseValue.status === 503) throw new CloudSecretBrokerBusyError();
+					throw new Error("Cloud secret broker refused the Claude login");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_CLAUDE_LOGIN_RESPONSE_BYTES, requestSignal);
+				try {
+					return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+				} catch {
+					throw new Error("Cloud secret broker returned an invalid Claude login");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			25_000,
+			signal,
+		);
+	} finally {
+		body.fill(0);
+	}
+}
+
+/** The run's member's Claude login files for this run, or why not (`SIGNED_OUT`: the member must sign in again;
+ * `NOT_OPEN`: Claude Code is not open for them). A run the database does not let have it is refused (an error). */
+export async function openClaudeLoginForRun(
+	options: ClaudeLoginRunClient,
+	binding: ModelLoginRunBinding,
+	signal: AbortSignal,
+): Promise<OpenedClaudeLogin | { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }> {
+	const answer = record(
+		await claudeLoginCall(
+			options,
+			"open",
+			Buffer.from(
+				JSON.stringify({
+					schema: "qorpera.claude-login-open-request/v1",
+					binding: parseModelLoginRunBinding(binding),
+				}),
+			),
+			signal,
+		),
+		"Claude login",
+	);
+	if (answer.schema !== "qorpera.claude-login-files-for-run/v1") throw new Error("Claude login is invalid");
+	if (answer.state === "refused") {
+		exact(answer, ["schema", "state", "reason"], "Claude login");
+		if (answer.reason !== "SIGNED_OUT" && answer.reason !== "NOT_OPEN") throw new Error("Claude login is invalid");
+		return { refused: answer.reason };
+	}
+	exact(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256", "files"], "Claude login");
+	const { claudeLoginId, version, envelopeSha256 } = answer;
+	if (
+		answer.state !== "open" ||
+		typeof claudeLoginId !== "string" ||
+		!UUID.test(claudeLoginId) ||
+		typeof version !== "number" ||
+		!Number.isSafeInteger(version) ||
+		version < 1 ||
+		typeof envelopeSha256 !== "string" ||
+		!SHA.test(envelopeSha256)
+	)
+		throw new Error("Claude login is invalid");
+	const files = new Map<ClaudeLoginFileName, Buffer>();
+	const fileSha256: Partial<Record<ClaudeLoginFileName, string>> = {};
+	for (const [name, text] of Object.entries(claudeLoginSealFiles(answer.files))) {
+		const bytes = Buffer.from(text, "base64");
+		files.set(name as ClaudeLoginFileName, bytes);
+		fileSha256[name as ClaudeLoginFileName] = createHash("sha256").update(bytes).digest("hex");
+	}
+	return { claudeLoginId: claudeLoginId.toLowerCase(), version, envelopeSha256, files, fileSha256 };
+}
+
+/** Sends back the login files the run host read from the box after the run, when any changed (Claude Code renewed its
+ * token): `unchanged` sends nothing. Only Claude Code's login files may be sent (`.credentials.json`, and
+ * `.claude.json` when it keeps one); the vault seals them as the login's next version only if the version opened is
+ * still the login's, else `stale` (the newer one stays). */
+export async function sealClaudeLoginBack(
+	options: ClaudeLoginRunClient,
+	request: {
+		readonly binding: ModelLoginRunBinding;
+		readonly opened: Pick<OpenedClaudeLogin, "claudeLoginId" | "version" | "envelopeSha256" | "fileSha256">;
+		readonly files: ReadonlyMap<string, Uint8Array>;
+	},
+	signal: AbortSignal,
+): Promise<{ readonly state: "unchanged" } | ClaudeLoginSealAnswer> {
+	for (const name of request.files.keys())
+		if (!(CLAUDE_LOGIN_FILES as readonly string[]).includes(name))
+			throw new Error("Only Claude Code's login files are sealed back");
+	const digests = new Map(
+		[...request.files].map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")] as const),
+	);
+	const opened = Object.entries(request.opened.fileSha256);
+	if (opened.length === digests.size && opened.every(([name, digest]) => digests.get(name) === digest))
+		return { state: "unchanged" };
+	const files: Record<string, string> = {};
+	for (const [name, bytes] of request.files) files[name] = Buffer.from(bytes).toString("base64");
+	const answer = record(
+		await claudeLoginCall(
+			options,
+			"seal",
+			Buffer.from(
+				JSON.stringify({
+					schema: "qorpera.claude-login-seal-request/v1",
+					binding: parseModelLoginRunBinding(request.binding),
+					claudeLoginId: request.opened.claudeLoginId,
+					baseVersion: request.opened.version,
+					baseEnvelopeSha256: request.opened.envelopeSha256,
+					files: claudeLoginSealFiles(files),
+				}),
+			),
+			signal,
+		),
+		"Claude login seal-back",
+	);
+	if (answer.schema !== "qorpera.claude-login-seal/v1") throw new Error("Claude login seal-back is invalid");
+	if (answer.state === "refused") {
+		exact(answer, ["schema", "state", "reason"], "Claude login seal-back");
+		if (answer.reason !== "SIGNED_OUT" && answer.reason !== "NOT_OPEN")
+			throw new Error("Claude login seal-back is invalid");
+		return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: answer.reason };
+	}
+	exact(answer, ["schema", "state", "claudeLoginId", "version"], "Claude login seal-back");
+	const { state, version } = answer;
+	if (
+		(state !== "sealed" && state !== "stale") ||
+		answer.claudeLoginId !== request.opened.claudeLoginId ||
+		typeof version !== "number" ||
+		!Number.isSafeInteger(version) ||
+		version < 1
+	)
+		throw new Error("Claude login seal-back is invalid");
+	return { schema: "qorpera.claude-login-seal/v1", state, claudeLoginId: request.opened.claudeLoginId, version };
 }
 
 /** Typed member capture path. The plaintext body goes to the broker origin,
