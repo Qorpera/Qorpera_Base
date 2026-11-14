@@ -268,8 +268,8 @@ interface ContinueLogin {
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
 
-/** A peer chip's time for a screen reader, as its description: the time on a hover (ui/sent-time-hover.ts) is only drawn,
- * and the chip's name says what it opens. */
+/** A peer chip's time for a screen reader, as its description; the chip's name says what it opens. A status line like
+ * this shows no time on a hover (Jonas, 14 Nov 2026): only messages do (ui/sent-time-hover.ts). */
 const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
 const peerTime = (linkId: string, at: string) =>
 	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
@@ -2824,7 +2824,7 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
-										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id, sentAt: item.createdAt },
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
 										"aria-label": t("{label}. Open the conversation", { label }),
 										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
@@ -3603,7 +3603,7 @@ export class ConversationView {
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					dataset: { pairSessionId: link.pairSessionId, linkIds: ids, sentAt: link.createdAt },
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
 					"aria-label": t("{label}. Open the conversation", { label: name }),
 					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
