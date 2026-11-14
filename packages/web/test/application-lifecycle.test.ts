@@ -703,7 +703,7 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(true);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company-name"));
 	});
 
 	it("toggles and closes company navigation without replacing the composer", async () => {
@@ -716,7 +716,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
 		// The drawer opens on the company's name, never on the folded search field.
 		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
-		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company-name"));
 		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
 		await draw();
