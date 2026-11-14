@@ -13,6 +13,7 @@ import {
 	type CloudCompanyDataVerb,
 	cloudDataTools,
 	DATA_APPLY_DESCRIPTION,
+	DATA_CHANGE_DESCRIPTION,
 	DATA_DESCRIBE_DESCRIPTION,
 	DATA_QUERY_DESCRIPTION,
 	httpsCompanyDataDoor,
@@ -27,8 +28,8 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
-/* Company databases, slice 5 (cloud-data-tools.ts, migration 20260930750000): data_describe, data_apply and data_query.
- * Each call asks the platform for a data pass through the run's real folder client and sends it to the data gateway's
+/* Company databases, slice 5 (cloud-data-tools.ts, migration 20260930750000): data_describe, data_apply and data_query;
+ * and slice 7 (migration 20260930763000): data_change. Each call asks the platform for a data pass through the run's real folder client and sends it to the data gateway's
  * run door. The platform's answers have the shapes the SQL gives (test 1244 pins them against the real functions), and
  * the door is a stand-in that answers as the gateway does (deploy/company-data/gateway/gateway.test.mjs drives the real
  * one); the HTTPS door is driven against a real TLS server. */
@@ -67,7 +68,7 @@ const entry = (path: string, text: string) => ({
 
 type DoorCall = { verb: CloudCompanyDataVerb; body: Record<string, unknown> };
 
-/** A run with the three tools. `platform` answers the folder client's calls (the pass, a file's entry); `door` answers
+/** A run with the data tools. `platform` answers the folder client's calls (the pass, a file's entry); `door` answers
  * the run door's. */
 async function fixture(
 	door: (call: DoorCall, count: number) => { status: number; value: unknown },
@@ -141,12 +142,13 @@ async function fixture(
 const ok = (value: unknown) => ({ status: 200, value });
 
 describe("the company data tools", () => {
-	it("are three runtime tools, described briefly, and a worker's run is not offered data_apply", async () => {
+	it("are four runtime tools, described briefly, and a worker's run is offered neither data_apply nor data_change", async () => {
 		const f = await fixture(() => ok({}));
 		expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([
 			["data_describe", "runtime"],
 			["data_apply", "runtime"],
 			["data_query", "runtime"],
+			["data_change", "runtime"],
 		]);
 		for (const tool of f.tools) {
 			expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain(tool.name);
@@ -156,8 +158,11 @@ describe("the company data tools", () => {
 			DATA_DESCRIBE_DESCRIPTION,
 			DATA_APPLY_DESCRIPTION,
 			DATA_QUERY_DESCRIPTION,
+			DATA_CHANGE_DESCRIPTION,
 		]);
 		expect(DATA_APPLY_DESCRIPTION).toContain("it waits for a member to say yes");
+		expect(DATA_CHANGE_DESCRIPTION).toContain("data/<database>/actions/<change>.sql");
+		expect(DATA_CHANGE_DESCRIPTION).toContain("A change that fails changes nothing.");
 		const worker = await fixture(() => ok({}), { apply: false });
 		expect(worker.tools.map((tool) => tool.name)).toEqual(["data_describe", "data_query"]);
 	});
@@ -397,6 +402,143 @@ describe("the company data tools", () => {
 		expect(answer.rows[0]).toEqual([0, "x".repeat(400)]);
 	});
 
+	it("runs a named change with its values, and shows how many rows it wrote and what it gave back", async () => {
+		const f = await fixture(() =>
+			ok({
+				changed: 1,
+				columns: ["id", "customer"],
+				rows: [[41, "Ada"]],
+				more: false,
+				asOf: "2026-11-14T10:00:00Z",
+			}),
+		);
+		const answer = await f.invoke("data_change", {
+			database: "shop",
+			change: "add-order",
+			params: { customer: "Ada", amount: 120.5, gift: false, note: null },
+		});
+		expect(answer).toMatchObject({ success: true, status: "ok" });
+		expect(JSON.parse(answer.text)).toEqual({
+			database: "shop",
+			change: "add-order",
+			changed: 1,
+			columns: ["id", "customer"],
+			rows: [[41, "Ada"]],
+			more: false,
+			asOf: "2026-11-14T10:00:00Z",
+		});
+		// A pass for the database, as the run, and the change by its name: no SQL of the agent's own goes to the door.
+		expect(f.platformCalls.map((call) => [call.method, call.args.p_database])).toEqual([[PASS, "shop"]]);
+		expect(f.doorCalls).toHaveLength(1);
+		expect(f.doorCalls[0]?.verb).toBe("change");
+		const { pass: sent, ...body } = f.doorCalls[0]?.body ?? {};
+		expect(sent).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(body).toEqual({
+			database: "shop",
+			change: "add-order",
+			params: { customer: "Ada", amount: 120.5, gift: false, note: null },
+		});
+		// A statement that gives nothing back: how many rows it wrote, and no rows. A select that called a function says
+		// what the function gave, and no count.
+		const plain = await fixture(() => ok({ changed: 3, asOf: "2026-11-14T10:00:00Z" }));
+		expect(JSON.parse((await plain.invoke("data_change", { database: "shop", change: "close-all" })).text)).toEqual({
+			database: "shop",
+			change: "close-all",
+			changed: 3,
+			asOf: "2026-11-14T10:00:00Z",
+		});
+		expect(plain.doorCalls[0]?.body).not.toHaveProperty("params");
+		const called = await fixture(() =>
+			ok({ columns: ["closed"], rows: [[7]], more: false, asOf: "2026-11-14T10:00:00Z" }),
+		);
+		expect(JSON.parse((await called.invoke("data_change", { database: "shop", change: "close-all" })).text)).toEqual({
+			database: "shop",
+			change: "close-all",
+			columns: ["closed"],
+			rows: [[7]],
+			more: false,
+			asOf: "2026-11-14T10:00:00Z",
+		});
+	});
+
+	it("reads a change's file as the run when the gateway asks for it, and tells the gateway's refusal as it is", async () => {
+		const files = new Map([
+			...FILES,
+			[
+				"data/shop/actions/mark-shipped.sql",
+				"-- Mark order :id as shipped.\nupdate orders set id = id where id = :id;\n",
+			],
+		]);
+		const text = files.get("data/shop/actions/mark-shipped.sql") ?? "";
+		const f = await fixture(
+			(_call, count) =>
+				count === 1
+					? ok({ need: [{ path: "data/shop/actions/mark-shipped.sql", sha256: sha(text) }] })
+					: ok({ changed: 1, asOf: "2026-11-14T10:00:00Z" }),
+			{ files },
+		);
+		const answer = await f.invoke("data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } });
+		expect(answer.status).toBe("ok");
+		expect(f.platformCalls.map((call) => call.method)).toEqual([PASS, READ, PASS]);
+		expect(f.doorCalls[1]?.body.texts).toEqual({ [sha(text)]: text });
+		expect(f.doorCalls[1]?.body).toMatchObject({ database: "shop", change: "mark-shipped", params: { id: 7 } });
+		// What the gateway refused, in its words: a change that does a step's work, one that is not there, a full database.
+		for (const [status, error] of [
+			[
+				400,
+				"A change adds, changes and deletes rows. This one also dropped table shop.orders, which is a step's work: nothing was changed",
+			],
+			[404, "No change shop/nope that you may run"],
+			[
+				507,
+				"This company's database is at its size limit of 1 GiB: only a change that deletes rows runs until there is room",
+			],
+		] as const) {
+			const refused = await fixture(() => ({ status, value: { error } }));
+			expect(await refused.invoke("data_change", { database: "shop", change: "nope" })).toMatchObject({
+				status: "denied",
+				text: `REFUSED: ${error}`,
+			});
+		}
+	});
+
+	it("never says a change failed when its call ended without an answer: it may have run", async () => {
+		const unknown =
+			"REFUSED: No answer came from the company's data store, so the change may or may not have run. Read the rows with data_query before you run it again, so it does not run twice.";
+		const ended = await fixture(() => {
+			throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended");
+		});
+		expect(await ended.invoke("data_change", { database: "shop", change: "add-order" })).toMatchObject({
+			status: "denied",
+			text: unknown,
+		});
+		const failed = await fixture(() => ({ status: 503, value: { error: "The data store did not answer" } }));
+		expect(await failed.invoke("data_change", { database: "shop", change: "add-order" })).toMatchObject({
+			status: "denied",
+			text: unknown,
+		});
+		// An answer that is not a change's is no answer.
+		for (const value of [{ changed: "three" }, { rows: [[1]] }, { columns: ["id"], rows: "none", more: false }]) {
+			const odd = await fixture(() => ok(value));
+			const answer = await odd.invoke("data_change", { database: "shop", change: "add-order" });
+			expect(answer.status, JSON.stringify(value)).not.toBe("ok");
+			expect(answer.text).not.toMatch(/^REFUSED/);
+		}
+	});
+
+	it("shows as many of a change's rows as one result holds, with more, and always how many it wrote", async () => {
+		const rows = Array.from({ length: 200 }, (_, index) => [index, "x".repeat(400)]);
+		const f = await fixture(() =>
+			ok({ changed: 200, columns: ["id", "note"], rows, more: false, asOf: "2026-11-14T10:00:00Z" }),
+		);
+		const answer = JSON.parse((await f.invoke("data_change", { database: "shop", change: "note-all" })).text);
+		expect(answer.changed).toBe(200);
+		expect(answer.more).toBe(true);
+		expect(answer.rows.length).toBeGreaterThan(0);
+		expect(answer.rows.length).toBeLessThan(200);
+		expect(answer.rows[0]).toEqual([0, "x".repeat(400)]);
+	});
+
 	it("refuses arguments it cannot send, before asking for a pass", async () => {
 		const f = await fixture(() => ok({}));
 		for (const args of [
@@ -411,6 +553,18 @@ describe("the company data tools", () => {
 		])
 			expect((await f.invoke("data_query", args)).success, JSON.stringify(args).slice(0, 80)).toBe(false);
 		expect((await f.invoke("data_apply", {})).success).toBe(false);
+		for (const args of [
+			{ database: "shop" },
+			{ change: "add-order" },
+			{ database: "shop", change: "Add Order" },
+			{ database: "shop", change: "x".repeat(61) },
+			{ database: "shop", change: "add-order", sql: "delete from orders" },
+			{ database: "shop", change: "add-order", params: [1] },
+			{ database: "shop", change: "add-order", params: { "a-b": 1 } },
+			{ database: "shop", change: "add-order", params: { a: { b: 1 } } },
+			{ database: "shop", change: "add-order", params: { a: "x".repeat(5000) } },
+		])
+			expect((await f.invoke("data_change", args)).success, JSON.stringify(args).slice(0, 80)).toBe(false);
 		expect(f.platformCalls).toEqual([]);
 	});
 });

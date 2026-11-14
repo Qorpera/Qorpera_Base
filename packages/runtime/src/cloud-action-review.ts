@@ -268,6 +268,10 @@ export function cloudActionEffect(
 		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
 		// that would destroy data is held until a member says yes.
 		case "data_apply":
+		// A named change (slice 7): the company's own rows, written through a file someone the folder let write put
+		// there, as company_write writes a file. It may delete rows, which is that change's own defined act; the data
+		// gateway rolls back one that would drop or empty a table.
+		case "data_change":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
