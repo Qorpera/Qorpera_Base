@@ -112,6 +112,11 @@ describe("the machine's own backdrop, as the web draws it", () => {
 		const rule = (selector: string) =>
 			css.match(new RegExp(`\\n${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
 		expect(rule(".computer-scene-dock")).not.toMatch(/background/);
+		// On the lit screen none of the window's own light words is drawn over the scene's dock (they stay for screen
+		// readers): starting, screen coming on, and settled, where a failed look can leave the scene up for a moment.
+		expect(css).toContain(
+			".computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen], [data-scene=settled]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px;",
+		);
 		expect(rule(".computer-scene-date")).toContain("color: var(--computer-scene-date-ink, #a3abba);");
 		expect(rule(".computer-scene-time")).toContain("color: var(--computer-scene-time-ink, #eef0f4);");
 		// The scene carries the hour's ink: noon in one zone, midnight in another.

@@ -84,7 +84,10 @@
 .computer-loading.is-scene[data-scene=asleep] { top: auto; bottom: calc((100cqh - var(--screen-h)) / 2); height: max(28px, calc(var(--screen-h) * 0.08)); background: hsl(225 8% 6%); }
 .computer-panel .computer-loading.is-scene .computer-retry { flex: none; min-height: 0; height: calc(100% - 8px); max-height: 30px; margin-left: auto; padding: 0 10px; border: 0; border-radius: 999px; color: #1d1d1f; background: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
 .computer-panel .computer-loading.is-scene .computer-retry:hover { background: #e9e9ec; }
-.computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Settled too (review r1 of #1824): the scene's own dock shows the date and the time there, on the hour's ground, where
+   these light words would lie over the date and, by day, be next to invisible (a look that fails right after the first
+   picture leaves the scene up in that phase for a moment). */
+.computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen], [data-scene=settled]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @container (min-width: 44em) {
 	.computer-loading.is-scene { padding: 0 6px 0 16px; gap: 10px; }
 	.computer-loading.is-scene p { font-size: 13px; }
