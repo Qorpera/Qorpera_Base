@@ -2332,6 +2332,17 @@ function mergeApps(company: CompanyController, parts: RailParts, dragged: string
 	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
 	parts.appFolding = groupKey(id);
 	void company.changeAppLayout(makeAppGroup(layout, parts.appTree, key, to.key, name, id));
+	// Then it asks for a better name: one small call on the member's own login, nothing shown in a thread (Jonas, 14 Nov
+	// 2026: "when a new group is created, I would like to run a light call, having an agent name it"). The answer
+	// renames the group unless the member did meanwhile.
+	const about = (app: string) =>
+		app.startsWith("app:")
+			? company.store.get().apps?.find((entry) => entry.name === app.slice("app:".length))?.manifest?.about
+			: undefined;
+	void company.nameNewAppGroup(id, name, [
+		{ name: nameOf(onto), about: about(to.key) },
+		{ name: nameOf(dragged), about: about(key) },
+	]);
 }
 
 /** A page's icon in the drawer: its emblem with its name under it. */

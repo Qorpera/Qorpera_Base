@@ -2,6 +2,7 @@
 
 import { parseAppIcon } from "@qorpera/cloud-client/app-icons";
 import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -16,8 +17,10 @@ import {
 	type MemberAppLayout,
 	parseAppGroups,
 	parseMemberAppLayout,
+	renameAppGroup,
 } from "../src/cloud/app-groups.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { LightAsk } from "../src/cloud/light-asks.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
@@ -1568,7 +1571,9 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		cleanup.push(controller.store.subscribe(draw));
 		draw();
 		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
-		return { element, controller, set, f };
+		// A new group asks for its name (light asks): no answer unless a test gives one.
+		const ask = vi.spyOn(f.api, "requestLightAsk").mockResolvedValue(lightAsk("failed", { problem: "no_payer" }));
+		return { element, controller, set, f, ask };
 	}
 	const tiles = (element: HTMLElement) =>
 		[...element.querySelectorAll<HTMLElement>(".rail-apps-grid > [data-app-key]")].map(
@@ -1863,6 +1868,185 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
 		expect(labels()[0]).toBe("Move to");
 	});
+	const ASK_ID = "12580000-0000-4000-8000-0000000000a1";
+	const lightAsk = (state: LightAsk["state"], more: Partial<LightAsk> = {}): LightAsk => ({
+		id: ASK_ID,
+		kind: "name-app-group",
+		state,
+		answer: null,
+		problem: null,
+		...more,
+	});
+	/** Trips, lifted and let go over Members' middle: a new group of the two. jsdom lays nothing out, so the tiles
+	 * stand in one row, 50 × 60 each, measured from the grid. */
+	function groupTripsWithMembers(element: HTMLElement): void {
+		const grid = element.querySelector<HTMLElement>(".rail-apps-grid")!;
+		vi.spyOn(grid, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 120));
+		for (const tile of [...grid.children] as HTMLElement[]) {
+			const index = () => [...grid.children].indexOf(tile);
+			Object.defineProperties(tile, {
+				offsetParent: { get: () => grid },
+				offsetLeft: { get: () => index() * 50 },
+				offsetTop: { get: () => 0 },
+				offsetWidth: { get: () => 50 },
+				offsetHeight: { get: () => 60 },
+			});
+		}
+		const pointer = (type: string, x: number, target: EventTarget = document) =>
+			target.dispatchEvent(
+				new PointerEvent(type, {
+					bubbles: true,
+					cancelable: true,
+					pointerId: 1,
+					pointerType: "mouse",
+					button: 0,
+					buttons: type === "pointerup" ? 0 : 1,
+					clientX: x,
+					clientY: 30,
+				}),
+			);
+		pointer("pointerdown", 125, element.querySelector<HTMLElement>("[data-app-key='app:trips']")!);
+		pointer("pointermove", 110);
+		pointer("pointermove", 75);
+		pointer("pointerup", 75);
+	}
+	const newGroupId = (set: { mock: { calls: unknown[][] } }) =>
+		Object.keys((set.mock.calls.at(-1)![1] as MemberAppLayout).groups)[0]!;
+
+	it("asks for a new group's name and takes the answer, with nothing more asked after it (Jonas, 14 Nov 2026)", async () => {
+		localStorage.clear();
+		const { element, set, f, ask } = drawer();
+		ask.mockResolvedValue(lightAsk("waiting"));
+		const read = vi
+			.spyOn(f.api, "readLightAsk")
+			.mockResolvedValueOnce(lightAsk("waiting"))
+			.mockResolvedValue(lightAsk("answered", { answer: "  People and   trips " }));
+		vi.useFakeTimers();
+		try {
+			groupTripsWithMembers(element);
+			await vi.advanceTimersByTimeAsync(0);
+			// The group is there at once, under the name the drawer gives it; the ask names a kind and the two apps.
+			expect(tiles(element)).toEqual(["Market", "Group"]);
+			expect(ask).toHaveBeenCalledOnce();
+			expect(ask).toHaveBeenCalledWith(profileA.profileId, expect.stringMatching(UUID_PATTERN), "name-app-group", {
+				apps: [{ name: "Members" }, { name: "Trips" }],
+				language: "en",
+			});
+			const id = newGroupId(set);
+			expect(set).toHaveBeenCalledOnce();
+			// Read every two seconds: still waiting, then the answer, which is the group's name.
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(read).toHaveBeenCalledTimes(1);
+			expect(read).toHaveBeenLastCalledWith(profileA.profileId, ASK_ID);
+			expect(tiles(element)).toEqual(["Market", "Group"]);
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(read).toHaveBeenCalledTimes(2);
+			expect(tiles(element)).toEqual(["Market", "People and trips"]);
+			expect(set).toHaveBeenCalledTimes(2);
+			expect((set.mock.calls.at(-1)![1] as MemberAppLayout).groups).toEqual({
+				[id]: { mine: { name: "People and trips" } },
+			});
+			// Folded as it was made, and nothing more is read.
+			expect(element.querySelector(`[data-app-key='group:${id}']`)?.getAttribute("aria-expanded")).toBe("false");
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(read).toHaveBeenCalledTimes(2);
+			expect(ask).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+			localStorage.clear();
+		}
+	});
+
+	it("keeps a name the member gave the group before the answer came, and a group taken apart", async () => {
+		localStorage.clear();
+		const { element, set, f, ask, controller } = drawer();
+		ask.mockResolvedValue(lightAsk("waiting"));
+		vi.spyOn(f.api, "readLightAsk").mockResolvedValue(lightAsk("answered", { answer: "People and trips" }));
+		vi.useFakeTimers();
+		try {
+			groupTripsWithMembers(element);
+			await vi.advanceTimersByTimeAsync(0);
+			const id = newGroupId(set);
+			// The member renames it before the answer is read.
+			const layout = controller.store.get().appLayout!.layout;
+			await controller.changeAppLayout(renameAppGroup(layout, id, "Away days", undefined));
+			expect(tiles(element)).toEqual(["Market", "Away days"]);
+			const writes = set.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(tiles(element)).toEqual(["Market", "Away days"]);
+			expect(set).toHaveBeenCalledTimes(writes);
+		} finally {
+			vi.useRealTimers();
+			localStorage.clear();
+		}
+	});
+
+	it("leaves the name when there is no answer, and stops reading after two minutes", async () => {
+		localStorage.clear();
+		const { element, set, f, ask } = drawer();
+		// No login of the member's own can pay: failed at once, nothing is read.
+		const read = vi.spyOn(f.api, "readLightAsk").mockResolvedValue(lightAsk("waiting"));
+		vi.useFakeTimers();
+		try {
+			groupTripsWithMembers(element);
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(ask).toHaveBeenCalledOnce();
+			expect(read).not.toHaveBeenCalled();
+			expect(tiles(element)).toEqual(["Market", "Group"]);
+			expect(set).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+			localStorage.clear();
+		}
+	});
+
+	it("reads a waiting answer for two minutes and no longer, and one that failed no more", async () => {
+		const { controller, f, ask, set } = drawer();
+		ask.mockResolvedValue(lightAsk("waiting"));
+		const read = vi.spyOn(f.api, "readLightAsk").mockResolvedValue(lightAsk("waiting"));
+		vi.useFakeTimers();
+		try {
+			const named = controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+			await vi.advanceTimersByTimeAsync(119_000);
+			expect(read).toHaveBeenCalledTimes(59);
+			await vi.advanceTimersByTimeAsync(600_000);
+			expect(read).toHaveBeenCalledTimes(60);
+			await named;
+			// A failed read ends it at once.
+			read.mockClear();
+			read.mockResolvedValueOnce(lightAsk("failed", { problem: "no_answer" }));
+			const failed = controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+			await vi.advanceTimersByTimeAsync(60_000);
+			await failed;
+			expect(read).toHaveBeenCalledTimes(1);
+			// An answer for a group that is not there changes nothing.
+			read.mockResolvedValueOnce(lightAsk("answered", { answer: "Money" }));
+			const gone = controller.nameNewAppGroup("m-gone", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+			await vi.advanceTimersByTimeAsync(2_000);
+			await gone;
+			expect(set).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("asks nothing more once the cloud has no light asks, and nothing for apps that make no ask", async () => {
+		const { controller, ask } = drawer();
+		// One app, or a name that is empty, is no ask.
+		await controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }]);
+		await controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "  " }]);
+		expect(ask).not.toHaveBeenCalled();
+		// Any other refusal is one ask lost; the next group asks again.
+		ask.mockRejectedValueOnce(new CloudRpcError("qorpera_request_light_ask", { message: "busy", code: "55P03" }));
+		await controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+		ask.mockRejectedValueOnce(new CloudRpcError("qorpera_request_light_ask", { message: "none", code: "PGRST202" }));
+		await controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+		expect(ask).toHaveBeenCalledTimes(2);
+		// A cloud from before 20260930761000: found out once.
+		await controller.nameNewAppGroup("m-2", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+		expect(ask).toHaveBeenCalledTimes(2);
+	});
+
 	it("makes a new group folded, its two apps going into its tile (Jonas, 14 Nov 2026)", async () => {
 		localStorage.clear();
 		const { element, set } = drawer();

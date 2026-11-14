@@ -1,6 +1,11 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
-import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
+import {
+	type AppTreeNode,
+	type MemberAppLayout,
+	type MemberAppLayoutRead,
+	renameAppGroup,
+} from "../cloud/app-groups.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
@@ -23,6 +28,7 @@ import {
 } from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
+import { appGroupNameFromAnswer, type LightAsk, NAME_APP_GROUP, nameAppGroupInput } from "../cloud/light-asks.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
@@ -74,7 +80,7 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
-import { t } from "../ui/preferences.ts";
+import { presentationLocale, t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
 import { type AgentAtComputer, type AgentsAtComputers, AtComputerWatch } from "./agents-at-computers.ts";
 import type { MailState } from "./company-mail.ts";
@@ -1578,6 +1584,55 @@ export class CompanyController {
 			if (!this.#appLayoutPending) await this.refreshAppLayout();
 			return false;
 		}
+	}
+
+	/** A cloud before 20260930761000 has no light asks: found out once, then nothing more is asked while the company
+	 * is open. */
+	#lightAsksMissing = false;
+
+	/** A new group of the member's own asks for its name (Jonas, 14 Nov 2026: "when a new group is created, I would like
+	 * to run a light call, having an agent name it"; deploy/first-node/RUNTIME-LIGHT-ASK.md). The group already shows
+	 * under `given`, the name the drawer gave it. The ask is one small call on the member's own login, with nothing
+	 * shown in a conversation. Its answer is read every two seconds for at most two minutes; when it comes and the
+	 * group is still the member's own under `given`, the group takes it as its name. A member who renamed the group or
+	 * took it apart meanwhile keeps what they did. With no answer (no login of the member's own, a cloud without light
+	 * asks, a call that failed) the name stays, and nothing is said. */
+	async nameNewAppGroup(
+		id: string,
+		given: string,
+		apps: readonly { readonly name: string; readonly about?: string | null }[],
+	): Promise<void> {
+		if (this.#stopped || this.#lightAsksMissing) return;
+		const input = nameAppGroupInput(apps, presentationLocale());
+		if (!input) return;
+		let ask: LightAsk | undefined;
+		try {
+			ask = await this.#api.requestLightAsk(this.profile.profileId, crypto.randomUUID(), NAME_APP_GROUP, input);
+			for (let reads = 0; ask?.state === "waiting" && reads < LIGHT_ASK_READS; reads++) {
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, LIGHT_ASK_READ_MS);
+					this.signal.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							resolve();
+						},
+						{ once: true },
+					);
+				});
+				if (this.#stopped) return;
+				ask = await this.#api.readLightAsk(this.profile.profileId, ask.id);
+			}
+		} catch (error) {
+			if (error instanceof CloudRpcError && error.missing) this.#lightAsksMissing = true;
+			return;
+		}
+		if (this.#stopped || ask?.state !== "answered") return;
+		const name = appGroupNameFromAnswer(ask.answer);
+		const layout = this.store.get().appLayout?.layout;
+		// Still the member's own group under the name it was given: a rename or an ungroup since then stands.
+		if (!name || name === given || !layout || layout.groups[id]?.mine?.name !== given) return;
+		await this.changeAppLayout(renameAppGroup(layout, id, name, undefined));
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
@@ -3442,6 +3497,9 @@ export class CompanyController {
 /** How long the drawer shows an app drawing new icons at most, and how often their folder is read meanwhile. */
 const APP_ICONS_DRAWING_MS = 10 * 60_000;
 const APP_ICONS_WATCH_MS = 10_000;
+/** A light ask's answer is read every two seconds, for at most two minutes. */
+const LIGHT_ASK_READ_MS = 2_000;
+const LIGHT_ASK_READS = 60;
 
 /** An icon by its id and the version of its file: the same id drawn again is a new version. */
 const iconVersion = (icon: CompanyAppIcon) => `${icon.id}@${icon.seq}`;
