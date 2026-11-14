@@ -555,10 +555,12 @@ So a guide is a tool's answer, read when the part is made:
   rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
 
 **The look (14 November 2026, company views plan §3 "Taste").** `look` is the bar every app is held to, from Jonas's
-reactions to 44 sketched screens of a company: Qorpera's own look (a plain white page, the system font; no scenes,
-skies or themed backdrops), the company's real things (products, shop, money, dates, customers' words), one big shape
+reactions to 44 sketched screens of a company: Qorpera's own plain look (the base style's page, `--q-bg`, and the
+system font; no scenes, skies or themed backdrops), the company's real things (products, shop, money, dates, customers' words), one big shape
 a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
-text cards or labelled diagram lines, and **copy the quality, not the layout**. It tells seven screens he liked and
+text cards or labelled diagram lines, and **copy the quality, not the layout**. A kit keeps its own form (the model
+kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
+hand, the page too. It tells seven screens he liked and
 three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
 app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
 company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine

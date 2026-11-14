@@ -41,19 +41,20 @@ export const APP_KIT_CHOICE =
 	"The form Qorpera draws for you, or null for a page you write by hand (the product's own prototype, or a working tool no kit draws). Before your first app, read app_guide look. Choose by what the thing is. model: how something works in numbers, such as a business model, a price, costs or capacity. board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references. path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route. object: a physical thing a member turns in the hand. explainer: a mechanism or a decision that a short narrated video explains.";
 
 /**
- * The look every app is held to (company views plan §3 "Taste", lanes/company-views-20261114/PLAN.md; Jonas, 14
- * November 2026, after 44 sketched screens of a company: he liked a few and not the rest). The rules are his taste in
+ * The look every app is held to (Jonas, 14 November 2026, after 44 sketched screens of a company: he liked a few and
+ * not the rest). The rules are his taste in
  * short words; the screens are the ones he liked and three he did not, each told in one line, since no picture of them
  * reaches every company's folder yet. They show the bar, not the screens to make: "it would still be important that the
  * agents knew to diverge from them and create whatever the company needed".
  */
 const LOOK = `Read this before your first app. It is the bar every app is held to, whatever it shows.
 
-- Qorpera's own look: a plain white page and the system font, as the base style gives them. No scenes, skies, landscapes or themed backdrops.
+- Qorpera's own plain look: the base style's page (--q-bg) and the system font, never colours of your own for the page. No scenes, skies, landscapes or themed backdrops.
 - Show the company's real things: its products, its shop, its money, its dates, its customers' own words.
 - One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.
 - Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.
 - Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs, in the shape that shows it best.
+- A kit draws its own form, sliders, chips and arrows included: for a kit, this decides what you put in it (real things, few words, the numbers that matter). For a page you write by hand, it decides the page too.
 
 Screens at the bar:
 - While you slept: three big numbers of the night (orders, money in, new customers), what each agent did in a word or two, and one button for the two things that want a yes.

@@ -230,7 +230,9 @@ it("holds every app to one look, with screens at the bar and three not to make",
 	// Jonas's taste from 44 sketched screens (14 November 2026), in short words: the bar, never the layout.
 	for (const rule of [
 		"Read this before your first app.",
-		"Qorpera's own look: a plain white page and the system font, as the base style gives them. No scenes, skies, landscapes or themed backdrops.",
+		"Qorpera's own plain look: the base style's page (--q-bg) and the system font, never colours of your own for the page. No scenes, skies, landscapes or themed backdrops.",
+		// A kit keeps its own form; the look decides what goes in it (review r1 of #1820).
+		"A kit draws its own form, sliders, chips and arrows included: for a kit, this decides what you put in it (real things, few words, the numbers that matter). For a page you write by hand, it decides the page too.",
 		"Show the company's real things: its products, its shop, its money, its dates, its customers' own words.",
 		"One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.",
 		"Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.",
