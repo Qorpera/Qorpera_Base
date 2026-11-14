@@ -285,6 +285,32 @@ function storeProblem(error) {
 	}
 }
 
+/** `connecting`'s connection when it comes before `until`. Else a refusal, and the connection is given back, unused,
+ * when it does come. */
+function inTime(connecting, until) {
+	return new Promise((resolve, reject) => {
+		let late = false;
+		const timer = setTimeout(
+			() => {
+				late = true;
+				reject(new Refusal(408, "No connection to the data store was free in time"));
+			},
+			Math.max(0, until - Date.now()),
+		);
+		connecting.then(
+			(client) => {
+				clearTimeout(timer);
+				if (late) client.release();
+				else resolve(client);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
 export class Gateway {
 	#store;
 	#platform;
@@ -561,16 +587,18 @@ export class Gateway {
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
 	 * take, at most a question's limit. `gone`: when it aborts, the statement is cancelled. `agent`: an agent's read,
-	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. */
-	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false } = {}) {
+	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. `until`: the time by which it
+	 * must be over, its wait for a connection included: with none free by then it is refused (the read role's
+	 * connections are few, and a call would else wait for one as long as the pool lets it), and the statement gets
+	 * what is left of the time. */
+	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null } = {}) {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const client = await this.#pool(ready.database, `${ready.database}_r${ready.n}`)
-			.connect()
-			.catch((error) => {
-				throw storeProblem(error);
-			});
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
+			throw storeProblem(error);
+		});
 		const pid = client.processID;
 		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
 		// A connection its backend left (the watcher ended it) is not given back to the pool.
@@ -585,6 +613,10 @@ export class Gateway {
 		gone?.addEventListener("abort", cancel, { once: true });
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
+			if (until !== null) {
+				ms = Math.min(ms, until - Date.now());
+				if (ms < 1) refuse(408, "No time was left for the statement");
+			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
@@ -1083,10 +1115,12 @@ export class Gateway {
 	}
 
 	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
-	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`).
-	 * One that was not counted carries PostgreSQL's own estimate with `about: true` when it has one, and no `rows` when
-	 * it has none: the estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows
-	 * alone, so on its own it said 0 for a small table that held rows. */
+	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`):
+	 * `rows` is never a guess. One that was not counted carries PostgreSQL's own estimate as `rowsAbout` when it has
+	 * one, under a name of its own so that nothing that passes `rows` on can pass a guess for a count (an agent's
+	 * shorter describe keeps a table's name, `rows` and columns). It carries neither when PostgreSQL has none: the
+	 * estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows alone, so on its
+	 * own it said 0 for a small table that held rows. */
 	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns, size] = await Promise.all([
@@ -1118,7 +1152,7 @@ export class Gateway {
 				...(table.counted !== null
 					? { rows: table.counted }
 					: table.estimate >= 0 && table.kind !== "v"
-						? { rows: table.estimate, about: true }
+						? { rowsAbout: table.estimate }
 						: {}),
 				columns: table.columns,
 			})),
@@ -1129,15 +1163,17 @@ export class Gateway {
 	/** Counts the rows of a database folder's `tables` (`counted`), each as a question of its own: the folder's read
 	 * role, a read-only transaction, a question's time at most. Tables and materialized views go first, the ones
 	 * PostgreSQL holds as smallest before the others, then partitioned tables, then views, whose count runs their own
-	 * statement. Nothing is started after `until`, and a count that ran out of time or was refused leaves its table
-	 * uncounted: a describe is never refused over a count. */
+	 * statement. Every count is over by `until`, its wait for one of the read role's connections included, and
+	 * nothing is started after it. A count that ran out of time, found no connection free or was refused leaves its
+	 * table uncounted: a describe is never refused over a count. The table is named with its schema: a name alone
+	 * would find a catalog relation of the same name first (`pg_tables`), whatever the search path. */
 	async #count(database, name, n, tables, until) {
 		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
 		for (const table of order) {
-			const left = until - Date.now();
-			if (left < 1) return;
-			const answer = await this.#ask({ database, name, n, sql: `select count(*) from ${quoted(table.name)}`, values: [] }, { ms: left }).catch((error) => {
+			if (until - Date.now() < 1) return;
+			const sql = `select count(*) from ${quoted(name)}.${quoted(table.name)}`;
+			const answer = await this.#ask({ database, name, n, sql, values: [] }, { until }).catch((error) => {
 				if (error instanceof Refusal) return null;
 				throw error;
 			});
