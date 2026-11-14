@@ -10,8 +10,9 @@ Each channel is one transient unit on the home in qorpera-machine.slice as the a
 Every byte each way is scanned for the canaries (the pattern needs their 16 random hex digits, never typed whole).
 With --gate-ms N it also stands in for C1's output gate (CONTRACT.md section 3): every answer of the home leaves only
 after a "release" that began after it came, each release taking N ms, one at a time per channel, the next starting at
-once on the file channel and at most every 200 ms on the exec channel (HOME_SFTP_RELEASE_SPACING_MS = 0; the exec
-channel's spacing). No folder service here: N stands in for the real release's latency.
+once on the file channel, and on the exec channel from a bucket of 4 that gets one back every 200 ms (C1 e8f9c2c8d:
+a shell command's start answer, output and exit pass at once; HOME_SFTP_RELEASE_SPACING_MS = 0). No folder service here: N stands in for the real release's latency.
+SOCKET is a Unix socket's path, or HOST:PORT for TCP (the stock run host's proof reaches it from another nested VM).
 Usage: gateway.py HOME SOCKET LOGDIR [--gate-ms N]. SIGTERM: close every channel, write LOGDIR/gateway-summary.json.
 """
 import asyncio, base64, binascii, json, os, re, secrets, signal, sys, time
@@ -129,6 +130,8 @@ async def channel(reader, writer):
         async def gate():
             """C1's HomeOutputGate as a stand-in: what came before a release's start leaves when that release ends."""
             spacing = 0.2 if kind == "exec" else 0.0
+            burst = 4 if kind == "exec" else 1
+            tokens, refilled = float(burst), time.monotonic()
             last = -1.0
             held = []
             ended = False
@@ -138,8 +141,14 @@ async def channel(reader, writer):
                     if item is None:
                         break
                     held.append(item)
-                start = max(time.monotonic(), last + spacing)
-                await asyncio.sleep(start - time.monotonic())
+                if spacing:
+                    now = time.monotonic()
+                    tokens = min(burst, tokens + (now - refilled) / spacing)
+                    refilled = now
+                    if tokens < 1:
+                        await asyncio.sleep((1 - tokens) * spacing)
+                        tokens, refilled = 1.0, time.monotonic()
+                    tokens -= 1
                 last = time.monotonic()
                 while not queue.empty():
                     item = queue.get_nowait()
@@ -178,11 +187,15 @@ async def channel(reader, writer):
 
 
 async def main():
-    if os.path.exists(SOCKET):
-        os.unlink(SOCKET)
     # Lines of up to C1's 8 MiB (a base64 piece of the SFTP stream is about 1 MiB; asyncio's default is 64 KiB).
-    server = await asyncio.start_unix_server(channel, SOCKET, limit=16 * 1024 * 1024)
-    os.chmod(SOCKET, 0o666)
+    if SOCKET.startswith("/"):
+        if os.path.exists(SOCKET):
+            os.unlink(SOCKET)
+        server = await asyncio.start_unix_server(channel, SOCKET, limit=16 * 1024 * 1024)
+        os.chmod(SOCKET, 0o666)
+    else:
+        host, port = SOCKET.rsplit(":", 1)
+        server = await asyncio.start_server(channel, host, int(port), limit=16 * 1024 * 1024)
     print("READY", flush=True)
     stop = asyncio.Event()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)

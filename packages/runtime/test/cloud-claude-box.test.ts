@@ -90,9 +90,14 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 		"--setting-sources",
 		"user",
 		"--strict-mcp-config",
-		"--allowedTools",
-		"Grep,Glob",
+		"--tools",
+		"Bash,Read,Edit,Write,NotebookEdit,Grep,Glob,TaskStop",
 	]);
+	expect(claudeBoxArguments({ tools: ["Bash", "Read"] }).slice(-2)).toEqual(["--tools", "Bash,Read"]);
+	// The list only narrows: nothing outside the eight, nothing twice, never empty (an empty list would mean "no
+	// restriction" to nobody, and "all" to a careless reader).
+	for (const tools of [[], ["Bash", "Bash"], ["Bash", "WebFetch"], ["Task"], ["default"]])
+		expect(() => claudeBoxArguments({ tools: tools as never })).toThrow("Invalid Claude tools");
 	expect(claudeBoxArguments({ model: "claude-opus-5-5" }).slice(-2)).toEqual(["--model", "claude-opus-5-5"]);
 	expect(() => claudeBoxArguments({ model: "x --settings /tmp/evil" })).toThrow("Invalid Claude model");
 });

@@ -53,7 +53,8 @@ import {
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
 import {
-	type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide, type CloudHomeSessionAuthorized,
+	type CloudHomeChannelKind, type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide,
+	type CloudHomeSessionAuthorized,
 } from "../../packages/runtime/src/cloud-home-channel.ts";
 import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
@@ -72,9 +73,10 @@ interface MachineCommandRouterOptions {
 	credential(name: string): Promise<string>;
 	/** This node's machines; absent when the executor carries no machines. */
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
-	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it, as the agent's
-	 * account on the boot SQL named, for as long as the run's turn. Absent when the executor carries no machines. */
-	execServerLocal?(authority: { sessionId: string; placementId: string; bootId: string }, signal: AbortSignal): Promise<CloudHomeChannelSide>;
+	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it (or, for kind
+	 * `sftp`, OpenSSH's `sftp-server`: slice C1), as the agent's account on the boot SQL named, for as long as the run's
+	 * turn. Absent when the executor carries no machines. */
+	execServerLocal?(authority: { sessionId: string; placementId: string; bootId: string; kind: CloudHomeChannelKind }, signal: AbortSignal): Promise<CloudHomeChannelSide>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
@@ -218,17 +220,19 @@ export class MachineCommandRouter {
 	 * the machine's placement and boot. A machine of this node is opened here; a machine another node holds is reached
 	 * through that node's peer listener, exactly as a machine command is forwarded: the peer authorizes the same
 	 * session again in SQL and may only open it locally, so a channel is never forwarded twice. A run's slot talks to
-	 * its own node's ingress wherever its agent's machine is.
+	 * its own node's ingress wherever its agent's machine is. The channel's kind (the exec-server's lines, or the file
+	 * channel's: slice C1) travels with it, under the same session.
 	 */
 	async execServer(authority: CloudHomeSessionAuthorized, request: CloudHomeChannelRequest, signal: AbortSignal, localOnly = false): Promise<CloudHomeChannelSide> {
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.execServerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			try {
-				return await this.#options.execServerLocal(authority, signal);
+				return await this.#options.execServerLocal({ ...authority, kind: request.kind }, signal);
 			} catch (error) {
-				// The machine's Codex is not the pinned build (an earlier image's disk): the run is told so in words of its
-				// own, through this ingress or a forwarding one, rather than "could not be reached".
-				if (error instanceof Error && error.message === "HOME_CODEX_NOT_PINNED") throw new CloudHomeChannelRefused(error.message);
+				// The machine's Codex is not the pinned build, or it has no sftp-server (an earlier image's disk): the run is
+				// told so in words of its own, through this ingress or a forwarding one, rather than "could not be reached".
+				if (error instanceof Error && (error.message === "HOME_CODEX_NOT_PINNED" || error.message === "HOME_SFTP_MISSING"))
+					throw new CloudHomeChannelRefused(error.message);
 				throw error;
 			}
 		}
@@ -240,7 +244,7 @@ export class MachineCommandRouter {
 			// The peer listener takes no holder: this executor proved the run's at its own ingress.
 			holder: null,
 		});
-		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId }, signal);
+		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId, kind: request.kind }, signal);
 	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);

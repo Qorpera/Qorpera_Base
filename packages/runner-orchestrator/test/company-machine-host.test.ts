@@ -7206,11 +7206,29 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		]);
 		f.running();
 		await f.host.pass(f.signal);
-		const exec: { request?: LxdExecPipeRequest; signal?: AbortSignal; codex: string; hashes: number } = {
+		const exec: {
+			request?: LxdExecPipeRequest;
+			signal?: AbortSignal;
+			codex: string;
+			hashes: number;
+			sftp: number;
+			sftpChecks: number;
+		} = {
 			codex: `${CLOUD_MACHINE_HOME.codexSha256}  /opt/qorpera-machine/codex\n`,
 			hashes: 0,
+			// The file channel's check (slice C1): 0 the machine has sftp-server, 98 it has none, 97 another boot.
+			sftp: 0,
+			sftpChecks: 0,
 		};
 		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (
+				request.command.includes(CLOUD_MACHINE_HOME.sftpServer) &&
+				!request.command.includes("/usr/bin/systemd-run")
+			) {
+				exec.sftpChecks++;
+				f.order.push("exec:sftp-check");
+				return { exitCode: exec.sftp, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
 			// The machine's Codex, hashed once per boot before its first channel (#homeCodex).
 			if (request.command.includes("/opt/qorpera-machine/codex") && !request.command.includes("exec-server")) {
 				exec.hashes++;
@@ -7222,7 +7240,9 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 					stderrTail: Buffer.alloc(0),
 				};
 			}
-			f.order.push("exec:exec-server");
+			f.order.push(
+				request.command.includes(CLOUD_MACHINE_HOME.sftpServer) ? "exec:sftp-server" : "exec:exec-server",
+			);
 			exec.request = request;
 			exec.signal = signal;
 			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
@@ -7387,6 +7407,183 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(shell(boot, "/proc/sys/kernel/random/boot_id").stdout).toMatch(/^[0-9a-f]{64} {2}\/proc\//);
 		expect(shell("00000000-0000-4000-8000-000000000000", "/proc/sys/kernel/random/boot_id").status).toBe(97);
 		expect(shell(boot, "/nothing/here").status).toBe(98);
+	});
+
+	it("runs a file channel's sftp-server as a unit of its own, as the agent's account, its bytes as base64 lines (slice C1)", async () => {
+		const { f, exec, session, opens } = await home();
+		f.homeSessions.push(session());
+		const before = f.order.length;
+		const channel = await f.host.execServer(
+			{ placementId: id(6), sessionId: id(30), bootId: f.boot, kind: "sftp" },
+			f.signal,
+		);
+		// The same ask, window and take-in as the exec-server's; the machine's sftp-server is looked for instead of
+		// Codex's hash.
+		expect(f.order.slice(before)).toEqual([
+			"sql:qorpera_folder_home_session_window",
+			"exec:sftp-check",
+			"folder:open",
+			"folder:boundary",
+			"sql:qorpera_folder_test_machine_inherit_reads",
+			"exec:sftp-server",
+		]);
+		expect(exec.hashes).toBe(0);
+		expect(opens()).toBe(1);
+		const command = exec.request?.command ?? [];
+		const unit = command.find((word) => word.startsWith("--unit="));
+		expect(unit).toMatch(new RegExp(`^--unit=qorpera-machine-home-${id(30)}-sftp-[0-9a-f]{16}$`));
+		expect(command).toEqual(companyMachineHomeCommand(f.boot, id(30), unit?.split("-").at(-1) ?? "", "sftp"));
+		expect(command.slice(0, 5)).toEqual([
+			"/bin/sh",
+			"-c",
+			'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"',
+			f.boot,
+			"/usr/bin/systemd-run",
+		]);
+		for (const word of [
+			"--pipe",
+			"--slice=qorpera-machine.slice",
+			"--uid=2000",
+			"--gid=2000",
+			"--working-directory=/company",
+			"--property=KillMode=control-group",
+			"--setenv=HOME=/var/lib/qorpera-agent",
+		])
+			expect(command).toContain(word);
+		// The program itself, with no argument and no shell around it.
+		expect(command.at(-1)).toBe("/usr/lib/openssh/sftp-server");
+		expect(command.at(-2)).toMatch(/^--setenv=/);
+		expect(command).not.toContain("exec-server");
+		expect([exec.request?.user, exec.request?.group]).toEqual([undefined, undefined]);
+
+		// Bytes both ways, binary and newlines included, as standard base64 lines.
+		const bytes = Buffer.from([0, 0, 0, 5, 1, 0, 0, 0, 3, 10, 0xff, 13, 10]);
+		const stdin = (exec.request?.stdin as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+		channel.write(bytes.toString("base64"));
+		expect(Buffer.from((await stdin.next()).value as Uint8Array)).toEqual(bytes);
+		const lines = channel.lines[Symbol.asyncIterator]();
+		exec.request?.stdout?.(bytes);
+		expect(await lines.next()).toEqual({ done: false, value: bytes.toString("base64") });
+		// A large answer is cut into pieces of at most 768 KiB, in order.
+		const large = randomBytes(2 * 1024 * 1024 + 7);
+		exec.request?.stdout?.(large);
+		const pieces: string[] = [];
+		while (pieces.reduce((sum, line) => sum + Buffer.from(line, "base64").byteLength, 0) < large.byteLength)
+			pieces.push((await lines.next()).value as string);
+		expect(pieces.map((line) => Buffer.from(line, "base64").byteLength)).toEqual([786432, 786432, 524295]);
+		expect(Buffer.concat(pieces.map((line) => Buffer.from(line, "base64")))).toEqual(large);
+		// A line that is not the stream reaches nothing and ends the channel.
+		channel.write("not base64!");
+		expect(exec.signal?.aborted).toBe(true);
+		expect(await lines.next()).toEqual({ done: true, value: undefined });
+		await channel.close();
+		expect(
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
+		).toHaveLength(1);
+	});
+
+	it("releases a file channel's answers one after another at once, and an exec channel's short exchange too, but not a stream (slice C1)", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session(), session());
+		// Five answers one after another, each only after a release of its own. The file channel has no spacing; the
+		// exec-server's has four releases in hand and one more every 200 ms (a shell command's start answer, output and
+		// exit pass at once; the fifth in a row waits).
+		const roundTrips = async (kind: "exec" | "sftp") => {
+			const channel = await f.host.execServer(
+				{ placementId: id(6), sessionId: id(30), bootId: f.boot, kind },
+				f.signal,
+			);
+			const lines = channel.lines[Symbol.asyncIterator]();
+			const releases = () =>
+				f.order.filter((step) => step === "sql:qorpera_folder_test_machine_inherit_reads").length;
+			const before = releases();
+			const at = performance.now();
+			const times: number[] = [];
+			for (const answer of ["one", "two", "three", "four", "five"]) {
+				exec.request?.stdout?.(Buffer.from(`${answer}\n`));
+				await lines.next();
+				times.push(performance.now() - at);
+			}
+			const released = releases() - before;
+			await channel.close();
+			return { times, released };
+		};
+		const files = await roundTrips("sftp");
+		const shell = await roundTrips("exec");
+		expect([files.released, shell.released]).toEqual([5, 5]);
+		expect(files.times[4]).toBeLessThan(150);
+		expect(shell.times[3]).toBeLessThan(150);
+		expect(shell.times[4]).toBeGreaterThanOrEqual(150);
+	});
+
+	it("refuses a file channel on a machine without sftp-server, and asks again at the next one (slice C1)", async () => {
+		const { f, exec, pipe, session, opens } = await home();
+		exec.sftp = 98;
+		f.homeSessions.push(session(), session(), session(), session());
+		const before = f.order.length;
+		const open = () =>
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot, kind: "sftp" }, f.signal);
+		await expect(open()).rejects.toThrow("HOME_SFTP_MISSING");
+		expect(f.order.slice(before)).toEqual(["sql:qorpera_folder_home_session_window", "exec:sftp-check"]);
+		expect(opens()).toBe(0);
+		// The agent, root on its home, may install it: a missing one is asked again; one found is kept for the boot.
+		exec.sftp = 0;
+		const first = await open();
+		const second = await open();
+		expect(exec.sftpChecks).toBe(2);
+		await first.close();
+		await second.close();
+		// Another boot than the machine's ends the session.
+		const other = await home();
+		other.exec.sftp = 97;
+		other.f.homeSessions.push(other.session());
+		await expect(
+			other.f.host.execServer(
+				{ placementId: id(6), sessionId: id(30), bootId: other.f.boot, kind: "sftp" },
+				other.f.signal,
+			),
+		).rejects.toThrow("HOME_SESSION_ENDED");
+		// The check's own shell: the boot SQL named and an executable file pass; another boot is 97, none at all 98.
+		const boot = existsSync("/proc/sys/kernel/random/boot_id")
+			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+			: undefined;
+		const script = pipe.mock.calls
+			.map((call) => call[2].command)
+			.find((c) => c.includes(CLOUD_MACHINE_HOME.sftpServer) && !c.includes("/usr/bin/systemd-run"));
+		expect(script?.slice(3)).toEqual([f.boot, "/usr/lib/openssh/sftp-server"]);
+		if (!boot || !script) return;
+		const shell = (bootId: string, path: string) =>
+			spawnSync("/bin/sh", ["-c", script[2] as string, bootId, path], { encoding: "utf8" });
+		expect(shell(boot, "/bin/sh").status).toBe(0);
+		expect(shell("00000000-0000-4000-8000-000000000000", "/bin/sh").status).toBe(97);
+		expect(shell(boot, "/nothing/here").status).toBe(98);
+		expect(shell(boot, "/proc/sys/kernel/random/boot_id").status).toBe(98);
+	});
+
+	it("keeps one window for a session's channels and closes it only with the last (slice C1)", async () => {
+		const { f, session, opens } = await home();
+		f.homeSessions.push(session(), session(), session());
+		const closes = () =>
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)).length;
+		const shell = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		const files = await f.host.execServer(
+			{ placementId: id(6), sessionId: id(30), bootId: f.boot, kind: "sftp" },
+			f.signal,
+		);
+		expect(opens()).toBe(2);
+		// The shell's channel ends: the files' channel still has the window, so a change made over it is credited.
+		await shell.close();
+		expect(closes()).toBe(0);
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(3);
+		// A reconnect of the shell, then both end: the window closes once, with the last.
+		const again = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		await files.close();
+		expect(closes()).toBe(0);
+		await again.close();
+		expect(closes()).toBe(1);
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(4);
 	});
 
 	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {

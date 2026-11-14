@@ -80,3 +80,26 @@ export class LinePipe {
 		}
 	}
 }
+
+/** The most of the file channel's stream one line carries, before base64 (slice C1; the runtime's
+ * CLOUD_HOME_SFTP_PIECE_BYTES, which this package cannot import). */
+export const SFTP_PIECE_BYTES = 768 * 1024;
+/** Standard base64 with its padding, checked with the length (a multiple of 4) and without a backtracking group. */
+const BASE64_LINE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** The file channel's bytes from the machine as its lines: each chunk, in order, cut at SFTP_PIECE_BYTES, as standard
+ * base64 (the runtime's cloudHomeSftpLines). */
+export async function* sftpLines(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+	for await (const chunk of chunks) {
+		const bytes = Buffer.from(chunk);
+		for (let at = 0; at < bytes.byteLength; at += SFTP_PIECE_BYTES)
+			yield bytes.subarray(at, at + SFTP_PIECE_BYTES).toString("base64");
+	}
+}
+
+/** One line of the file channel as its bytes, or undefined for anything but nonempty standard base64, which is not the
+ * stream: Node's own decoder would skip what it cannot read and hand sftp-server the rest. */
+export function sftpBytes(line: string): Buffer | undefined {
+	if (line.length % 4 !== 0 || line.length > LINE_PIPE_BYTES || !BASE64_LINE.test(line)) return undefined;
+	return Buffer.from(line, "base64");
+}

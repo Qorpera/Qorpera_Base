@@ -12,9 +12,11 @@
 // It holds nothing of the run: no descriptor beyond 0-2 reaches it (P4), and it reads no variable but the named ones.
 // Node built-ins only, so the box runs this one file as it is.
 
-import { readlinkSync, writeSync } from "node:fs";
+import { readlinkSync, realpathSync, writeSync } from "node:fs";
 import { connect } from "node:net";
 import { constants } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SOCKET = "/run/qorpera-home/shell.sock";
 const FORWARDED = [
@@ -41,24 +43,36 @@ const HOME_FOLDERS = ["/company/", "/var/lib/qorpera-agent/", "/tmp/"];
  * file of the box's, `/proc`) stays a descriptor path the home does not have: ripgrep there fails, and nothing of the
  * box is searched or crosses.
  */
-function homeArgument(arg: string): string {
+export function cloudClaudeHomeArgument(arg: string, readlink: (path: string) => string = readlinkSync): string {
 	if (!/^\/(?:dev\/fd|proc\/self\/fd)\/\d{1,6}$/.test(arg)) return arg;
+	let target: string;
 	try {
-		const target = readlinkSync(arg.startsWith("/dev/fd/") ? `/proc/self/fd/${arg.slice(8)}` : arg);
-		return HOME_FOLDERS.some((folder) => target.startsWith(folder)) && !target.includes("\0") ? target : arg;
+		target = readlink(arg.startsWith("/dev/fd/") ? `/proc/self/fd/${arg.slice(8)}` : arg);
 	} catch {
 		return arg;
 	}
+	// A file deleted since it was opened (`... (deleted)`), a path that climbs out with `..`, or one that is not plainly
+	// in a home folder stays the descriptor's path, which the home does not have.
+	if (
+		target.endsWith(" (deleted)") ||
+		target.includes("\0") ||
+		target.split("/").includes("..") ||
+		!HOME_FOLDERS.some((folder) => target.startsWith(folder))
+	)
+		return arg;
+	return target;
+}
+
+/** The command the home runs for one ripgrep call: `rg` with each argument single-quoted for `bash -c`. */
+export function cloudClaudeRipgrepCommand(
+	args: readonly string[],
+	homeArgument: (arg: string) => string = cloudClaudeHomeArgument,
+): string {
+	return `exec rg ${args.map((arg) => `'${homeArgument(arg).replaceAll("'", "'\\''")}'`).join(" ")}`;
 }
 
 function main(): void {
-	const cmd =
-		process.argv[2] === "--rg"
-			? `exec rg ${process.argv
-					.slice(3)
-					.map((arg) => `'${homeArgument(arg).replaceAll("'", "'\\''")}'`)
-					.join(" ")}`
-			: (process.argv[2] ?? "");
+	const cmd = process.argv[2] === "--rg" ? cloudClaudeRipgrepCommand(process.argv.slice(3)) : (process.argv[2] ?? "");
 	const env: Record<string, string> = {};
 	for (const name of FORWARDED) {
 		const text = process.env[name];
@@ -105,4 +119,5 @@ function main(): void {
 	socket.on("close", () => process.exit(code));
 }
 
-main();
+// Run as the prefix (or as `rg`); imported, it only gives its two functions to the tests.
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) main();
