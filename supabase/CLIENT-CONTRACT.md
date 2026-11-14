@@ -1497,6 +1497,28 @@ stops and deletes it as one it started.
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
 
+### A computer a member woke sleeps when that member is gone (20260930759000_machine_member_sleep)
+
+A task machine that is awake only because a member woke it (the window's wake, or a computer a member started for an
+agent) sleeps sooner than the node's quiet window: its node's `member_sleep_after_seconds` (600 by default) after that
+member's last sign, whatever is busy on it. It is such a machine while no agent has used it since that start (no
+command of an agent's that still runs or started since, no agent at its screen, no run that still goes that started it
+or asked for it by `machine_start`); once an agent uses it, the quiet window decides again until it has slept. An
+always-on machine is never one. There is no new call:
+
+- `qorpera_list_agent_machines` also answers, per machine, `memberSleepSeconds`: those seconds for such a machine, null
+  for every other.
+- The member's signs are what their own calls already record: the wake (`qorpera_member_manage_company_machine`
+  `start`, `qorpera_member_start_agent_computer`), a look (`qorpera_member_machine_screen_begin`), private typing (the
+  take-over and each action, never the heartbeat), an action or a pointer pass on the desktop shared with the agent, and
+  a start of the desktop. A look counts only for as long after the member's word (`watch.confirmed: true`) as the
+  machine's seconds: looks that go on in a tab nobody touches stop counting.
+- So, for a machine with `memberSleepSeconds`: a window stops looking and asks whether the member still watches after
+  that long without a touch on the page (at most the 30 minutes it keeps for every machine); it says `confirmed: true`
+  again within a minute of a touch, and also while the live picture shows the screen (the stream records nothing), on a
+  look whose picture it does not draw. A machine that slept is `stopped`, as after any idle sleep, and the member's ask
+  wakes it.
+
 ### The company's time zone (20260930739000_company_time_zone)
 
 A company has one time zone, an IANA name (`qorpera_profiles.time_zone`, null while it is not known), taken once from
