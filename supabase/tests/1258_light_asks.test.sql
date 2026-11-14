@@ -296,8 +296,18 @@ begin
 	v_wake := pg_temp.wake_of(v_ask);
 	v_binding := pg_temp.leased(v_wake.id);
 	perform set_config('qorpera_test.light_binding', v_binding::text, true);
+	-- A coworker's message waits for the Co-Founder's next run: a light run is not that run, and leaves it waiting.
+	set local session_replication_role = replica;
+	insert into public.qorpera_pending_peer_messages(profile_id, environment_id, pair_session_id, event_id, sender_staff_id,
+		recipient_staff_id, text)
+	values (v_wake.profile_id, v_wake.environment_id, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(), v_wake.staff_agent_id, 'The numbers are in.');
+	set local session_replication_role = origin;
 	perform pg_temp.as_service();
 	v_envelope := public.qorpera_read_native_wake(v_binding);
+	if v_envelope -> 'payload' ? 'heldMessages' or exists (select 1 from public.qorpera_pending_peer_messages
+		where recipient_staff_id = v_wake.staff_agent_id and delivered_run_id is not null) then
+		raise exception 'A light run took a coworker''s held message: %', v_envelope -> 'payload'; end if;
 	if v_envelope ->> 'kind' is distinct from 'agent' or v_envelope -> 'source' ->> 'kind' is distinct from 'light-ask'
 		or v_envelope -> 'source' ->> 'id' is distinct from v_ask::text or v_envelope ->> 'parentRunId' is not null
 		or v_envelope -> 'audience' ->> 'sessionId' is not null or v_envelope -> 'policy' ->> 'final' is distinct from 'forbidden'
