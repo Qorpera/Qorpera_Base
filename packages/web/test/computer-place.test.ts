@@ -27,18 +27,18 @@ function setup() {
 	document.body.append(body);
 	// What a fixed box is placed against: the whole window here. The window's place is read from a still probe beside
 	// the panel (fixed, at nothing on every side), never from the panel, which the large view's zoom moves and scales
-	// while it enters: so the panel itself answers a rect in mid-zoom, as it did live on 14 Nov 2026.
+	// while it enters: so the panel itself answers a rect in mid-zoom, as it did live on 14 Nov 2026. One stand-in
+	// answers for every element: the probe by its mark, the thread and the panel by what the test set for them.
 	const frame = { rect: DOMRect.fromRect({ x: 0, y: 0, width: 1280, height: 800 }) };
+	const rects = new Map<Element, DOMRect>([
+		[body, DOMRect.fromRect({ x: 300, y: 40, width: 900, height: 700 })],
+		[panel, DOMRect.fromRect({ x: 621, y: 174, width: 623, height: 390 })],
+	]);
 	const zero = Element.prototype.getBoundingClientRect;
 	vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-		return this.hasAttribute("data-computer-place-probe") ? frame.rect : zero.call(this);
+		if (this.hasAttribute("data-computer-place-probe")) return frame.rect;
+		return rects.get(this) ?? zero.call(this);
 	});
-	vi.spyOn(body, "getBoundingClientRect").mockReturnValue(
-		DOMRect.fromRect({ x: 300, y: 40, width: 900, height: 700 }),
-	);
-	vi.spyOn(panel, "getBoundingClientRect").mockReturnValue(
-		DOMRect.fromRect({ x: 621, y: 174, width: 623, height: 390 }),
-	);
 	let resized = () => {};
 	const observe = vi.fn(),
 		disconnect = vi.fn();
@@ -54,7 +54,7 @@ function setup() {
 	);
 	const fit = attachComputerPlace(panel, stop.signal);
 	cleanup.push(() => stop.abort());
-	return { body, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit, frame };
+	return { body, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit, frame, rects };
 }
 
 function pointer(target: HTMLElement, type: string, options: MouseEventInit & { isPrimary?: boolean } = {}) {
@@ -91,9 +91,7 @@ describe("the computer's window in its thread", () => {
 		f.fit();
 		expect(box(f.panel)).toEqual(["40px", "300px", "80px", "60px"]);
 		expect(f.observe).toHaveBeenCalledWith(f.body);
-		vi.mocked(f.body.getBoundingClientRect).mockReturnValue(
-			DOMRect.fromRect({ x: 0, y: 40, width: 1280, height: 760 }),
-		);
+		f.rects.set(f.body, DOMRect.fromRect({ x: 0, y: 40, width: 1280, height: 760 }));
 		f.resized();
 		expect(box(f.panel)).toEqual(["40px", "0px", "0px", "0px"]);
 		f.panel.classList.remove("is-entered");
@@ -115,7 +113,7 @@ describe("the computer's window in its thread", () => {
 			{ x: 452, y: -9, width: 915, height: 951 },
 			{ x: 308, y: 104, width: 884, height: 628 },
 		]) {
-			vi.mocked(f.panel.getBoundingClientRect).mockReturnValue(DOMRect.fromRect(rect));
+			f.rects.set(f.panel, DOMRect.fromRect(rect));
 			f.panel.style.top = `${rect.y}px`;
 			f.panel.style.left = "17px";
 			f.resized();
