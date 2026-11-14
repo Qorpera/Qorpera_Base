@@ -31,7 +31,9 @@ export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...C
  * hides that member's picture and nothing else. A member's pointer pass SQL no longer holds (replaced by a newer one,
  * older than 10 s, a member made a viewer: 20260930744000), which the window begins again. */
 const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads",
-	"qorpera_folder_member_machine_reads", "qorpera_member_machine_desktop_pointer_authority"]);
+	"qorpera_folder_member_machine_reads", "qorpera_member_machine_desktop_pointer_authority",
+	// A member's live picture's release cycle (20260930745000): its read check's refusal ends that member's stream alone.
+	"qorpera_member_machine_stream_release"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
 /** A turn's lease renewal and describe (R2, 31 Oct 2026): the kernel's refusal says the lease is gone, and the executor

@@ -1631,12 +1631,18 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
 // where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
 // amendment, proposed).
+// With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
+// processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
+// With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
+// three were measured once more.
+// With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
+// received; 20260930762000, 14 November 2026), all three instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
+			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1644,7 +1650,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "dd088ab0f9eb254db43d49db65e1409290b110a61d3554c7ed82441101711132",
+			instructions: "1d31664cbdb78bd48da2f14d3e4e553bf3dba87bb555423d9f21c8e42def3daa",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1652,7 +1658,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "5bebba8e3c4184fb1e1e39d748e3f45fb8d25c9c46c53a3ed97637ffceb63a33",
+			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1780,6 +1786,37 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
+});
+
+// Jonas, 13 November 2026, on a company whose pictures came out of Blender and still looked drawn: "how come we seem
+// to not get very realistic animations for anything, even the things we want to make realistic?" Its agent had lit
+// boxes and spheres with one emitter against a black world, at 32 samples on a default machine's two processors, and
+// had written "illustrative" over the result. The same scene measured both ways (deploy/machine/README.md, "Sizing a
+// machine for the job"): the light and the materials make the frame; the processors only make it quicker.
+it("has a render lit and looked at like a photograph, on a machine sized for it (13 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	// A worker renders too: how a render is lit and looked at is in what every run reads.
+	for (const instructions of [staff, worker])
+		for (const rule of [
+			"A render meant to look real is lit and looked at like a photograph: light it with a real environment (an HDRI) and give its surfaces textured materials, never plain colours in a dark, empty world: a machine has Blender and a starter set of both (/opt/qorpera-assets/README.md), and Poly Haven has more, free to use (CC0).",
+			"Before anyone sees it, render one small frame into the company folder, open it with company_read and name what gives it away as computer-made, such as flat light, an empty background, surfaces that are too clean, edges that are too sharp or things that float",
+			"fix the weakest thing and render again, and render the final frames only when the small one holds up, on a machine sized for it (machine_start with cpus 8 or more), because a render uses every processor it is given.",
+		])
+			expect(instructions).toContain(rule);
+	// Choosing the machine is the staff agent's judgement: what it costs, and what to do when it is refused or waits for
+	// room. A machine left waiting would start by itself when room comes, unused and counted (review r1 of #1764, F1).
+	const sized =
+		"- Work that keeps processors busy for minutes, such as a render, encoding a film or a large build: a machine sized for it (machine_start with cpus 8 and memoryGiB 8), with the program told to use every processor, stopped when the work is done. Computer hours count a machine's size times the time it is awake, so a larger machine for a shorter time costs the same, and the work is done in a quarter of the time; when it is refused as too large, start a smaller one; when it has to wait in line for room, delete it with machine_delete (it has not run, so nothing is lost) and start a smaller one instead of waiting.";
+	expect(staff).toContain(sized);
+	expect(worker).not.toContain("Work that keeps processors busy for minutes");
+	// It follows the page's own look step, which stays as it was.
+	expect(staff.indexOf("Checking how a page looks, taking pictures of it or filming it")).toBeLessThan(
+		staff.indexOf(sized),
+	);
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {

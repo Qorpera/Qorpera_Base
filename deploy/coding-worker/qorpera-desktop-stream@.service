@@ -1,0 +1,73 @@
+[Unit]
+Description=Qorpera: one desktop's live picture, watched for the executor
+Documentation=file:///opt/qorpera-coding-executor/README.md
+# A stopped instance leaves nothing behind, whatever it ended with.
+CollectMode=inactive-or-failed
+
+[Service]
+# One desktop's relay, reader and pictures (20260930745000; the lead's decision after review r11 of #1746): the
+# executor's own program file, in the role decided before anything else in it; it reads no configuration and no
+# credential. It must run the SAME file the executor's loaded ExecStart names: on a node whose executor runs another
+# path (a fleet drop-in), a drop-in for this unit names that file, written from
+# `systemctl show qorpera-coding-executor.service -p ExecStart`, never typed (README). A miss is harmless: the instance
+# refuses the executor's HELLO as another program version, and members keep their pictures. The connection systemd accepted is its standard input; its output goes to the journal, never to that
+# connection.
+Type=simple
+ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs --qorpera-desktop-stream
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# An instance writes nothing of its own; a wrong one cannot fill the journal either.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+Restart=no
+Slice=qorpera_desktop_streams.slice
+# Its own limits, held by the kernel: past its memory it is killed, never the executor.
+MemoryMax=512M
+MemorySwapMax=0
+CPUQuota=100%
+TasksMax=32
+OOMPolicy=kill
+# No stream lasts longer than 8 hours; nothing of an instance outlives this.
+RuntimeMaxSec=9h
+TimeoutStopSec=5s
+KillMode=control-group
+LimitCORE=0
+# An account of its own for each instance that owns no file and can read none of the executor's: LXD's socket
+# (root:lxd 0660) is the one thing it reaches, through the lxd group. That socket is LXD's whole API, as it is for the
+# executor; this sandbox is the line around it.
+DynamicUser=yes
+SupplementaryGroups=lxd
+# No network: only unix sockets (LXD's, and its own connection).
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+# Nothing to write and nothing of the node's to read beyond what node needs: no home, no NAS, no executor state.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+TemporaryFileSystem=/mnt:ro /media:ro /srv:ro
+InaccessiblePaths=-/etc/qorpera -/var/lib/qorpera-agent-exit -/run/qorpera-coding-host -/var/lib/qorpera-recovery -/var/lib/qorpera-office
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Not PrivatePIDs: it would make the instance PID 1 of its own namespace, which ignores the SIGKILL its guard sends
+# itself when its loop is stuck (company-machine-stream-process.ts).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077

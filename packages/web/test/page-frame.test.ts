@@ -342,6 +342,140 @@ describe("an HTML page's frame", () => {
 			expect(ownLink(place), JSON.stringify(place)).toBe(false);
 	});
 
+	it("asks the company's databases over the port, and hands each watch's answers to its own listener only", async () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// The bridge as the document makes it, over a port that notes what is sent.
+		const body = script.slice(
+			script.indexOf("const send = MessagePort.prototype.postMessage;"),
+			script.indexOf('addEventListener("message", function take'),
+		);
+		const sent: Record<string, unknown>[] = [];
+		let hear: (event: { data: unknown }) => void = () => {};
+		const make = new Function(
+			"MessagePort",
+			"MessageEvent",
+			"getter",
+			"apply",
+			"listen",
+			`${body}\nreturn bridge;`,
+		) as (...parts: unknown[]) => (port: object) => { page: Record<string, (...args: unknown[]) => unknown> };
+		const { page } = make(
+			{ prototype: { postMessage: (message: Record<string, unknown>) => sent.push(message), start: () => {} } },
+			{ prototype: {} },
+			() =>
+				function data(this: { data: unknown }) {
+					return this.data;
+				},
+			Reflect.apply,
+			(_type: string, listener: typeof hear) => {
+				hear = listener;
+			},
+		)({});
+		const answer = (id: unknown, value: unknown) =>
+			hear({ data: { type: "qorpera-app-answer", id, ok: true, value } });
+		const data = (watch: unknown, value: unknown) => hear({ data: { type: "qorpera-app-data", watch, value } });
+		expect(Object.isFrozen(page)).toBe(true);
+		expect(Object.isFrozen(page.query)).toBe(true);
+		expect(Object.isFrozen(page.watch)).toBe(true);
+
+		const asked = page.query!("shop/sales", { since: "2026-11-01" }) as Promise<unknown>;
+		expect(sent.at(-1)).toEqual({
+			type: "qorpera-app-call",
+			id: 1,
+			method: "query",
+			params: { name: "shop/sales", params: { since: "2026-11-01" } },
+		});
+		answer(1, { columns: ["orders"], rows: [{ orders: 3 }], more: false, asOf: "x" });
+		expect(await asked).toEqual({ columns: ["orders"], rows: [{ orders: 3 }], more: false, asOf: "x" });
+		page.query!("shop/sales");
+		expect(sent.at(-1)?.params).toEqual({ name: "shop/sales", params: {} });
+
+		// A watch: its first answer, then each one sent for its id, and nothing sent for another.
+		const seen: unknown[] = [];
+		const stop = page.watch!("shop/sales", undefined, (value: unknown) => seen.push(value)) as () => void;
+		expect(Object.isFrozen(stop)).toBe(true);
+		expect(sent.at(-1)).toEqual({
+			type: "qorpera-app-call",
+			id: 3,
+			method: "watch",
+			params: { name: "shop/sales", params: {} },
+		});
+		answer(3, { watch: 7, answer: "first" });
+		data(7, "second");
+		data(8, "another's");
+		hear({ data: { type: "qorpera-app-data", watch: "7", value: "odd" } });
+		expect(seen).toEqual(["first", "second"]);
+		// A listener that throws is passed by, and the next answer still reaches it.
+		const thrown: unknown[] = [];
+		page.watch!("shop/by-status", { open: true }, (value: unknown) => {
+			thrown.push(value);
+			throw new Error("the page's own");
+		});
+		answer(4, { watch: 9, answer: "a" });
+		expect(() => data(9, "b")).not.toThrow();
+		expect(thrown).toEqual(["a", "b"]);
+		// Stopped: the app is told once, and nothing more reaches the listener.
+		stop();
+		expect(sent.at(-1)).toEqual({ type: "qorpera-app-call", id: 5, method: "unwatch", params: { watch: 7 } });
+		stop();
+		expect(sent).toHaveLength(5);
+		data(7, "late");
+		expect(seen).toEqual(["first", "second"]);
+		// Stopped before its first answer: the listener is never called, and the watch the app started is ended.
+		const never: unknown[] = [];
+		const early = page.watch!("shop/sales", {}, (value: unknown) => never.push(value)) as () => void;
+		early();
+		expect(sent).toHaveLength(6);
+		answer(6, { watch: 10, answer: "first" });
+		expect(sent.at(-1)).toEqual({ type: "qorpera-app-call", id: 7, method: "unwatch", params: { watch: 10 } });
+		data(10, "late");
+		expect(never).toEqual([]);
+		// No listener, no watch.
+		page.watch!("shop/sales", {});
+		expect(sent).toHaveLength(7);
+
+		// A watch the app refuses to start: `failed` is called once with the app's words, and its stop does nothing.
+		const refuse = (id: unknown, error: unknown) =>
+			hear({ data: { type: "qorpera-app-answer", id, ok: false, error } });
+		const failures: unknown[] = [];
+		const refused = page.watch!(
+			"shop/missing",
+			{},
+			() => failures.push("listener"),
+			(error: unknown) => failures.push(error),
+		) as () => void;
+		refuse(8, "No question shop/missing that you may read");
+		refuse(8, "again");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toBeInstanceOf(Error);
+		expect((failures[0] as Error).message).toBe("No question shop/missing that you may read");
+		refused();
+		expect(sent).toHaveLength(8);
+		// A watch that started never calls it, also when it stops; one that throws is passed by.
+		const unfailed: unknown[] = [];
+		const fine = page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			(error: unknown) => unfailed.push(error),
+		) as () => void;
+		answer(9, { watch: 11, answer: "first" });
+		fine();
+		expect(unfailed).toEqual([]);
+		page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			() => {
+				throw new Error("the page's own");
+			},
+		);
+		expect(() => refuse(11, 'Add "data" to reads in app.toml to ask the company\'s databases')).not.toThrow();
+		// Without `failed`, a refusal is as before: nothing.
+		page.watch!("shop/sales", {}, () => {});
+		expect(() => refuse(12, "refused")).not.toThrow();
+	});
+
 	it("hands an app's page a note to its owner as one more call that only asks, its parts as plain values", () => {
 		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
 		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));

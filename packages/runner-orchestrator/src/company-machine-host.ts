@@ -35,12 +35,26 @@ import {
 	lxdCompanyMachineName,
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
+import { type CompanyMachineDiskPlacement, CompanyMachineDiskReader } from "./company-machine-disk.ts";
 import { COMPANY_MACHINE_DESKTOP_FIGURE, companyMachineDesktopFigure } from "./company-machine-figure.ts";
+import {
+	COMPANY_MACHINE_DESKTOP_VIEW,
+	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+	type DesktopStreamOptions,
+	type DesktopStreamRelease,
+	type DesktopStreamSink,
+} from "./company-machine-stream.ts";
+import type { DesktopRelaySpec, WatchedDesktop } from "./company-machine-stream-process.ts";
 import { COMPANY_MACHINE_DESKTOP_TIME_ZONE, companyMachineDesktopTimeZone } from "./company-machine-time-zone.ts";
 import type { FolderCommandWindow, FolderControl, MachineBoundary } from "./folder-control.ts";
-import type { LxdInstanceExecPipeClient, LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
+import type {
+	LxdInstanceExecPipeClient,
+	LxdInstanceExecStreamClient,
+	LxdStoragePoolUseClient,
+	LxdTrackedClient,
+} from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
-import { LinePipe } from "./machine-exec-server.ts";
+import { LINE_PIPE_BYTES, LinePipe } from "./machine-exec-server.ts";
 import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -140,7 +154,7 @@ export function companyMachineHomeCommand(bootId: string, sessionId: string, cha
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
 /** The helper runs only on the boot SQL named (`$0`; else exit 97) and only where the image has it (`$2`; else exit 98,
- * an earlier image: the machine gets it once it sleeps and wakes from the current one). */
+ * an earlier image: a machine made from the current one has it). */
 const CODING_VALUE_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"';
 /** One JSON line: a box (five base64url parts) or a refusal's code. */
@@ -383,6 +397,59 @@ const POINTER_FENCE_MS = 3000;
 const POINTER_FENCE_AFTER_MOVER_MS = 5000;
 /** How many times one caller looks again for a confirmed fence while it keeps moving (#confirmFence) before it gives up. */
 const POINTER_FENCE_ROUNDS = 4;
+/** The largest of LXD's messages a desktop's live picture takes from its relay (20260930745000). */
+const MEMBER_STREAM_MESSAGE_BYTES = 4 * 1024 * 1024;
+/** At most this many desktops watched at once on this node, each in a process of its own that systemd starts in its own
+ * cgroup (`qorpera-desktop-stream@.service`, deploy/coding-worker/): the socket's MaxConnections is 12, four more for
+ * instances still stopping, and the kernel holds each instance to 512 MiB and one core, all of them to 3 GiB and four
+ * (`qorpera_desktop_streams.slice`), apart from the executor's own 2 GiB and two. A member asking for a further desktop
+ * is refused STREAM_BUSY: the window keeps its pictures and its sharing as they were, and asks again 30 s later. */
+export const MAX_WATCHED_DESKTOPS = 8;
+/** Starts are paced here, far under the socket's trigger limit (TriggerLimitBurst=50 in 2 s; past it systemd fails the
+ * socket unit and it stays failed): one desktop's instance at most once every DESKTOP_START_GAP_MS, the node's at most
+ * one every NODE_START_GAP_MS, so at most 5 in any 2 s. A member's start waits its turn; it is never refused for it. */
+const DESKTOP_START_GAP_MS = 2000;
+const NODE_START_GAP_MS = 500;
+
+/** Waits `ms`, or until `signal` aborts; leaves no timer or listener behind. */
+function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal.aborted) return resolve();
+		const done = () => {
+			globalThis.clearTimeout(timer);
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = globalThis.setTimeout(done, ms);
+		signal.addEventListener("abort", done, { once: true });
+	});
+}
+
+/** A watched desktop's relay, through `client`'s exec: in the desktop's own instance, its own client on the node's
+ * socket. */
+export function desktopRelay(
+	client: Required<LxdInstanceExecPipeClient>,
+	spec: DesktopRelaySpec,
+): DesktopStreamOptions["run"] {
+	return (stdout, stdin, signal) =>
+		client
+			.execInstancePipe(
+				spec.project,
+				spec.name,
+				{
+					command: [...spec.command],
+					environment: {},
+					cwd: "/",
+					stdin,
+					// Each of LXD's messages, never the whole: the picture flows for as long as it is watched.
+					maxStdoutBytes: spec.maxStdoutBytes,
+					stdout,
+					stderrTailBytes: 0,
+				},
+				signal,
+			)
+			.then((result) => result.exitCode);
+}
 /** A mover with no move for this long is closed (its stdin ends); the next move starts another. */
 const MEMBER_POINTER_IDLE_MS = 20000;
 /** After a mover failed (the screen off, another boot, no X), moves are refused with its reason for this long, then a
@@ -654,6 +721,12 @@ const STARTING_WAKES = 3;
 const PASS_FLOOR_MS = 1000;
 /** The most time between passes. */
 export const COMPANY_MACHINE_PASS_EVERY_MS = 10000;
+/** How often a pass reads its storage pool's real use for the kernel (20260930757000), at most: the kernel decides on a
+ * report for 2 minutes, then on the paper budget. */
+export const COMPANY_MACHINE_DISK_REPORT_EVERY_MS = 30000;
+/** How long one disk report may take in all (its disk reads, within their own 10 s budget, the pool's and the kernel's
+ * call): it runs beside the passes and never holds up admission. */
+const DISK_REPORT_MS = 20000;
 /** How long a pass waits for its placements' steps by default. */
 const PASS_HOLD_MS = 2000;
 
@@ -673,7 +746,7 @@ const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
 /** Why a boot without a view of its own has no /company (#viewless). */
 const FOLDER_VIEWLESS = Object.freeze({
 	"old-helper":
-		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 	refused: "the company folder refused this machine's view",
 	closed: "the machine could not mount /company: the company folder closed each view it was handed",
 });
@@ -698,6 +771,8 @@ const HELD = Object.freeze({
 
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
+	// The pool's real use, for the room a new machine's disk needs (20260930757000).
+	"qorpera_report_executor_disk",
 	"qorpera_list_executor_machines",
 	"qorpera_authorize_executor_machine",
 	"qorpera_mark_company_machine_running",
@@ -717,6 +792,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	// The record of a desktop clipboard the host cleared after a member held it (F32 of #1661; F33: it was missing here,
 	// so the executor's closed control refused it in production).
 	"qorpera_machine_desktop_clipboard_cleared",
+	// A member's live picture, one release cycle (20260930745000).
+	"qorpera_member_machine_stream_release",
 	// The agent's home (slice 3, 20260930754000): whether a session may share its machine, and its window's ids.
 	"qorpera_folder_home_session_window",
 ] as const;
@@ -736,7 +813,10 @@ export interface CompanyMachineHostOptions {
 		| "execInstance"
 	> &
 		Partial<LxdInstanceExecStreamClient> &
-		Partial<LxdInstanceExecPipeClient>;
+		Partial<LxdInstanceExecPipeClient> &
+		// The pool's real use (20260930757000); without both reads the executor reports nothing and the kernel keeps the
+		// paper budget.
+		Partial<LxdStoragePoolUseClient>;
 	/** The node's folder service (F3 6d): each boot of a test machine gets its own company folder view, its commands'
 	 * windows and boundaries go through it, and their output leaves only once the machine's reads are released. Without
 	 * it, machines run without /company. It needs the client's execInstanceStream (the view's hand-over). */
@@ -747,9 +827,14 @@ export interface CompanyMachineHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	/** The sha-256 of the packaged machine guest helper the image carries. */
 	helperSha256: string;
-	/** Helpers of earlier images still on this node: their machines keep running until they sleep, and
-	 * wake fresh from the current image (their placement's policy is no longer the node's). */
+	/** Helpers of earlier images whose machines this node still runs or wakes on their own disks (20260930760000): trusted
+	 * as the current one is while any placement of their image exists, sleeping ones included. */
 	previousHelperSha256s?: readonly string[];
+	/** Given, the only earlier helpers that take the company folder as the current one does (its `folder-mount` and the
+	 * folder program), each also in previousHelperSha256s; an empty list: none. Absent: every earlier helper does, as
+	 * every image's has since v183 (19 Oct 2026). A boot of one that does gets a view and keeps the one the service holds,
+	 * as the current helper's do; any other earlier helper's boot gets none (#settle). */
+	folderHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
 	/** How long a pass waits for its placements' steps (default 2 s; `Infinity`: for every step). One still running then
@@ -774,7 +859,16 @@ export interface CompanyMachineHostOptions {
 	memberStartTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
-	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
+	/** Watches a desktop for members' live pictures (20260930745000): the executor's starts a process of its own for
+	 * every desktop, in its own cgroup, which opens the relay itself, so no byte of the guest's is read in the executor
+	 * (company-machine-stream-process.ts). Without it, members' live pictures are refused: the rule cannot be skipped by
+	 * an option left out. The host's own tests give one in this process, with their fake client. */
+	desktopStreams?: (spec: DesktopRelaySpec, ended: () => void) => WatchedDesktop;
+	/** How far apart one desktop's instances, and the node's, may start (DESKTOP_START_GAP_MS, NODE_START_GAP_MS): the
+	 * tests' own. */
+	desktopStartGapMs?: number;
+	nodeStartGapMs?: number;
+	/** The clock a desktop's busy grace and the disk report's 30 s are counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
 
@@ -925,6 +1019,16 @@ export interface CompanyMachineMemberAct {
 export type CompanyMachineMemberActOutcome =
 	| { readonly done: { readonly exitCode: number | null } }
 	| { readonly refused: string };
+/** A member's live picture of a desktop of this node (20260930745000), as the executor that took the member's stream
+ * read it (the member's pointer pass): where it runs, whose it is, and its hold: shared at a lease generation (`epoch`
+ * null), or the member's own private hold under `epoch` in its seat (`generation`). */
+export interface CompanyMachineMemberStream {
+	placementId: string;
+	bootId: string;
+	userId: string;
+	generation: number;
+	epoch: number | null;
+}
 /** A member's pointer move on a desktop of this node (20260930744000), on the pass SQL gave (read once, kept by the
  * executor): where it runs, whose pass it is, the lease generation that stood at its read (the shared pass's generation,
  * or the private holder's seat), and where the pointer goes, in the screen's own pixels. */
@@ -1276,6 +1380,14 @@ export class LxdCompanyMachineHost {
 	/** Steps ended so far, and per placement the count when its last one ended: a list asked before a step ended may
 	 * show its placement as it was before that step, so that pass leaves the placement to the next. */
 	#stepEnds = 0;
+	/** The placements of the last listing: whose disks the next disk report reads (20260930757000). */
+	#listed: readonly CompanyMachineEntry[] = [];
+	/** When the last disk report began (the host's clock), whether or not it reached the kernel. */
+	#diskReadAt = Number.NEGATIVE_INFINITY;
+	/** The reader of the pool, which keeps sleeping disks' reads between reports; none without LXD's two reads. */
+	readonly #diskReader?: CompanyMachineDiskReader;
+	/** The disk report under way, beside the passes. */
+	#diskReport?: Promise<void>;
 	readonly #endedAt = new Map<string, number>();
 	/** What steps that outlasted their pass came to, for the next pass to hand over. */
 	readonly #late: CompanyMachineOutcome[] = [];
@@ -1298,6 +1410,12 @@ export class LxdCompanyMachineHost {
 	/** Per placement: its pointer's mover while a member's pointer moves, the last mover's failure (its boot, reason and
 	 * when), and who moved its pointer when (their looks show no drawn pointer). */
 	readonly #movers = new Map<string, PointerMover>();
+	/** Per placement, its desktop's live picture while any member watches it (20260930745000): one relay, ended with the
+	 * last member's stream, the boot's, or the X server's. */
+	readonly #streams = new Map<string, { readonly bootId: string; readonly stream: WatchedDesktop }>();
+	/** When each desktop's next instance may start, and the node's next. */
+	readonly #streamStarts = new Map<string, number>();
+	#nodeStreamStart = 0;
 	readonly #moverFailed = new Map<
 		string,
 		{
@@ -1341,12 +1459,24 @@ export class LxdCompanyMachineHost {
 			!SHA.test(options.machineIdSha256) ||
 			!SHA.test(options.helperSha256) ||
 			(options.previousHelperSha256s ?? []).some((sha) => !SHA.test(sha)) ||
+			(options.folderHelperSha256s ?? []).some((sha) => !options.previousHelperSha256s?.includes(sha)) ||
+			new Set(options.folderHelperSha256s).size !== (options.folderHelperSha256s ?? []).length ||
 			resolve(options.journalRoot) !== options.journalRoot ||
 			(options.folder !== undefined && typeof options.client.execInstanceStream !== "function")
 		)
 			throw new Error("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
 		this.#policy = parseCompanyMachinePolicy(options.policy);
 		this.#storage = createCodingNasStorage(parseCloudCodingNasPolicy(options.storagePolicy));
+		const client = options.client;
+		if (typeof client.readStorageVolumeUse === "function" && typeof client.readStoragePoolSpace === "function")
+			this.#diskReader = new CompanyMachineDiskReader({
+				client: {
+					readStorageVolumeUse: client.readStorageVolumeUse.bind(client),
+					readStoragePoolSpace: client.readStoragePoolSpace.bind(client),
+				},
+				pool: this.#policy.storagePool,
+				...(options.now ? { now: options.now } : {}),
+			});
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("COMPANY_MACHINE_JOURNAL_NOT_ON_NAS");
 		this.#options = Object.freeze({ ...options });
 	}
@@ -1844,12 +1974,20 @@ export class LxdCompanyMachineHost {
 	 * start gets a view of its own: opened in SQL as the platform for this boot, then handed to the guest. After this
 	 * process restarted, a view the service still holds keeps the boot's /company (a new one would take it away from the
 	 * commands that run) and its boundaries keep fencing. A boot that gets no view of its own (a guest of an earlier
-	 * image, a refused open, views the guest answers closed) is left to #viewless; a busy or unconfirmed open, or a
-	 * hand-over without an answer, is tried again next pass, and starts wait meanwhile. */
+	 * image whose helper does not take the folder, a refused open, views the guest answers closed) is left to
+	 * #viewless; a busy or unconfirmed open, or a hand-over without an answer, is tried again next pass, and starts wait
+	 * meanwhile. */
 	async #settle(e: CompanyMachineEntry, f: BootFolder, helperSha256: string, signal: AbortSignal): Promise<string> {
 		const folder = this.#options.folder as FolderControl;
-		// A guest of an earlier image is handed no view: whether its helper ever took one is not this image's to say.
-		if (helperSha256 !== this.#options.helperSha256) return this.#viewless(e, f, "old-helper", signal);
+		// A guest of an earlier image settles as any other when its helper takes the company folder as the current one
+		// does: one folderHelperSha256s names, or without that list any earlier one this node trusts. After this process
+		// restarted, the views the service holds then keep its /company. Any other earlier helper is handed no view:
+		// whether it ever took one is not this image's to say.
+		if (
+			helperSha256 !== this.#options.helperSha256 &&
+			!(this.#options.folderHelperSha256s ?? this.#options.previousHelperSha256s ?? []).includes(helperSha256)
+		)
+			return this.#viewless(e, f, "old-helper", signal);
 		if (!f.asked) {
 			let held: string[];
 			try {
@@ -2318,6 +2456,7 @@ export class LxdCompanyMachineHost {
 		// Its pointer (20260930744000): the mover ends with the instance anyway; what was known of it goes.
 		this.#movers.get(e.placementId)?.stop.abort();
 		this.#movers.delete(e.placementId);
+		this.#streams.delete(e.placementId);
 		this.#moverEnded.delete(e.placementId);
 		this.#fenceCounts.delete(e.placementId);
 		this.#fencePublished.delete(e.placementId);
@@ -2335,7 +2474,7 @@ export class LxdCompanyMachineHost {
 		const plan = this.#plan(e);
 		const instance = await this.#options.client.getInstance(plan.project, plan.name, signal);
 		if (!instance) return false;
-		plan.assertInstance(instance);
+		plan.assertInstance(instance, "run");
 		return instance.status === "Running";
 	}
 	async #step(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
@@ -2372,6 +2511,50 @@ export class LxdCompanyMachineHost {
 		).catch(() => undefined);
 	}
 
+	/** The pool's real use, for the kernel's room (20260930757000): at most every 30 s, one report at a time, beside the
+	 * passes (it never holds up admission). The reader reads the awake disks and the sleeping ones it keeps no read of
+	 * (each listed placement's disk of the policy's pool, by its own name), then the pool, and the report goes to the
+	 * kernel with qorpera_report_executor_disk. A report that fails is left (the kernel decides on the paper budget once
+	 * its last report is 2 minutes old); it never fails a pass. */
+	#startDiskReport(lasting: AbortSignal): void {
+		const reader = this.#diskReader;
+		const now = (this.#options.now ?? Date.now)();
+		if (!reader || this.#diskReport || now - this.#diskReadAt < COMPANY_MACHINE_DISK_REPORT_EVERY_MS) return;
+		this.#diskReadAt = now;
+		const pool = this.#policy.storagePool;
+		const placements: CompanyMachineDiskPlacement[] = [];
+		for (const e of this.#listed) {
+			if (e.binding.storagePool !== pool) continue;
+			try {
+				const { project, name } = this.#plan(e);
+				placements.push({ placementId: e.placementId, project, name, asleepSince: e.asleepSince });
+			} catch {
+				// A placement whose binding is not this executor's: its use stays unknown.
+			}
+		}
+		const report = (async () => {
+			try {
+				const checked = AbortSignal.any([lasting, AbortSignal.timeout(DISK_REPORT_MS)]);
+				const reading = await reader.read(placements, checked);
+				await this.#call(
+					"qorpera_report_executor_disk",
+					{
+						p_owner: this.#options.owner,
+						p_machine_id_sha256: this.#options.machineIdSha256,
+						p_report: reading.report,
+					},
+					checked,
+				);
+			} catch {
+				// Left for the next report: the kernel's paper budget stands in once the last report is old.
+			}
+		})();
+		const settled: Promise<void> = report.finally(() => {
+			if (this.#diskReport === settled) this.#diskReport = undefined;
+		});
+		this.#diskReport = settled;
+	}
+
 	/** One pass. Placements progress side by side; a failed step is recorded
 	 * on its machine and retried at the next pass, never hidden. Admission
 	 * takes one machine per call (one reservation per transaction) and never
@@ -2382,6 +2565,7 @@ export class LxdCompanyMachineHost {
 	/** `lasting` outlasts this pass: a step that outlasts it goes on under it, each step under a scope of its own. */
 	async #pass(signal: AbortSignal, lasting: AbortSignal): Promise<CompanyMachineOutcome[]> {
 		const admission: CompanyMachineOutcome[] = [];
+		this.#startDiskReport(lasting);
 		for (let admitted = 0; admitted < 8; admitted++) {
 			let taken: unknown;
 			try {
@@ -2404,6 +2588,7 @@ export class LxdCompanyMachineHost {
 		);
 		if (!Array.isArray(listed)) throw new Error("COMPANY_MACHINE_LIST_INVALID");
 		const entries = listed.map(entry);
+		this.#listed = entries;
 		const outcomes: (CompanyMachineOutcome | undefined)[] = [];
 		let over = false;
 		const steps = Promise.all(
@@ -2611,7 +2796,7 @@ export class LxdCompanyMachineHost {
 	}
 	/** The steps still running, once they ended. */
 	async settled(): Promise<void> {
-		await Promise.allSettled([...this.#work.values()]);
+		await Promise.allSettled([...this.#work.values(), this.#diskReport]);
 	}
 
 	/**
@@ -3252,6 +3437,133 @@ export class LxdCompanyMachineHost {
 	}
 
 	/**
+	 * A member's live picture of a desktop of this node (20260930745000): streams the desktop's changed areas to `sink`
+	 * until `signal` aborts (the member's stream ended at the executor that took it), a release cycle ends it, or the
+	 * desktop's relay ends (the X server, the boot). Answers why it ended.
+	 *
+	 * Every member watching a desktop shares its one relay (COMPANY_MACHINE_DESKTOP_VIEW: the machine's own VNC server,
+	 * through which nothing but the handshake, the pixel format, the encodings and update requests can pass: it only
+	 * shows). Each member's changes are let go by that member's own release cycles: what changed before a cycle began
+	 * leaves once the cycle passed, as every look's picture passes today (#streamCycle): the pointer fence confirmed on
+	 * the desktop while a mover is around (no picture while an older move could still run), the company folder's boundary
+	 * when the boot has /company, and SQL's one read (qorpera_member_machine_stream_release: the member may still act,
+	 * the machine runs on this boot, the take-over fence of the stream's hold, the disk's root rule and the member's own
+	 * read check of what the machine read). A refusal there ends the stream with its reason; a boundary not answered holds
+	 * the changes for the next cycle.
+	 */
+	async memberStream(
+		stream: CompanyMachineMemberStream,
+		sink: DesktopStreamSink,
+		signal: AbortSignal,
+	): Promise<string> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_STREAM_UNAVAILABLE");
+		if (
+			![stream.placementId, stream.bootId, stream.userId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(stream.generation) ||
+			stream.generation < 0 ||
+			!(stream.epoch === null || (Number.isSafeInteger(stream.epoch) && stream.epoch >= 0))
+		)
+			throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+		this.#seeGeneration(stream.placementId, stream.generation);
+		const desktops = this.#options.desktopStreams;
+		// No instance to watch it in: refused, never read in the executor.
+		if (!desktops) return "STREAM_UNAVAILABLE";
+		// Paced on a monotonic clock: a wall clock stepped back must not hold a start for the hour it went back.
+		const now = () => performance.now();
+		let kept = this.#streams.get(stream.placementId);
+		while (!kept || kept.bootId !== stream.bootId || kept.stream.ended) {
+			// A desktop not watched yet, past the node's cap of watched desktops: refused, the window keeps its pictures.
+			let live = 0;
+			for (const [placementId, entry] of this.#streams)
+				if (placementId !== stream.placementId && !entry.stream.ended) live++;
+			if (live >= MAX_WATCHED_DESKTOPS) return "STREAM_BUSY";
+			// Its start waits its turn (DESKTOP_START_GAP_MS, NODE_START_GAP_MS), then everything is looked at again.
+			const at = Math.max(this.#streamStarts.get(stream.placementId) ?? 0, this.#nodeStreamStart);
+			if (at > now()) {
+				await waitOrAbort(at - now(), signal);
+				if (signal.aborted) return "closed";
+				kept = this.#streams.get(stream.placementId);
+				continue;
+			}
+			for (const [placementId, until] of this.#streamStarts)
+				if (until <= now()) this.#streamStarts.delete(placementId);
+			this.#streamStarts.set(stream.placementId, now() + (this.#options.desktopStartGapMs ?? DESKTOP_START_GAP_MS));
+			this.#nodeStreamStart = now() + (this.#options.nodeStartGapMs ?? NODE_START_GAP_MS);
+			const placementId = stream.placementId;
+			const bootId = stream.bootId;
+			const desktop: WatchedDesktop = desktops(
+				{
+					project: this.#policy.project,
+					name: lxdCompanyMachineName(placementId),
+					command: ["/bin/sh", "-c", COMPANY_MACHINE_DESKTOP_VIEW, bootId, COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM],
+					maxStdoutBytes: MEMBER_STREAM_MESSAGE_BYTES,
+				},
+				() => {
+					if (this.#streams.get(placementId)?.stream === desktop) this.#streams.delete(placementId);
+				},
+			);
+			kept = { bootId, stream: desktop };
+			this.#streams.set(placementId, kept);
+		}
+		return kept.stream.watch((cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal), sink, signal);
+	}
+	/** One release cycle of a member's live picture (memberStream). */
+	async #streamCycle(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		stream: CompanyMachineMemberStream,
+		signal: AbortSignal,
+	): ReturnType<DesktopStreamRelease> {
+		// No picture while an older move could still run (as a look: review r2 and r3 of #1733).
+		await this.#confirmFence(pipe, stream.placementId, stream.bootId, signal);
+		const asked = async (): Promise<"ok" | { readonly end: string }> => {
+			try {
+				const answer = record(
+					await this.#call(
+						"qorpera_member_machine_stream_release",
+						{
+							p_placement_id: stream.placementId,
+							p_boot_id: stream.bootId,
+							p_user_id: stream.userId,
+							p_generation: stream.generation,
+							p_epoch: stream.epoch,
+						},
+						signal,
+					),
+					"COMPANY_MACHINE_MEMBER_STREAM_INVALID",
+				);
+				if (answer.schema !== "qorpera.member-machine-stream-release/v1")
+					throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+				if (answer.state === "ok") return "ok";
+				if (answer.state === "refused" && typeof answer.reason === "string" && /^[A-Z_]{1,64}$/.test(answer.reason))
+					return { end: answer.reason };
+				throw new Error("COMPANY_MACHINE_MEMBER_STREAM_INVALID");
+			} catch (error) {
+				// A read of the machine's the member may not read: this member's stream ends, nothing else.
+				if (error instanceof CodingControlRefused && error.detail === MEMBER_UNREADABLE)
+					return { end: "MEMBER_CANNOT_READ" };
+				throw error;
+			}
+		};
+		const folder = this.#options.folder;
+		if (!folder) return asked();
+		const at: FolderRelease = { placementId: stream.placementId, bootId: stream.bootId };
+		const f = this.#folders.get(stream.placementId);
+		const boot = f?.bootId === stream.bootId ? f : undefined;
+		// A boot whose folder ended, or that read something no longer readable, shows nothing more.
+		if (this.#heldAlready(at, boot) !== undefined) return { end: "DESKTOP_NOT_SHOWN" };
+		let verdict: "ok" | { readonly end: string } = "ok";
+		const held = await this.#release(folder, at, boot, SCREEN_BOUNDARY_MS, signal, async () => {
+			verdict = await asked();
+			return verdict === "ok" ? undefined : HELD.untaken;
+		});
+		if (verdict !== "ok") return verdict;
+		if (held === undefined) return "ok";
+		if (held === HELD.ended || held === HELD.unreadable) return { end: "DESKTOP_NOT_SHOWN" };
+		return "pending";
+	}
+
+	/**
 	 * A member's pointer move on a desktop of this node (20260930744000), on the pass SQL gave. It answers at once and
 	 * waits for nothing: the position goes to the desktop's mover (one held-open X connection per desktop while a member's
 	 * pointer moves, COMPANY_MACHINE_MEMBER_POINTER), replacing a position not given yet, so a move never waits behind a
@@ -3660,10 +3972,11 @@ export class LxdCompanyMachineHost {
 				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
 				cwd: "/",
 				stdin: toMachine.read(),
-				onStdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
-				// Streamed, so nothing is kept and nothing is bounded here: fromMachine ends the channel when more than
-				// its own bound waits unread (and the gate when more than its own waits for a release).
-				maxStdoutBytes: 0,
+				stdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
+				// Streamed, so nothing is kept here and this bounds only each of LXD's messages: fromMachine ends the
+				// channel when more than its own bound (the same 16 MiB) waits unread, and the gate when more than its own
+				// waits for a release.
+				maxStdoutBytes: LINE_PIPE_BYTES,
 				stderrTailBytes: 4096,
 			},
 			run.signal,

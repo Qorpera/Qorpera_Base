@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
 	CompanyMachineClipboardClear, CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
 	CompanyMachineMemberAct, CompanyMachineMemberActOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
 	CompanyMachineMemberPointer, CompanyMachineMemberPointerOutcome, CompanyMachineMemberStart,
-	CompanyMachineMemberStartOutcome, CompanyMachineScreen, CompanyMachineScreenOutcome,
+	CompanyMachineMemberStartOutcome, CompanyMachineMemberStream, CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
@@ -31,6 +31,7 @@ import {
 	type CloudMemberMachineStart,
 	type CloudMemberMachineStartPeerRequest,
 	CloudMemberMachineStartRefusal,
+	type CloudMemberMachineStreamPeerRequest,
 	cloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
 	createHttpMemberMachineScreenPeer,
@@ -44,6 +45,9 @@ import type {
 	CloudMemberMachineActRequest, CloudMemberMachinePointerAnswer, CloudMemberMachinePointerRequest,
 	CloudMemberMachineScreenLook, CloudMemberMachineStartRequest,
 } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
+import type {
+	CloudMemberMachineStreamRun, CloudMemberMachineStreamSink,
+} from "../../packages/runtime/src/cloud-member-machine-stream-http.ts";
 import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
@@ -108,6 +112,9 @@ interface MachineCommandRouterOptions {
 		hold: { generation: number } | { epoch: number; seat: number } }, signal: AbortSignal): Promise<string>;
 	/** A member's pointer move on this node's machine; absent when the executor carries no machines. */
 	memberPointerLocal?(authority: MemberMachinePointerAuthority, x: number, y: number, signal: AbortSignal): Promise<CloudMemberMachinePointerMove>;
+	/** A member's live picture of this node's machine (20260930745000), until `signal` aborts or it ends (why); absent when
+	 * the executor carries no machines. */
+	memberStreamLocal?(stream: CompanyMachineMemberStream, sink: CloudMemberMachineStreamSink, signal: AbortSignal): Promise<string>;
 	fetch?: typeof fetch;
 }
 
@@ -116,10 +123,42 @@ interface MachineCommandRouterOptions {
 export const MEMBER_POINTER_MOVES_PER_SECOND = 30;
 /** At most this many pointer passes are kept at once; the oldest goes first. */
 const MEMBER_POINTER_PASSES = 10000;
+/** A live picture's ticket (20260930745000): used once, within this, by the browser whose Origin bought it. */
+const MEMBER_STREAM_TICKET_MS = 30_000;
+/** At most this many tickets are kept at once; the oldest goes first. */
+const MEMBER_STREAM_TICKETS = 1024;
+/** Streams at once: of one member (two windows), and of one machine. */
+const MEMBER_STREAMS_PER_MEMBER = 2;
+const MEMBER_STREAMS_PER_MACHINE = 8;
+/** How often a stream checks that its member still holds a live pointer pass of its hold. */
+const MEMBER_STREAM_PASS_CHECK_MS = 1000;
+/** A pointer pass's begin is the one pointer request that calls out (PostgREST, as the member): at most this many at
+ * once on this executor, one per token, and at most MEMBER_POINTER_BEGINS_PER_SECOND begun in a second. Past it the
+ * begin is refused at once (MEMBER_POINTER_BUSY, 503; the window asks again at its next move, at most once a second),
+ * before any call: a flood of tokens that only look like a member's costs this node a hash and a counter each
+ * (20260930745000, v242 release prep). A window begins about one pass in 7.5 s while its member points or watches live. */
+export const MEMBER_POINTER_BEGINS_IN_FLIGHT = 16;
+export const MEMBER_POINTER_BEGINS_PER_SECOND = 40;
 
-/** A pointer pass this executor holds (20260930744000), in its memory only: SQL's read of it, until when it lasts, the
- * sha-256 of the member's token that began it (on the executor that took the member's request; null where another
- * executor forwards its moves), and its moves in the current second. */
+/** A live picture's ticket, as the executor keeps it (memory only): until when, for which browser (Origin), whose
+ * (the sha-256 of the token that bought it, the company, the machine, the member), and its hold (shared at a lease
+ * generation, or private under an epoch in a seat). */
+interface MemberStreamTicket {
+	readonly until: number;
+	readonly origin: string;
+	readonly tokenSha256: string;
+	readonly companyId: string;
+	readonly machineId: string;
+	readonly userId: string;
+	readonly private: boolean;
+	readonly generation: number;
+	readonly epoch: number | null;
+}
+
+/** A pointer pass this executor holds (20260930744000), in its memory only: SQL's read of it, until when it lasts (on
+ * the monotonic clock, counted from when SQL was asked: v242 release review r1 F2), the sha-256 of the member's token
+ * that began it (on the executor that took the member's request; null where another executor forwards its moves), and
+ * its moves in the current second. */
 interface MemberPointerPass {
 	readonly authority: MemberMachinePointerAuthority;
 	readonly companyId: string | null;
@@ -148,6 +187,12 @@ export class MachineCommandRouter {
 	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
 	readonly #pages = new CloudCommandPages();
 	readonly #pointers = new Map<string, MemberPointerPass>();
+	readonly #streamTickets = new Map<string, MemberStreamTicket>();
+	readonly #streamsOpen = new Set<{ readonly userId: string; readonly machineId: string }>();
+	/** The pointer begins on their way (by the sha-256 of their token), and the current second's count. */
+	readonly #beginsInFlight = new Set<string>();
+	#beginSecond = 0;
+	#begunInSecond = 0;
 	constructor(options: MachineCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
 	}
@@ -405,15 +450,33 @@ export class MachineCommandRouter {
 	 * line per move. It is moved on this node, or sent to the machine's node once (a newer move replaces it).
 	 */
 	async memberPointer(request: CloudMemberMachinePointerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerAnswer> {
+		if ("stream" in request) return this.#streamTicket(request);
 		if ("begin" in request) {
 			if (!this.#options.memberPointerBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-			const passId = await this.#options.memberPointerBegin(request.token, { companyId: request.companyId,
-				machineId: request.machineId, hold: request.begin }, signal);
-			const authority = await authorizeMemberMachinePointer(this.#options.control,
-				{ passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
-			if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
-			this.#keepPointer(authority, request.companyId, sha256(request.token));
-			return { pass: passId, milliseconds: authority.milliseconds };
+			const tokenSha256 = sha256(request.token);
+			const second = Math.floor(Date.now() / 1000);
+			if (second !== this.#beginSecond) {
+				this.#beginSecond = second;
+				this.#begunInSecond = 0;
+			}
+			if (this.#beginsInFlight.size >= MEMBER_POINTER_BEGINS_IN_FLIGHT || this.#beginsInFlight.has(tokenSha256) ||
+				this.#begunInSecond >= MEMBER_POINTER_BEGINS_PER_SECOND)
+				throw new Error("MEMBER_POINTER_BUSY");
+			this.#begunInSecond++;
+			this.#beginsInFlight.add(tokenSha256);
+			try {
+				const passId = await this.#options.memberPointerBegin(request.token, { companyId: request.companyId,
+					machineId: request.machineId, hold: request.begin }, signal);
+				const askedAt = performance.now();
+				const authority = await authorizeMemberMachinePointer(this.#options.control,
+					{ passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
+				if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
+				const kept = this.#keepPointer(authority, request.companyId, tokenSha256, askedAt);
+				// What is left of it now, not what SQL said before its answer travelled.
+				return { pass: passId, milliseconds: Math.floor(kept.until - performance.now()) };
+			} finally {
+				this.#beginsInFlight.delete(tokenSha256);
+			}
 		}
 		const kept = this.#pointerPass(request.pass);
 		if (!kept || kept.tokenSha256 !== sha256(request.token) || kept.companyId !== request.companyId ||
@@ -438,10 +501,11 @@ export class MachineCommandRouter {
 	async memberPointerPeer(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove> {
 		let kept = this.#pointerPass(request.passId);
 		if (!kept) {
+			const askedAt = performance.now();
 			const authority = await authorizeMemberMachinePointer(this.#options.control,
 				{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
 			if (!authority.served) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			kept = this.#keepPointer(authority, null, null);
+			kept = this.#keepPointer(authority, null, null, askedAt);
 		}
 		if (!admitMove(kept)) return { moved: false };
 		return this.#pointerLocal(kept, request.x, request.y, signal);
@@ -456,25 +520,145 @@ export class MachineCommandRouter {
 			throw error;
 		}
 	}
+	/**
+	 * A live picture's ticket (20260930745000), bought on a pointer pass this executor holds: the member's token hashes to
+	 * the one that began it, the company and the machine are the pass's, and the hold asked for is the pass's (shared at
+	 * its generation, or private in its seat). 32 random bytes, kept in memory only, used once within
+	 * MEMBER_STREAM_TICKET_MS by the browser whose Origin bought it (admitMemberStream).
+	 */
+	#streamTicket(request: Extract<CloudMemberMachinePointerRequest, { stream: unknown }>): { ticket: string; seconds: number } {
+		const kept = this.#pointerPass(request.stream.pass);
+		const hold = request.stream.hold;
+		const isPrivate = "epoch" in hold;
+		if (!kept || kept.tokenSha256 !== sha256(request.token) || kept.companyId !== request.companyId ||
+			kept.authority.machineId !== request.machineId || kept.authority.private !== isPrivate ||
+			kept.authority.generation !== ("epoch" in hold ? hold.seat : hold.generation))
+			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		const now = Date.now();
+		for (const [ticket, asked] of this.#streamTickets) if (asked.until <= now) this.#streamTickets.delete(ticket);
+		while (this.#streamTickets.size >= MEMBER_STREAM_TICKETS) {
+			const oldest = this.#streamTickets.keys().next().value;
+			if (oldest === undefined) break;
+			this.#streamTickets.delete(oldest);
+		}
+		const ticket = randomBytes(32).toString("base64url");
+		this.#streamTickets.set(ticket, {
+			until: now + MEMBER_STREAM_TICKET_MS, origin: request.origin, tokenSha256: kept.tokenSha256 as string,
+			companyId: request.companyId, machineId: request.machineId, userId: kept.authority.userId, private: isPrivate,
+			generation: kept.authority.generation, epoch: "epoch" in hold ? hold.epoch : null,
+		});
+		return { ticket, seconds: MEMBER_STREAM_TICKET_MS / 1000 };
+	}
+	/**
+	 * A member's stream, as the live-picture listener took it (20260930745000): the ticket is used up here, whatever comes
+	 * of it; it must be live and of the browser's Origin, and the member under MEMBER_STREAMS_PER_MEMBER and the machine
+	 * under MEMBER_STREAMS_PER_MACHINE open streams (else null: the listener says 404, nothing more). The stream then runs
+	 * for as long as the member holds a live pointer pass of its hold on this executor (the window renews it every few
+	 * seconds through the member bridge; checked every MEMBER_STREAM_PASS_CHECK_MS, else it ends POINTER_PASS_ENDED), on
+	 * this node's machine or the machine's node (its peer listener, which reads the newest pass itself).
+	 */
+	admitMemberStream(ticket: string, origin: string): CloudMemberMachineStreamRun | null {
+		const asked = this.#streamTickets.get(ticket);
+		this.#streamTickets.delete(ticket);
+		if (!asked || asked.until <= Date.now() || asked.origin !== origin) return null;
+		const open = [...this.#streamsOpen];
+		if (open.filter((one) => one.userId === asked.userId).length >= MEMBER_STREAMS_PER_MEMBER ||
+			open.filter((one) => one.machineId === asked.machineId).length >= MEMBER_STREAMS_PER_MACHINE)
+			return null;
+		const opened = { userId: asked.userId, machineId: asked.machineId };
+		// Counted from the admission on, so two at once cannot both pass the limit.
+		this.#streamsOpen.add(opened);
+		let ran = false;
+		// A ticket admitted but never run (the browser went away first) gives its place back.
+		const unused = globalThis.setTimeout(() => {
+			if (!ran) this.#streamsOpen.delete(opened);
+		}, 10_000);
+		return async (sink, signal) => {
+			ran = true;
+			globalThis.clearTimeout(unused);
+			const lapsed = new AbortController();
+			const stop = AbortSignal.any([signal, lapsed.signal]);
+			const watch = globalThis.setInterval(() => {
+				if (!this.#streamPass(asked)) lapsed.abort();
+			}, MEMBER_STREAM_PASS_CHECK_MS);
+			try {
+				const pass = this.#streamPass(asked);
+				if (!pass) return "POINTER_PASS_ENDED";
+				let reason: string;
+				if (pass.authority.served) {
+					if (!this.#options.memberStreamLocal) return "STREAM_UNAVAILABLE";
+					reason = await this.#options.memberStreamLocal({ placementId: pass.authority.placementId,
+						bootId: pass.authority.bootId, userId: asked.userId, generation: asked.generation, epoch: asked.epoch }, sink, stop);
+				} else {
+					const peer = this.#options.peers.find((entry) => entry.owner === pass.authority.executorOwner &&
+						entry.providerId === pass.authority.providerId);
+					if (!peer) return "STREAM_UNAVAILABLE";
+					reason = await createHttpMemberMachineScreenPeer({ url: peer.origin,
+						token: await this.#options.credential(peer.tokenCredential), fetch: this.#options.fetch })
+						.memberStream({ passId: pass.authority.passId, epoch: asked.epoch }, sink, stop);
+				}
+				return lapsed.signal.aborted ? "POINTER_PASS_ENDED" : reason;
+			} finally {
+				globalThis.clearInterval(watch);
+				this.#streamsOpen.delete(opened);
+			}
+		};
+	}
+	/** A member's live picture another executor asked of this one (its peer listener, 20260930745000): the pass read in
+	 * SQL here (as a move's), served by this node, of the hold the stream is (private exactly when an epoch is named); then
+	 * the desktop streamed from this node until the asking executor closes its request or it ends. */
+	async memberStreamPeer(request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink,
+		signal: AbortSignal): Promise<string> {
+		const askedAt = performance.now();
+		const authority = await authorizeMemberMachinePointer(this.#options.control,
+			{ passId: request.passId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
+		if (!authority.served || !this.#options.memberStreamLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		if ((request.epoch !== null) !== authority.private) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		// A pass with nothing left once SQL's answer came (none, or all of it gone on the way) shows nothing (as a move's:
+		// v242 release review r1 F2).
+		if (authority.milliseconds <= 0 || askedAt + authority.milliseconds <= performance.now())
+			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+		return this.#options.memberStreamLocal({ placementId: authority.placementId, bootId: authority.bootId,
+			userId: authority.userId, generation: authority.generation, epoch: request.epoch }, sink, signal);
+	}
+	/** The member's newest live pointer pass of the stream's hold, on this executor; none when it ran out. */
+	#streamPass(asked: MemberStreamTicket): MemberPointerPass | undefined {
+		const now = performance.now();
+		let newest: MemberPointerPass | undefined;
+		for (const kept of this.#pointers.values())
+			if (kept.until > now && kept.tokenSha256 === asked.tokenSha256 && kept.companyId === asked.companyId &&
+				kept.authority.machineId === asked.machineId && kept.authority.private === asked.private &&
+				kept.authority.generation === asked.generation && (!newest || kept.until > newest.until))
+				newest = kept;
+		return newest;
+	}
 	/** The pass, while it lasts. */
 	#pointerPass(passId: string): MemberPointerPass | undefined {
 		const kept = this.#pointers.get(passId);
-		if (kept && kept.until <= Date.now()) {
+		if (kept && kept.until <= performance.now()) {
 			this.#pointers.delete(passId);
 			return undefined;
 		}
 		return kept;
 	}
-	/** Keeps a pass for what is left of it; the passes that ran out go, and the oldest when there are too many. */
-	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null): MemberPointerPass {
-		const now = Date.now();
+	/**
+	 * Keeps a pass for what is left of it: SQL's milliseconds counted from `askedAt`, when SQL was asked (the monotonic
+	 * clock), so the time its answer took is not added to the pass (v242 release review r1 F2). A pass with nothing left
+	 * (none, or all of it gone on the way) is refused before its first move: POINTER_PASS_ENDED, never kept. The passes
+	 * that ran out go, and the oldest when there are too many.
+	 */
+	#keepPointer(authority: MemberMachinePointerAuthority, companyId: string | null, tokenSha256: string | null,
+		askedAt: number): MemberPointerPass {
+		const now = performance.now();
+		const until = askedAt + authority.milliseconds;
+		if (authority.milliseconds <= 0 || until <= now) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
 		for (const [passId, kept] of this.#pointers) if (kept.until <= now) this.#pointers.delete(passId);
 		while (this.#pointers.size >= MEMBER_POINTER_PASSES) {
 			const oldest = this.#pointers.keys().next().value;
 			if (oldest === undefined) break;
 			this.#pointers.delete(oldest);
 		}
-		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until: now + authority.milliseconds, second: now, moves: 0 };
+		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until, second: now, moves: 0 };
 		this.#pointers.set(authority.passId, kept);
 		return kept;
 	}
@@ -482,7 +666,7 @@ export class MachineCommandRouter {
 
 /** A move of this pass within MEMBER_POINTER_MOVES_PER_SECOND (counted per second); false: dropped. */
 function admitMove(kept: MemberPointerPass): boolean {
-	const now = Date.now();
+	const now = performance.now();
 	if (now - kept.second >= 1000) {
 		kept.second = now;
 		kept.moves = 0;
@@ -632,6 +816,13 @@ export function localMemberMachinePointer(host: {
 	};
 }
 
+/** How a router streams a desktop of this node's machines (MachineCommandRouter's `memberStreamLocal`, 20260930745000). */
+export function localMemberMachineStream(host: {
+	memberStream(stream: CompanyMachineMemberStream, sink: CloudMemberMachineStreamSink, signal: AbortSignal): Promise<string>;
+}): (stream: CompanyMachineMemberStream, sink: CloudMemberMachineStreamSink, signal: AbortSignal) => Promise<string> {
+	return (stream, sink, signal) => host.memberStream(stream, sink, signal);
+}
+
 /** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
  * never forwards. */
 export function machineCommandRoutes(
@@ -648,6 +839,7 @@ export function machineCommandRoutes(
 	memberAct?(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	memberStart?(request: CloudMemberMachineStartPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	memberPointer?(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove>;
+	memberStream?(request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink, signal: AbortSignal): Promise<string>;
 } {
 	return {
 		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
@@ -663,5 +855,8 @@ export function machineCommandRoutes(
 		...(localOnly ? { memberStart: (request: CloudMemberMachineStartPeerRequest, signal: AbortSignal) => router.memberStartPeer(request, signal) } : {}),
 		// And a member's pointer move (20260930744000).
 		...(localOnly ? { memberPointer: (request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal) => router.memberPointerPeer(request, signal) } : {}),
+		// And a member's live picture (20260930745000).
+		...(localOnly ? { memberStream: (request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink,
+			signal: AbortSignal) => router.memberStreamPeer(request, sink, signal) } : {}),
 	};
 }

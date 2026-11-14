@@ -7,18 +7,18 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024399_runtime_bundle_activation_v243.sql";
-const activationVersion = 243;
-const previousActivationVersion = 242;
-const previousActivationSha256 = "4de54296b40374a2ca6608a2de4b89c72cd39b361ffa65d4ea195eefa3623f86";
-// This release's own migrations, which its activation requires before it registers the bundle (v243): one entry per
+const activation = "supabase/migrations/20260929024699_runtime_bundle_activation_v246.sql";
+const activationVersion = 246;
+const previousActivationVersion = 245;
+const previousActivationSha256 = "8eab2780076d59239b3102771024c9b85a67502c57462b7d262af871de7c14a3";
+// This release's own migrations, which its activation requires before it registers the bundle (v246): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v244 replaces these entries with the migrations v244 brings (or an empty list).
-// v244's activation already requires v243 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v243 carries no migration of its own (the interface kits, #1736, with #1748 and #1753: a
-// runtime bundle alone), so its list is empty. An entry sorting before the activation file is checked on every
-// database; one sorting after it only on a database past 20260930534000, since a fresh chain in file order reaches it
-// only after the activation (as with the guards in the activation's text below).
+// version lines, when it sets them: v247 replaces these entries with the migrations v247 brings (or an empty list).
+// v247's activation already requires v246 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v246 carries no migration of its own (company databases open to pages: #1744, #1778, and
+// #1765's words: a runtime bundle alone), so its list is empty. An entry sorting before the activation file is checked
+// on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file order
+// reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {

@@ -62,7 +62,15 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | `query` | `{ database, question, params?, etag? }` | `{ columns, rows, more, asOf, etag }`, or `{ same: true, etag }` |
 | `watch` | `{ watches: [{ database, question, params?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait |
 | `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
-| `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows, columns }], companyBytes }` |
+| `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows?, rowsAbout?, columns }], companyBytes }` |
+
+A table's `rows` are counted when it is described, as the database folder's read login, each count a question of its
+own (read only, a question's time at most): tables first, the smallest first, then views. `rows` is never a guess.
+All the counts of one call are over within 1.5 s (`countMs`), the wait for one of the read login's three connections
+included: a count that finds none free in that time is given up. A table that was not counted carries PostgreSQL's
+own estimate as `rowsAbout`, a name of its own so that nothing that passes `rows` on passes a guess for a count, and
+neither when PostgreSQL has none (it has none before a table is first analysed, and autovacuum leaves a table of a
+few rows alone; a view never has one). A describe is never refused over a count.
 
 ### The run door (agents)
 
@@ -75,6 +83,12 @@ and `actions/`) with its hash. The gateway reads nothing else as the run: a file
 a text is used only when its hash is the kept one. One pass serves one call; a `need` answer is asked again with a new
 pass and the texts. A wrong token, no pass and a pass that redeems to nothing (redeemed, unknown, expired, or its run's
 job ended) all answer 401 `{ error: "Not allowed" }`.
+
+Where it listens: on the store's machine the kit starts it when `DATA_RUN_LISTEN` is set (`kit/README.md`, "The run
+door"), over TLS with a cert from the kit's CA for `10.41.0.1`. A provider host (a slot of its node's execution host)
+dials `https://10.41.0.1:8481` on its own node, which the guest guard lets through, and the node forwards it to the run
+door (node 2's through node 1); TLS ends at the gateway. The host holds the token as its credential
+`qorpera-company-data` and pins the kit's CA by its sha256 (`deploy/shared-execution/shared-execution.env.example`).
 
 | Call | Body (with `pass`, and `texts` after a `need`) | Answer |
 | --- | --- | --- |
@@ -104,6 +118,7 @@ that you may read), 405 (not POST), 408 (past the time limit), 409 (no step appl
 | A member's folder read | kept 10 s |
 | A body | 1 MiB |
 | A company's database | 1 GiB: the watcher closes its steps, questions still answer |
+| A describe call's row counts | over within 1.5 s together (`countMs`), waits for a connection included; a table not counted shows `rowsAbout` or nothing |
 
 The watcher also ends a statement of a folder's login that runs 2 s past its door's limit.
 

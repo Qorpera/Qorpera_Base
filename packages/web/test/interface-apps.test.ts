@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
+import {
+	type CloudMemberDataAnswer,
+	CloudMemberDataError,
+	type CloudMemberDataQuestion,
+	type CloudMemberDataWatch,
+	type CloudMemberDataWatchAnswer,
+} from "@qorpera/cloud-client/cloud-member-data";
 import { type CloudMemberFolderEntry, CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
 	type AppLink,
@@ -11,6 +18,8 @@ import {
 	assembleApp,
 	type CompanyApp,
 	CompanyApps,
+	CompanyData,
+	type CompanyDataClient,
 	companyConcepts,
 	readApps,
 	resolveAppPath,
@@ -687,28 +696,31 @@ describe("the bridge", () => {
 				follows ? (link) => followed.push(link) : undefined,
 			).answer({ method: "open", params: { href } });
 		// It needs nothing in reads, and the answer is the same whether or not what the link names is there.
-		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md", "https://example.com/"])
+		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md"])
 			expect(await open(href), href).toEqual({ ok: true, value: null });
+		// A web page opens only from the bar, once the member saw its address (Jonas, 13 November 2026: "Show the address
+		// first"): a bridge with no bar opens none (test/app-actions.test.ts has the bar's part).
+		expect(await open("https://example.com/")).toEqual({ ok: false, error: "No web page opens from this page" });
 		expect(followed).toEqual([
 			{ kind: "app", name: "hiring" },
 			{ kind: "file", path: "sales/report.md" },
 			{ kind: "file", path: "sales/missing.md" },
-			{ kind: "web", href: "https://example.com/" },
 		]);
 		for (const bad of ["folder:QorperaOS/tables/tasks/table.toml", "other.html", "javascript:alert(1)", 7])
 			expect(await open(bad), String(bad)).toEqual({
 				ok: false,
 				error: "A link opens an app (app:name), a company file (folder:path) or a web page (https://…)",
 			});
-		expect(followed).toHaveLength(4);
+		expect(followed).toHaveLength(3);
 		expect(folder.reads).toEqual([]);
 		// A bridge given no way to open one (none is today) opens none.
 		expect(await open("app:hiring", false)).toMatchObject({ ok: false });
-		// Each link is a call of the app's budget: 120 a minute, with its reads.
+		// Each link is a call of the app's budget: 120 a minute, with its reads. Thirteen are spent: eight links of one
+		// call, and the web page's, which costs what a request costs (five) wherever it is refused after that.
 		let refused = 0;
 		for (let index = 0; index < 115; index++) if (!(await open("app:hiring")).ok) refused++;
-		expect(refused).toBe(4);
-		expect(followed).toHaveLength(4 + 111);
+		expect(refused).toBe(8);
+		expect(followed).toHaveLength(3 + 107);
 		expect(await open("app:hiring")).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
 	});
 
@@ -720,6 +732,567 @@ describe("the bridge", () => {
 			if (!answer.ok) refused++;
 		}
 		expect(refused).toBe(5);
+	});
+});
+
+describe("the company's databases on an app's page", () => {
+	type Answer = CloudMemberDataAnswer;
+	const asOf = "2026-11-13T10:00:00.000Z";
+	const result = (etag: string, rows: unknown[][] = [[1]], columns = ["orders"]): Answer => ({
+		columns,
+		rows,
+		more: false,
+		etag,
+		asOf,
+	});
+	const shown = (rows: Record<string, unknown>[], columns = ["orders"]) => ({ columns, rows, more: false, asOf });
+
+	/** The member's client of the company's databases: questions answered at once, each watch call held until the test
+	 * answers it or it is ended. */
+	function fakeClient(answers: Record<string, Answer | Error> = {}) {
+		const asked: CloudMemberDataQuestion[] = [];
+		const calls: {
+			watches: readonly CloudMemberDataWatch[];
+			signal: AbortSignal;
+			answer: (value: CloudMemberDataWatchAnswer) => void;
+			fail: (error: Error) => void;
+		}[] = [];
+		const client: CompanyDataClient = {
+			query: async (question) => {
+				asked.push(question);
+				const answer = answers[question.question] ?? result(`e-${question.question}`);
+				if (answer instanceof Error) throw answer;
+				return answer;
+			},
+			watch: (watches, signal) =>
+				new Promise((resolve, reject) => {
+					calls.push({ watches, signal, answer: resolve, fail: reject });
+					signal.addEventListener("abort", () => reject(signal.reason));
+				}),
+		};
+		return { client, asked, calls };
+	}
+
+	const manifest = (reads: string[]): CompanyApp & { manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest('name = "Sales"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		// APP_READS takes "data" since #1744 (the kits' binding); the cast only lets a case hand over plain strings.
+		return {
+			name: "sales",
+			path: "apps/sales",
+			manifest: { ...parsed.manifest, reads: reads as never },
+			problems: [],
+			version: null,
+		};
+	};
+
+	function page() {
+		const stop = new AbortController();
+		const sent: { watch: number; value: unknown }[] = [];
+		return {
+			stop,
+			sent,
+			page: { signal: stop.signal, send: (watch: number, value: unknown) => sent.push({ watch, value }) },
+		};
+	}
+
+	function setup(answers: Record<string, Answer | Error> = {}) {
+		const fake = fakeClient(answers);
+		const company = new AbortController();
+		const data = new CompanyData(() => fake.client, company.signal);
+		const bridge = (on: ReturnType<typeof page>, reads = ["data"], key = crypto.randomUUID(), withData = true) =>
+			new AppBridge(
+				{ folder: () => fakeFolder({}), agents: () => [], ...(withData ? { data } : {}) },
+				manifest(reads),
+				key,
+				new AbortController().signal,
+				undefined,
+				undefined,
+				() => on.page,
+			);
+		return { ...fake, company, data, bridge };
+	}
+
+	let visibility: DocumentVisibilityState = "visible";
+	const show = (state: DocumentVisibilityState) => {
+		visibility = state;
+		document.dispatchEvent(new Event("visibilitychange"));
+	};
+
+	beforeEach(() => {
+		visibility = "visible";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const query = (name: unknown, params?: unknown) => ({ method: "query", params: { name, params } });
+	const watch = (name: unknown, params?: unknown) => ({ method: "watch", params: { name, params } });
+
+	it("refuses what a page may not ask, and costs a call of the minute", async () => {
+		const { bridge, asked } = setup();
+		const on = page();
+		expect(await bridge(on, []).answer(query("shop/sales"))).toEqual({
+			ok: false,
+			error: 'Add "data" to reads in app.toml to ask the company\'s databases',
+		});
+		expect(await bridge(on, ["files"]).answer(watch("shop/sales"))).toMatchObject({
+			ok: false,
+			error: expect.stringMatching(/^Add "data"/),
+		});
+		expect(await bridge(on, ["data"], undefined, false).answer(query("shop/sales"))).toEqual({
+			ok: false,
+			error: "This company's databases can't be asked from here",
+		});
+		const one = bridge(on);
+		for (const name of [
+			"shop",
+			"shop/sales/x",
+			"Shop/sales",
+			"1shop/sales",
+			"shop/Sales",
+			"shop/sales--x",
+			`shop/${"a".repeat(61)}`,
+			`${"a".repeat(41)}/x`,
+			7,
+			null,
+		])
+			expect(await one.answer(query(name)), String(name)).toEqual({
+				ok: false,
+				error: "Name a question as <database>/<question>",
+			});
+		expect(await one.answer(query("shop/sales", { viewer: "someone" }))).toEqual({
+			ok: false,
+			error: ":viewer is filled by Qorpera with the member looking",
+		});
+		expect(await one.answer(query("shop/sales", [1]))).toMatchObject({ ok: false });
+		expect(await one.answer(query("shop/sales", { "a-b": 1 }))).toMatchObject({ ok: false });
+		for (const value of [{}, [1], Number.NaN, Number.POSITIVE_INFINITY, "x".repeat(1025)])
+			expect(await one.answer(query("shop/sales", { since: value })), String(value)).toEqual({
+				ok: false,
+				error: ":since is short text, a number, true, false or null",
+			});
+		const many = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`p${index}`, index]));
+		expect(await one.answer(query("shop/sales", many))).toEqual({
+			ok: false,
+			error: "A question takes at most 16 parameters",
+		});
+		expect(asked).toEqual([]);
+		// A question is one call of the app's 120 a minute.
+		const key = crypto.randomUUID();
+		let refused = 0;
+		for (let index = 0; index < 122; index++)
+			if (!(await bridge(on, ["data"], key).answer(query("shop/sales"))).ok) refused++;
+		expect(refused).toBe(2);
+		expect(asked).toHaveLength(120);
+		expect(asked[0]).toEqual({ database: "shop", question: "sales", params: {} });
+	});
+
+	it("answers a question with rows as objects by column name, and passes the gateway's refusal on", async () => {
+		const { bridge, asked } = setup({
+			sales: result("e1", [[23, 4100.5, "a", "b", "x"]], ["orders", "total", "name", "name", "__proto__"]),
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const answer = await bridge(page()).answer(
+			query("shop/sales", { since: "2026-11-01", top: 5, open: true, none: null }),
+		);
+		expect(asked[0]).toEqual({
+			database: "shop",
+			question: "sales",
+			params: { since: "2026-11-01", top: 5, open: true, none: null },
+		});
+		// The later of two columns of one name stands; the names are all listed; the etag stays in the web.
+		expect(answer).toEqual({
+			ok: true,
+			value: {
+				columns: ["orders", "total", "name", "name", "__proto__"],
+				rows: [expect.objectContaining({ orders: 23, total: 4100.5, name: "b" })],
+				more: false,
+				asOf,
+			},
+		});
+		const row = (answer as { value: { rows: Record<string, unknown>[] } }).value.rows[0]!;
+		// A column named __proto__ is a plain key of the row and changes no prototype.
+		expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+		expect(Object.hasOwn(row, "__proto__")).toBe(true);
+		expect(Object.getOwnPropertyDescriptor(row, "__proto__")?.value).toBe("x");
+		expect(Object.keys(row)).toEqual(["orders", "total", "name", "__proto__"]);
+		expect(await bridge(page()).answer(query("shop/missing"))).toEqual({
+			ok: false,
+			error: "No question shop/missing that you may read",
+		});
+	});
+
+	it("takes the answers of a call that ran out of time, and watches on with the new etags", async () => {
+		const { bridge, calls } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		void bridge(a).answer(watch("shop/by-status"));
+		await vi.advanceTimersByTimeAsync(600);
+		const call = calls.at(-1)!;
+		expect(call.watches.map((one) => one.question)).toEqual(["sales", "by-status"]);
+		call.answer({ changed: [{ index: 0, answer: result("e2", [[2]]) }], partial: true });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: 1, value: shown([{ orders: 2 }]) }]);
+		await vi.advanceTimersByTimeAsync(500);
+		const next = calls.at(-1)!;
+		expect(next).not.toBe(call);
+		expect(next.watches.map((one) => one.etag)).toEqual(["e2", "e-by-status"]);
+		next.answer({ same: true, partial: true });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls.at(-1)).not.toBe(next);
+		expect(calls.at(-1)?.watches.map((one) => one.etag)).toEqual(["e2", "e-by-status"]);
+	});
+
+	it("watches a question: its first answer, then each new one, in one held call", async () => {
+		const { bridge, calls, asked } = setup();
+		const a = page();
+		const first = bridge(a).answer(watch("shop/sales", { since: "2026-11-01" }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toEqual({ ok: true, value: { watch: 1, answer: shown([{ orders: 1 }]) } });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.watches).toEqual([
+			{ database: "shop", question: "sales", params: { since: "2026-11-01" }, etag: "e-sales" },
+		]);
+		calls[0]?.answer({ changed: [{ index: 0, answer: result("e2", [[2]]) }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: 1, value: shown([{ orders: 2 }]) }]);
+		// The next call holds the new etag; one that says the same is followed by another.
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches[0]?.etag).toBe("e2");
+		calls[1]?.answer({ same: true });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(3);
+		expect(calls[2]?.watches[0]?.etag).toBe("e2");
+		expect(a.sent).toHaveLength(1);
+		expect(asked).toHaveLength(1);
+	});
+
+	it("shares a question two pages watch, and starts a new call when the set changes", async () => {
+		const { bridge, calls, asked, data } = setup();
+		const a = page();
+		const b = page();
+		const first = bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		const one = ((await first) as { value: { watch: number } }).value.watch;
+		expect(calls).toHaveLength(1);
+		// The same question with the same parameters: no question asked, the call stands, and the answer is the one held.
+		const second = await bridge(b).answer(watch("shop/sales", {}));
+		expect(second).toEqual({ ok: true, value: { watch: 2, answer: shown([{ orders: 1 }]) } });
+		await vi.advanceTimersByTimeAsync(600);
+		expect(asked).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect(data.questions).toBe(1);
+		// Another question: the call in flight ends and the next holds both.
+		const third = bridge(b).answer(watch("shop/by-status"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await third).toMatchObject({ ok: true, value: { watch: 3 } });
+		expect(calls[0]?.signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches.map((one) => one.question)).toEqual(["sales", "by-status"]);
+		// A new answer of the shared question reaches both pages.
+		calls[1]?.answer({ changed: [{ index: 0, answer: result("e5", [[5]]) }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(a.sent).toEqual([{ watch: one, value: shown([{ orders: 5 }]) }]);
+		expect(b.sent).toEqual([{ watch: 2, value: shown([{ orders: 5 }]) }]);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls).toHaveLength(3);
+		// A page stops its own watch only, and that costs nothing: the shared question stays, so the call stands.
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: 2 } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: one } })).toEqual({ ok: true, value: null });
+		expect(await bridge(a).answer({ method: "unwatch", params: { watch: one } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls).toHaveLength(3);
+		expect(data.questions).toBe(2);
+		// The last watcher of a question gone: a new call without it.
+		expect(await bridge(b).answer({ method: "unwatch", params: { watch: 3 } })).toEqual({ ok: true, value: null });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(calls[2]?.signal.aborted).toBe(true);
+		expect(calls[3]?.watches.map((one) => one.question)).toEqual(["sales"]);
+	});
+
+	it("holds at most 8 watches a page and 24 questions a company, and a question that fails is no watch", async () => {
+		const { bridge, calls, data } = setup({
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const pages = [page(), page(), page(), page()];
+		const start = async (on: ReturnType<typeof page>, name: string) => {
+			const answer = bridge(on).answer(watch(name));
+			await vi.advanceTimersByTimeAsync(0);
+			return answer;
+		};
+		for (let index = 0; index < 8; index++)
+			expect(await start(pages[0]!, `shop/q${index}`)).toMatchObject({ ok: true });
+		expect(await start(pages[0]!, "shop/q8")).toEqual({
+			ok: false,
+			error: "A page watches at most 8 questions at once",
+		});
+		for (let index = 8; index < 24; index++)
+			expect(await start(pages[1 + Math.floor((index - 8) / 8)]!, `shop/q${index}`)).toMatchObject({ ok: true });
+		expect(data.questions).toBe(24);
+		expect(await start(pages[3]!, "shop/q24")).toEqual({
+			ok: false,
+			error: "The company's open apps watch at most 24 questions together",
+		});
+		// One already watched still may be.
+		expect(await start(pages[3]!, "shop/q3")).toMatchObject({ ok: true });
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls.at(-1)?.watches).toHaveLength(24);
+		const other = setup({ missing: new CloudMemberDataError("No question shop/missing that you may read", 404) });
+		const lone = page();
+		const failed = other.bridge(lone).answer(watch("shop/missing"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await failed).toEqual({ ok: false, error: "No question shop/missing that you may read" });
+		expect(other.data.questions).toBe(0);
+		await vi.advanceTimersByTimeAsync(600);
+		expect(other.calls).toHaveLength(0);
+	});
+
+	it("answers a watch that can't start with the refusal's own words, for the page's `failed`", async () => {
+		const { bridge } = setup({
+			missing: new CloudMemberDataError("No question shop/missing that you may read", 404),
+		});
+		const on = page();
+		const start = async (name: string, reads = ["data"], withData = true) => {
+			const answer = bridge(on, reads, undefined, withData).answer(watch(name));
+			await vi.advanceTimersByTimeAsync(0);
+			return answer;
+		};
+		expect(await start("shop/sales", [])).toEqual({
+			ok: false,
+			error: 'Add "data" to reads in app.toml to ask the company\'s databases',
+		});
+		expect(await start("shop")).toEqual({ ok: false, error: "Name a question as <database>/<question>" });
+		expect(await start("shop/missing")).toEqual({ ok: false, error: "No question shop/missing that you may read" });
+		expect(await start("shop/sales", ["data"], false)).toEqual({
+			ok: false,
+			error: "This company's databases can't be asked from here",
+		});
+		for (let index = 0; index < 8; index++) expect(await start(`shop/q${index}`)).toMatchObject({ ok: true });
+		expect(await start("shop/q8")).toEqual({ ok: false, error: "A page watches at most 8 questions at once" });
+	});
+
+	it("hands a page no answer larger than it may get, counted as the page gets it, and keeps no watch for one", async () => {
+		// Under 1 MiB from the gateway, over it once each row repeats its long column name.
+		const wide = "c".repeat(200);
+		const big = result(
+			"big",
+			Array.from({ length: 6000 }, () => [1]),
+			[wide],
+		);
+		expect(JSON.stringify(big).length).toBeLessThan(1024 * 1024);
+		const words =
+			"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
+		const answers: Record<string, Answer> = {};
+		for (let index = 0; index < 9; index++) answers[`big${index}`] = big;
+		const { bridge, calls, data } = setup(answers);
+		const on = page();
+		expect(await bridge(on).answer(query("shop/big0"))).toEqual({ ok: false, error: words });
+		// Nine first answers too large, one after another: none keeps a place, so the page's 8 are all still free.
+		for (let index = 0; index < 9; index++) {
+			const refused = bridge(on).answer(watch(`shop/big${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await refused, `watch ${index}`).toEqual({ ok: false, error: words });
+		}
+		expect(data.questions).toBe(0);
+		for (let index = 0; index < 8; index++) {
+			const started = bridge(on).answer(watch(`shop/q${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await started).toMatchObject({ ok: true });
+		}
+		// A later answer too large is not sent: the watch ends and gives its place back, and the page keeps what it has.
+		const other = page();
+		const started = bridge(other).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(600);
+		const id = ((await started) as { value: { watch: number } }).value.watch;
+		expect(data.questions).toBe(9);
+		const call = calls.at(-1)!;
+		const index = call.watches.findIndex((one) => one.question === "sales");
+		call.answer({ changed: [{ index, answer: big }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(other.sent).toEqual([]);
+		expect(data.questions).toBe(8);
+		expect(await bridge(other).answer({ method: "unwatch", params: { watch: id } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		await vi.advanceTimersByTimeAsync(600);
+		expect(calls.at(-1)?.watches.map((one) => one.question)).not.toContain("sales");
+	});
+
+	it("counts an answer's size in UTF-8 bytes, so a name in another script is counted in full", async () => {
+		// Under 1 MiB in characters as the page gets it, over it in bytes: each 界 is three.
+		const wide = "界".repeat(200);
+		const big = result(
+			"wide",
+			Array.from({ length: 3000 }, () => [1]),
+			[wide],
+		);
+		const text = JSON.stringify(
+			shown(
+				Array.from({ length: 3000 }, () => ({ [wide]: 1 })),
+				[wide],
+			),
+		);
+		expect(text.length).toBeLessThan(1024 * 1024 - 1024);
+		expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(1024 * 1024);
+		const words =
+			"The answer is larger than a page may be handed (1 MiB as rows of named columns): ask for fewer rows or columns";
+		const { bridge, calls, data } = setup({ wide: big });
+		const on = page();
+		expect(await bridge(on).answer(query("shop/wide"))).toEqual({ ok: false, error: words });
+		const first = bridge(on).answer(watch("shop/wide"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toEqual({ ok: false, error: words });
+		expect(data.questions).toBe(0);
+		// A later answer: not sent, and the watch ends.
+		const started = bridge(on).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(600);
+		expect(await started).toMatchObject({ ok: true });
+		calls.at(-1)?.answer({ changed: [{ index: 0, answer: big }] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(on.sent).toEqual([]);
+		expect(data.questions).toBe(0);
+	});
+
+	it("keeps every parameter as given, `__proto__` and `constructor` too, and one question for any order", async () => {
+		const { bridge, asked, calls, data } = setup();
+		const given = JSON.parse('{"__proto__":"x","constructor":"y","since":"2026-11-01"}') as Record<string, unknown>;
+		expect(Object.hasOwn(given, "__proto__")).toBe(true);
+		expect(await bridge(page()).answer(query("shop/sales", given))).toMatchObject({ ok: true });
+		const sentParams = asked[0]!.params;
+		expect(Object.getPrototypeOf(sentParams)).toBe(Object.prototype);
+		expect(Object.keys(sentParams)).toEqual(["__proto__", "constructor", "since"]);
+		expect(JSON.stringify(sentParams)).toBe('{"__proto__":"x","constructor":"y","since":"2026-11-01"}');
+		// Through a watch, into the held call's body, the same.
+		const a = page();
+		const first = bridge(a).answer(watch("shop/sales", given));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await first).toMatchObject({ ok: true });
+		expect(JSON.stringify(calls.at(-1)?.watches[0]?.params)).toBe(
+			'{"__proto__":"x","constructor":"y","since":"2026-11-01"}',
+		);
+		// A watch with no parameters is another question, not this one.
+		const plain = bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await plain).toMatchObject({ ok: true });
+		expect(data.questions).toBe(2);
+		// The same parameters in another order are one question.
+		const b = page();
+		const ab = bridge(b).answer(watch("shop/by-status", { a: 1, b: 2 }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await ab).toMatchObject({ ok: true });
+		const before = asked.length;
+		expect(await bridge(b).answer(watch("shop/by-status", { b: 2, a: 1 }))).toMatchObject({ ok: true });
+		expect(asked).toHaveLength(before);
+		expect(data.questions).toBe(3);
+	});
+
+	it("waits 2 s, 5 s, then 10 s after a call that failed, and tells no page", async () => {
+		const { bridge, calls } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(1);
+		for (const [index, wait] of [2000, 5000, 10_000, 10_000].entries()) {
+			calls[index]?.fail(new Error("The company's databases did not answer (503)"));
+			await vi.advanceTimersByTimeAsync(wait - 1);
+			expect(calls, `after failure ${index + 1}`).toHaveLength(index + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(calls).toHaveLength(index + 2);
+		}
+		expect(a.sent).toEqual([]);
+		// One that answers starts the count again.
+		calls[4]?.answer({ same: true });
+		await vi.advanceTimersByTimeAsync(500);
+		calls[5]?.fail(new Error("down"));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(calls).toHaveLength(7);
+	});
+
+	it("ends a watch with 8 calls in flight, and gives its place back", async () => {
+		const { bridge, client, data } = setup();
+		// A question that never answers holds its call in flight.
+		const query = client.query;
+		client.query = (asked, signal) =>
+			asked.question === "hang" ? new Promise<never>(() => {}) : query(asked, signal);
+		const a = page();
+		const key = crypto.randomUUID();
+		const ids: number[] = [];
+		for (let index = 0; index < 8; index++) {
+			const started = bridge(a, ["data"], key).answer(watch(`shop/q${index}`));
+			await vi.advanceTimersByTimeAsync(0);
+			ids.push(((await started) as { value: { watch: number } }).value.watch);
+		}
+		expect(await bridge(a).answer(watch("shop/q8"))).toEqual({
+			ok: false,
+			error: "A page watches at most 8 questions at once",
+		});
+		for (let index = 0; index < 8; index++) void bridge(a, ["data"], key).answer(query8());
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await bridge(a, ["data"], key).answer(query8())).toEqual({
+			ok: false,
+			error: "Too many calls: wait a moment and try again",
+		});
+		// Ending a watch is never refused for the budget or the calls in flight, and its place is free again.
+		expect(await bridge(a, ["data"], key).answer({ method: "unwatch", params: { watch: ids[0] } })).toEqual({
+			ok: true,
+			value: null,
+		});
+		expect(data.questions).toBe(7);
+		const ninth = bridge(a).answer(watch("shop/q8"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await ninth).toMatchObject({ ok: true });
+	});
+	const query8 = () => ({ method: "query", params: { name: "shop/hang", params: {} } });
+
+	it("stops while the tab is hidden, when the company is put away, and when the page goes", async () => {
+		const { bridge, calls, company, data } = setup();
+		const a = page();
+		void bridge(a).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(1);
+		show("hidden");
+		expect(calls[0]?.signal.aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(1);
+		show("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.watches[0]?.etag).toBe("e-sales");
+		// The page goes (its app closed or reloaded): its watches with it.
+		a.stop.abort();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls[1]?.signal.aborted).toBe(true);
+		expect(data.questions).toBe(0);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(2);
+		expect(await bridge(a).answer(watch("shop/sales"))).toEqual({
+			ok: false,
+			error: "This page can't watch the company's databases",
+		});
+		// The company put away.
+		const b = page();
+		void bridge(b).answer(watch("shop/sales"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toHaveLength(3);
+		company.abort();
+		expect(calls[2]?.signal.aborted).toBe(true);
+		show("hidden");
+		show("visible");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(3);
+		expect(data.questions).toBe(0);
 	});
 });
 

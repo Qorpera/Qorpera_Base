@@ -82,7 +82,7 @@ function localPipe(config) {
 		let stderr = Buffer.alloc(0);
 		child.stdin.on("error", () => undefined);
 		const kept = [];
-		child.stdout.on("data", (chunk) => (request.onStdout ? request.onStdout(chunk) : kept.push(chunk)));
+		child.stdout.on("data", (chunk) => (request.stdout ? request.stdout(chunk) : kept.push(chunk)));
 		child.stderr.on("data", (chunk) => {
 			stderr = Buffer.concat([stderr, chunk]).subarray(-request.stderrTailBytes);
 		});
@@ -110,8 +110,8 @@ async function executor() {
 			const channel = ++channels;
 			const at = Date.now();
 			const seen = { frames: 0, bytes: 0, smallest: null, largest: 0, endsInsideUtf8: 0, firstFrameMs: null };
-			const onStdout =
-				request.onStdout &&
+			const stdout =
+				request.stdout &&
 				((chunk) => {
 					seen.frames++;
 					seen.bytes += chunk.length;
@@ -119,12 +119,12 @@ async function executor() {
 					seen.largest = Math.max(seen.largest, chunk.length);
 					if (endsInsideUtf8(chunk)) seen.endsInsideUtf8++;
 					seen.firstFrameMs ??= Date.now() - at;
-					request.onStdout(chunk);
+					request.stdout(chunk);
 				});
 			emit({ event: "exec", channel, project, name, command: request.command, user: request.user, group: request.group, cwd: request.cwd,
 				hash: request.command.includes("exec-server") ? undefined : true });
 			try {
-				const result = await pipe(project, name, { ...request, onStdout }, signal);
+				const result = await pipe(project, name, { ...request, stdout }, signal);
 				emit({ event: "exec-end", channel, ms: Date.now() - at, exitCode: result.exitCode,
 					stderrTail: result.stderrTail.toString("utf8").slice(-800), aborted: signal.aborted, ...seen });
 				return result;

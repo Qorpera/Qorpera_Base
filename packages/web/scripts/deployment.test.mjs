@@ -67,6 +67,18 @@ test("secure origin validation refuses CSP injection and ambiguous URL normaliza
 		assert.throws(() => parseCloudConfig({ ...config, [field]: "http://unsafe.invalid" }));
 });
 
+test("the machine-stream address is an exact secure WebSocket origin, locked into configuration and its CSP (20260930745000)", t => {
+	const machineStreamUrl = "wss://screens.example.invalid";
+	const deployment = prepareDeployment(fixture(t, { ...config, machineStreamUrl: `${machineStreamUrl}/` }));
+	assert.equal(deployment.config.machineStreamUrl, machineStreamUrl);
+	const sources = deployment.headers.match(/; connect-src ([^;]+);/)[1].split(" ");
+	assert.deepEqual(sources.slice(-1), [machineStreamUrl]);
+	for (const value of ["ws://screens.invalid", "https://screens.invalid", "wss://screens.invalid/v1", "wss://screens.invalid/?t=1", "wss://*.invalid"])
+		assert.throws(() => parseCloudConfig({ ...config, machineStreamUrl: value }), undefined, value);
+	// Without it, no stream address anywhere.
+	assert.equal(prepareDeployment(fixture(t)).config.machineStreamUrl, undefined);
+});
+
 test("header generation fails if the template drops or duplicates its binding", t => {
 	const input = fixture(t);
 	assert.throws(() => prepareDeployment({ ...input, headersTemplate: "connect-src *" }), /one connect-src marker/);

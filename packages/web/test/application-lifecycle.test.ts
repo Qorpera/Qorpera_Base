@@ -140,6 +140,7 @@ function executionTransport() {
 			if (method === "qorpera_request_session_turn_v2") return send(init);
 			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
 			if (method === "qorpera_select_member_session_account") return Response.json(id(81));
+			if (method === "qorpera_get_native_account_refresh") return Response.json(null);
 			if (method === "qorpera_begin_native_account_refresh")
 				return Response.json({
 					request_id: id(83),
@@ -1363,12 +1364,32 @@ describe("account and route ownership", () => {
 		};
 		return Object.assign(fake, { changed });
 	}
-	/** Whose the open concept is and the password line: a strip of the side panel outside the list that folds. */
-	const conceptGuard = (root: HTMLElement) => {
-		const guard = root.querySelector<HTMLElement>(".concepts > .concepts-side > .concepts-guard");
-		expect(guard?.closest(".concepts-panel")).toBeNull();
-		expect(guard?.hidden).toBe(false);
-		return guard?.textContent;
+	/** The side panel ends with its list: no controls under it and no strip (Jonas, 13 November 2026: "get rid of this
+	 * at the bottom of the concepts sidepanel"), open or folded. */
+	const endsWithItsList = (root: HTMLElement) => {
+		const side = root.querySelector<HTMLElement>(".concepts > .concepts-side")!;
+		expect(side.querySelector(".concepts-guard, .concepts-foot, .concepts-actions")).toBeNull();
+		expect(side.lastElementChild?.classList.contains("concepts-panel")).toBe(true);
+		expect(side.querySelector(".concepts-panel")?.lastElementChild?.tagName).toBe("NAV");
+		expect(side.textContent).not.toContain("never asks for passwords");
+	};
+	/** A concept's row's menu, opened as a right-click (`at` the pointer) or the keyboard's menu key (no point) opens it. */
+	const rowMenu = (root: HTMLElement, name: string, at = { clientX: 40, clientY: 120 }) => {
+		const row = root.querySelector<HTMLAnchorElement>(`.concepts-side a.concepts-item[data-concept="${name}"]`)!;
+		const opened = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, ...at });
+		row.dispatchEvent(opened);
+		expect(opened.defaultPrevented).toBe(true);
+		const menu = document.querySelector<HTMLElement>(".context-menu");
+		expect(menu?.getAttribute("aria-label")).toContain("actions");
+		return {
+			row,
+			menu: menu!,
+			labels: [...menu!.querySelectorAll("[role=menuitem]")].map((item) => item.textContent),
+			choose: (label: string) =>
+				[...menu!.querySelectorAll<HTMLButtonElement>("[role=menuitem]")]
+					.find((item) => item.textContent === label)!
+					.click(),
+		};
 	};
 	const concepts = (root: HTMLElement) => root.querySelector<HTMLElement>("main > section.concepts");
 	const conceptItems = (root: HTMLElement) =>
@@ -1405,11 +1426,10 @@ describe("account and route ownership", () => {
 		expect(a.querySelector(".concepts-item-about")?.textContent).toBe("A calm shop");
 		expect(a.querySelector(".concepts-item-by")?.textContent).toBe("Made by Fixture agent");
 		expect(a.querySelector(".concepts-thumb svg.interface-emblem")).not.toBeNull();
-		// The concept's frame fills the stage, with no header bar over it; the panel says no password is asked for.
+		// The concept's frame fills the stage, with no header bar over it; the panel ends with its list.
 		expect(conceptFrame(f.root)?.getAttribute("sandbox")).toBe("allow-scripts");
 		expect(view.querySelector(".concepts-stage .side-panel-header")).toBeNull();
-		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
-		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
+		endsWithItsList(f.root);
 		// The posted app that is no concept is not listed.
 		expect(view.querySelector(`a.concepts-item[data-href$="/sales-board"]`)).toBeNull();
 		// The company's redraws keep the viewer and its frame as they are.
@@ -1549,16 +1569,19 @@ describe("account and route ownership", () => {
 			const view = concepts(f.root)!;
 			const fold = view.querySelector<HTMLButtonElement>("button.concepts-collapse")!;
 			expect(view.classList.contains("is-collapsed")).toBe(false);
-			expect(fold.getAttribute("aria-label")).toBe("Hide the concepts");
+			// It says what it does now, as a sidebar's toggle does, and whether the sidebar is open.
+			expect(fold.getAttribute("aria-label")).toBe("Hide sidebar");
+			expect(fold.title).toBe("Hide sidebar");
 			expect(fold.getAttribute("aria-expanded")).toBe("true");
 			fold.click();
 			expect(view.classList.contains("is-collapsed")).toBe(true);
-			expect(fold.getAttribute("aria-label")).toBe("Show the concepts");
+			expect(fold.getAttribute("aria-label")).toBe("Show sidebar");
+			expect(fold.title).toBe("Show sidebar");
 			expect(fold.getAttribute("aria-expanded")).toBe("false");
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("1");
-			// The concept stays open while the panel folds, and whose it is and the password line stay in the strip.
+			// The concept stays open while the panel folds, and the folded strip has nothing under its buttons.
 			expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
-			expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(f.root);
 			// Opened again, it is folded still.
 			dispose?.();
 			dispose = undefined;
@@ -1567,16 +1590,49 @@ describe("account and route ownership", () => {
 			await draw();
 			await draw();
 			expect(concepts(again.root)?.classList.contains("is-collapsed")).toBe(true);
-			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(again.root);
 			concepts(again.root)!.querySelector<HTMLButtonElement>("button.concepts-collapse")!.click();
-			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(again.root);
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("0");
 		} finally {
 			localStorage.removeItem("qorpera.web.concepts-collapsed");
 		}
 	});
 
-	it("never styles away whose a concept is or the password line: open, folded or at phone width", () => {
+	it("keeps Reload and Show in Storage in a concept's row menu, where the panel's foot had them", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts`);
+		await draw();
+		await draw();
+		endsWithItsList(f.root);
+		// The open concept's row: Reload and Show in Storage, in the rail's own menu.
+		const open = rowMenu(f.root, "shop-b");
+		expect(open.menu.classList.contains("context-menu")).toBe(true);
+		expect(open.row.classList.contains("menu-open")).toBe(true);
+		expect(open.labels).toEqual(["Reload", "Show in Storage"]);
+		// Reload reads the concept again, in a new frame (which also lets it ask again after three Not nows).
+		const before = conceptFrame(f.root);
+		open.choose("Reload");
+		await draw();
+		await draw();
+		expect(conceptFrame(f.root)).not.toBe(before);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		// Another concept's row: Show in Storage; a press opens it, read fresh.
+		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Storage"]);
+		document
+			.querySelector<HTMLElement>(".context-menu")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// From the keyboard (Shift+F10 or the menu key on the focused row): the browser's contextmenu has no point.
+		const keyed = rowMenu(f.root, "shop-b", { clientX: 0, clientY: 0 });
+		expect(keyed.labels).toEqual(["Reload", "Show in Storage"]);
+		// Show in Storage opens Storage at the concept's folder.
+		keyed.choose("Show in Storage");
+		await draw();
+		await draw();
+		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+	});
+
+	it("keeps who made a concept in its row, with no strip and no controls under the list, in any layout", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss;
 		document.head.append(style);
@@ -1589,26 +1645,16 @@ describe("account and route ownership", () => {
 							? rules(rule.cssRules).map((entry) => ({ ...entry, media: rule.media.mediaText }))
 							: [],
 				);
-			// The strip and what holds it: the viewer and its side panel.
-			const holds = (selector: string) =>
-				selector.split(",").some((part) => /\.concepts-(guard|side)\b|\.concepts(?![\w-])\s*$/.test(part.trim()));
 			const all = rules(style.sheet!.cssRules);
+			// The strip and the foot are gone, in every layout (Jonas, 13 November 2026).
+			expect(all.filter(({ selector }) => /\.concepts-(guard|foot|actions)\b/.test(selector))).toEqual([]);
+			// Who made each concept stands in its row: nothing styles that line away.
 			const hiding = all.filter(
 				({ selector, rule }) =>
-					holds(selector) &&
-					!selector.includes("[hidden]") &&
-					(rule.style.display === "none" ||
-						rule.style.visibility === "hidden" ||
-						rule.style.opacity === "0" ||
-						rule.style.height === "0px" ||
-						rule.style.width === "0px"),
+					/\.concepts-item(-copy|-by)?\b/.test(selector) &&
+					(rule.style.display === "none" || rule.style.visibility === "hidden" || rule.style.opacity === "0"),
 			);
 			expect(hiding.map(({ selector, media }) => `${media} ${selector}`)).toEqual([]);
-			// It has a rule of its own in each of the three layouts.
-			const guard = all.filter(({ selector }) => selector.includes(".concepts-guard"));
-			expect(guard.some(({ selector, media }) => media === "" && selector === ".concepts-guard")).toBe(true);
-			expect(guard.some(({ selector, media }) => media === "" && selector.includes(".is-collapsed"))).toBe(true);
-			expect(guard.some(({ media }) => media.includes("max-width: 760px"))).toBe(true);
 		} finally {
 			style.remove();
 		}

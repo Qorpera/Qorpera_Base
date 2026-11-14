@@ -19,6 +19,8 @@ for part in "${parts[@]}"; do
 	[[ $part == /* ]] || part=$K/$part
 	files=${files:+$files:}$part
 done
+# The run door (run-door.yml) comes with its setting, and only with it: a machine never names the file.
+if [ -n "${DATA_RUN_LISTEN:-}" ] && [[ :$files: != *:$K/run-door.yml:* ]]; then files=$files:$K/run-door.yml; fi
 export COMPOSE_FILE=$files
 unset files parts part
 export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME (the project of this machine, for example company-data)}
@@ -60,6 +62,35 @@ volume() {
 		--filter label=com.docker.compose.volume=data
 }
 new_secret() { head -c "${1:-24}" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# The run door's secrets in $L/secrets/run-door, the gateway's user's: `token` (32 random bytes as base64url, 43
+# characters: what the nodes' provider hosts hold as the credential qorpera-company-data) and `door.key`, `door.crt`
+# from the kit's CA for the one name every provider host dials, the qorpera0 bridge's own address on its node
+# (RUN_DOOR_NAMES). Each is made only when it is not there: the token is never made again, so the nodes' copy stays
+# right. Needs the CA ($L/ca). Never prints a secret.
+RUN_DOOR_NAMES=${DATA_RUN_NAMES:-10.41.0.1}
+make_run_door() {
+	local d=$L/secrets/run-door made=
+	install -d -m 0500 -o "$NOBODY" -g "$NOBODY" "$d"
+	if [ ! -e "$d/token" ]; then
+		(umask 077 && head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' >"$d/token.new")
+		[ "$(wc -c <"$d/token.new" | tr -d ' ')" = 43 ] || {
+			rm -f "$d/token.new"
+			die "the run door's token was not made"
+		}
+		chown "$NOBODY:$NOBODY" "$d/token.new"
+		chmod 0400 "$d/token.new"
+		mv "$d/token.new" "$d/token"
+		made="the token"
+	fi
+	# The key and the cert are made together: one without the other is made again.
+	if [ ! -e "$d/door.crt" ] || [ ! -e "$d/door.key" ]; then
+		# shellcheck disable=SC2086
+		"$K/tls.sh" door "$L/ca" "$d" $RUN_DOOR_NAMES
+		made="${made:+$made and }the cert"
+	fi
+	echo "run door: ${made:-nothing new}; secrets $(find "$d" -type f | wc -l | tr -d ' ')"
+}
 # Waits up to $1 seconds for the store to answer and leave recovery (or, with $2 = standby, to answer at all).
 wait_store() {
 	local i

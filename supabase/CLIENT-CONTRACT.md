@@ -328,6 +328,28 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
   each colour and each icon as one.
+- Light asks (`20260930761000`, deploy/first-node/RUNTIME-LIGHT-ASK.md): one small
+  question a member's own action raises, answered by one call to the small model
+  with no tools, with nothing shown in a conversation.
+  `qorpera_request_light_ask(p_profile_id, p_client_ask_id, p_kind, p_input)` →
+  `qorpera.light-ask/v1` `{id, kind, state, answer, problem}`; owner, admin or
+  contributor of a folder-v2 company. `p_kind` is a closed list, today
+  `name-app-group`, whose `p_input` is `{apps: [{name, about?}], language}`: 2 to
+  12 apps, a name of 1 to 80 characters, `about` at most 200, `language` like `en`,
+  `da` or `en-GB`; never a prompt (22023 for anything else). `state` is `waiting`,
+  `answered` (with `answer`, one line of at most 200 characters) or `failed` (with
+  `problem`: `no_payer` when no Codex login of the member's own can pay,
+  `unavailable` for a company with no Co-Founder or one that is paused,
+  `too_many` at 8 waiting asks, `no_answer`, or `expired` after ten minutes).
+  A failed ask is never raised as an error, and `failed` is final: an answer that
+  comes after the ten minutes is not kept. In a company that is paused or being
+  deleted no ask is kept: the answer is `failed` (`unavailable`) under an id that
+  names no row, which reads as null. The same `p_client_ask_id` with the
+  same kind and input answers the ask already made (23505 with other content).
+  `qorpera_read_light_ask(p_profile_id, p_ask_id)` → the same shape, or null when
+  the caller has no ask of that id. The member's own login pays, a ChatGPT plan
+  too; no company account does. A cloud before `20260930761000` has neither
+  function, and the web then asks nothing.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
@@ -1311,6 +1333,14 @@ request of another shape.
   `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_MEMBER_IN_CONTROL`,
   `DESKTOP_HELD_SINCE`, `DESKTOP_CONTROL_ENDED`); the moves on it ask SQL nothing. A pass records no action and renews no
   lease; the executor's read of it moves the machine's last use at most every 30 seconds.
+- The member's live picture (20260930745000): `qorpera_member_machine_stream_release(placement, boot, user, generation,
+  epoch)`, service_role only, read only (it writes and locks nothing), the machine's node's read for one release cycle
+  of a member's stream: `{schema: "qorpera.member-machine-stream-release/v1", state: "ok"}` or a refusal:
+  `STREAM_NOT_ALLOWED` (no longer an owner, admin or contributor, or the company is being deleted),
+  `MACHINE_NOT_RUNNING` (not running, or not on that boot or placement), `MACHINE_NEEDS_COMPANY_VIEW`, and for the
+  stream's hold `DESKTOP_MEMBER_IN_CONTROL` and `DESKTOP_HELD_SINCE` (shared) or `DESKTOP_CONTROL_ENDED` (private); then
+  the member's read check of what the machine read (`qorpera_folder_member_machine_reads`, 42501 with detail
+  `qorpera.test-machine/member-unreadable`). No page calls it; a page buys a ticket on the executor's pointer route.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes

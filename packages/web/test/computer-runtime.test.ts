@@ -25,7 +25,6 @@ import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
 import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
-import { ComputerScene } from "../src/ui/computer-scene.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { DOUBLE_CLICK_MS, inputSpan, joinInputs, machineTexts, TYPE_BATCH_MS } from "../src/ui/machine-screen-view.ts";
 import { fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
@@ -65,6 +64,39 @@ type ActAnswer =
 	| { hold: Promise<void>; exitCode: number }
 	| { hold: Promise<void>; code: string };
 
+/** The browser's WebSocket, as the live picture uses it (20260930745000): what it was opened on, what the page sent on
+ * it (never anything), how the page closed it, and the machine's node's side (a message, a close). */
+class FakeSocket extends EventTarget {
+	readonly url: string;
+	readonly protocol: string;
+	binaryType = "blob";
+	readyState = 0;
+	readonly sent: unknown[] = [];
+	closedWith: number | undefined;
+	constructor(url: string, protocol: string) {
+		super();
+		this.url = url;
+		this.protocol = protocol;
+		FakeSocket.made?.push(this);
+	}
+	static made: FakeSocket[] | undefined;
+	send(data: unknown) {
+		this.sent.push(data);
+	}
+	close(code?: number) {
+		this.closedWith = code;
+		this.readyState = 3;
+	}
+	message(data: ArrayBuffer) {
+		this.readyState = 1;
+		this.dispatchEvent(Object.assign(new Event("message"), { data }));
+	}
+	closeWith(code: number, reason = "") {
+		this.readyState = 3;
+		this.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
+	}
+}
+
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
@@ -87,11 +119,22 @@ function setup(
 		canWake?: boolean;
 		canTakeOver?: boolean;
 		role?: typeof profileA.role;
+		/** The build names a machine-stream address (20260930745000): the large view streams the desktop. */
+		stream?: boolean;
 	} = {},
 ) {
 	const f = fixture(),
 		stop = new AbortController();
-	Object.assign(f.cloud.config, { objectGatewayUrl: gateway, memberCompanyGatewayUrl: bridge });
+	Object.assign(f.cloud.config, {
+		objectGatewayUrl: gateway,
+		memberCompanyGatewayUrl: bridge,
+		...(options.stream ? { machineStreamUrl: "wss://screens.example.invalid" } : {}),
+	});
+	const sockets: FakeSocket[] = [];
+	if (options.stream) {
+		FakeSocket.made = sockets;
+		vi.stubGlobal("WebSocket", FakeSocket);
+	}
 	const state = {
 		machines: options.machines ?? [machine(1)],
 		canWake: options.canWake ?? true,
@@ -163,6 +206,9 @@ function setup(
 		 * requests answer, in turn (a refusal's code; then a pass, or moved). */
 		pointerRoute: "there" as "there" | "missing" | "failing" | "movesFail",
 		pointerAnswers: [] as string[],
+		/** What a live picture's ticket answers, in turn (a refusal's code, or `old`: an executor before 20260930745000,
+		 * 400); then a ticket. */
+		ticketAnswers: [] as string[],
 		/** The next pointer move waits for this before it is answered (a move on its way). */
 		pointerGate: undefined as Promise<void> | undefined,
 		/** As the database: a member's looks at a machine at least 400 ms apart (20260930712000), else SCREEN_TOO_SOON;
@@ -224,7 +270,20 @@ function setup(
 			expect(headers.get("content-type")).toBe("application/json");
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			pointers.push({ url: url.slice(bridge.length), body });
-			order.push("begin" in body ? "begin" : `move ${String(body.x)} ${String(body.y)}`);
+			order.push(
+				"begin" in body ? "begin" : "stream" in body ? "ticket" : `move ${String(body.x)} ${String(body.y)}`,
+			);
+			if ("stream" in body) {
+				// A live picture's ticket on the member's pass (20260930745000).
+				const code = state.ticketAnswers.shift();
+				if (code === "old") return Response.json({ error: "member_pointer_invalid" }, { status: 400 });
+				if (code) return Response.json({ code }, { status: 409 });
+				return Response.json({
+					schema: "qorpera.member-machine-pointer/v1",
+					ticket: `${"T".repeat(40)}${String(pointers.length).padStart(3, "0")}`,
+					seconds: 30,
+				});
+			}
 			if (state.pointerRoute === "missing")
 				return Response.json({ error: "Member route is not available" }, { status: 404 });
 			if (state.pointerRoute === "failing" || (state.pointerRoute === "movesFail" && !("begin" in body)))
@@ -529,6 +588,7 @@ function setup(
 		rpcs,
 		pointers,
 		order,
+		sockets,
 		hints,
 		decode,
 		hint: (resource: RealtimeResource) => hint?.(resource),
@@ -615,8 +675,16 @@ function pressControl(p: ComputerPanel) {
 function handBackButton(p: ComputerPanel) {
 	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back") ?? null;
 }
+/** The picture shown now: the view has two canvases (the window's own looks and the live picture), one shown at a
+ * time (20260930745000, review r6 of #1746), and the member sees and acts on whichever that is. */
 function canvas(p: ComputerPanel) {
-	return p.el.querySelector<HTMLCanvasElement>(".machine-screen-canvas")!;
+	const all = [...p.el.querySelectorAll<HTMLCanvasElement>(".machine-screen-canvas")];
+	return all.find((one) => !one.hidden) ?? all[0]!;
+}
+/** The box the picture is drawn in, for both canvases: which of them shows depends on whether the live picture is up. */
+function inBox(p: ComputerPanel, width: number, height: number) {
+	for (const one of p.el.querySelectorAll<HTMLCanvasElement>(".machine-screen-canvas"))
+		vi.spyOn(one, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, width, height));
 }
 /** The time between looks, `count` times, to `step` ms. */
 async function gaps(s: Setup, count: number, step = 50) {
@@ -637,7 +705,7 @@ async function holding(s: Setup = setup()) {
 	s.state.answers.push({ picture: 1 });
 	const p = panel(s);
 	await flush();
-	vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+	inBox(p, 800, 500);
 	canvas(p).width = 1600;
 	canvas(p).height = 1000;
 	pressControl(p);
@@ -1390,30 +1458,53 @@ describe("an agent's computer window", () => {
 	it("enters and goes back as the old viewer did, and Escape goes back before it closes", async () => {
 		const s = setup();
 		s.state.answers.push({ picture: 1 });
+		// The window stands in a row of the thread's log (conversation.ts #computerRow).
 		const thread = document.createElement("div");
 		const conversation = document.createElement("div");
 		conversation.className = "thread-conversation";
 		const header = document.createElement("div");
 		header.className = "thread-header";
+		const log = document.createElement("div");
 		const message = document.createElement("div");
-		conversation.append(header, message);
+		const row = document.createElement("div");
+		const figure = document.createElement("div");
+		const slot = document.createElement("div");
+		row.append(figure, slot);
+		log.append(message, row);
+		conversation.append(header, log);
 		thread.append(conversation);
 		document.body.append(thread);
 		const close = vi.fn();
 		const p = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
 		cleanup.push(() => p.dispose());
-		p.attach(thread, close);
+		p.attach(slot, close);
 		await flush();
 		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
 		expect(p.el.classList.contains("is-entered")).toBe(true);
+		// Everything but the header and the way down to the window is covered; the row and log it stands in are not.
 		expect(message.inert).toBe(true);
+		expect(figure.inert).toBe(true);
 		expect(header.inert).not.toBe(true);
+		expect([log, row, slot].some((element) => element.inert === true)).toBe(false);
+		// A row the thread draws while the view is open (a message, a card, the working figure) is covered too
+		// (review r1 F2 of #1787).
+		const arrived = document.createElement("div");
+		log.append(arrived);
+		p.coverAgain();
+		expect(arrived.inert).toBe(true);
 		const back = p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
 		expect(back.hidden).toBe(false);
 		expect(back.getAttribute("aria-label")).toBe("Back to thread");
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(p.el.classList.contains("is-entered")).toBe(false);
 		expect(message.inert).not.toBe(true);
+		expect(figure.inert).not.toBe(true);
+		expect(arrived.inert).not.toBe(true);
+		// Back in the preview, a new row is nobody's to cover.
+		const later = document.createElement("div");
+		log.append(later);
+		p.coverAgain();
+		expect(later.inert).not.toBe(true);
 		expect(close).not.toHaveBeenCalled();
 		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(close).toHaveBeenCalledOnce();
@@ -1957,7 +2048,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		const control = p.el.querySelector<HTMLElement>(".machine-screen-control")!;
 		expect(control.closest(".screen-viewer-stage")).not.toBeNull();
 		press(canvas(p), 10, 10);
@@ -1981,7 +2072,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		// The preview, before the take-over: a picture to watch, no input, no control.
 		expect(entered(p)).toBe(false);
 		expect(canvas(p).getAttribute("role")).toBe("img");
@@ -2047,21 +2138,25 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(s.acts.at(-1)).toMatchObject({ action: { type: "click", x: 800, y: 500 }, epoch: null, seat: null });
 	});
 
-	/** A thread for the window: its conversation's header stays reachable, a message and the composer are covered while
-	 * the window is entered. */
+	/** A thread for the window, standing in a row of its log (`element` is that row's slot): its conversation's header
+	 * stays reachable, a message and the composer are covered while the window is entered. */
 	function thread() {
 		const element = document.createElement("div");
 		const conversation = document.createElement("div");
 		conversation.className = "thread-conversation";
 		const header = document.createElement("div");
 		header.className = "thread-header";
+		const log = document.createElement("div");
 		const message = document.createElement("div");
+		// The window's row in the log (conversation.ts #computerRow): the window is attached into its slot.
+		const slot = document.createElement("div");
+		log.append(message, slot);
 		const composer = document.createElement("textarea");
-		conversation.append(header, message, composer);
+		conversation.append(header, log, composer);
 		element.append(conversation);
 		document.body.append(element);
 		cleanup.push(() => element.remove());
-		return { element, header, message, composer };
+		return { element: slot, header, message, composer };
 	}
 
 	it("enters nothing for a take-over answered after the window left its thread, and comes back in the preview (review r1 F1 of #1685)", async () => {
@@ -2360,7 +2455,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("maps a press by the picture as drawn, letterboxed, and takes none outside it", async () => {
 		const { s, p } = await holding();
 		// 1000 x 500 box: the 1600 x 1000 picture drawn at half size, 100 px in from each side.
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 500));
+		inBox(p, 1000, 500);
 		press(canvas(p), 100, 0, { button: 2 });
 		press(canvas(p), 899, 499, { button: 2 });
 		press(canvas(p), 50, 250, { button: 2 });
@@ -2850,7 +2945,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		canvas(p).width = 1600;
 		canvas(p).height = 1000;
 		return { s, p };
@@ -4128,7 +4223,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(p, 800, 500);
 		canvas(p).width = 1600;
 		canvas(p).height = 1000;
 		press(canvas(p), 400, 250);
@@ -4177,7 +4272,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			s.state.answers.push({ picture: 1 });
 			const p = panel(s);
 			await flush();
-			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			inBox(p, 800, 500);
 			hover(p, 100, 100);
 			await advance(100);
 			expect(s.pointers, "preview").toEqual([]);
@@ -4189,7 +4284,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			s.state.answers.push({ picture: 1 });
 			const p = panel(s);
 			await flush();
-			vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+			inBox(p, 800, 500);
 			press(canvas(p), 400, 250);
 			await advance(DOUBLE_CLICK_MS);
 			hover(p, 100, 100);
@@ -4464,7 +4559,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		const first = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode, ledger });
 		first.attach(document.body, () => first.dispose());
 		await flush();
-		vi.spyOn(canvas(first), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(first, 800, 500);
 		canvas(first).width = 1600;
 		canvas(first).height = 1000;
 		press(canvas(first), 400, 250);
@@ -4488,7 +4583,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 		second.attach(document.body, () => second.dispose());
 		cleanup.push(() => second.dispose());
 		await flush();
-		vi.spyOn(canvas(second), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		inBox(second, 800, 500);
 		canvas(second).width = 1600;
 		canvas(second).height = 1000;
 		press(canvas(second), 400, 250);
@@ -4532,6 +4627,298 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 			{ begin: { epoch: 0, seat: 1 } },
 			{ pass: bodies(s)[asked + 1]?.pass, x: 260, y: 260 },
 		]);
+	});
+});
+
+describe("the desktop's live picture in the large view (20260930745000)", () => {
+	const entered = (p: ComputerPanel) =>
+		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
+	/** A window showing machine 1's picture (1600 x 1000 in an 800 x 500 box), in the large view, shared. */
+	async function inside(s: Setup) {
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		inBox(p, 800, 500);
+		canvas(p).width = 1600;
+		canvas(p).height = 1000;
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(p)).toBe(true);
+		return { s, p };
+	}
+	const u16 = (value: number) => [value >> 8, value & 0xff];
+	const size = () => new Uint8Array([1, ...u16(1600), ...u16(1000)]).buffer;
+	const whole = () =>
+		new Uint8Array([
+			2,
+			...u16(1),
+			...u16(0),
+			...u16(0),
+			...u16(1600),
+			...u16(1000),
+			0,
+			0,
+			0,
+			8,
+			137,
+			80,
+			78,
+			71,
+			13,
+			10,
+			26,
+			10,
+		]).buffer;
+	const bodies = (s: Setup) => s.pointers.map((one) => one.body);
+	const tickets = (s: Setup) => bodies(s).filter((body) => "stream" in body);
+	const hover = (p: ComputerPanel, x: number, y: number) => canvas(p).dispatchEvent(pointer("pointermove", x, y));
+	/** The stream shows the screen: its size and the whole screen came. */
+	async function live(s: Setup, socket = s.sockets.at(-1)!) {
+		socket.message(size());
+		socket.message(whole());
+		await flush();
+	}
+
+	it("streams the shared desktop on the sharing's own pass once the large view shows its picture: the looks pause, the pass is renewed, nothing is ever sent on it", async () => {
+		const s = setup({ stream: true });
+		s.state.seats.set(machine(1).machineId, 3);
+		const { p } = await inside(s);
+		await flush();
+		const pass = id(901);
+		expect(bodies(s)).toEqual([{ begin: { generation: 3 } }, { stream: { pass, hold: { generation: 3 } } }]);
+		expect(s.sockets).toHaveLength(1);
+		expect(s.sockets[0]!.url).toMatch(/^wss:\/\/screens\.example\.invalid\/v1\/member-machine-streams\/T{40}002$/);
+		expect(s.sockets[0]!.protocol).toBe("qorpera.machine-stream.v1");
+		await live(s);
+		expect(mark(p)).toBe("Live");
+		// No looks while the stream shows the screen; the list is read as before.
+		const looked = s.looks.length;
+		await advance(5000);
+		expect(s.looks).toHaveLength(looked);
+		// The pass is begun again before it runs out (10 s), on the same hold.
+		await advance(3000);
+		expect(bodies(s).filter((body) => "begin" in body)).toEqual([
+			{ begin: { generation: 3 } },
+			{ begin: { generation: 3 } },
+		]);
+		expect(s.sockets).toHaveLength(1);
+		// The member's moves and clicks go their own ways (the pointer route, the action route), never on the stream.
+		canvas(p).dispatchEvent(pointer("pointermove", 100, 100));
+		press(canvas(p), 200, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 400, y: 200 }]);
+		expect(bodies(s).some((body) => "x" in body)).toBe(true);
+		expect(s.sockets[0]!.sent).toEqual([]);
+		expect(s.sockets[0]!.closedWith).toBeUndefined();
+	});
+
+	it("ends with the sharing at once (Back, Type privately, a hidden tab, the close), and the looks come back with a whole picture", async () => {
+		// Back to the preview.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			const looked = s.looks.length;
+			await advance(LOOK_EVERY_MS);
+			expect(s.looks.length).toBeGreaterThan(looked);
+			expect(s.looks[looked]!.etag).toBeNull();
+			await advance(5000);
+			expect(s.sockets).toHaveLength(1);
+			p.dispose();
+		}
+		// Type privately: the sharing ends, and the private hold streams on a pass of its own epoch and seat.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			pressControl(p);
+			await flush();
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			await advance(2000);
+			expect(tickets(s).at(-1)).toMatchObject({ stream: { hold: { epoch: 0, seat: 1 } } });
+			expect(s.sockets).toHaveLength(2);
+			p.dispose();
+			expect(s.sockets[1]!.closedWith).toBe(1000);
+		}
+		// A hidden tab, within a second.
+		{
+			const s = setup({ stream: true });
+			const { p } = await inside(s);
+			await flush();
+			await live(s);
+			vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+			await advance(1000);
+			expect(s.sockets[0]!.closedWith).toBe(1000);
+			p.dispose();
+		}
+	});
+
+	it("falls back to its looks when a stream fails, tries again after a wait, and is off for 10 minutes after three failures", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		// The door is off: the socket closes before anything came.
+		s.sockets[0]!.closeWith(1006);
+		await flush();
+		const looked = s.looks.length;
+		await advance(1000);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		expect(s.sockets).toHaveLength(1);
+		await advance(1000);
+		expect(s.sockets).toHaveLength(2);
+		s.sockets[1]!.closeWith(1006);
+		await advance(4000);
+		expect(s.sockets).toHaveLength(3);
+		s.sockets[2]!.closeWith(1006);
+		await advance(60_000);
+		expect(s.sockets).toHaveLength(3);
+		// The looks went on all along.
+		expect(s.looks.length).toBeGreaterThan(looked + 10);
+	});
+
+	it("counts a stream that sent its size and no pixels as failed: three of them in a row turn it off (the v245 release review F3)", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		// Each socket sends the screen's size, then fails before any pixels: the member never saw a live picture.
+		s.sockets[0]!.message(size());
+		await flush();
+		s.sockets[0]!.closeWith(1006);
+		await flush();
+		await advance(2000);
+		expect(s.sockets).toHaveLength(2);
+		s.sockets[1]!.message(size());
+		await flush();
+		s.sockets[1]!.closeWith(1006);
+		await advance(4000);
+		expect(s.sockets).toHaveLength(3);
+		// A size and then a renewal is no picture either.
+		s.sockets[2]!.message(size());
+		await flush();
+		s.sockets[2]!.closeWith(4001, "POINTER_PASS_ENDED");
+		await advance(60_000);
+		expect(s.sockets).toHaveLength(3);
+	});
+
+	it("ends a run of failures only once a stream drew pixels: then a failure is the first of a new run", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		for (let n = 0; n < 5; n++) {
+			// Pixels drawn, then the socket fails: tried again after the first wait, every time.
+			await live(s);
+			s.sockets.at(-1)!.closeWith(1006);
+			await flush();
+			await advance(2000);
+			expect(s.sockets).toHaveLength(n + 2);
+		}
+	});
+
+	it("leaves a refusal of its release cycle to the looks: a private hold since the sharing's generation ends the sharing until a list read", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		await live(s);
+		const listed = lists(s);
+		s.sockets[0]!.closeWith(4003, "DESKTOP_HELD_SINCE");
+		await flush();
+		// The sharing ended: the picture takes no input until a list read names the generation that stands.
+		press(canvas(p), 100, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts).toEqual([]);
+		await advance(1000);
+		expect(lists(s)).toBeGreaterThan(listed);
+		expect(s.looks.length).toBeGreaterThan(0);
+		// No stream for a moment after a refusal.
+		expect(s.sockets).toHaveLength(1);
+	});
+
+	it("keeps the looks and the sharing as they were when the node watches as many desktops as it may, and asks again 30 s later (review r11 of #1746)", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		s.sockets[0]!.closeWith(4003, "STREAM_BUSY");
+		await flush();
+		// The picture still takes the member's clicks: nothing of the screen or its sharing changed.
+		press(canvas(p), 200, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 400, y: 200 }]);
+		// The looks go on, and no stream is asked for within the wait (a refusal of a cycle waits 3 s); it is asked for
+		// again when the wait is over, however still the screen is.
+		const looked = s.looks.length;
+		for (let n = 0; n < 29; n++) await advance(1000);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		expect(s.sockets).toHaveLength(1);
+		await advance(1500);
+		expect(s.sockets).toHaveLength(2);
+	});
+
+	it("keeps the looks quietly when the way has no stream route (an executor before it), or a ticket is refused", async () => {
+		const s = setup({ stream: true });
+		s.state.ticketAnswers.push("old");
+		const { p } = await inside(s);
+		await advance(10_000);
+		expect(tickets(s)).toHaveLength(1);
+		expect(s.sockets).toEqual([]);
+		p.dispose();
+		// A ticket refused for its pass: another pass, after a wait.
+		const refused = setup({ stream: true });
+		refused.state.ticketAnswers.push("POINTER_PASS_ENDED");
+		await inside(refused);
+		await flush();
+		expect(tickets(refused)).toHaveLength(1);
+		expect(refused.sockets).toEqual([]);
+		await advance(2500);
+		expect(bodies(refused).filter((body) => "begin" in body)).toHaveLength(2);
+		expect(tickets(refused)).toHaveLength(2);
+		expect(refused.sockets).toHaveLength(1);
+	});
+
+	it("adds no uncertainty of its own: while it shows, a move that got no answer still holds the next action, in the company's ledger (v242 review r1 F1 with step 2)", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		await live(s);
+		expect(mark(p)).toBe("Live");
+		// The stream only shows: it sends nothing that can run on the desktop, and its renewals only begin a pass.
+		expect(s.sockets[0]!.sent).toEqual([]);
+		expect(bodies(s).every((body) => !("x" in body))).toBe(true);
+		// A move whose answer never comes while the stream shows.
+		s.state.pointerRoute = "movesFail";
+		hover(p, 50, 50);
+		await advance(40);
+		await flush();
+		expect(bodies(s).filter((body) => "x" in body)).toHaveLength(1);
+		// A click right after waits for that move's pass, as without a stream; the stream itself goes on.
+		press(canvas(p), 10, 10, { button: 2 });
+		await advance(5000);
+		await flush();
+		expect(s.acts).toEqual([]);
+		expect(s.sockets[0]!.closedWith).toBeUndefined();
+		await advance(6500);
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
+		// And the move went nowhere but the pointer route: nothing of it on the stream.
+		expect(s.sockets[0]!.sent).toEqual([]);
+	});
+
+	it("draws nothing it cannot place, and then ends: an area that does not fit the screen", async () => {
+		const s = setup({ stream: true });
+		const { p } = await inside(s);
+		await flush();
+		s.decode.mockResolvedValue({ width: 10, height: 10, close() {} } as unknown as ImageBitmap);
+		s.sockets[0]!.message(size());
+		s.sockets[0]!.message(whole());
+		await flush();
+		expect(s.sockets[0]!.closedWith).toBe(1000);
+		expect(screen(p)?.hidden).toBe(false);
 	});
 });
 
@@ -5985,154 +6372,4 @@ describe("a member's start of a desktop, explored (20260930714000)", () => {
 			for (const close of cleanup.splice(0)) close();
 		}
 	}, 30_000);
-});
-
-/* A window that showed by itself in its agent's thread (20260930742000; computer-by-itself.ts): the window answers
- * whether the rule may close it, and every act of the member's makes it theirs at once, before any answer (review r2
- * F1 of #1732). Each case: the rule's minute runs out at second 60; the member acts at second 59; the answer comes
- * after second 60. */
-describe("a window that showed by itself (20260930742000)", () => {
-	const AUTO = 60_000;
-	function byItself(s: Setup) {
-		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
-		cleanup.push(() => panels.dispose());
-		const p = panels.open(staff)!;
-		p.attach(document.body, () => panels.close(staff.id));
-		panels.byItself.opened(staff.id, "s1", p.el);
-		return { panels, p };
-	}
-	const gate = () => {
-		let open = () => {};
-		const closed = new Promise<void>((resolve) => {
-			open = resolve;
-		});
-		return { closed, open };
-	};
-	/** The agent stops at 0; the member acts at 59 s; the rule's minute runs out at 60 s. */
-	async function actAt59(panels: ComputerPanels, act: () => void) {
-		panels.byItself.seen(staff.id, undefined);
-		await advance(AUTO - 1_000);
-		act();
-		await advance(2_000);
-	}
-
-	it("goes by itself a minute after the agent stopped when nothing of the member's is in it, giving nothing back", async () => {
-		const s = setup();
-		s.state.answers.push({ picture: 1 });
-		const { panels, p } = byItself(s);
-		await flush();
-		panels.byItself.seen(staff.id, undefined);
-		await advance(AUTO);
-		expect(panels.get(staff.id)).toBeUndefined();
-		expect(p.el.isConnected).toBe(false);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
-	});
-
-	it("leaves nothing of the window running after the rule's close: no loop, no timer, no scene (review r3 F2)", async () => {
-		const s = setup();
-		s.state.answers.push({ picture: 1 });
-		const timersBefore = vi.getTimerCount();
-		const sceneGone = vi.spyOn(ComputerScene.prototype, "dispose");
-		const { panels, p } = byItself(s);
-		await flush();
-		panels.byItself.seen(staff.id, undefined);
-		await advance(AUTO);
-		expect(panels.get(staff.id)).toBeUndefined();
-		expect(sceneGone).toHaveBeenCalled();
-		await advance(1_000);
-		expect(p.el.isConnected).toBe(false);
-		const looks = s.looks.length,
-			rpcs = s.rpcs.length;
-		await advance(10 * 60_000);
-		expect(s.looks.length).toBe(looks);
-		expect(s.rpcs.length).toBe(rpcs);
-		expect(vi.getTimerCount()).toBe(timersBefore);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
-	});
-
-	it("stays when the member takes it over from the card at second 59 and the answer comes after 60", async () => {
-		const s = setup();
-		s.state.answers.push({ picture: 1 });
-		const { panels, p } = byItself(s);
-		await flush();
-		const take = gate();
-		s.state.takeGate = take.closed;
-		// The card's Take over reaches the window as `takeOver()`: no touch on the window.
-		await actAt59(panels, () => p.takeOver());
-		expect(panels.get(staff.id)).toBe(p);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
-		take.open();
-		await flush();
-		expect(p.holding).toBe(true);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toEqual([]);
-	});
-
-	it("stays when the member presses Wake it at second 59", async () => {
-		const s = setup({ machines: [machine(1, { state: "stopped" })] });
-		const { panels, p } = byItself(s);
-		await flush();
-		expect(action(p)?.textContent).toBe("Wake it");
-		await actAt59(panels, () => action(p)!.click());
-		expect(panels.get(staff.id)).toBe(p);
-		expect(calls(s, "qorpera_member_manage_company_machine")).toHaveLength(1);
-	});
-
-	it("stays when the member presses Start one at second 59 and the answer comes after 60", async () => {
-		const s = setup({ machines: [] });
-		const { panels, p } = byItself(s);
-		await flush();
-		expect(action(p)?.textContent).toBe("Start one");
-		const start = gate();
-		s.state.computerGate = start.closed;
-		await actAt59(panels, () => action(p)!.click());
-		expect(panels.get(staff.id)).toBe(p);
-		start.open();
-		await flush();
-		expect(panels.get(staff.id)).toBe(p);
-	});
-
-	it("stays when the member turns the screen on at second 59 and the answer comes after 60", async () => {
-		const s = setup();
-		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
-		const { panels, p } = byItself(s);
-		await flush();
-		expect(action(p)?.textContent).toBe("Turn it on");
-		const start = gate();
-		s.state.startGate = start.closed;
-		await actAt59(panels, () => action(p)!.click());
-		expect(panels.get(staff.id)).toBe(p);
-		start.open();
-		await flush();
-		expect(panels.get(staff.id)).toBe(p);
-	});
-
-	it("stays the member's when their request fails, and the next stretch may show it again once they close it", async () => {
-		const s = setup();
-		s.state.answers.push({ picture: 1 });
-		s.state.take = { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Bo", epoch: null };
-		const { panels, p } = byItself(s);
-		await flush();
-		await actAt59(panels, () => p.takeOver());
-		await advance(5 * AUTO);
-		// Refused: nothing is held, and the window is still the member's (the rule never takes it back).
-		expect(p.holding).toBe(false);
-		expect(panels.get(staff.id)).toBe(p);
-		expect(panels.byItself.owns(staff.id)).toBe(false);
-		// Open, it is not shown again; closed by the member in that stretch, not in it either; the next stretch shows it.
-		expect(panels.byItself.wanted(staff.id, "s1", true, false)).toBe(false);
-		panels.byItself.closed(staff.id, "s1");
-		panels.close(staff.id);
-		expect(panels.byItself.wanted(staff.id, "s1", false, false)).toBe(false);
-		expect(panels.byItself.wanted(staff.id, "s2", false, false)).toBe(true);
-	});
-
-	it("shows a computer that has just fallen asleep as asleep, with Wake it, and wakes nothing", async () => {
-		const s = setup({ machines: [machine(1, { state: "stopped" })] });
-		const { p } = byItself(s);
-		await flush();
-		await advance(MACHINES_EVERY_MS * 2);
-		expect(action(p)?.textContent).toBe("Wake it");
-		expect(calls(s, "qorpera_member_manage_company_machine")).toEqual([]);
-		expect(s.starts).toEqual([]);
-	});
 });

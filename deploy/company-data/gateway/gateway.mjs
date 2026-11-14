@@ -92,6 +92,8 @@ export const LIMITS = Object.freeze({
 	bodyBytes: 1024 * 1024,
 	/** A company's database, all its rows: at this size its steps stop applying, and its questions still answer. */
 	companyBytes: 1024 ** 3,
+	/** Counting the rows of the tables one describe call shows: all its counts together. */
+	countMs: 1_500,
 });
 
 /** How long past its door's limit the watcher lets a statement run before it ends it. */
@@ -281,6 +283,32 @@ function storeProblem(error) {
 				return new Refusal(400, String(error.message), { code: error.code, ...(error.position ? { position: Number(error.position) } : {}) });
 			return new Refusal(503, "The data store did not answer");
 	}
+}
+
+/** `connecting`'s connection when it comes before `until`. Else a refusal, and the connection is given back, unused,
+ * when it does come. */
+function inTime(connecting, until) {
+	return new Promise((resolve, reject) => {
+		let late = false;
+		const timer = setTimeout(
+			() => {
+				late = true;
+				reject(new Refusal(408, "No connection to the data store was free in time"));
+			},
+			Math.max(0, until - Date.now()),
+		);
+		connecting.then(
+			(client) => {
+				clearTimeout(timer);
+				if (late) client.release();
+				else resolve(client);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
 }
 
 export class Gateway {
@@ -559,16 +587,18 @@ export class Gateway {
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
 	 * take, at most a question's limit. `gone`: when it aborts, the statement is cancelled. `agent`: an agent's read,
-	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. */
-	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false } = {}) {
+	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. `until`: the time by which it
+	 * must be over, its wait for a connection included: with none free by then it is refused (the read role's
+	 * connections are few, and a call would else wait for one as long as the pool lets it), and the statement gets
+	 * what is left of the time. */
+	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null } = {}) {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const client = await this.#pool(ready.database, `${ready.database}_r${ready.n}`)
-			.connect()
-			.catch((error) => {
-				throw storeProblem(error);
-			});
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
+			throw storeProblem(error);
+		});
 		const pid = client.processID;
 		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
 		// A connection its backend left (the watcher ended it) is not given back to the pool.
@@ -583,6 +613,10 @@ export class Gateway {
 		gone?.addEventListener("abort", cancel, { once: true });
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
+			if (until !== null) {
+				ms = Math.min(ms, until - Date.now());
+				if (ms < 1) refuse(408, "No time was left for the statement");
+			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
@@ -1071,7 +1105,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) return { database: name, applied: [], tables: [] };
-		const stored = await this.#stored(database, name);
+		const stored = await this.#stored(database, name, n, Date.now() + this.#limits.countMs);
 		return {
 			database: name,
 			applied: stored.applied.map((step) => ({ name: step.name, at: step.at })),
@@ -1080,13 +1114,20 @@ export class Gateway {
 		};
 	}
 
-	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size. */
-	async #stored(database, name) {
+	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
+	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`):
+	 * `rows` is never a guess. One that was not counted carries PostgreSQL's own estimate as `rowsAbout` when it has
+	 * one, under a name of its own so that nothing that passes `rows` on can pass a guess for a count (an agent's
+	 * shorter describe keeps a table's name, `rows` and columns). It carries neither when PostgreSQL has none: the
+	 * estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows alone, so on its
+	 * own it said 0 for a small table that held rows. */
+	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns, size] = await Promise.all([
 			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
-				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.reltuples::bigint as rows
+				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type,
+					c.relkind as kind, c.relpages as pages, c.reltuples::bigint as estimate
 				from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
 				where c.relkind in ('r', 'p', 'v', 'm') order by c.relname, a.attnum`,
@@ -1098,14 +1139,47 @@ export class Gateway {
 		});
 		const tables = new Map();
 		for (const row of columns.rows) {
-			if (!tables.has(row.table)) tables.set(row.table, { name: row.table, rows: Math.max(0, Number(row.rows)), columns: [] });
+			if (!tables.has(row.table))
+				tables.set(row.table, { name: row.table, kind: row.kind, pages: Number(row.pages), estimate: Number(row.estimate), counted: null, columns: [] });
 			tables.get(row.table).columns.push({ name: row.column, type: row.type });
 		}
+		await this.#count(database, name, n, [...tables.values()], until);
 		return {
 			applied: steps.rows.map((row) => ({ name: row.name, sha256: row.sha256, at: row.applied_at.toISOString() })),
-			tables: [...tables.values()],
+			tables: [...tables.values()].map((table) => ({
+				name: table.name,
+				// A view holds no rows of its own, so PostgreSQL's number for it says nothing.
+				...(table.counted !== null
+					? { rows: table.counted }
+					: table.estimate >= 0 && table.kind !== "v"
+						? { rowsAbout: table.estimate }
+						: {}),
+				columns: table.columns,
+			})),
 			companyBytes: Number(size.rows[0].bytes),
 		};
+	}
+
+	/** Counts the rows of a database folder's `tables` (`counted`), each as a question of its own: the folder's read
+	 * role, a read-only transaction, a question's time at most. Tables and materialized views go first, the ones
+	 * PostgreSQL holds as smallest before the others, then partitioned tables, then views, whose count runs their own
+	 * statement. Every count is over by `until`, its wait for one of the read role's connections included, and
+	 * nothing is started after it. A count that ran out of time, found no connection free or was refused leaves its
+	 * table uncounted: a describe is never refused over a count. The table is named with its schema: a name alone
+	 * would find a catalog relation of the same name first (`pg_tables`), whatever the search path. */
+	async #count(database, name, n, tables, until) {
+		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
+		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
+		for (const table of order) {
+			if (until - Date.now() < 1) return;
+			const sql = `select count(*) from ${quoted(name)}.${quoted(table.name)}`;
+			const answer = await this.#ask({ database, name, n, sql, values: [] }, { until }).catch((error) => {
+				if (error instanceof Refusal) return null;
+				throw error;
+			});
+			const rows = Number(answer?.rows[0]?.[0]);
+			if (answer && Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+		}
 	}
 
 	/** Whether the company's database exists yet: a company that never applied a step has none. */
@@ -1157,9 +1231,11 @@ export class Gateway {
 						})
 				).rows[0].bytes,
 			);
+		// One call's counts share one time, however many databases it shows.
+		const countUntil = Date.now() + this.#limits.countMs;
 		for (const name of wanted) {
 			const n = exists ? await this.#folder(database, name) : null;
-			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name);
+			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
 			const root = `data/${name}`;
 			const steps = [...caller.files]
 				.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))

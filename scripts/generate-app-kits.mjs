@@ -74,7 +74,7 @@ export function renderKitEngines(sources) {
 		"// change those files, then run npm run generate:app-kits.",
 		...Object.entries(KIT_GUIDE_SOURCES).flatMap(([name, path]) => [
 			"",
-			`/** The ${path.split("/").at(-2)} kit's guide for agents, as save_app's schema carries it. */`,
+			`/** The ${path.split("/").at(-2)} kit's guide for agents, as app_guide answers it. */`,
 			`export const ${name} = ${literal(sources[name])};`,
 		]),
 		...Object.entries(KIT_ENGINE_SOURCES).flatMap(([name, path]) => [

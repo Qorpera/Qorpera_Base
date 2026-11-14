@@ -10,6 +10,7 @@ import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { SkillSuggestion } from "../cloud/skills.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
+import type { InteractionCardApp } from "../ui/interaction-card.ts";
 import type { ComputerPanels } from "./views/computer.ts";
 
 export interface AgentDraft extends FigureChoice {
@@ -63,6 +64,9 @@ export interface WorkspaceActions {
 	/** A picture of the company's folder for a preview (a wall item's, a question option's), read with the member's own
 	 * folder client; null when the path names no picture to show (app/folder-images.ts). */
 	folderImage?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
+	/** An app of the company by its name, for a question option whose preview names one (`app:<name>`): the card shows
+	 * the app's cover, or its emblem and title, never its folder name. */
+	folderApp?: (name: string) => InteractionCardApp | undefined;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;

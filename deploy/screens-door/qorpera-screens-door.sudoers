@@ -1,0 +1,2 @@
+# The operator may run the live pictures' door, exactly its four verbs, as root (deploy/screens-door/README.md).
+OPERATOR ALL=(root) NOPASSWD: /usr/local/sbin/qorpera-screens-door token, /usr/local/sbin/qorpera-screens-door on, /usr/local/sbin/qorpera-screens-door off, /usr/local/sbin/qorpera-screens-door status
