@@ -11,6 +11,7 @@ import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	CLOUD_ASK_MEMBER_LABEL_MAX_BYTES,
 	CLOUD_ASK_MEMBER_LINE_MAX_BYTES,
+	cloudAskMemberInstructions,
 } from "@qorpera/runtime/cloud-thread-interactions";
 import { expect, it } from "vitest";
 import { catalogs } from "./fixtures/cloud-tool-catalogs-fixture.ts";
@@ -196,5 +197,9 @@ it("writes every description as a contract: short, in lines, and without the rul
 		expect(words, tool.name).not.toMatch(/do not wait or poll/);
 		// A description of more than two sentences is in lines, not one block.
 		if (Buffer.byteLength(words) > 1200) expect(words, tool.name).toContain("\n");
-	}
+	} // Review r1 of #1802: the catalog above has ask_member as a run without Gmail has it; a run with Gmail's tools gets
+	// the draft's steps too, held to the same bound.
+	const gmail = cloudAskMemberInstructions(true);
+	expect(gmail).toContain("Gmail: for an email draft, call gmail_get_profile");
+	expect(Buffer.byteLength(gmail)).toBeLessThanOrEqual(3600);
 });

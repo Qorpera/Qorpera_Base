@@ -36,7 +36,6 @@ const STAFF_DIRECT = [
 	"send_coworker_message",
 	"manage_todo",
 	"manage_worker",
-	"update_wall",
 	"machine_start",
 	"machine_run",
 	"machine_read",

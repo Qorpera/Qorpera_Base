@@ -52,7 +52,6 @@ import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
-import { cloudWallTools } from "./cloud-folder-wall.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -635,6 +634,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					composed = {
 						prompt,
 						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
+						// The tool-result rules stand inside them, after the company's files (track 3, T3-3).
+						resultRulesInside: true,
 						// Every request of a run with the view shares its conversation's cache key (§6.2).
 						composeContext:
 							view && context.identity.sessionId !== null
@@ -985,17 +986,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...(pictures
 									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
 									: []),
-								// The agent's wall above its thread (5 November 2026): its own report, kept by a company
-								// run of the agent; a worker reports to its agent instead.
-								...(identity.audienceKind === "company" && !work.isWorker
-									? cloudWallTools({
-											folder: folder.client,
-											operations,
-											identity,
-											handle: folder.handle,
-											timeZone: wake.time.timeZone,
-										})
-									: []),
+								// No wall (the founder, 14 November 2026: "rather drop the wall - it's the wrong medium for
+								// activity"): update_wall is offered to no run; a member learns work has started from the
+								// run's short first message, and what waits on a member is a card.
 							].filter(work.companyFile),
 							...(folderSearch
 								? [

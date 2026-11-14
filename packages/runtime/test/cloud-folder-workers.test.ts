@@ -610,7 +610,7 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
 		{ folderTodos, folderWorkers: f.workers() },
 	);
-	expect(manage?.description).toContain("- status: the workers of one todo, newest first");
+	expect(manage?.description).toContain("- status: the workers of one todo (name its todoKey), newest first");
 	expect(JSON.stringify(manage?.inputSchema)).toContain("holds brief.md");
 	// Coding sessions and their archive are this company's too (C3b).
 	expect(manage?.description).toContain(
@@ -623,6 +623,11 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	for (const action of ["dispatch", "status", "followup", "cancel", "decide", "archive"])
 		expect(manage?.description).toContain(`\n- ${action}: `);
 	expect(manage?.description).not.toContain("without todoKey, those of open todos");
+	// Review r1 of #1802: status needs the todoKey too (CloudFolderWorkers.status refuses without one), and the field says so.
+	expect(manage?.description).toContain(
+		"Every action takes the todo's todoKey; all but status also take operationKey and workerKey.",
+	);
+	expect(JSON.stringify(manage?.inputSchema)).toContain("every action names it, status too");
 	// The longest text a run gets: folder-v2 on a node that serves machines. The tool boundary refuses over 4096 bytes.
 	const [, withMachines] = cloudWorkerTools(
 		f.binding,

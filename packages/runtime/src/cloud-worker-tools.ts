@@ -138,10 +138,10 @@ const CLOUD_WORKER_TOOL_INTRO =
 
 export const CLOUD_WORKER_TOOL_DESCRIPTION = [
 	`${CLOUD_WORKER_TOOL_INTRO}, tests or builds on the company's machines (a worker starts and uses machines as you do, and waits for its own commands). Do quick work yourself.`,
-	"Every worker belongs to a todo (make it with manage_todo first) and has a workerKey. Every action but status takes operationKey, todoKey and workerKey.",
+	"Every worker belongs to a todo (make it with manage_todo first) and has a workerKey. Every action takes the todo's todoKey; all but status also take operationKey and workerKey.",
 	"Actions:",
 	"- dispatch: start one, with title, goal, definitionOfDone and access, and context, sources, saveTo and revival as needed. The worker starts from nothing, so the brief must be complete.",
-	"- status: the workers of one todo, newest first, as many as fit one result, each with the start of its summary; filter with state or search, and name a workerKey too for one whole result. More pages while moreWorkers is above zero.",
+	"- status: the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary; filter with state or search, and name a workerKey too for one whole result. More pages while moreWorkers is above zero.",
 	"- followup: new instructions or a missing answer (text) for the same finished or blocked worker, which keeps its history. Prefer it to a new dispatch on the same work.",
 	"- cancel: stop one.",
 	"- decide: accept or reject a finished result (decision, note). Accept only after checking it against its definition of done.",
@@ -376,7 +376,11 @@ export function cloudWorkerTools(
 			properties: {
 				action: { type: "string", enum: [...WORKER_ACTIONS] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				todoKey: { type: "string", pattern: WORK_KEY.source },
+				todoKey: {
+					type: "string",
+					pattern: WORK_KEY.source,
+					description: "The todo the workers belong to, by its todoKey: every action names it, status too.",
+				},
 				workerKey: {
 					type: "string",
 					pattern: WORK_KEY.source,

@@ -320,7 +320,7 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		"The basics (Mailbox, Bank, the finances, Members) stay loose at the front.",
 		"Two group levels at most, three to twelve apps in a group; a group of one app is ungrouped.",
 		"Members' own colours and changes in their own drawer are theirs and win there",
-		"After a change, say it in one line to the member who asked, or on your wall.",
+		"After a change, say it in one line to the member who asked.",
 		// The groups' colours (12 November 2026).
 		"Give every group a colour that sets it apart and fits its product or area; a group inside a group takes its parent's, so leave its own unset.",
 		"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null.",
@@ -328,7 +328,7 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		expect(ORGANIZE_APPS_DESCRIPTION).toContain(rule);
 	// The Co-Founder's tidy pass takes a group without a colour as a sign to sort the drawer.
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
-		"more than eight apps loose, a group with one app or with more than twelve, a top-level group without a colour, or a new product or area with no group of its own.",
+		"more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.",
 	);
 	const f = await fixture();
 	const tool = f.tool();
