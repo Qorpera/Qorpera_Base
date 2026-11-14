@@ -789,7 +789,7 @@ async function handle(message) {
 	} else if (message.id === "first_1") {
 		outputOf(message);
 		// After the answer: bookkeeping, the answer again exactly, or anything else.
-		if (mode === "final-send-then-tail") write(call("tail_1", "update_wall", {}));
+		if (mode === "final-send-then-tail") write(call("tail_1", "manage_todo", {}));
 		else if (mode === "final-send-replay") write(call("first_2", "send_message", { idempotencyKey: "k1", text: "Done.", phase: "final" }));
 		else write(call("note_1", "read_note", {}));
 	} else if (message.id === "tail_1" || message.id === "first_2") {

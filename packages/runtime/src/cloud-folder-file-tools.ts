@@ -592,8 +592,9 @@ export function appManifestCheck(path: string, before: AppManifestParse | null, 
 		);
 }
 
-/** An agent's wall written as a file (packages/cloud-client/src/agent-wall.ts): it must read as a wall, within its
- * limits, as update_wall keeps it. */
+/** An agent's wall written as a file (packages/cloud-client/src/agent-wall.ts): it must still read as a wall, within
+ * its limits, for the web that shows it. No tool keeps walls since 14 November 2026 (the founder: "rather drop the
+ * wall"); a member's hand or an agent's file tool is the only writer left. */
 export function wallCheck(path: string, text: string): void {
 	if (wallHandle(path) === null) return;
 	const { problems } = parseWall(text);
@@ -602,7 +603,7 @@ export function wallCheck(path: string, text: string): void {
 			`WALL_INVALID: nothing was written; wall.md has problems: ${problems
 				.slice(0, 5)
 				.map((problem) => `line ${problem.line}: ${problem.message}`)
-				.join("; ")}. Keep it with update_wall`,
+				.join("; ")}`,
 		);
 }
 

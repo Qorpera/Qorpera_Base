@@ -100,20 +100,20 @@ describe("cloud-owned native tool boundary", () => {
 		});
 		for (const answer of ["send_message", "ask_member"]) {
 			const card = tool(answer, "runtime", true);
-			const wall = tool("update_wall", "company_file");
+			const sidebar = tool("organize_sidebar", "company_file");
 			const todo = tool("manage_todo", "runtime");
 			const write = tool("company_write", "company_file");
 			const boundary = new CloudNativeToolBoundary({
 				companyId,
 				runId,
-				tools: [card, wall, todo, write],
+				tools: [card, sidebar, todo, write],
 				assertActive: async () => undefined,
 				signal: new AbortController().signal,
 			});
 			const call = (id: string, name: string, key = id) => boundary.invoke(id, "qorpera", name, { key });
 			// Before the answer every call runs, the bookkeeping too, and nothing ends the turn.
 			for (const [id, name] of [
-				["b1", "update_wall"],
+				["b1", "organize_sidebar"],
 				["b2", "company_write"],
 			] as const)
 				expect(await call(id, name)).toMatchObject({ success: true });
@@ -122,7 +122,7 @@ describe("cloud-owned native tool boundary", () => {
 			expect(answered.completesTurn).toBeUndefined();
 			// After it: the bookkeeping runs and the turn goes on; the answer's own call again replays it.
 			for (const [id, name, key] of [
-				["t1", "update_wall", "t1"],
+				["t1", "organize_sidebar", "t1"],
 				["t2", "manage_todo", "t2"],
 				["t3", answer, "answer"],
 			] as const) {
@@ -145,7 +145,7 @@ describe("cloud-owned native tool boundary", () => {
 			}
 			expect(write.execute).toHaveBeenCalledOnce();
 			expect(card.execute).toHaveBeenCalledTimes(2);
-			expect(wall.execute).toHaveBeenCalledTimes(2);
+			expect(sidebar.execute).toHaveBeenCalledTimes(2);
 			expect(todo.execute).toHaveBeenCalledOnce();
 		}
 	});

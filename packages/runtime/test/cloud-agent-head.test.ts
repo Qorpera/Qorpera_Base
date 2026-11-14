@@ -187,19 +187,21 @@ it("puts the head after everything an agent's runs share and before everything a
 	expect(prefixes[2]).toBe(prefixes[0]);
 	expect(prefixes[1]).not.toBe(prefixes[0]);
 	expect(prefixes[1]).not.toContain("# Your role");
-	expect(prefixes[1]).not.toContain("A company registers (CVR)");
+	expect(prefixes[1]).not.toContain("registers it (CVR)");
 	expect(prefixes[0]).toContain("# Your role: Co-Founder");
 	expect(prefixes[0]).toContain("\n# Your head\nThe next line is your head");
-	for (const later of ["# Standing work", "# This wake:", "# Continuing earlier work", "# Before you"])
+	// The sections the tools call for are shared too, before the head (track 3, T3-3).
+	expect(prefixes[0]).toContain("# Standing work");
+	expect(prefixes[1]).not.toContain("# Standing work");
+	for (const later of ["# This run:", "# Continuing earlier work", "# Before you"])
 		expect(prefixes[0]).not.toContain(later);
-	expect(runs[0]).toContain("# Standing work");
-	expect(runs[1]).not.toContain("# Standing work");
 	expect(runs[2]).toContain("# Continuing earlier work");
 	// The views follow the head, still before the wake's part.
 	const views = '{"schema":"qorpera.view/v1"}';
 	const withViews = compileCloudNativeCompanyInstructions(context, null, { head, views });
 	expect(withViews).toContain(`${head}\n${views}\n`);
-	expect(withViews.indexOf(views)).toBeLessThan(withViews.indexOf("# Standing work"));
+	expect(withViews.indexOf(views)).toBeGreaterThan(withViews.indexOf("# Standing work"));
+	expect(withViews.indexOf(views)).toBeLessThan(withViews.indexOf("# This run:"));
 	// Empty views add nothing.
 	expect(compileCloudNativeCompanyInstructions(context, null, { head, views: "" })).toBe(
 		compileCloudNativeCompanyInstructions(context, null, { head }),

@@ -54,7 +54,6 @@ async function bundle(scratch) {
 				'export {cloudNativeContextIdentity} from "./packages/runtime/src/cloud-native-context-composition.ts";',
 				'export {CLOUD_AFTER_ANSWER_TOOLS, CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
 				'export {CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput, parseCloudAgentSendReceipt} from "./packages/runtime/src/cloud-agent-mouth.ts";',
-				'export {cloudWallTools} from "./packages/runtime/src/cloud-folder-wall.ts";',
 				'export {cloudWorkerTools} from "./packages/runtime/src/cloud-worker-tools.ts";',
 				'export {CloudFolderTodos} from "./packages/runtime/src/cloud-folder-todos.ts";',
 				'export {CloudFolderWorkers} from "./packages/runtime/src/cloud-folder-workers.ts";',
@@ -377,8 +376,21 @@ function provider(state, calls, roundMs = 0) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, runtimeInstructions, interfaceTools, moreTools, tools } =
-		context;
+	const {
+		db,
+		binding,
+		objects,
+		binary,
+		port,
+		root,
+		nativeBinarySha256,
+		prompt,
+		runtimeInstructions,
+		resultRulesInside,
+		interfaceTools,
+		moreTools,
+		tools,
+	} = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -391,6 +403,8 @@ async function attempt(code, context) {
 	let folder;
 	let admitted;
 	const command = await code.nativeCodexFixtureCommand(root, [binary], port);
+	const composeContext = async (request, signal) =>
+		runWork ? await runWork(request, signal) : code.cloudNativeContextIdentity(request);
 	const result = await code.runCloudNativeRunToolSession({
 		binding,
 		controlPlane: controlPlane(db),
@@ -464,13 +478,13 @@ async function attempt(code, context) {
 				runLog: { log: opened.log, lines: opened.lines },
 			};
 		},
-		composeContext: async (request, signal) =>
-			runWork ? await runWork(request, signal) : code.cloudNativeContextIdentity(request),
+		...(resultRulesInside
+			? // As the company runtime gives them (track 3, T3-3): an opening whose instructions carry the tool-result rules.
+				{ opening: async () => ({ prompt, runtimeInstructions, composeContext, resultRulesInside: true }) }
+			: { composeContext, prompt, ...(runtimeInstructions === undefined ? {} : { runtimeInstructions }) }),
 		compactor,
 		command: command.command,
 		binarySha256: command.binarySha256,
-		prompt,
-		...(runtimeInstructions === undefined ? {} : { runtimeInstructions }),
 		signal: AbortSignal.timeout(240_000),
 		timeoutMs: 200_000,
 	});
@@ -515,11 +529,14 @@ export function answerOf(output) {
  * makes while the run goes on, with `platformChange`). The model's rounds take `roundMs` each. A run whose turn ends
  * before its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every
  * call and then the closing answer. `runtimeInstructions`, when given, are the run's developer instructions after the
- * tool-result rules, as the company runtime compiles them (by default none). Without the binary it prints NOT RUN. */
+ * tool-result rules, as the company runtime compiles them (by default none); with `resultRulesInside` they carry the
+ * rules themselves, as a company run's do since track 3, T3-3, and the session adds none. Without the binary it prints
+ * NOT RUN. */
 export async function proveCompanyRun({
 	name,
 	prompt,
 	runtimeInstructions,
+	resultRulesInside = false,
 	setup,
 	objects,
 	calls,
@@ -586,6 +603,7 @@ export async function proveCompanyRun({
 			nativeBinarySha256: made.nativeBinarySha256,
 			prompt,
 			runtimeInstructions,
+			resultRulesInside,
 			lane: state.lane,
 			interfaceTools,
 			moreTools,

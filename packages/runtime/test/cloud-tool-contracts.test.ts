@@ -15,7 +15,6 @@ import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import { cloudInterfaceTools } from "@qorpera/runtime/cloud-folder-interface-tools";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
 import { cloudPictureTool } from "@qorpera/runtime/cloud-folder-picture-tool";
-import { cloudWallTools } from "@qorpera/runtime/cloud-folder-wall";
 import { cloudGoodWillTools } from "@qorpera/runtime/cloud-good-will-tools";
 import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import { cloudMachineTools } from "@qorpera/runtime/cloud-machine-tools";
@@ -108,7 +107,6 @@ async function catalogs() {
 	} as never;
 	const staff = [
 		...shared(false),
-		...cloudWallTools({ folder, operations, identity, handle: "alice", timeZone: "UTC" }),
 		cloudCoworkerMessageTool(binding, identity, standIn()),
 		...cloudRoutineTools(binding, identity, undefined, standIn()),
 		cloudRoutineDecisionTool(binding, identity, {

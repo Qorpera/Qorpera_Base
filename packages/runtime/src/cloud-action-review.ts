@@ -393,7 +393,8 @@ export function cloudActionEffect(
 		// agent's or a member's app changes that app, as save_app does (make_picture's prepare says which).
 		case "make_picture":
 			return args.foreignOwner === true ? "delegation" : "internal";
-		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
+		// The agent's wall was its own report of its work above its thread (5 November 2026); no run is offered the tool
+		// since 14 November 2026, and the name stays for the observations and receipts of earlier runs.
 		case "update_wall":
 			return "internal";
 		// The company's code kept in Qorpera (20260930720000). An undo only puts main back to a state it had, as a
