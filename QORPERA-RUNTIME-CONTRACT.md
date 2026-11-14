@@ -5340,6 +5340,9 @@ amendment governs. In-place edits are marked "(changed in place)".
    awake: a company machine after 5 minutes, a coding machine after 10
    minutes, an agent's task machine after an hour. These stay per-node or
    per-environment settings.
+   - A task machine that is awake only because a member woke it sleeps 10
+     minutes after that member's last sign (the 2026-11-14 amendment "a
+     machine a member woke sleeps when that member is gone").
    - Sleep stops what is still running. Files and disks stay as before.
    - The next run of the agent that started a stopped program is told what
      stopped and why, once.
@@ -6744,6 +6747,36 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
 7. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
    final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
    `update_wall`. Nothing else; no tool's schema changes.
+
+### 2026-11-14 amendment: a machine a member woke sleeps when that member is gone
+
+Founder decision of 14 November 2026: "if a person has an idle tab in qorpera open, we should be able to close the
+machines when the user clearly isn't actually online"; "im referring to machines that start due to a users laptop being
+open on the platform - as we keep a machine warm for any requests they may send. not the always on machines"; and, to
+"Sleep a member-woken machine 5 minutes after the member leaves, not an hour?": "let's go with 10 minutes". It amends
+item 3 of the 2026-10-03 amendment "one idle rule for every machine" ("an agent's task machine after an hour"), for one
+kind of task machine. Nothing else of that amendment changes: no caps, busy work an agent started runs on, sleep stops
+what runs and the agent is told, always-on machines are never stopped by the kernel. It goes live with migration
+`20260930759000`, in a release the founder names.
+
+1. **Awake only for a member.** An agent's task machine is awake only for a member when the start that stands was a
+   member's (the computer window's wake, or a computer a member started for an agent) and no agent has used it since:
+   no command of an agent's that still runs or that started since (a worker's and a coding conversation's are
+   commands), no agent at its screen since, and no run that still goes that started the machine or asked for it by
+   `machine_start`. Once an agent uses it, it is an agent's machine again, and the hour decides, until it has slept and
+   a member wakes it.
+2. **It sleeps 10 minutes after that member's last sign**, counted from its boot when that is later. The time is a
+   per-node setting beside the quiet window (`member_sleep_after_seconds`, 600).
+3. **A member's signs** are what a member does at the machine: waking it, watching its screen, typing on its desktop
+   (privately or on the desktop shared with the agent), moving the pointer over it, turning its screen on. Watching
+   counts for as long as the member's word that they watch is at most that time old: a window in a tab nobody touches
+   stops counting, and the window itself stops looking then and asks whether the member still watches. A private
+   hold's heartbeat is no sign.
+4. **A busy machine is no sign.** For this kind of machine only, busy work does not keep it awake: what runs on it was
+   started from a member's desktop, or starts by itself at boot, and no agent's turn is waiting on it. A program a
+   member left running on the desktop stops with the machine.
+5. **Coming back.** The machine is asleep as after any idle sleep; the member's own ask wakes it (opening the computer,
+   or saying they still watch). Nothing new is shown to members.
 
 ## 20. Enforcement matrix
 
