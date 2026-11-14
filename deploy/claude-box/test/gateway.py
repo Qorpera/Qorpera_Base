@@ -12,6 +12,7 @@ With --gate-ms N it also stands in for C1's output gate (CONTRACT.md section 3):
 after a "release" that began after it came, each release taking N ms, one at a time per channel, the next starting at
 once on the file channel and at most every 200 ms on the exec channel (HOME_SFTP_RELEASE_SPACING_MS = 0; the exec
 channel's spacing). No folder service here: N stands in for the real release's latency.
+SOCKET is a Unix socket's path, or HOST:PORT for TCP (the stock run host's proof reaches it from another nested VM).
 Usage: gateway.py HOME SOCKET LOGDIR [--gate-ms N]. SIGTERM: close every channel, write LOGDIR/gateway-summary.json.
 """
 import asyncio, base64, binascii, json, os, re, secrets, signal, sys, time
@@ -178,11 +179,15 @@ async def channel(reader, writer):
 
 
 async def main():
-    if os.path.exists(SOCKET):
-        os.unlink(SOCKET)
     # Lines of up to C1's 8 MiB (a base64 piece of the SFTP stream is about 1 MiB; asyncio's default is 64 KiB).
-    server = await asyncio.start_unix_server(channel, SOCKET, limit=16 * 1024 * 1024)
-    os.chmod(SOCKET, 0o666)
+    if SOCKET.startswith("/"):
+        if os.path.exists(SOCKET):
+            os.unlink(SOCKET)
+        server = await asyncio.start_unix_server(channel, SOCKET, limit=16 * 1024 * 1024)
+        os.chmod(SOCKET, 0o666)
+    else:
+        host, port = SOCKET.rsplit(":", 1)
+        server = await asyncio.start_server(channel, host, int(port), limit=16 * 1024 * 1024)
     print("READY", flush=True)
     stop = asyncio.Event()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
