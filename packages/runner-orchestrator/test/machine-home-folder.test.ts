@@ -284,6 +284,33 @@ describe("a home's exec output: a few releases in hand, a stream still bounded (
 		expect(g.releases).toHaveLength(9);
 	});
 
+	it("waits no longer than one spacing when the clock is set back", async () => {
+		const g = gated(200, 1024, 4);
+		const answered = { count: 0 };
+		// The burst is spent, then the clock goes back a minute (the executor's clock stepped by its time service).
+		for (let i = 0; i < 4; i++) {
+			g.gate.push(Buffer.from("x"));
+			await answerAll(g, answered);
+		}
+		g.advance(-60_000);
+		g.gate.push(Buffer.from("y"));
+		await answerAll(g, answered);
+		await g.gate.drained();
+		expect(g.passed.join("")).toBe("xxxxy");
+		expect(g.sleeps).toEqual([200]);
+		// And with one release in hand (the default), as the gate was before the burst.
+		const one = gated(200);
+		const seen = { count: 0 };
+		one.gate.push(Buffer.from("a"));
+		await answerAll(one, seen);
+		one.advance(-60_000);
+		one.gate.push(Buffer.from("b"));
+		await answerAll(one, seen);
+		await one.gate.drained();
+		expect(one.passed.join("")).toBe("ab");
+		expect(one.sleeps).toEqual([200]);
+	});
+
 	it("still ends at a release that holds, burst or not", async () => {
 		const g = gated(200, 1024, 4);
 		g.gate.push(Buffer.from("seen"));
