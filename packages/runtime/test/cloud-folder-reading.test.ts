@@ -222,6 +222,11 @@ it("refuses before its receipt an agent that does not work here and a member the
 		f.writer().save(request({ things: things(["research"], [STRANGER]) }), f.context),
 		`${STRANGER} is not a member of the company`,
 	);
+	// Review r1 of #1819 (F3): an id of the parser's shape that is no version-4 UUID is checked too.
+	await refuses(
+		f.writer().save(request({ things: things(["research"], ["11111111-1111-1111-1111-111111111111"]) }), f.context),
+		"11111111-1111-1111-1111-111111111111 is not a member of the company",
+	);
 	expect(f.commits).toEqual([]);
 	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
 	await f

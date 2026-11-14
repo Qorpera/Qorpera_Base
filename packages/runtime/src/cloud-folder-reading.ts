@@ -13,7 +13,7 @@ import {
 	type ReadingThing,
 	writeReadingFile,
 } from "@qorpera/cloud-client/company-state-files";
-import { isUuid, type JsonValue } from "@qorpera/contracts";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { invalidMessage } from "./cloud-folder-hiring.ts";
@@ -380,7 +380,9 @@ export class CloudFolderReading {
 				throw new CloudToolRefusal(
 					`${change.agent} is not an agent's folder under ${osPath("agents")}/: a change names the agent by its folder name`,
 				);
-		const waited = [...new Set(request.things.flatMap((thing) => thing.waitsFor))].filter((id) => isUuid(id));
+		const waited = [...new Set(request.things.flatMap((thing) => thing.waitsFor))].filter(
+			(id) => id !== READING_FOUNDERS,
+		);
 		if (!waited.length) return;
 		const members = await this.#members(signal);
 		const stranger = waited.find((id) => !members.has(id));
