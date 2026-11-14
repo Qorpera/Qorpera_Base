@@ -2242,6 +2242,24 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	/** The company's days by kind for the leased sync's range (20260930769000). */
+	recordBankDays(input: Parameters<BankSyncAuthority["recordBankDays"]>[0], signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_bank_days($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::date,$7::date,$8::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				input.from,
+				input.to,
+				JSON.stringify(input.days),
+			],
+			signal,
+		);
+	}
+
 	finishBankSync(input: Parameters<BankSyncAuthority["finishBankSync"]>[0], signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_finish_bank_sync($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::text,$7::jsonb,$8::timestamptz,$9::text,$10::text) as result",

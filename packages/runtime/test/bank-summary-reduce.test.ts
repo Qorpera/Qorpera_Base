@@ -1,4 +1,10 @@
-import { danishAccount, reduceBankSummary } from "@qorpera/runtime/bank-summary-reduce";
+import {
+	BANK_DAYS_MAX,
+	copenhagenDay,
+	danishAccount,
+	reduceBankDays,
+	reduceBankSummary,
+} from "@qorpera/runtime/bank-summary-reduce";
 import type { EnableBankingTransaction } from "@qorpera/runtime/cloud-connector-enable-banking";
 import { describe, expect, it } from "vitest";
 
@@ -286,5 +292,221 @@ describe("balances as the bank's types mean them", () => {
 		]);
 		for (const category of summary.moneyOut.categories)
 			for (const item of category.items) expect(item.name.length).toBeLessThanOrEqual(80);
+	});
+});
+
+describe("the days by kind", () => {
+	const input = (accounts: Parameters<typeof reduceBankDays>[0]["accounts"], at = now) => ({
+		bank: "Danske Bank",
+		now: at,
+		pausedSince: null,
+		payTo: null,
+		accounts,
+	});
+	const balances = [{ type: "CLBD", amount: 282730, currency: "DKK", referenceDate: date(0) }];
+	const days = reduceBankDays(input([{ balances, transactions: year() }]));
+	const summary = reduceBankSummary(input([{ balances, transactions: year() }]));
+	const total = (rows: typeof days.days) => Math.round(rows.reduce((sum, row) => sum + row.amount, 0) * 100) / 100;
+
+	it("covers each day from the first booked one to today, with only booked kroner and no names", () => {
+		expect(days).toMatchObject({ schema: "qorpera.bank-days/v1", from: date(364), to: date(0) });
+		expect(days.days[0]?.day).toBe(date(364));
+		expect(days.days.at(-1)?.day).toBe(date(0));
+		const serialized = JSON.stringify(days);
+		for (const name of ["Nets", "NETS", "MobilePay", "Dataløn", "Husleje", "Bean", "Skattestyrelsen", "grinder"])
+			expect(serialized).not.toContain(name);
+		for (const row of days.days)
+			expect(Object.keys(row).sort()).toEqual(["amount", "count", "day", "direction", "kind"]);
+		// The pending card payment is no day's.
+		expect(days.days.filter((row) => row.day === date(1) && row.direction === "out")).toEqual([]);
+	});
+
+	it("sums each day's money in and out by kind, with how many payments, adding up to the months", () => {
+		expect(days.days.filter((row) => row.day === date(0))).toEqual([
+			{ day: date(0), direction: "in", kind: "sales", amount: 4450, count: 2 },
+		]);
+		expect(days.days.filter((row) => row.day === date(3))).toEqual([
+			{ day: date(3), direction: "in", kind: "sales", amount: 4450, count: 2 },
+			{ day: date(3), direction: "out", kind: "other", amount: 6150, count: 1 },
+		]);
+		expect(days.days.find((row) => row.day === date(11) && row.direction === "out")).toEqual({
+			day: date(11),
+			direction: "out",
+			kind: "salaries",
+			amount: 64000,
+			count: 1,
+		});
+		expect(days.days.find((row) => row.day === date(50) && row.direction === "out")?.kind).toBe("taxes");
+		expect(days.days.find((row) => row.day === date(19) && row.direction === "out")?.kind).toBe("rent");
+		for (const month of summary.months) {
+			const inMonth = days.days.filter((row) => row.day.startsWith(month.month));
+			expect(total(inMonth.filter((row) => row.direction === "in"))).toBe(month.in);
+			expect(total(inMonth.filter((row) => row.direction === "out"))).toBe(month.out);
+		}
+	});
+
+	it("gives this month's money out the summary's categories, as words", () => {
+		const words: Record<string, string> = {
+			Salaries: "salaries",
+			"Taxes and VAT": "taxes",
+			Rent: "rent",
+			Utilities: "utilities",
+			Subscriptions: "subscriptions",
+			"Card and app fees": "fees",
+			Other: "other",
+		};
+		const thisMonth = days.days.filter(
+			(row) => row.day.startsWith(summary.moneyOut.month) && row.direction === "out",
+		);
+		for (const category of summary.moneyOut.categories)
+			expect(total(thisMonth.filter((row) => row.kind === words[category.name]))).toBe(category.total);
+		expect(new Set(thisMonth.map((row) => row.kind))).toEqual(
+			new Set(summary.moneyOut.categories.map((category) => words[category.name])),
+		);
+	});
+
+	it("names money in by what paid it, never who: payment providers' payouts, the tax authority's refunds, the rest", () => {
+		const providers = [
+			"Stripe Technology Europe",
+			"SumUp Payments",
+			"Zettle by PayPal",
+			"Shopify International",
+			"KLARNA BANK AB",
+			"Nets Denmark A/S",
+			"Vipps MobilePay AS",
+		];
+		const paid = reduceBankDays(
+			input([
+				{
+					balances: [],
+					transactions: [
+						...providers.map((name) => tx(2, 100, name)),
+						tx(2, 2500, "Skattestyrelsen"),
+						tx(2, 900, "SKAT"),
+						tx(2, 40, null, { text: "Overførsel fra Jens" }),
+						tx(2, 3000, "Kunde ApS"),
+					],
+				},
+			]),
+		);
+		expect(paid.days).toEqual([
+			{ day: date(2), direction: "in", kind: "sales", amount: 700, count: 7 },
+			{ day: date(2), direction: "in", kind: "tax", amount: 3400, count: 2 },
+			{ day: date(2), direction: "in", kind: "other", amount: 3040, count: 2 },
+		]);
+		// A provider's fee is money out, a fee.
+		const fee = reduceBankDays(input([{ balances: [], transactions: [tx(2, -12.5, "Stripe")] }]));
+		expect(fee.days).toEqual([{ day: date(2), direction: "out", kind: "fees", amount: 12.5, count: 1 }]);
+	});
+
+	it("adds the accounts together, kroner only", () => {
+		const both = reduceBankDays(
+			input([
+				{ balances: [], transactions: [tx(4, 100, "Kunde"), tx(4, -30, "Kiosk")] },
+				{ balances: [], transactions: [tx(4, 50, "Kunde"), tx(4, 999, "Kunde", { currency: "EUR" })] },
+			]),
+		);
+		expect(both.days).toEqual([
+			{ day: date(4), direction: "in", kind: "other", amount: 150, count: 2 },
+			{ day: date(4), direction: "out", kind: "other", amount: 30, count: 1 },
+		]);
+	});
+
+	it("covers only today when nothing is booked, and at most 400 days", () => {
+		expect(reduceBankDays(input([{ balances, transactions: [] }]))).toEqual({
+			schema: "qorpera.bank-days/v1",
+			from: date(0),
+			to: date(0),
+			days: [],
+		});
+		const long = reduceBankDays(
+			input([{ balances, transactions: [tx(500, 10, "Kunde"), tx(399, 20, "Kunde"), tx(400, 30, "Kunde")] }]),
+		);
+		expect(BANK_DAYS_MAX).toBe(400);
+		expect(long.from).toBe(date(399));
+		expect(long.days).toEqual([{ day: date(399), direction: "in", kind: "other", amount: 20, count: 1 }]);
+	});
+});
+
+describe("today is the Copenhagen date", () => {
+	const at = (moment: string, transactions: EnableBankingTransaction[] = []) => {
+		const reading = {
+			bank: "Danske Bank",
+			now: new Date(moment),
+			pausedSince: null,
+			payTo: null,
+			accounts: [{ balances: [], transactions }],
+		};
+		return { summary: reduceBankSummary(reading), days: reduceBankDays(reading) };
+	};
+	const on = (day: string, amount: number) =>
+		({
+			reference: null,
+			amount,
+			currency: "DKK",
+			status: "BOOK",
+			date: day,
+			counterparty: "Kunde",
+			text: null,
+		}) satisfies EnableBankingTransaction;
+
+	it("turns at midnight in Copenhagen, summer and winter, not at midnight UTC", () => {
+		// Summer (UTC+2): 23:59 and 00:00 in Copenhagen.
+		expect(copenhagenDay(new Date("2026-07-14T21:59:59Z"))).toBe("2026-07-14");
+		expect(copenhagenDay(new Date("2026-07-14T22:00:00Z"))).toBe("2026-07-15");
+		// Winter (UTC+1).
+		expect(copenhagenDay(new Date("2026-12-31T22:59:59Z"))).toBe("2026-12-31");
+		expect(copenhagenDay(new Date("2026-12-31T23:00:00Z"))).toBe("2027-01-01");
+		// The nights the clocks change: 29 March (02:00 becomes 03:00) and 25 October (03:00 becomes 02:00).
+		expect(copenhagenDay(new Date("2026-03-28T22:59:59Z"))).toBe("2026-03-28");
+		expect(copenhagenDay(new Date("2026-03-28T23:00:00Z"))).toBe("2026-03-29");
+		expect(copenhagenDay(new Date("2026-03-29T21:59:59Z"))).toBe("2026-03-29");
+		expect(copenhagenDay(new Date("2026-03-29T22:00:00Z"))).toBe("2026-03-30");
+		expect(copenhagenDay(new Date("2026-10-24T21:59:59Z"))).toBe("2026-10-24");
+		expect(copenhagenDay(new Date("2026-10-24T22:00:00Z"))).toBe("2026-10-25");
+		expect(copenhagenDay(new Date("2026-10-25T22:59:59Z"))).toBe("2026-10-25");
+		expect(copenhagenDay(new Date("2026-10-25T23:00:00Z"))).toBe("2026-10-26");
+	});
+
+	it("counts a payment booked on the new day just after midnight, in the summary and the days", () => {
+		// 00:30 on 1 November in Copenhagen is still 31 October in UTC.
+		const { summary, days } = at("2026-10-31T23:30:00Z", [on("2026-10-31", 100), on("2026-11-01", 40)]);
+		expect(days.to).toBe("2026-11-01");
+		expect(days.days.map((row) => row.day)).toEqual(["2026-10-31", "2026-11-01"]);
+		expect(summary.history.at(-1)?.date).toBe("2026-11-01");
+		expect(summary.moneyIn.month).toBe("2026-11");
+		expect(summary.moneyOut.month).toBe("2026-11");
+		expect(summary.months.at(-1)).toEqual({ month: "2026-11", in: 40, out: 0 });
+		// The summary keeps its shape: the Bank page parses it strictly.
+		expect(Object.keys(summary).sort()).toEqual(
+			[
+				"schema",
+				"bank",
+				"updatedAt",
+				"pausedSince",
+				"saldo",
+				"disponibel",
+				"reserveret",
+				"payTo",
+				"history",
+				"expected",
+				"months",
+				"moneyIn",
+				"moneyOut",
+			].sort(),
+		);
+		expect(summary.updatedAt).toBe("2026-10-31T23:30:00.000Z");
+	});
+
+	it("leaves out a payment dated after today in Copenhagen", () => {
+		// 23:30 on 24 October in Copenhagen (summer time): the 25th has not begun.
+		const { summary, days } = at("2026-10-24T21:30:00Z", [on("2026-10-24", 100), on("2026-10-25", 40)]);
+		expect(days.to).toBe("2026-10-24");
+		expect(days.days.map((row) => row.day)).toEqual(["2026-10-24"]);
+		expect(summary.history.at(-1)?.date).toBe("2026-10-24");
+		// On the night the clocks go back, 00:30 UTC is 02:30 in Copenhagen on the 25th.
+		const night = at("2026-10-25T00:30:00Z", [on("2026-10-25", 40)]);
+		expect(night.days.to).toBe("2026-10-25");
+		expect(night.days.days).toEqual([{ day: "2026-10-25", direction: "in", kind: "other", amount: 40, count: 1 }]);
 	});
 });

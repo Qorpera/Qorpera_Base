@@ -57,9 +57,11 @@ function fixture(options: {
 	fields?: Record<string, string>;
 	kept?: (sent: readonly KeptBankTransaction[]) => unknown[];
 	complete?: boolean;
+	daysError?: Error;
 }) {
 	const finished: Parameters<BankSyncAuthority["finishBankSync"]>[0][] = [];
 	const recorded: Parameters<BankSyncAuthority["recordBankTransactions"]>[0][] = [];
+	const days: Parameters<BankSyncAuthority["recordBankDays"]>[0][] = [];
 	const authority: BankSyncAuthority = {
 		claimBankSync: vi.fn(async () => (options.claim === undefined ? claim() : options.claim)),
 		recordBankTransactions: vi.fn(async (input: Parameters<BankSyncAuthority["recordBankTransactions"]>[0]) => {
@@ -68,6 +70,11 @@ function fixture(options: {
 				? options.kept(input.transactions)
 				: input.transactions.map(({ key: _key, ...rest }) => rest);
 			return { schema: "qorpera.bank-transactions-kept/v1", transactions: kept };
+		}),
+		recordBankDays: vi.fn(async (input: Parameters<BankSyncAuthority["recordBankDays"]>[0]) => {
+			days.push(input);
+			if (options.daysError) throw options.daysError;
+			return { schema: "qorpera.bank-days-result/v1" };
 		}),
 		finishBankSync: vi.fn(async (input) => {
 			finished.push(input);
@@ -114,7 +121,7 @@ function fixture(options: {
 		bank,
 		now: () => NOW,
 	});
-	return { syncs, authority, keyring, bank, finished, recorded, opened };
+	return { syncs, authority, keyring, bank, finished, recorded, days, opened };
 }
 
 it("does nothing when no sync is due", async () => {
@@ -204,6 +211,67 @@ it("keeps a long history in batches the database takes, and summarizes from the 
 		12_001,
 	);
 	expect(f.finished[0]?.outcome).toBe("current");
+});
+
+it("records the days by kind of the accounts shared now before the summary, under the claim's lease", async () => {
+	const elsewhere = {
+		accountKey: "e".repeat(64),
+		date: "2026-10-02",
+		amount: -7_000,
+		currency: "DKK",
+		counterparty: "Husleje",
+		text: null,
+	};
+	const f = fixture({
+		transactions: [
+			booked("2026-10-01", 500, "Stripe Payments Europe"),
+			booked("2026-10-01", 250, "Wolt"),
+			booked("2026-10-05", -99, "Figma", "ref-figma"),
+			{ ...booked("2026-10-21", -20, "Café"), status: "PDNG" },
+		],
+		// A row of an account this session does not share (an earlier bank's) is not counted.
+		kept: (sent) => [elsewhere, ...sent.map(({ key: _key, ...rest }) => rest)],
+	});
+	expect(await f.syncs.pass(signal)).toBe("current");
+	expect(f.days).toHaveLength(1);
+	expect(f.days[0]).toMatchObject({
+		secretId: f.finished[0]?.secretId,
+		version: 1,
+		lease: "0c0c0c0c-0000-4000-8000-00000000c1a1",
+		from: "2026-10-01",
+		to: "2026-10-21",
+	});
+	expect(f.days[0]?.days).toEqual([
+		{ day: "2026-10-01", direction: "in", kind: "sales", amount: 500, count: 1 },
+		{ day: "2026-10-01", direction: "in", kind: "other", amount: 250, count: 1 },
+		{ day: "2026-10-05", direction: "out", kind: "subscriptions", amount: 99, count: 1 },
+	]);
+	expect(JSON.stringify(f.days)).not.toMatch(/Stripe|Wolt|Figma|Husleje|Café|DK50/);
+	const recordDays = vi.mocked(f.authority.recordBankDays).mock.invocationCallOrder[0] ?? 0;
+	expect(recordDays).toBeGreaterThan(vi.mocked(f.authority.recordBankTransactions).mock.invocationCallOrder[0] ?? 0);
+	expect(recordDays).toBeLessThan(vi.mocked(f.authority.finishBankSync).mock.invocationCallOrder[0] ?? 0);
+});
+
+it("records the summary when the days could not be recorded, and no days of a fetch that publishes no summary", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const f = fixture({ daysError: new Error("function qorpera_record_bank_days does not exist") });
+		expect(await f.syncs.pass(signal)).toBe("current");
+		expect(f.finished[0]).toMatchObject({ outcome: "current", error: null });
+		expect(f.finished[0]?.summary?.saldo).toBe(1000);
+		expect(error).toHaveBeenCalledWith(
+			"Bank sync: the days by kind could not be recorded; the next sync writes them again.",
+		);
+		expect(JSON.stringify(error.mock.calls)).not.toContain("does not exist");
+	} finally {
+		error.mockRestore();
+	}
+	const incomplete = fixture({ complete: false });
+	expect(await incomplete.syncs.pass(signal)).toBe("failed");
+	expect(incomplete.days).toEqual([]);
+	const ended = fixture({ bankError: new EnableBankingSessionEnded("EXPIRED_SESSION") });
+	expect(await ended.syncs.pass(signal)).toBe("ended");
+	expect(ended.days).toEqual([]);
 });
 
 it("reports an ended consent so the member is asked to connect again", async () => {

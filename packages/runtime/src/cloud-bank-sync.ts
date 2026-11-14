@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { type BankSummaryFile, danishAccount, reduceBankSummary } from "./bank-summary-reduce.ts";
+import {
+	type BankDay,
+	type BankSummaryFile,
+	type BankSummaryInput,
+	danishAccount,
+	reduceBankDays,
+	reduceBankSummary,
+} from "./bank-summary-reduce.ts";
 import {
 	type EnableBankingAccount,
 	type EnableBankingBalance,
@@ -17,7 +24,9 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * each shared account's balances and transactions from Enable Banking, keeps the booked transactions in the
  * database (a bank hands out its full history only shortly after the member signs in), reduces everything
  * to the bank summary the Bank page draws, and records it. Writing the summary to the company folder is the
- * object gateway's.
+ * object gateway's. Before the summary it records the company's days by kind (money in and out each day, summed by a
+ * kind word, migration 20260930769000), from the same accounts: only the vault knows which accounts the member shares
+ * now.
  *
  * Nothing here logs or records a session id, an account number or a transaction: errors are fixed phrases,
  * accounts are known to the database by a hash of their bank identity, transactions by a hash of their own.
@@ -32,6 +41,18 @@ export interface BankSyncAuthority {
 			lease: string;
 			accountKeys: readonly string[];
 			transactions: readonly KeptBankTransaction[];
+		},
+		signal: AbortSignal,
+	): Promise<unknown>;
+	/** Replaces the company's days by kind from `from` to `to` (the leased sync's; 20260930769000). */
+	recordBankDays(
+		input: {
+			secretId: string;
+			version: number;
+			lease: string;
+			from: string;
+			to: string;
+			days: readonly BankDay[];
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
@@ -351,7 +372,7 @@ export class CloudBankSyncs {
 					.filter((account) => (account.account.currency ?? "DKK") === "DKK")
 					.map((account) => danishAccount(account.account.iban))
 					.find((account) => account !== null) ?? null;
-			const summary = reduceBankSummary({
+			const reading: BankSummaryInput = {
 				bank: fetched.bank,
 				now: this.#now(),
 				pausedSince: null,
@@ -374,7 +395,26 @@ export class CloudBankSyncs {
 						...account.transactions.filter((transaction) => transaction.status !== "BOOK"),
 					],
 				})),
-			});
+			};
+			const summary = reduceBankSummary(reading);
+			const days = reduceBankDays(reading);
+			// The days are the company's numbers, not the Bank page's: a failure to record them leaves the days as they
+			// were (the next sync writes them again) and never holds the summary back.
+			try {
+				await this.#authority.recordBankDays(
+					{
+						secretId: claim.secretId,
+						version: claim.version,
+						lease: claim.lease,
+						from: days.from,
+						to: days.to,
+						days: days.days,
+					},
+					AbortSignal.timeout(DATABASE_DEADLINE_MS),
+				);
+			} catch {
+				console.error("Bank sync: the days by kind could not be recorded; the next sync writes them again.");
+			}
 			await finish("current", summary, consentUntil, null);
 			return "current";
 		} catch {
