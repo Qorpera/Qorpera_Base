@@ -1545,10 +1545,16 @@ export class CompanyController {
 
 	/** Changes the member's own arrangement of the drawer: drawn at once, then written whole, one write at a time. A
 	 * write another tab overtook is read again and said in the rail. */
-	async changeAppLayout(next: MemberAppLayout): Promise<boolean> {
+	async changeAppLayout(next: MemberAppLayout, options: { quiet?: boolean } = {}): Promise<boolean> {
 		const current = this.store.get().appLayout;
 		if (this.#stopped || !current || this.#resetting || this.#appLayoutStale) return false;
-		this.store.set({ appLayout: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
+		// A quiet change is not the member's own act (a light ask's answer names a group): it says nothing in the rail,
+		// neither clearing what stands there nor adding to it when its write is refused.
+		this.store.set({
+			appLayout: { ...current, layout: next },
+			...(options.quiet ? {} : { railError: undefined }),
+			sidebarReset: undefined,
+		});
 		// With nothing on its way, the time last read is the one to name; behind another write, the time it answered.
 		const behind = this.#appLayoutPending > 0;
 		this.#appLayoutPending++;
@@ -1575,12 +1581,13 @@ export class CompanyController {
 		} catch (error) {
 			this.#appLayoutPending--;
 			if (this.#stopped) return false;
-			this.store.set({
-				railError:
-					error instanceof CloudRpcError && error.code === "QAL01"
-						? t("Your apps changed in another tab. Try again.")
-						: t("The apps could not be arranged. Try again."),
-			});
+			if (!options.quiet)
+				this.store.set({
+					railError:
+						error instanceof CloudRpcError && error.code === "QAL01"
+							? t("Your apps changed in another tab. Try again.")
+							: t("The apps could not be arranged. Try again."),
+				});
 			if (!this.#appLayoutPending) await this.refreshAppLayout();
 			return false;
 		}
@@ -1596,7 +1603,8 @@ export class CompanyController {
 	 * shown in a conversation. Its answer is read every two seconds for at most two minutes; when it comes and the
 	 * group is still the member's own under `given`, the group takes it as its name. A member who renamed the group or
 	 * took it apart meanwhile keeps what they did. With no answer (no login of the member's own, a cloud without light
-	 * asks, a call that failed) the name stays, and nothing is said. */
+	 * asks, a call that failed) the name stays, and nothing is said; nor is anything said when the rename itself is
+	 * refused. */
 	async nameNewAppGroup(
 		id: string,
 		given: string,
@@ -1609,16 +1617,15 @@ export class CompanyController {
 		try {
 			ask = await this.#api.requestLightAsk(this.profile.profileId, crypto.randomUUID(), NAME_APP_GROUP, input);
 			for (let reads = 0; ask?.state === "waiting" && reads < LIGHT_ASK_READS; reads++) {
+				// Two seconds, or the company closing: its listener goes with the timer, so a long wait leaves none behind.
 				await new Promise<void>((resolve) => {
-					const timer = setTimeout(resolve, LIGHT_ASK_READ_MS);
-					this.signal.addEventListener(
-						"abort",
-						() => {
-							clearTimeout(timer);
-							resolve();
-						},
-						{ once: true },
-					);
+					const done = (): void => {
+						clearTimeout(timer);
+						this.signal.removeEventListener("abort", done);
+						resolve();
+					};
+					const timer = setTimeout(done, LIGHT_ASK_READ_MS);
+					this.signal.addEventListener("abort", done, { once: true });
 				});
 				if (this.#stopped) return;
 				ask = await this.#api.readLightAsk(this.profile.profileId, ask.id);
@@ -1632,7 +1639,9 @@ export class CompanyController {
 		const layout = this.store.get().appLayout?.layout;
 		// Still the member's own group under the name it was given: a rename or an ungroup since then stands.
 		if (!name || name === given || !layout || layout.groups[id]?.mine?.name !== given) return;
-		await this.changeAppLayout(renameAppGroup(layout, id, name, undefined));
+		// Quiet: a write the cloud refuses (another tab changed the drawer meanwhile) is not the member's to try again;
+		// the layout is read again and the name the drawer gave stays.
+		await this.changeAppLayout(renameAppGroup(layout, id, name, undefined), { quiet: true });
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.

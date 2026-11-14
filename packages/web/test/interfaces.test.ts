@@ -1981,6 +1981,64 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		}
 	});
 
+	it("says nothing when the answer's rename is refused: the layout is read again and the name stays (review F1 on #1798)", async () => {
+		localStorage.clear();
+		const { element, set, f, ask, controller } = drawer();
+		ask.mockResolvedValue(lightAsk("waiting"));
+		vi.spyOn(f.api, "readLightAsk").mockResolvedValue(lightAsk("answered", { answer: "People and trips" }));
+		const reread = vi.spyOn(f.api, "readMemberAppLayout");
+		vi.useFakeTimers();
+		try {
+			groupTripsWithMembers(element);
+			await vi.advanceTimersByTimeAsync(0);
+			const made = set.mock.calls.at(-1)![1] as MemberAppLayout;
+			// Another tab changed the drawer meanwhile: the cloud refuses the rename, and has the group as it was made.
+			set.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_set_member_app_layout", { message: "stale", code: "QAL01" }),
+			);
+			reread.mockResolvedValue({ layout: made, updatedAt: "2026-11-11T12:00:05Z" });
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(set).toHaveBeenCalledTimes(2);
+			expect(reread).toHaveBeenCalled();
+			expect(controller.store.get().railError).toBeUndefined();
+			expect(tiles(element)).toEqual(["Market", "Group"]);
+			// A member's own change that is refused still says so.
+			set.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_set_member_app_layout", { message: "stale", code: "QAL01" }),
+			);
+			await controller.changeAppLayout(renameAppGroup(made, newGroupId(set), "Away days", undefined));
+			expect(controller.store.get().railError).toBe("Your apps changed in another tab. Try again.");
+		} finally {
+			vi.useRealTimers();
+			localStorage.clear();
+		}
+	});
+
+	it("leaves no listener on the company for each read of a waiting answer (review F2 on #1798)", async () => {
+		const { controller, f, ask } = drawer();
+		ask.mockResolvedValue(lightAsk("waiting"));
+		vi.spyOn(f.api, "readLightAsk").mockResolvedValue(lightAsk("waiting"));
+		const added = vi.spyOn(controller.signal, "addEventListener");
+		const removed = vi.spyOn(controller.signal, "removeEventListener");
+		vi.useFakeTimers();
+		try {
+			const named = controller.nameNewAppGroup("m-1", "Group", [{ name: "Bank" }, { name: "Plan" }]);
+			await vi.advanceTimersByTimeAsync(20_000);
+			const waits = added.mock.calls.filter(([type]) => type === "abort");
+			// Ten waits ended and the eleventh is running: each that ended took its own listener away.
+			expect(waits).toHaveLength(11);
+			for (const [, listener] of waits.slice(0, 10)) expect(removed).toHaveBeenCalledWith("abort", listener);
+			expect(removed.mock.calls.filter(([type]) => type === "abort")).toHaveLength(10);
+			await vi.advanceTimersByTimeAsync(200_000);
+			await named;
+			expect(removed.mock.calls.filter(([type]) => type === "abort")).toHaveLength(
+				added.mock.calls.filter(([type]) => type === "abort").length,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("leaves the name when there is no answer, and stops reading after two minutes", async () => {
 		localStorage.clear();
 		const { element, set, f, ask } = drawer();

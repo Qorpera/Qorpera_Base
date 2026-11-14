@@ -82,6 +82,36 @@ describe("the name of a new group of apps", () => {
 		).toHaveLength(12);
 	});
 
+	it("leaves out what the cloud would refuse: a control character, and the lines about apps when they are too much", () => {
+		// A C1 control is one to the cloud too.
+		expect(nameAppGroupInput([{ name: "Ba\u0085nk" }, { name: "Plan\u2028B" }], "en")!.apps).toEqual([
+			{ name: "Ba nk" },
+			{ name: "Plan B" },
+		]);
+		// Twelve apps with long lines in three-byte letters pass the cloud's size: the names alone are sent.
+		const long = Array.from({ length: 12 }, (_, n) => ({ name: `App ${n}`, about: "\u65e5".repeat(200) }));
+		const names = nameAppGroupInput(long, "da")!;
+		expect(names.apps).toEqual(long.map(({ name }) => ({ name })));
+		expect(new TextEncoder().encode(JSON.stringify(names)).length).toBeLessThanOrEqual(3_000);
+		// With short lines they stay.
+		expect(
+			nameAppGroupInput(
+				long.map(({ name }) => ({ name, about: "Short." })),
+				"da",
+			)!.apps[0],
+		).toEqual({
+			name: "App 0",
+			about: "Short.",
+		});
+		// Names alone too large make no input.
+		expect(
+			nameAppGroupInput(
+				Array.from({ length: 12 }, () => ({ name: "\u65e5".repeat(80) })),
+				"da",
+			),
+		).toBeUndefined();
+	});
+
 	it("makes no input of fewer than two apps, or of an app with no name", () => {
 		expect(nameAppGroupInput([], "en")).toBeUndefined();
 		expect(nameAppGroupInput([{ name: "Bank" }], "en")).toBeUndefined();

@@ -45,15 +45,22 @@ export interface NameAppGroupInput {
 	readonly language: "da" | "en";
 }
 
-const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/g;
+// What the cloud counts as a control character (`[[:cntrl:]]`), and the two line separators.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
 /** One line of at most `limit` characters, or nothing: control characters are spaces, runs of spaces one. */
 function oneLine(value: string | null | undefined, limit: number): string | undefined {
 	const text = (value ?? "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 	return text ? [...text].slice(0, limit).join("").trim() : undefined;
 }
 
+/** The cloud keeps an input of at most 4 KiB as it stores it; the web sends one well under that as JSON. */
+const INPUT_MAX_BYTES = 3_000;
+const inputBytes = (input: NameAppGroupInput): number => new TextEncoder().encode(JSON.stringify(input)).length;
+
 /** `name-app-group`'s input as the cloud takes it (`qorpera_light_ask_input_valid`): 2 to 12 apps, each a name of at
- * most 80 characters and, when it has one, a line about it of at most 200. Undefined when the apps do not make one. */
+ * most 80 characters and, when it has one, a line about it of at most 200, no control character in either. Many apps
+ * with long lines would pass the cloud's size: then the lines about them are left out. Undefined when the apps do not
+ * make an input: fewer than two, one with no name, or names alone too large. */
 export function nameAppGroupInput(
 	apps: readonly { readonly name: string; readonly about?: string | null }[],
 	language: "da" | "en",
@@ -65,7 +72,11 @@ export function nameAppGroupInput(
 		const about = oneLine(app.about, 200);
 		listed.push(about ? { name, about } : { name });
 	}
-	return listed.length >= 2 ? { apps: listed, language } : undefined;
+	if (listed.length < 2) return undefined;
+	const whole: NameAppGroupInput = { apps: listed, language };
+	if (inputBytes(whole) <= INPUT_MAX_BYTES) return whole;
+	const names: NameAppGroupInput = { apps: listed.map(({ name }) => ({ name })), language };
+	return inputBytes(names) <= INPUT_MAX_BYTES ? names : undefined;
 }
 
 /** An answer as a group's name, as the drawer keeps one (1 to 40 characters, one line); undefined when it is none. */
