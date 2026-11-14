@@ -8,18 +8,23 @@ answer is {"ok": true, ...} and then lines both ways, exactly as C1's channel ca
   sftp: standard base64 of pieces of the SFTP stream of `/usr/lib/openssh/sftp-server` on the home.
 Each channel is one transient unit on the home in qorpera-machine.slice as the agent (uid 2000), C1's unit shape.
 Every byte each way is scanned for the canaries (the pattern needs their 16 random hex digits, never typed whole).
-Usage: gateway.py HOME SOCKET LOGDIR. SIGTERM: close every channel, write LOGDIR/gateway-summary.json.
+With --gate-ms N it also stands in for C1's output gate (CONTRACT.md section 3): every answer of the home leaves only
+after a "release" that began after it came, each release taking N ms, one at a time per channel, the next starting at
+once on the file channel and at most every 200 ms on the exec channel (HOME_SFTP_RELEASE_SPACING_MS = 0; the exec
+channel's spacing). No folder service here: N stands in for the real release's latency.
+Usage: gateway.py HOME SOCKET LOGDIR [--gate-ms N]. SIGTERM: close every channel, write LOGDIR/gateway-summary.json.
 """
 import asyncio, base64, binascii, json, os, re, secrets, signal, sys, time
 
 HOME, SOCKET, LOGDIR = sys.argv[1:4]
+GATE_MS = int(sys.argv[sys.argv.index("--gate-ms") + 1]) if "--gate-ms" in sys.argv else None
 PAT = re.compile(("C2CAN" + "ARY-(?:FD|FILE|RFR|FD2)-[0-9a-f]{16}").encode())
 AGENT_ENV = {"HOME": "/var/lib/qorpera-agent", "USER": "qorpera-agent", "LOGNAME": "qorpera-agent", "SHELL": "/bin/bash",
              "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "TZ": "UTC",
              "NO_COLOR": "1", "CODEX_HOME": "/var/lib/qorpera-agent/.codex"}
 T0 = time.time()
 stats = {"exec": {"channels": 0, "up": 0, "down": 0, "hits": 0}, "sftp": {"channels": 0, "up": 0, "down": 0, "hits": 0},
-         "sessions": [], "refused": 0}
+         "sessions": [], "refused": 0, "gate_ms": GATE_MS, "releases": {"exec": 0, "sftp": 0}}
 logf = open(os.path.join(LOGDIR, "gateway.jsonl"), "a", buffering=1)
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -96,6 +101,8 @@ async def channel(reader, writer):
                 await proc.stdin.drain()
             proc.stdin.close()
 
+        queue = asyncio.Queue()
+
         async def down():
             while True:
                 if kind == "sftp":
@@ -103,14 +110,52 @@ async def channel(reader, writer):
                     if not b:
                         break
                     scan.feed("down", b)
-                    writer.write(base64.b64encode(b) + b"\n")
+                    out = base64.b64encode(b) + b"\n"
                 else:
                     b = await proc.stdout.readline()
                     if not b:
                         break
                     scan.feed("down", b)
-                    writer.write(b)
+                    out = b
+                if GATE_MS is None:
+                    writer.write(out)
+                    await writer.drain()
+                else:
+                    queue.put_nowait((time.monotonic(), out))
+            if GATE_MS is not None:
+                queue.put_nowait(None)
+                await released
+
+        async def gate():
+            """C1's HomeOutputGate as a stand-in: what came before a release's start leaves when that release ends."""
+            spacing = 0.2 if kind == "exec" else 0.0
+            last = -1.0
+            held = []
+            ended = False
+            while not ended or held:
+                if not held:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    held.append(item)
+                start = max(time.monotonic(), last + spacing)
+                await asyncio.sleep(start - time.monotonic())
+                last = time.monotonic()
+                while not queue.empty():
+                    item = queue.get_nowait()
+                    if item is None:
+                        ended = True
+                    else:
+                        held.append(item)
+                await asyncio.sleep(GATE_MS / 1000)
+                stats["releases"][kind] += 1
+                go = [o for t, o in held if t <= last]
+                held = [(t, o) for t, o in held if t > last]
+                for o in go:
+                    writer.write(o)
                 await writer.drain()
+
+        released = asyncio.ensure_future(gate()) if GATE_MS is not None else None
 
         done, pending = await asyncio.wait({asyncio.create_task(up()), asyncio.create_task(down())},
                                            return_when=asyncio.FIRST_COMPLETED)

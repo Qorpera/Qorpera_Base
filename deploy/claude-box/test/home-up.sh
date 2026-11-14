@@ -28,6 +28,11 @@ fi
 X sh -c 'command -v sudo >/dev/null' || echo "WARN: no sudo in the home image"
 # The new piece for Claude Code's file tools: sftp-server (one binary, needs only libc)
 X test -x /usr/lib/openssh/sftp-server || { X install -d -m 0755 /usr/lib/openssh; L file push /usr/lib/openssh/sftp-server $H/usr/lib/openssh/sftp-server --uid 0 --gid 0 --mode 0755; }
+# ripgrep, as the machine image has it (Grep and Glob run it on the home through the box's rg bridge)
+if ! X sh -c 'command -v rg >/dev/null'; then
+	d=$(mktemp -d); (cd "$d" && apt-get download ripgrep >/dev/null 2>&1); L file push "$d"/ripgrep_*.deb $H/root/ripgrep.deb
+	X sh -c 'dpkg -i /root/ripgrep.deb >/dev/null && rm -f /root/ripgrep.deb'; rm -rf "$d"
+fi
 echo "home holds: codex $(X sh -c 'sha256sum /opt/qorpera-machine/codex | cut -c1-16'), sftp-server $(X sh -c 'sha256sum /usr/lib/openssh/sftp-server | cut -c1-16; stat -c %s /usr/lib/openssh/sftp-server' | tr '\n' ' ')B, sudo rule: $(X runuser -u qorpera-agent -- sudo -n id -u)"
 echo "home tools: $(X sh -c 'for b in python3 git rg grep find bash sudo systemd-run; do printf "%s=%s " $b $(command -v $b || echo -); done')"
 # The 5,000-file tree: 50 folders x 100 files, about 2 KB each; 37 hold the needle

@@ -251,6 +251,10 @@ async function run(options: RunOptions): Promise<Record<string, unknown>> {
 			channel,
 			sessionId,
 			machineId: MACHINE,
+			// Stands in for qorpera_close_home_session: called once, after both channels are closed.
+			endSession: async (id, reason) => {
+				record.endSession = { sameId: id === sessionId, reason };
+			},
 			prompt: "Run the C2 scenario.",
 			signal: controller.signal,
 			proof: { transport: transport(port), extraCa: `${P}/tls/ca.pem`, weakening: options.weakening },
@@ -332,6 +336,8 @@ async function main(): Promise<void> {
 	if (mode === "look") {
 		configuration.entryPoint = `${P}/test/debug-entry.mjs`;
 		await run({ tag: "look", scenario: scen("recon"), login: { token: token() } });
+	} else if (mode === "bench") {
+		await run({ tag: "bench", scenario: scen("bench2"), login: { token: token() } });
 	} else if (mode === "shell" || mode === "files") await run({ tag: mode, scenario: scen(mode), login: { token: token() } });
 	else if (mode === "a5") {
 		await run({ tag: "a5-s1", scenario: scen("attack"), login: { token: token() } });

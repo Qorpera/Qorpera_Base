@@ -121,8 +121,9 @@ export class CloudClaudeHomeShell {
 	#server?: Server;
 	#path?: string;
 	#current?: Promise<Channel>;
-	/** For the run's report: commands, commands stopped by a dropped prefix, variables dropped, channels opened. */
-	readonly counts = { commands: 0, terminated: 0, refused: 0, channels: 0, lost: 0 };
+	/** For the run's report: commands, searches among them, commands stopped by a dropped prefix, requests refused,
+	 * channels opened, commands whose channel was lost. */
+	readonly counts = { commands: 0, searches: 0, terminated: 0, refused: 0, channels: 0, lost: 0 };
 	/** Why the channel would not open or ended, for this host's journal alone. */
 	cause?: string;
 
@@ -270,6 +271,8 @@ export class CloudClaudeHomeShell {
 				return;
 			}
 			this.counts.commands += 1;
+			// Grep and Glob through the box's `rg` bridge (cloud-claude-home-shell-client.ts).
+			if (request.cmd.startsWith("exec rg ")) this.counts.searches += 1;
 			processId = `claude-${this.counts.commands}-${randomBytes(4).toString("hex")}`;
 			const events: Record<string, unknown>[] = [];
 			let wake: (() => void) | undefined;

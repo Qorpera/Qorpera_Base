@@ -7,8 +7,8 @@
 set -uo pipefail
 MODE=$1 LABEL=$2
 shift 2
-HUNT= DISK=
-while (($#)); do case $1 in --hunt) HUNT=1 ;; --disk) DISK=--disk ;; *) echo "unknown $1"; exit 2 ;; esac; shift; done
+HUNT= DISK= GATE=()
+while (($#)); do case $1 in --hunt) HUNT=1 ;; --disk) DISK=--disk ;; --gate-ms) GATE=(--gate-ms "$2"); shift ;; *) echo "unknown $1"; exit 2 ;; esac; shift; done
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 P=/opt/qorpera-c2-proof
@@ -17,6 +17,16 @@ B=/var/lib/c2-proof
 X() { lxc exec c2-home -- "$@" </dev/null; }
 say() { echo "$(date -u +%H:%M:%S) $*"; }
 
+# Claude Code from npm (unmodified) and sshfs from its .deb (unpacked, not installed), into the lane folder.
+install -d -m 0755 $L $L/pkg $L/cc
+if [[ ! -x $L/cc/2.1.325/claude ]]; then
+	rm -rf $L/pkg/cc; mkdir -p $L/pkg/cc
+	(cd $L/pkg/cc && npm pack --silent "@anthropic-ai/claude-code-linux-x64@2.1.325" >/dev/null && tar xzf ./*.tgz)
+	install -d -m 0755 $L/cc/2.1.325; install -m 0555 $L/pkg/cc/package/claude $L/cc/2.1.325/claude
+fi
+if [[ ! -x $L/sshfs/usr/bin/sshfs ]]; then
+	(cd $L/pkg && rm -f sshfs_*.deb && apt-get download sshfs >/dev/null 2>&1 && dpkg -x sshfs_*.deb $L/sshfs)
+fi
 # The driver's parts, root-owned and not writable by anyone else (rootOwnedFile).
 install -d -m 0755 $P $P/src $P/test $P/scen $P/tls
 [[ $(sha256sum $P/claude 2>/dev/null | cut -c1-16) == 0dc4f4a9a165fc60 ]] || install -m 0555 $L/cc/2.1.325/claude $P/claude
@@ -39,7 +49,7 @@ if [[ ! -f $P/tls/ca.pem ]]; then
 		-extfile $P/tls/ext -out $P/tls/server.pem 2>/dev/null
 	chmod 0444 $P/tls/ca.pem $P/tls/server.pem $P/tls/server.key; chmod 0400 $P/tls/ca.key
 fi
-for k in shell files attack attack-next recon end; do python3 $P/test/scen.py $k $P/scen/$k.json /company >/dev/null; done
+for k in shell files attack attack-next recon end bench2; do python3 $P/test/scen.py $k $P/scen/$k.json /company >/dev/null; done
 python3 $P/test/scen.py second $P/scen/second.json /company $B/run-first >/dev/null
 chmod 0444 $P/scen/*.json
 
@@ -65,7 +75,7 @@ case $MODE in a5 | a6 | a2 | a3)
 	;;
 esac
 
-python3 $P/test/gateway.py c2-home /run/c2-gw/gw.sock $B >$B/gateway.out 2>&1 &
+python3 $P/test/gateway.py c2-home /run/c2-gw/gw.sock $B "${GATE[@]}" >$B/gateway.out 2>&1 &
 GW=$!
 for _ in $(seq 1 100); do grep -q READY $B/gateway.out 2>/dev/null && break; sleep 0.1; done
 say "gateway: $(cat $B/gateway.out)"

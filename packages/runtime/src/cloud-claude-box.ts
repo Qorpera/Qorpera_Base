@@ -71,6 +71,8 @@ export const CLAUDE_BOX_PATHS = Object.freeze({
 	/** The entry and the shell client keep their own file's extension in the box (`.mjs` as the image installs them). */
 	entryPoint: "/opt/qorpera/native-entry",
 	shellPrefix: "/opt/qorpera/home-shell",
+	/** Ahead of the box's own PATH: `rg`, the bridge that runs ripgrep on the home (Grep and Glob). */
+	searchBin: "/opt/qorpera/bin",
 	settings: "/opt/qorpera/settings.json",
 	shellSocket: "/run/qorpera-home/shell.sock",
 	config: "/slot/config",
@@ -130,7 +132,13 @@ export function claudeBoxMountOptions(
 	].join(",");
 }
 
-/** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only. */
+/**
+ * Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only.
+ * `--allowedTools Grep,Glob` brings the two search tools back: 2.1.325 hides them unless a launch list names them
+ * (`setSearchToolsOptIn`, search6.log) and tells the model to use grep and find through Bash. They run ripgrep, which
+ * here is the home's own through the `rg` bridge (USE_BUILTIN_RIPGREP=0): one round trip on the home's disk, never a
+ * walk of the mount. Allow rules never outweigh the deny rules (the attack suite runs with them).
+ */
 export function claudeBoxArguments(options: { model?: string } = {}): string[] {
 	if (options.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(options.model))
 		throw new Error("Invalid Claude model");
@@ -146,6 +154,8 @@ export function claudeBoxArguments(options: { model?: string } = {}): string[] {
 		"--setting-sources",
 		"user",
 		"--strict-mcp-config",
+		"--allowedTools",
+		"Grep,Glob",
 		...(options.model ? ["--model", options.model] : []),
 	];
 }
@@ -165,13 +175,15 @@ export function claudeBoxEnvironment(options: {
 		USER: "claude",
 		LOGNAME: "claude",
 		SHELL: "/bin/bash",
-		PATH: "/usr/bin:/bin",
+		PATH: `${CLAUDE_BOX_PATHS.searchBin}:/usr/bin:/bin`,
 		LANG: "C.UTF-8",
 		TZ: "UTC",
 		TERM: "dumb",
 		NO_COLOR: "1",
 		CLAUDE_CONFIG_DIR: CLAUDE_BOX_PATHS.config,
 		CLAUDE_CODE_SHELL_PREFIX: CLAUDE_BOX_PATHS.shellPrefix,
+		// Grep and Glob run the `rg` on PATH, the bridge to the home, not the copy built into Claude Code.
+		USE_BUILTIN_RIPGREP: "0",
 		DISABLE_AUTOUPDATER: "1",
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
 		DISABLE_TELEMETRY: "1",
@@ -189,6 +201,7 @@ function scratchPaths(root: string) {
 		mount: join(root, "mnt"),
 		settings: join(root, "settings.json"),
 		prefix: join(root, "home-shell"),
+		rg: join(root, "rg"),
 		passwd: join(root, "passwd"),
 		group: join(root, "group"),
 	};
@@ -280,6 +293,9 @@ export function claudeBoxInvocation(options: {
 		s.prefix,
 		CLAUDE_BOX_PATHS.shellPrefix,
 		"--ro-bind",
+		s.rg,
+		`${CLAUDE_BOX_PATHS.searchBin}/rg`,
+		"--ro-bind",
 		s.settings,
 		CLAUDE_BOX_PATHS.settings,
 		...(options.extraCa ? ["--ro-bind", options.extraCa, CLAUDE_BOX_PATHS.extraCa] : []),
@@ -352,6 +368,9 @@ export function checkClaudeCodePin(path: string): Promise<void> {
 	});
 }
 
+/** How long closing the box waits for the session's close in SQL (as CLOUD_HOME_CLOSE_MS). */
+const CLAUDE_BOX_CLOSE_MS = 5_000;
+
 /** One piece of the SFTP stream as a channel line (C1's contract: standard base64, at most 768 KiB a piece). */
 const SFTP_PIECE = 768 * 1024;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -378,10 +397,14 @@ export async function launchClaudeCodeBox(options: {
 	/** The run's private scratch root (this account's, mode 0700), made for this run and removed by the caller. */
 	scratchRoot: string;
 	login: ClaudeBoxLogin;
-	/** The home: its channels and the one session that authorizes both (C1's contract). */
+	/** The home: its channels and the one session that authorizes both (C1's contract: a second id for the same run
+	 * on the same boot supersedes the first in SQL, so the caller makes ONE id per run and boot and passes it here). */
 	channel: CloudClaudeHomeChannel;
 	sessionId: string;
 	machineId: string;
+	/** Closes the session in SQL (`qorpera_close_home_session`), called once by `close()` after both channels are
+	 * closed: "stopped" when the run's signal ended it, "ended" otherwise. As Codex's home does (cloud-codex-home.ts). */
+	endSession?: (sessionId: string, reason: "ended" | "stopped") => Promise<void>;
 	/** What the model is asked; Claude Code reads it on stdin. */
 	prompt: string;
 	model?: string;
@@ -431,6 +454,11 @@ export async function launchClaudeCodeBox(options: {
 		`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} "$@"\n`,
 		{ mode: 0o500, flag: "wx" },
 	);
+	await writeFile(
+		s.rg,
+		`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} --rg "$@"\n`,
+		{ mode: 0o500, flag: "wx" },
+	);
 	// Claude Code's own first-run state for a box of its own; a login folder is the caller's and is left as it is.
 	if (token !== undefined)
 		await writeFile(
@@ -447,8 +475,16 @@ export async function launchClaudeCodeBox(options: {
 		closing ??= (async () => {
 			controller.abort();
 			for (const cleanup of cleanups.reverse()) await cleanup().catch(() => undefined);
+			// Both channels are closed now; then the one session that authorized them.
+			if (options.endSession)
+				await Promise.race([
+					options
+						.endSession(options.sessionId, options.signal.aborted ? "stopped" : "ended")
+						.catch(() => undefined),
+					new Promise((resolve) => setTimeout(resolve, CLAUDE_BOX_CLOSE_MS).unref()),
+				]);
 			// The box's own folders: transcripts, Claude Code's state, its big outputs. Never the caller's login folder.
-			for (const path of [s.config, s.home, s.settings, s.passwd, s.group, s.prefix])
+			for (const path of [s.config, s.home, s.settings, s.passwd, s.group, s.prefix, s.rg])
 				await rm(path, { recursive: true, force: true }).catch(() => undefined);
 			// The mount point stays empty in this namespace (the mount lives in the box's): only an empty folder goes.
 			await rmdir(s.mount).catch(() => undefined);

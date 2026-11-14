@@ -90,6 +90,8 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 		"--setting-sources",
 		"user",
 		"--strict-mcp-config",
+		"--allowedTools",
+		"Grep,Glob",
 	]);
 	expect(claudeBoxArguments({ model: "claude-opus-5-5" }).slice(-2)).toEqual(["--model", "claude-opus-5-5"]);
 	expect(() => claudeBoxArguments({ model: "x --settings /tmp/evil" })).toThrow("Invalid Claude model");
@@ -102,6 +104,9 @@ it("hands a token in on descriptor 3 only, and keeps HOME and the config folder 
 	expect(token.HOME).toBe("/slot/home");
 	expect(token.CLAUDE_CONFIG_DIR).toBe("/slot/config");
 	expect(token.CLAUDE_CODE_SHELL_PREFIX).toBe("/opt/qorpera/home-shell");
+	// Grep and Glob run the home's ripgrep through the bridge first on PATH.
+	expect(token.USE_BUILTIN_RIPGREP).toBe("0");
+	expect(token.PATH).toBe("/opt/qorpera/bin:/usr/bin:/bin");
 	expect(token.NODE_EXTRA_CA_CERTS).toBeUndefined();
 	const folder = claudeBoxEnvironment({ login: "folder" });
 	expect(folder.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR).toBeUndefined();
@@ -159,6 +164,7 @@ it("makes the mount in the run's own namespace and starts the box without a capa
 	expect(readOnly).toContainEqual(["/opt/qorpera-harnesses/native-claude/claude", CLAUDE_BOX_PATHS.binary]);
 	expect(readOnly).toContainEqual([`${scratch}/settings.json`, CLAUDE_BOX_PATHS.settings]);
 	expect(readOnly).toContainEqual([`${scratch}/shell.sock`, CLAUDE_BOX_PATHS.shellSocket]);
+	expect(readOnly).toContainEqual([`${scratch}/rg`, "/opt/qorpera/bin/rg"]);
 	// The run host's own /etc never enters the box whole.
 	expect(readOnly.filter(([, inside]) => inside.startsWith("/etc")).map(([, inside]) => inside)).toEqual([
 		"/etc/ssl/certs",
@@ -166,7 +172,7 @@ it("makes the mount in the run's own namespace and starts the box without a capa
 		"/etc/passwd",
 		"/etc/group",
 	]);
-	expect(box.slice(-15)).toEqual([
+	expect(box.slice(-17)).toEqual([
 		"/usr/bin/node",
 		"/opt/qorpera/native-entry.mjs",
 		`${scratch}/egress.sock`,
