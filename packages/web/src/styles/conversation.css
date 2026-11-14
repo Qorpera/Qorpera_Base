@@ -868,8 +868,21 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel.is-entered .machine-screen .computer-switcher { max-width: 100%; }
 .computer-panel.is-entered .machine-screen .computer-switcher { color: rgb(255 255 255 / 82%); filter: none; }
 .computer-panel.is-entered .machine-screen .computer-switcher:hover, .computer-panel.is-entered .machine-screen .computer-switcher.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
+/* Open (20260930758000): beside the switcher, and as it looks: on the preview top right before the close, shown with the
+   other hover controls; entered, beside the switcher in the title. It opens a menu of the company's apps. */
+.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.computer-panel .computer-opener[hidden] { display: none; }
+.computer-panel .computer-opener:hover, .computer-panel .computer-opener.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
+.computer-panel > .computer-opener { position: absolute; top: 6px; right: 34px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel:hover > .computer-opener, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-opener, .computer-panel > .computer-opener.menu-open { opacity: 1; pointer-events: auto; }
+.computer-panel:is(.is-dragging, .is-resizing) > .computer-opener, .computer-panel.is-entered > .computer-opener { opacity: 0; pointer-events: none; }
+.computer-panel.is-entered > .computer-opener { display: none; }
+.computer-panel .computer-pickers { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.computer-panel.is-entered .machine-screen .computer-opener { color: rgb(255 255 255 / 82%); filter: none; }
+.computer-panel.is-entered .machine-screen .computer-opener:hover, .computer-panel.is-entered .machine-screen .computer-opener.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
 @media (hover: none) {
-	.computer-panel:not(.is-entered) > .computer-switcher { opacity: 1; pointer-events: auto; }
+	.computer-panel:not(.is-entered) > :is(.computer-switcher, .computer-opener) { opacity: 1; pointer-events: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.computer-panel > .computer-switcher { transition: none; }

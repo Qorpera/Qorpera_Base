@@ -21,6 +21,7 @@ import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
+	COMPANY_MACHINE_MEMBER_OPEN,
 	COMPANY_MACHINE_MEMBER_POINTER,
 	COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
 	COMPANY_MACHINE_MEMBER_START,
@@ -31,6 +32,7 @@ import {
 	type CompanyMachineEntry,
 	type CompanyMachineHostOptions,
 	type CompanyMachineMemberStream,
+	companyMachineMemberOpenCommand,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
 	desktopRelay,
@@ -6678,6 +6680,161 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			expect(run()).toBe(3);
 			await tool("desktop", "echo journal tail >&2; exit 1");
 			expect(run()).toBe(1);
+		},
+	);
+});
+
+describe("a member opens something on a desktop (20260930758000)", () => {
+	const answer = (exitCode: number) => ({ exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+	const open = "apps/a;b $(x) 'q'.txt";
+	const start = (path: string = open) => ({ placementId: id(6), bootId: id(7), startId: id(40), open: path });
+	async function piped(reply: (given: LxdExecPipeRequest) => Promise<ReturnType<typeof answer>>) {
+		const f = await fixture();
+		const calls: LxdExecPipeRequest[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest) => {
+			calls.push(given);
+			return reply(given);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+
+	it("starts first, then opens in a unit of its own: the path on stdin, never in a word of the command", async () => {
+		const { f, calls } = await piped(async (given) =>
+			answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 92 : 0),
+		);
+		expect(await f.host.memberStart(start(), f.signal)).toEqual({ outcome: "opened" });
+		expect(calls.map((call) => call.command)).toEqual([
+			companyMachineMemberStartCommand(id(7)),
+			companyMachineMemberOpenCommand(id(7)),
+		]);
+		expect(calls[1]!.command).toEqual([
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--wait",
+			"--pipe",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			"RuntimeMaxSec=8",
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			"--description=qorpera member desktop open",
+			"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"--setenv=HOME=/root",
+			"--setenv=LANG=C.UTF-8",
+			"--setenv=USER=root",
+			"--",
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_MEMBER_OPEN,
+			id(7),
+		]);
+		expect(Buffer.from(calls[1]!.stdin as Uint8Array).toString("utf8")).toBe(open);
+		expect(JSON.stringify(calls.map((call) => call.command))).not.toContain("q'.txt");
+		expect(calls[0]!.stdin).toBeUndefined();
+	});
+
+	it("opens nothing after a start that did not end with a desktop, and maps the open's exit to a fixed outcome", async () => {
+		for (const refused of [3, 97, 98, 1]) {
+			const { f, calls } = await piped(async () => answer(refused));
+			expect("refused" in (await f.host.memberStart(start(), f.signal))).toBe(true);
+			expect(calls).toHaveLength(1);
+		}
+		for (const [exitCode, outcome] of [
+			[0, { outcome: "opened" }],
+			[89, { refused: "DESKTOP_OPEN_NO_FOLDER" }],
+			[91, { refused: "DESKTOP_OPEN_NOT_FOUND" }],
+			[97, { refused: "MACHINE_BOOT_CHANGED" }],
+			[98, { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[1, { refused: "DESKTOP_DID_NOT_OPEN" }],
+			[2, { refused: "DESKTOP_DID_NOT_OPEN" }],
+			[137, { refused: "DESKTOP_DID_NOT_OPEN" }],
+		] as const) {
+			const { f } = await piped(async (given) =>
+				answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 0 : exitCode),
+			);
+			expect(await f.host.memberStart(start(), f.signal), String(exitCode)).toEqual(outcome);
+		}
+		const slow = await piped(async (given) => {
+			if (given.command.includes(COMPANY_MACHINE_MEMBER_START)) return answer(0);
+			throw new Error("LXD exec stalled");
+		});
+		expect(await slow.f.host.memberStart(start(), slow.f.signal)).toEqual({ refused: "DESKTOP_DID_NOT_OPEN" });
+		// A path no folder could have runs nothing at all.
+		for (const bad of [
+			"",
+			"/etc/passwd",
+			"a//b",
+			"a/../b",
+			"./a",
+			"a/",
+			"a\nb",
+			"a\\b",
+			"x".repeat(501),
+			"a\u0000b",
+		]) {
+			const never = await piped(async () => answer(0));
+			await expect(never.f.host.memberStart(start(bad), never.f.signal), JSON.stringify(bad)).rejects.toThrow(
+				"COMPANY_MACHINE_MEMBER_START_INVALID",
+			);
+			expect(never.pipe).not.toHaveBeenCalled();
+		}
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"exits as the script says in a real shell, the path one word whatever is in it",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-open-")));
+			roots.push(bin);
+			const tool = async (name: string, body: string) => {
+				await writeFile(join(bin, name), `#!/bin/sh\n${body}\n`);
+				await chmod(join(bin, name), 0o755);
+			};
+			await symlink("/bin/cat", join(bin, "cat"));
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const asked = join(bin, "asked");
+			const run = (path: string, bootId = boot) =>
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_OPEN, bootId], { env: { PATH: bin }, input: path })
+					.status;
+			expect(run(open, randomUUID())).toBe(97);
+			expect(run(open)).toBe(98);
+			await tool(
+				"desktop",
+				`printf '%s\\n' "$#" > ${asked}; for word in "$@"; do printf '[%s]\\n' "$word" >> ${asked}; done`,
+			);
+			// No company folder: /company not there, or on the root's own device (a view not mounted).
+			await tool("stat", "exit 1");
+			expect(run(open)).toBe(89);
+			await tool("stat", "echo 1");
+			expect(run(open)).toBe(89);
+			// The folder mounted: its real place found, then opened as ONE word.
+			await tool("stat", 'if [ "$3" = /company ]; then echo 2; else echo 1; fi');
+			await tool("realpath", 'printf "%s\\n" "$3"');
+			for (const path of [open, "Møder/æble og grød ø.md", "a  b", "*", "$HOME", "-x"]) {
+				expect(run(path), path).toBe(0);
+				expect(readFileSync(asked, "utf8"), path).toBe(`2\n[open]\n[/company/${path}]\n`);
+			}
+			// A line break, or nothing: no path.
+			expect(run("a\nb")).toBe(91);
+			expect(run("a\n")).toBe(91);
+			expect(run("")).toBe(91);
+			// Not there, or a link that leads out: 91, and nothing opened.
+			await writeFile(asked, "");
+			await tool("realpath", "exit 1");
+			expect(run(open)).toBe(91);
+			for (const out of ["/etc/passwd", "/company", "/companyx/a"]) {
+				await tool("realpath", `echo ${out}`);
+				expect(run(open), out).toBe(91);
+			}
+			expect(readFileSync(asked, "utf8")).toBe("");
+			// The helper's own failure.
+			await tool("realpath", 'printf "%s\\n" "$3"');
+			await tool("desktop", "exit 2");
+			expect(run(open)).toBe(1);
 		},
 	);
 });

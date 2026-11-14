@@ -177,6 +177,15 @@ export interface ComputerPanelOptions {
 	readonly ledger?: DesktopHoldLedger;
 	/** The company's time zone (the machine's clock and backdrop follow it; migration 20260930739000). */
 	readonly timeZone?: () => string | null | undefined;
+	/** The company's apps, as last read, that a member may open on the computer (20260930758000); none without it. */
+	readonly apps?: () => readonly ComputerOpenApp[] | undefined;
+}
+
+/** One of the company's apps as Open offers it (20260930758000): its name, and the path of the company folder that opens
+ * it on the desktop. */
+export interface ComputerOpenApp {
+	readonly name: string;
+	readonly path: string;
 }
 
 /** How a window is opened: `asked` when the member's own click just asked for it (the agent's card, the thread's
@@ -471,7 +480,22 @@ export class ComputerPanel {
 	/** The member's wish that the desktop be on (20260930714000): this page's, for one machine, until its picture shows,
 	 * the member chooses another machine or closes the window, a refusal comes, or WANT_ON_MS pass. While it stands a
 	 * screen that is off is turned on by itself (after Wake it too), without a second press. */
-	#wantOn: { readonly machineId: string; readonly until: number } | undefined;
+	#wantOn: { readonly machineId: string; readonly until: number; readonly open?: string } | undefined;
+	/** Open (20260930758000): the company's apps as last read; an open on its way while the picture shows; the large view
+	 * to enter at the first picture after Open was chosen in the small window; and what the last open that did not go
+	 * through says (with the path to try again, where trying again can help). */
+	readonly #apps: () => readonly ComputerOpenApp[];
+	readonly #opener: HTMLButtonElement;
+	readonly #frameOpener: HTMLButtonElement;
+	#opening = false;
+	#enterOnOpen = false;
+	#openNote: { readonly machineId: string; readonly words: string } | undefined;
+	#openRetry: { readonly machineId: string; readonly path: string; readonly words: string } | undefined;
+	readonly #openAgain = h(
+		"button",
+		{ type: "button", class: "machine-screen-control-hand-back machine-screen-open-again", hidden: true },
+		t("Try again"),
+	);
 	/** A start of the desktop on its way, and when this page last asked for one. */
 	#turningOn = false;
 	#startedAt = Number.NEGATIVE_INFINITY;
@@ -547,6 +571,7 @@ export class ComputerPanel {
 		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlWho, this.#controlNote),
 		this.#controlButton,
 		this.#controlHandBack,
+		this.#openAgain,
 	);
 
 	constructor(
@@ -567,6 +592,17 @@ export class ComputerPanel {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#switcher = this.#switcherButton(signal);
 		this.#frameSwitcher = this.#switcherButton(signal);
+		this.#apps = () => options.apps?.() ?? [];
+		this.#opener = this.#openerButton(signal);
+		this.#frameOpener = this.#openerButton(signal);
+		this.#openAgain.addEventListener(
+			"click",
+			() => {
+				const again = this.#openRetry;
+				if (again && again.machineId === this.#machineId) this.#choose(again.path, signal);
+			},
+			{ signal },
+		);
 		this.el = h(
 			"aside",
 			{
@@ -579,6 +615,7 @@ export class ComputerPanel {
 			},
 			this.#body,
 			this.#switcher,
+			this.#opener,
 			this.#closeButton,
 		);
 		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
@@ -650,7 +687,7 @@ export class ComputerPanel {
 			},
 			...(options.decode ? { decode: options.decode } : {}),
 		});
-		this.#view.setSwitcher(this.#frameSwitcher);
+		this.#view.setSwitcher(h("span", { class: "computer-pickers" }, this.#frameSwitcher, this.#frameOpener));
 		this.#view.setControls(this.#controls);
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
@@ -1036,6 +1073,7 @@ export class ComputerPanel {
 				this.#confirmedAt = Number.NEGATIVE_INFINITY;
 			}
 			this.#syncSwitchers();
+			this.#syncOpeners();
 			if (!machine || machine.state !== "running") {
 				// A machine that sleeps may wake larger: what a start said of it is gone.
 				this.#startEnded = undefined;
@@ -1106,8 +1144,13 @@ export class ComputerPanel {
 					this.#pictureOf = machine.machineId;
 					this.#screenSeen = true;
 					this.#unchanged = 0;
-					// The desktop is on: the member's wish is met.
-					if (this.#wantOn?.machineId === machine.machineId) this.#wantOn = undefined;
+					// The desktop is on: the member's wish is met. What it was to open and has not been sent goes now
+					// (20260930758000: the screen came on by another's start).
+					if (this.#wantOn?.machineId === machine.machineId) {
+						const open = this.#wantOn.open;
+						this.#wantOn = undefined;
+						if (open !== undefined) void this.#openNow(computer, machine.machineId, open, signal);
+					}
 					if (this.#startEnded?.machineId === machine.machineId) this.#startEnded = undefined;
 					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
 					// controls show.
@@ -2189,6 +2232,18 @@ export class ComputerPanel {
 			this.#enterOnHold = false;
 			this.#view?.enterFrame();
 		}
+		// Open chosen in the small window: the large view, in the thread (never full screen), at the first picture.
+		if (this.#enterOnOpen && picture && this.el.parentElement !== null) {
+			this.#enterOnOpen = false;
+			if (!this.#view?.entered) this.#view?.enterFrame();
+		}
+		// With a picture, an open's note is said under it (its words are the control note's).
+		if (picture) this.#openNote = undefined;
+		this.#openAgain.hidden = !(
+			this.#openRetry !== undefined &&
+			this.#openRetry.machineId === this.#machineId &&
+			this.#controlNote.textContent === this.#openRetry.words
+		);
 		const entered = this.#view?.entered === true;
 		const release =
 			(this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined) ??
@@ -2375,10 +2430,15 @@ export class ComputerPanel {
 	/** Wakes a sleeping machine (Wake it, or the click that opened the window): one call, joined while it is on its way;
 	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
 	 * again; the list says where it stands. */
-	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
+	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal, open?: string): Promise<void> {
 		this.claim();
-		if (this.#waking) return;
-		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+		if (this.#waking) {
+			// Joined: what the member chose to open goes with the wish (20260930758000).
+			if (open !== undefined && this.#wantOn?.machineId === machineId)
+				this.#wantOn = { machineId, until: this.#wantOn.until, open };
+			return;
+		}
+		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, ...(open === undefined ? {} : { open }) };
 		this.#startEnded = undefined;
 		this.#startAnswered = undefined;
 		this.#wakeFailed = undefined;
@@ -2587,8 +2647,12 @@ export class ComputerPanel {
 				this.#waking
 			);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
-		this.#detail.hidden = detail === null;
-		this.#detail.textContent = detail ?? "";
+		// An open that did not go through says why under the state, until the member presses or opens again.
+		const note = this.#openNote;
+		const said = note !== undefined && note.machineId === this.#machineId ? note.words : detail;
+		this.#detail.hidden = said === null;
+		this.#detail.textContent = said ?? "";
+		this.#syncOpeners();
 		this.#action.hidden = action === null;
 		this.#action.textContent = action ?? "";
 	}
@@ -2598,6 +2662,7 @@ export class ComputerPanel {
 		this.claim();
 		const state = this.#loading.dataset.state;
 		this.#touched();
+		this.#openNote = undefined;
 		if (state === "paused") {
 			this.#paused = false;
 			this.#confirm = true;
@@ -2711,15 +2776,31 @@ export class ComputerPanel {
 		this.#turningOn = true;
 		this.#startedAt = Date.now();
 		this.#unpicture("turning");
+		// What the wish is to open goes with this start (20260930758000); the wish itself goes on to the picture.
+		const wish = this.#wantOn?.machineId === machineId ? this.#wantOn : undefined;
+		const open = wish?.open;
+		if (wish && open !== undefined) this.#wantOn = { machineId, until: wish.until };
 		let answer: MachineStartAnswer | undefined;
 		try {
-			answer = await computer.screens.start(machineId, signal);
+			answer = await computer.screens.start(machineId, signal, open);
 		} catch {
 			answer = undefined;
 		} finally {
 			this.#turningOn = false;
 		}
-		if (signal.aborted || this.#wantOn?.machineId !== machineId || this.#machineId !== machineId) return;
+		if (signal.aborted || this.#machineId !== machineId) return;
+		// An open's own answer: opened, or why not (said whether the wish stands or not).
+		if (open !== undefined && this.#openAnswered(machineId, open, answer, false)) return;
+		if (this.#wantOn?.machineId !== machineId) return;
+		// A start that may be tried again keeps what it was to open.
+		if (
+			open !== undefined &&
+			answer?.kind === "refused" &&
+			(answer.code === "DESKTOP_START_TOO_SOON" ||
+				answer.code === "MACHINE_NOT_RUNNING" ||
+				answer.code === "MACHINE_BOOT_CHANGED")
+		)
+			this.#wantOn = { machineId, until: this.#wantOn.until, open };
 		if (answer?.kind === "refused") {
 			if (answer.code === "DESKTOP_MACHINE_TOO_SMALL") {
 				this.#endStart(machineId, "small");
@@ -2738,7 +2819,15 @@ export class ComputerPanel {
 		} else if (answer === undefined) {
 			this.#endStart(machineId, "startFailed");
 			return;
-		} else this.#startAnswered = { machineId, at: Date.now() };
+		} else {
+			this.#startAnswered = { machineId, at: Date.now() };
+			// Open was chosen while this start was on its way without it: it goes now, the desktop running.
+			const later = this.#wantOn.open;
+			if (later !== undefined) {
+				this.#wantOn = { machineId, until: this.#wantOn.until };
+				void this.#openNow(computer, machineId, later, signal);
+			}
+		}
 		// Started, running already, or another start on its way: look at once (the helper waited until it was drawn).
 		this.#etag = null;
 		this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -2805,6 +2894,9 @@ export class ComputerPanel {
 							// over to the machine chosen now, nor a wish that its desktop be on (20260930714000).
 							if (machine.machineId !== before) {
 								this.#wantTakeOver = undefined;
+								this.#enterOnOpen = false;
+								this.#openRetry = undefined;
+								this.#openNote = undefined;
 								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
 								// Shared input of the last computer goes no further, even while the loop waits on a request
 								// (review r1 F1 of #1701); the next one's screen is not seen yet (review r3).
@@ -2826,6 +2918,172 @@ export class ComputerPanel {
 		// A press on the switcher is not the start of a drag.
 		button.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
 		return button;
+	}
+
+	/** Open (20260930758000): a button that lists the company's apps; choosing one is the ask. */
+	#openerButton(signal: AbortSignal): HTMLButtonElement {
+		const button = h(
+			"button",
+			{ type: "button", class: "computer-opener", hidden: true, "aria-haspopup": "menu" },
+			h("span", null, t("Open")),
+			icon("chevron-down"),
+		);
+		button.addEventListener(
+			"click",
+			(event) => {
+				event.stopPropagation();
+				const rect = button.getBoundingClientRect();
+				// Full screen, the browser shows only the full-screen element: the menu goes inside it, as the switcher's.
+				const full = document.fullscreenElement;
+				openContextMenu({
+					label: t("Open on this computer"),
+					x: rect.left,
+					y: rect.bottom + 4,
+					opener: button,
+					...(full instanceof HTMLElement && full.contains(button) ? { container: full } : {}),
+					items: this.#apps().map((app) => ({ label: app.name, select: () => this.#choose(app.path, signal) })),
+				});
+			},
+			{ signal },
+		);
+		// A press on it is not the start of a drag.
+		button.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
+		return button;
+	}
+
+	/** Open shows for a member who may act on the computer shown, when it can have a screen and the company has an app,
+	 * whatever it does now (asleep and off too: the press is the wish "on, with this open"); not while its screen is
+	 * someone's private typing, or hidden. */
+	#syncOpeners(): void {
+		const machine = this.#pick();
+		const state = this.#loading.hidden ? undefined : this.#loading.dataset.state;
+		const offered =
+			machine?.desktopCapable === true &&
+			this.#listed?.canTakeOver === true &&
+			this.#apps().length > 0 &&
+			![
+				"member",
+				"hidden",
+				"small",
+				"image",
+				"unavailable",
+				"error",
+				"none",
+				"headless",
+				"noStart",
+				"making",
+			].includes(state ?? "");
+		for (const button of [this.#opener, this.#frameOpener]) {
+			if (button.hidden === offered) button.hidden = !offered;
+			if (button.title !== t("Open on this computer")) button.title = t("Open on this computer");
+		}
+	}
+
+	/** The member chose something to open (20260930758000): that is the ask, with no second press. A computer asleep is
+	 * woken, one on its way up or with its screen off is turned on, each with the open in the wish; on a screen the member
+	 * sees, it opens at once. From the small window the large view comes at the first picture, as Take over's does. */
+	#choose(path: string, signal: AbortSignal): void {
+		const computer = this.#computer;
+		const machine = this.#pick();
+		if (!computer || !machine || this.#listed?.canTakeOver !== true || signal.aborted) return;
+		this.claim();
+		this.#touched();
+		const machineId = machine.machineId;
+		this.#openNote = undefined;
+		this.#openRetry = undefined;
+		if (this.#lostShown) {
+			this.#lostShown = false;
+			this.#controlNote.textContent = "";
+		}
+		if (!this.#view?.entered) this.#enterOnOpen = this.el.parentElement !== null;
+		if (machine.state === "stopped" || machine.state === "stopping") {
+			void this.#wake(computer, machineId, signal, path);
+		} else if (machine.state !== "running") {
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path };
+			this.#startEnded = undefined;
+			this.#startAnswered = undefined;
+		} else if (this.#picturing() && this.#screenSeen) {
+			void this.#openNow(computer, machineId, path, signal);
+		} else {
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS, open: path };
+			this.#startEnded = undefined;
+			this.#startAnswered = undefined;
+			if (!this.#turningOn) void this.#turnOn(computer, machineId, signal);
+		}
+		this.#syncControls();
+		this.#poke();
+	}
+
+	/** Opens a path on a desktop that runs (the start route turns its screen on first when it is off). A start of another
+	 * page's a moment ago is waited out once. */
+	async #openNow(
+		computer: WebCompanyComputer,
+		machineId: string,
+		path: string,
+		signal: AbortSignal,
+		again = true,
+	): Promise<void> {
+		if (this.#opening) return;
+		this.#opening = true;
+		let answer: MachineStartAnswer | undefined;
+		try {
+			answer = await computer.screens.start(machineId, signal, path);
+		} catch {
+			answer = undefined;
+		} finally {
+			this.#opening = false;
+		}
+		if (signal.aborted || this.#machineId !== machineId) return;
+		if (again && answer?.kind === "refused" && answer.code === "DESKTOP_START_TOO_SOON") {
+			await new Promise((resolve) => setTimeout(resolve, START_AGAIN_MS));
+			if (!signal.aborted && this.#machineId === machineId)
+				await this.#openNow(computer, machineId, path, signal, false);
+			return;
+		}
+		this.#openAnswered(machineId, path, answer, true);
+	}
+
+	/** What an open's answer means for the window: opened (look at once), someone else typing privately (as a click's
+	 * refusal: the list says who), or why it did not open, said in plain words (under the picture, or under the state
+	 * without one), with Try again where trying again can help. With `all`, any other answer is an open that failed;
+	 * without it, a start's own refusals are left to the start's handling. True when handled. */
+	#openAnswered(machineId: string, path: string, answer: MachineStartAnswer | undefined, all: boolean): boolean {
+		const code = answer?.kind === "refused" ? answer.code : undefined;
+		if (answer?.kind === "opened") {
+			this.#startAnswered = { machineId, at: Date.now() };
+			this.#etag = null;
+			this.#lastLook = Number.NEGATIVE_INFINITY;
+			this.#quicken();
+			return true;
+		}
+		if (code === "DESKTOP_MEMBER_IN_CONTROL") {
+			if (this.#wantOn?.machineId === machineId) this.#wantOn = undefined;
+			this.#screenSeen = false;
+			this.#listStale = true;
+			this.#quicken();
+			return true;
+		}
+		let words: string | undefined;
+		let retry = false;
+		if (code === "DESKTOP_OPEN_NOT_FOUND" || code === "DESKTOP_OPEN_PATH_INVALID")
+			words = t("That is not in the company folder any more.");
+		else if (code === "DESKTOP_OPEN_NO_FOLDER")
+			words = t("This computer cannot see the company folder yet. It can after it has slept and woken.");
+		else if (code === "DESKTOP_DID_NOT_OPEN" || answer === undefined || all) {
+			words = t("The computer could not open it. Try again.");
+			retry = true;
+		}
+		if (words === undefined) return false;
+		if (this.#wantOn?.machineId === machineId) this.#wantOn = undefined;
+		this.#openNote = { machineId, words };
+		this.#openRetry = retry ? { machineId, path, words } : undefined;
+		this.#lostShown = true;
+		this.#controlNote.textContent = words;
+		this.#etag = null;
+		this.#lastLook = Number.NEGATIVE_INFINITY;
+		this.#syncControls();
+		this.#quicken();
+		return true;
 	}
 
 	/** The switchers name the machine shown, and show only while the agent has more than one with a screen. */

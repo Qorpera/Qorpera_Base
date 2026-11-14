@@ -144,7 +144,9 @@ function setup(
 		/** What the member's actions answer, in turn (then done, exit 0). */
 		actAnswers: [] as ActAnswer[],
 		/** What the member's starts of the desktop answer, in turn (then started), and a gate each waits on. */
-		startAnswers: [] as ({ outcome: "started" | "running" } | { code: string })[],
+		startAnswers: [] as ({ outcome: "started" | "running" | "opened" } | { code: string })[],
+		/** The company's apps the window offers to open (20260930758000): none unless a test names some. */
+		apps: [] as { name: string; path: string }[],
 		startGate: undefined as Promise<void> | undefined,
 		/** A gate the next look waits on before it is answered (review r1 F3 of #1681): a look in flight. */
 		lookGate: undefined as Promise<void> | undefined,
@@ -232,6 +234,7 @@ function setup(
 	};
 	const looks: { url: string; etag: string | null }[] = [];
 	const starts: string[] = [];
+	const opens: string[] = [];
 	const acts: {
 		url: string;
 		action: Record<string, unknown>;
@@ -254,13 +257,17 @@ function setup(
 		const headers = new Headers(init?.headers);
 		expect(headers.get("authorization")).toBe("Bearer fixture-token");
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/start")) {
-			// A member's start of the desktop (20260930714000): `{}`, and what the test says comes of it.
+			// A member's start of the desktop (20260930714000): `{}`, or `{"open": path}` (20260930758000), and what the test
+			// says comes of it.
 			expect(init?.method).toBe("POST");
-			expect(init?.body).toBe("{}");
+			const body = JSON.parse(String(init?.body)) as { open?: unknown };
+			expect(Object.keys(body).filter((key) => key !== "open")).toEqual([]);
+			if (body.open === undefined) expect(init?.body).toBe("{}");
+			else opens.push(body.open as string);
 			starts.push(url.slice(bridge.length));
 			if (state.startHook)
 				return state.startHook(url.slice(bridge.length).split("/")[4] as string, init?.signal ?? undefined);
-			const answer = state.startAnswers.shift() ?? { outcome: "started" };
+			const answer = state.startAnswers.shift() ?? { outcome: body.open === undefined ? "started" : "opened" };
 			if (state.startGate) await state.startGate;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
 			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
@@ -586,6 +593,7 @@ function setup(
 		looks,
 		acts,
 		starts,
+		opens,
 		rpcs,
 		pointers,
 		order,
@@ -598,7 +606,11 @@ function setup(
 type Setup = ReturnType<typeof setup>;
 /** A window opened on its own: its ledger of holds is its own, and ends with the company (the setup's signal). */
 function panel(s: Setup, attach = true) {
-	const value = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+	const value = new ComputerPanel(staff, s.computer, s.stop.signal, {
+		hints: s.hints,
+		decode: s.decode,
+		apps: () => s.state.apps,
+	});
 	if (attach) value.attach(document.body, () => value.dispose());
 	cleanup.push(() => value.dispose());
 	return value;
@@ -1525,6 +1537,210 @@ describe("an agent's computer window", () => {
 		cleanup.push(() => p.dispose());
 		p.attach(document.body, () => {});
 		expect(status(p)).toBe("Computer access is not available yet.");
+	});
+});
+
+describe("a member opens one of the company's apps on the computer (20260930758000)", () => {
+	const apps = [
+		{ name: "Brooks overblik", path: "apps/brooks-overblik" },
+		{ name: "Kort", path: "apps/kort/pages/kort.html" },
+	];
+	const opener = (p: ComputerPanel) => p.el.querySelector<HTMLButtonElement>(":scope > .computer-opener")!;
+	const frameOpener = (p: ComputerPanel) =>
+		p.el.querySelector<HTMLButtonElement>(".machine-screen-switcher-slot .computer-opener")!;
+	const note = (p: ComputerPanel) => p.el.querySelector(".machine-screen-control-note")?.textContent ?? "";
+	const again = (p: ComputerPanel) => {
+		const button = p.el.querySelector<HTMLButtonElement>(".machine-screen-open-again");
+		return button?.hidden ? null : button;
+	};
+	/** Opens the menu of the small window's Open and chooses a row. */
+	function choose(p: ComputerPanel, row: number, button = opener(p)) {
+		button.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+	}
+
+	it("lists the company's apps by name, and opens the one chosen on a screen the member sees, at once", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		expect(opener(p).hidden).toBe(false);
+		expect(frameOpener(p).hidden).toBe(false);
+		expect(opener(p).textContent).toBe("Open");
+		opener(p).click();
+		expect([...openMenu()!.el.querySelectorAll("[role^=menuitem]")].map((row) => row.textContent)).toEqual([
+			expect.stringContaining("Brooks overblik"),
+			expect.stringContaining("Kort"),
+		]);
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		await flush();
+		// Choosing is the ask: one start that opens it, no second press; from the small window, the large view.
+		expect(s.opens).toEqual(["apps/kort/pages/kort.html"]);
+		expect(s.starts).toHaveLength(1);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(document.fullscreenElement ?? null).toBeNull();
+		expect(mark(p)).toBe("Live");
+	});
+
+	it("offers nothing to a member without the right, without apps, or on a computer too small for a screen", async () => {
+		const viewer = setup({ canWake: false, canTakeOver: false, role: "viewer" });
+		viewer.state.apps = apps;
+		viewer.state.fallback = { picture: 1 };
+		const p = panel(viewer);
+		await flush();
+		expect(opener(p).hidden).toBe(true);
+		expect(frameOpener(p).hidden).toBe(true);
+		p.dispose();
+		const none = setup();
+		none.state.fallback = { picture: 1 };
+		const q = panel(none);
+		await flush();
+		expect(opener(q).hidden).toBe(true);
+		q.dispose();
+		const small = setup({ machines: [machine(1, { desktopCapable: false })] });
+		small.state.apps = apps;
+		const r = panel(small);
+		await flush();
+		expect(opener(r).hidden).toBe(true);
+	});
+
+	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(opener(p).hidden).toBe(false);
+		s.state.machines = [machine(1, { state: "starting" })];
+		choose(p, 0);
+		await flush();
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+		expect(s.starts).toEqual([]);
+		// It runs with its screen off: the start that turns it on carries the open, no second press.
+		s.state.machines = [machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		expect(s.starts).toHaveLength(1);
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+	});
+
+	it("turns an off screen on with what was chosen open, in one start", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		choose(p, 0);
+		await flush();
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		expect(s.starts).toHaveLength(1);
+		s.state.answers.push({ picture: 1 });
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		// Done: nothing opens again by itself.
+		await advance(LOOK_EVERY_MS * 4);
+		expect(s.starts).toHaveLength(1);
+	});
+
+	it("says why it did not open in plain words, with Try again where trying again helps", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NOT_FOUND" });
+		choose(p, 0);
+		await flush();
+		expect(note(p)).toBe("That is not in the company folder any more.");
+		expect(again(p)).toBeNull();
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NO_FOLDER" });
+		choose(p, 0, frameOpener(p));
+		await flush();
+		expect(note(p)).toBe("This computer cannot see the company folder yet. It can after it has slept and woken.");
+		s.state.startAnswers.push({ code: "DESKTOP_DID_NOT_OPEN" });
+		choose(p, 1, frameOpener(p));
+		await flush();
+		expect(note(p)).toBe("The computer could not open it. Try again.");
+		expect(again(p)?.textContent).toBe("Try again");
+		again(p)!.click();
+		await flush();
+		expect(s.opens).toEqual([
+			"apps/brooks-overblik",
+			"apps/brooks-overblik",
+			"apps/kort/pages/kort.html",
+			"apps/kort/pages/kort.html",
+		]);
+		expect(note(p)).toBe("");
+		expect(again(p)).toBeNull();
+		// No technical line and no path shown anywhere.
+		expect(p.el.textContent).not.toContain("apps/");
+		expect(p.el.textContent).not.toContain("DESKTOP_");
+	});
+
+	it("says a refusal under the state when no picture shows, and someone else's private typing as a click's", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NOT_FOUND" });
+		choose(p, 0);
+		await flush();
+		// The next look finds the screen still off, and the state says why nothing opened.
+		await advance(LOOK_EVERY_MS);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(detail(p)).toBe("That is not in the company folder any more.");
+		await advance(SCREEN_OFF_EVERY_MS * 2);
+		expect(s.starts).toHaveLength(1);
+		// The member's own press ends it.
+		s.state.startAnswers.push({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		choose(p, 0);
+		await flush();
+		expect(detail(p)).toBeNull();
+		// As a click's refusal: the list is read again, and nothing more is started by itself.
+		await advance(SCREEN_OFF_EVERY_MS * 2);
+		expect(s.starts).toHaveLength(2);
+	});
+
+	it("drops the open with the wish at a switch or a close", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2, { state: "stopped" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		s.state.machines = [machine(1, { state: "starting" }), machine(2, { state: "stopped" })];
+		choose(p, 0);
+		await flush();
+		// The member chooses the other computer meanwhile: nothing of the first's wish opens anywhere.
+		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		await flush();
+		s.state.machines = [machine(1), machine(2, { state: "stopped" })];
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS * 4);
+		expect(s.opens).toEqual([]);
+		p.dispose();
+		// Closed during the wish: nothing opens.
+		const t = setup({ machines: [machine(1, { state: "stopped" })] });
+		t.state.apps = apps;
+		const q = panel(t);
+		await flush();
+		t.state.machines = [machine(1, { state: "starting" })];
+		choose(q, 0);
+		await flush();
+		q.dispose();
+		t.state.machines = [machine(1)];
+		t.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		await advance(LOOK_EVERY_MS * 4);
+		expect(t.opens).toEqual([]);
 	});
 });
 

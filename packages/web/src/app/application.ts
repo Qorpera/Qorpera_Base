@@ -822,6 +822,19 @@ export function mountApplication(
 				hints: (listener) => controller.onInvalidate(listener),
 				// The machine's clock and backdrop follow the company's time zone (20260930739000).
 				timeZone: () => controller.store.get().team?.timeZone,
+				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+				// folder when the page is its index.html (the helper serves the folder), else the page itself.
+				apps: () =>
+					controller.store
+						.get()
+						.apps?.filter((app) => app.manifest !== null)
+						.map((app) => ({
+							name: app.manifest?.name ?? app.name,
+							path:
+								app.manifest === null || app.manifest.entry === "index.html"
+									? app.path
+									: `${app.path}/${app.manifest.entry}`,
+						})),
 			});
 			// A window that showed by itself follows its agent's use whatever thread is shown (20260930742000).
 			const panels = computerPanels;
