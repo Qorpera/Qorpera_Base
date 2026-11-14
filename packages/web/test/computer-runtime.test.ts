@@ -1747,6 +1747,80 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(p.choices).toHaveLength(1);
 	});
 
+	/** A file dialog the test answers when it likes: each call's signal and its answer, in turn. */
+	function heldDialogs(s: Setup) {
+		const dialogs: { signal: AbortSignal; answer: (path: string | null) => void }[] = [];
+		s.state.chooseFile = (signal) =>
+			new Promise((resolve) => {
+				dialogs.push({ signal, answer: resolve });
+			});
+		return dialogs;
+	}
+
+	it("closes the file dialog, choosing nothing, when someone else starts typing privately meanwhile (review r1 F1 of #1808)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		choose(p, 2);
+		await flush();
+		expect(dialogs).toHaveLength(1);
+		expect(dialogs[0]!.signal.aborted).toBe(false);
+		const until = new Date(Date.now() + 120_000).toISOString();
+		s.state.machines = [
+			machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } }),
+		];
+		s.hint("machines");
+		await flush();
+		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.dataset.state).toBe("controlled");
+		expect(opener(p).hidden).toBe(true);
+		// The dialog is told to close; a pick it answers anyway is no choice, sent nowhere and said nowhere.
+		expect(dialogs[0]!.signal.aborted).toBe(true);
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(s.opens).toEqual([]);
+		expect(p.choices).toHaveLength(0);
+		expect(p.el.querySelector(".machine-screen-control-note")?.textContent ?? "").toBe("");
+		// Ada is done: Open is offered again, and a pick made the ordinary way is a choice.
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(opener(p).hidden).toBe(false);
+		choose(p, 2);
+		await flush();
+		dialogs[1]!.answer("notes/plan.md");
+		await flush();
+		expect(s.opens).toEqual(["notes/plan.md"]);
+		expect(p.choices.map((choice) => choice.path)).toEqual(["notes/plan.md"]);
+	});
+
+	it("closes the file dialog, choosing nothing, when the computer shown changes meanwhile; one dialog at a time", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		choose(p, 2);
+		await flush();
+		// A second "A file…" while one is open does nothing: the open one is in front.
+		choose(p, 2, frameOpener(p));
+		await flush();
+		expect(dialogs).toHaveLength(1);
+		// The computer it was asked on leaves the list: the window shows the other one, and the dialog closes.
+		s.state.machines = [machine(2)];
+		s.hint("machines");
+		await flush();
+		expect(dialogs[0]!.signal.aborted).toBe(true);
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(s.opens).toEqual([]);
+		expect(s.starts).toHaveLength(0);
+		expect(p.choices).toHaveLength(0);
+	});
+
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;
@@ -2346,11 +2420,18 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 			const s = setup({ machines: [machine(1), machine(2)], stream: true });
 			s.state.apps = apps;
 			// "A file…" is one more move: the folder's browser answers a file, a folder, or Cancel.
+			// "A file…" is one more move: the folder's dialog stays open across moves and answers later, a file, a folder or
+			// Cancel; each a path of its own, so a pick from a dialog told to close is seen if it is ever sent (review r1 F1
+			// of #1808).
 			let files = 0;
-			s.state.chooseFile = async () => {
+			const dialogs: { signal: AbortSignal; answer: (path: string | null) => void; path: string }[] = [];
+			const dropped = new Set<string>();
+			s.state.chooseFile = (signal) => {
 				files++;
-				return pick(["notes/plan.md", "Salg/2026", null]);
+				const path = pick([`notes/plan ${files}.md`, `Salg/${files}`]);
+				return new Promise((resolve) => dialogs.push({ signal, answer: resolve, path }));
 			};
+			const until = new Date(Date.now() + 24 * 3600_000).toISOString();
 			// Half the seeds begin with the screen off: a plain Turn it on is then the state's own button.
 			s.state.fallback = first % 2 === 1 ? { code: "DESKTOP_NOT_RUNNING" } : { picture: 1 };
 			const u16 = (value: number) => [value >> 8, value & 0xff];
@@ -2448,12 +2529,36 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 						stamp();
 						notStalled();
 					}
+				} else if (move < 0.84 && dialogs.length > 0) {
+					// An open file dialog answers: a pick, or Cancel.
+					const [dialog] = dialogs.splice(Math.floor(random() * dialogs.length), 1);
+					const path = random() < 0.2 ? null : (dialog?.path ?? null);
+					if (path !== null && dialog?.signal.aborted) dropped.add(path);
+					dialog?.answer(path);
+				} else if (move < 0.86) {
+					// Someone else starts or stops typing privately on the first computer (Open hides while they do).
+					s.state.machines = s.state.machines.map((one, index) =>
+						index === 0
+							? {
+									...one,
+									control: one.control
+										? null
+										: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null },
+								}
+							: one,
+					);
+					s.hint("machines");
 				} else await advance(pick([0, LOOK_EVERY_MS, 1000, START_AGAIN_MS]));
 				await flush();
 				stamp();
 				for (const one of seen) holds(one);
 				notStalled();
+				for (const path of dropped)
+					expect(s.opens, `a pick from a dialog told to close was sent: ${path}`).not.toContain(path);
 			}
+			for (const dialog of dialogs.splice(0)) dialog.answer(null);
+			s.state.machines = s.state.machines.map((one) => ({ ...one, control: null }));
+			s.hint("machines");
 			// Every request answers, and time runs out: every choice of every window has ended.
 			for (let round = 0; round < 12 && pending.length > 0; round++) {
 				for (const resolve of pending.splice(0)) resolve(respond({ outcome: "opened" }));

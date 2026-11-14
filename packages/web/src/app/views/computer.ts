@@ -552,6 +552,8 @@ export class ComputerPanel {
 	readonly #apps: () => readonly ComputerOpenApp[];
 	/** Open's "A file…" (the company folder's browser in choose mode); a pick there is one more choice. */
 	readonly #chooseFile: ((signal: AbortSignal) => Promise<string | null>) | undefined;
+	/** The file dialog open now: the computer Open was pressed on, and what closes it (review r1 F1 of #1808). */
+	#fileDialog: { readonly machineId: string; readonly stop: AbortController } | undefined;
 	readonly #opener: HTMLButtonElement;
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
@@ -3027,33 +3029,60 @@ export class ComputerPanel {
 		];
 	}
 
-	/** "A file…": the company folder's browser picks a file or a folder; that path is a choice like an app's. Cancel
-	 * chooses nothing, and leaves any choice standing as it was. */
+	/** "A file…": the company folder's browser picks a file or a folder; that path is a choice like an app's, on the
+	 * computer Open was pressed on (review r1 F1 of #1808). The dialog may stay open for minutes: it is closed, choosing
+	 * nothing, the moment that computer is no longer the one shown or Open is no longer offered on it (#syncOpeners), and
+	 * a path it answers becomes a choice only while both still hold. Cancel chooses nothing, and leaves any choice standing
+	 * as it was. One dialog at a time: a second "A file…" while one is open does nothing (the open one is modal, in
+	 * front). */
 	async #chooseAFile(choose: (signal: AbortSignal) => Promise<string | null>, signal: AbortSignal): Promise<void> {
+		const machineId = this.#pick()?.machineId;
+		if (this.#fileDialog || machineId === undefined || !this.#openOffered()) return;
+		const dialog = { machineId, stop: new AbortController() };
+		this.#fileDialog = dialog;
 		let path: string | null;
 		try {
-			path = await choose(signal);
+			path = await choose(AbortSignal.any([signal, dialog.stop.signal]));
 		} catch {
-			return;
+			path = null;
+		} finally {
+			if (this.#fileDialog === dialog) this.#fileDialog = undefined;
 		}
-		if (path !== null && !signal.aborted) this.#choose(path, signal);
+		if (
+			path === null ||
+			signal.aborted ||
+			dialog.stop.signal.aborted ||
+			this.#pick()?.machineId !== machineId ||
+			!this.#openOffered()
+		)
+			return;
+		this.#choose(path, signal);
 	}
 
-	/** Open shows for a member who may act on the computer shown, when it can have a screen and the company has an app or
-	 * a folder to pick from ("A file…"), whatever it does now (asleep and off too: the press is the wish "on, with this
+	/** Open is offered to a member who may act on the computer shown, when it can have a screen and the company has an app
+	 * or a folder to pick from ("A file…"), whatever it does now (asleep and off too: the press is the wish "on, with this
 	 * open"); not while its screen is someone's private typing, or hidden. */
-	#syncOpeners(): void {
+	#openOffered(): boolean {
 		const machine = this.#pick();
 		const state = this.#loading.hidden ? null : ((this.#loading.dataset.state ?? "loading") as Shown);
-		const offered =
+		return (
 			machine?.desktopCapable === true &&
 			this.#listed?.canTakeOver === true &&
 			(this.#apps().length > 0 || this.#chooseFile !== undefined) &&
-			computerOpenOffered(state);
+			computerOpenOffered(state)
+		);
+	}
+
+	/** Open shows where it is offered; a file dialog open for a computer no longer shown, or where Open is no longer
+	 * offered, closes and chooses nothing. */
+	#syncOpeners(): void {
+		const offered = this.#openOffered();
 		for (const button of [this.#opener, this.#frameOpener]) {
 			if (button.hidden === offered) button.hidden = !offered;
 			if (button.title !== t("Open on this computer")) button.title = t("Open on this computer");
 		}
+		const dialog = this.#fileDialog;
+		if (dialog && (!offered || this.#pick()?.machineId !== dialog.machineId)) dialog.stop.abort();
 	}
 
 	/** The member chose something to open (20260930758000): that is the ask, with no second press. The choice standing
