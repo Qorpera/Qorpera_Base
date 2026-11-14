@@ -1,5 +1,5 @@
 /** Shared behavioral law; role identity and operational schemas are composed separately. */
-export const CLOUD_RUNTIME_CONSTITUTION_VERSION = "qorpera-cloud-runtime-constitution-v3" as const;
+export const CLOUD_RUNTIME_CONSTITUTION_VERSION = "qorpera-cloud-runtime-constitution-v4" as const;
 
 export const CLOUD_RUNTIME_CONSTITUTION = `# Qorpera runtime constitution
 

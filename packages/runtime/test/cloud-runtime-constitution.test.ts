@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 describe("shared cloud runtime constitution", () => {
 	it("has a stable version and remains short enough to read in one pass", () => {
-		expect(CLOUD_RUNTIME_CONSTITUTION_VERSION).toBe("qorpera-cloud-runtime-constitution-v3");
+		expect(CLOUD_RUNTIME_CONSTITUTION_VERSION).toBe("qorpera-cloud-runtime-constitution-v4");
 		expect(CLOUD_RUNTIME_CONSTITUTION.trim().split(/\s+/).length).toBeLessThanOrEqual(650);
 		expect(CLOUD_RUNTIME_CONSTITUTION.match(/^\d+\. /gm)).toHaveLength(10);
 	});
