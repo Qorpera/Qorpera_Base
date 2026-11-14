@@ -545,11 +545,12 @@ So a guide is a tool's answer, read when the part is made:
   reads nothing of the company and changes nothing: review class `read`, no receipt, no operationKey. Its one
   database change is its name in the closed list of a run's observations (20260930762000).
 - **`save_app` saves a kit's own file (`<kit>.json`, `scenes.js`) only in a run that has read the kit's guide**:
-  otherwise `APP_GUIDE_UNREAD`, before anything is written, naming the guide to read. Which guides a run
-  has read is held by the run's own app tools, made once a run. A description that says "read the guide first" is a
-  request; this is the rule, since the failure it answers was silent for as long as nobody read a request as the
-  model received it. A save that leaves the kit's file alone (pictures, the manifest, a concept's cover) needs no
-  guide. The guides of a hand-written page are not held to a read: its page still opens without them.
+  otherwise `APP_GUIDE_UNREAD`, before anything is written, naming the guide to read. Which guides were read is held
+  by the app tools of the run's attempt: a run that goes on in a new attempt reads the guide again. A description that
+  says "read the guide first" is a request; this is the rule, since the failure it answers was silent for as long as
+  nobody read a request as the model received it. A save that leaves the kit's file alone (pictures, the manifest, a
+  concept's cover) needs no guide. The guides of a hand-written page are not held to a read: its page still opens
+  without them.
 - `save_app`'s fields say a line each: which kit draws which thing stays on `kit`, where the agent chooses; the
   rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
 

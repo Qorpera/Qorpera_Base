@@ -229,7 +229,7 @@ it("saves a kit's file only in a run that has read the kit's guide", async () =>
 	// A new app: refused before anything is written, naming the guide.
 	await refuses(
 		f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
-		"APP_GUIDE_UNREAD: nothing was saved. This run has not read the explainer kit's guide, which says what scenes.js holds and gives an example. Call app_guide with about explainer, check scenes.js against it, then save again.",
+		"APP_GUIDE_UNREAD: this call saved nothing. Read the explainer kit's guide first: it says what scenes.js holds and gives an example. Call app_guide with about explainer, check scenes.js against it, then make this call again.",
 	);
 	expect(f.commits).toEqual([]);
 	// Another kit's guide is not this kit's.
@@ -261,7 +261,7 @@ it("holds a change of a kit's file to the guide too, and leaves every other save
 	);
 	await refuses(
 		f.call("save_app", save("fee", "change-1", null, [{ path: "scenes.js", text: `${SCENES}\n` }])),
-		"APP_GUIDE_UNREAD: nothing was saved. This run has not read the explainer kit's guide",
+		"APP_GUIDE_UNREAD: this call saved nothing. Read the explainer kit's guide first",
 	);
 	// By the kit the app keeps under a manifest that names none, and by the file's name in any case.
 	await refuses(

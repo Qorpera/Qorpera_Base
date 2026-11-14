@@ -76,7 +76,7 @@ finish(
 			assert.equal(blind.envelope.status, "denied");
 			assert(
 				blind.text.includes(
-					"APP_GUIDE_UNREAD: nothing was saved. This run has not read the model kit's guide, which says what model.json holds and gives an example. Call app_guide with about model, check model.json against it, then save again.",
+					"APP_GUIDE_UNREAD: this call saved nothing. Read the model kit's guide first: it says what model.json holds and gives an example. Call app_guide with about model, check model.json against it, then make this call again.",
 				),
 				blind.text,
 			);

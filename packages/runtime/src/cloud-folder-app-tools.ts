@@ -563,8 +563,9 @@ function savedText(
 	});
 }
 
-/** The interface app tools of a folder-v2 run. `operations` takes the receipts of their changes. One run's tools are
- * made once, so they hold which guides the run has read. */
+/** The interface app tools of a folder-v2 run. `operations` takes the receipts of their changes. They are made once
+ * for a run's attempt and hold which guides it has read: a run that goes on in a new attempt reads a kit's guide again
+ * before it writes the kit's file, as it does when its context no longer holds the guide. */
 export function cloudAppTools(options: {
 	folder: CloudCompanyFolderClient;
 	operations: CloudNativeToolOperations;
@@ -591,13 +592,15 @@ export function cloudAppTools(options: {
 	const guided = new Set<AppGuide>();
 	// A kit's own file is saved only in a run that has read the kit's guide: its fields, their bounds and its example
 	// are nowhere else, and a file written without them passes the few checks a save can make and draws an empty or
-	// broken page (14 November 2026). Thrown before the call began anything.
+	// broken page (14 November 2026). Thrown before the call began anything, and it speaks of this call alone: a call
+	// an earlier attempt of the run completed is refused here too, in an attempt that has not read the guide, and made
+	// again after the read it replays its receipt, as any repeated call does.
 	const refuseUnread = (kit: AppManifest["kit"], files: readonly AppFile[]): void => {
 		if (kit === null || guided.has(kit)) return;
 		const own = kitOwnFile(kit);
 		if (files.some((file) => file.path.toLowerCase() === own))
 			throw new CloudToolRefusal(
-				`APP_GUIDE_UNREAD: nothing was saved. This run has not read the ${kit} kit's guide, which says what ${own} holds and gives an example. Call app_guide with about ${kit}, check ${own} against it, then save again.`,
+				`APP_GUIDE_UNREAD: this call saved nothing. Read the ${kit} kit's guide first: it says what ${own} holds and gives an example. Call app_guide with about ${kit}, check ${own} against it, then make this call again.`,
 			);
 	};
 	// A commit no one can complete would fence this run's later operations: refuse before writing anything.
