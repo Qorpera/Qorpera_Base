@@ -62,7 +62,13 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | `query` | `{ database, question, params?, etag? }` | `{ columns, rows, more, asOf, etag }`, or `{ same: true, etag }` |
 | `watch` | `{ watches: [{ database, question, params?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait |
 | `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
-| `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows, columns }], companyBytes }` |
+| `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows?, about?, columns }], companyBytes }` |
+
+A table's `rows` are counted when it is described, as the database folder's read login, each count a question of its
+own (read only, a question's time at most): tables first, the smallest first, then views. All the counts of one call
+share 1.5 s (`countMs`). A table that was not counted in that time carries PostgreSQL's own estimate with
+`about: true`, or no `rows` at all when PostgreSQL has none (it has none before a table is first analysed, and
+autovacuum leaves a table of a few rows alone; a view never has one). A describe is never refused over a count.
 
 ### The run door (agents)
 
@@ -110,6 +116,7 @@ that you may read), 405 (not POST), 408 (past the time limit), 409 (no step appl
 | A member's folder read | kept 10 s |
 | A body | 1 MiB |
 | A company's database | 1 GiB: the watcher closes its steps, questions still answer |
+| A describe call's row counts | 1.5 s together (`countMs`); a table not counted in time shows an estimate or no rows |
 
 The watcher also ends a statement of a folder's login that runs 2 s past its door's limit.
 

@@ -430,8 +430,48 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.ok(described.value.companyBytes > 0);
 		const orders = described.value.tables.find((table) => table.name === "orders");
 		assert.deepEqual(orders.columns.map((column) => column.name), ["id", "customer", "amount", "status", "placed_by", "placed_at", "note"]);
+		const [{ held }] = await asAdmin(companyDatabase(ENV_A), "select count(*)::int as held from shop.orders");
+		assert.ok(held > 0);
+		assert.deepEqual([orders.rows, orders.about], [held, undefined], "the rows the table holds, counted");
 		const triggers = await asAdmin(companyDatabase(ENV_A), "select tgname from pg_trigger where tgrelid = 'shop.orders'::regclass and not tgisinternal order by 1");
 		assert.deepEqual(triggers.map((row) => row.tgname), ["qorpera_changed", "qorpera_emptied", "qorpera_rows_gone"]);
+	});
+
+	it("counts a table's rows when it describes it, and says when a number is only PostgreSQL's estimate", async () => {
+		put(ENV_A, {
+			"data/tally/database.toml": 'format = "qorpera.database/v1"\nname = "Tally"\nabout = "Things counted"\n',
+			"data/tally/tables/001-things.sql":
+				"create table things (id int primary key, name text not null);\n" +
+				"insert into things select n, 'thing ' || n from generate_series(1, 7) n;\n" +
+				"create view some_things as select * from things where id <= 3;\n" +
+				// 7 rows at 0.2 s each: its count runs past a question's time here (300 ms).
+				"create view slow_things as select * from things where pg_sleep(0.2) is not null;\n",
+		});
+		const applied = await ask(contributor, "apply", { database: "tally" });
+		assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+		const rowsOf = (answer) => Object.fromEntries(answer.value.tables.map((table) => [table.name, [table.rows, table.about]]));
+		// Autovacuum never analyses a table of 7 rows, so PostgreSQL has no estimate for it: the count is the truth.
+		const [{ estimate }] = await asAdmin(companyDatabase(ENV_A), "select reltuples::int as estimate from pg_class where oid = 'tally.things'::regclass");
+		assert.equal(estimate, -1);
+		const began = Date.now();
+		const counted = await call(viewer, "describe", { database: "tally" });
+		assert.equal(counted.status, 200, JSON.stringify(counted.value));
+		// The slow view's count was ended at a question's time and left it without rows; the view after it was counted.
+		assert.deepEqual(rowsOf(counted), { slow_things: [undefined, undefined], some_things: [3, undefined], things: [7, undefined] });
+		assert.ok(Date.now() - began < LIMITS_HERE.countMs + 1_500, "a describe lasts its counts' time at most");
+		assert.deepEqual(Object.keys(counted.value.tables.find((table) => table.name === "things")), ["name", "rows", "columns"]);
+		await withGateway({ limits: { ...LIMITS_HERE, countMs: 0 } }, async () => {
+			// No time to count: no rows are named where PostgreSQL has no estimate.
+			const none = await call(viewer, "describe", { database: "tally" });
+			assert.deepEqual(rowsOf(none), { slow_things: [undefined, undefined], some_things: [undefined, undefined], things: [undefined, undefined] });
+			await asAdmin(companyDatabase(ENV_A), "analyze tally.things");
+			// With an estimate it is given, and marked; a view never has one.
+			const about = await call(viewer, "describe", { database: "tally" });
+			assert.deepEqual(rowsOf(about), { slow_things: [undefined, undefined], some_things: [undefined, undefined], things: [7, true] });
+		});
+		// A question still answers after a count was ended.
+		put(ENV_A, { "data/tally/queries/count.sql": "-- How many things there are.\nselect count(*) as things from things;\n" });
+		assert.deepEqual((await ask(viewer, "query", { database: "tally", question: "count" })).value.rows, [[7]]);
 	});
 
 	// ---- questions
@@ -1369,6 +1409,9 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.deepEqual(stock.steps.waiting, []);
 		assert.deepEqual(stock.steps.applied.map((step) => step.name), ["001-items"]);
 		assert.deepEqual(stock.tables.map((table) => [table.name, table.columns.map((column) => column.name)]), [["items", ["id", "name", "owner"]]]);
+		const [{ items }] = await asAdmin(companyDatabase(ENV_D), "select count(*)::int as items from stock.items");
+		assert.ok(items > 0);
+		assert.deepEqual([stock.tables[0].rows, stock.tables[0].about], [items, undefined], "an agent sees the rows the table holds");
 		assert.ok(described.value.companyBytes > 0);
 		// A step a member wrote that destroys rows is held, with what it would destroy, and nothing changes.
 		put(ENV_D, { "data/stock/tables/002-clear.sql": "delete from items where id > 90;\n" });
