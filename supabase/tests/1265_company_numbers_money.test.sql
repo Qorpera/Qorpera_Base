@@ -496,11 +496,11 @@ end $$;
 rollback to savepoint n_zone;
 select pg_temp.base_claims('service_role');
 
--- 15. Until slice M2 the summary's days and month are the vault's UTC ones, and may lead the company's. money-kinds'
---     "this month" is the summary's own when it is the month of the company's yesterday, today or tomorrow: on the
+-- 15. Until slice M2 the summary's days and month are the vault's UTC ones, and may lead or lag the company's.
+--     money-kinds' "this month" is the summary's own when it is the month of the company's today or tomorrow: on the
 --     company's 31 October a summary of November (fetched after midnight UTC, in a zone behind it) is answered, and
---     either month may be named. money-balance's default range ends on the summary's newest day when that is the
---     company's tomorrow, never later.
+--     either month may be named. A summary that lags (last month's, with no fetch since) is never this month's.
+--     money-balance's default range ends on the summary's newest day when that is the company's tomorrow, never later.
 savepoint n_utc;
 do $$
 declare o constant uuid := '92400000-0000-4000-8000-000000000001'; v jsonb;
@@ -510,8 +510,8 @@ begin
 		'a summary a month ahead, on the company''s last day of the month');
 	perform pg_temp.n_same(public.qorpera_company_numbers_kinds_month('2026-12-31', '2027-01'), '2027-01',
 		'a summary a month ahead, across the year');
-	perform pg_temp.n_same(public.qorpera_company_numbers_kinds_month('2026-11-01', '2026-10'), '2026-10',
-		'a summary a month behind, on the company''s first day of the month');
+	perform pg_temp.n_same(public.qorpera_company_numbers_kinds_month('2026-11-01', '2026-10'), '2026-11',
+		'a summary a month behind, on the company''s first day of the month: the company''s');
 	perform pg_temp.n_same(public.qorpera_company_numbers_kinds_month('2026-11-15', '2026-12'), '2026-11',
 		'a summary a month ahead, mid-month: the company''s');
 	perform pg_temp.n_same(public.qorpera_company_numbers_kinds_month('2026-11-15', '2026-10'), '2026-11',
@@ -526,17 +526,38 @@ begin
 		'a summary behind');
 	perform pg_temp.n_same(public.qorpera_company_numbers_balance_end('2026-10-31', null)::text, '2026-10-31', 'no days');
 
-	-- A summary whose months are a month ahead of the company's (as on its last day of a month): its kinds are
-	-- answered, and both months may be named.
+	-- A summary whose months are next month's: answered only on the company's last day of a month (the month of its
+	-- tomorrow), where both months may be named; on any other day it is no month of the company's: the company's month
+	-- has no rows, and next month is refused.
+	perform set_config('qorpera_test.n_next', to_char(date_trunc('month', pg_temp.n_today()) + interval '1 month',
+		'YYYY-MM'), true);
 	perform pg_temp.n_record('92400000-0000-4000-8000-000000000010', jsonb_set(jsonb_set(pg_temp.n_summary(),
-		'{moneyIn,month}', to_jsonb(to_char(pg_temp.n_today() + 1, 'YYYY-MM'))),
-		'{moneyOut,month}', to_jsonb(to_char(pg_temp.n_today() + 1, 'YYYY-MM'))));
-	v := pg_temp.n_member(o, 'money-kinds', jsonb_build_object('month', to_char(pg_temp.n_today() + 1, 'YYYY-MM')));
-	perform pg_temp.n_same(jsonb_array_length(v -> 'rows')::text, '5', 'the summary''s month by name');
-	perform pg_temp.n_same(jsonb_array_length(pg_temp.n_member(o, 'money-kinds') -> 'rows')::text, '5',
-		'this month is the summary''s');
+		'{moneyIn,month}', to_jsonb(current_setting('qorpera_test.n_next'))),
+		'{moneyOut,month}', to_jsonb(current_setting('qorpera_test.n_next'))));
+	if to_char(pg_temp.n_today() + 1, 'YYYY-MM') = current_setting('qorpera_test.n_next') then
+		v := pg_temp.n_member(o, 'money-kinds', jsonb_build_object('month', current_setting('qorpera_test.n_next')));
+		perform pg_temp.n_same(jsonb_array_length(v -> 'rows')::text, '5', 'next month''s summary by name, on the last day');
+		perform pg_temp.n_same(jsonb_array_length(pg_temp.n_member(o, 'money-kinds') -> 'rows')::text, '5',
+			'this month is the summary''s, on the last day');
+	else
+		perform pg_temp.n_json(pg_temp.n_member(o, 'money-kinds') -> 'rows', '[]',
+			'next month''s summary is no month of the company''s mid-month');
+		perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds',
+			jsonb_build_object('month', current_setting('qorpera_test.n_next'))),
+			format('22023 qorpera/money-kinds answers this month only (%s), for now', pg_temp.n_month()),
+			'next month is refused mid-month');
+	end if;
 	perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds', jsonb_build_object('month', pg_temp.n_month())), 'ok',
-		'the company''s own month may be named too');
+		'the company''s own month may always be named');
+	-- A summary of last month (fetched before this month began, and none since): never this month's.
+	perform pg_temp.n_record('92400000-0000-4000-8000-000000000010', jsonb_set(jsonb_set(pg_temp.n_summary(),
+		'{moneyIn,month}', to_jsonb(to_char(date_trunc('month', pg_temp.n_today()) - interval '1 month', 'YYYY-MM'))),
+		'{moneyOut,month}', to_jsonb(to_char(date_trunc('month', pg_temp.n_today()) - interval '1 month', 'YYYY-MM'))));
+	perform pg_temp.n_json(pg_temp.n_member(o, 'money-kinds') -> 'rows', '[]', 'last month''s summary');
+	perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds',
+		jsonb_build_object('month', to_char(date_trunc('month', pg_temp.n_today()) - interval '1 month', 'YYYY-MM'))),
+		format('22023 qorpera/money-kinds answers this month only (%s), for now', pg_temp.n_month()),
+		'last month is refused');
 	-- A summary two months ahead is no month of the company's: nothing, and its month is refused.
 	perform pg_temp.n_record('92400000-0000-4000-8000-000000000010', jsonb_set(jsonb_set(pg_temp.n_summary(),
 		'{moneyIn,month}', to_jsonb(to_char(pg_temp.n_today() + interval '2 months', 'YYYY-MM'))),
