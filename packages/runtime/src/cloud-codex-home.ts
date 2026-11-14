@@ -67,6 +67,10 @@ export const CLOUD_HOME_NOT_RUNNING =
 	"HOME_NOT_RUNNING: this agent's machine is not running, so nothing ran there. Start it with machine_start and try again, or use the company's own tools.";
 export const CLOUD_HOME_BUSY =
 	"HOME_BUSY: this agent's machine is busy with another run's work, so nothing ran there. Use the company's own tools, or try again when that work is done.";
+/** What the model is told when its machine's Codex is not the build its run speaks to: a machine that slept through an
+ * image switch keeps its disk, and with it the tools of the image it was made from. */
+export const CLOUD_HOME_OUTDATED =
+	"HOME_OUTDATED: this agent's machine has an older build of the tools this run uses on it, so the home is unavailable on this machine and nothing ran there. Start a new machine for this agent to have it, or use the company's own tools.";
 /** What the model is told when its home went away while it was working on it. */
 export const CLOUD_HOME_LOST =
 	"HOME_LOST: the connection to this agent's machine broke while that was running there, so there is no answer to it. Part of it may have happened on the machine. Look at the machine's own state before doing it again, or use the company's own tools.";
@@ -78,6 +82,7 @@ export const CLOUD_HOME_NO_RECORD =
 export function cloudHomeRefusalWords(reason: string | undefined): string {
 	if (reason === "MACHINE_NOT_RUNNING") return CLOUD_HOME_NOT_RUNNING;
 	if (reason === "MACHINE_BUSY_WITH_OTHER_WORK") return CLOUD_HOME_BUSY;
+	if (reason === "HOME_CODEX_NOT_PINNED") return CLOUD_HOME_OUTDATED;
 	return CLOUD_HOME_UNAVAILABLE;
 }
 

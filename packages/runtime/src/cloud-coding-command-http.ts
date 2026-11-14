@@ -15,6 +15,7 @@ import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts"
 import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
+	CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
 	CLOUD_HOME_CHANNEL_REASON,
@@ -23,7 +24,9 @@ import {
 	type CloudHomeChannelSide,
 	type CloudHomeSessionAnswer,
 	type CloudHomeSessionAuthorized,
+	cloudHomeChannelKeepAlive,
 	cloudHomeChannelLines,
+	cloudHomeChannelWithoutKeepAlive,
 	parseCloudHomeChannelHandshake,
 } from "./cloud-home-channel.ts";
 import {
@@ -345,6 +348,8 @@ export interface CloudCodingCommandServiceOptions {
 	};
 	host?: "127.0.0.1" | "::1";
 	port?: number;
+	/** How often an open home channel says it is still there (CLOUD_HOME_CHANNEL_KEEPALIVE): the tests' own shorter one. */
+	homeKeepAliveMs?: number;
 }
 
 async function readRequest(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
@@ -394,6 +399,8 @@ export class HttpCloudCodingCommandService {
 		if (
 			!validToken(options.token) ||
 			(options.host !== undefined && !["127.0.0.1", "::1"].includes(options.host)) ||
+			(options.homeKeepAliveMs !== undefined &&
+				(!Number.isSafeInteger(options.homeKeepAliveMs) || options.homeKeepAliveMs < 1)) ||
 			!Number.isSafeInteger(options.port ?? 0) ||
 			(options.port ?? 0) < 0 ||
 			(options.port ?? 0) > 65535
@@ -428,6 +435,7 @@ export class HttpCloudCodingCommandService {
 			);
 		};
 		let side: CloudHomeChannelSide | undefined;
+		let stopKeepAlive = (): void => undefined;
 		try {
 			if (
 				!home ||
@@ -468,6 +476,12 @@ export class HttpCloudCodingCommandService {
 			}
 			side = await home.open(authority, { binding, holder }, controller.signal);
 			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
+			// A front ends an upgraded connection that is quiet for its read timeout: while the channel is open this end
+			// says it is there, and the run's own such lines go no further than here.
+			stopKeepAlive = cloudHomeChannelKeepAlive(
+				socket,
+				this.#options.homeKeepAliveMs ?? CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
+			);
 			const machine = side;
 			// Either side ending ends the other (review round 1, F3): the exec-server on the machine waits on its
 			// stdin, so a run's slot that went must not leave a process running there, and a machine whose channel
@@ -483,7 +497,7 @@ export class HttpCloudCodingCommandService {
 				}
 			})();
 			try {
-				for await (const line of reader) machine.write(line);
+				for await (const line of cloudHomeChannelWithoutKeepAlive(reader)) machine.write(line);
 			} finally {
 				await side.close().catch(() => undefined);
 				side = undefined;
@@ -498,6 +512,7 @@ export class HttpCloudCodingCommandService {
 					: "unavailable";
 			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason })}\n`);
 		} finally {
+			stopKeepAlive();
 			this.#controllers.delete(controller);
 			controller.abort();
 			await side?.close().catch(() => undefined);

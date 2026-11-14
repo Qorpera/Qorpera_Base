@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import type { TimerOptions } from "node:timers";
 import type * as TimersPromises from "node:timers/promises";
 import {
+	CLOUD_MACHINE_HOME,
 	type CloudMachineCommandReceipt,
 	cloudMachineFolderBytes,
 	parseCloudMachineCommandReceipt,
@@ -19,7 +20,6 @@ import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachine
 import {
 	COMPANY_MACHINE_CLIPBOARD_CLEAR,
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
-	COMPANY_MACHINE_HOME_ON_BOOT,
 	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
 	COMPANY_MACHINE_MEMBER_POINTER,
@@ -30,6 +30,7 @@ import {
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	companyMachineHomeCommand,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
 	LxdCompanyMachineHost,
@@ -6555,8 +6556,22 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		]);
 		f.running();
 		await f.host.pass(f.signal);
-		const exec: { request?: LxdExecPipeRequest; signal?: AbortSignal } = {};
+		const exec: { request?: LxdExecPipeRequest; signal?: AbortSignal; codex: string; hashes: number } = {
+			codex: `${CLOUD_MACHINE_HOME.codexSha256}  /opt/qorpera-machine/codex\n`,
+			hashes: 0,
+		};
 		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			// The machine's Codex, hashed once per boot before its first channel (#homeCodex).
+			if (request.command.includes("/opt/qorpera-machine/codex") && !request.command.includes("exec-server")) {
+				exec.hashes++;
+				f.order.push("exec:codex-sha");
+				const missing = exec.codex === "missing";
+				return {
+					exitCode: missing ? 98 : 0,
+					stdout: Buffer.from(missing ? "" : exec.codex),
+					stderrTail: Buffer.alloc(0),
+				};
+			}
 			f.order.push("exec:exec-server");
 			exec.request = request;
 			exec.signal = signal;
@@ -6590,6 +6605,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		expect(f.order.slice(before)).toEqual([
 			"sql:qorpera_folder_home_session_window",
+			"exec:codex-sha",
 			"folder:open",
 			"folder:boundary",
 			"sql:qorpera_folder_test_machine_inherit_reads",
@@ -6634,46 +6650,96 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(opens()).toBe(2);
 	});
 
-	it("starts the exec-server as the agent's account, on the boot SQL named, without the LXD agent's shield from the memory guard", async () => {
+	it("starts each channel's exec-server as a unit of its own in the machines' slice, as the agent's account, on the boot SQL named", async () => {
 		const { f, exec, session } = await home();
-		f.homeSessions.push(session());
+		f.homeSessions.push(session(), session());
 		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
-		expect(exec.request?.command).toEqual([
+		const command = exec.request?.command ?? [];
+		const unit = command.find((word) => word.startsWith("--unit="));
+		expect(command).toEqual(companyMachineHomeCommand(f.boot, id(30), unit?.split("-").at(-1) ?? ""));
+		expect(unit).toMatch(new RegExp(`^--unit=qorpera-machine-home-${id(30)}-[0-9a-f]{16}$`));
+		expect(command.slice(0, 11)).toEqual([
 			"/bin/sh",
 			"-c",
-			COMPANY_MACHINE_HOME_ON_BOOT,
+			'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"',
 			f.boot,
-			"/opt/qorpera-machine/codex",
-			"exec-server",
-			"--listen",
-			"stdio",
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--pipe",
+			"--wait",
+			"--collect",
+			"--service-type=exec",
+			"--expand-environment=no",
 		]);
-		expect([exec.request?.user, exec.request?.group, exec.request?.cwd]).toEqual([2000, 2000, "/company"]);
-		expect(exec.request?.environment.CODEX_HOME).toBe("/var/lib/qorpera-agent/.codex");
+		for (const word of [
+			"--slice=qorpera-machine.slice",
+			"--uid=2000",
+			"--gid=2000",
+			"--working-directory=/company",
+			"--property=KillMode=control-group",
+			"--setenv=HOME=/var/lib/qorpera-agent",
+			"--setenv=CODEX_HOME=/var/lib/qorpera-agent/.codex",
+		])
+			expect(command).toContain(word);
+		expect(command.slice(-4)).toEqual(["/opt/qorpera-machine/codex", "exec-server", "--listen", "stdio"]);
+		// Root only to hand it to systemd: the exec names no account, so LXD runs it as root.
+		expect([exec.request?.user, exec.request?.group]).toEqual([undefined, undefined]);
 		await channel.close();
-		// The guest's own shell, for real (home-lxd, 14 Nov 2026: LXD's processes inherit OOMScoreAdjust=-900 from the
-		// LXD agent's unit). From a raised score, which needs no privilege to lower again to 0, as -900 needs none to
-		// raise: on this boot the program runs with 0; on another nothing runs.
+		// Another channel of the same session is another unit, so a reconnect never meets the one still ending.
+		const again = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		expect(exec.request?.command.find((word) => word.startsWith("--unit="))).not.toBe(unit);
+		await again.close();
+		// The guest's own shell, for real: on this boot the program runs; on another nothing does.
 		const boot = existsSync("/proc/sys/kernel/random/boot_id")
 			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
 			: undefined;
 		if (!boot) return;
 		const run = (bootId: string) =>
-			spawnSync(
-				"/bin/sh",
-				[
-					"-c",
-					'echo 500 > /proc/self/oom_score_adj && exec /bin/sh -c "$@"',
-					"raised",
-					COMPANY_MACHINE_HOME_ON_BOOT,
-					bootId,
-					"/bin/cat",
-					"/proc/self/oom_score_adj",
-				],
-				{ encoding: "utf8" },
-			);
-		expect(run(boot)).toMatchObject({ status: 0, stdout: "0\n" });
+			spawnSync("/bin/sh", ["-c", command[2] as string, bootId, "/bin/echo", "ran"], { encoding: "utf8" });
+		expect(run(boot)).toMatchObject({ status: 0, stdout: "ran\n" });
 		expect(run("00000000-0000-4000-8000-000000000000")).toMatchObject({ status: 1, stdout: "" });
+	});
+
+	it("hashes the machine's Codex once per boot and refuses a home whose Codex is not the pinned build", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session(), session(id(40)));
+		const first = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		const second = await f.host.execServer({ placementId: id(6), sessionId: id(40), bootId: f.boot }, f.signal);
+		expect(exec.hashes).toBe(1);
+		await first.close();
+		await second.close();
+		// Another machine's state on a fresh host: an earlier build, and none at all, are both refused before any
+		// exec-server, window or folder read.
+		for (const codex of [`${"0".repeat(64)}  /opt/qorpera-machine/codex\n`, "missing"]) {
+			const other = await home();
+			other.exec.codex = codex;
+			other.f.homeSessions.push(other.session(), other.session());
+			const before = other.f.order.length;
+			await expect(
+				other.f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: other.f.boot }, other.f.signal),
+			).rejects.toThrow("HOME_CODEX_NOT_PINNED");
+			expect(other.f.order.slice(before)).toEqual(["sql:qorpera_folder_home_session_window", "exec:codex-sha"]);
+			// Kept for the boot: the next session is refused without hashing again.
+			await expect(
+				other.f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: other.f.boot }, other.f.signal),
+			).rejects.toThrow("HOME_CODEX_NOT_PINNED");
+			expect(other.exec.hashes).toBe(1);
+		}
+		// The hash's own shell: a boot that is not the machine's ends the session; a missing file is 98.
+		const boot = existsSync("/proc/sys/kernel/random/boot_id")
+			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+			: undefined;
+		const hash = f.client.execInstancePipe as unknown as ReturnType<typeof vi.fn>;
+		const script = hash.mock.calls
+			.map((call) => (call[2] as LxdExecPipeRequest).command)
+			.find((c) => !c.includes("exec-server"))?.[2];
+		if (!boot || !script) return;
+		const shell = (bootId: string, path: string) =>
+			spawnSync("/bin/sh", ["-c", script, bootId, path], { encoding: "utf8" });
+		expect(shell(boot, "/proc/sys/kernel/random/boot_id")).toMatchObject({ status: 0 });
+		expect(shell(boot, "/proc/sys/kernel/random/boot_id").stdout).toMatch(/^[0-9a-f]{64} {2}\/proc\//);
+		expect(shell("00000000-0000-4000-8000-000000000000", "/proc/sys/kernel/random/boot_id").status).toBe(97);
+		expect(shell(boot, "/nothing/here").status).toBe(98);
 	});
 
 	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {
@@ -6720,12 +6786,19 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
 			["open", "close"],
 		);
-		expect(pipe).not.toHaveBeenCalled();
+		// The machine's Codex was hashed; no exec-server started.
+		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
 	});
 
 	it("asks whether the session may share its machine on an executor without a folder too (review r10 F2)", async () => {
 		const f = await fixture();
-		const pipe = vi.fn(async (_project: string, _name: string, _request: LxdExecPipeRequest, signal: AbortSignal) => {
+		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (!request.command.includes("exec-server"))
+				return {
+					exitCode: 0,
+					stdout: Buffer.from(`${CLOUD_MACHINE_HOME.codexSha256}  /opt/qorpera-machine/codex\n`),
+					stderrTail: Buffer.alloc(0),
+				};
 			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
 				const done = () => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
 				if (signal.aborted) done();
@@ -6750,7 +6823,8 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 			bootId: f.boot,
 		});
 		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
-		expect(pipe).toHaveBeenCalledTimes(1);
+		// The machine's Codex hashed once, then the exec-server.
+		expect(pipe).toHaveBeenCalledTimes(2);
 		// No folder here: no window and no release, only the ask.
 		expect(f.service.requests).toEqual([]);
 		expect(f.calls.filter((call) => call.method === "qorpera_folder_home_session_window")).toHaveLength(2);
@@ -6783,6 +6857,6 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(
 			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
 		).toHaveLength(1);
-		expect(pipe).not.toHaveBeenCalled();
+		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
 	});
 });

@@ -650,6 +650,11 @@ test("the agent's home: Codex's own home folder is the agent account's, where th
 	const host = read("packages/runner-orchestrator/src/company-machine-host.ts");
 	assert.ok(host.includes("CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,"), "the executor's CODEX_HOME");
 	assert.match(read("packages/contracts/src/cloud-machine.ts"), /\thome: "\/var\/lib\/qorpera-agent",\n/);
+	// The executor runs a machine's Codex only when it is the pinned build: its sha-256 is the artifact's, the one the
+	// image takes (argument 8 is checked against the same file).
+	const pin = JSON.parse(read("deploy/first-node/native-codex/linux-x64-artifact.json")).artifact.sha256;
+	assert.match(pin, /^[0-9a-f]{64}$/);
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes(`\tcodexSha256: "${pin}",\n`), "the executor's Codex pin");
 	const made = imageScript.indexOf("\tinstall -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex\n");
 	assert.ok(made > imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent "), "made after the account");
 	assert.ok(

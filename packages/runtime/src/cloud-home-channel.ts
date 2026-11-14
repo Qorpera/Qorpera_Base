@@ -28,6 +28,34 @@ export const CLOUD_HOME_CHANNEL_HANDSHAKE_MS = 10_000;
 /** The whole of opening a channel from the run's side: the connection, the upgrade and the handshake together. */
 export const CLOUD_HOME_CHANNEL_OPEN_MS = 20_000;
 
+/**
+ * A line each end of an open channel sends the other every CLOUD_HOME_CHANNEL_KEEPALIVE_MS and drops when it reads
+ * one: never a line of the exec-server's, never passed on to the machine or to Codex. The exec-server says nothing
+ * while the model thinks or a command runs quietly, and a front (the node's nginx, home-lxd 14 Nov 2026) ends an
+ * upgraded connection that is quiet for its read timeout, which would end the exec-server and what it runs. With a
+ * line in each direction every 20 s, a front's ordinary timeout of a minute or more holds a quiet channel open, and a
+ * channel whose other end is truly gone still ends.
+ */
+export const CLOUD_HOME_CHANNEL_KEEPALIVE = '{"qorpera":"keepalive"}';
+export const CLOUD_HOME_CHANNEL_KEEPALIVE_MS = 20_000;
+
+/** Sends the keep-alive line every `ms` while the socket can take it; the returned function stops it. */
+export function cloudHomeChannelKeepAlive(
+	socket: { readonly writable: boolean; write(line: string): unknown },
+	ms: number,
+): () => void {
+	const timer = setInterval(() => {
+		if (socket.writable) socket.write(`${CLOUD_HOME_CHANNEL_KEEPALIVE}\n`);
+	}, ms);
+	timer.unref();
+	return () => clearInterval(timer);
+}
+
+/** The lines of a channel without the other end's keep-alive lines. */
+export async function* cloudHomeChannelWithoutKeepAlive(lines: AsyncIterable<string>): AsyncGenerator<string> {
+	for await (const line of lines) if (line !== CLOUD_HOME_CHANNEL_KEEPALIVE) yield line;
+}
+
 /** The first line the run's host writes: whose channel this is, and which machine it wants. */
 export interface CloudHomeChannelHandshake {
 	schema: typeof CLOUD_HOME_CHANNEL_PROTOCOL;

@@ -260,6 +260,15 @@ export const CLOUD_MACHINE_GUEST_PATHS = /* @__PURE__ */ Object.freeze({
  */
 export const CLOUD_MACHINE_HOME = /* @__PURE__ */ Object.freeze({
 	codex: "/opt/qorpera-machine/codex",
+	/** The pinned build's sha-256 (deploy/first-node/native-codex/linux-x64-artifact.json, `artifact.sha256`; a test
+	 * keeps the two equal). The executor runs a machine's Codex only when it is this build: a machine that sleeps keeps
+	 * its disk across image switches, so it can wake with an earlier Codex than the run's slot speaks to. */
+	codexSha256: "9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4",
+	/** Each channel's exec-server runs as a transient unit of its own in the machines' slice (`qorpera-machine.slice`),
+	 * named by this prefix, the session and a per-channel suffix: what the agent starts in its shell is the machine's
+	 * work, as a `machine_run` command's is (the idle rule, the slice's memory bound, the memory guard, the watchdog and
+	 * the stop), and nothing of it outlives its channel. */
+	unitPrefix: "qorpera-machine-home-",
 	/** The company folder as the machine mounts it, and the environment's working directory. */
 	cwd: "/company",
 	account: "qorpera-agent",

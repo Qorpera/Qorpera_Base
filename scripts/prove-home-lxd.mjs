@@ -28,6 +28,8 @@ import { lxdCompanyMachineName } from "../packages/runner-orchestrator/src/compa
 import { LxdUnixClient } from "../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../packages/runtime/src/cloud-coding-command-http.ts";
 import { createCloudHomeChannel } from "../packages/runtime/src/cloud-home-channel-client.ts";
+import { CLOUD_HOME_OUTDATED, cloudHomeRefusalWords } from "../packages/runtime/src/cloud-codex-home.ts";
+import { CloudHomeChannelRefused } from "../packages/runtime/src/cloud-home-channel.ts";
 
 const run = promisify(execFile);
 const OWNER = "home-lxd-proof";
@@ -66,7 +68,10 @@ function endsInsideUtf8(chunk) {
 function localPipe(config) {
 	// The protocol dry run only: the command on this computer, without LXD. Nothing of it is judged.
 	return async (_project, _name, request, signal) => {
-		const command = request.command.map((word) => (word === CLOUD_MACHINE_HOME.codex ? config.codex : word));
+		// Without root here, the dry run starts the exec-server itself where the machine hands it to systemd.
+		const unit = request.command.indexOf("/usr/bin/systemd-run");
+		const words = unit < 0 ? request.command : [...request.command.slice(0, unit), ...request.command.slice(request.command.indexOf(CLOUD_MACHINE_HOME.codex))];
+		const command = words.map((word) => (word === CLOUD_MACHINE_HOME.codex ? config.codex : word));
 		const child = spawn(command[0], command.slice(1), {
 			cwd: config.cwd,
 			env: { ...process.env, ...request.environment, HOME: config.cwd, CODEX_HOME: join(config.cwd, ".codex") },
@@ -115,7 +120,8 @@ async function executor() {
 					seen.firstFrameMs ??= Date.now() - at;
 					request.onStdout(chunk);
 				});
-			emit({ event: "exec", channel, project, name, command: request.command, user: request.user, group: request.group, cwd: request.cwd });
+			emit({ event: "exec", channel, project, name, command: request.command, user: request.user, group: request.group, cwd: request.cwd,
+				hash: request.command.includes("exec-server") ? undefined : true });
 			try {
 				const result = await pipe(project, name, { ...request, onStdout }, signal);
 				emit({ event: "exec-end", channel, ms: Date.now() - at, exitCode: result.exitCode,
@@ -422,8 +428,10 @@ async function driver() {
 	};
 	// Sessions are named before each executor starts: its stand-in SQL answers for these.
 	const named = { s1: session(), s3a: session(), s3b: session(), s3c: session(), s4: session(), s4x: session(),
-		s4y: session(), s5: session(), s7: session(), sBoot: session(WRONG_BOOT) };
+		s4y: session(), s5: session(), s7: session(), s10: session(), sOther: session(), sNone: session(), sBoot: session(WRONG_BOOT) };
 	const executors = [];
+	const execEvents = [];
+	const hashChannels = new Set();
 	const startExecutor = async (label) => {
 		const child = spawn(process.execPath, [process.argv[1], "executor"], { stdio: ["pipe", "pipe", "inherit"] });
 		child.stdin.write(`${JSON.stringify({ token, local, socket, project, placementId, machine, boot, sessions,
@@ -432,7 +440,12 @@ async function driver() {
 			const lines = createInterface({ input: child.stdout });
 			lines.on("line", (line) => {
 				if (line.startsWith("READY ")) resolve(Number(line.slice(6)));
-				else if (line.startsWith("EVENT ")) say(`EXEC[${label}] ${line.slice(6).slice(0, 1200)}`);
+				else if (line.startsWith("EVENT ")) {
+					const event = JSON.parse(line.slice(6));
+					execEvents.push({ ...event, label, hash: event.hash === true || (event.event === "exec-end" && hashChannels.has(`${label}:${event.channel}`)) });
+					if (event.event === "exec" && event.hash) hashChannels.add(`${label}:${event.channel}`);
+					say(`EXEC[${label}] ${line.slice(6).slice(0, 1200)}`);
+				}
 				else say(`EXEC[${label}] ${line.slice(0, 400)}`);
 			});
 			child.once("exit", (code, signal) => {
@@ -480,7 +493,25 @@ async function driver() {
 			"/bin/cat", "/proc/self/oom_score_adj", "/proc/self/cgroup"]).catch((error) => error)).stdout ?? "");
 		const unitRun = await inMachine("systemd-run --quiet --wait --pipe -p Slice=qorpera-machine.slice /bin/cat /proc/self/oom_score_adj /proc/self/cgroup");
 		say(`NOTE 8 a plain LXD exec as qorpera-agent: ${JSON.stringify(plainExec)}; a unit in the machines' slice (as machine_run's): ${JSON.stringify(unitRun)}`);
-		check("8", placed.output.split("\n")[0] === "0", `the home's shell: oom_score_adj and cgroup ${JSON.stringify(placed.output)}`);
+		const homeUnit = /qorpera-machine\.slice\/(qorpera-machine-home-[0-9a-f-]+\.service)/.exec(placed.output)?.[1] ?? "";
+		const unitShow = homeUnit ? await inMachine(`systemctl show ${homeUnit} -p Slice -p KillMode -p User -p MemoryMax -p OOMScoreAdjust; systemctl show qorpera-machine.slice -p MemoryMax -p MemoryCurrent`) : "";
+		say(`NOTE 8 the home's unit: ${JSON.stringify(unitShow)}`);
+		check("8", placed.output.split("\n")[0] === "0" && /^0::\/qorpera\.slice\/qorpera-machine\.slice\/qorpera-machine-home-[0-9a-f-]+\.service$/m.test(placed.output),
+			`the home's shell is in a unit of its own in the machines' slice, score 0: ${JSON.stringify(placed.output)}`);
+		// 9. The idle rule counts the home's work: the slice's processor time moves, the LXD agent's does not.
+		const cpu = async () => {
+			const text = await inMachine("for g in qorpera.slice/qorpera-machine.slice system.slice/lxd-agent.service; do echo $g $(sed -n 's/^usage_usec //p' /sys/fs/cgroup/$g/cpu.stat); done");
+			return Object.fromEntries(text.trim().split("\n").map((line) => line.split(" ")).map(([g, v]) => [g, Number(v)]));
+		};
+		const cpu0 = await cpu();
+		const burn = await shell(a.rpc, "timeout 4 sh -c 'while :; do :; done'; echo burned", { timeoutMs: 20000 });
+		const cpu1 = await cpu();
+		await sleep(4000);
+		const cpu2 = await cpu();
+		const delta = (x, y, g) => Math.round(((y[g] ?? 0) - (x[g] ?? 0)) / 1000);
+		const S = "qorpera.slice/qorpera-machine.slice", A = "system.slice/lxd-agent.service";
+		check("9", burn.output.includes("burned") && delta(cpu0, cpu1, S) >= 3500 && delta(cpu0, cpu1, A) < 500 && delta(cpu1, cpu2, S) < 200,
+			`4 s of a busy loop in the home's shell: the machines' slice used ${delta(cpu0, cpu1, S)} ms of processor time, the LXD agent's unit ${delta(cpu0, cpu1, A)} ms (the idle rule counts the first as work, never the second); then 4 s with the channel open and idle: the slice used ${delta(cpu1, cpu2, S)} ms`);
 		const ticks = await shell(a.rpc, "for i in 1 2 3 4 5; do echo tick $i; sleep 1; done", { timeoutMs: 20000 });
 		const chunkTimes = ticks.chunks.map((chunk) => Math.round(chunk.at - ticks.asked));
 		const beforeExit = ticks.chunks.filter((chunk) => chunk.at < (a.rpc.process(ticks.processId).exitedAt ?? Infinity)).length;
@@ -569,12 +600,12 @@ async function driver() {
 		const closedAt = performance.now();
 		await c.stream.close();
 		await c.rpc.done;
-		const gone3a = await goneWithin(closedAt, (line) => /sleep 304/.test(line));
-		say(`3a every process but the detached one was gone ${gone3a} ms after the run's side closed (polled every ~0.1 s)`);
+		const gone3a = await goneWithin(closedAt);
+		say(`3a every process, the detached one too, was gone ${gone3a} ms after the run's side closed (polled every ~0.1 s)`);
 		await sleep(1000);
 		const after3a = await sweep(`3a ${Math.round(performance.now() - closedAt)} ms after the run's side closed`);
 		say(`NOTE 3a: a process the command itself detached into a session of its own (setsid sleep 304 & disown) is ${after3a.some((line) => /sleep 304/.test(line)) ? "LEFT running" : "gone too"}; the check below judges the rest`);
-		check("3a", before3a.length >= 6 && after3a.filter((line) => !/sleep 304/.test(line)).length === 0,
+		check("3a", before3a.length >= 6 && after3a.length === 0 && before3a.some((line) => /sleep 304/.test(line)),
 			`the run's side closed: ${before3a.length} processes before (exec-server, its shells and sleeps), ${after3a.length} after: ${after3a.map((line) => line.trim().split(/\s+/).slice(7).join(" ")).join("; ") || "none"}`);
 
 		// (b) The executor holding the LXD exec is killed (SIGKILL): LXD's websockets drop without a close.
@@ -650,12 +681,53 @@ async function driver() {
 		await sleep(1000);
 		await sweep("after s7 closed");
 
+		// 10. The watchdog's and the machine stop's own act, `systemctl stop qorpera-machine.slice`, ends a home too.
+		const w = await open(main.port, named.s10, "s10");
+		await start(w.rpc, ["/bin/bash", "-c", "setsid sleep 351 & disown; sleep 352"]);
+		await sleep(1200);
+		const before10 = await agentProcesses("10 before the slice is stopped");
+		const stoppedAt = performance.now();
+		await inMachine("systemctl stop qorpera-machine.slice");
+		await Promise.race([w.rpc.done, sleep(10000)]);
+		const gone10 = await goneWithin(stoppedAt);
+		check("10", w.rpc.ended && gone10 !== null && before10.length >= 3,
+			`stopping the machines' slice (the watchdog's and the stop's own command) ended the channel (${w.rpc.ended}, after ${w.rpc.ended ? Math.round(w.rpc.endedAt - stoppedAt) : "-"} ms) and all ${before10.length} of the home's processes, the detached one too, in ${gone10} ms`);
+		if (!w.rpc.ended) await w.stream.close();
+		say(`UNITS left: ${JSON.stringify(await inMachine("systemctl list-units --all --no-legend 'qorpera-machine-home-*' | wc -l"))}`);
+
 		// The guest's own boot check: a session whose boot is not the machine's never starts an exec-server.
 		const wrong = await open(main.port, named.sBoot, "sBoot").catch((error) => ({ error: String(error?.message ?? error) }));
 		if (wrong.rpc) await Promise.race([wrong.rpc.done, sleep(5000)]);
 		check("boot", Boolean(wrong.error) || (wrong.rpc.ended && wrong.rpc.received === 0),
 			`a session on another boot: ${wrong.error ? `refused at open: ${wrong.error}` : `ready ${wrong.readyMs} ms, then the channel ended (${wrong.rpc.ended}) with ${wrong.rpc.received} lines from the machine; initialize ${JSON.stringify(wrong.init)}`}`);
 		await sweep("after the wrong boot");
+
+		// 11. The machine's Codex is checked before it runs: hashed once per boot (its cost is in the first channel's
+		// exec events above: the sha256sum exec), and a home whose Codex is another build, or none, is refused in words.
+		const hashes = execEvents.filter((event) => event.event === "exec-end" && event.label === "main" && event.hash);
+		say(`TIMING the Codex hash at the first channel of the boot: ${hashes.map((event) => `${event.ms} ms`).join(", ")} (${hashes.length} hash for ${execEvents.filter((event) => event.event === "exec" && event.label === "main" && !event.hash).length} channels on the main executor)`);
+		const refusedWith = async (label) => {
+			const fresh = await startExecutor(label);
+			const before = execEvents.length;
+			const result = await open(fresh.port, named[label], label).then(
+				async (opened) => {
+					await opened.stream.close();
+					return { opened: true };
+				},
+				(error) => ({ error }),
+			);
+			const execs = execEvents.slice(before).filter((event) => event.event === "exec" && !event.hash).length;
+			fresh.child.kill("SIGTERM");
+			return { ...result, execs };
+		};
+		if (!local) await inMachine("cp /opt/qorpera-machine/codex /root/codex.pinned && printf x >> /opt/qorpera-machine/codex");
+		const other = await refusedWith("sOther");
+		if (!local) await inMachine("rm -f /opt/qorpera-machine/codex");
+		const none = await refusedWith("sNone");
+		const reasonOf = (r) => (r.error instanceof CloudHomeChannelRefused ? r.error.reason : String(r.error?.message ?? r.opened));
+		check("11", reasonOf(other) === "HOME_CODEX_NOT_PINNED" && reasonOf(none) === "HOME_CODEX_NOT_PINNED" && other.execs === 0 && none.execs === 0 &&
+			hashes.length === 1 && cloudHomeRefusalWords(reasonOf(other)) === CLOUD_HOME_OUTDATED,
+			`another build: refused ${reasonOf(other)}, no exec-server started (${other.execs}); none at all: refused ${reasonOf(none)} (${none.execs}); the model is told ${JSON.stringify(cloudHomeRefusalWords(reasonOf(other)))}`);
 	} finally {
 		for (const child of executors) child.kill("SIGTERM");
 		say(`CHECKS ${checks.filter((one) => one.ok).length} of ${checks.length} passed${local ? " (dry run: not judged)" : ""}: ${checks.filter((one) => !one.ok).map((one) => one.id).join(" ") || "none failed"}`);

@@ -48,7 +48,9 @@ import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
-import type { CloudHomeChannelRequest, CloudHomeChannelSide, CloudHomeSessionAuthorized } from "../../packages/runtime/src/cloud-home-channel.ts";
+import {
+	type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide, type CloudHomeSessionAuthorized,
+} from "../../packages/runtime/src/cloud-home-channel.ts";
 import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
@@ -176,7 +178,14 @@ export class MachineCommandRouter {
 	async execServer(authority: CloudHomeSessionAuthorized, request: CloudHomeChannelRequest, signal: AbortSignal, localOnly = false): Promise<CloudHomeChannelSide> {
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.execServerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			return await this.#options.execServerLocal(authority, signal);
+			try {
+				return await this.#options.execServerLocal(authority, signal);
+			} catch (error) {
+				// The machine's Codex is not the pinned build (an earlier image's disk): the run is told so in words of its
+				// own, through this ingress or a forwarding one, rather than "could not be reached".
+				if (error instanceof Error && error.message === "HOME_CODEX_NOT_PINNED") throw new CloudHomeChannelRefused(error.message);
+				throw error;
+			}
 		}
 		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);

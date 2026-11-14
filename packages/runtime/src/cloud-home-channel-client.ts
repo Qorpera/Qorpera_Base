@@ -10,6 +10,7 @@ import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 import type { CloudCodexHomeChannel, CloudCodexHomeStream } from "./cloud-codex-home.ts";
 import {
+	CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
 	CLOUD_HOME_CHANNEL_OPEN_MS,
 	CLOUD_HOME_CHANNEL_PATH,
 	CLOUD_HOME_CHANNEL_PROTOCOL,
@@ -17,7 +18,9 @@ import {
 	type CloudHomeChannelReady,
 	CloudHomeChannelRefused,
 	cloudHomeChannelHandshake,
+	cloudHomeChannelKeepAlive,
 	cloudHomeChannelLines,
+	cloudHomeChannelWithoutKeepAlive,
 } from "./cloud-home-channel.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
@@ -33,6 +36,8 @@ export function createCloudHomeChannel(options: {
 	 * executor forwarding a channel to a peer's listener, which takes none (as for a machine command). */
 	holder: (() => string) | null;
 	allowLoopback?: boolean;
+	/** How often this end says it is still there (CLOUD_HOME_CHANNEL_KEEPALIVE): the tests' own shorter one. */
+	keepAliveMs?: number;
 }): CloudCodexHomeChannel {
 	const base = new URL(options.url);
 	if (
@@ -134,12 +139,19 @@ export function createCloudHomeChannel(options: {
 						throw new CloudHomeChannelRefused(ready.reason);
 					throw new Error(ERROR);
 				}
+				// While the channel is open this end says it is there, and the ingress's own such lines are dropped here.
+				const stopKeepAlive = cloudHomeChannelKeepAlive(
+					socket,
+					options.keepAliveMs ?? CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
+				);
+				socket.once("close", stopKeepAlive);
 				return {
 					write: (line) => {
 						if (socket.writable) socket.write(`${line}\n`);
 					},
-					lines: reader,
+					lines: cloudHomeChannelWithoutKeepAlive(reader),
 					close: async () => {
+						stopKeepAlive();
 						socket.destroy();
 					},
 				} satisfies CloudCodexHomeStream;

@@ -79,13 +79,63 @@ const DELIVERY_MS = 30000;
 /** A start on a machine with a folder runs in its guest only on the boot it was let in on (`$0`): the guest's shell
  * compares the kernel's boot id at the exec, then runs the helper (`$@`). The helper's own start takes no boot. */
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
-/** The agent's home (lanes/agent-box-20261113): the same boot check, then the exec-server gives up the LXD agent's
- * shield from the memory guard. Everything LXD starts on the machine inherits the agent's OOMScoreAdjust=-900
- * (deploy/machine/lxd-agent-memory.conf), which is right for the executor's helpers and wrong for the agent's own shell:
- * a job the agent starts there is its work and must be what the guard ends first, as a machine_run command is (score 0).
- * Raising one's own score needs no privilege. Proven on a real machine of the live image (home-lxd, 14 Nov 2026). */
-export const COMPANY_MACHINE_HOME_ON_BOOT =
-	'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && echo 0 > /proc/self/oom_score_adj && exec "$@"';
+/** The agent's home (lanes/agent-box-20261113): the machine's Codex, hashed as root on the boot SQL named (`$0`; else
+ * exit 97) where the image has it (`$1`; else exit 98). */
+const HOME_CODEX_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
+/** How long the hash of the machine's Codex (319 MB) may take, once per boot. */
+const HOME_CODEX_HASH_MS = 60000;
+
+/**
+ * The agent's home (lanes/agent-box-20261113): one channel's `codex exec-server --listen stdio`, started as root on the
+ * boot SQL named (ON_BOOT) as a transient unit of its own in the machines' slice, run as the agent's account. So what
+ * the agent starts in its own shell is the machine's work exactly as a machine_run command's unit is: the idle rule
+ * counts it (the LXD agent's unit is the machine's own control, and is not counted), the slice's memory bound and the
+ * memory guard apply to it (the LXD agent's OOMScoreAdjust=-900, deploy/machine/lxd-agent-memory.conf, is not
+ * inherited), the watchdog and the machine's stop end it with the slice, and when its channel ends the whole unit ends
+ * (KillMode=control-group), a process the agent detached included. `--pipe` hands the exec's stdin and stdout to the
+ * service itself; the environment is the service's, never expanded by systemd. Proven on a real machine of the live
+ * image (home-lxd, 14 Nov 2026).
+ */
+export function companyMachineHomeCommand(bootId: string, sessionId: string, channel: string): string[] {
+	if (!UUID.test(bootId) || !UUID.test(sessionId) || !/^[0-9a-f]{8,32}$/.test(channel))
+		throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+	const environment = {
+		HOME: CLOUD_MACHINE_HOME.home,
+		USER: CLOUD_MACHINE_HOME.account,
+		LOGNAME: CLOUD_MACHINE_HOME.account,
+		CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
+		PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		LANG: "C.UTF-8",
+		TZ: "UTC",
+		NO_COLOR: "1",
+	};
+	return [
+		"/bin/sh",
+		"-c",
+		ON_BOOT,
+		bootId,
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--pipe",
+		"--wait",
+		"--collect",
+		"--service-type=exec",
+		"--expand-environment=no",
+		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${channel}`,
+		`--slice=${PATHS.slice}`,
+		`--uid=${CLOUD_MACHINE_HOME.uid}`,
+		`--gid=${CLOUD_MACHINE_HOME.gid}`,
+		`--working-directory=${CLOUD_MACHINE_HOME.cwd}`,
+		"--property=KillMode=control-group",
+		"--property=TimeoutStopSec=10",
+		...Object.entries(environment).map(([key, value]) => `--setenv=${key}=${value}`),
+		CLOUD_MACHINE_HOME.codex,
+		"exec-server",
+		"--listen",
+		"stdio",
+	];
+}
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
@@ -1282,6 +1332,8 @@ export class LxdCompanyMachineHost {
 	readonly #looks = new Set<Set<string>>();
 	/** Per placement and command: a window close on its way, answered with the machine's boundary (or none). */
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
+	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
+	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -3556,11 +3608,12 @@ export class LxdCompanyMachineHost {
 	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
 	 * with its lines carried both ways for as long as the run's channel lasts. The ingress has proven the run's holder
 	 * and SQL has authorized this session on this boot; the guest's own shell checks that boot again at the exec
-	 * (COMPANY_MACHINE_HOME_ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start
-	 * never does; there it also leaves the LXD agent's shield from the memory guard, which the agent's own work must not
-	 * have.
+	 * (ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start never does. Each
+	 * channel's exec-server is a unit of its own in the machines' slice (companyMachineHomeCommand), and runs only when
+	 * the machine's Codex is the pinned build (#homeCodex): a home whose Codex is another is refused
+	 * HOME_CODEX_NOT_PINNED.
 	 *
-	 * It starts no unit, writes no inbox file and leaves no command row. What the model does through it is reviewed by
+	 * It writes no inbox file and leaves no command row. What the model does through it is reviewed by
 	 * the run's own host before a line gets here (slice 4) and kept as the run's steps (slice 2); the changes it makes
 	 * land in the company folder through the machine's `/company` mount, as every change on a machine does.
 	 * On a machine with a folder (slice 3, 20260930754000) the session first gets its own folder window, so those
@@ -3583,6 +3636,8 @@ export class LxdCompanyMachineHost {
 		);
 		if (answer.state === "refused") throw new Error(answer.reason);
 		if (answer.session.bootId !== input.bootId) throw new Error("HOME_SESSION_ENDED");
+		if ((await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256)
+			throw new Error("HOME_CODEX_NOT_PINNED");
 		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
 		const toMachine = new LinePipe();
 		const fromMachine = new LinePipe();
@@ -3600,29 +3655,10 @@ export class LxdCompanyMachineHost {
 			this.#policy.project,
 			lxdCompanyMachineName(input.placementId),
 			{
-				command: [
-					"/bin/sh",
-					"-c",
-					COMPANY_MACHINE_HOME_ON_BOOT,
-					input.bootId,
-					CLOUD_MACHINE_HOME.codex,
-					"exec-server",
-					"--listen",
-					"stdio",
-				],
-				user: CLOUD_MACHINE_HOME.uid,
-				group: CLOUD_MACHINE_HOME.gid,
-				environment: {
-					HOME: CLOUD_MACHINE_HOME.home,
-					USER: CLOUD_MACHINE_HOME.account,
-					LOGNAME: CLOUD_MACHINE_HOME.account,
-					CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
-					PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-					LANG: "C.UTF-8",
-					TZ: "UTC",
-					NO_COLOR: "1",
-				},
-				cwd: CLOUD_MACHINE_HOME.cwd,
+				// Root only to hand the exec-server to systemd; the unit runs it as the agent's account.
+				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex")),
+				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+				cwd: "/",
 				stdin: toMachine.read(),
 				onStdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
 				// Streamed, so nothing is kept and nothing is bounded here: fromMachine ends the channel when more than
@@ -3651,6 +3687,44 @@ export class LxdCompanyMachineHost {
 				await pipe;
 			},
 		};
+	}
+	/** The sha-256 of the machine's Codex on this boot, read once per boot (the file is 319 MB; every later channel of the
+	 * boot takes the answer kept here), or "missing" where the image has none. A boot that is not the machine's is
+	 * HOME_SESSION_ENDED; a read that failed otherwise is not kept, so the next channel reads again. */
+	async #homeCodex(
+		placementId: string,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const kept = this.#homeCodexes.get(placementId);
+		if (kept?.bootId === bootId) return await kept.sha;
+		const sha = (async () => {
+			const result = await exec(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", HOME_CODEX_ON_BOOT, bootId, CLOUD_MACHINE_HOME.codex],
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					maxStdoutBytes: 1024,
+					stderrTailBytes: 512,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+			);
+			if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+			if (result.exitCode === 98) return "missing";
+			const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
+			if (result.exitCode !== 0 || !read) throw new Error("HOME_CODEX_UNREADABLE");
+			return read[1] as string;
+		})();
+		this.#homeCodexes.set(placementId, { bootId, sha });
+		try {
+			return await sha;
+		} catch (error) {
+			if (this.#homeCodexes.get(placementId)?.sha === sha) this.#homeCodexes.delete(placementId);
+			throw error;
+		}
 	}
 	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
 	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
