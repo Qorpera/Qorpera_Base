@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createHash, webcrypto } from "node:crypto";
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
-import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { READING_PATH, writeReadingFile, writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
@@ -1037,6 +1037,100 @@ describe("account and route ownership", () => {
 		await vi.advanceTimersByTimeAsync(120_000);
 		await draw();
 		expect(reads()).toBe(changed);
+	});
+
+	/** The company's page (`#/c/{id}/now`) over a folder whose reading names a change, the Co-Founder hired from its
+	 * template; the standing read counted, `answer` saying what it answers. */
+	function companyPage(answer: () => Promise<unknown>) {
+		const fake = folderFake({ seed: [] });
+		fake.put(
+			READING_PATH,
+			writeReadingFile({
+				sentence: "We are building the tracker.",
+				line: null,
+				attention: "tracker",
+				things: ["tracker", "needs", "money"].map((key) => ({
+					key,
+					name: key,
+					shape: "board" as const,
+					full: 40,
+					state: "Going",
+					agents: [],
+					waitsFor: [],
+				})),
+				changes: [{ agent: "sales", what: "joined", line: "Sales joined" }],
+				notes: [],
+			}),
+		);
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		const f = mounted(`#/c/${profileA.profileId}/now`);
+		const cofounder = {
+			...staff,
+			id: id(40),
+			displayName: "Co-Founder",
+			role: "Co-Founder",
+			templateId: "co-founder",
+		};
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff, cofounder]);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_read_company_standing") return answer();
+			throw new Error("Unexpected RPC");
+		});
+		const standings = () =>
+			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_read_company_standing").length;
+		return { f, standings };
+	}
+	const running = async () => ({
+		schema: "qorpera.company-standing/v1",
+		stopped: false,
+		since: null,
+		why: null,
+		member: null,
+		resetsAt: null,
+		waiting: 0,
+	});
+
+	it("ends the company's page with its company: no standing read after the member signs out (review r1 F2 of #1818)", async () => {
+		const { f, standings } = companyPage(running);
+		await draw();
+		expect(f.root.querySelector("main .company-now .now-title")?.textContent).toBe("We are building the tracker.");
+		await vi.advanceTimersByTimeAsync(30_000);
+		await draw();
+		const read = standings();
+		expect(read).toBeGreaterThan(1);
+		f.auth(null);
+		await draw();
+		await vi.advanceTimersByTimeAsync(120_000);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await draw();
+		expect(standings()).toBe(read);
+	});
+
+	it("puts Not right? into the Co-Founder's composer once, and opens its thread only from the page (review r1 F4 of #1818)", async () => {
+		const { f } = companyPage(running);
+		const thread = deferred<AgentThreadHandle>();
+		vi.spyOn(f.api, "agentThread").mockReturnValue(thread.promise);
+		await draw();
+		const pill = () => f.root.querySelector<HTMLButtonElement>("main .company-now .now-pill");
+		expect(pill()?.textContent).toBe("Not right?");
+		// Pressed twice while the thread opens: one draft. The member goes elsewhere meanwhile: they stay there.
+		pill()!.click();
+		pill()!.click();
+		location.hash = `#/c/${profileA.profileId}/team`;
+		await draw();
+		thread.resolve({ sessionId: session.sessionId, roomId: id(41), staffAgentId: id(40), status: "active" });
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/team`);
+		// Back on the page, a second press finds the draft there already, and opens the thread.
+		location.hash = `#/c/${profileA.profileId}/now`;
+		await draw();
+		pill()!.click();
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const composer = f.root.querySelector<HTMLTextAreaElement>("main textarea")!;
+		expect(composer.value.split("Not right: Sales joined.").length - 1).toBe(1);
 	});
 
 	/** The company's folder with one posted app, `apps/sales-board/`, made by the fixture's agent. */

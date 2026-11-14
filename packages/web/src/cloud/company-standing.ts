@@ -22,7 +22,11 @@ export interface CompanyStanding {
 	readonly waiting: number;
 }
 
-const WHY: readonly StandingWhy[] = ["login_full", "sign_in", "no_login"];
+/** Every `why` the read answers. */
+export const STANDING_WHY: readonly StandingWhy[] = ["login_full", "sign_in", "no_login"];
+/** Every key of the read's answer; test/company-now.test.ts holds them to the migration's own once it is in this tree
+ * (it lands with step 1's PR, #1815): this parse must not merge before it. */
+export const STANDING_KEYS = ["schema", "stopped", "since", "why", "member", "resetsAt", "waiting"] as const;
 
 /** A company the page knows nothing against: what an older backend, without the read, stands for. */
 export const RUNNING: CompanyStanding = {
@@ -43,7 +47,7 @@ export function parseCompanyStanding(value: unknown): CompanyStanding {
 	return {
 		stopped: input.stopped,
 		since: nullable(input.since, (item) => timestamp(item, "standing since")),
-		why: nullable(input.why, (item) => oneOf(item, WHY, "standing why")),
+		why: nullable(input.why, (item) => oneOf(item, STANDING_WHY, "standing why")),
 		member: nullable(input.member, (item) => uuid(item, "standing member")),
 		resetsAt: nullable(input.resetsAt, (item) => timestamp(item, "standing reset")),
 		waiting: boundedInteger(input.waiting ?? 0, "standing waiting", 0, Number.MAX_SAFE_INTEGER),

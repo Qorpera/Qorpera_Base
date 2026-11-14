@@ -665,6 +665,9 @@ export function mountApplication(
 		appReturn = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
+		// The company's page reads on a clock and on the tab's return: it ends with its company (review r1 F2 of #1818).
+		nowPage?.view.dispose();
+		nowPage = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
@@ -2299,7 +2302,9 @@ export function mountApplication(
 						},
 						standing: () => readCompanyStanding(cloud, profileId),
 						openSettings: (tab) => openSettings(tab),
+						// Each opens the Co-Founder's thread only while the member is still on this page (as bank.ts does).
 						ask: async (text) => {
+							const from = location.hash;
 							accounts ??= createWebNativeSubscription(
 								cloud,
 								profileId,
@@ -2308,17 +2313,22 @@ export function mountApplication(
 								companyCurrent,
 							);
 							const told = await tellAgent(controller, accounts, cofounder(), { text, quotes: [] });
-							if (company === controller) location.hash = told.href;
+							if (company === controller && location.hash === from) location.hash = told.href;
 						},
+						// "Not right?" adds its draft once: a second press, or a second visit, finds it there already (review
+						// r1 F4 of #1818; the view ignores presses while one is on its way).
 						draft: async (text) => {
+							const from = location.hash;
 							const opened = await controller.openCofounderConversation();
 							if (!opened.sessionId)
 								throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
 							const room = controller.roomDrafts.room(opened.sessionId);
 							if (room) await room.refresh();
 							controller.roomDrafts.follow(opened.sessionId);
-							controller.addToDraft(opened.sessionId, { text, quotes: [] });
-							if (company === controller) location.hash = `#/c/${profileId}`;
+							if (company !== controller) return;
+							if (!(controller.conversation(opened.sessionId).get().draft ?? "").includes(text))
+								controller.addToDraft(opened.sessionId, { text, quotes: [] });
+							if (location.hash === from) location.hash = `#/c/${profileId}`;
 						},
 					});
 					nowPage = { company: controller, view };

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
 	READING_SHAPES,
 	type ReadingFile,
@@ -19,11 +21,28 @@ import {
 } from "../src/app/reading-layout.ts";
 import { type CompanyNowHost, CompanyNowView, type NowFolder } from "../src/app/views/company-now.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
-import { type CompanyStanding, parseCompanyStanding, RUNNING } from "../src/cloud/company-standing.ts";
+import {
+	type CompanyStanding,
+	parseCompanyStanding,
+	RUNNING,
+	STANDING_KEYS,
+	STANDING_WHY,
+} from "../src/cloud/company-standing.ts";
 import type { HostedProfileMember, HostedStaffAgent } from "../src/cloud/types.ts";
 import { presentationLocale } from "../src/ui/preferences.ts";
 import { THING_SHAPES, thingShape } from "../src/ui/thing-shapes.ts";
-import { fixture, id, profileA, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 
 /* The company's page, `#/c/{id}/now` (app/views/company-now.ts; Jonas, 14 Nov 2026: "It should feel like the company is
  * conscious almost"): the company's reading of itself (QorperaOS/vision/reading.md) as a picture of shapes that fill,
@@ -63,7 +82,8 @@ const member = (userId: string, name: string): HostedProfileMember => ({
 	joinedAt: timestamp,
 });
 const jonas = member(userA.id, "Jonas Krüger");
-const sofie = member(id(60), "Sofie Lund");
+// Jonas founded the company (an owner); Sofie is an admin, no founder.
+const sofie: HostedProfileMember = { ...member(id(60), "Sofie Lund"), role: "admin" };
 
 const thing = (
 	key: string,
@@ -113,24 +133,38 @@ const later: Omit<ReadingFile, "kind"> = {
 
 /** A member folder that holds the reading (or none), and the agents' folders. */
 function fakeFolder(text: string | null, agents: [string, HostedStaffAgent][] = handles) {
-	const state = { text, version: "v1", agents };
+	const state: {
+		text: string | null;
+		version: string;
+		agents: [string, HostedStaffAgent][];
+		/** The next read waits for this (a slow link). */
+		gate?: Promise<void>;
+		/** The entry's size, when it says another than the text's. */
+		bytes?: number;
+	} = { text, version: "v1", agents };
 	const encoded = () => new TextEncoder().encode(state.text ?? "");
+	const answer = (path: string) => ({
+		asOfSeq: 1,
+		entry:
+			state.text === null
+				? null
+				: {
+						path,
+						kind: "file",
+						version: state.version,
+						seq: 1,
+						updatedAt: timestamp,
+						file: { bytes: state.bytes ?? encoded().byteLength },
+						target: null,
+					},
+	});
 	const folder = {
-		read: vi.fn(async (path: string) => ({
-			asOfSeq: 1,
-			entry:
-				state.text === null
-					? null
-					: {
-							path,
-							kind: "file",
-							version: state.version,
-							seq: 1,
-							updatedAt: timestamp,
-							file: { bytes: encoded().byteLength },
-							target: null,
-						},
-		})),
+		read: vi.fn(async (path: string) => {
+			const gate = state.gate;
+			state.gate = undefined;
+			if (gate) await gate;
+			return answer(path);
+		}),
 		readFile: vi.fn(async () => encoded()),
 		stateFolders: vi.fn(async () => ({
 			agents: state.agents.map(([handle, entry]) => ({
@@ -161,6 +195,8 @@ function page(
 		members?: HostedProfileMember[];
 		standing?: () => Promise<CompanyStanding>;
 		agents?: [string, HostedStaffAgent][];
+		/** The first read of the reading waits for this. */
+		gate?: Promise<void>;
 	} = {},
 ) {
 	const f = fixture();
@@ -172,6 +208,7 @@ function page(
 	});
 	cleanup.push(() => controller.stop());
 	const { folder, state } = fakeFolder(text, extra.agents);
+	if (extra.gate) state.gate = extra.gate;
 	const listeners = new Set<() => void>();
 	const host = {
 		folder: () => folder as unknown as NowFolder,
@@ -194,7 +231,11 @@ function page(
 		for (const listener of [...listeners]) listener();
 		await settle();
 	};
-	return { view, host, folder, controller, change, el: view.el };
+	/** A change hint, with nothing awaited. */
+	const hint = () => {
+		for (const listener of [...listeners]) listener();
+	};
+	return { view, host, folder, state, controller, change, hint, el: view.el };
 }
 
 const title = (el: HTMLElement) => el.querySelector(".now-title")?.textContent;
@@ -312,7 +353,23 @@ describe("where the things stand (app/reading-layout.ts)", () => {
 	});
 });
 
+/** Step 1's migration, which defines the member read; in this tree once its PR (#1815) is. The tests run from
+ * packages/web (jsdom gives this file no file: URL to start from). */
+const STANDING_SQL = resolve(process.cwd(), "../../supabase/migrations/20260930765000_company_reading.sql");
+
 describe("the company's standing", () => {
+	// Review r1 F6 of #1818: the parse reads the answer of a function this branch does not hold. Once both are in one
+	// tree, the answer's keys and its reasons are held to the SQL's, so a change there fails here instead of the page
+	// showing "running" for ever.
+	it.skipIf(!existsSync(STANDING_SQL))("reads exactly the keys and reasons the SQL answers", () => {
+		const sql = readFileSync(STANDING_SQL, "utf8");
+		const body = sql.slice(sql.indexOf("function public.qorpera_read_company_standing"));
+		const answer = body.slice(body.indexOf("return jsonb_build_object("), body.indexOf("end $$;"));
+		expect(answer).toContain("'qorpera.company-standing/v1'");
+		expect([...answer.matchAll(/'([A-Za-z]+)',/g)].map((match) => match[1])).toEqual([...STANDING_KEYS]);
+		expect([...answer.matchAll(/then '([a-z_]+)'/g)].map((match) => match[1])).toEqual([...STANDING_WHY]);
+	});
+
 	it("reads the member read's answer, and refuses another shape", () => {
 		expect(
 			parseCompanyStanding({
@@ -456,6 +513,15 @@ describe("the company's page (app/views/company-now.ts)", () => {
 			[sofie.userId, "Sofie Lund"],
 		]);
 		expect(faces[0]!.querySelector(".person-avatar")).not.toBeNull();
+	});
+
+	it("puts the founders' faces at a thing that waits for the founders, not a viewer who is none (review r1 F1)", async () => {
+		const owner: HostedProfileMember = { ...sofie, role: "owner" };
+		const { el } = page(writeReadingFile(now), { members: [{ ...jonas, role: "admin" }, owner] });
+		await settle();
+		const faces = [...el.querySelectorAll<HTMLElement>(".now-face")];
+		expect(faces.map((face) => face.dataset.member)).toEqual([sofie.userId]);
+		expect(el.querySelector(`.now-face[data-member="${userA.id}"]`)).toBeNull();
 	});
 
 	it("draws no agent whose role ended, nor one the file names that the company does not have", async () => {
@@ -636,6 +702,66 @@ describe("the company's page (app/views/company-now.ts)", () => {
 		expect(folder.readFile).toHaveBeenCalledTimes(1);
 		await change(writeReadingFile(later), "v2");
 		expect(folder.readFile).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a slow read's answer when hints come meanwhile, and reads once more after it (review r1 F3)", async () => {
+		const slow = deferred<void>();
+		const { el, folder, hint } = page(writeReadingFile(now), { gate: slow.promise });
+		await settle();
+		hint();
+		hint();
+		await settle();
+		expect(folder.read).toHaveBeenCalledTimes(1);
+		expect(title(el)).toBe("");
+		slow.resolve();
+		await settle();
+		expect(title(el)).toBe(now.sentence);
+		// The hints asked for one more read, after the first.
+		expect(folder.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps the last reading when the file grows past its bound, as when it does not read (review r1 F5)", async () => {
+		const { el, state, change } = page(writeReadingFile(now));
+		await settle();
+		expect(title(el)).toBe(now.sentence);
+		state.bytes = 5000;
+		await change(writeReadingFile(later), "v2");
+		expect(title(el)).toBe(now.sentence);
+		expect(things(el)).toHaveLength(6);
+		// Deleted, the company has no reading.
+		await change(null, "v3");
+		expect(title(el)).toBe("We are finding our feet. The first reading comes with the next plan.");
+	});
+
+	it("ends with its company: no reads after the company stops (review r1 F2)", async () => {
+		vi.useFakeTimers();
+		const { host, folder, controller } = page(writeReadingFile(now));
+		await settle();
+		const standing = host.standing.mock.calls.length;
+		const reads = folder.read.mock.calls.length;
+		controller.stop();
+		await vi.advanceTimersByTimeAsync(120_000);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(host.standing.mock.calls.length).toBe(standing);
+		expect(folder.read.mock.calls.length).toBe(reads);
+	});
+
+	it("takes one press of Not right? at a time (review r1 F4)", async () => {
+		const { el, host } = page(writeReadingFile(later));
+		await settle();
+		const pending = deferred<void>();
+		host.draft.mockReturnValueOnce(pending.promise);
+		const pill = el.querySelector<HTMLButtonElement>(".now-pill")!;
+		pill.click();
+		pill.click();
+		await settle();
+		expect(host.draft).toHaveBeenCalledTimes(1);
+		pending.resolve();
+		await settle();
+		el.querySelector<HTMLButtonElement>(".now-pill")!.click();
+		await settle();
+		expect(host.draft).toHaveBeenCalledTimes(2);
 	});
 
 	it("draws nothing from a read that answers after the page went away", async () => {

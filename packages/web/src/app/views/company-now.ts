@@ -160,7 +160,11 @@ export class CompanyNowView {
 	#standing: CompanyStanding = RUNNING;
 	/** The backend has no standing read: the company counts as running and the page asks no more. */
 	#standingMissing = false;
-	#reads = 0;
+	/** The read of the reading under way, which a hint meanwhile joins; `#again` asks for one more after it. */
+	#reading$: Promise<void> | undefined;
+	#again = false;
+	/** "Not right?" is on its way to the Co-Founder's thread: another press does nothing. */
+	#drafting = false;
 	#pane = UNMEASURED;
 	#drawn: string | undefined;
 	/** The reading was drawn as a picture before: what is new in the next one arrives. */
@@ -204,6 +208,8 @@ export class CompanyNowView {
 			form,
 		);
 		const signal = this.#lifetime.signal;
+		// The page ends with its company, whatever else holds it (review r1 F2).
+		company.signal.addEventListener("abort", () => this.dispose(), { once: true, signal });
 		this.#stopHints = host.onFolderChange(() => void this.#readReading());
 		document.addEventListener(
 			"visibilitychange",
@@ -258,9 +264,27 @@ export class CompanyNowView {
 		this.#draw();
 	}
 
-	async #readReading(): Promise<void> {
+	/** Reads the reading. A read asked for while one is under way joins it and reads once more after it, so on a slow
+	 * link every answer still lands (review r1 F3 of #1818): a newer read never throws an older one's answer away. */
+	#readReading(): Promise<void> {
+		if (this.#reading$) {
+			this.#again = true;
+			return this.#reading$;
+		}
+		const run = async () => {
+			do {
+				this.#again = false;
+				await this.#readOnce();
+			} while (this.#again && !this.#lifetime.signal.aborted);
+		};
+		this.#reading$ = run().finally(() => {
+			this.#reading$ = undefined;
+		});
+		return this.#reading$;
+	}
+
+	async #readOnce(): Promise<void> {
 		const signal = this.#lifetime.signal;
-		const read = ++this.#reads;
 		let reading = this.#reading;
 		let version = this.#version;
 		let handles = this.#handles;
@@ -268,9 +292,12 @@ export class CompanyNowView {
 		try {
 			const folder = this.#host.folder();
 			const { entry } = await folder.read(READING_PATH, signal);
-			if (!entry?.file || entry.kind !== "file" || entry.file.bytes > READING_FILE_MAX_BYTES) {
+			if (!entry?.file || entry.kind !== "file") {
 				reading = null;
 				version = undefined;
+			} else if (entry.file.bytes > READING_FILE_MAX_BYTES) {
+				// Too large to be a reading: like one that does not read, it keeps the last that did (review r1 F5).
+				reading ??= null;
 			} else if (entry.version !== version || reading === undefined) {
 				const text = TEXT.decode(
 					await folder.readFile(entry.file, signal, READING_FILE_MAX_BYTES, { cached: true }),
@@ -295,10 +322,10 @@ export class CompanyNowView {
 			}
 		} catch {
 			// The next hint, the clock or the tab coming back reads again; what was read stays.
-			if (signal.aborted || read !== this.#reads) return;
+			if (signal.aborted) return;
 		}
-		// An answer that comes after the page went away, or after a newer read, draws nothing.
-		if (signal.aborted || read !== this.#reads) return;
+		// An answer that comes after the page went away draws nothing.
+		if (signal.aborted) return;
 		this.#reading = reading;
 		this.#version = version;
 		this.#handles = handles;
@@ -352,12 +379,16 @@ export class CompanyNowView {
 	}
 
 	async #notRight(lines: readonly string[]): Promise<void> {
+		if (this.#drafting) return;
+		this.#drafting = true;
 		this.#note.hidden = true;
 		try {
 			await this.#host.draft(t("Not right: {changes}.", { changes: lines.join("; ") }));
 		} catch (error) {
 			this.#note.textContent = error instanceof Error ? error.message : String(error);
 			this.#note.hidden = false;
+		} finally {
+			this.#drafting = false;
 		}
 	}
 
@@ -372,7 +403,11 @@ export class CompanyNowView {
 		const members = new Map(
 			(state.team?.members ?? []).map((member) => [member.userId, member.displayName || member.email]),
 		);
-		return { state, staff, members };
+		// The founders a thing's `waits_for: founders` names: the company's owners (views/team.ts).
+		const founders = (state.team?.members ?? [])
+			.filter((member) => member.role === "owner")
+			.map((member) => member.userId);
+		return { state, staff, members, founders };
 	}
 
 	/** The look of an agent's figure: as the rail draws it (views/shell.ts railFigure), or grey and still. */
@@ -392,7 +427,7 @@ export class CompanyNowView {
 
 	#draw(): void {
 		if (this.#lifetime.signal.aborted) return;
-		const { state, staff, members } = this.#people();
+		const { state, staff, members, founders } = this.#people();
 		const reading = this.#reading;
 		const standing = this.#standing;
 		const still = standing.stopped;
@@ -411,6 +446,7 @@ export class CompanyNowView {
 			[...this.#handles],
 			state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
 			[...members],
+			founders,
 			looks,
 			Math.round(this.#pane.width),
 			Math.round(this.#pane.height),
@@ -462,7 +498,10 @@ export class CompanyNowView {
 				return agent ? [{ key: keyOf(agent.id), agent } satisfies Stand] : [];
 			});
 			const waiting = [
-				...new Set(thing.waitsFor.map((entry) => (entry === READING_FOUNDERS ? viewer : entry.toLowerCase()))),
+				// "founders" is every owner: the viewer's own face only when they are one (review r1 F1).
+				...new Set(
+					thing.waitsFor.flatMap((entry) => (entry === READING_FOUNDERS ? founders : [entry.toLowerCase()])),
+				),
 			].flatMap((userId) => {
 				const name = userId === viewer ? (members.get(viewer) ?? t("You")) : members.get(userId);
 				return name ? [{ key: keyOf(`member:${userId}`), member: { userId, name } } satisfies Stand] : [];
