@@ -1863,6 +1863,77 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
 		expect(labels()[0]).toBe("Move to");
 	});
+	it("makes a new group folded, its two apps going into its tile (Jonas, 14 Nov 2026)", async () => {
+		localStorage.clear();
+		const { element, set } = drawer();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		// jsdom lays nothing out: the tiles stand in one row, 50 × 60 each, measured from the grid. Animations are recorded.
+		const grid = element.querySelector<HTMLElement>(".rail-apps-grid")!;
+		vi.spyOn(grid, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 120));
+		for (const tile of [...grid.children] as HTMLElement[]) {
+			const index = () => [...grid.children].indexOf(tile);
+			Object.defineProperties(tile, {
+				offsetParent: { get: () => grid },
+				offsetLeft: { get: () => index() * 50 },
+				offsetTop: { get: () => 0 },
+				offsetWidth: { get: () => 50 },
+				offsetHeight: { get: () => 60 },
+			});
+		}
+		const animate = vi.fn(
+			() => ({ finish() {}, cancel() {}, finished: Promise.resolve() }) as unknown as Animation,
+		);
+		const own = Element.prototype.animate;
+		Element.prototype.animate = animate as unknown as Element["animate"];
+		const pointer = (type: string, x: number, target: EventTarget = document) =>
+			target.dispatchEvent(
+				new PointerEvent(type, {
+					bubbles: true,
+					cancelable: true,
+					pointerId: 1,
+					pointerType: "mouse",
+					button: 0,
+					buttons: type === "pointerup" ? 0 : 1,
+					clientX: x,
+					clientY: 30,
+				}),
+			);
+		vi.useFakeTimers();
+		try {
+			// Trips, lifted and let go over Members' middle.
+			pointer("pointerdown", 125, element.querySelector<HTMLElement>("[data-app-key='app:trips']")!);
+			pointer("pointermove", 110);
+			pointer("pointermove", 75);
+			pointer("pointerup", 75);
+			// One tile where Members stood, folded: nothing of it is kept as open.
+			expect(tiles(element)).toEqual(["Market", "Group"]);
+			expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`) ?? "[]")).toEqual(
+				[],
+			);
+			// The write follows the draw, and its answer draws again: the two apps below are still on their way then.
+			await vi.advanceTimersByTimeAsync(0);
+			const made = set.mock.calls.at(-1)![1];
+			const [id] = Object.keys(made.groups);
+			expect(made.groups).toEqual({ [id!]: { mine: { name: "Group" } } });
+			// Its two apps go into its tile, as a folding group's do.
+			const name = (tile: Element) => tile.querySelector(".rail-app-name")?.textContent;
+			expect([...element.querySelectorAll(".rail-app.is-leaving.is-folding")].map(name).sort()).toEqual([
+				"Members",
+				"Trips",
+			]);
+			vi.advanceTimersByTime(500);
+			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
+			// A press opens it.
+			element.querySelector<HTMLButtonElement>(`[data-app-key='group:${id}']`)!.click();
+			expect(tiles(element)).toEqual(["Market", "Group+", "Members", "Trips"]);
+		} finally {
+			vi.useRealTimers();
+			if (own) Element.prototype.animate = own;
+			else delete (Element.prototype as { animate?: unknown }).animate;
+			localStorage.clear();
+		}
+	});
+
 	it("draws a group's apps in the group's colour, and a member colours a group and a loose app (Jonas, 12 Nov 2026)", async () => {
 		localStorage.clear();
 		const { element, controller, set } = drawer();
