@@ -1,6 +1,26 @@
 # Changelog
 
 ## [Unreleased]
+- What's new can show a ready version before it goes live, and Sites and What's new say when Qorpera took a site down
+  (own code storage step 5.1, part E1b and the cross-check's fixes; migration `20260930756000`;
+  `lanes/own-code-storage/STEP5-BUILD.md`). While the releases read says `preview` (owners and admins, only while site
+  hosts are on), the ready block shows "Look first" before "Put it live": the press opens a blank tab within the click
+  with its way back to the app cut at once, asks `qorpera_open_site_preview` for a one-time link, and sends the tab
+  there; the link must be exactly `https://<the site's slug>--next.qorpera.com/.qorpera/enter?t=<ticket>` and is used
+  once and kept nowhere. Every other answer closes the tab and says why in its own words (a page that moved is read
+  again; a site taken down; no answer; any other failure; not an owner or admin); `off` takes the button away. Put it
+  live and Go back read the new `refused` answer ("It did not go live: Qorpera took this site down. Nothing changed.").
+  Sites reads `qorpera_company_site_access` beside the list, leniently: a site Qorpera took down shows "Taken down" and
+  one sentence with the reason in place of its link and password ("Qorpera took this site down: <reason>. If you think
+  this is wrong, tell us with Feedback in your menu.", the account menu's item by its own label; no mail address), and
+  no menu (the lead's call, 13 Nov 2026: a takedown sticks until Qorpera restores it, and the kernel refuses Take
+  offline meanwhile; a menu still open, or a question still asked, when the read says so sends nothing). A project's site
+  taken down before it ever went live, which no list has, gets the same row from the access read's names (the review of
+  #1774, F4: the list's closed row shape is left as it is, so an open tab keeps reading it). What's new reads the same
+  access beside its page and offers no "Open the site" for a site taken down, saying so instead, for a site never live
+  too, and none of what the kernel refuses then: no Look first, no Put it live, no Go back, only Not yet (review round
+  3); it takes the names from the access read, and reads the list only for an entry that names none. The Danish says "hjemmesiden" as the rest of Sites does. A backend without these (today's) draws both
+  pages exactly as before.
 - An agent's computer is a row of its thread, beside the agent (Jonas, 14 Nov 2026: "when an agents computer is open, instead of having it sit on the outside of the thread in the top right, how about a bigger window next to the working agent inside of the thread?"; he picked "A with C" of the sketch). The window takes the thread's width (up to 980 px wide, 16:10) next to the agent's figure, with a line under it ("Nova is using its computer"). While the agent uses its computer the row is the thread's live end, in the working figure's place, and new messages come in above it; once it stops, the row stays where it stood and what comes after goes under it, and the window says the computer is asleep once it sleeps. It is no longer dragged or resized (`ui/computer-drag.ts` is gone; `ui/computer-place.ts` keeps the press's focus mark and fixes the large view over the thread it stands in), and the large view still covers the thread, all but its header.
 - An agent's figure no longer shows a colour it does not have while the page loads (Jonas, 14 Nov 2026, after a reload: "a lot of the agents load in their old colors for a brief moment before they load the actual profile they have"). Until its drawn figure was ready, each figure showed its still artwork, which is the figure's original look: neither the agent's saved colour nor the figure's own shade today (the planet's still is teal, its shade sky blue; the heart's orange, its shade red). Now the figure's place stays empty until the figure is drawn in its own colour, and it fades in (`ui/figure-motion.ts`). A figure whose artwork in that colour and motion are already loaded (a sidebar row built anew, another view of the agent) is drawn at once, before the browser shows it, where it showed the still for a frame before. The still artwork is shown only when the figure cannot be drawn (its motion failed to load). No migration, no gateway or runtime change.
 - Opening a company no longer logs a server error while a check of the member's model account is still running (found by the desktop computers lead, 14 Nov 2026: `POST …/rpc/qorpera_begin_native_account_refresh` answered 500, code 55000 "Account refresh already in progress", at each company open while an attempt an earlier page had left behind was pending). The refresh reads first now (`qorpera_get_native_account_refresh`): a pending attempt is watched with the read, backed off as before, and admission is asked only when none is pending. An attempt that had completed before the page looked is not joined: only admission knows whether its result is still fresh. Admission can still answer busy when two pages ask in the same moment; it is then asked again only after a pause, as before, and an attempt seen to complete meanwhile is joined. One more light read per refresh. (`cloud/native-subscription.ts`.)
