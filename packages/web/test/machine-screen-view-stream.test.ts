@@ -526,6 +526,32 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(mark()).toBe("Live");
 	});
 
+	it("drops a look that began before the stream and decodes after its end: the handed-back frame stays, and is not called live (the v245 release review F2)", async () => {
+		const { screen, area, look, canvas, on, mark, handedBack } = view();
+		expect(await screen.show(look("old-look", 100, 100))).toBe(true);
+		// A look begins decoding, and stalls; the stream starts, its pixels land, and it ends while the look still decodes.
+		let release: () => void = () => {};
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const late = screen.show(look("late-look", 100, 100, slow));
+		await screen.stream({ kind: "size", width: 640, height: 480 });
+		expect(await screen.stream({ kind: "rects", rects: [area("fresh", 0, 0, 640, 480)] })).toBe("drawn");
+		screen.streamEnded();
+		await handedBack();
+		expect(mark()).toBe("Updating…");
+		// The look decodes now: it is older than the frame handed back, so it lands nowhere and says nothing.
+		release();
+		expect(await late).toBe(false);
+		expect(on(canvas)).toEqual(["old-look", "live-frame"]);
+		expect([canvas.width, canvas.height]).toEqual([640, 480]);
+		expect(mark()).toBe("Updating…");
+		// The fresh look the window asks for at the hand-back lands, and the picture is live again.
+		expect(await screen.show(look("new-look", 640, 480))).toBe(true);
+		expect(on(canvas)).toEqual(["old-look", "live-frame", "new-look"]);
+		expect(mark()).toBe("Live");
+	});
+
 	it("fails to the safe mode: an area outside the size the stream told is never painted (review r5 of #1746)", async () => {
 		const { screen, area, drawn } = view();
 		// Pixels before any size: refused.

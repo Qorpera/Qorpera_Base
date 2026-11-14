@@ -4755,6 +4755,45 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		expect(s.looks.length).toBeGreaterThan(looked + 10);
 	});
 
+	it("counts a stream that sent its size and no pixels as failed: three of them in a row turn it off (the v245 release review F3)", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		expect(s.sockets).toHaveLength(1);
+		// Each socket sends the screen's size, then fails before any pixels: the member never saw a live picture.
+		s.sockets[0]!.message(size());
+		await flush();
+		s.sockets[0]!.closeWith(1006);
+		await flush();
+		await advance(2000);
+		expect(s.sockets).toHaveLength(2);
+		s.sockets[1]!.message(size());
+		await flush();
+		s.sockets[1]!.closeWith(1006);
+		await advance(4000);
+		expect(s.sockets).toHaveLength(3);
+		// A size and then a renewal is no picture either.
+		s.sockets[2]!.message(size());
+		await flush();
+		s.sockets[2]!.closeWith(4001, "POINTER_PASS_ENDED");
+		await advance(60_000);
+		expect(s.sockets).toHaveLength(3);
+	});
+
+	it("ends a run of failures only once a stream drew pixels: then a failure is the first of a new run", async () => {
+		const s = setup({ stream: true });
+		await inside(s);
+		await flush();
+		for (let n = 0; n < 5; n++) {
+			// Pixels drawn, then the socket fails: tried again after the first wait, every time.
+			await live(s);
+			s.sockets.at(-1)!.closeWith(1006);
+			await flush();
+			await advance(2000);
+			expect(s.sockets).toHaveLength(n + 2);
+		}
+	});
+
 	it("leaves a refusal of its release cycle to the looks: a private hold since the sharing's generation ends the sharing until a list read", async () => {
 		const s = setup({ stream: true });
 		const { p } = await inside(s);

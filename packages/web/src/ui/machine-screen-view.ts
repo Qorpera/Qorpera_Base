@@ -1021,6 +1021,10 @@ export class MachineScreenView {
 	#handBack(): void {
 		const from = this.#streamCanvas;
 		const { width, height } = from;
+		// The stream's last frame is the newest picture the window has: a look of its own still decoding began before
+		// it, so it may no longer land, however late it decodes, nor say the older screen is live (the v245 release
+		// review F2). The fresh look the window asks for now is newer still, and lands.
+		this.#lookTurn++;
 		void this.#commit(this.#job(), () => {
 			// Nothing writes that canvas between the drop and here (its stream is gone, and a new stream's own size
 			// message is committed after this one), but a size that moved all the same is not copied.
