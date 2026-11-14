@@ -1327,11 +1327,13 @@ should feel like the company is conscious almost"; no tool could archive an agen
 - Before the automatic review (`prepare`), the agent's `agent.md` is read: the Co-Founder, the calling agent and a
   handle that is no agent's folder are refused (`REFUSED: …`), and the card ("End an agent's role") names the agent as
   its file has it, with the reason. Review class `delegation`, as SQL's for a status change.
-- An agent already archived is not refused before the receipt (review r1 of #1819): the same call repeated after its
-  archive landed, in this run or a resumed one, replays its stored answer from the receipt. A new call on an archived
-  agent finds no receipt and is answered `{outcome: "refused", reason: "already_ended"}` under its own, settled by one
-  unit the folder core refuses with no effect (a `write` with no `expectedVersion` at a path that exists, "exists"),
-  with no review; nothing is left unconfirmed and the card says "Its role has already ended: nothing changes".
+- An agent already archived is told apart by the call's receipt (reviews r1 and r2 of #1819), read with
+  `qorpera_folder_run_receipt_exists(environment, actor, key)` (20260930766000; the run's own receipts, the runtime's
+  role only) under the operations layer's key `end_role:end-role:<operationKey>`, before the review and again before
+  the receipt. With a receipt, the call is a repeat of one that archived the agent: it goes on to its receipt, which
+  replays its stored answer, in this run or a resumed one (the card says "Its role has already ended: nothing
+  changes"). With none, it is a new call on a role that has already ended: `REFUSED: <name>'s role has already ended`
+  before the review, with no receipt, no commit and nothing kept.
 - Under the receipt: one `write` unit, `setCompanyStateSettings(text, {status: "archived"})` over the version read,
   staged, its review recorded (`recordReview`, tool `end_role`; the recorder takes `end_role` since 20260930766000) and
   committed with it. The follow-up queue then pauses its routines, revokes its access and closes its threads; nothing

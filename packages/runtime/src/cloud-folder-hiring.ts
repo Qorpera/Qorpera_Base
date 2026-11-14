@@ -48,9 +48,10 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * agent's agent.md to `status: archived`, over the version read. A status change is delegation, so the save carries the
  * automatic review's approval of the call, as a hire's does. The agent is read before the review (`prepareEndRole`),
  * which refuses the Co-Founder, the calling agent and a handle that is no agent's folder, and gives the card the agent's
- * name. An agent already archived is refused only after the call's receipt is looked up (review r1 of #1819): the same
- * call repeated after its archive landed, in this run or a resumed one, replays its stored answer; a new call finds no
- * receipt and is answered "already ended" under its own, settled by a unit the folder core refuses without an effect.
+ * name. An agent already archived is told apart by the call's receipt (reviews r1 and r2 of #1819), looked up read
+ * only (`runReceiptExists`) before the review and again before the receipt: with one, the call is a repeat of a call
+ * that archived it, and goes on to its receipt, which replays its stored answer, in this run or a resumed one; with
+ * none, it is a new call on a role that has already ended, refused before the review with no receipt and no commit.
  * Once archived, the folder core's follow-up pauses its routines, revokes its access and closes its threads; its files
  * stay, and a member who sets it active again brings it back.
  */
@@ -158,9 +159,13 @@ export interface CloudFolderRoleEnd {
 	readonly reason: string;
 }
 
+/** An end of a role's logical operation key, as its receipt is kept under it (with the tool's name before it). */
+const endRoleKey = (request: CloudFolderRoleEnd) => `end-role:${request.operationKey}`;
+
 /** An agent's file as an end of its role reads it, or a refusal the model can act on: no agent's folder, the
  * Co-Founder, the calling agent. Read before the review and again before the receipt; none of these changes when the
- * call's own archive lands, so a repeated call still reaches its receipt. An archived agent is not refused here. */
+ * call's own archive lands, so a repeated call still reaches its receipt. An archived agent is not refused here: only
+ * a call with no receipt is (`#refuseEnded`). */
 async function roleOf(
 	folder: CloudCompanyFolderClient,
 	identity: CloudNativeToolIdentity,
@@ -213,13 +218,23 @@ export class CloudFolderHiring {
 		if (problems.length) throw new CloudToolArgumentRefusal(invalidMessage(problems));
 	}
 
+	/** An archived agent's role, for a call with no receipt under its key: a new call on a role that has already ended,
+	 * refused before anything begins. A repeat of a call that archived it has a receipt and goes on to it. */
+	async #refuseEnded(request: CloudFolderRoleEnd, agent: AgentFile, signal: AbortSignal): Promise<void> {
+		if (agent.status !== "archived") return;
+		// The operations layer's key for this call (`<tool>:<logicalOperationKey>`, cloud-native-tool-operations.ts).
+		if (!(await this.#folder.runReceiptExists(`end_role:${endRoleKey(request)}`, signal)))
+			throw new CloudToolRefusal(`${agent.name}'s role has already ended`);
+	}
+
 	/** What ending a role changes, read before the automatic review: the request with the agent's name, for its card, and
-	 * `ended` when its role has already ended (never refused here: the call may be a repeat whose receipt answers). */
+	 * `ended` for a repeat of a call that already archived it. A new call on a role that has already ended is refused. */
 	async prepareEndRole(
 		request: CloudFolderRoleEnd,
 		signal: AbortSignal,
 	): Promise<CloudFolderRoleEnd & { readonly name: string; readonly ended?: true }> {
 		const role = await roleOf(this.#folder, this.#identity, request.agent, signal);
+		await this.#refuseEnded(request, role.agent, signal);
 		return {
 			...request,
 			name: role.agent.name,
@@ -237,30 +252,23 @@ export class CloudFolderHiring {
 				"Ending a role needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 			);
 		const role = await roleOf(this.#folder, this.#identity, request.agent, signal);
+		// Archived meanwhile, by another call: refused before the receipt as in prepare. A repeat goes on to its receipt.
+		await this.#refuseEnded(request, role.agent, signal);
 		const name = role.agent.name;
 		const folder = osPath(`agents/${request.agent}`);
-		// Already archived before this call's effect: a repeat of a call that archived it never gets here (its completed
-		// receipt answers), so this is another call. It is answered "already ended", and its receipt is settled by one
-		// unit the folder core refuses with no effect (a new file at a path that exists), so nothing is left unconfirmed.
-		const ended = role.agent.status === "archived";
 		const units: CloudCompanyFolderUnit[] = [
-			ended
-				? { op: "write", path: role.path, content: { text: role.text, mediaType: "text/markdown" } }
-				: {
-						op: "write",
-						path: role.path,
-						content: {
-							text: setCompanyStateSettings(role.text, { status: "archived" }),
-							mediaType: "text/markdown",
-						},
-						expectedVersion: role.entry.version,
-					},
+			{
+				op: "write",
+				path: role.path,
+				content: { text: setCompanyStateSettings(role.text, { status: "archived" }), mediaType: "text/markdown" },
+				expectedVersion: role.entry.version,
+			},
 		];
 		return this.#operations.execute({
 			operation: {
 				tool: "end_role",
 				toolVersion: TOOL_VERSION,
-				logicalOperationKey: `end-role:${request.operationKey}`,
+				logicalOperationKey: endRoleKey(request),
 				arguments: { agent: request.agent, reason: request.reason },
 				target: { agentId: role.agent.id },
 				requiresCompanyRevision: true,
@@ -269,36 +277,19 @@ export class CloudFolderHiring {
 			authorize: async () => {},
 			perform: async (_operation, { receiptId, signal: performSignal }) => {
 				const staged = await this.#folder.stage(units, performSignal);
-				// The settling unit changes nothing, so it carries no review.
-				const reviewId = ended
-					? undefined
-					: await this.#folder.recordReview(
-							{ actionReviewId, tool: "end_role", argumentSha256: context.argumentSha256 },
-							staged,
-							performSignal,
-						);
+				const reviewId = await this.#folder.recordReview(
+					{ actionReviewId, tool: "end_role", argumentSha256: context.argumentSha256 },
+					staged,
+					performSignal,
+				);
 				const committed = await this.#folder.commitStaged(
 					`end-role:${request.operationKey}`,
 					staged,
-					{ ...(reviewId ? { reviewId } : {}), receiptId },
+					{ reviewId, receiptId },
 					performSignal,
 				);
 				const saved = committed.units[0];
 				if (!saved) throw new Error("Company folder commit answered no unit");
-				if (ended) {
-					// The folder keeps the file as it is ("exists"). Should it have gone meanwhile, the unit puts back the
-					// archived file it read: still nothing more than "already ended".
-					const output = cloudToolJsonText({
-						schema: "qorpera.agent-role-end-receipt/v1",
-						runId: this.#identity.runId,
-						receiptId,
-						outcome: "refused",
-						reason: "already_ended",
-						agent: { id: role.agent.id, name, folder },
-						next: `${name}'s role has already ended: nothing changed. A member can bring it back.`,
-					});
-					return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };
-				}
 				const output = cloudToolJsonText({
 					schema: "qorpera.agent-role-end-receipt/v1",
 					runId: this.#identity.runId,

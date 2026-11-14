@@ -60,7 +60,7 @@ export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER =
 /** The end of an agent's role (the company's reading of itself, 20260930766000): its agent.md set to archived. */
 export const CLOUD_END_ROLE_TOOL_DESCRIPTION = [
 	`End an agent's role when its work is over: its ${osPath("agents")}/<name>/agent.md is set to archived, through the automatic review, which may ask a member on a card.`,
-	`agent is its folder name under ${osPath("agents")}/; reason is one sentence a founder reads on why its work is over, at most 280 characters. The Co-Founder's role and your own are refused, and one already ended is answered so.`,
+	`agent is its folder name under ${osPath("agents")}/; reason is one sentence a founder reads on why its work is over, at most 280 characters. The Co-Founder's role, your own and one already ended are refused.`,
 	"When the answer's outcome is saved, the platform pauses its routines and closes its threads by itself; its files stay, and a member can bring it back: tell the founders who and why. A conflict or a refusal needs a new operationKey.",
 ].join("\n");
 /** One sentence of why a role ends, in characters. */

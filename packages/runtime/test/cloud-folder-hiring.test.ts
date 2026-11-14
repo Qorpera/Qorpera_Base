@@ -340,8 +340,13 @@ it("ends a role by setting agent.md to archived, recording the call's review for
 		instructions: "Own Research.",
 	});
 	expect([...f.folders]).toContain("QorperaOS/agents/research");
-	// Once ended, prepare says so for the card and refuses nothing: a repeat of this call must reach its receipt.
+	// Once ended, the same call again has a receipt: prepare says so for the card and goes on, to that receipt. A new
+	// call (another key) has none and is refused.
 	expect(await f.hiring().prepareEndRole(END, f.context.signal)).toEqual({ ...END, name: "Research", ended: true });
+	await refuses(
+		f.hiring().prepareEndRole({ ...END, operationKey: "end-9" }, f.context.signal),
+		"Research's role has already ended",
+	);
 });
 
 // Review r1 of #1819 (F1): a repeated end_role after its archive landed and its answer was lost must reach its receipt,
@@ -373,22 +378,20 @@ it("answers a repeated end_role from its receipt after the archive landed, in th
 	expect(f.recordings).toHaveLength(1);
 });
 
-it("answers a new end_role on an agent already archived as already ended, its receipt settled, nothing changed", async () => {
+// Review r2 of #1819: a new call on a role that has already ended has no receipt under its key, and is refused before
+// the review, with no receipt begun, no commit and nothing kept; the run's next change goes ahead.
+it("refuses a new end_role on an agent already archived before the review, beginning nothing", async () => {
 	const f = await roles();
 	const before = f.text("QorperaOS/agents/market/agent.md");
-	const ended = parse(await f.hiring().endRole({ ...END, operationKey: "end-2", agent: "market" }, f.context));
-	expect(ended).toMatchObject({ outcome: "refused", reason: "already_ended", agent: { name: "Market" } });
-	expect(ended.next).toBe("Market's role has already ended: nothing changed. A member can bring it back.");
-	// One unit the folder refuses with no effect, carrying no review; the file is as it was.
-	expect(f.commits).toHaveLength(1);
-	expect(f.commits[0]?.reviewId ?? null).toBeNull();
-	expect(f.commits[0]?.units.map((unit) => [unit.op, unit.path, "expectedVersion" in unit])).toEqual([
-		["write", "QorperaOS/agents/market/agent.md", false],
-	]);
+	const ended = { ...END, operationKey: "end-2", agent: "market" };
+	await refuses(f.hiring().prepareEndRole(ended, f.context.signal), "Market's role has already ended");
+	// Archived meanwhile, between prepare and the effect: refused before the receipt in the same way.
+	await refuses(f.hiring().endRole(ended, f.context), "Market's role has already ended");
+	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.ledger.size).toBe(0);
+	expect(f.commits).toEqual([]);
 	expect(f.recordings).toEqual([]);
 	expect(f.text("QorperaOS/agents/market/agent.md")).toBe(before);
-	// The receipt is completed, not left unconfirmed: the run's next change goes ahead.
-	expect([...f.ledger.values()].every((row) => row.result !== null)).toBe(true);
 	expect(parse(await f.hiring().endRole(END, { ...f.context, callId: randomUUID() }))).toMatchObject({
 		outcome: "saved",
 	});

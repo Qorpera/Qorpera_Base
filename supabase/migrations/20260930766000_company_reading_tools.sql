@@ -12,6 +12,11 @@
 -- (20260930746000), and the review recorder's list of tools that write reviewed change sets gains end_role, after
 -- company_move (20260930525000). Both are anchored on one line each, so a later migration that anchors on the same
 -- line puts its names beside these, whichever is applied first.
+--
+-- And one read (review r2 of #1819): qorpera_folder_run_receipt_exists, whether the run has a receipt under a logical
+-- operation key, so end_role can tell a repeat of a call that already archived the agent (it has a receipt, which
+-- replays) from a new call on a role that has already ended (none: refused before the review, with no receipt and no
+-- commit). Read only; the run's own receipts only.
 
 create function pg_temp.reading_tools_replace(p_function regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -33,3 +38,29 @@ select pg_temp.reading_tools_replace('public.qorpera_folder_record_review(jsonb,
 	$new$'company_move' /* 20260930525000 */, 'end_role' /* 20260930766000 */)$new$);
 
 drop function pg_temp.reading_tools_replace(regprocedure, text, text);
+
+-- The run's receipt under a logical operation key, as the folder core's begin looks it up (20260928279540): whether one
+-- exists. Folder scope: the run's actor, checked by qorpera_folder_read_actor. Never another run's receipts.
+create function public.qorpera_folder_run_receipt_exists(p_environment_id uuid, p_actor jsonb, p_logical_operation_key text)
+returns boolean language plpgsql stable security definer set search_path = '' as $$
+begin
+	-- 20260930766000
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if p_actor ->> 'kind' is distinct from 'run' then
+		raise exception 'Receipt authority is unavailable' using errcode = '42501'; end if;
+	if char_length(btrim(coalesce(p_logical_operation_key, ''))) not between 1 and 256 then
+		raise exception 'Receipt key is invalid' using errcode = '22023'; end if;
+	perform public.qorpera_folder_read_actor(p_environment_id, p_actor);
+	return exists (select 1 from public.qorpera_run_operation_receipts as receipt
+		where receipt.run_id = (p_actor ->> 'runId')::uuid
+			and receipt.logical_operation_key = btrim(p_logical_operation_key));
+end $$;
+revoke all on function public.qorpera_folder_run_receipt_exists(uuid, jsonb, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_folder_run_receipt_exists(uuid, jsonb, text) to service_role;
+comment on function public.qorpera_folder_run_receipt_exists(uuid, jsonb, text) is
+	'Whether the calling run has a receipt under a logical operation key (end_role tells a repeat from a new call on an '
+	'ended role, 20260930766000). Read only; the run''s own receipts only.';
+
+insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_folder_run_receipt_exists', 'folder');

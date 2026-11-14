@@ -1488,6 +1488,19 @@ export class CloudCompanyFolderClient {
 		return { state: "pass", pass: input.pass, files: input.files as number };
 	}
 
+	/** Whether this run has a receipt under the operations layer's logical key (`<tool>:<key>`), read only
+	 * (`qorpera_folder_run_receipt_exists`, 20260930766000): a writer tells a repeat of a call, which its receipt
+	 * answers, from a new one before it begins anything. */
+	async runReceiptExists(logicalOperationKey: string, signal: AbortSignal): Promise<boolean> {
+		const answer = await this.#once(
+			"qorpera_folder_run_receipt_exists",
+			{ p_logical_operation_key: logicalOperationKey },
+			signal,
+		);
+		if (typeof answer !== "boolean") invalid();
+		return answer as boolean;
+	}
+
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers
 	 * W1, `qorpera_folder_agent_todos`, 20260929770000): newest first, 32 at most, each with its cursor. */
 	async agentTodos(

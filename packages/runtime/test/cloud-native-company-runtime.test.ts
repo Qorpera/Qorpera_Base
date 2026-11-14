@@ -3374,6 +3374,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// create_group_chat (the company's reading of itself, 20260930766000), and hire_agent's description says an existing
 	// coworker takes new work only when it is the same kind and it has room, so both moved again.
 	// Review r1 of #1819: end_role's description says one already ended is answered so, not refused, so both moved again.
+	// Review r2 of #1819: a new call on an ended role is refused again, so end_role's description is round 0's and both
+	// pins are round 0's.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3425,10 +3427,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"aa0e943df0cb12afafe0b88cdce7fc91e2fd3937c5ff205540e9d382d2a9a381",
+		"be69d55abd7e5c32ae7fc8163f4bac3e67341cce6dedf824f8aa58c2980caa03",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"ffd91f43b99cfdd93164cc8753ea5a4b2906784a8b5d493e46cdcdeddfab7154",
+		"b5bf895140bbcc79691c1b0d6ee081db181c7c6e27f6de2d94547320634bc9dd",
 	);
 });
 

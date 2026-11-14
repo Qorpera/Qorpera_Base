@@ -57,6 +57,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_offer_agents_to_member"
 	// The Co-Founder's senses: plain facts about the whole company for its company runs (20260930765000).
 	| "qorpera_describe_company_senses"
+	// Whether the run has a receipt under a key: end_role tells a repeat from a new call on an ended role (20260930766000).
+	| "qorpera_folder_run_receipt_exists"
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"
