@@ -6759,8 +6759,8 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
 > Jonas, 14 November 2026, on a group just made in the apps drawer: "when a new group is created, I would like to run a
 > light call, having an agent name it". Asked whether as a visible message in the Co-Founder's thread or as a new hidden
 > ask, he chose "Build the light call". The design is `deploy/first-node/RUNTIME-LIGHT-ASK.md`. It goes live with
-> migration `20260930761000`, then the runtime bundle. It adds to 8.1, 9 and 17. Item 3's reading of the ChatGPT plan
-> rule is the lead's and waits for Jonas's word.
+> migration `20260930761000`, then the runtime bundle. It adds to 8.1, 9 and 17. On item 3, asked whether a ChatGPT
+> plan may pay for its owner's own light ask, Jonas answered the same day: "Yes, a ChatGPT plan can pay for it".
 
 1. **What it is.** A light ask is one small question a member's own action raises, answered by one call to the small
    model with no tools, with nothing shown in any conversation. The first kind, `name-app-group`, names a new group in
@@ -6770,8 +6770,9 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    causal chain itself. The woken agent is the Co-Founder. The entrypoints stay five. The ask is a row the cloud keeps
    (`qorpera_light_asks`); the wake's agent, payer and payload come from that row, never from what the inserter sends.
 3. **Who pays (17).** The asking member's own Codex login, the one with the most room, as new work of theirs takes it.
-   A ChatGPT plan pays too, whether or not it works while its member is away: the ask is the plan owner's own request,
-   the call is made within ten minutes of it or not at all, and no other member's activity triggers it. No company
+   A ChatGPT plan pays too, whether or not it works while its member is away (the founder's decision of 14 November
+   2026): the ask is the plan owner's own request, the call is made within ten minutes of it or not at all, and no
+   other member's activity triggers it. No company
    account and no other member's login pays. A member with no login of their own gets no answer.
 4. **What the run may do: one call.** It offers no tool: its admission takes an empty tool catalog, and only an empty
    one, as every other run's takes at least one tool. It composes no context (9) and reads nothing of the company: its

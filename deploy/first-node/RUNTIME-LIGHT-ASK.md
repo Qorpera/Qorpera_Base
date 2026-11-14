@@ -18,8 +18,9 @@ and nothing shown in any thread. The first kind names a new group of apps in the
 - **One call.** The small model at low effort, the one auto-review and the memory compactor use
   (`CLOUD_ACTION_REVIEW_MODEL`, `CLOUD_ACTION_REVIEW_EFFORT`), on a side thread with no tools, as the compactor's
   threads are (`cloud-codex-tool-session.ts`, `compact()`).
-- **The member pays.** The asking member's own login, as `qorpera_starter_sponsor` chooses it for new work. A ChatGPT
-  plan may pay: the ask is the plan owner's own request, made now, as a message of theirs is.
+- **The member pays.** The asking member's own Codex login, the one with the most room, as new work of theirs takes
+  it (`qorpera_light_ask_sponsor`). A ChatGPT plan may pay: the ask is the plan owner's own request, made now, as a
+  message of theirs is (Jonas, 14 November 2026: "Yes, a ChatGPT plan can pay for it"). Never a company account.
 - **Nothing shows.** No conversation, no message, no card. The answer is a short text the member's browser reads and
   uses (it renames the group, which only that member may write).
 - **No machine, no Company File.** The run reads nothing of the company and starts nothing.
