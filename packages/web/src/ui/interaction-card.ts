@@ -35,9 +35,10 @@ import { phrase, t } from "./preferences.ts";
  *
  * A card that waits for this member in a thread is the one thing there to act on, and says so (Jonas, 13 November
  * 2026: "I still want some form of widget with proposed answers and a clear visual that indicates something to do"):
- * it keeps its frame, drawn in the accent colour with a soft ring that breathes, and its head is the agent's figure,
- * waiting, beside "{name} asks you" in that colour, in place of the label row (kept for a screen reader). The proposed
- * answers are large pills, and an answer of the member's own has a Send button in its field. */
+ * it keeps its frame, a quiet line on a soft shadow (Jonas, 14 November 2026: "the border is red and ugly"), and its
+ * head is the agent's figure, waiting, beside "{name} asks you" in the accent colour, in place of the label row (kept
+ * for a screen reader). The proposed answers are large pills, and an answer of the member's own has a Send button in
+ * its field. Options with pictures are boxes over the pills; an app is linked once. */
 
 /** A body longer than this many lines, or than this many characters as shown, folds behind Show more (ui/card-fold.ts):
  * past what a card the agent may write holds (5 short lines), so a readable card shows whole. */
@@ -141,11 +142,13 @@ const appShown = (app: InteractionCardApp | undefined) =>
 
 /** The picture area of a visual choice: the picture the agent made, or, for a preview that names an app, that app's
  * cover, or its emblem beside its title. Null when there is nothing to show (Jonas, 13 November 2026, on a question's
- * options: the previews "do not load their visual"): an empty grey frame is no preview, so none is drawn. */
+ * options: the previews "do not load their visual"): an empty grey frame is no preview, so none is drawn. `coverOnly`:
+ * an app's cover or nothing, for the app's own card, which has its emblem and title already. */
 function choicePicture(
 	preview: string,
 	apps: AppReader | undefined,
 	read: PictureReader | undefined,
+	coverOnly = false,
 ): HTMLElement | null {
 	const shown = (path: string) => {
 		if (!read) return null;
@@ -165,6 +168,7 @@ function choicePicture(
 	const app = isInterfaceName(named) ? apps?.(named) : undefined;
 	if (!app) return null;
 	const cover = app.cover ? shown(app.cover) : null;
+	if (coverOnly) return cover;
 	return (
 		cover ??
 		h(
@@ -185,6 +189,7 @@ function visualChoices(
 	chosen: ReadonlySet<string>,
 	busy: boolean,
 	multi = false,
+	others: HTMLElement | null = null,
 ): HTMLElement {
 	const boxes = options.map((option) => {
 		// A box that previews an app says which, and what of it it shows: refreshAppPreviews brings it up to date.
@@ -219,6 +224,7 @@ function visualChoices(
 		"div",
 		{ class: "interaction-choices" },
 		...boxes,
+		others,
 		apps.length
 			? h(
 					"div",
@@ -233,7 +239,8 @@ function visualChoices(
 			: null,
 	);
 	// Set through the style object: the page's CSP takes no inline style attribute.
-	grid.style.setProperty("--choices", String(Math.min(options.length, 3)));
+	// Never fewer than two columns: a lone picture is a box of a choice, not a banner across the card.
+	grid.style.setProperty("--choices", String(Math.max(2, Math.min(boxes.length, 3))));
 	return grid;
 }
 
@@ -250,13 +257,16 @@ function appPreviewName(preview: string | undefined): string | undefined {
  * typed stay as they are. Called by app/application.ts after each read of the company's apps and each change on its
  * page, as the cards of apps in messages are brought up to date. */
 export function refreshAppPreviews(root: ParentNode, apps: AppReader, read?: PictureReader): void {
-	for (const box of root.querySelectorAll<HTMLElement>(".choice-box[data-preview-app]")) {
+	// The options' boxes, and the app cards of a question's words that carry the app's cover.
+	for (const box of root.querySelectorAll<HTMLElement>(
+		":is(.choice-box, .interaction-body .app-card)[data-preview-app]",
+	)) {
 		const name = box.dataset.previewApp ?? "";
 		const shown = appShown(apps(name));
 		if (box.dataset.previewShown === shown) continue;
 		box.dataset.previewShown = shown;
 		for (const old of box.querySelectorAll(":scope > .choice-picture")) old.remove();
-		const picture = choicePicture(`app:${name}`, apps, read);
+		const picture = choicePicture(`app:${name}`, apps, read, box.classList.contains("app-card"));
 		if (picture) box.prepend(picture);
 	}
 	for (const card of root.querySelectorAll<HTMLElement>(".choice-apps .app-card[data-app-name]")) {
@@ -360,6 +370,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	const open = state === "waiting" && context.canAnswer;
 	const stateTone = state === "waiting" ? "warn" : state === "answered" ? "ok" : "neutral";
 
+	// The card's own words, drawn as a message's Markdown.
+	const words = request.body ? cardBody(request.body, item.id) : null;
 	const body: (HTMLElement | null)[] = [];
 	const actions: (HTMLElement | null)[] = [];
 	const result: (HTMLElement | null)[] = [];
@@ -442,12 +454,32 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		const multi = request.payload.multiSelect === true;
 		const custom = request.payload.allowCustom === true;
 		const chosen = new Set<string>();
-		const visual = options.some((option) => option.preview);
+		// An app the question's own words link is a card under them already, and is not shown again (Jonas, 14 November
+		// 2026: "the interface reference is there twice"): an option that previews it is a pill like any other, and its
+		// cover stands on that card. Only the options with a picture of their own are boxes, with the other options as
+		// pills under them ("the selections are unfitted"): never a picture's box beside an empty one.
+		const linked = new Map(
+			[...(words?.querySelectorAll<HTMLElement>(".app-card[data-app-name]") ?? [])].map((card) => [
+				card.dataset.appName ?? "",
+				card,
+			]),
+		);
+		const boxed = (option: QuestionOption) =>
+			Boolean(option.preview) && !linked.has(appPreviewName(option.preview) ?? "");
+		const pictured = options.filter(boxed);
+		const visual = pictured.length > 0;
+		for (const [name, linkCard] of linked) {
+			if (!options.some((option) => appPreviewName(option.preview) === name)) continue;
+			linkCard.dataset.previewApp = name;
+			linkCard.dataset.previewShown = appShown(context.app?.(name));
+			const cover = choicePicture(`app:${name}`, context.app, context.image, true);
+			if (cover) linkCard.prepend(cover);
+		}
 		if (visual && !open && state === "answered" && item.answer?.answer) {
 			const values = item.answer.answer.values;
 			body.push(
 				visualChoices(
-					options,
+					pictured,
 					context,
 					null,
 					new Set(
@@ -462,29 +494,32 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				const values = [...chosen];
 				if (values.length) answer("answered", { values });
 			};
-			const optionButtons = options.map((option) => {
-				const element = pill(
-					option.label,
-					() => {
-						if (!multi) {
-							answer("answered", { values: [option.value] });
-							return;
-						}
-						if (chosen.has(option.value)) chosen.delete(option.value);
-						else chosen.add(option.value);
-						element.setAttribute("aria-pressed", String(chosen.has(option.value)));
-					},
-					option.style === "primary" ? "primary" : "secondary",
-					busy,
-				);
-				if (multi) element.setAttribute("aria-pressed", "false");
-				if (option.description) element.title = option.description;
-				return element;
-			});
+			// With pictures, the options without a box of their own are these pills under the boxes.
+			const optionButtons = options
+				.filter((option) => !boxed(option))
+				.map((option) => {
+					const element = pill(
+						option.label,
+						() => {
+							if (!multi) {
+								answer("answered", { values: [option.value] });
+								return;
+							}
+							if (chosen.has(option.value)) chosen.delete(option.value);
+							else chosen.add(option.value);
+							element.setAttribute("aria-pressed", String(chosen.has(option.value)));
+						},
+						option.style === "primary" ? "primary" : "secondary",
+						busy,
+					);
+					if (multi) element.setAttribute("aria-pressed", "false");
+					if (option.description) element.title = option.description;
+					return element;
+				});
 			body.push(
 				visual
 					? visualChoices(
-							options,
+							pictured,
 							context,
 							(option, box) => {
 								if (!multi) {
@@ -499,6 +534,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 							chosen,
 							busy,
 							multi,
+							optionButtons.length
+								? h("div", { class: "interaction-options choice-others" }, ...optionButtons)
+								: null,
 						)
 					: h("div", { class: "interaction-options" }, ...optionButtons),
 			);
@@ -709,7 +747,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				badge(t(STATE_LABEL[state]), stateTone),
 			),
 			h("h3", { class: "interaction-title" }, request.title),
-			request.body ? cardBody(request.body, item.id) : null,
+			words,
 			...body.filter((part) => !pictures.includes(part)),
 		),
 		...pictures,
