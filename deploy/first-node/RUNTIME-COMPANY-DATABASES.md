@@ -337,7 +337,7 @@ through `api.qorpera.com` adds the rest (a request on that road took 139 to 354 
 | `data_change` (slice 7) | a named change with parameters |
 
 Agents write the files with the folder tools they have. Each tool is a call to the gateway from the execution host
-with the run's identity; none holds a database login. The instructions tell an agent when a database is the right
+with the run's identity; none holds a database login. A program on an agent's machine uses the command `data` (§9a). The instructions tell an agent when a database is the right
 home (many rows, numbers that change, a thing members act on) and when a file is.
 
 ## 7. The nightly snapshot
@@ -406,6 +406,107 @@ data/shop/snapshot/
 
 Each gets its own design before it is built.
 
+## 9a. A command on a company machine (slice 8a)
+
+An agent's own programs reach the company's databases. A company machine (`machine_start`,
+`deploy/machine/README.md`) has the command `data`:
+
+```text
+data describe [<database>]
+data apply <database>
+data query <database> <question> [name=value ...]
+data query <database> --sql '<one select>' [name=value ...]
+data change <database> <change> [name=value ...]
+```
+
+It does what the agents' tools do (§6, §8), with an agent's limits, and prints the gateway's answer as JSON. A value
+is text; `name:=<JSON>` gives a number, `true`, `false` or `null`. It ends 0 with an answer, 1 with a refusal (its
+words on standard error), 2 for a call it cannot read, and 3 when the databases cannot be reached from this machine.
+A script, a build or a server on the machine calls it as it calls any program. No database login and no key is in
+the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
+
+### Who the command is
+
+- A machine's one identity is its folder view (RUNTIME-FOLDER-TEST-MACHINES.md): each boot whose starter's agent and
+  member read the company folder's root has one open `test_machine` view, and the node serves it to that machine
+  only. The command acts as that view: what it may read under `data/<name>/` is what the view may read. A machine
+  without `/company` has no databases to reach, and `data` says so.
+- So a program on a machine reaches the company's databases as it reaches the company's files, and no further.
+  Root on the machine is the agent's, every command started there is reviewed as an outside effect (`machine_run`),
+  and the files of every database folder are already in `/company`. What is new: a program there can read rows and
+  run changes, where before it could only read and write the files that define them. A database in a folder the
+  company-wide view does not show (a member's private folder) is not reached.
+- `:viewer` is the member the view names (the starter's), unless the call names one, as for a run.
+
+### The road
+
+1. `data` is a subcommand of the folder program (`qorpera-folder data`: the Rust program that mounts `/company`,
+   `crates/qorpera-folder`; `/usr/local/bin/data` runs it). It reads the boot's view from
+   `/run/qorpera-folder/view.json` (root's, 0600: the machine gets no new secret), opens AF_VSOCK to the node
+   (`2:5250`) and says hello in a new role, `data` (protocol 5), as the `notices` role does: it mounts nothing, and no
+   view is opened or held for it.
+2. The node's bridge names the machine behind the connection (its CID, asked of LXD), as for every hello. The folder
+   service takes a `data` hello only for a view it serves to that very machine now: a `test_machine` view, the
+   caller its machine, the pass's hash the view's. Anything else gets the one refusal a hello has.
+3. A request is one frame, `{verb, body}`, at most 1 MiB. The folder service asks the core for a data pass as the
+   view (below) and sends the body with the pass to the gateway's run door on its own node, with the node's token
+   and the kit's CA pinned, as a provider host does for a run (§3). The answer goes back as one frame.
+4. The gateway redeems the pass: it names the company, the member and each file the view may read under the
+   database's folder, with its hash. When the gateway asks for a file's text (`need`), the command reads it from
+   `/company` and sends the call again. A text counts only by its hash, so nothing a machine sends is trusted. A
+   file written a moment ago is used once it is saved to the folder (about two seconds after its last change): the
+   command asks again for up to 10 s.
+
+The folder service gains two credentials on the node host, each a systemd credential of its own: the run door's token
+and the CA's pin, as the provider hosts hold them. It forwards nothing but the four verbs with a JSON body. Whether
+the node host itself reaches the run door's forward (it listens on the node's own `qorpera0` address for the provider
+hosts) is read on a node before this is built; if it does not, the folder service gets a forward of its own.
+
+### The pass
+
+- `qorpera_machine_data_pass(p_environment_id, p_actor, p_database)`, for the service role: `p_actor` is
+  `{"kind":"view", viewId, pass}`, and the view must be an open, valid `test_machine` view. It lists and keeps the
+  files as `qorpera_run_data_pass` does (one listing, used by both), as the view may read them now, with the view,
+  its machine, its agent and its member. `qorpera_data_passes.kind` gains `machine`; such a pass names no run and no
+  job.
+- `qorpera_data_pass_redeem` answers a machine's pass once, within its 60 s, while its view is open and valid, with
+  `kind: "machine"`. The gateway takes it at the run door as it takes a run's, with an agent's limits. A machine's
+  pass never carries an `allow`.
+
+### Limits
+
+- At the folder service, a machine has 4 calls at once and 120 a minute (what an interface app has, §5); past them a
+  call is refused at once and may be made again. A body is at most 1 MiB, an answer 4 MiB, a call 30 s (an apply
+  120 s).
+- Each call makes a pass, and a pass lists the database's folder in the platform's database. That cost is what the
+  120 a minute bound. A server that asks many times a second needs the direct connection of §9, or a pass that serves
+  a machine for a short while. Neither is in this slice.
+- The gateway's own limits hold as for a run: an agent's time, rows and bytes; a folder's logins and connections.
+
+### What it does not do
+
+- It gives no yes for a held step and deletes no database folder.
+- It adds no listener in a machine and none on a node: the folder service stays the one host service on vsock, and
+  `security.devlxd` stays off.
+- The Company Computer's desktop (`computer_shell`) and a coding session's machine get no `data` in this slice: only
+  a company machine's view is taken.
+- No call is reviewed by itself. Starting a command on a machine is; what the command then writes, to the folder or
+  to rows, is the command's.
+
+### Parts and rollout
+
+| Part | What | Tests |
+| --- | --- | --- |
+| 1 | The machine's pass and its redeem (one migration); the gateway takes a `machine` pass | an SQL test; the gateway's tests against a real PostgreSQL |
+| 2 | The folder service's `data` role: the hello's check, the limits, the run door's client, the two credentials | the folder service's tests, with a stand-in door |
+| 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`; one sentence in the agents' instructions | the program's tests; the image script's own checks |
+| 4 | A proof on a test machine: a machine in a nested VM asks, changes and applies, and a second machine with another view is refused | `scripts/` proof, on a test machine |
+
+A release rolls the migration, a later gateway on the store's machines, the node release with the folder service and
+its two credentials, the folder program's new build (its pin moves wherever it runs) and the machine image.
+RUNTIME-FOLDER-TEST-MACHINES.md's "The security line" gains the sentence that a machine reaches the company's
+databases through its one view, with part 2.
+
 ## 10. Qorpera's own data (slice 9)
 
 What Qorpera already holds about a company (bank transactions, mail, todos, agents, usage) appears in the company's
@@ -441,6 +542,7 @@ registry when a slice starts.
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
 | 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
 | 8 | The product's doors, each after its own design | | |
+| 8a | The `data` command on a company machine (§9a), in four parts | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
 | 9 | Qorpera's own data as tables | | |
 
 Slices 2 to 5 together are "live reads": a fresh company's agents make a database and an interface shows its numbers
@@ -458,6 +560,13 @@ on a test machine first. Live reads change nothing in the platform's database bu
    read** (§4).
 
 To 2, 3 and the shape in 1, each put with a recommendation of yes, he answered: "Yes, all three".
+
+**14 November 2026.** He asked whether agents have the tools to set up and manage their databases that they would
+have on a hosted database service, and whether they have them as commands. They had three tools, as calls a model
+makes, and no command; rows changed only through a new step, a held step could never be applied, and nothing a program
+on an agent's machine ran could reach a database. To the order put to him (writing rows and a member's yes for a held
+step, slice 7; then a `data` command on the agent's machine with the same reach as the tools, §9a; later a server's
+direct connection, §9, and export and restore) he answered: "Yes, build them".
 
 ## 14. Not in this design
 
