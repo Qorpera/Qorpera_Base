@@ -382,7 +382,9 @@ export function cloudDataTools(options: {
 			required: ["database"],
 			properties: {
 				database: { type: "string", pattern: DATABASE.source },
-				allow: { type: "string", maxLength: 200 },
+				// No length is given: an allow is as long as its step's name and two hashes, and a step's name has no
+				// bound of its own here (parseApply checks its shape).
+				allow: { type: "string" },
 			},
 		},
 		parseArguments: (value) => parseApply(value) as unknown as JsonValue,

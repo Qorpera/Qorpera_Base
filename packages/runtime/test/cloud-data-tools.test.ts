@@ -704,6 +704,14 @@ describe("the company data tools", () => {
 			expect((await f.invoke("data_apply", { database: "shop", allow })).success, String(allow).slice(0, 30)).toBe(
 				false,
 			);
+		// A step with a long name has a long allow: the schema names no length, so nothing tells the model that such an
+		// allow is too long to send, and the tool takes it.
+		const apply = f.tools.find((tool) => tool.name === "data_apply");
+		expect((apply?.inputSchema.properties as Record<string, unknown>).allow).toEqual({ type: "string" });
+		const long = `007-${"remove-discontinued-products-and-their-archived-price-history-rows".repeat(3)}.${"a".repeat(64)}.${"b".repeat(64)}`;
+		expect(long.length).toBeGreaterThan(300);
+		const held = await fixture(() => ({ status: 409, value: { error: "Step 007 waits" } }));
+		expect((await held.invoke("data_apply", { database: "shop", allow: long })).text).toBe("REFUSED: Step 007 waits");
 		for (const args of [
 			{ database: "shop" },
 			{ change: "add-order" },
