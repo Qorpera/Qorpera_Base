@@ -8,7 +8,8 @@
 -- 3. The kind: QorperaOS/vision/reading.md is stored with its checked parse, a parse of the wrong shape is refused, and
 --    an in-house run's save is plain, a move of attention included.
 -- 4. The senses of a small company: a blocked todo, a paused routine, an active one with a wake waiting, an unanswered
---    and an answered card, a hire since the reading; the members' logins; under 8 KiB, a larger team cut to fit.
+--    and an answered card, a hire since the reading; the members' logins; at most 8,192 bytes, cut in order
+--    (cards, ended, hired, then agents, never the Co-Founder's), with churn at its bounds.
 -- 5. A run that is not the Co-Founder's is refused the senses.
 -- 6. The standing's states: a wake waiting under 30 minutes; stopped with every login ready; a busy company (another
 --    routine wake got a run 10 minutes ago) not stopped; Brooks (wakes queued for days, a member's turn an hour ago)
@@ -174,7 +175,7 @@ declare v jsonb := pg_temp.rd_senses(); v_bob jsonb := pg_temp.rd_agent(v, 'bob'
 begin
 	perform pg_temp.base_assert(v ->> 'schema' = 'qorpera.company-senses/v1' and v ->> 'runId' = current_setting('qorpera_test.base_binding')::jsonb ->> 'runId'
 		and v -> 'agentsTruncated' = 'false' and v -> 'membersTruncated' = 'false', 'the senses'' shape: ' || v::text);
-	perform pg_temp.base_assert(octet_length(v::text) < 8192, 'the senses stay under 8 KiB: ' || octet_length(v::text));
+	perform pg_temp.base_assert(octet_length(v::text) <= 8192, 'the senses are at most 8,192 bytes: ' || octet_length(v::text));
 	-- The agents, the Co-Founder first.
 	perform pg_temp.base_assert(v #>> '{agents,0,handle}' = 'alice' and v #> '{agents,0,cofounder}' = 'true'
 		and jsonb_array_length(v -> 'agents') = 5 and v_alice ->> 'id' = '92400000-0000-4000-8000-000000000030'
@@ -207,7 +208,8 @@ begin
 	perform pg_temp.base_assert(v #>> '{reading,attention}' = 'sales' and v #>> '{reading,savedAt}' is not null,
 		'the reading: ' || coalesce((v -> 'reading')::text, 'none'));
 end $$;
--- A larger team with long names: the answer still stays under 8 KiB, the agents last in its order left out.
+-- A larger team with long names: the answer is at most 8,192 bytes. The card and the hires go before any agent, and
+-- the agents last in its order go before the Co-Founder's.
 savepoint rd_many;
 do $$
 declare v jsonb;
@@ -218,10 +220,54 @@ begin
 	v := pg_temp.rd_senses();
 	perform pg_temp.base_assert(octet_length(v::text) <= 8192 and v -> 'agentsTruncated' = 'true'
 		and jsonb_array_length(v -> 'agents') between 5 and 18 and v #>> '{agents,0,handle}' = 'alice'
-		and v -> 'members' is not null and v -> 'team' is not null,
-		'a larger team is cut to 8 KiB: ' || octet_length(v::text) || ' bytes, ' || jsonb_array_length(v -> 'agents') || ' agents');
+		and v #> '{questions,oldest}' = '[]' and v #> '{questions,truncated}' = 'true' and v #> '{questions,count}' = '1'
+		and v #> '{team,hired}' = '[]' and v #> '{team,truncated}' = 'true' and jsonb_array_length(v -> 'members') = 4,
+		'a larger team is cut to 8 KiB, the agents last: ' || octet_length(v::text) || ' bytes, '
+			|| jsonb_array_length(v -> 'agents') || ' agents: ' || v::text);
 end $$;
 rollback to savepoint rd_many;
+-- Churn at its bounds: twenty members, ten unanswered cards, twenty hires with long names that are not ASCII and ten of
+-- them ended since the reading. The answer is at most 8,192 bytes and still holds the Co-Founder's row.
+savepoint rd_churn;
+insert into auth.users(id, email)
+select ('12630000-0000-4000-8000-' || lpad(to_hex(512 + n), 12, '0'))::uuid, 'reading-member-' || n || '@example.test'
+from generate_series(1, 16) as n;
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+select '92400000-0000-4000-8000-000000000010', ('12630000-0000-4000-8000-' || lpad(to_hex(512 + n), 12, '0'))::uuid,
+	'reading-member-' || n || '@example.test', 'Medlem ' || n, 'contributor'
+from generate_series(1, 16) as n;
+do $$
+declare b jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_card integer;
+begin
+	for v_card in 1..9 loop
+		perform public.qorpera_append_native_interaction_request((b ->> 'leaseId')::uuid, (b ->> 'runId')::uuid,
+			(b ->> 'jobId')::uuid, (b ->> 'runnerId')::uuid, (b ->> 'assignmentId')::uuid, (b ->> 'credentialCapsuleId')::uuid,
+			(b ->> 'computeIdentityId')::uuid, 'openai', 'codex-cli', ('12630000-0000-4000-8000-0000000009d' || v_card)::uuid,
+			jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'question', 'title', 'Question ' || v_card,
+				'payload', '{"options":[{"label":"Yes"},{"label":"No"}]}'::jsonb));
+	end loop;
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'rd-churn-1', (select jsonb_agg(pg_temp.base_hire('churn-' || n,
+		('12630000-0000-4000-8000-' || lpad(to_hex(768 + n), 12, '0'))::uuid, rpad('Ærøskøbing ' || n || ' ', 150, 'ø')))
+		from generate_series(1, 20) as n));
+end $$;
+set local session_replication_role = replica;
+update public.qorpera_profile_staff set employment_status = 'archived', updated_at = clock_timestamp()
+where profile_id = '92400000-0000-4000-8000-000000000010'
+	and staff_agent_id in (select ('12630000-0000-4000-8000-' || lpad(to_hex(768 + n), 12, '0'))::uuid from generate_series(1, 10) as n);
+set local session_replication_role = origin;
+do $$
+declare v jsonb := pg_temp.rd_senses();
+begin
+	perform pg_temp.base_assert(octet_length(v::text) <= 8192 and v #>> '{agents,0,handle}' = 'alice'
+		and v #> '{agents,0,cofounder}' = 'true' and jsonb_array_length(v -> 'members') = 20
+		and v -> 'membersTruncated' = 'false' and v #> '{questions,count}' = '10' and v #> '{questions,truncated}' = 'true'
+		and v #> '{team,truncated}' = 'true' and v -> 'agentsTruncated' = 'true'
+		and not exists (select 1 from jsonb_array_elements(coalesce(v #> '{team,hired}', '[]') || coalesce(v #> '{team,ended}', '[]')) e
+			where char_length(e ->> 'name') > 60),
+		'churn at its bounds stays within 8,192 bytes with the Co-Founder''s row: ' || octet_length(v::text) || ' bytes: '
+			|| v::text);
+end $$;
+rollback to savepoint rd_churn;
 
 -- 5. Only the Co-Founder's run reads the senses.
 set local session_replication_role = replica;

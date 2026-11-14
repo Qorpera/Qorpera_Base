@@ -848,7 +848,7 @@ waits_for: [${JONAS}]
 			[3, "things", "unknown_key"],
 		]);
 		expect(problemsOf(edited("shape: coin\n", "shape: coins\n"))).toEqual([[25, "shape", "value"]]);
-		expect(problemsOf(edited("key: money\n", "key: sales\n"))).toEqual([[null, "key", "value"]]);
+		expect(problemsOf(edited("key: money\n", "key: sales\n"))).toEqual([[24, "key", "value"]]);
 		expect(problemsOf(edited("key: money\n", "key: Money\n"))).toEqual([[24, "key", "value"]]);
 		expect(problemsOf(edited("key: money\n", `key: ${"m".repeat(33)}\n`))).toEqual([[24, "key", "value"]]);
 		expect(problemsOf(edited("key: money\n", ""))).toEqual([[23, "key", "missing"]]);
@@ -897,7 +897,7 @@ waits_for: [${JONAS}]
 			"## Changed",
 			`${Array.from({ length: 5 }, (_, n) => money.replace("key: money", `key: money-${n}`)).join("")}## Changed`,
 		);
-		expect(problemsOf(many)).toEqual([[null, null, "body"]]);
+		expect(problemsOf(many)).toEqual([[63, null, "body"]]);
 		expect(
 			problemsOf(
 				edited(
@@ -905,7 +905,7 @@ waits_for: [${JONAS}]
 					`${Array.from({ length: 6 }, (_, n) => `- tom-holm changed: Step ${n}.`).join("\n")}\n`,
 				),
 			),
-		).toEqual([[null, null, "body"]]);
+		).toEqual([[38, null, "body"]]);
 		expect(problemsOf(edited("- tom-holm changed:", "- tom-holm left:"))).toEqual([[33, null, "body"]]);
 		expect(problemsOf(edited("- tom-holm changed:", "- Tom changed:"))).toEqual([[33, null, "body"]]);
 		expect(
@@ -916,7 +916,7 @@ waits_for: [${JONAS}]
 			[36, null, "body"],
 		]);
 		expect(problemsOf(`${written}${Array.from({ length: 5 }, (_, n) => `- Note ${n}.`).join("\n")}\n`)).toEqual([
-			[null, null, "body"],
+			[41, null, "body"],
 		]);
 		expect(problemsOf(`${written}\n## Notes\n- Again.\n`)).toEqual([[38, null, "body"]]);
 		const large = refused(PATH, `${written}${"- x\n".repeat(1100)}`);

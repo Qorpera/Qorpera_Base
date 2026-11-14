@@ -14,7 +14,8 @@
 -- 2. qorpera_describe_company_senses(binding): what the Co-Founder's company run reads to write the reading: per agent
 --    its open, blocked and lately done todos, its runs, its routines and its wakes that wait; who was hired and whose
 --    role ended since the reading was saved; the question cards nobody has answered yet; each member's login; and when
---    the reading was saved. A host call of the Co-Founder's company run only, built to stay under 8 KiB.
+--    the reading was saved. A host call of the Co-Founder's company run only, at most 8,192 bytes: past that it leaves
+--    out the newest of the oldest cards, then the ended and the hired, then agents from the end, never the Co-Founder's.
 -- 3. qorpera_read_company_standing(company): a member's read of whether the company can run. A company whose routines
 --    stand still cannot write its own reading, so the platform says it: since when, and whose login holds it. Stopped
 --    means the routines stand still: a routine wake has waited more than 30 minutes and no routine wake was given a run
@@ -162,8 +163,11 @@ select pg_temp.reading765_replace('public.qorpera_company_state_parse_problems(t
 -- 2. The Co-Founder's senses -------------------------------------------------------------------------------------------
 
 -- Plain facts for the Co-Founder's company run, next to its open work (qorpera_describe_agent_open_work): the run check
--- of that read, and the Co-Founder check of qorpera_cofounder_crew. Lists are capped and say so; when the answer would
--- still pass 8 KiB, the agents last in its order are left out, and agentsTruncated says so.
+-- of that read, and the Co-Founder check of qorpera_cofounder_crew. Lists are capped and say so, and the answer is at
+-- most 8,192 bytes: while it would pass that, it leaves out the last of questions.oldest, then of team.ended, then of
+-- team.hired (each setting its truncated flag), and only then agents from the end (agentsTruncated), never the
+-- Co-Founder's row, which comes first. What no cut reaches stays well inside the bound: the Co-Founder's row (a name of
+-- at most 160 characters), at most 20 members (an id, a role and a login state) and the fixed keys, about 5 KiB at most.
 -- * agents: the active agents, the Co-Founder first, then by hire: todos open and blocked, and done in the last 7 days;
 --   runs in the last 7 days and the last one; routines active, paused (and the distinct reasons), concluded, and the
 --   next run of an active one; the wakes queued for it that are due, and the oldest one's time.
@@ -261,12 +265,12 @@ begin
 			left join waiting on waiting.staff_agent_id = staff.staff_agent_id), '[]'::jsonb),
 		'agentsTruncated', v_active > 50,
 		'team', (select jsonb_build_object('since', v_since,
-				'hired', coalesce((select jsonb_agg(jsonb_build_object('name', hired.display_name,
+				'hired', coalesce((select jsonb_agg(jsonb_build_object('name', left(hired.display_name, 60),
 						'handle', split_part(hired.folder_path, '/', 3), 'at', hired.created_at) order by hired.created_at, hired.staff_agent_id)
 					from (select * from public.qorpera_profile_staff as staff
 						where staff.profile_id = v_run.profile_id and staff.created_at > v_since
 						order by staff.created_at, staff.staff_agent_id limit 10) as hired), '[]'::jsonb),
-				'ended', coalesce((select jsonb_agg(jsonb_build_object('name', ended.display_name,
+				'ended', coalesce((select jsonb_agg(jsonb_build_object('name', left(ended.display_name, 60),
 						'handle', split_part(ended.folder_path, '/', 3), 'at', ended.ended_at) order by ended.ended_at, ended.staff_agent_id)
 					from (select staff.*, coalesce(staff.folder_retired_at, staff.deleted_at, staff.updated_at) as ended_at
 						from public.qorpera_profile_staff as staff
@@ -313,7 +317,7 @@ begin
 								and input.failed_at is null)
 				) as card
 				where room.profile_id = v_run.profile_id and room.bound_staff_agent_id is not null and room.status = 'active')
-			select jsonb_build_object('count', (select count(*) from cards),
+			select jsonb_build_object('count', (select count(*) from cards), 'truncated', (select count(*) > 10 from cards),
 				'oldest', coalesce((select jsonb_agg(jsonb_build_object('agent', split_part(staff.folder_path, '/', 3),
 						'member', oldest.actor_user_id, 'askedAt', oldest.created_at) order by oldest.created_at, oldest.event_id)
 					from (select * from cards order by cards.created_at, cards.event_id limit 10) as oldest
@@ -329,10 +333,21 @@ begin
 		'reading', case when v_saved_at is null then null
 			else jsonb_build_object('savedAt', v_saved_at, 'attention', v_attention) end)
 	into v_answer;
-	-- Under 8 KiB: the agents last in the order go first.
-	while octet_length(v_answer::text) > 8192 and jsonb_array_length(v_answer -> 'agents') > 0 loop
-		v_answer := jsonb_set(v_answer, '{agents}', (v_answer -> 'agents') - (jsonb_array_length(v_answer -> 'agents') - 1))
-			|| jsonb_build_object('agentsTruncated', true);
+	-- At most 8,192 bytes: the cards, then the ended and the hired, then the agents from the end; never the Co-Founder's
+	-- row, first in the order.
+	while octet_length(v_answer::text) > 8192 loop
+		if jsonb_array_length(v_answer #> '{questions,oldest}') > 0 then
+			v_answer := jsonb_set(jsonb_set(v_answer, '{questions,oldest}', (v_answer #> '{questions,oldest}') - -1),
+				'{questions,truncated}', 'true');
+		elsif jsonb_array_length(v_answer #> '{team,ended}') > 0 then
+			v_answer := jsonb_set(jsonb_set(v_answer, '{team,ended}', (v_answer #> '{team,ended}') - -1), '{team,truncated}', 'true');
+		elsif jsonb_array_length(v_answer #> '{team,hired}') > 0 then
+			v_answer := jsonb_set(jsonb_set(v_answer, '{team,hired}', (v_answer #> '{team,hired}') - -1), '{team,truncated}', 'true');
+		elsif jsonb_array_length(v_answer -> 'agents') > 1 then
+			v_answer := jsonb_set(v_answer, '{agents}', (v_answer -> 'agents') - -1) || jsonb_build_object('agentsTruncated', true);
+		else
+			exit;
+		end if;
 	end loop;
 	return v_answer;
 end $$;
@@ -342,7 +357,7 @@ grant execute on function public.qorpera_describe_company_senses(jsonb) to servi
 comment on function public.qorpera_describe_company_senses(jsonb) is
 	'The plain facts the Co-Founder''s company run writes the company''s reading from (QorperaOS/vision/reading.md): '
 	'agents with their work, routines and waiting wakes, the team''s changes, unanswered cards, members'' logins '
-	'(20260930765000). The Co-Founder''s run only; under 8 KiB.';
+	'(20260930765000). The Co-Founder''s run only; at most 8,192 bytes, the agents cut last.';
 
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_describe_company_senses', 'binding');
 
