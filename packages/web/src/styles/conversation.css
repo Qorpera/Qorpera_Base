@@ -881,9 +881,11 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel.is-entered .machine-screen .computer-opener:hover, .computer-panel.is-entered .machine-screen .computer-opener.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
 @media (hover: none) {
 	.computer-panel:not(.is-entered) > :is(.computer-switcher, .computer-opener) { opacity: 1; pointer-events: auto; }
+	/* The close is 36px wide for a finger (above): Open keeps clear of it (review r5 of #1781). */
+	.computer-panel > .computer-opener { right: 46px; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.computer-panel > .computer-switcher { transition: none; }
+	.computer-panel > :is(.computer-switcher, .computer-opener) { transition: none; }
 }
 
 /* New conversation: a "To:" field with one short list hanging from it. */
