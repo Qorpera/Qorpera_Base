@@ -132,6 +132,10 @@ export function inputSpanTooOld(made: InputSpan, now: InputTime): boolean {
 }
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
+/** A list older than this says nothing sure of the computer now (the window reads it every MACHINES_EVERY_MS while it
+ * watches; it is older after a pause, a hidden tab, or reads that failed): what a choice starts is then decided by the
+ * first read begun after the choice, not from it (OpenChoice.freshAfter; review r4 F1 and r5 F1 of #1808). */
+export const LIST_OLD_MS = 2 * MACHINES_EVERY_MS;
 /** How often a screen that is off, or hidden, is looked at again. */
 export const SCREEN_OFF_EVERY_MS = 5000;
 /** How long a member's wish that the desktop be on lasts (20260930714000): Turn it on, or Wake it, which turns the
@@ -195,9 +199,10 @@ interface OpenChoice {
 	sent: boolean;
 	/** Not sent again before this (an answer that asked for it again: a start a moment ago is waited out). */
 	notBefore: number;
-	/** Made while the window was paused, on a list as old as the pause (review r4 F1 of #1808): this many list reads had
-	 * begun then, and nothing is decided or sent for it (wake, start, open) before one begun after it has answered. Its
-	 * own time limit runs meanwhile. Undefined for a choice made on a list the window keeps fresh, and once settled. */
+	/** Made on an old list (LIST_OLD_MS: after a pause, a hidden tab, reads that failed; review r4 F1 and r5 F1 of
+	 * #1808): this many list reads had begun then, and nothing is decided or sent for it (wake, start, open) before one
+	 * begun after it has answered. Its own time limit runs meanwhile. Undefined for a choice made on a list the window
+	 * keeps fresh, and once settled. */
 	freshAfter: number | undefined;
 }
 /** How long the window's loop waits at most while a choice stands unsent: it turns, and pumps, at least this often. */
@@ -1145,7 +1150,7 @@ export class ComputerPanel {
 			}
 			this.#syncSwitchers();
 			this.#syncOpeners();
-			// A choice made on a list as old as a pause is begun by the first read begun after it (review r4 F1 of #1808).
+			// A choice made on an old list is begun by the first read begun after it (review r4 F1 of #1808).
 			this.#settleChoice(computer, signal);
 			if (!machine || machine.state !== "running") {
 				// A machine that sleeps may wake larger: what a start said of it is gone.
@@ -3131,17 +3136,19 @@ export class ComputerPanel {
 		if (!computer || !machine || this.#listed?.canTakeOver !== true || signal.aborted) return;
 		// A choice is the member's word that they watch, as a press on the paused window is: a file picked in a dialog that
 		// stayed open through a pause leaves the pause, so the list is read and the screen looked at again and the choice
-		// is served (review r3 F1 of #1808). Paused, the loop pumps the choice and nothing else. The list is as old as the
-		// pause, and the computer may have gone to sleep or woken meanwhile: what the choice starts is decided by the first
-		// read begun after it (#settleChoice), not here (review r4 F1 of #1808).
-		const paused = this.#paused;
-		if (paused) {
+		// is served (review r3 F1 of #1808). Paused, the loop pumps the choice and nothing else.
+		if (this.#paused) {
 			this.#paused = false;
 			this.#confirm = true;
 			this.#lastLook = Number.NEGATIVE_INFINITY;
-			this.#listStale = true;
 			this.#show("loading");
 		}
+		// An old list (after that pause, a hidden tab, reads that failed) says nothing sure of the computer now: it may have
+		// gone to sleep or woken meanwhile. What the choice starts is then decided by the first read begun after it
+		// (#settleChoice), not here: by the list's age, so a second choice made before that read answers waits for it too
+		// (review r4 F1 and r5 F1 of #1808).
+		const old = Date.now() - this.#listedAt > LIST_OLD_MS;
+		if (old) this.#listStale = true;
 		this.#touched();
 		const machineId = machine.machineId;
 		this.#endChoice("replaced");
@@ -3153,13 +3160,13 @@ export class ComputerPanel {
 			until: Date.now() + WANT_ON_MS,
 			sent: false,
 			notBefore: Number.NEGATIVE_INFINITY,
-			freshAfter: paused ? this.#listReads : undefined,
+			freshAfter: old ? this.#listReads : undefined,
 		};
 		this.#choice = choice;
 		this.#choiceLog.push({ gen: choice.gen, path, sends: 0, out: 0, retries: 0 });
 		if (this.#choiceLog.length > 64) this.#choiceLog.shift();
 		if (!this.#view?.entered) this.#enterOnOpen = this.el.parentElement !== null;
-		if (!paused) this.#beginChoice(computer, machine, signal);
+		if (!old) this.#beginChoice(computer, machine, signal);
 		this.#syncControls();
 		this.#poke();
 	}
@@ -3180,9 +3187,9 @@ export class ComputerPanel {
 		this.#pumpChoice(computer, signal);
 	}
 
-	/** A choice made on a list as old as a pause (OpenChoice.freshAfter) is begun here, once, by the first list read begun
-	 * after it: called by the loop wherever it has applied a list, after a machine that is no longer the one shown has
-	 * ended the choice. */
+	/** A choice made on an old list (OpenChoice.freshAfter) is begun here, once, by the first list read begun after it:
+	 * called by the loop wherever it has applied a list, after a machine that is no longer the one shown has ended the
+	 * choice. */
 	#settleChoice(computer: WebCompanyComputer, signal: AbortSignal): void {
 		const choice = this.#choice;
 		if (!choice || choice.freshAfter === undefined || this.#listedRead <= choice.freshAfter) return;
@@ -3214,7 +3221,7 @@ export class ComputerPanel {
 		}
 		// Asked for again: not before the wait the answer asked for.
 		if (Date.now() < choice.notBefore) return;
-		// Made on a list as old as a pause: nothing goes before a read begun after it has answered (#settleChoice).
+		// Made on an old list: nothing goes before a read begun after it has answered (#settleChoice).
 		if (choice.freshAfter !== undefined) return;
 		// The desktop runs: a screen the member sees, or a start that answered so (a confirmed success).
 		if ((this.#picturing() && this.#screenSeen) || this.#startAnswered?.machineId === choice.machineId) {

@@ -1948,6 +1948,53 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(p.el.textContent).not.toContain("could not open it");
 	});
 
+	it("decides a second choice made before the list has answered from the list read after it too: no start on the old list, one wake (review r5 F1 of #1808)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		expect(mark(p)).toBe("Live");
+		choose(p, 2);
+		await flush();
+		// The pause; the computer goes to sleep meanwhile; and the first read after the pick fails (a laptop just awake).
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		s.state.machines = [machine(1, { state: "stopped" })];
+		s.state.listFails = 1;
+		const starts = s.starts.length;
+		const wakes = () => s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine").length;
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(p.choices.map((choice) => choice.ended)).toEqual([undefined]);
+		// A second choice before any list has answered (an app, from a menu of Open's still up: the window says Connecting
+		// and offers Open no more): the window is not paused any more, and its list is as old.
+		expect(status(p)).toBe("Connecting…");
+		choose(p, 0);
+		await flush();
+		expect(p.choices.map((choice) => [choice.path, choice.ended])).toEqual([
+			["notes/plan.md", "replaced"],
+			["apps/brooks-overblik", undefined],
+		]);
+		// Nothing was started or opened on the old list, for either choice.
+		expect(s.starts).toHaveLength(starts);
+		expect(s.opens).toEqual([]);
+		// A read answers: asleep. One wake; then it runs and the second choice opens.
+		await advance(MACHINES_EVERY_MS);
+		expect(wakes()).toBe(1);
+		expect(s.starts).toHaveLength(starts);
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		expect(wakes()).toBe(1);
+		expect(p.el.textContent).not.toContain("could not open it");
+	});
+
 	it("makes no choice of a pick after a pause when the list read after it says the member may no longer act: nothing is woken, started or opened", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;
