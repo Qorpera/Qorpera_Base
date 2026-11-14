@@ -3031,7 +3031,6 @@ export class ComputerPanel {
 		const computer = this.#computer;
 		const machine = this.#pick();
 		if (!computer || !machine || this.#listed?.canTakeOver !== true || signal.aborted) return;
-		this.claim();
 		this.#touched();
 		const machineId = machine.machineId;
 		this.#endChoice("replaced");
