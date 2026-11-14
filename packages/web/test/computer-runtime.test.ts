@@ -665,12 +665,18 @@ function controlButton(p: ComputerPanel) {
 	const button = controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-button");
 	return button && !button.hidden ? button : null;
 }
-/** The member presses the window's control. Type privately is in the large view alone (20260930734000): a member in the
- * preview opens it first with a click on the picture; Done and Try again are in both. */
+/** The member presses the window's control, Done or Try again, while there is one. With none, a private hold begins the
+ * only way one still can since nothing in the web begins one (Jonas, 14 Nov 2026: "Yes, remove it"): the take-over
+ * kept for these tests (`takeOver`, the hold an older page could have), from the large view. */
 function pressControl(p: ComputerPanel) {
+	const button = controlButton(p);
+	if (button) {
+		button.click();
+		return;
+	}
 	const view = p.el.querySelector<HTMLElement>(".machine-screen");
-	if (!controlButton(p) && view && !view.hidden) press(view, 10, 10);
-	controlButton(p)!.click();
+	if (view && !view.hidden && !p.el.classList.contains("is-entered")) press(view, 10, 10);
+	p.takeOver();
 }
 function handBackButton(p: ComputerPanel) {
 	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back") ?? null;
@@ -2167,7 +2173,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(control.closest(".screen-viewer-stage")).not.toBeNull();
 	});
 
-	it("takes input only in the large view: a click on the preview's picture enters the frame in the thread, never full screen, and Type privately there holds it (v234, 20260930734000)", async () => {
+	it("takes input only in the large view: a click on the preview's picture enters the frame in the thread, never full screen, and a private hold there holds it (v234, 20260930734000)", async () => {
 		const full = vi.fn(async () => {});
 		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
 		cleanup.push(() => {
@@ -2434,7 +2440,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			},
 		]);
 		expect(p.holding).toBe(false);
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		// Shared again (20260930734000): the picture keeps the keyboard, with no hold and no heartbeat.
 		expect(canvas(p).getAttribute("tabindex")).toBe("0");
 		await advance(KEEP_EVERY_MS * 2);
@@ -2696,7 +2702,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		press(canvas(p), 10, 10, { button: 2 });
 		await flush();
 		expect(p.holding).toBe(false);
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		// One window at a time: each setup stubs the one fetch.
 		p.dispose();
 		const second = await holding();
@@ -2708,7 +2714,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(100);
 		expect(calls(second.s, "qorpera_member_keep_machine_desktop")).toHaveLength(1);
 		expect(second.p.holding).toBe(false);
-		expect(controlButton(second.p)?.textContent).toBe("Type privately");
+		expect(controlButton(second.p)).toBeNull();
 	});
 
 	it("shows who holds the desktop to another member, not the screen, until they give it back or their time runs out", async () => {
@@ -2807,7 +2813,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		// Shown as the member's own, from another window: the picture, Take over and Hand back; no input, no heartbeat.
 		expect(p.holding).toBe(false);
 		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		expect(handBackButton(p)?.hidden).toBe(false);
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
 		key(canvas(p), "Enter");
@@ -3102,16 +3108,14 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		expect(canvas(p).getAttribute("role")).toBe("img");
 	});
 
-	it("says once, the first time, that the member and the agent share the computer, and offers Type privately with a lock", async () => {
-		const { p } = await shown();
+	it("says once, the first time, that the member and the agent share the computer, and offers no private typing (Jonas, 14 Nov 2026)", async () => {
+		const { s, p } = await shown();
 		press(canvas(p), 400, 250);
 		await flush();
 		expect(words(p)).toBe(`You and ${staff.displayName} share this computer: you can both click and type.`);
-		const lock = controlButton(p)!;
-		expect(lock.textContent).toBe("Type privately");
-		expect(lock.querySelector("svg.icon")).not.toBeNull();
-		expect(lock.classList.contains("is-secondary")).toBe(true);
-		expect(lock.title).toBe(`For passwords: ${staff.displayName} gets no pictures of the screen until you're done.`);
+		expect(controlButton(p)).toBeNull();
+		expect(p.el.textContent).not.toContain("Type privately");
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([]);
 		// It stays while the large view is open, and goes for good once it is left.
 		await advance(LOOK_EVERY_MS * 2);
 		expect(words(p)).toContain("share this computer");
@@ -3121,7 +3125,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		await flush();
 		expect(entered(p)).toBe(true);
 		expect(words(p)).toBe("");
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		// Another window in this browser says it no more either.
 		p.dispose();
 		const again = await shown();
@@ -3129,6 +3133,40 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		await flush();
 		expect(entered(again.p)).toBe(true);
 		expect(words(again.p)).toBe("");
+	});
+
+	it("begins no private hold from anything in the window: every button, in the preview and entered, shared, held elsewhere or by someone else (Jonas, 14 Nov 2026)", async () => {
+		const until = new Date(Date.now() + 120_000).toISOString();
+		const controls = [
+			null,
+			{ mine: true, name: "Owner", until, epoch: 0, seat: 3, press: "71300000-0000-4000-8000-0000000000e1" },
+			{ mine: false, name: "Ada", until, epoch: null, seat: null, press: null },
+		];
+		for (const control of controls) {
+			const s = setup({ machines: [machine(1, control ? { control } : {}), machine(2)] });
+			s.state.answers.push({ picture: 1 });
+			const p = panel(s);
+			await flush();
+			inBox(p, 800, 500);
+			for (const phase of ["preview", "entered"] as const) {
+				if (phase === "entered" && !canvas(p).hidden) {
+					press(canvas(p), 400, 250);
+					await flush();
+				}
+				for (const button of p.el.querySelectorAll<HTMLButtonElement>("button")) {
+					// The close ends the window; everything else is pressed.
+					if (button.classList.contains("computer-close") || button.hidden) continue;
+					button.click();
+					openMenu()?.close();
+					await flush();
+				}
+				key(p.el, "Enter");
+				await flush();
+			}
+			expect(p.el.textContent, JSON.stringify(control)).not.toContain("Type privately");
+			expect(calls(s, "qorpera_member_take_machine_desktop"), JSON.stringify(control)).toEqual([]);
+			p.dispose();
+		}
 	});
 
 	it("names who else used the computer in the last minute, in the preview too; a viewer watches and is told so", async () => {
@@ -3162,7 +3200,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		expect(viewer.acts).toEqual([]);
 	});
 
-	it("types privately with the lock: the hold, the words, Done, and shared input again after it; what was typed under it never goes out shared", async () => {
+	it("types privately under a hold (the kept take-over): the hold, the words, Done, and shared input again after it; what was typed under it never goes out shared", async () => {
 		const { s, p } = await shown();
 		press(canvas(p), 400, 250);
 		await flush();
@@ -3170,14 +3208,15 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		press(canvas(p), 100, 100);
 		await advance(DOUBLE_CLICK_MS);
 		expect(s.acts.map((act) => act.seat)).toEqual([null]);
-		// Type privately: no input goes while it is on its way; then the private hold takes it.
+		// A private hold: no input goes while it is on its way; then the private hold takes it.
 		let open = () => {};
 		s.state.takeGate = new Promise<void>((resolve) => {
 			open = resolve;
 		});
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
-		expect(controlButton(p)?.disabled).toBe(true);
+		// No button while it is on its way: nothing offers private typing any more.
+		expect(controlButton(p)).toBeNull();
 		expect(canvas(p).getAttribute("role")).toBe("img");
 		key(canvas(p), "z");
 		await advance(TYPE_BATCH_MS);
@@ -3188,7 +3227,6 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		expect(words(p)).toBe(`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`);
 		expect(words(p)).not.toMatch(/can't see|cannot see/);
 		expect(controlButton(p)?.textContent).toBe("Done");
-		expect(controlButton(p)?.classList.contains("is-secondary")).toBe(false);
 		// The password, under the hold: with its epoch and seat. Done comes before its batch goes: it goes nowhere.
 		for (const value of ["p", "w"]) key(canvas(p), value);
 		await advance(TYPE_BATCH_MS);
@@ -3199,8 +3237,8 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		await flush();
 		expect(p.holding).toBe(false);
 		expect(s.acts.filter((act) => act.action.type === "type").map((act) => act.action.text)).toEqual(["pw"]);
-		// Shared again: the lock is offered, and input goes with no hold.
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		// Shared again: no button, and input goes with no hold.
+		expect(controlButton(p)).toBeNull();
 		press(canvas(p), 100, 100);
 		await advance(DOUBLE_CLICK_MS);
 		expect(s.acts.at(-1)).toMatchObject({ action: { type: "click", x: 200, y: 200 }, epoch: null, seat: null });
@@ -3374,11 +3412,11 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 
 	it("sends nothing gathered for sharing as private, nor gathered under a private hold as shared, nor after Back or a close (review r2 F1 of #1701)", async () => {
 		const types = (s: Setup) => s.acts.filter((act) => act.action.type === "type");
-		// Shared, then Type privately before the text went: it goes nowhere.
+		// Shared, then a private hold before the text went: it goes nowhere.
 		{
 			const { s, p } = await twoComputers();
 			key(canvas(p), "a");
-			controlButton(p)!.click();
+			pressControl(p);
 			await flush();
 			expect(p.holding).toBe(true);
 			await advance(TYPE_BATCH_MS * 2);
@@ -3417,7 +3455,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 				s.state.takeGate = new Promise<void>((resolve) => {
 					open = resolve;
 				});
-				controlButton(p)!.click();
+				pressControl(p);
 				await advance(3000);
 				open();
 			} else p.dispose();
@@ -3662,7 +3700,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 			press(canvas(p), 400, 250);
 			await flush();
 			if (mode === "private") {
-				controlButton(p)!.click();
+				pressControl(p);
 				await flush();
 				expect(p.holding, mode).toBe(true);
 			}
@@ -3823,7 +3861,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		const { s, p } = await shown();
 		press(canvas(p), 400, 250);
 		await flush();
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(true);
 		// Under the first hold (epoch 0, seat 1): a click the busy desktop keeps waiting, and a text behind it.
@@ -3840,7 +3878,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		await flush();
 		expect(p.holding).toBe(false);
 		// Typing privately again: a new hold (epoch 1, seat 2); only what is typed under it goes, under it.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(true);
 		key(canvas(p), "q");
@@ -3960,7 +3998,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					press(canvas(p), 400, 250);
 					await flush();
 					if (mode === "private") {
-						controlButton(p)!.click();
+						pressControl(p);
 						await flush();
 						expect(p.holding, name).toBe(true);
 					}
@@ -4014,7 +4052,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 			press(canvas(p), 400, 250);
 			await flush();
 			if (mode === "private") {
-				controlButton(p)!.click();
+				pressControl(p);
 				await flush();
 				expect(p.holding, mode).toBe(true);
 			}
@@ -4084,7 +4122,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					press(canvas(p), 400, 250);
 					await flush();
 					if (mode === "private") {
-						controlButton(p)!.click();
+						pressControl(p);
 						await flush();
 					}
 					const sent = () => s.acts.filter((act) => act.url.endsWith("/act"));
@@ -4163,7 +4201,7 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 				expect.soft(note(p), name).toBe(lost);
 				p.dispose();
 			}
-		// Ended by the member: a switch, Back, Type privately. Nothing is said, and nothing of it goes.
+		// Ended by the member: a switch, Back, a private hold beginning. Nothing is said, and nothing of it goes.
 		const voluntary: [string, (p: ComputerPanel, s: Setup) => Promise<void>][] = [
 			[
 				"a switch",
@@ -4182,9 +4220,9 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 				},
 			],
 			[
-				"Type privately",
+				"a private hold",
 				async (p) => {
-					controlButton(p)!.click();
+					p.takeOver();
 					await flush();
 				},
 			],
@@ -4519,7 +4557,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 
 	it("goes on a private pass of the hold's epoch and seat while the member types privately", async () => {
 		const { s, p } = await inside();
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(true);
 		hover(p, 100, 100);
@@ -4705,7 +4743,7 @@ describe("the member's own pointer is the desktop's (20260930744000)", () => {
 
 	it("comes back after the desktop went away and came back under the same private hold (review r1 F4 of #1733)", async () => {
 		const { s, p } = await inside();
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(true);
 		hover(p, 100, 100);
@@ -4817,7 +4855,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 		expect(s.sockets[0]!.closedWith).toBeUndefined();
 	});
 
-	it("ends with the sharing at once (Back, Type privately, a hidden tab, the close), and the looks come back with a whole picture", async () => {
+	it("ends with the sharing at once (Back, a private hold, a hidden tab, the close), and the looks come back with a whole picture", async () => {
 		// Back to the preview.
 		{
 			const s = setup({ stream: true });
@@ -4834,7 +4872,7 @@ describe("the desktop's live picture in the large view (20260930745000)", () => 
 			expect(s.sockets).toHaveLength(1);
 			p.dispose();
 		}
-		// Type privately: the sharing ends, and the private hold streams on a pass of its own epoch and seat.
+		// A private hold: the sharing ends, and the private hold streams on a pass of its own epoch and seat.
 		{
 			const s = setup({ stream: true });
 			const { p } = await inside(s);
@@ -5057,7 +5095,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await advance(2000);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").length).toBe(asked + 1);
 		expect(backEpochs(s)).toEqual([0, 0]);
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		expect(p.holding).toBe(false);
@@ -5081,7 +5119,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		pressControl(p);
 		await flush();
 		expect(count()).toBe(4);
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 		await advance(30_000);
 		expect(count()).toBe(4);
 	});
@@ -5101,7 +5139,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		slow.open();
 		await back;
 		expect(done).toBe(true);
-		expect(controlButton(p)?.textContent).toBe("Type privately");
+		expect(controlButton(p)).toBeNull();
 	});
 
 	it("calls off a take-over still on its way: the hand-back names it at once, and the take-over is refused when it arrives", async () => {
@@ -5821,7 +5859,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(controls(p)?.textContent ?? "").not.toContain("could not start");
 	});
 
-	it("takes nothing over after pagehide for a press made before it, when the same window goes on: no take-over, no heartbeat, Take over offered (r13 F20)", async () => {
+	it("takes nothing over after pagehide for a press made before it, when the same window goes on: no take-over, no heartbeat, and no button (r13 F20)", async () => {
 		const { s, p } = await company();
 		// Take over, sent at 0; its answer is delayed.
 		const late = gate();
@@ -5839,7 +5877,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await advance(LOOK_EVERY_MS);
 		await advance(MACHINES_EVERY_MS);
 		expect(takeEpochs(s)).toEqual([0]);
-		// The take-over sent before arrives at last: refused; nothing held, no heartbeat, nothing said; Take over offered.
+		// The take-over sent before arrives at last: refused; nothing held, no heartbeat, nothing said, and no button.
 		late.open();
 		await flush();
 		await advance(KEEP_EVERY_MS * 2);
@@ -5847,8 +5885,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(p.holding).toBe(false);
 		expect(keeps(s)).toHaveLength(0);
 		expect(s.state.machines[0]?.control).toBeNull();
-		expect(controlButton(p)?.textContent).toBe("Type privately");
-		expect(controlButton(p)?.disabled).toBe(false);
+		expect(controlButton(p)).toBeNull();
 		// Only a new press takes it over, at the epoch the hand-back answered.
 		await takeOver(p);
 		expect(takeEpochs(s)).toEqual([0, 1]);
@@ -6172,8 +6209,9 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_epoch])).toEqual([
 			[machine(1).machineId, 0],
 		]);
-		// The same window's button offers Take over for the second machine; the agent's card asks before the first answers.
-		expect(controlButton(p)?.disabled).toBe(false);
+		// The window offers no take-over (nothing does since 14 Nov 2026); the kept take-over asks for the second machine
+		// before the first answers.
+		expect(controlButton(p)).toBeNull();
 		p.takeOver();
 		await flush();
 		expect(taken()).toEqual([machine(1).machineId, machine(2).machineId]);

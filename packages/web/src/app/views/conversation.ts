@@ -1624,16 +1624,6 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
-	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
-		if (this.#panel) this.#panels.open(agent, { asked: true });
-		const panel = this.#panel ?? this.#showPanel(agent, true);
-		panel?.focus();
-		panel?.takeOver();
-	}
-
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
 	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
 	#computerByItself(agent: HostedStaffAgent | undefined): void {
@@ -3060,14 +3050,6 @@ export class ConversationView {
 									? {
 											actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
 												this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
-										}
-									: {}),
-								...(takeOver
-									? {
-											takeOver: () => {
-												const current = currentAgent();
-												if (current) this.#takeOver(current);
-											},
 										}
 									: {}),
 								...(item.request.surface === "secret" && answers

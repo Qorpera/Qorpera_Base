@@ -837,9 +837,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-control-who:empty { display: none; }
 .computer-panel .machine-screen-control-button[hidden] { display: none; }
 .computer-panel .machine-screen-control-button { display: inline-flex; align-items: center; gap: 5px; }
-.computer-panel .machine-screen-control-button .icon { flex: none; width: 13px; height: 13px; }
-.computer-panel .machine-screen-control-button.is-secondary { color: #fff; background: rgb(255 255 255 / 16%); }
-.computer-panel .machine-screen-control-button.is-secondary:hover { background: rgb(255 255 255 / 26%); }
 .computer-panel .machine-screen.is-controlling .machine-screen-mark { display: none; }
 .computer-panel .machine-screen.is-controlling .machine-screen-canvas { cursor: default; outline: none; touch-action: none; }
 /* The preview takes the member's clicks while they hold the desktop (otherwise a press there moves the panel), and its

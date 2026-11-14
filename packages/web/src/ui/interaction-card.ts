@@ -89,8 +89,6 @@ export interface InteractionCardContext {
 	figure?: () => HTMLElement;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
-	/** Opens the agent's computer for a takeover; absent when the thread has none. */
-	takeOver?: () => void;
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
@@ -583,8 +581,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		if (instruction) body.push(h("p", { class: "interaction-text" }, instruction));
 		if (open) {
 			actions.push(
-				context.takeOver ? pill(t("Take over"), context.takeOver, "primary", busy) : null,
-				pill(t("I'm done"), () => answer("handed_back"), context.takeOver ? "secondary" : "primary", busy),
+				// Nothing begins private typing in the web any more (Jonas, 14 Nov 2026): the member does what the card asks
+				// on the agent's computer as it is shared, and says when it is done.
+				pill(t("I'm done"), () => answer("handed_back"), "primary", busy),
 				pill(t("Skip"), () => answer("dismissed"), "quiet", busy),
 			);
 		}
