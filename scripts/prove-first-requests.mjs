@@ -16,8 +16,10 @@ import { finish, pass, platformCommit, proveCompanyRun, repositoryRoot, textObje
 //
 //   QORPERA_CODEX_FENCE_BINARY=<patched codex> node scripts/prove-first-requests.mjs
 //
-// Kinds: a Co-Founder's member turn, an employee's member turn, an employee's worker with write access, and an
-// employee's scheduled routine. A coding turn is not among them: its instructions and two of its five tools are made
+// Kinds: a Co-Founder's member turn before and after its company's vision is agreed, its scheduled routine (its planning
+// run) and its worker with write access; an employee's member turn, its worker with write access and its scheduled
+// routine. The instructions are compiled for the run's own tools (their names, from a dry making of the same tools with
+// the runtime's test authority, checked against the run's catalog) and the vision's state. A coding turn is not among them: its instructions and two of its five tools are made
 // inside CloudNativeCodingRuntime, which this harness does not drive.
 // For each kind it prints the bytes of every part of the request, then three checks on the developer instructions: the
 // tools they name that the run lacks, the "when … is offered" clauses, and the founder rules (lanes'
@@ -26,7 +28,16 @@ import { finish, pass, platformCommit, proveCompanyRun, repositoryRoot, textObje
 // reported but are not a measure of a real company.
 
 const NOTE = "# Prices\n\nThe price list is ready: 40 kr a cup.\n";
-const KINDS = ["cofounder-member", "employee-member", "employee-worker", "employee-routine"];
+/** Each kind of run; "agreed" is a Co-Founder whose company's vision ends with its "Agreed by" line. */
+const KINDS = [
+	"cofounder-member",
+	"cofounder-member-agreed",
+	"cofounder-routine",
+	"cofounder-worker",
+	"employee-member",
+	"employee-worker",
+	"employee-routine",
+];
 
 /** One phrase of today's text per founder rule (PLAN.md §3), and the kinds of run that read it. */
 const FOUNDER_RULES = [
@@ -76,6 +87,9 @@ async function bundle(scratch) {
 				`export {cloudWorkerTools, cloudWorkerToolFilter} from "${src("cloud-worker-tools")}";`,
 				`export {cloudCodeTools} from "${src("cloud-code-tools")}";`,
 				`export {CLOUD_AGENT_SEND_INSTRUCTIONS} from "${src("cloud-agent-mouth")}";`,
+				`export {cloudFolderFileTools} from "${src("cloud-folder-file-tools")}";`,
+				`export {CloudNativeToolRun} from "${src("cloud-native-tool-authority")}";`,
+				'export {nativeToolAuthorityFixture} from "./packages/runtime/test/fixtures/native-tool-authority-fixture.ts";',
 				`export {CLOUD_ASK_MEMBER_BODY_MAX_BYTES, CLOUD_ASK_MEMBER_INSTRUCTIONS, CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA, CLOUD_ASK_MEMBER_SURFACES} from "${src("cloud-thread-interactions")}";`,
 			].join("\n"),
 		},
@@ -127,7 +141,7 @@ function wakeOf(kind, identity) {
 		parentRunId: null,
 		causal: { agentIds: [] },
 	};
-	if (kind.endsWith("-member"))
+	if (kind.includes("-member"))
 		return {
 			...base,
 			kind: "human",
@@ -153,11 +167,11 @@ function wakeOf(kind, identity) {
 	};
 }
 
-/** A small, fixed head (stand-in): the vision, the job and two notebook facts. */
-const HEAD = JSON.stringify({
+/** A small, fixed head (stand-in): the vision, the job and two notebook facts; an agreed vision ends with its line. */
+const headOf = (agreed) => JSON.stringify({
 	schema: "qorpera.agent-head/v1",
 	parts: [
-		{ part: "vision", path: "QorperaOS/vision/vision.md", trust: "company_instructions_not_authority", text: "We make coffee cups that keep coffee hot for an hour. ".repeat(12) },
+		{ part: "vision", path: "QorperaOS/vision/vision.md", trust: "company_instructions_not_authority", text: `${"We make coffee cups that keep coffee hot for an hour. ".repeat(12)}${agreed ? "\nAgreed by Jonas, 2026-11-14." : ""}` },
 		{ part: "job", path: "QorperaOS/agents/alice/agent.md", trust: "job_specification_not_authority", text: "Owns sales: prices, the shop and the first customers. ".repeat(6) },
 		{ part: "profile", path: "QorperaOS/agents/alice/memory/profile.md", trust: "own_notebook_not_authority", facts: ["Jonas likes short replies with the numbers first.", "The price list lives in sales/price-list.md."] },
 	],
@@ -189,7 +203,7 @@ function contextOf(kind, identity) {
 		images: [],
 		content: { text, originalBytes: Buffer.byteLength(text), sha256: "0".repeat(64), offset: 0, nextOffset: null, truncated: false },
 	});
-	const input = kind.endsWith("-member")
+	const input = kind.includes("-member")
 		? [source(uuid(907), "input", "Is the price list ready?")]
 		: [];
 	return {
@@ -202,7 +216,7 @@ function contextOf(kind, identity) {
 		initialAcknowledgementSatisfied: false,
 		audience: { kind: "company", userId: null },
 		runtimeBundle: { id: identity.runtimeBundleId, sha256: identity.runtimeBundleSha256 },
-		sourceKind: kind.endsWith("-member") ? "session_turn" : "wake",
+		sourceKind: kind.includes("-member") ? "session_turn" : "wake",
 		sourceId: uuid(908),
 		currentInputs: input,
 		history: [],
@@ -214,6 +228,29 @@ function contextOf(kind, identity) {
 		continuation: null,
 		folder: { agent: "alice", coworkers: {} },
 	};
+}
+
+/** The names of a run's tools of this kind, from a dry making of them with the runtime's test authority (nothing is
+ * called): the folder file tools the harness gives, then the rest. */
+async function dryNames(mine, kind) {
+	const { binding, authority } = mine.nativeToolAuthorityFixture();
+	const run = await mine.CloudNativeToolRun.open(
+		binding,
+		{ describeToolAuthority: async () => authority },
+		new AbortController().signal,
+	);
+	const identity = run.identity;
+	const context = contextOf(kind, identity);
+	const made = [
+		...mine.cloudFolderFileTools({ folder: standIn(), operations: standIn(), identity }),
+		...toolsOf(mine, kind, context, wakeOf(kind, context.identity), {
+			binding,
+			folder: standIn(),
+			operations: standIn(),
+			identity,
+		}),
+	];
+	return new Set(made.map((tool) => tool.name));
 }
 
 /** The run's tools beside the folder file tools the harness gives, in the company runtime's order. */
@@ -391,7 +428,14 @@ async function main() {
 			// The tools are made in the run, from its own identity, which their factories check against its binding.
 			const shown = contextOf(kind, STAND_IN_IDENTITY);
 			const shownWake = wakeOf(kind, shown.identity);
-			const instructions = mine.compileCloudNativeCompanyInstructions(shown, shownWake, { head: HEAD });
+			const agreed = kind.endsWith("-agreed");
+			const HEAD = headOf(agreed);
+			const names = await dryNames(mine, kind);
+			const instructions = mine.compileCloudNativeCompanyInstructions(shown, shownWake, {
+				head: HEAD,
+				tools: names,
+				visionAgreed: agreed,
+			});
 			const prompt = mine.composeCloudNativeCompanyPrompt(shown, shownWake);
 			const developer = mine.redactCloudWebhookSecrets([mine.CLOUD_TOOL_RESULT_INSTRUCTIONS, instructions].join("\n"));
 			let tools;
@@ -415,6 +459,11 @@ async function main() {
 					assert(tools, "the run's tools were made");
 					const body = state.agent[0].body;
 					const measured = measure(body, developer, prompt, tools.map((tool) => tool.name));
+					assert.deepEqual(
+						Object.keys(measured.perTool).sort(),
+						[...names].sort(),
+						"the instructions were compiled for the run's own tools",
+					);
 					assert(
 						measured.input.some((item) => item.ours?.startsWith("our developer instructions")) ||
 							(typeof body.instructions === "string" && body.instructions.includes(developer)),
