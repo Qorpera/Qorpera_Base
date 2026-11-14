@@ -17,6 +17,7 @@ import {
 } from "@qorpera/runtime/cloud-secret-broker-http";
 import type { CloudSecretBrokerCompanies } from "@qorpera/runtime/cloud-secret-broker-shared";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { CloudSecretBrokerBusyError } from "@qorpera/runtime/cloud-vault-database-failure";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -188,11 +189,13 @@ describe("the vault seals back what Claude Code changed", () => {
 		const base = { claudeLoginId: f.login.id, baseVersion: 1, baseEnvelopeSha256: f.sha() };
 		const files = { ".credentials.json": b64(RENEWED_CREDENTIALS), ".claude.json": b64(CANARY_SETTINGS) };
 		const sealed = await f.vault.sealBack({ binding: binding(), ...base, files }, AbortSignal.timeout(5000));
+		// The answer names the new version's envelope digest: the base a later seal of the same run starts from.
 		expect(sealed).toEqual({
 			schema: "qorpera.claude-login-seal/v1",
 			state: "sealed",
 			claudeLoginId: f.login.id,
 			version: 2,
+			envelopeSha256: f.sha(),
 		});
 		// Version 2's identity opens it, with the renewed file.
 		expect((await f.sealed()).files).toEqual(files);
@@ -306,6 +309,8 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 
 	async function route(f: ReturnType<typeof standIn>) {
 		const requests: { path: string; body: Record<string, unknown>; headers: IncomingMessage["headers"] }[] = [];
+		// The vault saves the next seal, and its answer is lost on the way back (the route answers busy).
+		const lose = { nextSealAnswer: false };
 		server = createServer(async (request, reply) => {
 			const chunks: Buffer[] = [];
 			for await (const chunk of request) chunks.push(chunk as Buffer);
@@ -325,6 +330,12 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 							},
 							AbortSignal.timeout(5000),
 						);
+			if (url.pathname === "/v1/claude-logins/seal" && lose.nextSealAnswer) {
+				lose.nextSealAnswer = false;
+				reply.writeHead(503, { "content-type": "application/json" });
+				reply.end('{"error":"busy"}');
+				return;
+			}
 			reply.writeHead(200, { "content-type": "application/json" });
 			reply.end(JSON.stringify(answer));
 		});
@@ -336,7 +347,7 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 			holder: () => "holder-c4b",
 			allowLoopback: true,
 		};
-		return { client, requests };
+		return { client, requests, lose };
 	}
 
 	it("opens the files for the box, sends back only changed login files, and none when nothing changed", async () => {
@@ -361,7 +372,7 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 			{ binding: run, opened, files: opened.files },
 			AbortSignal.timeout(5000),
 		);
-		expect(unchanged).toEqual({ state: "unchanged" });
+		expect(unchanged).toEqual({ state: "unchanged", opened });
 		expect(
 			await sealClaudeLoginBack(
 				client,
@@ -372,7 +383,7 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 				},
 				AbortSignal.timeout(5000),
 			),
-		).toEqual({ state: "unchanged" });
+		).toEqual({ state: "unchanged", opened });
 		expect(requests).toHaveLength(1);
 		// Without the credentials file nothing is sent either: it is refused.
 		await expect(
@@ -404,11 +415,22 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 			{ binding: run, opened, files: renewed },
 			AbortSignal.timeout(5000),
 		);
+		const next = {
+			claudeLoginId: f.login.id,
+			version: 2,
+			envelopeSha256: f.sha(),
+			fileSha256: {
+				".credentials.json": createHash("sha256").update(RENEWED_CREDENTIALS).digest("hex"),
+				".claude.json": createHash("sha256").update(CANARY_SETTINGS).digest("hex"),
+			},
+		};
 		expect(sealed).toEqual({
 			schema: "qorpera.claude-login-seal/v1",
 			state: "sealed",
 			claudeLoginId: f.login.id,
 			version: 2,
+			envelopeSha256: f.sha(),
+			opened: next,
 		});
 		expect(requests[1]?.body).toMatchObject({
 			schema: "qorpera.claude-login-seal-request/v1",
@@ -422,6 +444,71 @@ describe("the run host's two calls (C4c's), against a stand-in vault route", () 
 		expect(
 			await sealClaudeLoginBack(client, { binding: run, opened, files: renewed }, AbortSignal.timeout(5000)),
 		).toMatchObject({ state: "stale", version: 2 });
+	});
+
+	it("seals twice in one run, each from the base the last answer gave, and a retry after a lost answer is stale", async () => {
+		captureOutput();
+		const f = standIn();
+		const { client, requests, lose } = await route(f);
+		const run = binding();
+		const opened = await openClaudeLoginForRun(client, run, AbortSignal.timeout(5000));
+		if ("refused" in opened) throw new Error("refused");
+		// Right after Claude Code's start: it renewed, and only the credentials file is read back.
+		const first = await sealClaudeLoginBack(
+			client,
+			{ binding: run, opened, files: new Map([[".credentials.json", Buffer.from(RENEWED_CREDENTIALS)]]) },
+			AbortSignal.timeout(5000),
+		);
+		if (first.state !== "sealed") throw new Error(first.state);
+		expect(first.opened).toMatchObject({ version: 2, envelopeSha256: f.sha() });
+		// The same file at the end: nothing to send.
+		expect(
+			await sealClaudeLoginBack(
+				client,
+				{
+					binding: run,
+					opened: first.opened,
+					files: new Map([[".credentials.json", Buffer.from(RENEWED_CREDENTIALS)]]),
+				},
+				AbortSignal.timeout(5000),
+			),
+		).toEqual({ state: "unchanged", opened: first.opened });
+		// Renewed again during the run: the second seal starts from the first's answer.
+		const again = `{"claudeAiOauth":{"accessToken":"CANARY-C4B-AGAIN-${randomUUID()}"}}`;
+		const second = await sealClaudeLoginBack(
+			client,
+			{ binding: run, opened: first.opened, files: new Map([[".credentials.json", Buffer.from(again)]]) },
+			AbortSignal.timeout(5000),
+		);
+		expect(second).toMatchObject({ state: "sealed", version: 3, envelopeSha256: f.sha() });
+		expect((await f.sealed()).files).toEqual({
+			".credentials.json": b64(again),
+			".claude.json": b64(CANARY_SETTINGS),
+		});
+		if (second.state !== "sealed") throw new Error(second.state);
+		// A third seal whose answer is lost: the vault saved version 4, the client heard busy.
+		const last = `{"claudeAiOauth":{"accessToken":"CANARY-C4B-LAST-${randomUUID()}"}}`;
+		lose.nextSealAnswer = true;
+		await expect(
+			sealClaudeLoginBack(
+				client,
+				{ binding: run, opened: second.opened, files: new Map([[".credentials.json", Buffer.from(last)]]) },
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toBeInstanceOf(CloudSecretBrokerBusyError);
+		expect(f.login.version).toBe(4);
+		// Its retry answers stale with the version it named plus one: possibly its own seal, and the saved one stays.
+		const sealedBefore = f.sha();
+		expect(
+			await sealClaudeLoginBack(
+				client,
+				{ binding: run, opened: second.opened, files: new Map([[".credentials.json", Buffer.from(last)]]) },
+				AbortSignal.timeout(5000),
+			),
+		).toEqual({ schema: "qorpera.claude-login-seal/v1", state: "stale", claudeLoginId: f.login.id, version: 4 });
+		expect(f.sha()).toBe(sealedBefore);
+		expect((await f.sealed()).files[".credentials.json"]).toBe(b64(last));
+		expect(requests.filter((request) => request.path.startsWith("/v1/claude-logins/seal"))).toHaveLength(4);
 	});
 
 	it("tells a refused login apart from a refused run", async () => {

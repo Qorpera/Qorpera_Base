@@ -9,9 +9,11 @@
 --
 -- * Who may ask: the run host, for the run its binding names, through the company's broker authority on the shared
 --   vault (the principal that sealed the login): the binding's exact native lease, as a run's Codex login is issued
---   (qorpera_model_login_run_binding); the run is the worker run of an active plain worker with harness claude-code;
---   the login is the one its dispatch recorded, of the member who asked; the member's Claude Code lease is this run's
---   (its wake is this run's, and it is live). Anything else is refused whole (42501) and names nothing.
+--   (qorpera_model_login_run_binding); the run is the worker run of a plain worker with harness claude-code, at work
+--   for an open; the login is the one its dispatch recorded, of the member who asked; the member's Claude Code lease is
+--   this run's (its wake is this run's, and it is live). A seal-back also comes after the worker reported or was
+--   cancelled, while that lease is this run's and live: Claude Code renewed the sign-in at start, and the renewed file
+--   must not be lost because the worker's state moved first. Anything else is refused whole (42501) and names nothing.
 -- * What the login must be now: active (a signed-out or replaced login answers SIGNED_OUT), and its member on the
 --   Claude list with the sign-in open in this company (else NOT_OPEN): the run host tells the agent so in words.
 -- * The seal-back is a compare-and-swap on the version and envelope the run opened: the version goes up by one; a stale
@@ -34,7 +36,8 @@ end $$;
 
 alter table public.qorpera_claude_logins add column version bigint not null default 1 check (version >= 1);
 
--- The run's Claude login (any status) after every check of who asks; the row locked for a seal-back.
+-- The run's Claude login (any status) after every check of who asks; the row locked for a seal-back (p_lock). An open
+-- needs the worker at work; a seal-back does not (the lease being this run's and live is what ties it to this run).
 create function public.qorpera_claude_login_run(p_broker_authority_id uuid, p_broker_capability_sha256 text,
 	p_binding jsonb, p_lock boolean)
 returns public.qorpera_claude_logins
@@ -64,7 +67,7 @@ begin
 	where lease.owner_user_id = v_worker.requested_by_user_id;
 	if v_run.id is null or v_run.profile_id is distinct from v_authority.profile_id
 		or v_worker.id is null or v_worker.species is distinct from 'in-house'
-		or v_worker.harness is distinct from 'claude-code' or v_worker.state is distinct from 'active'
+		or v_worker.harness is distinct from 'claude-code' or (not p_lock and v_worker.state is distinct from 'active')
 		or v_principal.id is null or public.qorpera_company_account_vault(v_authority.profile_id) is distinct from v_principal.id
 		or v_login.id is null or v_login.principal_id is distinct from v_principal.id
 		or v_login.owner_user_id is distinct from v_worker.requested_by_user_id
