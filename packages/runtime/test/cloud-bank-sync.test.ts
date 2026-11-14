@@ -272,7 +272,12 @@ it("names every account the session shares as the days' accounts, so another set
 	expect(both.days[0]?.accountKeys).toEqual([bankAccountKey(account), bankAccountKey(savings)]);
 	expect(both.days[0]?.accountKeys).toEqual(both.recorded[0]?.accountKeys);
 	// The same accounts in a new session (a consent renewed, a secret rotated) name the same keys.
-	const renewed = fixture({ fields: fields([{ ...account, uid: "uid-new" }, { ...savings, uid: "uid-new-2" }]) });
+	const renewed = fixture({
+		fields: fields([
+			{ ...account, uid: "uid-new" },
+			{ ...savings, uid: "uid-new-2" },
+		]),
+	});
 	expect(await renewed.syncs.pass(signal)).toBe("current");
 	expect(renewed.days[0]?.accountKeys).toEqual(both.days[0]?.accountKeys);
 	const one = fixture({ fields: fields([savings]) });
