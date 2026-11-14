@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_BOX_CONFIGURATION, startClaudeCodeBox } from "@qorpera/runtime/cloud-claude-box";
 import type { CloudClaudeHomeChannel } from "@qorpera/runtime/cloud-claude-home-shell";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const MACHINE = "00000000-0000-4000-8000-000000000002";
@@ -102,5 +102,66 @@ describe.skipIf(process.platform !== "linux")("the box's start", () => {
 			),
 		).rejects.toThrow("refused");
 		expect(ended).toEqual([]);
+	});
+
+	it("refuses a tool or a model it does not know before anything of the home opens (review round 2, F3)", async () => {
+		for (const bad of [
+			{ tools: ["Bash", "WebFetch"] },
+			{ tools: ["Bash", "Bash"] },
+			{ tools: [] },
+			{ model: "claude opus --dangerously-skip-permissions" },
+		]) {
+			const { channel, opened } = home();
+			const ended: string[] = [];
+			const root = await scratch();
+			await expect(
+				startClaudeCodeBox(
+					{
+						configuration: CLAUDE_BOX_CONFIGURATION,
+						scratchRoot: root,
+						login: { token: "sk-ant-oat01-test" },
+						channel,
+						sessionId: SESSION,
+						machineId: MACHINE,
+						endSession: async (id, reason) => {
+							ended.push(`${id}:${reason}`);
+						},
+						prompt: "hi",
+						signal: new AbortController().signal,
+						...(bad as object),
+					},
+					standIn,
+				),
+			).rejects.toThrow(/Invalid Claude (tools|model)/);
+			expect(opened).toEqual([]);
+			expect(ended).toEqual([]);
+			// Nothing of the box was made in the run's folder either.
+			expect(readdirSync(root)).toEqual([]);
+		}
+	});
+
+	it("never starts as root (review round 2, F1)", async () => {
+		const { channel, opened } = home();
+		const account = vi.spyOn(process, "getuid").mockReturnValue(0);
+		try {
+			await expect(
+				startClaudeCodeBox(
+					{
+						configuration: CLAUDE_BOX_CONFIGURATION,
+						scratchRoot: await scratch(),
+						login: { token: "sk-ant-oat01-test" },
+						channel,
+						sessionId: SESSION,
+						machineId: MACHINE,
+						prompt: "hi",
+						signal: new AbortController().signal,
+					},
+					standIn,
+				),
+			).rejects.toThrow("The Claude Code box needs unprivileged Linux");
+		} finally {
+			account.mockRestore();
+		}
+		expect(opened).toEqual([]);
 	});
 });

@@ -461,18 +461,26 @@ export async function launchClaudeCodeBox(options: ClaudeCodeBoxOptions): Promis
 }
 
 /**
- * The start itself, once launchClaudeCodeBox has checked every part (root's, the pin). Exported for the tests, which
- * give it a stand-in for the box's process.
+ * The start itself, once launchClaudeCodeBox has checked every part (root's, the pin).
+ *
+ * @internal Exported for the tests alone, which give it a stand-in for the box's process. A run starts its box with
+ * launchClaudeCodeBox: this function checks neither whose the parts are nor that Claude Code is the pinned build.
  */
 export async function startClaudeCodeBox(
 	options: ClaudeCodeBoxOptions & { configuration: ClaudeBoxConfiguration },
 	spawnBox: typeof spawn,
 ): Promise<ClaudeCodeBox> {
+	// Said again here, where the account is used: the box's own account is this process's, never root's (review r2, F1).
+	const uid = process.getuid?.();
+	if (process.platform !== "linux" || !uid) throw new Error("The Claude Code box needs unprivileged Linux");
 	options.signal.throwIfAborted();
 	const configuration = options.configuration;
 	const login = options.login;
 	const token = "token" in login ? login.token : undefined;
 	if (token !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(token)) throw new Error("Invalid Claude sign-in token");
+	// The model and the tools are checked before anything of the home opens: a start that fails on them has used
+	// nothing of the caller's one session (review r2, F3).
+	claudeBoxArguments({ model: options.model, tools: options.tools });
 	await privateDirectory(options.scratchRoot);
 	if ("folder" in login) {
 		if (!isAbsolute(login.folder) || login.folder.startsWith(`${options.scratchRoot}/`))
@@ -481,7 +489,6 @@ export async function startClaudeCodeBox(
 	}
 	const s = scratchPaths(options.scratchRoot);
 	for (const folder of [s.config, s.home, s.mount]) await mkdir(folder, { mode: 0o700 });
-	const uid = process.getuid?.() ?? 0;
 	const gid = process.getgid?.() ?? uid;
 	await writeFile(s.settings, claudeBoxSettings(options.proof?.weakening), { mode: 0o400, flag: "wx" });
 	await writeFile(s.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
@@ -585,13 +592,6 @@ export async function startClaudeCodeBox(
 			child.once("error", () => resolve(255));
 			child.once("close", (code, killed) => resolve(code ?? (killed ? 137 : 255)));
 		});
-		// The run's stop ends the box at once, as close() does: the process group, the mount, both channels (so no write
-		// of the turn reaches the home after it, and the home ends the commands running there), the relay (review
-		// round 1, F1). close() takes the listener off again.
-		const stop = (): void => void close();
-		options.signal.addEventListener("abort", stop, { once: true });
-		cleanups.push(async () => options.signal.removeEventListener("abort", stop));
-		if (options.signal.aborted) stop();
 		cleanups.push(async () => {
 			if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
 				try {
@@ -602,6 +602,14 @@ export async function startClaudeCodeBox(
 			}
 			await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000).unref())]);
 		});
+		// The run's stop ends the box at once, as close() does: the process group first, then the relay, both channels
+		// (so no write of the turn reaches the home after it, and the home ends the commands running there) and the
+		// session (review round 1, F1). Set once the kill is among the cleanups, so a stop always ends the process
+		// before anything else; nothing waits between the check above and here, so no stop can fall in between
+		// (review r2, F2). close() takes the listener off again.
+		const stop = (): void => void close();
+		options.signal.addEventListener("abort", stop, { once: true });
+		cleanups.push(async () => options.signal.removeEventListener("abort", stop));
 		// The sign-in: written once into descriptor 3 and closed; Claude Code reads it and the pipe is empty after.
 		if (token !== undefined) {
 			const tokenPipe = stdio[3] as Writable;
