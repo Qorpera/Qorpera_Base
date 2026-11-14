@@ -90,7 +90,7 @@ async function bundle(scratch) {
 				`export {cloudFolderFileTools} from "${src("cloud-folder-file-tools")}";`,
 				`export {CloudNativeToolRun} from "${src("cloud-native-tool-authority")}";`,
 				'export {nativeToolAuthorityFixture} from "./packages/runtime/test/fixtures/native-tool-authority-fixture.ts";',
-				`export {CLOUD_ASK_MEMBER_BODY_MAX_BYTES, CLOUD_ASK_MEMBER_INSTRUCTIONS, CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA, CLOUD_ASK_MEMBER_SURFACES} from "${src("cloud-thread-interactions")}";`,
+				`export * from "${src("cloud-thread-interactions")}";`,
 			].join("\n"),
 		},
 		platform: "node",
@@ -277,11 +277,14 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 		parseArguments: (value) => value,
 		execute: async () => ({ kind: "text", value: "{}" }),
 	};
+	// ask_member as the company runtime makes it, for a run without Gmail's tools (no connectors here).
 	const ask = {
 		name: "ask_member",
 		source: "runtime",
-		description: mine.CLOUD_ASK_MEMBER_INSTRUCTIONS,
-		inputSchema: {
+		description: mine.cloudAskMemberInstructions
+			? mine.cloudAskMemberInstructions(false)
+			: mine.CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		inputSchema: mine.CLOUD_ASK_MEMBER_INPUT_SCHEMA ?? {
 			type: "object",
 			properties: {
 				idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
@@ -398,6 +401,11 @@ function measure(body, developer, prompt, ourTools) {
 		toolCount: sent.length,
 		toolDescriptionBytes: sent.reduce((sum, tool) => sum + bytes(tool.description ?? ""), 0),
 		perTool: Object.fromEntries(sent.map((tool) => [tool.name, bytes(tool)])),
+		// A schema over about 5,000 bytes as sent loses every field description (T3-5's probe): each tool's, as sent.
+		perToolParameters: Object.fromEntries(sent.map((tool) => [tool.name, bytes(tool.parameters ?? {})])),
+		perToolFieldDescriptions: Object.fromEntries(
+			sent.map((tool) => [tool.name, (JSON.stringify(tool.parameters ?? {}).match(/"description"/g) ?? []).length]),
+		),
 		codexInstructionsBytes: typeof body.instructions === "string" ? bytes(body.instructions) : 0,
 	};
 }
