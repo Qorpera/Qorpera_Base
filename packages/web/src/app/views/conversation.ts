@@ -512,14 +512,6 @@ export class ConversationView {
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
-		// A window that showed by itself and went by itself (computer-by-itself.ts) is no longer this thread's.
-		const letGo = this.#panels.byItself.onClose((agentId) => {
-			if (this.#panel?.agentId !== agentId) return;
-			this.#panel = undefined;
-			this.#autosize();
-			this.#redrawComputer();
-		});
-		this.#lifetime.signal.addEventListener("abort", letGo, { once: true });
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -1643,17 +1635,16 @@ export class ConversationView {
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
-	 * computer-by-itself.ts): small, watch only, without focus, once per stretch of the agent's use. */
+	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
 	#computerByItself(agent: HostedStaffAgent | undefined): void {
 		if (!agent || this.#disposed) return;
 		const rules = this.#panels.byItself;
 		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
-		rules.seen(agent.id, since);
 		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
 		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
 		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
 		const panel = this.#showPanel(agent, false);
-		if (panel) rules.opened(agent.id, since, panel.el);
+		if (panel) rules.opened(agent.id, since);
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
