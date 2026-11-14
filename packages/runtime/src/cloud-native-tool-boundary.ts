@@ -213,6 +213,25 @@ export function cloudToolForm(tool: Pick<CloudNativeTool, "name" | "description"
 	return `${tool.name}\n${tool.description}\nForm (JSON Schema): ${JSON.stringify(tool.inputSchema)}`;
 }
 
+/** Whether a more_tools call is a describe that names only the run's bookkeeping tools (CLOUD_AFTER_ANSWER_TOOLS), one
+ * or more: what more_tools may still do after the answer (T3-6). */
+function describesBookkeepingOnly(argumentsText: string): boolean {
+	let value: unknown;
+	try {
+		value = JSON.parse(argumentsText);
+	} catch {
+		return false;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const { action, names } = value as Record<string, unknown>;
+	return (
+		action === "describe" &&
+		Array.isArray(names) &&
+		names.length > 0 &&
+		names.every((name) => typeof name === "string" && CLOUD_AFTER_ANSWER_TOOLS.has(name))
+	);
+}
+
 /** Keeps a key in insertion order and forgets the oldest past the window. */
 function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
 	while (store.size > limit) store.delete(store.keys().next().value as K);
@@ -979,12 +998,12 @@ export class CloudNativeToolBoundary {
 			this.#pending.then(async () => {
 				// After the answer only the run's bookkeeping runs, and the answer's own call again (its key replays it).
 				// Anything else runs nothing and ends the turn at the next model request, as a final send ended it before
-				// (the 2026-11-13 amendment).
-				// more_tools' own call (a describe, or a use it refuses) changes nothing, so it may open one of those too.
+				// (the 2026-11-13 amendment). A use of a bookkeeping tool through more_tools runs as that tool; more_tools' own
+				// call passes only as a describe of bookkeeping tools alone, so that the run can open them (T3-6).
 				if (
 					this.#answers.size > 0 &&
 					!CLOUD_AFTER_ANSWER_TOOLS.has(tool.name) &&
-					tool.name !== CLOUD_MORE_TOOLS &&
+					!(tool.name === CLOUD_MORE_TOOLS && describesBookkeepingOnly(argumentsText)) &&
 					!this.#answers.has(digest)
 				)
 					return {

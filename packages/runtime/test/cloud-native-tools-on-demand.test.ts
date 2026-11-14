@@ -375,6 +375,18 @@ describe("tools on demand", () => {
 		const { tool: hook, execute: hooked } = recorded("manage_hook");
 		const offered = cloudToolsOnDemand([send, apps, hook], "employee");
 		const boundary = boundaryOf(offered.tools, { deferred: offered.deferred });
+		const describe = (id: string, names: string[]) =>
+			boundary.invoke(id, "qorpera", CLOUD_MORE_TOOLS, { action: "describe", names });
+		// Before the answer every describe passes, and none ends the turn.
+		for (const [id, names] of [
+			["b1", ["organize_apps"]],
+			["b2", ["manage_hook"]],
+			["b3", ["organize_apps", "manage_hook"]],
+		] as const) {
+			const before = await describe(id, [...names]);
+			expect(resultOf(before).status).toBe("ok");
+			expect(before.completesTurn).toBeUndefined();
+		}
 		expect(
 			await boundary.invoke("s1", "qorpera", "send_message", { operationKey: "final", title: "Done" }),
 		).toMatchObject({ answered: true });
@@ -403,5 +415,26 @@ describe("tools on demand", () => {
 		expect(resultOf(late).content.text).toMatch(/^TOOL_UNAVAILABLE: the final send is made/);
 		expect(late.completesTurn).toBe(true);
 		expect(hooked).not.toHaveBeenCalled();
+		// After the answer more_tools' own call passes only as a describe of bookkeeping tools alone (review r1 of #1811):
+		// a describe that names any other tool, and a use more_tools itself refuses, run nothing and end the turn.
+		const ended = [
+			await describe("s5", ["manage_hook"]),
+			await describe("s6", ["organize_apps", "manage_hook"]),
+			await boundary.invoke("s7", "qorpera", CLOUD_MORE_TOOLS, {
+				action: "use",
+				name: "interface_read",
+				arguments: {},
+			}),
+			await boundary.invoke("s8", "qorpera", CLOUD_MORE_TOOLS, { action: "use", name: "organize_apps" }),
+			await describe("s9", []),
+		];
+		for (const response of ended) {
+			expect(resultOf(response)).toMatchObject({ status: "denied", provenance: { tool: CLOUD_MORE_TOOLS } });
+			expect(resultOf(response).content.text).toMatch(/^TOOL_UNAVAILABLE: the final send is made/);
+			expect(response.completesTurn).toBe(true);
+		}
+		const bookkeeping = await describe("s10", ["organize_apps"]);
+		expect(resultOf(bookkeeping).status).toBe("ok");
+		expect(bookkeeping.completesTurn).toBeUndefined();
 	});
 });
