@@ -34,17 +34,6 @@ const POINTER_TIMEOUT_MS = 5_000;
 /** How long a browser keeps a preflight of the pointer route (seconds). On production the API gateway in front of the
  * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
-/** A member's call to the company's databases, for one environment (RUNTIME-COMPANY-DATABASES.md section 3): a
- * question, a held watch, steps to apply, or what a database holds. The node's mux sends it to the data gateway. */
-const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe)$`);
-/** A question or a look at a database: names, parameters, and a question's text when asked for. */
-const MAX_DATA_BYTES = 64 * 1024;
-/** A watch: up to 24 questions with their etags, and their texts of up to 16 KiB each when asked for. */
-const MAX_WATCH_BYTES = 512 * 1024;
-/** A watch is held by the data gateway for up to 20 s after its own reads, and the bridge's sign-in check may take
- * 5 s before it. */
-const WATCH_TIMEOUT_MS = 30_000;
-
 /** The signing algorithms of the project's own access tokens (its legacy secret, or its asymmetric keys). */
 const MEMBER_TOKEN_ALGORITHMS: ReadonlySet<string> = new Set(["HS256", "ES256", "RS256"]);
 const MEMBER_ID = new RegExp(`^${UUID}$`);
@@ -214,19 +203,6 @@ function route(path: string): RoutePolicy | undefined {
 			maxBody: MAX_START_BYTES,
 			unavailable: "The computer is unavailable just now.",
 		};
-	// Steps to apply may carry their texts, at most 1 MiB. A held watch gets 30 s, the others the default.
-	const data = COMPANY_DATA.exec(path);
-	if (data)
-		return {
-			method: "POST",
-			headers: ["authorization", "content-type"],
-			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : data[1] === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
-			...(data[1] === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
-			unavailable:
-				data[1] === "apply"
-					? "Company data is unavailable just now. Steps sent may still apply."
-					: "Company data is unavailable just now.",
-		};
 	const erase = ERASE.exec(path);
 	if (erase)
 		return {
@@ -366,8 +342,8 @@ export async function forwardMemberCompanyGateway(
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
 		return fail(503, "Member gateway is not configured");
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
-	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report, a chat
-	// image or a call to the company's data. A chunked body of unknown length is refused unread.
+	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report or a
+	// chat image. A chunked body of unknown length is refused unread.
 	const length = request.headers.get("content-length");
 	const refuse = (status: number, error: string) => {
 		void request.body?.cancel().catch(() => {});
