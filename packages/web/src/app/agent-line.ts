@@ -6,13 +6,12 @@ import type { AgentNote } from "./agent-notes.ts";
  * otherwise the first of these that holds is shown:
  *   1. its run did not finish;
  *   2. it rests at its login's usage limit until the reset;
- *   3. its wall says something waits on the member;
- *   4. its wall's Now line, where its work stands (Jonas, 11 Nov 2026: the newest done headline read as a work log);
- *   5. its next planned run is within SOON_MS;
- *   6. what it last got done, from its wall, and when (a wall written before the Now line);
- *   7. its next planned run, however far off;
- *   8. when it was hired.
- * So every agent's row has a line. */
+ *   3. its next planned run, however far off;
+ *   4. when it was hired.
+ * So every agent's row has a line. The agent's wall gave three more lines here (what waits on the member, its Now line,
+ * what it last got done); they went with the wall (Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong medium
+ * for activity", and of the Now line: "Let it go too"). The next run no longer needs a 12-hour rule: that only ranked
+ * it against the wall's last-done line. */
 
 export interface IdleLineInput {
 	failed: boolean;
@@ -29,25 +28,16 @@ export interface IdleLine {
 	tone?: "failed";
 }
 
-/** A next run this close comes before what the agent last got done. */
-const SOON_MS = 12 * 60 * 60 * 1000;
 const WEEK_DAYS = 6;
 
 export function idleLine(input: IdleLineInput, now = new Date()): IdleLine {
 	if (input.failed) return { text: t("Didn't finish"), tone: "failed" };
 	const until = input.restingUntil && Date.parse(input.restingUntil);
 	if (until && until > now.getTime()) return { text: t("Resting until {time}", { time: moment(until, now) }) };
-	const note = input.note;
-	if (note?.waits) return { text: t("Waits on you: {item}", { item: note.waits }) };
-	if (note?.now) return { text: note.now };
-	const nextAt = note?.next ? Date.parse(note.next.at) : Number.NaN;
-	const next =
-		note?.next && nextAt > now.getTime()
-			? { text: t("Next: {title} · {time}", { title: note.next.title, time: moment(nextAt, now) }) }
-			: undefined;
-	if (next && nextAt - now.getTime() <= SOON_MS) return next;
-	if (note?.done) return { text: `${note.done.text} · ${dayLabel(note.done.day, now)}` };
-	if (next) return next;
+	const next = input.note?.next;
+	const nextAt = next ? Date.parse(next.at) : Number.NaN;
+	if (next && nextAt > now.getTime())
+		return { text: t("Next: {title} · {time}", { title: next.title, time: moment(nextAt, now) }) };
 	const hired = Date.parse(input.hiredAt);
 	return Number.isFinite(hired)
 		? { text: t("Hired {day}", { day: dayLabel(presentationDay(new Date(hired), timeZoneOption().timeZone), now) }) }

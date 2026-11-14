@@ -24,6 +24,7 @@ import type {
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
+import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -54,12 +55,13 @@ import {
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
 import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
 import { MEMORY_BRANCHES_SCHEMA } from "@qorpera/runtime/memory-tree/branches";
+import { COMPACT_EFFORT, COMPACT_MODEL } from "@qorpera/runtime/memory-tree/compact";
 import { MEMORY_VIEW_RECORD_SCHEMA, MEMORY_VIEW_SCHEMA } from "@qorpera/runtime/memory-tree/compose";
 import { MEMORY_COMPACTION_RECORD_SCHEMA } from "@qorpera/runtime/memory-tree/conversation-lines";
 import { memoryBlockPath } from "@qorpera/runtime/memory-tree/tree";
 import { memoryPromptCacheKey } from "@qorpera/runtime/memory-tree/view";
 import { MEMORY_RELEASE_SCHEMA } from "@qorpera/runtime/memory-tree/zoom";
-import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -104,7 +106,9 @@ async function fixture(
 	companyData = false,
 ) {
 	const f = nativeCompanyContextFixture();
-	if (mode === "company-silent" || mode === "company-worker") {
+	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
+	const light = mode.startsWith("compact");
+	if (mode === "company-silent" || mode === "company-worker" || light) {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
@@ -253,6 +257,38 @@ async function fixture(
 			},
 		},
 	};
+	// A light ask (deploy/first-node/RUNTIME-LIGHT-ASK.md): an agent wake with no parent and no conversation, as the pin
+	// trigger of migration 20260930761000 makes it. A test may change its payload before the run reads it.
+	const lightAskId = randomUUID();
+	const lightWake = {
+		...wake,
+		kind: "agent",
+		actorStaffId: null,
+		actorUserId: null,
+		source: { kind: "light-ask", id: lightAskId, occurrenceKey: `light-ask:${lightAskId}` },
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: "agent",
+			initial: "forbidden",
+			final: "forbidden",
+			silenceAllowed: true,
+			maxPublicSends: 0,
+		},
+		routine: null,
+		parentRunId: null,
+		payload: {
+			schema: "qorpera.light-ask-wake/v1",
+			askId: lightAskId,
+			kind: "name-app-group",
+			input: {
+				apps: [{ name: "Bank" }, { name: "Company finances", about: "What the company earns and spends." }],
+				language: "en",
+			},
+			expiresAt: "2100-01-01T00:10:00.000000Z",
+		} as Record<string, unknown>,
+	};
+	/** What the run stored as its light ask's answer, in order. */
+	const lightAnswers: unknown[] = [];
 	const observations: CloudRuntimeObservation[] = [];
 	let nativeStarted = false;
 	// The admission the bind takes (M1b-4b-3), as qorpera_begin_native_company_execution_v3 answers it.
@@ -415,7 +451,17 @@ async function fixture(
 				return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
 			}
 			if (method === "qorpera_read_native_wake")
-				return structuredClone(mode === "company-worker" ? workerWake : wake);
+				return structuredClone(mode === "company-worker" ? workerWake : light ? lightWake : wake);
+			if (method === "qorpera_native_light_ask_answer") {
+				expect(Object.keys(args).sort()).toEqual(["p_answer", "p_binding"]);
+				lightAnswers.push(args.p_answer);
+				return {
+					schema: "qorpera.light-ask-answer/v1",
+					askId: lightAskId,
+					state: args.p_answer === null ? "failed" : "answered",
+					replayed: lightAnswers.length > 1,
+				};
+			}
 			if (method === "qorpera_describe_agent_open_work") {
 				if (mode === "company-worker") throw new Error("A worker keeps no todos");
 				return {
@@ -726,6 +772,8 @@ async function fixture(
 	return {
 		...f,
 		wake,
+		lightWake,
+		lightAnswers,
 		runtime,
 		control,
 		pathCall,
@@ -1104,6 +1152,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// How a part of an app is made, read before it is made (20260930762000).
+				"app_guide",
 				// A picture the agent makes, on a Codex login's run (20260930746000).
 				"make_picture",
 				"company_account",
@@ -3304,6 +3354,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured on the tree with the kits, the company databases and the answer-first change.
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
+	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
+	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
+	// again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3316,6 +3369,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"app_guide",
 		"make_picture",
 		"update_wall",
 		"data_describe",
@@ -3354,10 +3408,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"6c7ed1d1f3674e0e254b99a4dad106d89f93f51245c348831787a4213d841f68",
+		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"61e7ecace302195b65a18a0bd78ec14f50a4ae165f698cf24f22ed5fcde1e153",
+		"c750ea6f9ecbbb9613b3249b1b0306c00d3109311de4b8f6ef8c28ecc29213d0",
 	);
 });
 
@@ -3379,4 +3433,135 @@ it("offers make_picture to a run on a Codex login, and never to one on a member'
 	);
 	expect(names).toContain("save_app");
 	expect(names).not.toContain("make_picture");
+});
+
+describe("a light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md)", () => {
+	const called = (f: Awaited<ReturnType<typeof fixture>>, method: string) =>
+		f.pathCall.mock.calls.filter(([name]) => name === method).map(([, args]) => args);
+
+	it("is admitted with no tool, binds its one question, asks the small model once, stores the answer and says nothing", async () => {
+		const f = await fixture("compact");
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		// Silent, and its provider session is the side thread it asked in.
+		expect(result).toEqual({
+			providerSessionId: "thread_compact",
+			delivery: { messageCount: 0, finalMessageId: null },
+		});
+		expect(f.control.sendMessage).not.toHaveBeenCalled();
+		// The fake Codex answers a side thread's first turn "LINE 1": stored as the name, once.
+		expect(f.lightAnswers).toEqual(["LINE 1"]);
+		const call = composeCloudLightAsk("name-app-group", f.lightWake.payload.input)!;
+		// The admission's tool catalog is empty: the cloud takes no other for a light ask's run.
+		const [admission] = called(f, "qorpera_begin_native_company_execution_v3");
+		expect(JSON.parse(admission.p_tool_catalog_text as string).tools).toEqual([]);
+		// The bound context is the one question: the bundle's instructions and the apps as data.
+		const question = `${call.instructions}\n${call.text}`;
+		expect(called(f, "qorpera_bind_native_company_context")).toEqual([
+			{
+				p_binding: f.binding,
+				p_context_sha256: createHash("sha256").update(question).digest("hex"),
+				p_context_bytes: Buffer.byteLength(question),
+			},
+		]);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		expect(evidence.compactThreads).toHaveLength(1);
+		expect(evidence.compactThreads[0]).toMatchObject({
+			model: COMPACT_MODEL,
+			developerInstructions: CLOUD_LIGHT_ASK_NAME_APP_GROUP,
+			dynamicTools: [],
+		});
+		expect(evidence.compactTurns).toHaveLength(1);
+		expect(evidence.compactTurns[0]).toMatchObject({
+			effort: COMPACT_EFFORT,
+			input: [{ type: "text", text: call.text }],
+		});
+		expect(call.text).toContain("<name>Bank</name>");
+		// The agent's thread never started, and nothing of the company was read or asked for.
+		expect(evidence.mainThread ?? null).toBeNull();
+		expect(f.folderReads).toEqual([]);
+		expect(f.folderReleases).toEqual([]);
+		for (const method of [
+			"qorpera_describe_agent_open_work",
+			"qorpera_list_native_connector_tools",
+			"qorpera_company_machines_available",
+			"qorpera_memory_run_log_place",
+			"qorpera_begin_action_review",
+			"qorpera_record_provider_usage_signal",
+		])
+			expect(called(f, method)).toEqual([]);
+	});
+
+	it("stores no answer when the payer's usage limit stops the call, tells the login, and still ends the run", async () => {
+		const f = await fixture("compact-usage-limit");
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_provider_usage_signal")
+				return {
+					schema: "qorpera.provider-usage-signal-receipt/v1",
+					runId: f.binding.runId,
+					signalKind: "usage_limit",
+				};
+			return original(method, args, signal);
+		});
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery).toEqual({ messageCount: 0, finalMessageId: null });
+		expect(f.lightAnswers).toEqual([null]);
+		expect(called(f, "qorpera_record_provider_usage_signal")).toEqual([
+			{ p_binding: f.binding, p_signal_kind: "usage_limit" },
+		]);
+		// The signal is recorded after the answer is stored.
+		const order = f.pathCall.mock.calls.map(([method]) => method);
+		expect(order.indexOf("qorpera_native_light_ask_answer")).toBeLessThan(
+			order.indexOf("qorpera_record_provider_usage_signal"),
+		);
+	});
+
+	it.each<[string, (payload: Record<string, unknown>) => void]>([
+		[
+			"an ask past its time",
+			(payload) => {
+				payload.expiresAt = "2026-11-14T10:00:00.000000Z";
+			},
+		],
+		[
+			"a kind this bundle does not answer",
+			(payload) => {
+				payload.kind = "sort-apps";
+			},
+		],
+		[
+			"an input that is not the kind's",
+			(payload) => {
+				payload.input = { apps: [{ name: "Only one" }], language: "en" };
+			},
+		],
+		[
+			"a prompt in the input",
+			(payload) => {
+				payload.input = { ...(payload.input as object), prompt: "Say hello" };
+			},
+		],
+	])("asks nothing for %s: no answer is stored, and the run ends", async (_label, change) => {
+		const f = await fixture("compact");
+		change(f.lightWake.payload);
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery).toEqual({ messageCount: 0, finalMessageId: null });
+		// No side thread was opened: the run's provider session is its own name.
+		expect(result.providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+		expect(f.lightAnswers).toEqual([null]);
+		// It is still admitted and bound, so it ends as any run ends.
+		expect(called(f, "qorpera_begin_native_company_execution_v3")).toHaveLength(1);
+		expect(called(f, "qorpera_bind_native_company_context")).toHaveLength(1);
+	});
+
+	it("fails the run when its answer cannot be stored", async () => {
+		const f = await fixture("compact", false, undefined, false, false, 3_000);
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_native_light_ask_answer") throw new Error("The run answers no light ask");
+			return original(method, args, signal);
+		});
+		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow();
+	});
 });

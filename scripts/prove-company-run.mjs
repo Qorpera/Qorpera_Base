@@ -45,6 +45,8 @@ async function bundle(scratch) {
 				'export {HttpCloudCompanyFolderBytes} from "./packages/runtime/src/cloud-company-folder-bytes.ts";',
 				'export {cloudFolderFileTools} from "./packages/runtime/src/cloud-folder-file-tools.ts";',
 				'export {cloudInterfaceTools} from "./packages/runtime/src/cloud-folder-interface-tools.ts";',
+				'export {cloudAppTools} from "./packages/runtime/src/cloud-folder-app-tools.ts";',
+				'export {appGuide} from "./packages/runtime/src/cloud-app-guides.ts";',
 				'export {cloudMachineTools} from "./packages/runtime/src/cloud-machine-tools.ts";',
 				'export {CloudRunLogCompanyFolder} from "./packages/runtime/src/cloud-run-log-folder.ts";',
 				'export {openCloudRunLog} from "./packages/runtime/src/cloud-run-log-open.ts";',

@@ -35,7 +35,6 @@ import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferen
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AgentNotes } from "./agent-notes.ts";
-import { agentWallReader } from "./agent-wall.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
@@ -301,7 +300,7 @@ export function mountApplication(
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
-	// card, in a message, on a wall or in a choice, opens the app's page.
+	// card, in a message or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
@@ -457,11 +456,8 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
-	/** The agents' walls and next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
+	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
 	let agentNotes: AgentNotes | undefined;
-	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
-	 * the open company has now (it is made again when the company opens again). */
-	const wallListeners = new Set<() => void>();
 	/** Makes the side panel of a Company File page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
 	/** The agent's app on its own page (`#/c/{id}/a/{name}`), while that route shows. */
@@ -1605,8 +1601,8 @@ export function mountApplication(
 			// An agent's icons-only save changes no app's manifest: every read of the apps (a hint, the minute's clock, the tab
 			// coming back) reads the icons read before (review F5 on #1696).
 			apps.onRead(() => controller.refreshAppIcons());
-			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
-			// and again on each change hint of the folder, as the thread's wall is.
+			// The rail's line under each agent's name: its next planned run, read with the member's own access and again on
+			// each change hint of the folder (routines are files of it).
 			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>
 				files.folder(),
 			);
@@ -1617,7 +1613,6 @@ export function mountApplication(
 							.get()
 							.staff.filter((agent) => agent.employmentStatus === "active")
 							.map((agent) => agent.id),
-					readWall: agentWallReader(() => files.folder()),
 					listRoutines: () => routines.list(),
 					signal: files.signal,
 				},
@@ -1627,10 +1622,7 @@ export function mountApplication(
 			);
 			agentNotes = notes;
 			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
-			apps.onChange(() => {
-				for (const listener of [...wallListeners]) listener();
-				notes.changed();
-			});
+			apps.onChange(() => notes.changed());
 			apps.open();
 			notes.open();
 		}
@@ -2016,17 +2008,6 @@ export function mountApplication(
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
-							// The agent's wall above its composer, read with the member's own folder client and again after
-							// each change hint of the company's folder (the apps' hint channel).
-							agentWall: {
-								read: agentWallReader(() =>
-									memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
-								),
-								onFolderChange: (listener) => {
-									wallListeners.add(listener);
-									return () => wallListeners.delete(listener);
-								},
-							},
 							folderImage: cardImage,
 							folderApp: cardApp,
 							messageErases: {
@@ -2396,7 +2377,7 @@ export function mountApplication(
 /** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
  * "kind", not "type": the sign-in callback takes a type parameter. */
 export const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
-/** How long a card's request for its agent's computer or wall waits for that agent's chat to open. */
+/** How long a card's request for its agent's computer waits for that agent's chat to open. */
 const AGENT_PAGE_WAIT_MS = 20_000;
 
 /** qorpera.com's arrow opens `app.qorpera.com/?ide=…&kind=…`; a link may also say `#/new?idea=…`. What it carries
