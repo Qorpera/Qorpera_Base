@@ -3357,6 +3357,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
 	// again.
+	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
+	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
+	// and in the takeover surface's schema, so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3408,10 +3411,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
+		"e7936ebdc9973dcfedc4324a11edfa04f1c18902dd9bf44c758a501abb644e6c",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c750ea6f9ecbbb9613b3249b1b0306c00d3109311de4b8f6ef8c28ecc29213d0",
+		"3084fe35f74209678cb8ce7cf974d4e044a4339414ec8781179c35922bfe8ad0",
 	);
 });
 
