@@ -380,7 +380,7 @@ async function driver() {
 	try {
 		const ex = await startExecutor("route", undefined);
 
-		if (only === "all") {
+		if (only === "all" || only === "checks") {
 			// 1. A machine whose image has no sftp-server: refused with its own reason, nothing started, words for the model.
 			await inMachine("[ -x /usr/lib/openssh/sftp-server ] && mv /usr/lib/openssh/sftp-server /usr/lib/openssh/sftp-server.c1-aside; true");
 			const missing = await openChannel(ex.port, named.missing).then(() => "opened", refusal);
@@ -408,25 +408,27 @@ async function driver() {
 			check("3", units.length === 1 && /^qorpera-machine-home-[0-9a-f-]{36}-sftp-[0-9a-f]{16}\.service$/.test(units[0]) &&
 				/qorpera-machine\.slice/.test(unitInfo) && /\/company/.test(unitInfo) && procs.some((line) => line.includes("/usr/lib/openssh/sftp-server")),
 				`the file channel is one unit in the machines' slice as the agent: ${units.join(" ")} | ${unitInfo.slice(0, 300)} | ${procs.join(" ; ").slice(0, 300)}`);
+			// Each run its own folder: a run stopped from outside leaves its files.
+			const mine = `c1-${randomBytes(4).toString("hex")}`;
 			const seed = (await sh(`cat ${c}/seed.txt`)).stdout;
 			const homeSeed = (await inMachine("cat /company/seed.txt"));
 			const random = randomBytes(1024 * 1024 + 13);
 			const want = createHash("sha256").update(random).digest("hex");
 			const binPath = `/run/c1-random-${randomBytes(3).toString("hex")}`;
 			writeFileSync(binPath, random);
-			const w = await sh(`set -e; mkdir -p ${c}/c1; printf 'hello from the box\\n' > ${c}/c1/note.txt; cp ${binPath} ${c}/c1/random.bin; mv ${c}/c1/note.txt ${c}/c1/renamed.txt; echo more >> ${c}/c1/renamed.txt; ln -s renamed.txt ${c}/c1/link.txt; echo all-done`);
+			const w = await sh(`set -e; mkdir -p ${c}/${mine}; printf 'hello from the box\\n' > ${c}/${mine}/note.txt; cp ${binPath} ${c}/${mine}/random.bin; mv ${c}/${mine}/note.txt ${c}/${mine}/renamed.txt; echo more >> ${c}/${mine}/renamed.txt; ln -s renamed.txt ${c}/${mine}/link.txt; echo all-done`);
 			rmSync(binPath, { force: true });
-			const onHome = await inMachine("stat -c '%U:%G %a %s %n' /company/c1/renamed.txt /company/c1/random.bin; cat /company/c1/renamed.txt; sha256sum /company/c1/random.bin | cut -d' ' -f1; ls /company/c1; readlink /company/c1/link.txt");
-			const back = await sh(`sha256sum ${c}/c1/random.bin | cut -d' ' -f1; cat ${c}/c1/link.txt`);
-			check("4", w.stdout.includes("all-done") && seed.length > 0 && seed === homeSeed && /qorpera-agent:qorpera-agent 644 \d+ \/company\/c1\/renamed\.txt/.test(onHome) &&
+			const onHome = await inMachine(`stat -c '%U:%G %a %s %n' /company/${mine}/renamed.txt /company/${mine}/random.bin; cat /company/${mine}/renamed.txt; sha256sum /company/${mine}/random.bin | cut -d' ' -f1; ls /company/${mine}; readlink /company/${mine}/link.txt`);
+			const back = await sh(`sha256sum ${c}/${mine}/random.bin | cut -d' ' -f1; cat ${c}/${mine}/link.txt`);
+			check("4", w.stdout.includes("all-done") && seed.length > 0 && seed === homeSeed && onHome.includes(`qorpera-agent:qorpera-agent 644 24 /company/${mine}/renamed.txt`) &&
 				onHome.includes("hello from the box\nmore\n") && onHome.includes(want) && !/note\.txt/.test(onHome) && back.stdout.startsWith(want) &&
 				back.stdout.includes("hello from the box"),
 				`read (${seed.length} B, same as the home's), write + rename + append + 1 MiB binary + symlink as the agent: ${w.stdout.trim()} ${w.stderr.trim().slice(0, 200)} | home: ${onHome.replaceAll("\n", " | ").slice(0, 400)}`);
 			// Root's file: the agent's account reads it, and its write is refused (EACCES), as P4 found for the file tools.
-			await inMachine("echo root-made > /company/c1/root.txt && chown root:root /company/c1/root.txt && chmod 0644 /company/c1/root.txt");
-			const rootRead = await sh(`cat ${c}/c1/root.txt`);
-			const rootWrite = await sh(`echo x >> ${c}/c1/root.txt`);
-			check("5", rootRead.stdout.trim() === "root-made" && rootWrite.code !== 0 && (await inMachine("cat /company/c1/root.txt")).trim() === "root-made",
+			await inMachine(`echo root-made > /company/${mine}/root.txt && chown root:root /company/${mine}/root.txt && chmod 0644 /company/${mine}/root.txt`);
+			const rootRead = await sh(`cat ${c}/${mine}/root.txt`);
+			const rootWrite = await sh(`echo x >> ${c}/${mine}/root.txt`);
+			check("5", rootRead.stdout.trim() === "root-made" && rootWrite.code !== 0 && (await inMachine(`cat /company/${mine}/root.txt`)).trim() === "root-made",
 				`a root file: read (${rootRead.stdout.trim()}), a write refused (exit ${rootWrite.code}: ${rootWrite.stderr.trim().slice(0, 80)}), unchanged on the home`);
 			const list = await sh(`find ${c}/tree -type f | wc -l; ls ${c}/tree/d49 | wc -l`);
 			check("6", list.stdout.split("\n")[0].trim() === "5000", `the 5,000-file listing through the route: ${list.stdout.replaceAll("\n", " ")} in ${list.ms} ms`);
@@ -453,6 +455,11 @@ async function driver() {
 		// 9. The speed: the same five operations over plain sshfs (P4's shape: no executor, no gate), through the route
 		// (no folder: no gate), and through the route with the host's gate (spacing 200 ms, release at once / after 25 ms).
 		const results = {};
+		if (only === "checks") {
+			const left = await goneWithin(performance.now(), 10000);
+			check("10", left !== null, `nothing of any file channel is left on the machine (${left} ms)`);
+			return;
+		}
 		const plain = await viaPlain("plain");
 		results.plain = await bench(plain, "plain");
 		plain.child.kill("SIGTERM");
@@ -469,7 +476,7 @@ async function driver() {
 			["gate0r10", { spacingMs: 0, releaseMs: 10 }, false],
 			["gate0r25", { spacingMs: 0, releaseMs: 25 }, false],
 		]) {
-			if (only !== "all" && only !== "bench" && only !== mode) continue;
+			if (only !== "all" && only !== "bench") continue;
 			const exG = await startExecutor(mode, gate);
 			const g = await viaRoute(mode, exG.port, session());
 			results[mode] = await bench(g, mode, exG.state, light);

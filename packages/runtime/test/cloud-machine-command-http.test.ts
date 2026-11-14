@@ -873,10 +873,14 @@ describe("a home session's channel through the router", () => {
 		executorOwner: "mx-a",
 		providerId: "machine-node",
 	});
-	const request = () => ({ binding: nativeToolAuthorityFixture().binding, holder: undefined });
+	const request = (kind: "exec" | "sftp" = "exec") => ({
+		binding: nativeToolAuthorityFixture().binding,
+		holder: undefined,
+		kind,
+	});
 	const router = (
 		execServerLocal?: (
-			authority: { sessionId: string; placementId: string; bootId: string },
+			authority: { sessionId: string; placementId: string; bootId: string; kind: "exec" | "sftp" },
 			signal: AbortSignal,
 		) => Promise<CloudHomeChannelSide>,
 	) =>
@@ -904,7 +908,11 @@ describe("a home session's channel through the router", () => {
 		const signal = AbortSignal.timeout(5_000);
 		expect(await router(execServerLocal).execServer(session, request(), signal)).toBe(side);
 		expect(execServerLocal).toHaveBeenCalledTimes(1);
-		expect(execServerLocal).toHaveBeenCalledWith(session, signal);
+		expect(execServerLocal).toHaveBeenCalledWith({ ...session, kind: "exec" }, signal);
+		// The file channel (slice C1): the same session, its kind carried to the machine's side.
+		const files = authority();
+		expect(await router(execServerLocal).execServer(files, request("sftp"), signal)).toBe(side);
+		expect(execServerLocal).toHaveBeenLastCalledWith({ ...files, kind: "sftp" }, signal);
 	});
 
 	it("passes on that the machine's Codex is not the pinned build, as a refusal with its reason", async () => {
@@ -915,6 +923,14 @@ describe("a home session's channel through the router", () => {
 			.catch((error: unknown) => error);
 		expect(failed).toBeInstanceOf(CloudHomeChannelRefused);
 		expect((failed as CloudHomeChannelRefused).reason).toBe("HOME_CODEX_NOT_PINNED");
+		// A file channel on a machine whose image has no sftp-server (slice C1): the same, with its own reason.
+		const missing = await router(async () => {
+			throw new Error("HOME_SFTP_MISSING");
+		})
+			.execServer(authority(), request("sftp"), AbortSignal.timeout(5_000))
+			.catch((error: unknown) => error);
+		expect(missing).toBeInstanceOf(CloudHomeChannelRefused);
+		expect((missing as CloudHomeChannelRefused).reason).toBe("HOME_SFTP_MISSING");
 	});
 
 	it("leaves any other failure of the machine's side as it is, and refuses a machine it does not hold", async () => {
