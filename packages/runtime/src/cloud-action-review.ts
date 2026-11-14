@@ -265,6 +265,9 @@ export function cloudActionEffect(
 		case "good_will_mark":
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
+		// The company's reading of itself (20260930766000) is the company's bookkeeping, like a todo: members see it as the
+		// company's page and say when it is wrong.
+		case "update_reading":
 		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
 		// that would destroy data is held until a member says yes.
 		case "data_apply":
@@ -360,6 +363,8 @@ export function cloudActionEffect(
 			return ["move", "scroll"].includes(action.action as string) ? "read" : "external";
 		case "hire_agent":
 		case "create_group_chat":
+		// Ending an agent's role sets its agent.md to archived, a change of who works here (20260930766000).
+		case "end_role":
 			return "delegation";
 		case "manage_routine":
 			return args.action === "list" ? "read" : "delegation";
@@ -1038,6 +1043,12 @@ export function describeCloudAction(
 		// The job description is the new agent's charter; its first assignment is where it starts.
 		quote("intent", args.jobDescription, CONTENT_BYTES);
 		add("first task", args.firstAssignment);
+	} else if (tool.name === "end_role") {
+		// Its prepared arguments (cloud-hiring-tools.ts): the agent's name as its agent.md has it, read before the review.
+		title = "End an agent's role";
+		target = text(args.name) || text(args.agent) || null;
+		add("reason", args.reason);
+		add("effect", "Its routines pause and its threads close; its files stay, and a member can bring it back");
 	} else if (tool.name === "create_group_chat") {
 		title = "Start a group chat";
 		target = text(args.name) || text(args.title) || null;
