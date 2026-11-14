@@ -2532,6 +2532,53 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect((await start(g)).companyFolder).toMatchObject({ company: "mounted" });
 	});
 
+	it("hands its own view to each new boot of a machine that wakes on its own disk with an earlier helper the node says takes the folder", async () => {
+		const startHeld =
+			"a start shows no output: machine_read shows it once the company folder has released what the machine read";
+		const f = await fixture({ folder: true, ...vouched });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		f.running();
+		const sleepAndWake = async () => {
+			f.entry.sleepDue = true;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+			// It wakes on the disk it slept on, its earlier helper and all: a new boot.
+			Object.assign(f.entry, { sleepDue: false, runningAt: null, bootId: null });
+			f.reboot();
+		};
+		await sleepAndWake();
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		// And again after the executor restarted while it slept.
+		f.running();
+		await sleepAndWake();
+		f.restart(vouched);
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		// Each boot its own view, handed over once, and the last boot's commands run with /company.
+		expect(f.views.opened).toHaveLength(3);
+		expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual(f.views.opened.map((view) => view.viewId));
+		f.running();
+		f.result(finished);
+		expect((await start(f)).companyFolder).toEqual({ company: "mounted", heldBack: startHeld });
+		expect(f.order).not.toContain("reboot");
+		// An earlier helper the node does not vouch for wakes without a view, and its agent is told where /company is.
+		const g = await fixture({ folder: true, ...moved });
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
+		]);
+		g.running();
+		g.result(finished);
+		expect((await start(g)).companyFolder).toEqual({
+			company: "none",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
+		});
+		expect(g.handovers).toEqual([]);
+	});
+
 	it("vouches only for an earlier helper it still trusts", async () => {
 		// The current helper, or one not among the earlier ones, is no earlier helper that takes the folder.
 		for (const pins of [{ folderHelperSha256s: [helperSha256] }, { ...moved, folderHelperSha256s: ["1".repeat(64)] }])
@@ -3334,7 +3381,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine still runs an earlier image that is not handed the company folder; it gets /company once it sleeps or is stopped and starts again",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });
