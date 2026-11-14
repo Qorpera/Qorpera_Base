@@ -1091,12 +1091,16 @@ of the body, for readers that should not reach the storage server.
 42501). Plain facts, no advice: `agents` (at most 50, active, the Co-Founder first then by hire: `id`,
 `handle`, `name`, `cofounder`, `hiredAt`, `todos {open, blocked, doneLast7d}`, `runsLast7d`, `lastRunAt`,
 `routines {active, paused, pausedWhy, concluded, nextAt}`, `waitingWakes` and `oldestWaitingWakeAt`: its
-queued wakes that are due), `agentsTruncated`; `team {since, hired, ended, truncated}` (name, handle and
-time, at most 10 each, since the reading was saved or else the last 14 days); `questions {count, oldest}`
+queued wakes that are due), `agentsTruncated`; `team {since, hired, ended, truncated}` (name cut to 60
+characters, handle and time, at most 10 each, since the reading was saved or else the last 14 days);
+`questions {count, truncated, oldest}`
 (question cards nobody has answered, by `qorpera_list_member_open_questions`' rule for any member, the
 oldest ten with `agent`, `member` and `askedAt`); `members` (at most 20: `userId`, `role`, `login` as
 `qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null.
-The answer stays under 8 KiB: past that, the agents last in its order are left out.
+The answer is at most 8,192 bytes. While it would pass that, it leaves out the last entry of
+`questions.oldest`, then of `team.ended`, then of `team.hired` (each setting its `truncated`), and only then
+agents from the end (`agentsTruncated`), never the Co-Founder's row, which comes first. What no cut reaches
+(that row, at most 20 members and the fixed keys) stays near 5 KiB at most.
 
 **Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a

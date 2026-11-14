@@ -1310,6 +1310,12 @@ function reading(split: Split, fields: Fields, problems: Problems): ReadingFile 
 	const changes: ReadingChange[] = [];
 	const notes: string[] = [];
 	const lists = new Set<string>();
+	// The lines of the things' headings, the changes, the notes and the things' keys, so a count over its bound and a key
+	// used twice point at the first line too many.
+	const thingLines: number[] = [];
+	const changeLines: number[] = [];
+	const noteLines: number[] = [];
+	const keyLines: (number | null)[] = [];
 	let sections = 0;
 	headings.forEach((heading, number) => {
 		const name = headingText(lines[heading]?.slice(2) ?? "");
@@ -1330,7 +1336,10 @@ function reading(split: Split, fields: Fields, problems: Problems): ReadingFile 
 							null,
 							`under ## Notes each line is "- " and a note of at most ${limits.note} bytes`,
 						);
-					else notes.push(note);
+					else {
+						notes.push(note);
+						noteLines.push(where);
+					}
 					return;
 				}
 				const change = READING_CHANGE_LINE.exec(raw);
@@ -1346,17 +1355,25 @@ function reading(split: Split, fields: Fields, problems: Problems): ReadingFile 
 					);
 				else if (!readingText(said, limits.change))
 					problems.add("body", where, null, `what changed is one line of at most ${limits.change} bytes`);
-				else changes.push({ agent, what, line: said });
+				else {
+					changes.push({ agent, what, line: said });
+					changeLines.push(where);
+				}
 			});
 			return;
 		}
 		sections++;
+		thingLines.push(at(heading));
 		if (!name || encoder.encode(name).byteLength > limits.name) {
 			problems.add("body", at(heading), null, `a thing's name is one line of 1–${limits.name} bytes`);
 			return;
 		}
 		const thing = readingThing(split, problems, heading, section);
-		if (thing) things.push({ ...thing, name });
+		if (thing) {
+			const { keyLine, ...read } = thing;
+			things.push({ ...read, name });
+			keyLines.push(keyLine);
+		}
 	});
 	if (sentence && sections < limits.thingsMin)
 		problems.add(
@@ -1366,15 +1383,22 @@ function reading(split: Split, fields: Fields, problems: Problems): ReadingFile 
 			`the reading has at least ${limits.thingsMin} things, each a ## section`,
 		);
 	if (sections > limits.thingsMax)
-		problems.add("body", null, null, `the reading has at most ${limits.thingsMax} things`);
+		problems.add(
+			"body",
+			thingLines[limits.thingsMax] ?? null,
+			null,
+			`the reading has at most ${limits.thingsMax} things`,
+		);
 	if (changes.length > limits.changes)
-		problems.add("body", null, null, `## Changed has at most ${limits.changes} lines`);
-	if (notes.length > limits.notes) problems.add("body", null, null, `## Notes has at most ${limits.notes} lines`);
+		problems.add("body", changeLines[limits.changes] ?? null, null, `## Changed has at most ${limits.changes} lines`);
+	if (notes.length > limits.notes)
+		problems.add("body", noteLines[limits.notes] ?? null, null, `## Notes has at most ${limits.notes} lines`);
 	const keys = new Set<string>();
-	for (const thing of things) {
-		if (keys.has(thing.key)) problems.add("value", null, "key", `two things have the key ${thing.key}`);
+	things.forEach((thing, index) => {
+		if (keys.has(thing.key))
+			problems.add("value", keyLines[index] ?? null, "key", `two things have the key ${thing.key}`);
 		keys.add(thing.key);
-	}
+	});
 	// Checked once every thing reads, so a broken thing is not also named as missing.
 	if (attention !== null && things.length === sections && !keys.has(attention))
 		problems.add(
@@ -1393,7 +1417,7 @@ function readingThing(
 	problems: Problems,
 	heading: number,
 	section: readonly string[],
-): Omit<ReadingThing, "name"> | null {
+): (Omit<ReadingThing, "name"> & { readonly keyLine: number | null }) | null {
 	const limits = READING_LIMITS;
 	const local = new Problems();
 	const headingLine = parts.bodyLine + heading;
@@ -1438,7 +1462,7 @@ function readingThing(
 	// A problem without a line of its own points at the thing's heading.
 	for (const problem of local.list) problems.list.push({ ...problem, line: problem.line ?? headingLine });
 	if (local.list.length || key === null || shape === null || full === null || state === null) return null;
-	return { key, shape, full, state, agents, waitsFor };
+	return { key, shape, full, state, agents, waitsFor, keyLine: fields.line("key") };
 }
 
 function agent(split: Split, fields: Fields, problems: Problems): AgentFile | null {
