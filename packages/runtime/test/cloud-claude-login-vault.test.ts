@@ -43,7 +43,9 @@ function binding(): ModelLoginRunBinding {
 	};
 }
 
-/** A stand-in for the database: one Claude login, sealed under the member's key, with SQL's compare-and-swap. */
+/** A stand-in for the database: one Claude login, sealed under the member's key, with SQL's compare-and-swap, and the
+ * worker's state ruled on as 20260930771000 rules on it: the open route's call refuses a worker no longer at work (the
+ * database's 42501), the seal-back's re-open and the seal itself do not. */
 function standIn() {
 	const keyring = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
 	const login = {
@@ -52,6 +54,7 @@ function standIn() {
 		keyId: "vault-root-1",
 		version: 1,
 		refusal: null as string | null,
+		workerState: "active" as "active" | "succeeded" | "cancelled",
 	};
 	const files = {
 		schema: CLAUDE_LOGIN_FILES_SCHEMA,
@@ -73,12 +76,17 @@ function standIn() {
 		version: login.version,
 		envelopeSha256: sha(envelope),
 	});
+	const openAnswer = () =>
+		login.refusal
+			? refusal()
+			: { ...loginHead(), state: "open", encryptedEnvelopeBase64: envelope.toString("base64") };
 	const authority: ClaudeLoginRunAuthority = {
-		openClaudeLoginForRun: vi.fn(async () =>
-			login.refusal
-				? refusal()
-				: { ...loginHead(), state: "open", encryptedEnvelopeBase64: envelope.toString("base64") },
-		),
+		openClaudeLoginForRun: vi.fn(async () => {
+			if (login.workerState !== "active")
+				throw Object.assign(new Error("Claude login is unavailable to this run"), { code: "42501" });
+			return openAnswer();
+		}),
+		openClaudeLoginForSealBack: vi.fn(async () => openAnswer()),
 		sealClaudeLoginBack: vi.fn(async (seal) => {
 			if (login.refusal) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: login.refusal };
 			if (seal.baseVersion !== login.version || seal.baseEnvelopeSha256 !== sha(envelope))
@@ -246,9 +254,40 @@ describe("the vault seals back what Claude Code changed", () => {
 			".credentials.json": b64(RENEWED_CREDENTIALS),
 			".claude.json": b64(CANARY_SETTINGS),
 		});
-		// The vault opened the version the run opened once more for it, and sealed nothing else.
-		expect(f.authority.openClaudeLoginForRun).toHaveBeenCalledTimes(1);
+		// The vault opened the version the run opened once more for it, through the seal-back's own re-open, and sealed
+		// nothing else.
+		expect(f.authority.openClaudeLoginForSealBack).toHaveBeenCalledTimes(1);
+		expect(f.authority.openClaudeLoginForRun).not.toHaveBeenCalled();
 		expect(f.authority.sealClaudeLoginBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("seals back for a worker that has reported or was cancelled, through its own re-open, and opens nothing for it", async () => {
+		captureOutput();
+		for (const state of ["succeeded", "cancelled"] as const) {
+			const f = standIn();
+			const opened = await f.vault.open({ binding: binding() }, AbortSignal.timeout(5000));
+			if (opened.state !== "open") throw new Error(opened.state);
+			// The model's report_work (or a cancel) moves the worker's state while Claude Code still runs.
+			f.login.workerState = state;
+			await expect(f.vault.open({ binding: binding() }, AbortSignal.timeout(5000))).rejects.toThrow(
+				"Claude login is unavailable to this run",
+			);
+			const sealed = await f.vault.sealBack(
+				{
+					binding: binding(),
+					claudeLoginId: f.login.id,
+					baseVersion: opened.version,
+					baseEnvelopeSha256: opened.envelopeSha256,
+					files: { ".credentials.json": b64(RENEWED_CREDENTIALS) },
+				},
+				AbortSignal.timeout(5000),
+			);
+			expect(sealed).toMatchObject({ state: "sealed", version: 2 });
+			expect((await f.sealed()).files[".credentials.json"]).toBe(b64(RENEWED_CREDENTIALS));
+			// The open route's call was asked once while at work and once after; the seal-back asked only its own.
+			expect(f.authority.openClaudeLoginForRun).toHaveBeenCalledTimes(2);
+			expect(f.authority.openClaudeLoginForSealBack).toHaveBeenCalledTimes(1);
+		}
 	});
 
 	it("seals only Claude Code's login files, the credentials among them", async () => {
@@ -616,6 +655,24 @@ describe("the vault's two routes on the broker service", () => {
 			expect(fine.status).toBe(200);
 			expect(fine.headers.get("cache-control")).toBe("no-store");
 			await fine.arrayBuffer();
+			// The worker reports (report_work) while Claude Code still runs: the open route gives the run nothing more, and
+			// its seal-back through the vault's own routes still seals what Claude Code renewed since.
+			f.login.workerState = "succeeded";
+			await expect(openClaudeLoginForRun(client, run, AbortSignal.timeout(5000))).rejects.toThrow(
+				"Cloud secret broker refused the Claude login",
+			);
+			const renewedAgain = `{"claudeAiOauth":{"accessToken":"CANARY-C4B-AFTER-REPORT-${randomUUID()}"}}`;
+			const afterReport = await sealClaudeLoginBack(
+				client,
+				{
+					binding: run,
+					opened: { claudeLoginId: f.login.id, version: 2, envelopeSha256: f.sha(), fileSha256: {} },
+					files: new Map([[".credentials.json", Buffer.from(renewedAgain)]]),
+				},
+				AbortSignal.timeout(5000),
+			);
+			expect(afterReport).toMatchObject({ state: "sealed", version: 3 });
+			expect((await f.sealed()).files[".credentials.json"]).toBe(b64(renewedAgain));
 		} finally {
 			await service.close();
 		}

@@ -57,8 +57,9 @@ begin
 	-- Coding value captures (20260930695000) add preparing a coding value's capture key, and reading and storing a
 	-- value a vault_capture browser call took from its service's screen, each bound to the agent's effect receipt;
 	-- 20260930698000 adds describing what the key is derived from, bound the same way.
-	-- A Claude Code worker's run (20260930771000) adds opening its member's Claude login for that run and sealing the
-	-- credentials file back, each bound to the run's exact lease, its worker and its member's Claude Code lease.
+	-- A Claude Code worker's run (20260930771000) adds opening its member's Claude login for that run, the vault's own
+	-- re-open of it for a seal-back, and sealing the credentials file back, each bound to the run's exact lease, its
+	-- worker and its member's Claude Code lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -125,6 +126,7 @@ begin
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_claude_login_for_run(uuid,text,jsonb)',
+		'qorpera_open_claude_login_for_seal_back(uuid,text,jsonb)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
