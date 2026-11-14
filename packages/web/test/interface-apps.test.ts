@@ -776,7 +776,7 @@ describe("the company's databases on an app's page", () => {
 	const manifest = (reads: string[]): CompanyApp & { manifest: NonNullable<CompanyApp["manifest"]> } => {
 		const parsed = parseAppManifest('name = "Sales"\n');
 		if (!parsed.ok) throw new Error("manifest");
-		// The manifest's reader does not take "data" yet: the agents' slice adds it to APP_READS.
+		// APP_READS takes "data" since #1744 (the kits' binding); the cast only lets a case hand over plain strings.
 		return {
 			name: "sales",
 			path: "apps/sales",
