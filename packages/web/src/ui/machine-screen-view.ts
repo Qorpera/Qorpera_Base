@@ -203,8 +203,8 @@ export interface MachineScreenViewOptions {
  * While the member holds the desktop (20260930713000, `capture`), the picture takes their input: clicks, double and
  * right clicks, drags and the wheel at the screen's own pixels (the picture's natural size, wherever it is drawn), keys
  * that are not text by their X names, typed text gathered into one action (TYPE_BATCH_MS), and what they paste. The
- * panel captures only while the view is entered (the frame in the thread, or full screen): in the preview a press drags
- * the window (computer-drag.ts), and a desktop cannot be driven at that size anyway. A slot under the picture holds the
+ * panel captures only while the view is entered (the frame in the thread, or full screen): in the preview (a row of its
+ * thread) a click opens the large view, and a desktop is not driven at that size. A slot under the picture holds the
  * take-over controls the panel gives it.
  */
 export class MachineScreenView {

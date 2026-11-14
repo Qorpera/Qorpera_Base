@@ -447,6 +447,24 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
+	/** The agent's computer is a row of the thread (Jonas, 14 Nov 2026: "a bigger window next to the working agent inside
+	 * of the thread"): its window stands beside the agent's figure. While the agent uses its computer the row is the live
+	 * end, in the working figure's place; once it stops, the row stays where it stood and what comes next goes under it. */
+	readonly #computerSlot = h("div", { class: "thread-computer-window" });
+	readonly #computerFigure = h("div", { class: "thread-computer-figure" });
+	readonly #computerCaption = h("p", { class: "thread-computer-caption" });
+	readonly #computerRow = h(
+		"div",
+		{ class: "thread-computer" },
+		this.#computerFigure,
+		h("div", { class: "thread-computer-main" }, this.#computerSlot, this.#computerCaption),
+	);
+	/** What the figure beside the window was drawn for, kept while it reads the same (its motion runs on). */
+	#computerFigureKey: string | undefined;
+	/** The row stands after every item of the thread up to this time (ms): set while it is the live end, kept after. */
+	#computerAfter: number | undefined;
+	/** A redraw for the computer's row is on its way. */
+	#computerRedraw = false;
 	/** The thread has shown its first messages: what joins the log after this comes in moving. */
 	#filled = false;
 	/** "Show earlier" at the top of a thread that has not read all its history yet. */
@@ -494,13 +512,6 @@ export class ConversationView {
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
-		// A window that showed by itself and went by itself (computer-by-itself.ts) is no longer this thread's.
-		const letGo = this.#panels.byItself.onClose((agentId) => {
-			if (this.#panel?.agentId !== agentId) return;
-			this.#panel = undefined;
-			this.#autosize();
-		});
-		this.#lifetime.signal.addEventListener("abort", letGo, { once: true });
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -1265,6 +1276,7 @@ export class ConversationView {
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
+			this.#redrawComputer();
 			if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			return;
 		}
@@ -1623,27 +1635,58 @@ export class ConversationView {
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
-	 * computer-by-itself.ts): small, watch only, without focus, once per stretch of the agent's use. */
+	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
 	#computerByItself(agent: HostedStaffAgent | undefined): void {
 		if (!agent || this.#disposed) return;
 		const rules = this.#panels.byItself;
 		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
-		rules.seen(agent.id, since);
 		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
 		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
 		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
 		const panel = this.#showPanel(agent, false);
-		if (panel) rules.opened(agent.id, since, panel.el);
+		if (panel) rules.opened(agent.id, since);
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
 	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
 		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
+		// A window that comes into the thread stands at its end; one already here stays where it is.
+		if (!this.#computerSlot.contains(panel.el)) this.#computerAfter = undefined;
 		this.#panel = panel;
-		panel.attach(this.#body, () => this.#toggleComputer());
+		// In the thread at once (at its end, where a new window stands), before the window comes into it: one that comes
+		// back entered covers the thread from there (review r1 F3 of #1787). The redraw puts the row in its place.
+		if (!this.#computerRow.isConnected) this.#log.append(this.#computerRow);
+		panel.attach(this.#computerSlot, () => this.#toggleComputer());
 		this.#autosize();
+		this.#redrawComputer();
 		return panel;
+	}
+
+	/** The computer came into the thread or left it outside a redraw: its row is placed again (a row with no window
+	 * leaves at once). */
+	#redrawComputer(): void {
+		if (!this.#panel) this.#computerRow.remove();
+		if (this.#computerRedraw) return;
+		this.#computerRedraw = true;
+		queueMicrotask(() => {
+			this.#computerRedraw = false;
+			this.update();
+		});
+	}
+
+	/** The figure beside the computer's window: working at it while the agent uses it, else still, as in its messages.
+	 * The line under the window says so in words. */
+	#drawComputerFigure(agent: HostedStaffAgent | undefined, agentName: string, working: boolean, locale: string): void {
+		const state = working ? this.#agentState : "idle";
+		const key = JSON.stringify([state, agentName, agent?.id, agent?.appearance, agent?.templateId, locale]);
+		if (key === this.#computerFigureKey) return;
+		this.#computerFigureKey = key;
+		const look = AGENT_LOOK[state];
+		replace(this.#computerFigure, agentFigure(agent, agentName, { size: 40, activity: look.figure }));
+		const caption = working ? activityCaption(look, agentName).label : "";
+		this.#computerCaption.textContent = caption;
+		this.#computerCaption.hidden = !caption;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -3109,7 +3152,32 @@ export class ConversationView {
 			nodes.push(this.#emptyRow);
 		}
 		const priorActivity = this.#activityRow?.element;
-		if (this.#working && !conversation.loading) {
+		// The agent's computer, while this thread shows it: its own row (#computerRow). The live end while the agent uses
+		// it, in the working figure's place; else where it stood then, before the first item that came after.
+		const computer = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		const atComputer = computer && this.#agentState === "computer" && !conversation.loading;
+		const latest = this.#timestampRows.reduce(
+			(time, row) => Math.max(time, (row.last ?? row.date).getTime()),
+			Number.NEGATIVE_INFINITY,
+		);
+		if (computer) this.#drawComputerFigure(agent, agentName, atComputer, locale);
+		if (computer && !atComputer) {
+			// Its place is fixed once the thread has read what it holds; while it reads, or after a read that failed, the row
+			// waits at the end (review r1 F1, r2 F1 of #1787).
+			if (!conversation.loading && !conversation.error) this.#computerAfter ??= latest;
+			const after = this.#computerAfter;
+			const next =
+				after === undefined ? undefined : this.#timestampRows.find((row) => row.date.getTime() > after)?.node;
+			const at = next ? nodes.indexOf(next) : -1;
+			const index = at < 0 ? nodes.length : at;
+			nodes.splice(index, 0, this.#computerRow);
+			if (index < liveStart) liveStart += 1;
+		}
+		if (atComputer) {
+			this.#computerAfter = latest;
+			this.#activityRow = undefined;
+			nodes.push(this.#computerRow);
+		} else if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
 			// shows beside it on hover or focus, never as a bubble. The row is kept while it
 			// reads the same, so its figure's motion runs on through new messages.
@@ -3367,6 +3435,8 @@ export class ConversationView {
 		// message gone from the thread leaves it on the thread.
 		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
 			this.#focusMessage(focusedMessage);
+		// Rows drawn now beside the computer's way are covered while its large view is open.
+		this.#panel?.coverAgain();
 		this.#pinToBottom();
 	}
 

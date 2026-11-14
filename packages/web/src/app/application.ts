@@ -825,14 +825,6 @@ export function mountApplication(
 				// The machine's clock and backdrop follow the company's time zone (20260930739000).
 				timeZone: () => controller.store.get().team?.timeZone,
 			});
-			// A window that showed by itself follows its agent's use whatever thread is shown (20260930742000).
-			const panels = computerPanels;
-			const stopFeed = controller.store.subscribe(() =>
-				panels.byItself.refresh((agentId) =>
-					controller.agentState(agentId) === "computer" ? controller.atComputer(agentId)?.since : undefined,
-				),
-			);
-			controller.signal.addEventListener("abort", stopFeed, { once: true });
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;

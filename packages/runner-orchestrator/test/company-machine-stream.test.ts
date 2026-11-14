@@ -24,6 +24,13 @@ import {
 	visibleRects,
 } from "../src/company-machine-stream.ts";
 
+/** The clock's part of these guards. The rules are the budgets these tests check exactly (charges, events, what is
+ * held); the wall clock only tells a blown budget (seconds of work in one turn) from a kept one. It is NOT a measure of
+ * this machine: the test VM runs several suites side by side on two cores, and a turn or a timer the kernel sets aside
+ * reads as tens of milliseconds there (129 ms seen on 14 Nov 2026 where a bound was 100), so the bounds are wide. */
+const TURN_CLOCK_MS = 500;
+const LOOP_CLOCK_MS = 1000;
+
 /** A PNG's pixels, as RGB (or RGBA) bytes, undoing the Sub filter this module uses. */
 function decodePng(png: Buffer): { width: number; height: number; channels: number; data: Buffer } {
 	expect(png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
@@ -811,7 +818,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 		do {
 			const began = performance.now();
 			reader.drain(RFB_TAKE_PER_TURN);
-			expect(performance.now() - began).toBeLessThan(50);
+			expect(performance.now() - began).toBeLessThan(TURN_CLOCK_MS);
 			expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
 			turns++;
 		} while (reader.busy && turns < 1000);
@@ -887,7 +894,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 		// (before: one turn read all 200,000 updates, each a ring eviction with a scan of the whole ring).
 		expect(stream.held.ring).toBe(kept);
 		expect(stream.held.outbox).toBeLessThanOrEqual(3);
-		expect(longest).toBeLessThan(250);
+		expect(longest).toBeLessThan(LOOP_CLOCK_MS);
 		stop.abort();
 		await watching;
 	}, 30_000);
@@ -999,14 +1006,14 @@ describe("a desktop's live picture (20260930745000)", () => {
 						expect(reader.charged).toBeLessThanOrEqual(MAX_CHARGE_A_TURN);
 						// Its own time: a turn's work is about a millisecond; the limit leaves room for the shared test
 						// machine's pauses (its strict bounds are the two above).
-						expect(took).toBeLessThan(100);
+						expect(took).toBeLessThan(TURN_CLOCK_MS);
 					} while (reader.busy);
 				}
 			}
 			// And nothing was lost or reordered on the way: every update, in order.
 			expect(got).toEqual(sent);
 			expect(turns).toBeGreaterThan(400);
-			expect(slowest).toBeLessThan(100);
+			expect(slowest).toBeLessThan(TURN_CLOCK_MS);
 		}
 	}, 120_000);
 
