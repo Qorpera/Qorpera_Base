@@ -537,7 +537,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Keep watching": "Bliv ved",
 	"Choose a computer": "Vælg en computer",
 	// A member opens one of the company's apps on the computer (20260930758000).
-	Open: "Åbn",
 	"Open on this computer": "Åbn på denne computer",
 	"That is not in the company folder any more.": "Det ligger ikke længere i virksomhedens mappe.",
 	"This computer cannot see the company folder yet. It can after it has slept and woken.":
