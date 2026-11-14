@@ -195,6 +195,10 @@ interface OpenChoice {
 	sent: boolean;
 	/** Not sent again before this (an answer that asked for it again: a start a moment ago is waited out). */
 	notBefore: number;
+	/** Made while the window was paused, on a list as old as the pause (review r4 F1 of #1808): this many list reads had
+	 * begun then, and nothing is decided or sent for it (wake, start, open) before one begun after it has answered. Its
+	 * own time limit runs meanwhile. Undefined for a choice made on a list the window keeps fresh, and once settled. */
+	freshAfter: number | undefined;
 }
 /** How long the window's loop waits at most while a choice stands unsent: it turns, and pumps, at least this often. */
 const CHOICE_TURN_MS = 1000;
@@ -506,6 +510,8 @@ export class ComputerPanel {
 	 * until one begun after it has answered, with the generation that stands now. */
 	#heldSince: number | undefined;
 	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
+	/** Which list read (by #listReads' count) `#listed` is the answer of; 0 before the first. */
+	#listedRead = 0;
 	#chosen: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
@@ -1082,6 +1088,7 @@ export class ComputerPanel {
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
+					this.#listedRead = read;
 					this.#failures = 0;
 					// A read begun after a DESKTOP_HELD_SINCE names the generation that stands now: sharing may go on under it.
 					if (this.#heldSince !== undefined && read > this.#heldSince) this.#heldSince = undefined;
@@ -1138,6 +1145,8 @@ export class ComputerPanel {
 			}
 			this.#syncSwitchers();
 			this.#syncOpeners();
+			// A choice made on a list as old as a pause is begun by the first read begun after it (review r4 F1 of #1808).
+			this.#settleChoice(computer, signal);
 			if (!machine || machine.state !== "running") {
 				// A machine that sleeps may wake larger: what a start said of it is gone.
 				this.#startEnded = undefined;
@@ -3122,8 +3131,11 @@ export class ComputerPanel {
 		if (!computer || !machine || this.#listed?.canTakeOver !== true || signal.aborted) return;
 		// A choice is the member's word that they watch, as a press on the paused window is: a file picked in a dialog that
 		// stayed open through a pause leaves the pause, so the list is read and the screen looked at again and the choice
-		// is served (review r3 F1 of #1808). Paused, the loop pumps the choice and nothing else.
-		if (this.#paused) {
+		// is served (review r3 F1 of #1808). Paused, the loop pumps the choice and nothing else. The list is as old as the
+		// pause, and the computer may have gone to sleep or woken meanwhile: what the choice starts is decided by the first
+		// read begun after it (#settleChoice), not here (review r4 F1 of #1808).
+		const paused = this.#paused;
+		if (paused) {
 			this.#paused = false;
 			this.#confirm = true;
 			this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -3141,22 +3153,42 @@ export class ComputerPanel {
 			until: Date.now() + WANT_ON_MS,
 			sent: false,
 			notBefore: Number.NEGATIVE_INFINITY,
+			freshAfter: paused ? this.#listReads : undefined,
 		};
 		this.#choice = choice;
 		this.#choiceLog.push({ gen: choice.gen, path, sends: 0, out: 0, retries: 0 });
 		if (this.#choiceLog.length > 64) this.#choiceLog.shift();
 		if (!this.#view?.entered) this.#enterOnOpen = this.el.parentElement !== null;
-		if (machine.state === "stopped" || machine.state === "stopping") void this.#wake(computer, machineId, signal);
-		else {
-			this.#startEnded = undefined;
-			if (machine.state !== "running" || !(this.#picturing() && this.#screenSeen)) {
-				this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
-				this.#startAnswered = undefined;
-			}
-			this.#pumpChoice(computer, signal);
-		}
+		if (!paused) this.#beginChoice(computer, machine, signal);
 		this.#syncControls();
 		this.#poke();
+	}
+
+	/** What a choice starts, from the list as it stands: an asleep computer wakes; any other gets the wish that its
+	 * desktop be on (unless the member sees its screen already), and the pump sends what can go now. */
+	#beginChoice(computer: WebCompanyComputer, machine: MemberAgentMachine, signal: AbortSignal): void {
+		const machineId = machine.machineId;
+		if (machine.state === "stopped" || machine.state === "stopping") {
+			void this.#wake(computer, machineId, signal);
+			return;
+		}
+		this.#startEnded = undefined;
+		if (machine.state !== "running" || !(this.#picturing() && this.#screenSeen)) {
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+			this.#startAnswered = undefined;
+		}
+		this.#pumpChoice(computer, signal);
+	}
+
+	/** A choice made on a list as old as a pause (OpenChoice.freshAfter) is begun here, once, by the first list read begun
+	 * after it: called by the loop wherever it has applied a list, after a machine that is no longer the one shown has
+	 * ended the choice. */
+	#settleChoice(computer: WebCompanyComputer, signal: AbortSignal): void {
+		const choice = this.#choice;
+		if (!choice || choice.freshAfter === undefined || this.#listedRead <= choice.freshAfter) return;
+		choice.freshAfter = undefined;
+		const machine = this.#pick();
+		if (machine?.machineId === choice.machineId) this.#beginChoice(computer, machine, signal);
 	}
 
 	/** The choice that waits goes when it can, one request at a time: on a desktop that runs (a screen the member sees,
@@ -3176,6 +3208,8 @@ export class ComputerPanel {
 		}
 		// Asked for again: not before the wait the answer asked for.
 		if (Date.now() < choice.notBefore) return;
+		// Made on a list as old as a pause: nothing goes before a read begun after it has answered (#settleChoice).
+		if (choice.freshAfter !== undefined) return;
 		// The desktop runs: a screen the member sees, or a start that answered so (a confirmed success).
 		if ((this.#picturing() && this.#screenSeen) || this.#startAnswered?.machineId === choice.machineId) {
 			void this.#openNow(computer, choice, signal);

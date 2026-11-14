@@ -1882,13 +1882,16 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		await advance(MACHINES_EVERY_MS);
 		expect(status(p)).toBe("Paused to save power. Still watching?");
 		expect(dialogs[0]!.signal.aborted).toBe(false);
-		// The member comes back and picks: no longer paused, the computer is woken once.
-		s.state.machines = [machine(1, { state: "starting" })];
+		// The member comes back and picks: no longer paused, and the list is read again before anything is decided. It
+		// still says asleep: the computer is woken once.
+		const reads = lists(s);
 		dialogs[0]!.answer("notes/plan.md");
 		await flush();
 		expect(status(p)).not.toBe("Paused to save power. Still watching?");
 		expect(p.choices.map((choice) => choice.path)).toEqual(["notes/plan.md"]);
+		expect(lists(s)).toBeGreaterThan(reads);
 		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+		s.state.machines = [machine(1, { state: "starting" })];
 		// It runs with its screen off: the list is read again, and the start that turns the screen on carries the open.
 		s.state.machines = [machine(1)];
 		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
@@ -1900,6 +1903,49 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		await advance(LOOK_EVERY_MS);
 		expect(mark(p)).toBe("Live");
 		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+	});
+
+	it("decides what a pick after a pause starts from a list read after it: a computer that went to sleep meanwhile is woken, and nothing is sent on the old list (review r4 F1 of #1808)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { picture: 1 };
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		expect(mark(p)).toBe("Live");
+		choose(p, 2);
+		await flush();
+		expect(dialogs).toHaveLength(1);
+		// Half an hour with the dialog left open: the window pauses, the dialog stays, and the computer goes to sleep.
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		expect(dialogs[0]!.signal.aborted).toBe(false);
+		s.state.machines = [machine(1, { state: "stopped" })];
+		const starts = s.starts.length;
+		const wakes = () => s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine").length;
+		expect(wakes()).toBe(0);
+		// The pick: the window's list still says it runs, and is half an hour old. Nothing is started on it; the list
+		// read after the pick says asleep, and the computer is woken, once.
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(p.choices.map((choice) => choice.path)).toEqual(["notes/plan.md"]);
+		expect(s.starts).toHaveLength(starts);
+		expect(s.opens).toEqual([]);
+		expect(wakes()).toBe(1);
+		// It runs again: the open goes out, and the window never said it could not open it.
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.opens).toEqual(["notes/plan.md"]);
+		expect(wakes()).toBe(1);
+		expect(mark(p)).toBe("Live");
+		expect(p.choices.map((choice) => [choice.path, choice.ended, choice.said])).toEqual([
+			["notes/plan.md", "answered", undefined],
+		]);
+		expect(p.el.textContent).not.toContain("could not open it");
 	});
 
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
