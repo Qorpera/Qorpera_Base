@@ -133,7 +133,7 @@ interface MailboxUi {
 	postOpen: boolean;
 	/** Words on how an agent answers that were typed and not yet saved or let go, by `hookId:agent` (`add` for the Add
 	 * form's): a menu that closes without Save keeps them, and the panel opens on them again. */
-	howDrafts: Record<string, string>;
+	howDrafts: Record<string, HowDraft>;
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
@@ -2390,6 +2390,14 @@ function answeringRoutine(page: Page, hookId: string, agentId: string): WebRouti
 		.sort(newestFirst)[0];
 }
 
+/** Words typed on how an agent answers and not yet saved, and the routine's words they were typed over (`base`; null
+ * for the Add form's, which has no routine yet): when the routine's words are not those any more, someone changed them
+ * meanwhile, and the panel says so before a Save puts these in their place. */
+interface HowDraft {
+	readonly words: string;
+	readonly base: string | null;
+}
+
 /** Lets go of the words typed on how an agent answers, `key` as `MailboxUi.howDrafts` names them. */
 function dropDraft(page: Page, key: string): void {
 	const { [key]: _draft, ...rest } = page.ui.howDrafts;
@@ -2397,8 +2405,16 @@ function dropDraft(page: Page, key: string): void {
 }
 
 /** The field the member writes how an agent answers in: it grows with the words, and takes the focus as the panel
- * opens. What is typed is kept as the draft `key` until it is saved or let go. ⌘/Ctrl-Enter is `submit`. */
-function howField(page: Page, key: string, name: string, text: string, submit: () => void): HTMLTextAreaElement {
+ * opens. What is typed is kept as the draft `key` until it is saved or let go, with the routine's words it was typed
+ * over (`base`, as the panel read them). ⌘/Ctrl-Enter is `submit`. */
+function howField(
+	page: Page,
+	key: string,
+	name: string,
+	text: string,
+	submit: () => void,
+	base: () => string | null = () => null,
+): HTMLTextAreaElement {
 	const field: HTMLTextAreaElement = h("textarea", {
 		rows: "4",
 		maxlength: "4000",
@@ -2408,7 +2424,8 @@ function howField(page: Page, key: string, name: string, text: string, submit: (
 		"aria-label": t("How {name} answers", { name }),
 		"data-autofocus": "",
 		oninput: () => {
-			page.ui.howDrafts = { ...page.ui.howDrafts, [key]: field.value };
+			const kept = page.ui.howDrafts[key];
+			page.ui.howDrafts = { ...page.ui.howDrafts, [key]: { words: field.value, base: kept ? kept.base : base() } };
 		},
 		onkeydown: (event: KeyboardEvent) => {
 			if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -2445,7 +2462,9 @@ function howPanel(
 	// Words typed before and not saved, when a menu closed on them: the panel opens on them again.
 	const draftKey = `${target.hookId}:${agentId}`;
 	const draft = page.ui.howDrafts[draftKey];
-	const field = howField(page, draftKey, name, draft ?? "", save);
+	// The routine's words as the panel read them last: what words typed now are typed over.
+	let fileHow: string | null = null;
+	const field = howField(page, draftKey, name, draft?.words ?? "", save, () => fileHow);
 	field.readOnly = true;
 	const note = h("p", { class: "mailbox-how-note", hidden: true });
 	const error = h("p", { class: "mailbox-error", role: "alert", hidden: true });
@@ -2462,8 +2481,9 @@ function howPanel(
 		field.readOnly = !on;
 		button.disabled = !on;
 	};
-	/** The agent's routine for the address and its file as they are now, and who pays for it. */
-	const load = async (keepWords: boolean) => {
+	/** The agent's routine for the address and its file as they are now, and who pays for it. True when words typed
+	 * before were typed over the routine's words as they were, and someone changed them since. */
+	const load = async (keepWords: boolean): Promise<boolean> => {
 		if (!routines) throw new Error(t("This routine could not be opened."));
 		const [routine] = (await listeners(routines, target.hookId))
 			.filter((each) => each.staffAgentId === agentId && each.status === "active")
@@ -2471,9 +2491,15 @@ function howPanel(
 		if (!routine) throw new Error(t("{name} no longer answers {address}", { name, address: target.address }));
 		const file = await routines.open(routine);
 		const payer = await routines.payer(routine.routineId).catch(() => null);
-		if (gone) return;
+		if (gone) return false;
 		opened = file;
-		if (!keepWords && page.ui.howDrafts[draftKey] === undefined) field.value = splitHow(file.file.instructions).how;
+		const how = splitHow(file.file.instructions).how;
+		fileHow = how;
+		const kept = page.ui.howDrafts[draftKey];
+		if (!keepWords && !kept) field.value = how;
+		// The draft is typed over these words from now on: said once, a Save puts the member's words in their place.
+		const changed = kept !== undefined && kept.base !== null && kept.base !== how;
+		if (kept) page.ui.howDrafts = { ...page.ui.howDrafts, [draftKey]: { words: kept.words, base: how } };
 		const other =
 			payer?.payer === "member" && payer.payerUserId && payer.payerUserId !== company.userId
 				? (company.store.get().team?.members.find((member) => member.userId === payer.payerUserId)?.displayName ??
@@ -2483,7 +2509,10 @@ function howPanel(
 			? t("{name} answers on {member}'s model account now. Saving moves it to yours.", { name, member: other })
 			: "";
 		note.hidden = !other;
+		return changed;
 	};
+	const changedMeanwhile = () =>
+		t("How {name} answers was changed meanwhile. Save again to put your words in its place.", { name });
 	const store = async () => {
 		if (saving || gone || !opened || !routines || !accounts) return;
 		const file = opened;
@@ -2520,7 +2549,7 @@ function howPanel(
 			button.textContent = t("Save");
 			const said =
 				failure instanceof WebRoutineChangedError
-					? t("How {name} answers was changed meanwhile. Save again to put your words in its place.", { name })
+					? changedMeanwhile()
 					: failure instanceof WebCompanyFolderRejectedError
 						? withProblems(t("How {name} answers could not be saved.", { name }), failure.problems)
 						: describeError(failure);
@@ -2553,7 +2582,10 @@ function howPanel(
 		);
 	};
 	load(false).then(
-		() => ready(!gone),
+		(changed) => {
+			ready(!gone);
+			if (changed && !gone) tell(changedMeanwhile());
+		},
 		(failure: unknown) => {
 			if (!gone) tell(describeError(failure));
 		},
@@ -2601,7 +2633,7 @@ function newHowPanel(page: Page, name: string, close: () => void): { el: HTMLEle
 		close();
 		page.redraw("add-answerer");
 	};
-	const field = howField(page, "add", name, ui.howDrafts.add ?? ui.addHow, done);
+	const field = howField(page, "add", name, ui.howDrafts.add?.words ?? ui.addHow, done);
 	const el = h(
 		"div",
 		{ class: "mailbox-how-panel" },

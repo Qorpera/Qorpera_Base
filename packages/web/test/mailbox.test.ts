@@ -1132,7 +1132,7 @@ describe("Sent, Addresses and Write", () => {
 	});
 
 	it("keeps the words typed on how an agent answers when the menu closes without Save, until Save or Cancel", async () => {
-		const { main, manage } = await mailbox(() => {});
+		const { main, manage, routines } = await mailbox(() => {});
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
 		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
@@ -1148,11 +1148,30 @@ describe("Sent, Addresses and Write", () => {
 		expect(field().value).toBe("Answer in Danish.");
 		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
 		expect(field().value).toBe("Answer in Danish.");
-		// Cancel lets them go: the panel opens on the routine's words again.
-		button(panel, "Cancel")!.click();
+		// Another member changes how Ada answers meanwhile, while the words wait: the panel says so, the member's words
+		// kept, and nothing is saved until a Save puts them in its place.
+		window.dispatchEvent(new Event("blur"));
+		routines.listening[0]!.prompt += "\n\n## How to answer\n\nTheirs.";
+		panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() =>
+			expect(panel.querySelector(".mailbox-error")?.textContent).toBe(
+				"How Ada answers was changed meanwhile. Save again to put your words in its place.",
+			),
+		);
+		expect(field().value).toBe("Answer in Danish.");
+		expect(manage.routines!.save).not.toHaveBeenCalled();
+		// Said once: opened again on the same file, it is not said again.
+		window.dispatchEvent(new Event("blur"));
 		panel = openHow(chip(), "Tell Ada how to answer");
 		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
-		expect(field().value).toBe("");
+		expect(panel.querySelector<HTMLElement>(".mailbox-error")?.hidden).toBe(true);
+		expect(field().value).toBe("Answer in Danish.");
+		// Cancel lets them go: the panel opens on the routine's words again.
+		button(panel, "Cancel")!.click();
+		// (The menu's row goes by the routines as last read; the panel reads the file as it opens.)
+		panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		expect(field().value).toBe("Theirs.");
 		// Saved, they are the routine's, and no draft is left.
 		type(field(), "Answer in English.");
 		button(panel, "Save")!.click();
