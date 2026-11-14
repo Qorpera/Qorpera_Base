@@ -1880,9 +1880,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 				offsetHeight: { get: () => 60 },
 			});
 		}
-		const animate = vi.fn(
-			() => ({ finish() {}, cancel() {}, finished: Promise.resolve() }) as unknown as Animation,
-		);
+		const animate = vi.fn(() => ({ finish() {}, cancel() {}, finished: Promise.resolve() }) as unknown as Animation);
 		const own = Element.prototype.animate;
 		Element.prototype.animate = animate as unknown as Element["animate"];
 		const pointer = (type: string, x: number, target: EventTarget = document) =>
@@ -1907,9 +1905,9 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			pointer("pointerup", 75);
 			// One tile where Members stood, folded: nothing of it is kept as open.
 			expect(tiles(element)).toEqual(["Market", "Group"]);
-			expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`) ?? "[]")).toEqual(
-				[],
-			);
+			expect(
+				JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`) ?? "[]"),
+			).toEqual([]);
 			// The write follows the draw, and its answer draws again: the two apps below are still on their way then.
 			await vi.advanceTimersByTimeAsync(0);
 			const made = set.mock.calls.at(-1)![1];
