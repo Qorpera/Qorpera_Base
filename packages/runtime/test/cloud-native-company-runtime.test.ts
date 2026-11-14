@@ -11,6 +11,7 @@ import {
 	CloudAgentNoFinalSend,
 	type CloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLAUDE_WORKER_CATALOG } from "@qorpera/runtime/cloud-claude-worker";
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -104,6 +105,7 @@ async function fixture(
 	folderSearch = false,
 	timeoutMs = 10_000,
 	companyData = false,
+	extra: Partial<ConstructorParameters<typeof CloudNativeCompanyRuntime>[0]> = {},
 ) {
 	const f = nativeCompanyContextFixture();
 	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
@@ -700,6 +702,7 @@ async function fixture(
 			},
 		},
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		...extra,
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
 		// The data gateway's run door only offers the data tools here; this suite never asks it.
@@ -1606,6 +1609,50 @@ it("refuses a Claude Code worker's run here, never running it on Codex", async (
 	expect(nativeProviderFailureCode(error)).toBe("NATIVE_CLAUDE_WORKER:UNKNOWN");
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
+});
+
+// The same run on a node that carries the Claude Code worker's composition (slice C4c): the divert takes it there. It is
+// admitted with Claude Code's own tools as its catalog and its brief as its context, Codex never starts, and with no
+// machine for the run no box starts and no sign-in is opened: its outcome is the home's words, which this suite cannot
+// save (it saves no file), so the run fails in its own stage after them.
+it("takes a Claude Code worker's run into its own composition, never Codex", async () => {
+	const launched = vi.fn();
+	const fetched = vi.fn(async () => new Response(null, { status: 500 }));
+	const f = await fixture("company-claude-worker", false, undefined, false, false, 10_000, false, {
+		homeChannel: () => ({ open: launched }) as never,
+		claudeWorker: {
+			logins: {
+				origin: "https://vault.example",
+				runtimeToken: "t".repeat(43),
+				companyId: randomUUID(),
+				holder: () => "holder",
+				fetch: fetched,
+			},
+		},
+	});
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
+		if (method === "qorpera_claude_worker_run_facts")
+			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		return original(method, args, signal);
+	});
+	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect((error as Error).message).not.toBe(CLAUDE_WORKER_NOT_CARRIED);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker" });
+	const calls = f.pathCall.mock.calls.map(([method]) => method);
+	const begin = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v3");
+	expect(JSON.parse(String(begin?.[1].p_tool_catalog_text))).toEqual(CLAUDE_WORKER_CATALOG);
+	expect(calls).toContain("qorpera_bind_native_company_context");
+	expect(calls).toContain("qorpera_claude_worker_run_facts");
+	expect(calls).not.toContain("qorpera_describe_agent_open_work");
+	// No Codex, no box, no sign-in.
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	expect(launched).not.toHaveBeenCalled();
+	expect(fetched).not.toHaveBeenCalled();
 });
 
 it("asks a reply's save again while its answer is lost, by the same key", async () => {

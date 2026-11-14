@@ -74,6 +74,9 @@ export const CLAUDE_BOX_PATHS = Object.freeze({
 	/** Ahead of the box's own PATH: `rg`, the bridge that runs ripgrep on the home (Grep and Glob). */
 	searchBin: "/opt/qorpera/bin",
 	settings: "/opt/qorpera/settings.json",
+	/** The caller's short note appended to Claude Code's system prompt (`--append-system-prompt-file`), written per run
+	 * and bound read-only, as the settings are. */
+	systemNote: "/opt/qorpera/system-note.md",
 	shellSocket: "/run/qorpera-home/shell.sock",
 	config: "/slot/config",
 	home: "/slot/home",
@@ -153,7 +156,9 @@ export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 
 /** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only, and
  * the tools named, no others. */
-export function claudeBoxArguments(options: { model?: string; tools?: readonly ClaudeBoxTool[] } = {}): string[] {
+export function claudeBoxArguments(
+	options: { model?: string; tools?: readonly ClaudeBoxTool[]; systemNote?: boolean } = {},
+): string[] {
 	if (options.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(options.model))
 		throw new Error("Invalid Claude model");
 	const tools = options.tools ?? CLAUDE_BOX_TOOLS;
@@ -177,6 +182,7 @@ export function claudeBoxArguments(options: { model?: string; tools?: readonly C
 		"--strict-mcp-config",
 		"--tools",
 		tools.join(","),
+		...(options.systemNote ? ["--append-system-prompt-file", CLAUDE_BOX_PATHS.systemNote] : []),
 		...(options.model ? ["--model", options.model] : []),
 	];
 }
@@ -221,6 +227,7 @@ function scratchPaths(root: string) {
 		home: join(root, "slot-home"),
 		mount: join(root, "mnt"),
 		settings: join(root, "settings.json"),
+		systemNote: join(root, "system-note.md"),
 		prefix: join(root, "home-shell"),
 		rg: join(root, "rg"),
 		passwd: join(root, "passwd"),
@@ -242,6 +249,8 @@ export function claudeBoxInvocation(options: {
 	extraCa?: string;
 	model?: string;
 	tools?: readonly ClaudeBoxTool[];
+	/** The run wrote a system note (scratch `system-note.md`): bound read-only and appended to the system prompt. */
+	systemNote?: boolean;
 }): { command: string; args: string[] } {
 	const c = options.configuration;
 	const s = scratchPaths(options.scratchRoot);
@@ -321,6 +330,7 @@ export function claudeBoxInvocation(options: {
 		s.settings,
 		CLAUDE_BOX_PATHS.settings,
 		...(options.extraCa ? ["--ro-bind", options.extraCa, CLAUDE_BOX_PATHS.extraCa] : []),
+		...(options.systemNote ? ["--ro-bind", s.systemNote, CLAUDE_BOX_PATHS.systemNote] : []),
 		"--bind",
 		config,
 		CLAUDE_BOX_PATHS.config,
@@ -341,7 +351,7 @@ export function claudeBoxInvocation(options: {
 		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
 		options.relayPath,
 		CLAUDE_BOX_PATHS.binary,
-		...claudeBoxArguments({ model: options.model, tools: options.tools }),
+		...claudeBoxArguments({ model: options.model, tools: options.tools, systemNote: options.systemNote }),
 	);
 	return {
 		command: c.namespaceHelper,
@@ -426,6 +436,8 @@ export interface ClaudeCodeBoxOptions {
 	endSession?: (sessionId: string, reason: "ended" | "stopped") => Promise<void>;
 	/** What the model is asked; Claude Code reads it on stdin. */
 	prompt: string;
+	/** A short note appended to Claude Code's own system prompt (at most 16 KiB), read-only in the box. */
+	systemNote?: string;
 	model?: string;
 	/** The tools Claude Code offers, no others (default and slice 1: CLAUDE_BOX_TOOLS). */
 	tools?: readonly ClaudeBoxTool[];
@@ -481,6 +493,8 @@ export async function startClaudeCodeBox(
 	// The model and the tools are checked before anything of the home opens: a start that fails on them has used
 	// nothing of the caller's one session (review r2, F3).
 	claudeBoxArguments({ model: options.model, tools: options.tools });
+	if (options.systemNote !== undefined && (!options.systemNote || Buffer.byteLength(options.systemNote) > 16_384))
+		throw new Error("Invalid Claude system note");
 	await privateDirectory(options.scratchRoot);
 	if ("folder" in login) {
 		if (!isAbsolute(login.folder) || login.folder.startsWith(`${options.scratchRoot}/`))
@@ -491,6 +505,7 @@ export async function startClaudeCodeBox(
 	for (const folder of [s.config, s.home, s.mount]) await mkdir(folder, { mode: 0o700 });
 	const gid = process.getgid?.() ?? uid;
 	await writeFile(s.settings, claudeBoxSettings(options.proof?.weakening), { mode: 0o400, flag: "wx" });
+	if (options.systemNote !== undefined) await writeFile(s.systemNote, options.systemNote, { mode: 0o400, flag: "wx" });
 	await writeFile(s.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
 		mode: 0o400,
 		flag: "wx",
@@ -535,7 +550,7 @@ export async function startClaudeCodeBox(
 					new Promise((resolve) => setTimeout(resolve, CLAUDE_BOX_CLOSE_MS).unref()),
 				]);
 			// The box's own folders: transcripts, Claude Code's state, its big outputs. Never the caller's login folder.
-			for (const path of [s.config, s.home, s.settings, s.passwd, s.group, s.prefix, s.rg])
+			for (const path of [s.config, s.home, s.settings, s.systemNote, s.passwd, s.group, s.prefix, s.rg])
 				await rm(path, { recursive: true, force: true }).catch(() => undefined);
 			// The mount point stays empty in this namespace (the mount lives in the box's): only an empty folder goes.
 			await rmdir(s.mount).catch(() => undefined);
@@ -579,6 +594,7 @@ export async function startClaudeCodeBox(
 			extraCa: options.proof?.extraCa,
 			model: options.model,
 			tools: options.tools,
+			systemNote: options.systemNote !== undefined,
 		});
 		const child = spawnBox(invocation.command, invocation.args, {
 			cwd: options.scratchRoot,
