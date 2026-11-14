@@ -2169,7 +2169,18 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
 	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
-	reconcile(grid, drawn);
+	// A tile already on its way out (a group folded a moment ago) keeps that way out, its fold included (review F1,
+	// round 3, on #1729), and stands in the grid until it ends, whatever is drawn meanwhile (round 4): another group
+	// opening, or a draw that changes no tile, as the answer to the write that made a group is (14 Nov 2026).
+	const kept = new Set(drawn);
+	const going = ([...grid.children] as HTMLElement[]).filter(
+		(element) => !kept.has(element) && leavingTiles.has(element),
+	);
+	// They stay where they stand, after the drawn tiles, never taken out and put back: that would start a plain fade
+	// (a CSS animation) again from whole (review F1 on #1795).
+	reconcile(grid, [...drawn, ...going]);
+	// The draw gave each its key again: out of the drawer's order while it goes, as when it first left.
+	for (const element of going) element.removeAttribute("data-app-key");
 	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
 	// collapsing").
 	const folding = parts.appFolding;
@@ -2177,7 +2188,6 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	if (!before || !box) return;
 	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
 	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
-	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
 		const was = before.get(element);
@@ -2199,14 +2209,6 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 			});
 	}
 	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
-	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
-	for (const element of before.keys())
-		if (!kept.has(element) && leavingTiles.has(element)) {
-			// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
-			element.removeAttribute("data-app-key");
-			if (element.parentElement !== grid) grid.append(element);
-		}
 	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
 	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
 	// wraps).
@@ -2323,12 +2325,12 @@ function mergeApps(company: CompanyController, parts: RailParts, dragged: string
 	}
 	const nameOf = (drawer: string) =>
 		parts.appsGrid.querySelector(`[data-app-key="${drawer}"] .rail-app-name`)?.textContent ?? "";
-	// Letting go makes the group at once, open, named from the two apps (Jonas, 12 Nov 2026: "if i drag interfaces over
-	// each other and let go it should create a group"); Rename group in its menu changes the name.
+	// Letting go makes the group at once, named from the two apps (Jonas, 12 Nov 2026: "if i drag interfaces over each
+	// other and let go it should create a group"); Rename group in its menu changes the name. It starts folded, the two
+	// apps going into its tile as a folding group's do (Jonas, 14 Nov 2026: "it should also start out collapsed").
 	const name = suggestGroupName(nameOf(onto), nameOf(dragged), t("Group"));
 	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
-	parts.appGroupsOpen.add(id);
-	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	parts.appFolding = groupKey(id);
 	void company.changeAppLayout(makeAppGroup(layout, parts.appTree, key, to.key, name, id));
 }
 
