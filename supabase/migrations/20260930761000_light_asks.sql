@@ -172,8 +172,9 @@ $$;
 -- 4. The member asks -------------------------------------------------------------------------------------------------------
 -- An owner, admin or contributor of a folder-v2 company asks. The same client id with the same kind and input answers
 -- the ask already made. What stops an ask is said in its state, never raised: no login of the member's own can pay
--- (`no_payer`), the company has no Co-Founder or is paused (`unavailable`), or the member has 8 asks waiting
--- (`too_many`); such an ask is failed at once and never runs.
+-- (`no_payer`), the company has no Co-Founder (`unavailable`), or the member has 8 asks waiting (`too_many`); such an
+-- ask is failed at once and never runs. A company that is paused or being deleted keeps no ask at all: the answer is
+-- failed (`unavailable`) under an id that names no row.
 create function public.qorpera_request_light_ask(p_profile_id uuid, p_client_ask_id uuid, p_kind text, p_input jsonb)
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
 declare v_user uuid := auth.uid(); v_environment uuid; v_cofounder uuid; v_problem text;
@@ -199,6 +200,26 @@ begin
 			raise exception 'Light ask id is bound to different content' using errcode = '23505'; end if;
 		return public.qorpera_light_ask_json(v_ask);
 	end if;
+	v_cofounder := (select c.staff_agent_id from public.qorpera_company_cofounders c where c.profile_id = p_profile_id);
+	-- The fence, then the rows the wake's admission reads (the asker, the woken agent and its authority, key share),
+	-- before any row of the asks is written: an ask's row hangs on the folder's clock, which the deletion purge takes
+	-- away under the fence, so the fence comes first here as it does for every table that hangs there.
+	begin
+		perform public.qorpera_folder_company_enter(v_environment, p_profile_id,
+			jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
+				'key', p_profile_id::text || ':' || v_user::text, 'mode', 'keyshare', 'required', true))
+			|| case when v_cofounder is null then '[]'::jsonb else jsonb_build_array(
+				jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
+					'key', p_profile_id::text || ':' || v_cofounder::text, 'mode', 'keyshare', 'required', false),
+				jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
+					'key', p_profile_id::text || ':' || v_cofounder::text, 'mode', 'keyshare', 'required', false)) end,
+			true);
+	exception when sqlstate '55000' then
+		-- A stop that holds the company (a pause, a deletion): no ask is kept. It is answered as failed, under an id
+		-- that names no row.
+		return jsonb_build_object('schema', 'qorpera.light-ask/v1', 'id', extensions.gen_random_uuid(), 'kind', p_kind,
+			'state', 'failed', 'answer', null, 'problem', 'unavailable');
+	end;
 	delete from public.qorpera_light_asks ask
 	where ask.profile_id = p_profile_id and ask.requested_by_user_id = v_user
 		and ask.created_at < clock_timestamp() - interval '1 day';
@@ -211,18 +232,7 @@ begin
 	values (extensions.gen_random_uuid(), v_environment, p_profile_id, v_user, p_client_ask_id, p_kind, p_input)
 	returning * into v_ask;
 	if v_problem is null then
-		v_cofounder := (select c.staff_agent_id from public.qorpera_company_cofounders c where c.profile_id = p_profile_id);
 		begin
-			-- The fence, then the rows the wake's admission reads: the asker, the woken agent and its authority, key share.
-			perform public.qorpera_folder_company_enter(v_environment, p_profile_id,
-				jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
-					'key', p_profile_id::text || ':' || v_user::text, 'mode', 'keyshare', 'required', true))
-				|| case when v_cofounder is null then '[]'::jsonb else jsonb_build_array(
-					jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
-						'key', p_profile_id::text || ':' || v_cofounder::text, 'mode', 'keyshare', 'required', false),
-					jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
-						'key', p_profile_id::text || ':' || v_cofounder::text, 'mode', 'keyshare', 'required', false)) end,
-				true);
 			perform public.qorpera_folder_admit_wakes(p_profile_id);
 			-- The pin trigger takes the agent, the payer and the payload from the ask.
 			insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind, source_id,
@@ -230,16 +240,13 @@ begin
 			values (extensions.gen_random_uuid(), p_profile_id, v_environment, 'agent', 'light-ask', v_ask.id,
 				'light-ask', 'light-ask:' || v_ask.id::text, clock_timestamp(), clock_timestamp())
 			returning * into v_wake;
+			-- The pin trigger leaves a paused company's wake cancelled; the fence above has refused a pause already.
 			if v_wake.status <> 'queued' then v_problem := 'unavailable'; end if;
 		exception
 			-- No login of the member's own can pay, or there is no agent to wake: the ask fails, and nothing of the wake stays.
 			when insufficient_privilege then
 				v_wake := null;
 				v_problem := case when sqlerrm = 'No model account can pay for this work' then 'no_payer' else 'unavailable' end;
-			-- A stop that holds the company (a pause, a deletion).
-			when sqlstate '55000' then
-				v_wake := null;
-				v_problem := 'unavailable';
 		end;
 	end if;
 	if v_problem is null then
@@ -271,7 +278,9 @@ end $$;
 -- 5. The run stores the answer --------------------------------------------------------------------------------------------
 -- The run of a light ask's wake, through the native host (scope `binding`). The answer is one line: runs of white space
 -- are one space. An empty one, one over 200 characters or one with a control character is no answer (`no_answer`), as
--- is null, which the run sends when the model gave none. The first call decides; a later one answers what stands.
+-- is null, which the run sends when the model gave none. An answer that comes after the ask's ten minutes is not kept:
+-- the ask is failed as `expired`, as its asker has read it since then. The first call decides; a later one answers
+-- what stands.
 create function public.qorpera_native_light_ask_answer(p_binding jsonb, p_answer text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_wake public.qorpera_wake_occurrences%rowtype;
@@ -289,7 +298,11 @@ begin
 	if v_ask.state = 'woken' then
 		v_replayed := false;
 		v_answer := btrim(regexp_replace(coalesce(p_answer, ''), '[[:space:]]+', ' ', 'g'));
-		if v_answer = '' or char_length(v_answer) > 200 or v_answer ~ '[[:cntrl:]]' then
+		if public.qorpera_light_ask_expires_at(v_ask.created_at) <= clock_timestamp() then
+			-- Past its time the asker has read it as failed (`expired`), and that stands: a late answer is not kept.
+			update public.qorpera_light_asks set state = 'failed', problem = 'expired', updated_at = clock_timestamp()
+			where id = v_ask.id returning * into v_ask;
+		elsif v_answer = '' or char_length(v_answer) > 200 or v_answer ~ '[[:cntrl:]]' then
 			update public.qorpera_light_asks set state = 'failed', problem = 'no_answer', updated_at = clock_timestamp()
 			where id = v_ask.id returning * into v_ask;
 		else

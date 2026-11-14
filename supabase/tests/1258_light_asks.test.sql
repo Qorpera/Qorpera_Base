@@ -10,7 +10,8 @@
 -- 4. The run reads its wake (the kind, the input, no held coworker messages), is admitted with no tool and only with
 --    none, and stores the answer, once; Anna reads it, and nobody else does. The run ends silent. Any other run needs
 --    a tool and stores no answer.
--- 5. No answer; an ask past its time; eight waiting asks; no login of one's own; a paused company.
+-- 5. No answer; an answer after the ask's time; an ask past its time before its run; eight waiting asks; day-old asks
+--    go when their member asks again; no login of one's own; a paused company keeps no ask.
 -- 6. The markers. Rolled back at the end.
 
 -- Each pass as its own transaction would start it (874's).
@@ -453,6 +454,29 @@ begin
 	if pg_temp.answer(v_binding, repeat('x', 201)) ->> 'state' is distinct from 'failed' then
 		raise exception 'An answer over 200 characters is kept'; end if;
 
+	-- An answer that comes after the ask's ten minutes is not kept (review F1 on #1796): the asker has read the ask as
+	-- failed since then, and that stands, for an answer and for none.
+	v_ask := (pg_temp.ask('85600000-0000-4000-8000-000000000001', '12580000-0000-4000-8000-000000000005') ->> 'id')::uuid;
+	perform pg_temp.materialize(v_profile);
+	v_binding := pg_temp.leased((pg_temp.wake_of(v_ask)).id);
+	update public.qorpera_light_asks set created_at = created_at - interval '11 minutes' where id = v_ask;
+	v_read := pg_temp.read('85600000-0000-4000-8000-000000000001', v_ask);
+	if v_read ->> 'state' is distinct from 'failed' or v_read ->> 'problem' is distinct from 'expired' then
+		raise exception 'A running ask past its time does not read as expired: %', v_read; end if;
+	v_receipt := pg_temp.answer(v_binding, 'Too late');
+	v_read := pg_temp.read('85600000-0000-4000-8000-000000000001', v_ask);
+	if v_receipt ->> 'state' is distinct from 'failed' or v_read ->> 'state' is distinct from 'failed'
+		or v_read ->> 'problem' is distinct from 'expired' or v_read -> 'answer' <> 'null'::jsonb
+		or (pg_temp.ask_row(v_ask)).answer is not null or (pg_temp.ask_row(v_ask)).problem is distinct from 'expired' then
+		raise exception 'A late answer was kept: % %', v_receipt, v_read; end if;
+	v_ask := (pg_temp.ask('85600000-0000-4000-8000-000000000001', '12580000-0000-4000-8000-000000000006') ->> 'id')::uuid;
+	perform pg_temp.materialize(v_profile);
+	v_binding := pg_temp.leased((pg_temp.wake_of(v_ask)).id);
+	update public.qorpera_light_asks set created_at = created_at - interval '11 minutes' where id = v_ask;
+	perform pg_temp.answer(v_binding, null);
+	if pg_temp.read('85600000-0000-4000-8000-000000000001', v_ask) ->> 'problem' is distinct from 'expired' then
+		raise exception 'No answer after its time changed why the ask failed'; end if;
+
 	-- Past its time before its run: it reads as failed, its wake is no longer authorized, and the materializer ends it.
 	v_ask := (pg_temp.ask('85600000-0000-4000-8000-000000000001', '12580000-0000-4000-8000-000000000004') ->> 'id')::uuid;
 	update public.qorpera_light_asks set created_at = created_at - interval '11 minutes' where id = v_ask;
@@ -480,6 +504,26 @@ begin
 		or (pg_temp.wake_of((v_result ->> 'id')::uuid)).requested_by_user_id is distinct from '85600000-0000-4000-8000-000000000002'
 		or (pg_temp.wake_of((v_result ->> 'id')::uuid)).sponsor_binding_id = (pg_temp.wake_of(current_setting('qorpera_test.ask')::uuid)).sponsor_binding_id then
 		raise exception 'Bo''s ask is not on Bo''s own login: %', v_result; end if;
+
+	-- Asks a day old go when their member asks again, and only that member's (review F4 on #1796). Anna's first ask and
+	-- Bo's are a day old; Anna asks.
+	update public.qorpera_light_asks set created_at = created_at - interval '25 hours'
+	where id in (current_setting('qorpera_test.ask')::uuid, (v_result ->> 'id')::uuid);
+	v_ask := (v_result ->> 'id')::uuid;
+	v_n := (select count(*) from public.qorpera_light_asks where requested_by_user_id = '85600000-0000-4000-8000-000000000001');
+	v_result := pg_temp.ask('85600000-0000-4000-8000-000000000001', '12580000-0000-4000-8000-000000000501');
+	if (pg_temp.ask_row(current_setting('qorpera_test.ask')::uuid)).id is not null
+		or (pg_temp.ask_row(v_ask)).id is null
+		-- One went and one came: every other ask of Anna's, none of them a day old, is still there.
+		or (select count(*) from public.qorpera_light_asks where requested_by_user_id = '85600000-0000-4000-8000-000000000001') <> v_n
+		or pg_temp.read('85600000-0000-4000-8000-000000000001', current_setting('qorpera_test.ask')::uuid) is not null then
+		raise exception 'A day-old ask stayed, or another member''s went: %', v_result; end if;
+	-- Its client id is free again: the same id with other content is a new ask, not a refusal.
+	v_result := pg_temp.ask('85600000-0000-4000-8000-000000000001', '12580000-0000-4000-8000-000000000001',
+		pg_temp.input('Mailbox', 'Members'));
+	if v_result ->> 'id' = current_setting('qorpera_test.ask') or (pg_temp.ask_row((v_result ->> 'id')::uuid)).input
+		is distinct from pg_temp.input('Mailbox', 'Members') then
+		raise exception 'A removed ask''s client id is still bound: %', v_result; end if;
 end $$;
 
 -- A member with no login of their own: nobody else's login and no company account pays.
@@ -498,7 +542,7 @@ end $$;
 -- A member who may only look asks nothing.
 select pg_temp.refused($$select pg_temp.ask('85600000-0000-4000-8000-000000000003', '12580000-0000-4000-8000-000000000302')$$, '42501');
 
--- A paused company: the ask fails at once, and no wake waits.
+-- A paused company keeps no ask: it is answered as failed under an id that names no row, and no wake is made.
 insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason)
 values (current_setting('qorpera_test.table')::uuid, '85600000-0000-4000-8000-000000000001', 'Fixture: paused');
 do $$
@@ -506,8 +550,11 @@ declare v_result jsonb; v_wake public.qorpera_wake_occurrences;
 begin
 	v_result := pg_temp.ask('85600000-0000-4000-8000-000000000002', '12580000-0000-4000-8000-000000000401');
 	v_wake := pg_temp.wake_of((v_result ->> 'id')::uuid);
-	if v_result ->> 'state' is distinct from 'failed' or v_result ->> 'problem' is distinct from 'unavailable'
-		or (v_wake.id is not null and v_wake.status = 'queued') then
+	if v_result ->> 'schema' is distinct from 'qorpera.light-ask/v1' or v_result ->> 'state' is distinct from 'failed'
+		or v_result ->> 'problem' is distinct from 'unavailable' or v_result ->> 'kind' is distinct from 'name-app-group'
+		or v_wake.id is not null or (pg_temp.ask_row((v_result ->> 'id')::uuid)).id is not null
+		or exists (select 1 from public.qorpera_light_asks where client_ask_id = '12580000-0000-4000-8000-000000000401')
+		or pg_temp.read('85600000-0000-4000-8000-000000000002', (v_result ->> 'id')::uuid) is not null then
 		raise exception 'An ask in a paused company: % %', v_result, to_jsonb(v_wake); end if;
 end $$;
 

@@ -93,10 +93,14 @@ wake's shape).
 
 ## 5. Bounds
 
-- A member has at most 8 light asks waiting; one more is refused.
-- An ask's input is at most 4 KiB. An answer is at most 200 characters as stored.
-- An ask that is not answered within 10 minutes reads as "no answer". Asks older than a day are removed when the
-  member asks again.
+- A member has at most 8 light asks waiting in a company; one more is kept as failed (`too_many`) and never runs.
+  Nothing is raised for it.
+- An ask's input is at most 4 KiB. An answer is at most 200 characters as stored, one line.
+- An ask that is not answered within ten minutes reads as failed (`expired`), and that stands: its wake no longer
+  runs, and an answer that comes after is not kept. A reply that is no answer is `no_answer`, a different problem.
+- Asks older than a day are removed when their member asks again.
+- A company that is paused or being deleted keeps no ask: the answer is failed (`unavailable`) under an id that names
+  no row.
 
 ## 6. What is proven, and what is not
 

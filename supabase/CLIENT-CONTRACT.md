@@ -341,7 +341,10 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `problem`: `no_payer` when no Codex login of the member's own can pay,
   `unavailable` for a company with no Co-Founder or one that is paused,
   `too_many` at 8 waiting asks, `no_answer`, or `expired` after ten minutes).
-  A failed ask is never raised as an error. The same `p_client_ask_id` with the
+  A failed ask is never raised as an error, and `failed` is final: an answer that
+  comes after the ten minutes is not kept. In a company that is paused or being
+  deleted no ask is kept: the answer is `failed` (`unavailable`) under an id that
+  names no row, which reads as null. The same `p_client_ask_id` with the
   same kind and input answers the ask already made (23505 with other content).
   `qorpera_read_light_ask(p_profile_id, p_ask_id)` → the same shape, or null when
   the caller has no ask of that id. The member's own login pays, a ChatGPT plan

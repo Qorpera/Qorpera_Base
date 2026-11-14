@@ -6787,9 +6787,9 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    (`qorpera_read_light_ask`). The run is the Co-Founder's in the company's records, as any run of its is. A coworker's
    message held for the Co-Founder waits for its next ordinary run: a light run takes none.
 7. **Bounds and failure.** A member has at most 8 light asks waiting in a company; an input is at most 4 KiB, an answer
-   at most 200 characters, one line. An ask not answered within ten minutes reads as failed, and its wake no longer
-   runs. A reply that is no answer, or no reply, is stored as none, and the run still ends. A usage limit or a rate
-   limit the call met is recorded against the run's login (17). A paused company takes no ask.
+   at most 200 characters, one line. An ask not answered within ten minutes reads as failed, and that stands: its
+   wake no longer runs, and an answer that comes after is not kept. A reply that is no answer, or no reply, is stored as none, and the run still ends. A usage limit or a rate
+   limit the call met is recorded against the run's login (17). A company that is paused or being deleted keeps no ask.
 8. **Cost.** One call to the small model per ask (a few hundred tokens in, a few out), and one run's start on an
    execution host.
 9. **What the provider sees.** The kind's instructions and the input between tags, on a thread with no tools. No
