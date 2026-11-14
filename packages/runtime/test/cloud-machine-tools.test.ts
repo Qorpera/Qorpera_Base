@@ -1451,6 +1451,11 @@ describe("machine tools", () => {
 					"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8. Hours count size times time awake, so that costs the same: for such work start a machine of 8 cpus and 8 GiB, tell the program to use them all, and stop it with machine_stop when done. ",
 				);
 				expect(Buffer.byteLength(description)).toBeLessThanOrEqual(4096);
+				// What the image brings for renders (deploy/machine/README.md, "Renders"): Blender, and where its starter set
+				// and the guide to it are.
+				expect(description).toContain(
+					"a chromium command, ffmpeg and Blender (with real light, materials and furniture for renders: read /opt/qorpera-assets/README.md) are installed too",
+				);
 			}
 		} finally {
 			f.boundary.close();
