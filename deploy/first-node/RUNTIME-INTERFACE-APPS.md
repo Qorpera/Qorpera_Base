@@ -153,7 +153,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
 | `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3c) | `internal`; `delegation` into another agent's or a member's app |
-| `app_guide` | answers how one part of an app is made: a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
+| `app_guide` | answers how one part of an app is made: the look every app is held to, a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
@@ -539,9 +539,9 @@ agent's answer to the refusal "model.json has no groups".
 
 So a guide is a tool's answer, read when the part is made:
 
-- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `model`, `board`,
-  `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's guide
-  starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
+- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `look` (below), `model`,
+  `board`, `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's
+  guide starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
   reads nothing of the company and changes nothing: review class `read`, no receipt, no operationKey. Its one
   database change is its name in the closed list of a run's observations (20260930762000).
 - **`save_app` saves a kit's own file (`<kit>.json`, `scenes.js`) only in a run that has read the kit's guide**:
@@ -553,6 +553,16 @@ So a guide is a tool's answer, read when the part is made:
   without them.
 - `save_app`'s fields say a line each: which kit draws which thing stays on `kit`, where the agent chooses; the
   rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
+
+**The look (14 November 2026, company views plan §3 "Taste").** `look` is the bar every app is held to, from Jonas's
+reactions to 44 sketched screens of a company: Qorpera's own look (a plain white page, the system font; no scenes,
+skies or themed backdrops), the company's real things (products, shop, money, dates, customers' words), one big shape
+a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
+text cards or labelled diagram lines, and **copy the quality, not the layout**. It tells seven screens he liked and
+three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
+app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
+company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine
+image, an image answer of `app_guide`) is a mechanism of its own, so the guide tells them in words until one is chosen.
 
 For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
 that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.

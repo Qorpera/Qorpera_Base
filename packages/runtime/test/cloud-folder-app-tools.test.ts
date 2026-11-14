@@ -192,6 +192,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 	const f = await fixture({}, true);
 	const tool = f.tool("app_guide");
 	expect((tool.inputSchema as { properties: { about: { enum: string[] } } }).properties.about.enum).toEqual([
+		"look",
 		"model",
 		"board",
 		"path",
@@ -203,7 +204,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"icons",
 	]);
 	for (const about of APP_GUIDES) expect(tool.description, about).toContain(about);
-	refusesArguments(tool, { about: "kits" }, "about must be one of model, board, path, object, explainer");
+	refusesArguments(tool, { about: "kits" }, "about must be one of look, model, board, path, object, explainer");
 	refusesArguments(tool, {}, "app_guide takes exactly about");
 	refusesArguments(tool, { about: "model", more: 1 }, "app_guide takes exactly about");
 	for (const about of APP_GUIDES) {
@@ -221,6 +222,50 @@ it("answers a guide's text, and nothing of the company", async () => {
 	expect(appGuide("explainer")).toContain("You write one file, scenes.js");
 	expect(f.commits).toEqual([]);
 	expect(f.releases).toEqual([]);
+});
+
+it("holds every app to one look, with screens at the bar and three not to make", async () => {
+	const f = await fixture({}, true);
+	const look = appGuide("look");
+	// Jonas's taste from 44 sketched screens (14 November 2026), in short words: the bar, never the layout.
+	for (const rule of [
+		"Read this before your first app.",
+		"Qorpera's own look: a plain white page and the system font, as the base style gives them. No scenes, skies, landscapes or themed backdrops.",
+		"Show the company's real things: its products, its shop, its money, its dates, its customers' own words.",
+		"One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.",
+		"Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.",
+		"Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs",
+	])
+		expect(look).toContain(rule);
+	// Seven screens he liked and three he did not, a line each, each naming why.
+	const lines = (heading: string) => look.split(`\n\n${heading}:\n`)[1]?.split("\n\n")[0]?.split("\n") ?? [];
+	expect(lines("Screens at the bar").map((line) => line.split(":")[0])).toEqual([
+		"- While you slept",
+		"- Money as a river",
+		"- Sign-off",
+		"- Replay the day",
+		"- The year ring",
+		"- The week's forecast",
+		"- The shop live",
+	]);
+	expect(lines("Not this")).toHaveLength(3);
+	for (const line of lines("Not this")) expect(line).toMatch(/^- [^:]+: \S/);
+	// Short: a guide read before every first app.
+	expect(Buffer.byteLength(look)).toBeLessThan(2500);
+	// An agent meets it where it chooses: app_guide's description, and save_app's kit.
+	expect(f.tool("app_guide").description).toContain(
+		"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app.",
+	);
+	const kit = (
+		f.tool("save_app").inputSchema as {
+			properties: { manifest: { properties: { kit: { description: string } } } };
+		}
+	).properties.manifest.properties.kit;
+	expect(kit.description).toContain("Before your first app, read app_guide look.");
+	// It is read, not held to: a page saves in a run that has not read it.
+	expect(
+		read(await f.call("save_app", save("sales", "make-1", manifest("Sales"), [{ path: "index.html", text: PAGE }]))),
+	).toMatchObject({ state: "applied", created: true });
 });
 
 it("saves a kit's file only in a run that has read the kit's guide", async () => {
