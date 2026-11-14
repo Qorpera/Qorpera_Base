@@ -107,8 +107,9 @@ function masked(opcode: number, payload: Buffer): Buffer {
 	return Buffer.concat([Buffer.from([0x80 | opcode, 0x80 | body.byteLength]), mask, body]);
 }
 
-/** Waits `ms` of real time. */
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Waits `ms` of real time, even while a test fakes the timers. */
+const realTimeout = globalThis.setTimeout;
+const pause = (ms: number) => new Promise<void>((resolve) => realTimeout(resolve, ms));
 /** A stream that runs until it is ended, its signal kept. */
 const waiting =
 	(signals: AbortSignal[]): CloudMemberMachineStreamRun =>
@@ -125,7 +126,7 @@ const closeCode = (one: { frames: { opcode: number; payload: Buffer }[] }) =>
  * most that ever waited unflushed on one of them. */
 function serverSide() {
 	const sockets: Socket[] = [];
-	const seen = { pongs: 0, most: 0 };
+	const seen = { pongs: 0, pings: 0, most: 0 };
 	const write = Socket.prototype.write;
 	const spy = vi.spyOn(Socket.prototype, "write").mockImplementation(function (
 		this: Socket & { server?: unknown },
@@ -135,6 +136,7 @@ function serverSide() {
 		if (this.server) {
 			if (!sockets.includes(this)) sockets.push(this);
 			if (Buffer.isBuffer(args[0]) && args[0][0] === 0x8a) seen.pongs++;
+			if (Buffer.isBuffer(args[0]) && args[0][0] === 0x89) seen.pings++;
 			seen.most = Math.max(seen.most, this.writableLength);
 		}
 		return result;
@@ -546,6 +548,47 @@ describe("the live-picture listener (20260930745000)", () => {
 			}
 		}, 30_000);
 	});
+
+	it("ends a client that reads nothing on time whatever pongs it sends: a pong answers our ping only once that ping left, and one ping at most waits (review r14 of #1746)", async () => {
+		const { seen } = serverSide();
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
+		});
+		try {
+			const signals: AbortSignal[] = [];
+			const picture = Buffer.alloc(256 * 1024, 7);
+			const { port } = await listener(() => async (sink, signal) => {
+				signals.push(signal);
+				// 32 MiB of pictures at once: far past what the kernel takes for a client that reads nothing, so every
+				// write after them (our ping among them) waits in this process.
+				for (let n = 0; n < 128; n++) void sink.send(picture).catch(() => {});
+				return new Promise<string>((resolve) => signal.addEventListener("abort", () => resolve("closed")));
+			});
+			const one = await open(port);
+			one.socket.on("error", () => {});
+			cleanups.push(async () => {
+				one.socket.destroy();
+			});
+			one.socket.pause();
+			await vi.waitFor(() => expect(signals).toHaveLength(1));
+			// A pong every 5 s, unasked or for a ping it never took: well under the input limits.
+			let elapsed = 0;
+			while (elapsed < 85_000) {
+				await vi.advanceTimersByTimeAsync(5000);
+				elapsed += 5000;
+				one.socket.write(masked(0xa, Buffer.alloc(0)));
+				await pause(5);
+				expect(signals[0]?.aborted, `at ${elapsed} ms`).toBe(false);
+				expect(seen.pings).toBeLessThanOrEqual(1);
+			}
+			// Our one ping went at 30 s and never left; 60 s on, at 90 s, the stream is ended, the pongs counting for nothing.
+			await vi.advanceTimersByTimeAsync(5000);
+			await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+			expect(seen.pings).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	}, 30_000);
 
 	it("tells the browser why, in a code and a reason it acts on", () => {
 		expect(cloudMemberMachineStreamClose("closed")).toEqual({ code: 1000, reason: "" });

@@ -28,9 +28,11 @@ import type { Writable } from "node:stream";
 //    CLIENT_FRAMES frames or CLIENT_READS reads in a CLIENT_WINDOW_MS window the client is not a correct one: ended
 //    (1008), and no longer read. Every frame costs at most CLIENT_FRAME_BYTES bytes looked at, every read one call.
 //  - A pong is written only while at most MAX_UNFLUSHED_PONGS of them wait unflushed (a client that does not read its
-//    pongs is ended); our own ping goes only once the last was answered. What waits to be written to a client is the
-//    pictures' bound (MEMBER_STREAM_HIGH_WATER_BYTES and a message, MEMBER_STREAM_UNFLUSHED_MESSAGES and one), at most
-//    four pongs, one ping and the close.
+//    pongs is ended); our own ping goes only once the last was answered, and a pong answers it only once it has LEFT
+//    this process (its write's callback ran): any other pong is a frame and nothing more, so the deadline, counted from
+//    the ping's write, ends a client that does not read whatever it sends (review r14). What waits to be written to a
+//    client is the pictures' bound (MEMBER_STREAM_HIGH_WATER_BYTES and a message, MEMBER_STREAM_UNFLUSHED_MESSAGES and
+//    one), at most four pongs, one ping and the close.
 //  - Ended means not read: the socket is paused and its data handler taken off at once, the carry let go; the close
 //    frame is written, and the socket destroyed once that is flushed, or after 2 s at the latest. (Paused, Node takes
 //    at most its readable high-water mark from the kernel, never looked at, and gone with the socket.)
@@ -292,8 +294,10 @@ export class CloudMemberMachineStreamListener {
 		let frames = 0;
 		let reads = 0;
 		let pongs = 0;
-		/** When our ping went out, until its pong comes: one at a time. */
+		/** When our ping was written, until its pong comes: one at a time. */
 		let pingAt: number | null = null;
+		/** Whether that ping has left this process (its write's callback ran): only then can a pong answer it. */
+		let pingLeft = false;
 		const end = (code: number, reason: string) => {
 			if (ended) return;
 			ended = true;
@@ -322,7 +326,11 @@ export class CloudMemberMachineStreamListener {
 				return;
 			}
 			pingAt = now();
-			if (!socket.destroyed) socket.write(frameHead(0x9, 0));
+			pingLeft = false;
+			if (!socket.destroyed)
+				socket.write(frameHead(0x9, 0), (error) => {
+					if (!error) pingLeft = true;
+				});
 		}, PING_EVERY_MS);
 		const onData = (chunk: Buffer) => {
 			const kept = carry;
@@ -383,8 +391,10 @@ export class CloudMemberMachineStreamListener {
 						pongs--;
 					});
 				} else if (opcode === 0xa) {
-					// The answer to our ping (one a browser sends unasked counts as a frame and nothing more).
-					pingAt = null;
+					// The answer to our ping, once that ping has left this process: a pong while none is out, or while ours
+					// still waits unflushed behind what the client does not read, counts as a frame and nothing more (review
+					// r14: unasked pongs must not keep a client that reads nothing alive).
+					if (pingAt !== null && pingLeft) pingAt = null;
 				} else {
 					end(1000, "");
 					return;
