@@ -92,5 +92,8 @@
 	.computer-panel .machine-screen.is-arriving { animation: none; }
 }
 /* On the dark screen the window's own ✕ and switcher take the dark surface's ink (dark.css), not a glow meant for a
-   light picture (review r1 on the real component). */
-.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }
+   light picture (review r1 on the real component). The same wherever the window says something in words and shows
+   no picture (the screen off, a start that failed): its body is dark there in the light theme too, and the picture's
+   dark ink with its white halo was hard to read on it (seen on screenshots, 14 Nov 2026). */
+.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])),
+.computer-panel:has(.computer-loading:not([hidden])) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }
