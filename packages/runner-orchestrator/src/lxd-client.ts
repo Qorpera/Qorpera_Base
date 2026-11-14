@@ -275,10 +275,15 @@ export interface LxdExecPipeRequest {
 	 * logged. A source the call does not read to its end is closed (its `return()`) when the call ends, also while a
 	 * read is pending; an async generator runs its own close once that read settles. */
 	readonly stdin?: Uint8Array | AsyncIterable<Uint8Array>;
-	/** A command printing more than this on stdout is killed and the call fails. */
+	/** A command printing more than this on stdout is killed and the call fails. With `stdout`, the bound of each of
+	 * LXD's messages instead: nothing is kept. */
 	readonly maxStdoutBytes: number;
 	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
 	readonly stderrTailBytes: number;
+	/** Hands each of stdout's messages over as it comes, in order, keeping none of it (20260930745000: a desktop's live
+	 * picture, for as long as it is watched); the result's stdout is then empty. Never recorded or logged. A handler
+	 * that throws ends the call, as an over-long message does. */
+	readonly stdout?: (chunk: Buffer) => void;
 }
 
 export interface LxdExecPipeResult {
@@ -1445,6 +1450,7 @@ function validExecPipe(request: LxdExecPipeRequest): boolean {
 		Number.isSafeInteger(maxStdoutBytes) &&
 		maxStdoutBytes >= 0 &&
 		maxStdoutBytes <= MAX_EXEC_PIPE_OUTPUT_BYTES &&
+		(request.stdout === undefined || typeof request.stdout === "function") &&
 		Number.isSafeInteger(stderrTailBytes) &&
 		stderrTailBytes >= 0 &&
 		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES
@@ -3743,7 +3749,7 @@ export class LxdUnixClient
 		request: LxdExecPipeRequest,
 		signal: AbortSignal,
 	): Promise<LxdExecPipeResult> {
-		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, stdout: handOver } = request;
 		if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
 		signal.throwIfAborted();
 		const result = await this.#request(
@@ -3823,7 +3829,17 @@ export class LxdUnixClient
 						},
 						binary: (payload) => {
 							if (failure) return;
-							if (stream.name === "stdout" && !stdoutEnded) {
+							if (stream.name === "stdout" && !stdoutEnded && handOver) {
+								// Handed over as it comes, nothing kept: the bound is each message's.
+								if (payload.byteLength > maxStdoutBytes)
+									fail(new Error("LXD exec pipe output exceeded its bound"));
+								else
+									try {
+										handOver(payload);
+									} catch (error) {
+										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+									}
+							} else if (stream.name === "stdout" && !stdoutEnded) {
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
 								else stdout.push(payload);

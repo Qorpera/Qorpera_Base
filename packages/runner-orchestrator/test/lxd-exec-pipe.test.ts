@@ -646,6 +646,53 @@ describe("LXD exec pipe", () => {
 		await vi.waitFor(() => expect(over.killed).toBe(true));
 	});
 
+	it("hands stdout over as it comes, keeping none of it, bounds each message, and ends the call when the handler throws (20260930745000)", async () => {
+		const parts = [Buffer.from("first"), Buffer.from("second"), randomBytes(48 * 1024)];
+		const exec = await fake(async (io) => {
+			for (const part of parts) io.print("stdout", part);
+			await io.input();
+			return 0;
+		});
+		const seen: Buffer[] = [];
+		const result = await run(exec, { stdout: (chunk) => seen.push(Buffer.from(chunk)), maxStdoutBytes: 64 * 1024 });
+		expect(Buffer.concat(seen).equals(Buffer.concat(parts))).toBe(true);
+		expect(result.stdout.byteLength).toBe(0);
+		// Each message within the bound, however long the whole: a long-lived picture is never cut for its length.
+		const long = await fake(async (io) => {
+			for (let n = 0; n < 40; n++) io.print("stdout", Buffer.alloc(32 * 1024, n));
+			await io.input();
+			return 0;
+		});
+		let bytes = 0;
+		await run(long, {
+			stdout: (chunk) => {
+				bytes += chunk.byteLength;
+			},
+			maxStdoutBytes: 32 * 1024,
+		});
+		expect(bytes).toBe(40 * 32 * 1024);
+		const over = await fake(async (io) => {
+			io.print("stdout", Buffer.alloc(600));
+			return "hold";
+		});
+		await expect(run(over, { stdout: () => undefined, maxStdoutBytes: 512 })).rejects.toThrow(
+			"LXD exec pipe output exceeded its bound",
+		);
+		await vi.waitFor(() => expect(over.killed).toBe(true));
+		const refused = await fake(async (io) => {
+			io.print("stdout", Buffer.from("x"));
+			return "hold";
+		});
+		await expect(
+			run(refused, {
+				stdout: () => {
+					throw new Error("not a picture");
+				},
+			}),
+		).rejects.toThrow("not a picture");
+		await vi.waitFor(() => expect(refused.killed).toBe(true));
+	});
+
 	it("fails when a stream ends without its end message", async () => {
 		const exec = await fake(async (io) => {
 			io.print("stdout", Buffer.from("cut"));

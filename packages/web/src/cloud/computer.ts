@@ -65,6 +65,7 @@ export class WebCompanyComputer {
 			route: (url) => memberRouteTarget(cloud.config, url),
 			accessToken,
 			fetch: fetching,
+			...(cloud.config.machineStreamUrl ? { streamUrl: cloud.config.machineStreamUrl } : {}),
 		});
 		this.client = new CloudMemberCompanyComputerClient({
 			companyId: profile.profileId,
