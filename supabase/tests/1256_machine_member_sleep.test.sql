@@ -13,7 +13,9 @@
 --    input, a shared action, a pointer pass, turning the screen on); a look counts only for the window after the
 --    member's word, and a watch that never said it is no sign; a hand-back clears the machine's own time of private
 --    typing and is itself the sign, by the hold's own record; a hold that ran out counts its last input, not the time
---    its lease ended; a take-over's heartbeat and a busy machine are no sign, though both move the machine's last use.
+--    its lease ended; taking one's own hold again is an input the record gives back for a hold that ran out idle (its
+--    end less 30 minutes) and not for one that lapsed (the retaking page's look is the sign); a take-over's heartbeat
+--    and a busy machine are no sign, though both move the machine's last use.
 -- 3. Due: not at 9 minutes 50 after the last sign, due at 10, by the executor's list and by the stop's custody, which
 --    then stops it as the kernel (cause slept); not before the machine came up, and its 10 minutes start when it does; a
 --    busy machine a run started, woken by a member who is gone, is due though its last use is now.
@@ -593,6 +595,60 @@ begin
 		perform pg_temp.base_assert(pg_temp.gm_seen('carol-desktop') between clock_timestamp() - interval '9 minutes 5 seconds'
 				and clock_timestamp() - interval '9 minutes' and not pg_temp.gm_due('carol-desktop'),
 			'2: a hold that ran out with no input: its take-over is the sign');
+		raise sqlstate 'P1256';
+	exception when sqlstate 'P1256' then null;
+	end;
+	-- The member takes their own standing hold again (a reloaded page, another tab): an input, kept on the machine's
+	-- row alone (no new hold, no action). If that hold then runs out for want of input, a late hand-back closes it as
+	-- idle with the time its lease ended, 30 minutes after that input: the record gives it back exactly.
+	begin
+		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
+			format(', 0, %L', '12560000-0000-4000-8000-0000000000e3'));
+		perform pg_temp.gm_quiet('carol-desktop', '45 minutes');
+		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
+			format(', 0, %L', '12560000-0000-4000-8000-0000000000e4'));
+		perform pg_temp.base_assert(v ->> 'state' = 'ok' and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop'))
+			and (select count(*) = 1 from public.qorpera_company_machine_desktop_controls
+				where machine_id = (pg_temp.gm_machine('carol-desktop')).id)
+			and not exists (select 1 from public.qorpera_company_machine_desktop_actions
+				where machine_id = (pg_temp.gm_machine('carol-desktop')).id),
+			'2: taking one''s own hold again is an input, with no new hold and no action: ' || v::text);
+		perform pg_temp.gm_shift('carol-desktop', $s$desktop_member_input_at = clock_timestamp() - interval '40 minutes',
+			desktop_member_until = clock_timestamp() - interval '10 minutes'$s$);
+		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop', $s$, 'closed', 0, null$s$);
+		perform pg_temp.base_assert(not (v ->> 'handedBack')::boolean
+			and (pg_temp.gm_machine('carol-desktop')).desktop_member_input_at is null
+			and (select ended_by = 'idle' from public.qorpera_company_machine_desktop_controls
+				where machine_id = (pg_temp.gm_machine('carol-desktop')).id), '2: the hold ran out for want of input: ' || v::text);
+		perform pg_temp.base_assert(pg_temp.gm_seen('carol-desktop') between clock_timestamp() - interval '40 minutes 5 seconds'
+				and clock_timestamp() - interval '40 minutes',
+			'2: an idle hold''s end less 30 minutes is its last input, the retake''s, not its take-over 45 minutes ago');
+		raise sqlstate 'P1256';
+	exception when sqlstate 'P1256' then null;
+	end;
+	-- If it runs out with its heartbeat instead (lapsed), the record keeps only its take-over and its actions: the
+	-- retake's time is gone with the machine's row, and the look of the page that took it again is the sign for it.
+	begin
+		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
+			format(', 0, %L', '12560000-0000-4000-8000-0000000000e5'));
+		perform pg_temp.gm_quiet('carol-desktop', '20 minutes');
+		v := pg_temp.gm_member('owner', 'qorpera_member_take_machine_desktop', 'carol-desktop',
+			format(', 0, %L', '12560000-0000-4000-8000-0000000000e6'));
+		perform pg_temp.base_assert(v ->> 'state' = 'ok' and not pg_temp.gm_due('carol-desktop'), '2: the retake: ' || v::text);
+		-- The page that took it again looked, with the member's word, as a window does when it opens.
+		v := pg_temp.gm_member('owner', 'qorpera_member_machine_screen_begin', 'carol-desktop', $s$, '{"confirmed": true}'$s$);
+		perform pg_temp.gm_shift('carol-desktop', $s$desktop_member_until = clock_timestamp() - interval '1 minute'$s$);
+		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop', $s$, 'closed', 0, null$s$);
+		perform pg_temp.base_assert((select ended_by = 'lapsed' from public.qorpera_company_machine_desktop_controls
+				where machine_id = (pg_temp.gm_machine('carol-desktop')).id)
+			and (pg_temp.gm_machine('carol-desktop')).desktop_member_input_at is null
+			and pg_temp.gm_now(pg_temp.gm_seen('carol-desktop')) and not pg_temp.gm_due('carol-desktop'),
+			'2: a lapsed hold closed late: the retaking page''s look is the sign: ' || v::text);
+		set local session_replication_role = replica;
+		delete from public.qorpera_company_machine_screen_watches where machine_id = (pg_temp.gm_machine('carol-desktop')).id;
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.gm_seen('carol-desktop') <= clock_timestamp() - interval '20 minutes'
+			and pg_temp.gm_due('carol-desktop'), '2: without that look, a lapsed hold''s record has only its take-over');
 		raise sqlstate 'P1256';
 	exception when sqlstate 'P1256' then null;
 	end;

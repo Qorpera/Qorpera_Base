@@ -158,11 +158,16 @@ returns timestamptz language sql stable security definer set search_path = '' as
 		-- closed yet, the machine's own row has it.
 		p_machine.desktop_member_input_at,
 		-- A hand-back clears that. The newest hold's own record keeps it: the hand-back itself when the member gave the
-		-- desktop back or their page closed (a live hold ended by them, at that moment), else the hold's last input (one
-		-- that ran out is closed later with the time its lease ended, which its heartbeat set).
+		-- desktop back or their page closed (a live hold ended by them, at that moment), else the hold's last input. A hold
+		-- that ran out is closed later with the time its lease ended, which its heartbeat set and which is never more than
+		-- 30 minutes after the last input: so that end less 30 minutes is never later than the last input, and for a hold
+		-- that ran out for want of input ('idle') it is exactly it. What the record cannot give is the time a member took
+		-- their own standing hold again (a reloaded page: an input on the machine's row alone, no action and no new hold)
+		-- when that hold then ran out with its heartbeat ('lapsed') and was closed by a late hand-back: its take-over and
+		-- its actions stand then, and the look of the page that took it again is the member's sign for that moment.
 		(select case when control.ended_at is null then control.began_at
 				when control.ended_by in ('handed_back', 'closed') then control.ended_at
-				else greatest(control.began_at, (select max(act.begun_at)
+				else greatest(control.began_at, control.ended_at - interval '30 minutes', (select max(act.begun_at)
 					from public.qorpera_company_machine_desktop_actions act where act.control_id = control.id)) end
 			from public.qorpera_company_machine_desktop_controls control
 			where control.machine_id = p_machine.id order by control.began_at desc limit 1),
