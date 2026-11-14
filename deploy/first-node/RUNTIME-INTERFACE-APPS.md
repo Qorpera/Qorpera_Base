@@ -153,6 +153,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
 | `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3c) | `internal`; `delegation` into another agent's or a member's app |
+| `app_guide` | answers how one part of an app is made: a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
@@ -161,15 +162,15 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   open nothing, §4, the first three named; three or more `<details>`; more than 500 words; more than 150 words with
   no picture, chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the
   page. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
-  instead of write, which links open, the base style and phone width. How a page reads live data (§5) is said on the
-  manifest's `reads`, how it lets a member act (§5 "Changes") on the manifest's `writes`, and the base style's
-  variables and the company's colours (§2) on `files`, all in the tool's schema, because a tool's own description
-  holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
+  instead of write, which links open, the base style and phone width. How a page reads live data (§5), how it lets a
+  member act (§5 "Changes") and the base style's variables and the company's colours (§2) are guides of `app_guide`
+  (§3d: `reads`, `writes`, `style`), because a tool's own description holds 4096 bytes and its schema, as the model
+  receives it, under 5,000. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
   `app.toml`; a manifest given without it keeps what the app has. `kit` makes the app from a kit (§3a).
   A file under `icons/` must be `icons/<id>.svg` and read as an icon (§2 "Icons"), or the call is refused naming the
   file and what to change; a save that adds icons past 12 is refused (`APP_ICONS_FULL`, naming the oldest: a new icon
   takes an old one's id, or `company_delete` removes one first). How to draw them, and that an ask for icons is one
-  call of files alone that never changes `manifest.emblem`, is said on `files`; a save of icons alone answers where the
+  call of files alone that never changes `manifest.emblem`, is the guide `icons` (§3d); a save of icons alone answers where the
   member picks one. The emblems are listed on `manifest.emblem` only: 24 names would put the description past 4096
   bytes.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
@@ -298,7 +299,8 @@ web does not already answer. What the kit adds is that the agent writes one file
   its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on
   your subscription it would be ideal probably"; a trial on his Mac that day read 28 captions, and one of them came
   back with sentences of the voice's own). Until then an explainer plays with captions alone.
-- **What an agent is told** stands on the manifest's `kit` in `save_app`'s schema: when a video is the right form
+- **What an agent is told** is the guide `explainer` (§3d; on `kit` in `save_app`'s schema until 14 November 2026,
+  where no model received it): when a video is the right form
   and when not, the calls of a scene, how to write captions for the ear, how to pace and lay out a stage, that every
   number comes from the company's files, and to look at more than the first frame before showing it. A test holds
   every call, icon and colour it names to the engine. After a save, `look` names what a read of `scenes.js` found:
@@ -353,7 +355,7 @@ call the web does not already answer.
 
 | File | Whose | What it is |
 | --- | --- | --- |
-| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `save_app`'s schema carries the four guides on `kit` |
+| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `app_guide` answers with it (§3d) |
 | pictures and videos | the agent's, written from a machine | named in the data by their path in the app's folder |
 | `engine.js` | Qorpera's | the kit's engine (`packages/runtime/kits/<kit>/engine.js`). The runtime holds each engine's and guide's text (`cloud-app-kit-engines.generated.ts`, written by `npm run generate:app-kits`, held to the sources by a test) |
 | `index.html` | Qorpera's | the page (`kitPage` in `cloud-app-kits.ts`) |
@@ -408,6 +410,9 @@ call the web does not already answer.
 Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
 its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
 app's screenshot by someone other than its maker. Pictures an agent generates are §3c.
+
+A model whose groups hold no input is refused as one without groups is (`APP_DATA_INVALID`): the engine would draw
+one line that says there is nothing to show.
 
 ## 3c. Pictures: make_picture (13 November 2026)
 
@@ -519,6 +524,38 @@ migration `20260930746000`, which only names the tool among a run's observations
   commit; `executing`, `ambiguous`, `cancelled` or `outcome_unknown` alone; nothing when there is none; a refusal when
   the key is bound to another input), with its SQL test, and a `CloudNativeToolOperations` method that asks it with
   the same envelope digest before the tool makes the picture.
+
+## 3d. Guides: app_guide (14 November 2026)
+
+What an agent must know to make a part of an app is long: a data kit's guide is about 5 KB, the explainer's 6 KB,
+a page's live data and changes 6 KB together. Until 14 November 2026 all of it, about 40 KB, stood on the fields of
+`save_app`'s schema (§3, §3a, §3b), on the reasoning that a description holds 4096 bytes and a schema 64 KiB.
+**No model ever received it.** The patched Codex sends no field description of a tool whose schema is 5,000 bytes
+or more as it sends it (probed that day with tools of rising size: 4,991 bytes kept every description, 5,000 lost
+them all; it also never sends `minimum`, `maximum`, `minLength`, `maxLength`, `maxItems`, `pattern` or `format`).
+`save_app`'s schema reached the model as 1,291 bytes of bare shape. The kits, live since v243, were filled from
+their names and one paragraph of the instructions: on production the one model app held `{"groups":[]}`, an
+agent's answer to the refusal "model.json has no groups".
+
+So a guide is a tool's answer, read when the part is made:
+
+- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `model`, `board`,
+  `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's guide
+  starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
+  reads nothing of the company and changes nothing: review class `read`, no receipt, no operationKey. Its one
+  database change is its name in the closed list of a run's observations (20260930762000).
+- **`save_app` saves a kit's own file (`<kit>.json`, `scenes.js`) only in a run that has read the kit's guide**:
+  otherwise `APP_GUIDE_UNREAD`, before anything is written, naming the guide to read. Which guides were read is held
+  by the app tools of the run's attempt: a run that goes on in a new attempt reads the guide again. A description that
+  says "read the guide first" is a request; this is the rule, since the failure it answers was silent for as long as
+  nobody read a request as the model received it. A save that leaves the kit's file alone (pictures, the manifest, a
+  concept's cover) needs no guide. The guides of a hand-written page are not held to a read: its page still opens
+  without them.
+- `save_app`'s fields say a line each: which kit draws which thing stays on `kit`, where the agent chooses; the
+  rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
+
+For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
+that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
 
 ## 4. Web
 
@@ -1028,9 +1065,13 @@ thread's "Quoted from an email" title).
 10. The data kits (§3b, 13 November 2026): four more names for the manifest's `kit`
     (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/{model,board,path,object}/`),
     the page, the pictures it names and the read of the data (`cloud-app-kits.ts`), `save_app` writing engine and page
-    with the guides on the schema field, and the agents' instructions: an app is an object, a model, an app or a
+    with the guides on the schema field (where no model received them: step 11), and the agents' instructions: an app is an object, a model, an app or a
     video, one app a thing, never a document or the state of someone's work (hire overlay v16). No migration, no node
     change and no change to the web's own code.
+11. Guides an agent receives (§3d, 14 November 2026): `app_guide`, the guides' text in `cloud-app-guides.ts`,
+    `save_app`'s fields a line each and its rule that a kit's file needs its guide read, and a model of no input
+    refused. One migration (20260930762000: the tool's name in the observations' list); no node change and no change
+    to the web.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

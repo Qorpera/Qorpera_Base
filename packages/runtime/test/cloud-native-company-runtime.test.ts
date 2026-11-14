@@ -1152,6 +1152,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// How a part of an app is made, read before it is made (20260930762000).
+				"app_guide",
 				// A picture the agent makes, on a Codex login's run (20260930746000).
 				"make_picture",
 				"company_account",
@@ -3352,6 +3354,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured on the tree with the kits, the company databases and the answer-first change.
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
+	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
+	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
+	// again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3364,6 +3369,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"app_guide",
 		"make_picture",
 		"update_wall",
 		"data_describe",
@@ -3402,10 +3408,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"6c7ed1d1f3674e0e254b99a4dad106d89f93f51245c348831787a4213d841f68",
+		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"61e7ecace302195b65a18a0bd78ec14f50a4ae165f698cf24f22ed5fcde1e153",
+		"c750ea6f9ecbbb9613b3249b1b0306c00d3109311de4b8f6ef8c28ecc29213d0",
 	);
 });
 
