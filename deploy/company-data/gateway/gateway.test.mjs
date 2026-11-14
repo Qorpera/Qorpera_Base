@@ -85,8 +85,9 @@ const mayRead = (env, userId, path) =>
 /** Data passes the stand-in made, by pass: what it kept, whether it was redeemed, and until when it lasts. */
 const PASSES = new Map();
 /** A run's data pass, as qorpera_run_data_pass makes it: database.toml and the files directly in tables/, queries/ and
- * actions/ of the database named (or of every database) that the run's requester may read. */
-const passFor = (env, userId, database = null, { ms = 60_000 } = {}) => {
+ * actions/ of the database named (or of every database) that the run's requester may read. `allow`: a held step a
+ * member said yes to, which only the platform puts in a pass. */
+const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined } = {}) => {
 	const files = [...FOLDERS[env]]
 		.filter(([path]) => {
 			const at = /^data\/([a-z][a-z0-9_]{0,39})\/(database\.toml|(tables|queries|actions)\/[^/]+)$/.exec(path);
@@ -104,6 +105,8 @@ const passFor = (env, userId, database = null, { ms = 60_000 } = {}) => {
 			requesterUserId: userId,
 			database,
 			files,
+			// The held step a member said yes to, as qorpera_run_data_pass_approved keeps it (20260930764000).
+			...(allow === undefined ? {} : { allow }),
 		},
 		redeemed: false,
 		until: Date.now() + ms,
@@ -2010,5 +2013,125 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.equal((await runAsk("apply", { database: "diary" }, { user: VIEWER })).value.applied, true);
 		const made = await runAsk("change", { database: "diary", change: "add-day", params: { day: "2026-11-14" } }, { user: VIEWER });
 		assert.deepEqual([made.status, made.value.changed], [200, 1], JSON.stringify(made.value));
+	});
+
+	it("applies a held step only for a run whose pass carries a member's yes to that step, its text and what it destroys", async () => {
+		const stock = async (text) => (await asAdmin(companyDatabase(ENV_D), text))[0];
+		const state = async () =>
+			JSON.stringify(
+				await stock(`select (select count(*) from stock.items) as items,
+					exists (select 1 from information_schema.columns where table_schema = 'stock' and table_name = 'items' and column_name = 'owner') as owner`),
+			);
+		const text = "delete from items where id > 90;\nalter table items drop column owner;\n";
+		put(ENV_D, { "data/stock/tables/002-clear.sql": text });
+		const gone = (await stock("select count(*)::int as n from stock.items where id > 90")).n;
+		assert.ok(gone > 0);
+		const before = await state();
+		const destroys = [
+			{ what: "deleted rows", object: "stock.items", rows: gone },
+			{ what: "dropped table column", object: "stock.items.owner" },
+		];
+		// Held, with what it would destroy and what a yes is for: the step, its text's hash, the hash of what it destroys.
+		const held = await runAsk("apply", { database: "stock" });
+		assert.deepEqual(states(held), ["001-items already", "002-clear held"]);
+		const { allow, ...rest } = held.value.results.at(-1);
+		assert.deepEqual(rest, { name: "002-clear", state: "held", detail: "It would destroy data, which waits for a member", destroys });
+		assert.match(allow, new RegExp(`^002-clear\\.${sha256(text)}\\.[0-9a-f]{64}$`));
+		const otherDestroys = allow.replace(/[0-9a-f]{64}$/, "0".repeat(64));
+		const otherText = `002-clear.${"0".repeat(64)}.${allow.slice(-64)}`;
+		// A check runs the step, keeps nothing, and says what the card shows.
+		const checked = await runAsk("apply", { database: "stock", check: allow });
+		assert.deepEqual([checked.status, checked.value], [200, { step: "002-clear", destroys }], JSON.stringify(checked.value));
+		assert.equal(await state(), before, "a check keeps nothing");
+		for (const [check, status, words] of [
+			["002-clear", 400, /check is a held step's allow/],
+			[7, 400, /check is a held step's allow/],
+			[`003-nope.${sha256(text)}.${"0".repeat(64)}`, 404, /No step 003-nope/],
+			[`001-items.${sha256(STOCK)}.${"0".repeat(64)}`, 409, /Step 001-items is applied already/],
+			[otherText, 409, /Step 002-clear was changed since it was held/],
+			[otherDestroys, 409, /What step 002-clear would destroy changed since it was held/],
+		]) {
+			const refused = await runAsk("apply", { database: "stock", check });
+			assert.equal(refused.status, status, `${check}: ${JSON.stringify(refused.value)}`);
+			assert.match(refused.value.error, words);
+		}
+		// No yes: a run's own word for it, a member's own apply, a pass that carries a yes to something else.
+		const pass = (allowed) => passFor(ENV_D, OWNER, "stock", { allow: allowed });
+		for (const [who, answer] of [
+			["a run that names the allow itself", await runAsk("apply", { database: "stock", allow })],
+			["a member on the members' door", await ask(owner, "apply", { database: "stock", allow }, ENV_D)],
+			["a yes to other rows", await runSend("apply", { database: "stock", pass: pass(otherDestroys) })],
+			["a yes to another text", await runSend("apply", { database: "stock", pass: pass(otherText) })],
+			["a yes to another step", await runSend("apply", { database: "stock", pass: pass(`003-clear.${allow.slice(10)}`) })],
+		]) {
+			assert.deepEqual(states(answer), ["001-items already", "002-clear held"], `${who}: ${JSON.stringify(answer.value)}`);
+			assert.equal(answer.value.results.at(-1).allow, allow, who);
+			assert.equal(await state(), before, who);
+		}
+		assert.equal(
+			(await runSend("apply", { database: "stock", pass: pass(otherDestroys) })).value.results.at(-1).detail,
+			"It would destroy data, and not what a member said yes to: it waits for a new yes",
+		);
+		// A row more to delete than the member was shown: the yes is not for that.
+		await asAdmin(companyDatabase(ENV_D), "insert into stock.items (id, name) values (600, 'late')");
+		const moved = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.deepEqual(states(moved), ["001-items already", "002-clear held"]);
+		assert.notEqual(moved.value.results.at(-1).allow, allow);
+		assert.equal(moved.value.results.at(-1).destroys[0].rows, gone + 1);
+		assert.equal((await runAsk("apply", { database: "stock", check: allow })).status, 409);
+		await asAdmin(companyDatabase(ENV_D), "delete from stock.items where id = 600");
+		assert.equal(await state(), before);
+		// A pass that is not a pass: its allow is no held step's.
+		assert.equal((await runSend("apply", { database: "stock", pass: pass("yes") })).status, 503);
+		// The yes: the step is applied, and says what it destroyed.
+		const applied = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.equal(applied.status, 200, JSON.stringify(applied.value));
+		assert.deepEqual(states(applied), ["001-items already", "002-clear applied"]);
+		assert.deepEqual(applied.value.results.at(-1), { name: "002-clear", state: "applied", destroyed: destroys });
+		assert.equal(applied.value.applied, true);
+		assert.deepEqual(await stock("select count(*)::int as n from stock.items where id > 90"), { n: 0 });
+		assert.equal(JSON.parse(await state()).owner, false);
+		const described = await runAsk("describe", { database: "stock" });
+		assert.deepEqual(described.value.databases[0].steps.applied.map((step) => step.name), ["001-items", "002-clear"]);
+		// The same yes again finds the step applied: nothing more is destroyed.
+		const again = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.deepEqual(states(again), ["001-items already", "002-clear already"]);
+		assert.equal((await runAsk("apply", { database: "stock", check: allow })).status, 409);
+	});
+
+	it("checks only the held step that is next to apply, and says when it fails or destroys nothing", async () => {
+		const drop = "drop table b;\n";
+		put(ENV_D, {
+			"data/yard/database.toml": 'format = "qorpera.database/v1"\n',
+			"data/yard/tables/001-make.sql": "create table a (id int primary key);\ninsert into a values (1), (2), (3);\ncreate table b (id int);\n",
+			"data/yard/tables/002-more.sql": "insert into a values (4);\n",
+			"data/yard/tables/003-drop.sql": drop,
+		});
+		const first = await runAsk("apply", { database: "yard" });
+		assert.deepEqual(states(first), ["001-make applied", "002-more applied", "003-drop held"]);
+		const allow = first.value.results.at(-1).allow;
+		assert.deepEqual(first.value.results.at(-1).destroys, [{ what: "dropped table", object: "yard.b" }]);
+		// A step after the held one waits behind it, whatever it does: its check is refused, and so is its apply.
+		const later = "insert into a values (5);\n";
+		put(ENV_D, { "data/yard/tables/004-later.sql": later });
+		const behind = await runAsk("apply", { database: "yard", check: `004-later.${sha256(later)}.${"0".repeat(64)}` });
+		assert.deepEqual([behind.status, behind.value.error], [409, "Step 003-drop waits before 004-later: apply the steps before it first"]);
+		assert.deepEqual(states(await runAsk("apply", { database: "yard" })), ["001-make already", "002-more already", "003-drop held"]);
+		// The held step's file changed to one that fails, and to one that destroys nothing.
+		put(ENV_D, { "data/yard/tables/003-drop.sql": "drop table nope;\n" });
+		const fails = await runAsk("apply", { database: "yard", check: `003-drop.${sha256("drop table nope;\n")}.${"0".repeat(64)}` });
+		assert.equal(fails.status, 400, JSON.stringify(fails.value));
+		assert.match(fails.value.error, /^Step 003-drop fails: table "nope" does not exist/);
+		put(ENV_D, { "data/yard/tables/003-drop.sql": "insert into a values (6);\n" });
+		const harmless = await runAsk("apply", { database: "yard", check: `003-drop.${sha256("insert into a values (6);\n")}.${"0".repeat(64)}` });
+		assert.deepEqual([harmless.status, harmless.value.error], [409, "Step 003-drop destroys nothing now: apply it without allow"]);
+		assert.deepEqual((await asAdmin(companyDatabase(ENV_D), "select count(*)::int as n from yard.a"))[0], { n: 4 }, "a check keeps nothing");
+		// The yes that was given is for the text that dropped the table: the step as it is now needs none, and applies.
+		put(ENV_D, { "data/yard/tables/003-drop.sql": drop });
+		const yes = await runSend("apply", { database: "yard", pass: passFor(ENV_D, OWNER, "yard", { allow }) });
+		assert.deepEqual(states(yes), ["001-make already", "002-more already", "003-drop applied", "004-later applied"], JSON.stringify(yes.value));
+		assert.deepEqual(yes.value.results[2].destroyed, [{ what: "dropped table", object: "yard.b" }]);
+		assert.equal(yes.value.results[3].destroyed, undefined);
+		assert.deepEqual((await asAdmin(companyDatabase(ENV_D), "select to_regclass('yard.b') is null as gone, (select count(*)::int from yard.a) as a"))[0], { gone: true, a: 5 });
 	});
 });

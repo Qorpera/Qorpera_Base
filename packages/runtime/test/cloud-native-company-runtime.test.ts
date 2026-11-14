@@ -3353,7 +3353,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	// On 14 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
-	// 20260930763000), so they moved again.
+	// 20260930763000), so they moved again. The same day data_apply took allow, a held step's, and says how a member
+	// is asked for a step that destroys data (20260930764000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3405,10 +3406,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"0cc161816f9bc8c09b9243dcd57b2f8603018556fe25611a5faaf0cdc9e0b615",
+		"ad4ce36474cd6fd6a42b7a1b3a9f006ac42990d4873079cf17e84ce6de576bd8",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"7a34fbb6712e0f1e65a3c50245877b4b55eca0cbd1159662728140c587aad5ec",
+		"b56184f71b327c9f264ad780e2334baa6aed53296185d930b1370ecfb643f51d",
 	);
 });
 

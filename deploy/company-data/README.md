@@ -63,7 +63,7 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | --- | --- | --- |
 | `query` | `{ database, question, params?, etag? }` | `{ columns, rows, more, asOf, etag }`, or `{ same: true, etag }` |
 | `watch` | `{ watches: [{ database, question, params?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait |
-| `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
+| `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys?, allow?, destroyed? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A `held` step would destroy data: `destroys` says what, and `allow` is what a member's yes is for (below). A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
 | `describe` | `{ database }` | `{ database, applied: [{ name, at }], tables: [{ name, rows?, rowsAbout?, columns }], companyBytes }` |
 | `change` | `{ database, change, params?, sha256? }` | `{ changed?, columns?, rows?, more?, asOf }`: `changed` is how many rows the statement wrote (a select says none); `columns`, `rows` and `more` are there when the statement gives rows back |
 | `change` | `{ database, change, params?, preview: true }` | `{ words, values, sha256 }`, and nothing runs |
@@ -130,9 +130,18 @@ door (node 2's through node 1); TLS ends at the gateway. The host holds the toke
 | Call | Body (with `pass`, and `texts` after a `need`) | Answer |
 | --- | --- | --- |
 | `describe` | `{ database? }` | `{ databases: [{ database, name, about, steps: { applied, waiting, changed, missing }, tables, questions: [{ name, words, parameters }], changes: [{ name, words, parameters }] }], companyBytes, limitBytes }` |
-| `apply` | `{ database }` | as a member's `apply` |
+| `apply` | `{ database }` | as a member's `apply`; a held step is applied when the pass carries its `allow` (below), and then says `destroyed` |
+| `apply` | `{ database, check: <allow> }` | `{ step, destroys }`, and nothing is applied: the held step named, which must be the next to apply, is run and rolled back, and both its text and what it would destroy must still be as `allow` says (else 409). It is what the member's card shows |
 | `query` | `{ database, question, params? }` or `{ database, sql, params? }` | `{ columns, rows, more, asOf }` |
 | `change` | `{ database, change, params? }` | as a member's `change`, the rows it gives back cut at an agent's 200 rows and 24 KiB |
+
+**A member's yes for a held step.** `allow` is `<step>.<sha256 of its text>.<sha256 of what it destroys>`, counted
+rows included. A step that destroys data is applied only for a run's pass that carries that very `allow`, which the
+platform puts there for a member's Allow on the card of the agent's `data_apply` call that this run used
+(`qorpera_run_data_pass_approved`, migration `20260930764000`; a plain pass names none). The gateway takes no word of the run's own for it (an
+`allow` in a call's body is not read), a member's own `apply` holds the step as before, and a pass whose `allow` is for
+another step, another text or other rows holds it again with the `allow` it has now. The same yes used again finds the
+step applied.
 
 A run's question or own read runs as a question does (the database folder's read login, read only, one statement), with
 an agent's limits: 15 s, 200 rows and 24 KiB an answer, `more: true` past them. `:viewer` is the member who asked the run

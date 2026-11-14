@@ -19,7 +19,11 @@ import {
 	httpsCompanyDataDoor,
 } from "@qorpera/runtime/cloud-data-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary, type CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	type CloudNativeActionReview,
+	CloudNativeToolBoundary,
+	type CloudToolResult,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_RUNTIME_TOOL_OPERATIONS,
 	CloudRuntimeDiagnosticError,
@@ -36,6 +40,14 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const PASS = "qorpera_run_data_pass";
+/** A pass that carries a member's yes to a held step (20260930764000). */
+const APPROVED = "qorpera_run_data_pass_approved";
+const ALLOW = `003-clear.${"a".repeat(64)}.${"b".repeat(64)}`;
+const REVIEW = "73000000-0000-4000-8000-0000000000aa";
+const DESTROYS = [
+	{ what: "deleted rows", object: "shop.orders", rows: 40 },
+	{ what: "dropped table column", object: "shop.orders.note" },
+];
 const READ = "qorpera_folder_read";
 const pass = () => ({
 	schema: "qorpera.data-pass/v1",
@@ -76,6 +88,8 @@ async function fixture(
 		platform?: (method: CloudCompanyPathRpc, args: Record<string, unknown>) => unknown;
 		apply?: boolean;
 		files?: Map<string, string>;
+		/** The automatic review, when the run has one: its approval's id reaches the tool. */
+		review?: CloudNativeActionReview;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -90,7 +104,7 @@ async function fixture(
 		call: vi.fn(async (method, args) => {
 			platformCalls.push({ method, args: structuredClone(args) });
 			if (options.platform) return options.platform(method, args);
-			if (method === PASS) return pass();
+			if (method === PASS || method === APPROVED) return pass();
 			if (method === READ) {
 				const path = args.p_path as string;
 				const text = files.get(path);
@@ -129,6 +143,7 @@ async function fixture(
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 		observability: new CloudRuntimeObservability({ assignmentId: binding.assignmentId, publish: async () => {} }),
+		...(options.review ? { review: options.review } : {}),
 	});
 	let callId = 0;
 	const invoke = async (name: string, args: Record<string, unknown>) => {
@@ -161,6 +176,7 @@ describe("the company data tools", () => {
 			DATA_CHANGE_DESCRIPTION,
 		]);
 		expect(DATA_APPLY_DESCRIPTION).toContain("it waits for a member to say yes");
+		expect(DATA_APPLY_DESCRIPTION).toContain("call data_apply again with that allow to ask a member on a card");
 		expect(DATA_CHANGE_DESCRIPTION).toContain("data/<database>/actions/<change>.sql");
 		expect(DATA_CHANGE_DESCRIPTION).toContain("A change that fails changes nothing.");
 		const worker = await fixture(() => ok({}), { apply: false });
@@ -302,6 +318,7 @@ describe("the company data tools", () => {
 						state: "held",
 						detail: "It would destroy data, which waits for a member",
 						destroys: [{ what: "deleted rows", object: "shop.orders", rows: 40 }],
+						allow: ALLOW,
 					},
 				],
 			}),
@@ -317,11 +334,141 @@ describe("the company data tools", () => {
 					name: "003-clear",
 					state: "held",
 					detail:
-						"It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
+						"It would destroy data, so it waits for a member to say yes; nothing changed. To ask them, call data_apply again with this step's allow.",
 					destroys: [{ what: "deleted rows", object: "shop.orders", rows: 40 }],
+					allow: ALLOW,
 				},
 			],
 		});
+		// A yes that is no longer for what the step would destroy: the step's new allow asks again.
+		const moved = await fixture(() =>
+			ok({
+				applied: false,
+				results: [
+					{
+						name: "003-clear",
+						state: "held",
+						detail: "It would destroy data, and not what a member said yes to: it waits for a new yes",
+						destroys: [{ what: "deleted rows", object: "shop.orders", rows: 41 }],
+						allow: ALLOW.replace(/b{64}$/, "c".repeat(64)),
+					},
+				],
+			}),
+		);
+		expect(JSON.parse((await moved.invoke("data_apply", { database: "shop" })).text).steps[0]).toEqual({
+			name: "003-clear",
+			state: "held",
+			detail:
+				"What it would destroy is no longer what the member said yes to, so nothing changed. To ask them again, call data_apply with this step's new allow.",
+			destroys: [{ what: "deleted rows", object: "shop.orders", rows: 41 }],
+			allow: ALLOW.replace(/b{64}$/, "c".repeat(64)),
+		});
+	});
+
+	it("asks a member with a held step's allow: the card's facts are the gateway's, and the yes goes to the platform for the pass", async () => {
+		const reviewed: unknown[] = [];
+		const f = await fixture(
+			({ body }) =>
+				body.check !== undefined
+					? ok({ step: "003-clear", destroys: DESTROYS })
+					: ok({ applied: true, results: [{ name: "003-clear", state: "applied", destroyed: DESTROYS }] }),
+			{
+				review: {
+					check: async (call) => {
+						reviewed.push(structuredClone(call.parsed));
+						return { run: true, reviewId: REVIEW };
+					},
+				},
+			},
+		);
+		const answer = await f.invoke("data_apply", { database: "shop", allow: ALLOW });
+		expect(answer).toMatchObject({ success: true, status: "ok" });
+		expect(JSON.parse(answer.text)).toEqual({
+			database: "shop",
+			applied: true,
+			steps: [{ name: "003-clear", state: "applied", destroyed: DESTROYS }],
+		});
+		// Before the review: the gateway runs the step, keeps nothing and says what it would destroy. That, never the
+		// agent's own words, is what the review and the card get.
+		expect(f.doorCalls.map((call) => [call.verb, Object.keys(call.body).sort()])).toEqual([
+			["apply", ["check", "database", "pass"]],
+			["apply", ["database", "pass"]],
+		]);
+		expect(f.doorCalls[0]?.body.check).toBe(ALLOW);
+		expect(reviewed).toEqual([{ database: "shop", allow: ALLOW, step: "003-clear", destroys: DESTROYS }]);
+		// After the yes: the pass is asked for with the approval's id, and the run's body names no allow of its own.
+		expect(f.platformCalls.map((call) => [call.method, call.args.p_database, call.args.p_review_id])).toEqual([
+			[PASS, "shop", undefined],
+			[APPROVED, "shop", REVIEW],
+		]);
+	});
+
+	it("applies no held step without a member's yes: no card here, a platform that knows of none, a step that changed", async () => {
+		// A run with no review cannot ask: the check ran, the apply did not.
+		const none = await fixture(({ body }) =>
+			body.check !== undefined ? ok({ step: "003-clear", destroys: DESTROYS }) : ok({ applied: true, results: [] }),
+		);
+		expect(await none.invoke("data_apply", { database: "shop", allow: ALLOW })).toMatchObject({
+			status: "denied",
+			text: "REFUSED: A step that destroys data is applied only after a member says yes on a card, and no card can be raised here. Nothing changed.",
+		});
+		expect(none.doorCalls).toHaveLength(1);
+		// A review the platform does not find a member's Allow behind: no pass, and the door is not asked to apply.
+		const unapproved = await fixture(
+			({ body }) =>
+				body.check !== undefined
+					? ok({ step: "003-clear", destroys: DESTROYS })
+					: ok({ applied: true, results: [] }),
+			{
+				review: { check: async () => ({ run: true, reviewId: REVIEW }) },
+				platform: (method) => {
+					if (method === APPROVED)
+						throw new CloudCompanyFolderRpcError(
+							"42501",
+							"DATA_APPROVAL_REQUIRED: a step that destroys data is applied only after a member approves it on a card",
+						);
+					return pass();
+				},
+			},
+		);
+		expect(await unapproved.invoke("data_apply", { database: "shop", allow: ALLOW })).toMatchObject({
+			status: "denied",
+			text: "REFUSED: No member has said yes to this step on a card, so nothing changed. Call data_apply with the step's allow again: it asks them.",
+		});
+		expect(unapproved.doorCalls).toHaveLength(1);
+		// A step that is no longer held as the allow says is refused before any review, in the gateway's words.
+		const asked = vi.fn(async () => ({ run: true as const, reviewId: REVIEW }));
+		const changed = await fixture(
+			() => ({
+				status: 409,
+				value: {
+					error: "Step 003-clear was changed since it was held: apply again to see what it would destroy now",
+				},
+			}),
+			{ review: { check: asked } },
+		);
+		expect(await changed.invoke("data_apply", { database: "shop", allow: ALLOW })).toMatchObject({
+			status: "denied",
+			text: "REFUSED: Step 003-clear was changed since it was held: apply again to see what it would destroy now",
+		});
+		// A check that names another step, or nothing it destroys, is no check; one that ends without an answer applied
+		// nothing, and never says the steps may still be applying.
+		for (const door of [
+			() => ok({ step: "004-other", destroys: DESTROYS }),
+			() => ok({ step: "003-clear", destroys: [] }),
+			() => ok({ step: "003-clear" }),
+			() => {
+				throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company data door call ended");
+			},
+			() => ({ status: 500, value: { error: "The data gateway failed" } }),
+		]) {
+			const odd = await fixture(door, { review: { check: asked } });
+			const answer = await odd.invoke("data_apply", { database: "shop", allow: ALLOW });
+			expect(answer.status).not.toBe("ok");
+			expect(answer.text).not.toMatch(/^REFUSED/);
+			expect(answer.text).not.toMatch(/may still be applying/);
+		}
+		expect(asked).not.toHaveBeenCalled();
 	});
 
 	it("says which steps still wait when the gateway's apply ran out of time, and to call data_apply again", async () => {
@@ -553,6 +700,10 @@ describe("the company data tools", () => {
 		])
 			expect((await f.invoke("data_query", args)).success, JSON.stringify(args).slice(0, 80)).toBe(false);
 		expect((await f.invoke("data_apply", {})).success).toBe(false);
+		for (const allow of ["003-clear", `${ALLOW}0`, ALLOW.toUpperCase(), 7, ""])
+			expect((await f.invoke("data_apply", { database: "shop", allow })).success, String(allow).slice(0, 30)).toBe(
+				false,
+			);
 		for (const args of [
 			{ database: "shop" },
 			{ change: "add-order" },

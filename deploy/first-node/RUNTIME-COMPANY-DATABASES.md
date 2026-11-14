@@ -260,9 +260,21 @@ checks each entry as the caller and asks for the texts it does not hold.
    another), aborts the transaction, so nothing is destroyed that the check did not see.
 3. If it destroyed nothing, it commits and is recorded as applied, with its hash, in the company's own database in
    the same transaction.
-4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy. In
-   the first slices a held step stays held. With slice 7 it becomes an approval of contract 16.2 that only a member
-   can give, never the reviewer and never a rule; with the member's yes the same step is applied.
+4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy, and
+   an `allow` for exactly that: the step, the hash of its text and the hash of what it would destroy, counted rows
+   included. In the first slices a held step stayed held. Since slice 7 it becomes an approval of contract 16.2 that
+   only a member can give, never the reviewer and never a rule; with the member's yes the same step is applied:
+   - An agent calls `data_apply` with the held step's `allow`. Before anything is asked, the gateway runs the step
+     once more, keeps nothing, and says what it would destroy now (`check`); a step that is no longer held as the
+     `allow` says is refused there. What the gateway said is what the member's card shows.
+   - That call is always asked on a card. A denial by the reviewer stands; nothing else it says, and no rule, lets
+     the step through.
+   - The gateway trusts no word of the run's for the yes. The platform says it: the run's data pass carries the
+     `allow` only when a member answered Allow on the card of this agent's call and this very run used that answer
+     (`qorpera_run_data_pass_approved`, 20260930764000).
+   - The gateway applies the step only for a pass that carries its `allow`, and only while the step's text and all
+     it destroys are still what the `allow` says. A row more or less to delete is another yes: the step is held
+     again with a new `allow`. Rows that change all the time are better deleted by a named change (§8).
 
 Updating rows in a step is not "destroying": last night's snapshot and the WAL hold what was there.
 
@@ -293,7 +305,8 @@ the gateway, so a company can make room.
 - **Agents make and change databases** by writing the files, as they write any of the company's work, and call
   `data_apply`. No member is asked.
 - **What destroys data waits for a member**: a step that drops or empties a table, drops a column or deletes rows; and
-  deleting a database's folder. Until slice 7 these are refused with their reason.
+  deleting a database's folder. A step is held and applied on a member's yes (§3, "A step"); deleting a database's
+  folder is refused with its reason until its own part of slice 7.
 - **Interfaces and, later, the public reach rows only through questions and changes kept as files.** They never send
   SQL of their own. Agents may ask any read, because they analyse.
 - **Nothing is public** unless a file marks it public (slice 8).

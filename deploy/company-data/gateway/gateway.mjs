@@ -27,6 +27,10 @@ const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1 };
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 24;
+/** What a member's yes to a held step is for (§3): the step, the hash of its text, and the hash of what it would
+ * destroy, as `<step>.<sha256>.<sha256>`. A held step's answer carries it as `allow`; a run's pass carries the one a
+ * member said yes to. A step is applied on a yes only when all three are still what the member was shown. */
+const TICKET = /^([0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*)\.([0-9a-f]{64})\.([0-9a-f]{64})$/;
 /** How long a call waits for a connection of a login's own before the pool gives up. */
 const CONNECT_MS = 5_000;
 /** A file of a database's API: a question is a named read in queries/, a change a named write in actions/. */
@@ -184,7 +188,8 @@ export class Platform {
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
 	}
 	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
-	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }> }`, or null for a pass that answers nothing. */
+	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass that answers
+	 * nothing. */
 	async redeemPass(pass) {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
 		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
@@ -212,6 +217,7 @@ export class Platform {
 			!ENVIRONMENT.test(answer.requesterUserId ?? "") ||
 			(answer.database !== null && !DATABASE_NAME.test(answer.database ?? "")) ||
 			!files ||
+			(answer.allow !== undefined && answer.allow !== null && !(typeof answer.allow === "string" && TICKET.test(answer.allow))) ||
 			files.length > 1000 ||
 			!files.every(
 				(file) => KEPT_PATH.test(file?.path ?? "") && SHA.test(file.sha256 ?? "") && Number.isSafeInteger(file.bytes) && file.bytes >= 0,
@@ -224,6 +230,8 @@ export class Platform {
 			requesterUserId: answer.requesterUserId,
 			database: answer.database,
 			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),
+			// The held step a member said yes to on its card, which this run used (20260930764000), or none.
+			allow: answer.allow ?? null,
 		};
 	}
 }
@@ -1128,7 +1136,12 @@ export class Gateway {
 	}
 
 	/** Applies a database folder's waiting steps, in order. Anyone who may read the steps may ask for it: a step that is
-	 * live in the folder was put there by someone the folder let write it. */
+	 * live in the folder was put there by someone the folder let write it. A step that would destroy data is held, and
+	 * its answer carries `allow`, what a member's yes is for. It is applied only for a run whose pass carries that very
+	 * `allow` (a member said yes on its card, and the platform kept it in the pass), and only while the step's text and
+	 * what it destroys are still what the member was shown.
+	 * `check: <allow>` applies nothing: it runs the held step named, which must be the next to apply, rolls it back
+	 * and answers `{ step, destroys }` when both are still as `allow` says. That is what the card shows. */
 	async apply(caller, environmentId, body) {
 		const began = Date.now();
 		const name = body.database;
@@ -1174,6 +1187,23 @@ export class Gateway {
 		for (const step of waiting)
 			if (newest !== undefined && step.name.slice(0, 3) <= newest.slice(0, 3))
 				refuse(400, `Step ${step.name} is numbered at or below ${newest}, which is applied: give it a higher number`);
+		const check = body.check === undefined ? null : TICKET.exec(typeof body.check === "string" ? body.check : "");
+		if (body.check !== undefined) {
+			if (!check) refuse(400, "check is a held step's allow");
+			const [, stepName, stepSha] = check;
+			if (applied.has(stepName)) refuse(409, `Step ${stepName} is applied already`);
+			const step = waiting.find((one) => one.name === stepName);
+			if (!step) refuse(404, `No step ${stepName} in ${root}/tables`);
+			if (waiting[0] !== step) refuse(409, `Step ${waiting[0].name} waits before ${stepName}: apply the steps before it first`);
+			if (step.sha256 !== stepSha) refuse(409, `Step ${stepName} was changed since it was held: apply again to see what it would destroy now`);
+			const text = await this.#text(database, step.sha256, body.texts, this.#limits.stepTextBytes);
+			if (text === null) return { need: [{ path: `${root}/tables/${step.name}.sql`, sha256: step.sha256 }] };
+			const outcome = await this.#step(database, name, n, step, text, { dry: true });
+			if (outcome.state === "failed") refuse(400, `Step ${stepName} fails: ${outcome.detail}`);
+			if (outcome.allow === undefined) refuse(409, `Step ${stepName} destroys nothing now: apply it without allow`);
+			if (outcome.allow !== body.check) refuse(409, `What step ${stepName} would destroy changed since it was held: apply again to see it`);
+			return { step: stepName, destroys: outcome.destroys };
+		}
 		const need = [];
 		const texts = new Map();
 		for (const step of waiting) {
@@ -1188,15 +1218,17 @@ export class Gateway {
 				for (const left of waiting.slice(index)) results.push({ name: left.name, state: "waiting" });
 				return { applied: false, more: true, results };
 			}
-			const outcome = await this.#step(database, name, n, step, texts.get(step.name));
+			const outcome = await this.#step(database, name, n, step, texts.get(step.name), { allow: caller.allow ?? null });
 			results.push(outcome);
 			if (outcome.state !== "applied") break;
 		}
 		return { applied: results.every((result) => result.state === "applied" || result.state === "already"), results };
 	}
 
-	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing. */
-	async #step(database, name, n, step, text) {
+	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing, or if what
+	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
+	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
+	async #step(database, name, n, step, text, { allow = null, dry = false } = {}) {
 		const client = await this.#pool(database, `${database}_o${n}`).connect();
 		try {
 			await client.query(
@@ -1236,13 +1268,27 @@ export class Gateway {
 					detail: `A step may not remove or switch off Qorpera's triggers: ${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}`,
 				};
 			}
-			if (effects.length > 0) {
+			const destroys = effects.map((effect) => ({ what: effect.kind, object: effect.object, ...(effect.rows === null ? {} : { rows: Number(effect.rows) }) }));
+			// A yes is for the step by name, its text and all it destroys, counted rows included: the hash of each.
+			const ticket =
+				destroys.length === 0
+					? null
+					: `${step.name}.${step.sha256}.${sha256(JSON.stringify(destroys.map((one) => [one.what, one.object, one.rows ?? null])))}`;
+			if (dry) {
+				await client.query("rollback");
+				return { name: step.name, state: ticket ? "held" : "harmless", ...(ticket ? { destroys, allow: ticket } : {}) };
+			}
+			if (ticket && allow !== ticket) {
 				await client.query("rollback");
 				return {
 					name: step.name,
 					state: "held",
-					detail: "It would destroy data, which waits for a member",
-					destroys: effects.map((effect) => ({ what: effect.kind, object: effect.object, ...(effect.rows === null ? {} : { rows: Number(effect.rows) }) })),
+					detail:
+						allow && TICKET.exec(allow)?.[1] === step.name
+							? "It would destroy data, and not what a member said yes to: it waits for a new yes"
+							: "It would destroy data, which waits for a member",
+					destroys,
+					allow: ticket,
 				};
 			}
 			await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
@@ -1255,7 +1301,8 @@ export class Gateway {
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
-			return { name: step.name, state: "applied" };
+			// Applied on a member's yes: what it destroyed, as they were shown it.
+			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
 			await client.query("rollback").catch(() => undefined);
 			throw storeProblem(error);
@@ -1573,7 +1620,7 @@ export class Gateway {
 			refuse(400, "Texts are given by their hash");
 		const kept = await this.#platform.redeemPass(body.pass);
 		if (!kept) refuse(401, "Not allowed");
-		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files };
+		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files, allow: kept.allow };
 		switch (route[1]) {
 			case "query":
 				return this.runQuery(caller, kept.environmentId, body);
