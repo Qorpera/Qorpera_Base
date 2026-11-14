@@ -241,11 +241,14 @@ async function dryNames(mine, kind) {
 	);
 	const identity = run.identity;
 	const context = contextOf(kind, identity);
+	// The folder client stands in too; the event tools check it acts for this run.
+	const actor = { runId: identity.runId.toLowerCase() };
+	const folder = new Proxy(standIn(), { get: (target, key) => (key === "actor" ? actor : target[key]) });
 	const made = [
-		...mine.cloudFolderFileTools({ folder: standIn(), operations: standIn(), identity }),
+		...mine.cloudFolderFileTools({ folder, operations: standIn(), identity }),
 		...toolsOf(mine, kind, context, wakeOf(kind, context.identity), {
 			binding,
-			folder: standIn(),
+			folder,
 			operations: standIn(),
 			identity,
 		}),
