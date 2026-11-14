@@ -1311,6 +1311,14 @@ request of another shape.
   `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_MEMBER_IN_CONTROL`,
   `DESKTOP_HELD_SINCE`, `DESKTOP_CONTROL_ENDED`); the moves on it ask SQL nothing. A pass records no action and renews no
   lease; the executor's read of it moves the machine's last use at most every 30 seconds.
+- The member's live picture (20260930745000): `qorpera_member_machine_stream_release(placement, boot, user, generation,
+  epoch)`, service_role only, read only (it writes and locks nothing), the machine's node's read for one release cycle
+  of a member's stream: `{schema: "qorpera.member-machine-stream-release/v1", state: "ok"}` or a refusal:
+  `STREAM_NOT_ALLOWED` (no longer an owner, admin or contributor, or the company is being deleted),
+  `MACHINE_NOT_RUNNING` (not running, or not on that boot or placement), `MACHINE_NEEDS_COMPANY_VIEW`, and for the
+  stream's hold `DESKTOP_MEMBER_IN_CONTROL` and `DESKTOP_HELD_SINCE` (shared) or `DESKTOP_CONTROL_ENDED` (private); then
+  the member's read check of what the machine read (`qorpera_folder_member_machine_reads`, 42501 with detail
+  `qorpera.test-machine/member-unreadable`). No page calls it; a page buys a ticket on the executor's pointer route.
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
   on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes

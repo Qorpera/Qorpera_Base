@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
+import { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
@@ -38,17 +39,21 @@ import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { HttpCloudMemberMachineScreenService } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
+import { CloudMemberMachineStreamListener } from "../../packages/runtime/src/cloud-member-machine-stream-http.ts";
 import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
-import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import { desktopRelay, LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import {
+	DESKTOP_STREAM_ROLE, type DesktopRelaySpec, desktopStreamProgramVersion, InstanceDesktop, runDesktopStreamInstance,
+} from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
 	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
-	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
+	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -57,6 +62,19 @@ import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 import { BrokerRepositoryFetch, publicGitHubTransport } from "./repository-fetch.ts";
+
+// This one program file is both the executor and every desktop's stream instance, which systemd starts with
+// DESKTOP_STREAM_ROLE as its first argument (qorpera-desktop-stream@.service). The role is decided here, before any of
+// the executor's own code runs: an instance reads no configuration and no credential (none is readable to it), and
+// does nothing else.
+const DESKTOP_STREAM_INSTANCE = process.argv[2] === DESKTOP_STREAM_ROLE;
+if (DESKTOP_STREAM_INSTANCE)
+	runDesktopStreamInstance({
+		// The connection systemd accepted, as this process's standard input (StandardInput=socket).
+		connection: new Socket({ fd: 0, readable: true, writable: true }),
+		version: desktopStreamProgramVersion(fileURLToPath(import.meta.url)),
+		openRelay: (spec) => desktopRelay(new LxdUnixClient(), spec),
+	});
 
 interface Config {
 	schema: "qorpera.coding-executor-service/v7";
@@ -100,11 +118,20 @@ interface Config {
 	 * and the project's publishable key (not a secret), at `supabaseUrl`. Absent: this executor takes no member's look,
 	 * but still serves the ones another executor sends it (the peer listener). One node of a deployment has it. */
 	memberScreens: { port: number; publishableKey: string } | null;
+	/** Members' live pictures (20260930745000): the live-picture listener on loopback `port`, reached only through node 1's
+	 * own Cloudflare tunnel (its connector on this host: `qorpera-screens-tunnel.service`). Tickets are bought on the
+	 * member listener, so it needs `memberScreens`. Absent: no stream is taken here (the peer listener still serves the
+	 * ones another executor asks of it). */
+	memberStreams: { port: number } | null;
+	/** Desktops watched for members' live pictures, each in a process of its own: the unix socket of
+	 * `qorpera-desktop-stream.socket` (deploy/coding-worker/), which systemd answers with one instance of
+	 * `qorpera-desktop-stream@.service` per connection. Absent: members' live pictures of this node's desktops are refused. */
+	desktopStreams: { socket: string } | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines", "memberScreens"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -152,6 +179,22 @@ function memberScreensConfig(value: unknown, taken: readonly number[]): Config["
 		typeof input.publishableKey !== "string" || !/^[A-Za-z0-9._-]{8,8192}$/.test(input.publishableKey))
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { port: Number(input.port), publishableKey: input.publishableKey };
+}
+function memberStreamsConfig(value: unknown, screens: Config["memberScreens"], taken: readonly number[]): Config["memberStreams"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (!screens || Object.keys(input).join() !== "port" || !Number.isSafeInteger(input.port) || Number(input.port) < 1024 ||
+		Number(input.port) > 65535 || taken.includes(Number(input.port)) || Number(input.port) === screens.port)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { port: Number(input.port) };
+}
+function desktopStreamsConfig(value: unknown): Config["desktopStreams"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (Object.keys(input).join() !== "socket" || typeof input.socket !== "string" ||
+		!/^\/run\/[A-Za-z0-9._-]{1,64}(\/[A-Za-z0-9._-]{1,64})?\.sock$/.test(input.socket))
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { socket: input.socket };
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -245,6 +288,10 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost, folder: folderConfig(config.folder),
 		memberScreens: memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
+		memberStreams: memberStreamsConfig(config.memberStreams,
+			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
+			[Number(config.commandPort), Number(config.peerCommandPort)]),
+		desktopStreams: desktopStreamsConfig(config.desktopStreams),
 	};
 }
 
@@ -332,6 +379,8 @@ export function codeHostRequestsOf(parts: {
  * member client participates in this loop. */
 export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.()) throw new Error("UNPRIVILEGED_LINUX_REQUIRED");
+	// This program as it was loaded: the desktops' instances must be the same (their units run this same file).
+	const programVersion = desktopStreamProgramVersion(fileURLToPath(import.meta.url));
 	if (!environment.CREDENTIALS_DIRECTORY) throw new Error("CODING_CREDENTIALS_REQUIRED");
 	const directory = environment.CREDENTIALS_DIRECTORY;
 	const credential = (name: string) => readCodingServiceCredential(directory, name);
@@ -451,6 +500,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
+		// Every watched desktop in a process of its own that systemd starts for each connection to the socket, in its own
+		// cgroup: it opens the relay itself, and no byte of the guest's is read in this process. Without the socket in
+		// the configuration, members' live pictures are refused here.
+		...(config.desktopStreams ? {
+			desktopStreams: (spec: DesktopRelaySpec, ended: () => void) => new InstanceDesktop(
+				(config.desktopStreams as { socket: string }).socket, spec, ended, { version: programVersion }),
+		} : {}),
 	}) : undefined;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).
 	const memberControl = config.memberScreens
@@ -491,6 +547,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			memberActLocal: localMemberMachineAct(machineHost),
 			memberStartLocal: localMemberMachineStart(machineHost),
 			memberPointerLocal: localMemberMachinePointer(machineHost),
+			memberStreamLocal: localMemberMachineStream(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -542,11 +599,17 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		pointer: (pointer, signal) => machineRouter.memberPointer(pointer, signal),
 		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
 	}) : undefined;
+	// Members' live pictures (20260930745000): loopback only, behind node 1's own tunnel; nothing of a stream is logged.
+	const memberStreams = config.memberStreams ? new CloudMemberMachineStreamListener({
+		host: "127.0.0.1", port: config.memberStreams.port,
+		admit: (ticket, origin) => machineRouter.admitMemberStream(ticket, origin),
+	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
 		await peerCommands.start(stop.signal);
 		await memberScreens?.start(stop.signal);
+		await memberStreams?.listen();
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -722,11 +785,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await commands.close();
 		await peerCommands.close();
 		await memberScreens?.close();
+		await memberStreams?.close();
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (!DESKTOP_STREAM_INSTANCE && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
 }

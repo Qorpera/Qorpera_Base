@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { type MachineStreamEnd, type MachineStreamMessage, openMachineStream } from "./machine-stream.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
 /** Why a look at an agent's desktop has no picture (migration 20260930712000; the executor's 409 codes): the machine is
@@ -136,12 +137,20 @@ const POINTER_REFUSALS: ReadonlySet<string> = new Set<MachinePointerRefusal>([
  * move on a pass, in the screen's own pixels. */
 export type MachinePointerRequest =
 	| { readonly begin: { readonly generation: number } | { readonly epoch: number; readonly seat: number } }
-	| { readonly pass: string; readonly x: number; readonly y: number };
+	| { readonly pass: string; readonly x: number; readonly y: number }
+	/** A live picture's ticket on that pass, for its hold (20260930745000): bought for this page's Origin. */
+	| {
+			readonly stream: {
+				readonly pass: string;
+				readonly hold: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+			};
+	  };
 /** A pass (its id and what is left of it), a move's end (`moved` false: dropped, never queued), why not, or no pointer
  * route at all (`unavailable`: a bridge or an executor from before 20260930744000; the window then keeps today's way). */
 export type MachinePointerAnswer =
 	| { readonly kind: "pass"; readonly pass: string; readonly milliseconds: number }
 	| { readonly kind: "moved"; readonly moved: boolean }
+	| { readonly kind: "ticket"; readonly ticket: string; readonly seconds: number }
 	| { readonly kind: "refused"; readonly code: MachinePointerRefusal }
 	| { readonly kind: "unavailable" };
 
@@ -186,6 +195,18 @@ export interface WebMachineScreens {
 	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
 	 * is `{}` (what to open there is for later). */
 	start(machineId: string, signal: AbortSignal): Promise<MachineStartAnswer>;
+	/** The desktop's live picture (20260930745000), on the member's pointer pass of a hold or a sharing: a ticket bought on
+	 * the pointer route, then one stream on it, every message to `onMessage`, until it ends (why) or `signal` aborts.
+	 * Absent when the build names no stream address: the window keeps its looks. */
+	stream?(
+		machineId: string,
+		on: {
+			readonly pass: string;
+			readonly hold: { readonly generation: number } | { readonly epoch: number; readonly seat: number };
+		},
+		onMessage: (message: MachineStreamMessage) => void,
+		signal: AbortSignal,
+	): Promise<MachineStreamEnd>;
 }
 
 /** The executor answers within 30 s; this covers the bridge on the way there and back. */
@@ -208,8 +229,11 @@ export function createWebMachineScreens(options: {
 	readonly route: (url: string) => string;
 	readonly accessToken: (signal: AbortSignal) => Promise<string>;
 	readonly fetch: typeof fetch;
+	/** The machine-stream address the build names (`wss://…`, 20260930745000); without it, no live picture. */
+	readonly streamUrl?: string;
+	readonly WebSocket?: typeof WebSocket;
 }): WebMachineScreens {
-	return {
+	const screens: WebMachineScreens = {
 		look: (machineId, { etag, watching }, signal) => {
 			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId))
 				return Promise.reject(new MachineScreenError("Invalid machine screen"));
@@ -342,16 +366,18 @@ export function createWebMachineScreens(options: {
 		},
 		pointer: (machineId, request, signal) => {
 			const whole = (value: number) => Number.isSafeInteger(value) && value >= 0;
+			const holdValid = (hold: { generation: number } | { epoch: number; seat: number }) =>
+				"generation" in hold ? whole(hold.generation) : whole(hold.epoch) && whole(hold.seat);
 			const valid =
 				"begin" in request
-					? "generation" in request.begin
-						? whole(request.begin.generation)
-						: whole(request.begin.epoch) && whole(request.begin.seat)
-					: UUID_PATTERN.test(request.pass) &&
-						whole(request.x) &&
-						whole(request.y) &&
-						request.x <= POINTER_MAX_X &&
-						request.y <= POINTER_MAX_Y;
+					? holdValid(request.begin)
+					: "stream" in request
+						? UUID_PATTERN.test(request.stream.pass) && holdValid(request.stream.hold)
+						: UUID_PATTERN.test(request.pass) &&
+							whole(request.x) &&
+							whole(request.y) &&
+							request.x <= POINTER_MAX_X &&
+							request.y <= POINTER_MAX_Y;
 			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId) || !valid)
 				return Promise.reject(new MachineScreenError("Invalid machine pointer"));
 			return withCloudDeadline(
@@ -365,7 +391,11 @@ export function createWebMachineScreens(options: {
 						method: "POST",
 						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
 						body: JSON.stringify(
-							"begin" in request ? { begin: request.begin } : { pass: request.pass, x: request.x, y: request.y },
+							"begin" in request
+								? { begin: request.begin }
+								: "stream" in request
+									? { stream: { pass: request.stream.pass, hold: request.stream.hold } }
+									: { pass: request.pass, x: request.x, y: request.y },
 						),
 						signal: requestSignal,
 						redirect: "error",
@@ -410,6 +440,18 @@ export function createWebMachineScreens(options: {
 						(answer.milliseconds as number) <= 10_000
 					)
 						return { kind: "pass", pass: answer.pass, milliseconds: answer.milliseconds as number };
+					if ("stream" in request) {
+						if (
+							keys === "schema,seconds,ticket" &&
+							typeof answer.ticket === "string" &&
+							/^[A-Za-z0-9_-]{43}$/.test(answer.ticket) &&
+							Number.isSafeInteger(answer.seconds) &&
+							(answer.seconds as number) >= 1 &&
+							(answer.seconds as number) <= 30
+						)
+							return { kind: "ticket", ticket: answer.ticket, seconds: answer.seconds as number };
+						throw new MachineScreenError("Invalid machine pointer answer");
+					}
 					if (!("begin" in request) && keys === "moved,schema" && typeof answer.moved === "boolean")
 						return { kind: "moved", moved: answer.moved };
 					throw new MachineScreenError("Invalid machine pointer answer");
@@ -468,4 +510,21 @@ export function createWebMachineScreens(options: {
 			);
 		},
 	};
+	const streamUrl = options.streamUrl;
+	if (streamUrl)
+		screens.stream = async (machineId, on, onMessage, signal) => {
+			// The ticket: on the member's pass, for this page's Origin (the bridge passes it on; the executor binds it).
+			const bought = await screens.pointer(machineId, { stream: { pass: on.pass, hold: on.hold } }, signal);
+			if (bought.kind === "unavailable") return { kind: "unavailable", delivered: false };
+			if (bought.kind === "refused") return { kind: "refused", code: bought.code, delivered: false };
+			if (bought.kind !== "ticket") return { kind: "failed", delivered: false };
+			return openMachineStream({
+				url: streamUrl,
+				ticket: bought.ticket,
+				onMessage,
+				signal,
+				...(options.WebSocket ? { WebSocket: options.WebSocket } : {}),
+			});
+		};
+	return screens;
 }
