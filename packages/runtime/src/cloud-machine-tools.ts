@@ -200,7 +200,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"On it, with machine_run: desktop start <company files, folders or URLs> starts the desktop and opens each on it (a folder under /company with an index.html, or an .html file, is served and opened as a site; the files stay in the company folder, so a change shows after a reload; add --lang da-DK --tz Europe/Copenhagen for a Danish company); desktop run <program> starts a program on it; desktop stop when the work is done; desktop help lists everything. " +
 	"See and drive the screen with machine_screen: one call takes one action (click, type, keys, scroll, open) and shows you the screen after it. " +
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
-	"Its disk is kept while the machine sleeps. It comes back with an empty disk only if its server ran out of disk, had no room for it at the wake, is gone, or moved to a new machine image; the result then says diskFreed. Keep what matters in the company's files. " +
+	"Its disk is kept while the machine sleeps. It comes back with an empty disk only if its server ran out of disk, had no room for it at the wake, or is gone or moved; the result then says diskFreed. Keep what matters in the company's files. Newer preinstalled tools come only on new machines. " +
 	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
 	"To wake a stopped machine, pass only machine with its name. " +
 	"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name. " +
@@ -247,7 +247,7 @@ export const CLOUD_MACHINE_READ_DESCRIPTION =
 export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCRIPTION} waitSeconds (1 to 300) waits until the command ends or that time passes, and answers at once when it has already ended; no model turn is spent.`;
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION = `Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result. ${FOLDER_REPORT}`;
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
-	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server; only if that server runs out of disk, has no room at the wake, is gone or moves to a new machine image does it come back with an empty disk, and its status then says diskFreed. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
+	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server; only if that server runs out of disk, has no room at the wake, or is gone or moved does it come back with an empty disk, and its status then says diskFreed. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
 export const CLOUD_MACHINE_DELETE_DESCRIPTION =
 	"Delete a machine and its disk. This cannot be undone. Save what you need first.";
 /** The services a coding value may be taken from (qorpera_coding_value_services, 20260930695000); the database checks
@@ -268,7 +268,7 @@ const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, 
 	MACHINE_NOT_RUNNING: "the machine is not running: start it, make or copy the key again, then call again",
 	DESKTOP_MEMBER_IN_CONTROL: `${MEMBER_IN_CONTROL}; then copy the key again and call again`,
 	MACHINE_IMAGE_WITHOUT_CODING_VALUES:
-		"this machine runs an earlier image that cannot save keys; a machine started on the current image can (one that sleeps wakes on it)",
+		"this machine runs an earlier image that cannot save keys; start a new machine to save one",
 	DESKTOP_NOT_RUNNING:
 		"the machine's desktop is not running, so it has no clipboard: desktop start, make the key in its browser, press the site's Copy, then call again",
 	CLIPBOARD_EMPTY:
@@ -295,7 +295,7 @@ const SCREEN_REFUSED: Readonly<Record<CloudMachineScreenRefusalCode, string>> = 
 	MACHINE_NEEDS_COMPANY_VIEW:
 		"this machine's disk holds the whole company folder, and this run, with the member it works for, may not read all of it, so it cannot see or drive its screen: use a machine this run started",
 	MACHINE_IMAGE_WITHOUT_SCREEN:
-		"this machine runs an earlier image without machine_screen; it gets it once it sleeps and wakes (machine_stop, then machine_start), or use machine_run with desktop commands meanwhile",
+		"this machine runs an earlier image without machine_screen: start a new machine to get it, or use machine_run with desktop commands",
 	MACHINE_BOOT_CHANGED: "the machine restarted meanwhile and its desktop started over: look before you act",
 	SCREEN_ACTION_TAKEN:
 		"this action was taken on the machine before and is never taken twice: look (no action) to see what came of it",

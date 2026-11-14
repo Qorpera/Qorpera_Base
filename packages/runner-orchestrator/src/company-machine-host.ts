@@ -89,7 +89,7 @@ const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
 /** The helper runs only on the boot SQL named (`$0`; else exit 97) and only where the image has it (`$2`; else exit 98,
- * an earlier image: the machine gets it once it sleeps and wakes from the current one). */
+ * an earlier image: a machine made from the current one has it). */
 const CODING_VALUE_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"';
 /** One JSON line: a box (five base64url parts) or a refusal's code. */
@@ -681,7 +681,7 @@ const FOLDER_ENDED: Readonly<Record<string, string>> = Object.freeze({
 /** Why a boot without a view of its own has no /company (#viewless). */
 const FOLDER_VIEWLESS = Object.freeze({
 	"old-helper":
-		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 	refused: "the company folder refused this machine's view",
 	closed: "the machine could not mount /company: the company folder closed each view it was handed",
 });
@@ -760,8 +760,8 @@ export interface CompanyMachineHostOptions {
 	storagePolicy: CloudCodingNasPolicy;
 	/** The sha-256 of the packaged machine guest helper the image carries. */
 	helperSha256: string;
-	/** Helpers of earlier images still on this node: their machines keep running until they sleep, and
-	 * wake fresh from the current image (their placement's policy is no longer the node's). */
+	/** Helpers of earlier images whose machines this node still runs or wakes on their own disks (20260930760000): trusted
+	 * as the current one is while any placement of their image exists, sleeping ones included. */
 	previousHelperSha256s?: readonly string[];
 	/** Given, the only earlier helpers that take the company folder as the current one does (its `folder-mount` and the
 	 * folder program), each also in previousHelperSha256s; an empty list: none. Absent: every earlier helper does, as
