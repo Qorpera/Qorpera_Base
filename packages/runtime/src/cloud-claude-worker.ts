@@ -316,7 +316,6 @@ export interface ClaudeWorkerLogins {
 	seal(base: ClaudeWorkerLoginBase, credentials: Uint8Array, signal: AbortSignal): Promise<ClaudeWorkerSealAnswer>;
 }
 
-
 /** Overwrites every regular file under `folder` (no link followed) with zeros of its own size, then removes the folder.
  * The run's login folder lives in the run host's own temporary root; whether that is memory or disk, what Claude Code
  * kept there (the credentials, its transcripts, its settings) is overwritten before it is removed. */
