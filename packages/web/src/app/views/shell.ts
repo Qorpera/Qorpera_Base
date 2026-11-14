@@ -2176,12 +2176,11 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	const going = ([...grid.children] as HTMLElement[]).filter(
 		(element) => !kept.has(element) && leavingTiles.has(element),
 	);
-	reconcile(grid, drawn);
-	for (const element of going) {
-		// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
-		element.removeAttribute("data-app-key");
-		grid.append(element);
-	}
+	// They stay where they stand, after the drawn tiles, never taken out and put back: that would start a plain fade
+	// (a CSS animation) again from whole (review F1 on #1795).
+	reconcile(grid, [...drawn, ...going]);
+	// The draw gave each its key again: out of the drawer's order while it goes, as when it first left.
+	for (const element of going) element.removeAttribute("data-app-key");
 	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
 	// collapsing").
 	const folding = parts.appFolding;

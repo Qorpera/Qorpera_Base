@@ -1908,8 +1908,22 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(
 				JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`) ?? "[]"),
 			).toEqual([]);
-			// The write follows the draw, and its answer draws again: the two apps below are still on their way then.
+			// The write follows the draw, and its answer draws again: the two apps below are still on their way then, and
+			// no draw took one out of the grid and put it back, which would start a plain fade again (review F1 on #1795).
+			const going = [...grid.querySelectorAll(".rail-app.is-leaving")];
+			expect(going).toHaveLength(2);
+			const taken: Node[] = [];
+			const record = (records: MutationRecord[]) => {
+				for (const entry of records) taken.push(...entry.removedNodes);
+			};
+			const watch = new MutationObserver(record);
+			watch.observe(grid, { childList: true });
 			await vi.advanceTimersByTimeAsync(0);
+			record(watch.takeRecords());
+			watch.disconnect();
+			expect(set).toHaveBeenCalledOnce();
+			expect(taken.filter((node) => going.includes(node as Element))).toEqual([]);
+			expect(going.every((tile) => tile.parentElement === grid)).toBe(true);
 			const made = set.mock.calls.at(-1)![1];
 			const [id] = Object.keys(made.groups);
 			expect(made.groups).toEqual({ [id!]: { mine: { name: "Group" } } });
