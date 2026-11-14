@@ -1401,13 +1401,19 @@ it("gives a stack's app the open questions and their answers, which its buttons 
 	expect(full.look).not.toContain(LOOK);
 	// Saved again, the manifest is not written, and the look says it again until answers has room.
 	const fullAgain = read(
-		await f.call("save_app", save("full", "change-3", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }])),
+		await f.call(
+			"save_app",
+			save("full", "change-3", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }]),
+		),
 	);
 	expect(fullAgain.files.map((file: { path: string }) => file.path)).not.toContain("apps/full/app.toml");
 	expect(fullAgain.look).toContain(FULL);
 	// Given room, answers joins: the look names only what was added.
 	const roomy = read(
-		await f.call("save_app", save("full", "change-4", { title: "Full", reads: ["questions"], writes: tables.slice(1) }, [])),
+		await f.call(
+			"save_app",
+			save("full", "change-4", { title: "Full", reads: ["questions"], writes: tables.slice(1) }, []),
+		),
 	);
 	expect(manifestOf(f, "full")).toMatchObject({ reads: ["questions"], writes: [...tables.slice(1), "answers"] });
 	expect(roomy.look).toContain(

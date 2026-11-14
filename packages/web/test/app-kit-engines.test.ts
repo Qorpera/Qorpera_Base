@@ -1362,7 +1362,11 @@ describe("the stack kit's engine", () => {
 		const title = "Pay the October parts bill from Nordic Supply AS?";
 		const { qorpera } = await open(
 			"stack",
-			JSON.stringify({ lang: "en", title: "Wants your yes", cards: [{ id: "parts", title, value: 4200, unit: "kr" }] }),
+			JSON.stringify({
+				lang: "en",
+				title: "Wants your yes",
+				cards: [{ id: "parts", title, value: 4200, unit: "kr" }],
+			}),
 			(bridge) => {
 				bridge.questions = [ask("q-long", title)];
 			},
