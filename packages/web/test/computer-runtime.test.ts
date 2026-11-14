@@ -1422,6 +1422,38 @@ describe("an agent's computer window", () => {
 		expect(s.looks.at(-1)?.url).toContain(machine(1).machineId);
 	});
 
+	it("follows the list at once when the large view is left with Escape, however slowly the window was looking (review r1 F2 of #1826)", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.fallback = { picture: 1 };
+		const p = panel(s);
+		await flush();
+		inBox(p, 800, 500);
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		// The agent goes to its other computer; the member stays on this one, and its picture stands still: the looks
+		// slow down to one every few seconds.
+		s.state.machines = [machine(2), machine(1)];
+		s.hint("machines");
+		await flush();
+		await advance(60_000);
+		expect(p.machineId).toBe(machine(1).machineId);
+		// Right after a look, so the next is seconds away.
+		const looked = s.looks.length;
+		for (let waited = 0; s.looks.length === looked && waited < 10_000; waited += 100) await advance(100);
+		expect(s.looks.length).toBeGreaterThan(looked);
+		const back = p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
+		back.focus();
+		key(back, "Escape");
+		await flush();
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		// The window is on the agent's computer now, not when its slow wait runs out.
+		s.state.fallback = { picture: 2 };
+		await advance(LOOK_EVERY_MS);
+		expect(p.machineId).toBe(machine(2).machineId);
+		expect(s.looks.at(-1)?.url).toContain(machine(2).machineId);
+	});
+
 	it("says the member watches each machine they switch to, and not only the first (review r1 F2)", async () => {
 		const s = setup({ machines: [machine(1), machine(2)] });
 		s.state.answers.push({ picture: 1 });
@@ -1998,6 +2030,50 @@ describe("a member's start of a computer for an agent that has none (20260930730
 		await advance(LOOK_EVERY_MS);
 		expect(mark(p)).toBe("Live");
 		expect(starts(s)).toHaveLength(1);
+	});
+
+	it("is on the computer it made only while its start is on its way; after that the window follows the list, as for any (review r1 F1 of #1826)", async () => {
+		const s = setup({ machines: [machine(1, { desktopCapable: false })] });
+		const p = panel(s);
+		await flush();
+		s.state.computerAnswers.push({ started: machine(9, { state: "waiting", waitingFor: "room" }) });
+		action(p)!.click();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		// While it starts, the agent gets another computer that runs, and the list names that one first: the window
+		// stays on the one the member just made.
+		s.state.machines = [machine(2), machine(1, { desktopCapable: false }), machine(9, { state: "starting" })];
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(p.machineId).toBe(machine(9).machineId);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(s.looks.filter((look) => look.url.includes(machine(2).machineId))).toEqual([]);
+		// It runs: the window turns ITS screen on and looks at IT until its picture has come. Its start is done then.
+		s.state.machines = [machine(2), machine(1, { desktopCapable: false }), machine(9)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.state.fallback = { picture: 2 };
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toEqual([`/v1/member-machine-screens/${profileA.profileId}/${machine(9).machineId}/start`]);
+		await advance(LOOK_EVERY_MS);
+		const lookedAt = (n: number) => s.looks.filter((look) => look.url.includes(machine(n).machineId)).length;
+		expect(lookedAt(9)).toBeGreaterThanOrEqual(2);
+		// From here the list decides, as for any computer: it names the agent's other one first, and the window is on
+		// that one. The computer the member made is not held for good (asleep later, it would have kept the window on a
+		// sleeping computer while the agent worked at another).
+		await advance(LOOK_EVERY_MS * 2);
+		expect(p.machineId).toBe(machine(2).machineId);
+		expect(s.looks.at(-1)?.url).toContain(machine(2).machineId);
+		expect(mark(p)).toBe("Live");
+		const nine = lookedAt(9);
+		s.state.machines = [machine(2), machine(1, { desktopCapable: false }), machine(9, { state: "stopped" })];
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS * 2);
+		expect(p.machineId).toBe(machine(2).machineId);
+		expect(lookedAt(9)).toBe(nine);
 	});
 
 	it("wakes the agent's own computer when the database answers it, and turns its screen on", async () => {

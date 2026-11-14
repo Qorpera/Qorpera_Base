@@ -449,6 +449,10 @@ export class ComputerPanel {
 	#heldSince: number | undefined;
 	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
 	#chosen: string | undefined;
+	/** The computer the member made with Start one (#startComputer): the window is on it while its start is on its way
+	 * (the wish for it stands), whatever the list names first meanwhile; after that the list decides, as for any (review
+	 * r1 F1 of #1826: held for good, the window would have stayed on it asleep while the agent worked at another). */
+	#started: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
 	/** The machine whose picture is up. */
@@ -630,6 +634,10 @@ export class ComputerPanel {
 				this.#setExpanded(expanded);
 				// The line that says the computer is shared was said: once is enough (20260930734000).
 				if (!expanded && this.#introShown) this.#introduce = false;
+				// Back in the row the window follows the list again (#pick holds it only in the large view): the loop
+				// looks now, not when its wait runs out, which is seconds once the picture stood still (review r1 F2 of
+				// #1826).
+				if (!expanded) this.#quicken();
 				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701): the member's own
 				// doing, so nothing is said (review r5 F2), and before the redraw, which would take it for one without it.
 				if (!expanded) this.#endShared();
@@ -2294,13 +2302,17 @@ export class ComputerPanel {
 
 	/** The machine the window shows: the first with a screen, as the list names them (running ones first, the one whose
 	 * screen the agent used last before the others), so the window follows the agent and a member chooses nothing. Two
-	 * things hold it: one the member just started with Start one is shown while the agent has it, whatever the list's
-	 * order (`#chosen`; the tests' `choose` sets it too); and the one the member is at in the large view, while it
-	 * runs. */
+	 * things hold it for a while: the one the member just made with Start one, while its start is on its way (`#started`
+	 * and the wish for it); and the one the member is at in the large view, while it runs. (`#chosen` is the tests'
+	 * `choose` alone.) */
 	#pick(): MemberAgentMachine | undefined {
 		const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-		const started = desktops.find((machine) => machine.machineId === this.#chosen);
-		if (started) return started;
+		const chosen = desktops.find((machine) => machine.machineId === this.#chosen);
+		if (chosen) return chosen;
+		if (this.#started !== undefined && this.#wantOn?.machineId === this.#started && Date.now() < this.#wantOn.until) {
+			const started = desktops.find((machine) => machine.machineId === this.#started);
+			if (started) return started;
+		}
 		// In the large view the member is at this computer, clicking and typing on it: the window stays on it while it
 		// runs, whatever the agent drives meanwhile, and follows the list again from the row. (The switcher gave them
 		// this; without it the list alone would take the screen from under their hands.)
@@ -2637,8 +2649,8 @@ export class ComputerPanel {
 			if (!this.#pick()) this.#show("noStart");
 			return;
 		}
-		// The computer just started is the one the window shows while the agent has it, wherever the list puts it.
-		this.#chosen = answer.machineId;
+		// The computer just made is the one the window shows while its start is on its way, wherever the list puts it.
+		this.#started = answer.machineId;
 		this.#wantOn = { machineId: answer.machineId, until: Date.now() + WANT_ON_MS };
 		this.#startEnded = undefined;
 		this.#startAnswered = undefined;
