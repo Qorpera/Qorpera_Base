@@ -252,13 +252,14 @@ describe("the vault seals back what Claude Code changed", () => {
 		captureOutput();
 		const f = standIn();
 		const base = { binding: binding(), claudeLoginId: f.login.id, baseVersion: 1, baseEnvelopeSha256: f.sha() };
-		for (const files of [
+		const refusedFiles: Record<string, string>[] = [
 			{ ".credentials.json": b64(RENEWED_CREDENTIALS), "settings.json": b64("{}") },
 			{ ".claude.json": b64(CANARY_SETTINGS) },
 			{ ".credentials.json": "not base64!" },
 			{ ".credentials.json": b64("x") },
 			{ ".credentials.json": b64("x".repeat(16 * 1024 + 1)) },
-		])
+		];
+		for (const files of refusedFiles)
 			await expect(f.vault.sealBack({ ...base, files }, AbortSignal.timeout(5000))).rejects.toThrow();
 		await expect(
 			f.vault.sealBack(
