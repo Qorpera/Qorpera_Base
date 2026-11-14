@@ -875,7 +875,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
 .computer-panel > .computer-opener { position: absolute; top: 6px; right: 34px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
 .computer-panel:hover > .computer-opener, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-opener, .computer-panel > .computer-opener.menu-open { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) > .computer-opener, .computer-panel.is-entered > .computer-opener { opacity: 0; pointer-events: none; }
 .computer-panel.is-entered > .computer-opener { display: none; }
 .computer-panel .computer-pickers { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .computer-panel.is-entered .machine-screen .computer-opener { color: rgb(255 255 255 / 82%); filter: none; }
