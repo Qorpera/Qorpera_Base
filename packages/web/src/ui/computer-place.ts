@@ -3,7 +3,8 @@
  * - a press on the preview focuses it, and that focus is marked (is-pointer-focus, read by the stylesheet) so it does
  *   not keep the hover controls up once the pointer has left; keyboard focus clears the mark and shows them;
  * - the large view covers the thread the row stands in (its `.thread-body`): the panel is fixed to that box while it
- *   is entered, since the row scrolls with the thread. Called as the view enters, before its zoom moves it.
+ *   is entered, since the row scrolls with the thread. Called as the view enters, and again whenever the thread's size
+ *   changes: also WHILE the view's zoom moves and scales the panel, so nothing here is read from the panel itself.
  * Returns `place`, which sets that box from the thread's place on the page (or clears it while not entered). */
 export function attachComputerPlace(panel: HTMLElement, signal: AbortSignal): () => void {
 	// Only the primary button moves focus: a press that moves none (a right click, or a button in a browser whose buttons
@@ -67,19 +68,24 @@ export function attachComputerPlace(panel: HTMLElement, signal: AbortSignal): ()
 				observer.observe(thread);
 			}
 		}
-		for (const name of BOX) panel.style.removeProperty(name);
-		if (!thread) return;
+		const parent = panel.parentElement;
+		if (!thread || !parent) {
+			for (const name of BOX) panel.style.removeProperty(name);
+			return;
+		}
 		// A fixed box is placed against the window, or against an ancestor that contains it (a container query's
-		// container may): read where the panel lands with the box at nothing, and set the box from there.
-		const style = getComputedStyle(panel);
-		const at = panel.getBoundingClientRect();
-		const inset = (value: string) => Number.parseFloat(value) || 0;
-		const frame = {
-			top: at.top - inset(style.top),
-			left: at.left - inset(style.left),
-			right: at.right + inset(style.right),
-			bottom: at.bottom + inset(style.bottom),
-		};
+		// container may). Where that is, a still probe beside the panel says: fixed as the panel is, at nothing on every
+		// side, never drawn. It is NOT read from the panel: the large view's zoom moves and scales the panel while it
+		// enters, the thread's observer calls here during it, and a reading of the moving panel put the box partly off
+		// the window (seen live on 14 Nov 2026: top -102px, right -109px, bottom -226px in a 1280 by 800 window).
+		const probe = document.createElement("div");
+		probe.setAttribute("data-computer-place-probe", "");
+		probe.setAttribute("aria-hidden", "true");
+		probe.style.cssText =
+			"position: fixed; top: 0; left: 0; right: 0; bottom: 0; visibility: hidden; pointer-events: none;";
+		parent.insertBefore(probe, panel);
+		const frame = probe.getBoundingClientRect();
+		probe.remove();
 		const box = thread.getBoundingClientRect();
 		const values = [box.top - frame.top, box.left - frame.left, frame.right - box.right, frame.bottom - box.bottom];
 		for (const [index, name] of BOX.entries()) panel.style.setProperty(name, `${Math.round(values[index] ?? 0)}px`);
