@@ -91,7 +91,12 @@ function dayFormat(timeZone: string | null | undefined): Intl.DateTimeFormat {
 	let format = dayFormats.get(zone);
 	if (!format) {
 		try {
-			format = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" });
+			format = new Intl.DateTimeFormat("en-CA", {
+				timeZone: zone,
+				year: "numeric",
+				month: "2-digit",
+				day: "2-digit",
+			});
 		} catch {
 			// A name this runtime's time zone data does not know.
 			return dayFormat(BANK_TIME_ZONE_FALLBACK);
