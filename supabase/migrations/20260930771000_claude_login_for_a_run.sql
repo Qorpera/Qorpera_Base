@@ -13,7 +13,9 @@
 --   for an open; the login is the one its dispatch recorded, of the member who asked; the member's Claude Code lease is
 --   this run's (its wake is this run's, and it is live). A seal-back also comes after the worker reported or was
 --   cancelled, while that lease is this run's and live: Claude Code renewed the sign-in at start, and the renewed file
---   must not be lost because the worker's state moved first. Anything else is refused whole (42501) and names nothing.
+--   must not be lost because the worker's state moved first. The vault re-opens the login for a seal-back through its own
+--   entry (qorpera_open_claude_login_for_seal_back), never through the open route's. Anything else is refused whole
+--   (42501) and names nothing.
 -- * What the login must be now: active (a signed-out or replaced login answers SIGNED_OUT), and its member on the
 --   Claude list with the sign-in open in this company (else NOT_OPEN): the run host tells the agent so in words.
 -- * The seal-back is a compare-and-swap on the version and envelope the run opened: the version goes up by one; a stale
@@ -36,10 +38,11 @@ end $$;
 
 alter table public.qorpera_claude_logins add column version bigint not null default 1 check (version >= 1);
 
--- The run's Claude login (any status) after every check of who asks; the row locked for a seal-back (p_lock). An open
--- needs the worker at work; a seal-back does not (the lease being this run's and live is what ties it to this run).
+-- The run's Claude login (any status) after every check of who asks; the row locked for the seal itself (p_lock). An open
+-- needs the worker at work (p_at_work); a seal-back, and the vault's re-open for it, do not (the lease being this run's
+-- and live is what ties them to this run).
 create function public.qorpera_claude_login_run(p_broker_authority_id uuid, p_broker_capability_sha256 text,
-	p_binding jsonb, p_lock boolean)
+	p_binding jsonb, p_lock boolean, p_at_work boolean)
 returns public.qorpera_claude_logins
 language plpgsql security definer set search_path = '' as $$
 declare
@@ -67,7 +70,7 @@ begin
 	where lease.owner_user_id = v_worker.requested_by_user_id;
 	if v_run.id is null or v_run.profile_id is distinct from v_authority.profile_id
 		or v_worker.id is null or v_worker.species is distinct from 'in-house'
-		or v_worker.harness is distinct from 'claude-code' or (not p_lock and v_worker.state is distinct from 'active')
+		or v_worker.harness is distinct from 'claude-code' or (p_at_work and v_worker.state is distinct from 'active')
 		or v_principal.id is null or public.qorpera_company_account_vault(v_authority.profile_id) is distinct from v_principal.id
 		or v_login.id is null or v_login.principal_id is distinct from v_principal.id
 		or v_login.owner_user_id is distinct from v_worker.requested_by_user_id
@@ -80,7 +83,7 @@ begin
 	end if;
 	return v_login;
 end $$;
-revoke all on function public.qorpera_claude_login_run(uuid, text, jsonb, boolean)
+revoke all on function public.qorpera_claude_login_run(uuid, text, jsonb, boolean, boolean)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- Why the run's login cannot be used now, as a code the run host turns into words; null when it can.
@@ -96,14 +99,16 @@ revoke all on function public.qorpera_claude_login_run_refusal(public.qorpera_cl
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- The run's Claude login as the vault opens it: the sealed files with their digest, the member and key to open them
--- with, and the version in their identity; or a refusal the run host turns into words.
-create function public.qorpera_open_claude_login_for_run(p_broker_authority_id uuid, p_broker_capability_sha256 text,
-	p_binding jsonb)
+-- with, and the version in their identity; or a refusal the run host turns into words. p_at_work: the worker must be at
+-- work (an open), or not (the vault's re-open for a seal-back).
+create function public.qorpera_claude_login_opened(p_broker_authority_id uuid, p_broker_capability_sha256 text,
+	p_binding jsonb, p_at_work boolean)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_login public.qorpera_claude_logins%rowtype; v_refusal text;
 begin
 	-- 20260930771000.
-	v_login := public.qorpera_claude_login_run(p_broker_authority_id, p_broker_capability_sha256, p_binding, false);
+	v_login := public.qorpera_claude_login_run(p_broker_authority_id, p_broker_capability_sha256, p_binding, false,
+		p_at_work);
 	v_refusal := public.qorpera_claude_login_run_refusal(v_login,
 		(select authority.profile_id from public.qorpera_cloud_secret_broker_authorities authority
 			where authority.id = p_broker_authority_id));
@@ -115,6 +120,25 @@ begin
 		'version', v_login.version, 'envelopeSha256', v_login.envelope_sha256,
 		'encryptedEnvelopeBase64', encode(v_login.encrypted_envelope, 'base64'));
 end $$;
+revoke all on function public.qorpera_claude_login_opened(uuid, text, jsonb, boolean)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- The open route's: for a worker at work only (a worker that has reported or was cancelled gets nothing).
+create function public.qorpera_open_claude_login_for_run(p_broker_authority_id uuid, p_broker_capability_sha256 text,
+	p_binding jsonb)
+returns jsonb language sql security definer set search_path = '' as $$
+	-- 20260930771000.
+	select public.qorpera_claude_login_opened(p_broker_authority_id, p_broker_capability_sha256, p_binding, true)
+$$;
+
+-- The vault's re-open for a seal-back, and only that: every check of the open but the worker at work, so a run whose
+-- worker reported or was cancelled while its lease is this run's and live still seals back what Claude Code renewed.
+create function public.qorpera_open_claude_login_for_seal_back(p_broker_authority_id uuid,
+	p_broker_capability_sha256 text, p_binding jsonb)
+returns jsonb language sql security definer set search_path = '' as $$
+	-- 20260930771000.
+	select public.qorpera_claude_login_opened(p_broker_authority_id, p_broker_capability_sha256, p_binding, false)
+$$;
 
 -- The credentials Claude Code renewed during the run, sealed by the vault under the member's key as version
 -- p_base_version + 1, replacing the version the run opened: a compare-and-swap on that version and its envelope.
@@ -135,7 +159,7 @@ begin
 		or encode(extensions.digest(v_envelope, 'sha256'), 'hex') <> p_envelope_sha256 then
 		raise exception 'Claude login seal-back is invalid' using errcode = '22023'; end if;
 	-- The row stays locked to this transaction's end: two seal-backs of one login queue here.
-	v_login := public.qorpera_claude_login_run(p_broker_authority_id, p_broker_capability_sha256, p_binding, true);
+	v_login := public.qorpera_claude_login_run(p_broker_authority_id, p_broker_capability_sha256, p_binding, true, false);
 	if v_login.id is distinct from p_claude_login_id then
 		raise exception 'Claude login is unavailable to this run' using errcode = '42501'; end if;
 	v_refusal := public.qorpera_claude_login_run_refusal(v_login,
@@ -165,8 +189,10 @@ begin
 end $$;
 
 revoke all on function public.qorpera_open_claude_login_for_run(uuid, text, jsonb),
+	public.qorpera_open_claude_login_for_seal_back(uuid, text, jsonb),
 	public.qorpera_seal_claude_login_back(uuid, text, jsonb, uuid, bigint, text, text, text, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_open_claude_login_for_run(uuid, text, jsonb),
+	public.qorpera_open_claude_login_for_seal_back(uuid, text, jsonb),
 	public.qorpera_seal_claude_login_back(uuid, text, jsonb, uuid, bigint, text, text, text, text)
 	to qorpera_secret_broker;

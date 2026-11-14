@@ -6,15 +6,16 @@
 -- 1. The open: the sealed files with their digest, the member and key, version 1.
 -- 2. Who may ask, each refused whole (42501) and naming nothing: another company's broker authority, a wrong capability,
 --    the agent's own conversation run, a plain worker's run, the run once its member's lease is not its own (taken by
---    another wake, or its wake ended), the run once its worker has reported or was cancelled (it opens nothing, but
---    still seals back while its lease is this run's and live; once the wake or the job ended it seals nothing), and a
+--    another wake, or its wake ended), the run once its worker has reported or was cancelled (the open route gives it
+--    nothing, but the vault's own re-open for a seal-back does and it still seals back while its lease is this run's and
+--    live; once the wake or the job ended neither), and a
 --    seal naming another login.
 -- 3. The seal-back: a compare-and-swap on the version and envelope opened; the version goes up by one; a repeat of the
 --    saved seal answers it again; a stale base answers stale and the newer envelope stays; a key other than the
 --    login's, an envelope that is not its digest, and shapes out of bounds are invalid (22023).
 -- 4. What the login must be now: signed out (the member signed in again) answers SIGNED_OUT to the open and the seal;
 --    the member taken off the Claude list between the dispatch and the open answers NOT_OPEN; on again, open.
--- 5. Only the vault's own role calls the two functions; the inner check is nobody's.
+-- 5. Only the vault's own role calls the three functions; the inner checks are nobody's.
 -- The vault's calls run in the vault's own session (qorpera_model_login_authority asks session_user): each section's
 -- checks run as that session, through a function that may also change rows to set up a case.
 
@@ -54,6 +55,11 @@ $$;
 create function pg_temp.c4b_open(p_binding jsonb default null, p_authority uuid default '12680000-0000-4000-8000-000000000040',
 	p_capability text default repeat('c', 64)) returns jsonb language sql as $$
 	select public.qorpera_open_claude_login_for_run(p_authority, p_capability, coalesce(p_binding, pg_temp.c4b_binding()))
+$$;
+-- The vault's re-open for a seal-back.
+create function pg_temp.c4b_reopen(p_binding jsonb default null) returns jsonb language sql as $$
+	select public.qorpera_open_claude_login_for_seal_back('12680000-0000-4000-8000-000000000040', repeat('c', 64),
+		coalesce(p_binding, pg_temp.c4b_binding()))
 $$;
 create function pg_temp.c4b_seal(p_base_version bigint, p_base_sha text, p_envelope text, p_key text default 'vault-root-1',
 	p_login uuid default '12690000-0000-4000-8000-0000000000c1', p_binding jsonb default null) returns jsonb language sql as $$
@@ -112,6 +118,8 @@ begin
 	-- A plain worker's run.
 	perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_open(%L)',
 		current_setting('qorpera_test.c4b_plain_binding'))) = '42501', '2: a plain worker''s run');
+	perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_reopen(%L)',
+		current_setting('qorpera_test.c4b_plain_binding'))) = '42501', '2: nor its re-open for a seal-back');
 	-- A binding with another lease id (not this run's exact native lease).
 	perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_open(%L)',
 		(pg_temp.c4b_binding() || jsonb_build_object('leaseId', extensions.gen_random_uuid()))::text)) <> 'ok',
@@ -151,6 +159,10 @@ begin
 			perform pg_temp.base_assert(public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: its lease still holds');
 			perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_open()') = '42501', '2: a worker ' || v_state
 				|| ' does not open');
+			-- The vault's seal-back: its own re-open, then the seal (as CloudClaudeLoginVault.sealBack calls them).
+			v := pg_temp.c4b_reopen();
+			perform pg_temp.base_assert(v ->> 'state' = 'open' and (v ->> 'version')::bigint = 1,
+				'2: a worker ' || v_state || ' is re-opened for its seal-back: ' || (v - 'encryptedEnvelopeBase64')::text);
 			v := pg_temp.c4b_seal(1, pg_temp.c4b_sha('canary-c4b-sealed-1'), 'canary-c4b-renewed');
 			perform pg_temp.base_assert(v ->> 'state' = 'sealed' and (v ->> 'version')::bigint = 2,
 				'2: a worker ' || v_state || ' still seals back: ' || v::text);
@@ -158,6 +170,8 @@ begin
 			begin
 				update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
 				where id = (pg_temp.c4_worker('12690000-0000-4000-8000-0000000000b1')).occurrence_id;
+				perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_reopen()') = '42501',
+					'2: a worker ' || v_state || ' whose wake ended is not re-opened');
 				perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(2, %L, %L)',
 					pg_temp.c4b_sha('canary-c4b-renewed'), 'canary-c4b-renewed-2')) = '42501',
 					'2: a worker ' || v_state || ' whose wake ended seals nothing');
@@ -170,6 +184,8 @@ begin
 				perform pg_temp.c4_end_job((pg_temp.c4b_binding() ->> 'runId')::uuid, 'failed');
 				set local session_replication_role = origin;
 				perform pg_temp.base_assert(not public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: the job ended');
+				perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_reopen()') = '42501',
+					'2: a worker ' || v_state || ' whose job ended is not re-opened');
 				perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(2, %L, %L)',
 					pg_temp.c4b_sha('canary-c4b-renewed'), 'canary-c4b-renewed-2')) = '42501',
 					'2: a worker ' || v_state || ' whose job ended seals nothing');
@@ -284,6 +300,7 @@ do $$
 declare v_role text; v_function text;
 begin
 	foreach v_function in array array['public.qorpera_open_claude_login_for_run(uuid,text,jsonb)',
+		'public.qorpera_open_claude_login_for_seal_back(uuid,text,jsonb)',
 		'public.qorpera_seal_claude_login_back(uuid,text,jsonb,uuid,bigint,text,text,text,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			if has_function_privilege(v_role, v_function, 'execute') then raise exception '5: % may call %', v_role, v_function; end if;
@@ -294,7 +311,8 @@ begin
 			raise exception '5: % does not name 20260930771000', v_function; end if;
 	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
-		if has_function_privilege(v_role, 'public.qorpera_claude_login_run(uuid,text,jsonb,boolean)', 'execute')
+		if has_function_privilege(v_role, 'public.qorpera_claude_login_run(uuid,text,jsonb,boolean,boolean)', 'execute')
+			or has_function_privilege(v_role, 'public.qorpera_claude_login_opened(uuid,text,jsonb,boolean)', 'execute')
 			or has_function_privilege(v_role, 'public.qorpera_claude_login_run_refusal(public.qorpera_claude_logins,uuid)', 'execute') then
 			raise exception '5: % may call the inner check', v_role; end if;
 	end loop;

@@ -31,7 +31,10 @@ export type ClaudeLoginRefusal = "SIGNED_OUT" | "NOT_OPEN";
 
 /** The database's side (the company's broker authority on the shared vault). */
 export interface ClaudeLoginRunAuthority {
+	/** The open route's: only while the worker is at work. */
 	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
+	/** The seal-back's re-open, and only the seal-back's: every check of the open but the worker at work. */
+	openClaudeLoginForSealBack(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
 	sealClaudeLoginBack(
 		seal: {
 			binding: ModelLoginRunBinding;
@@ -155,7 +158,12 @@ export class CloudClaudeLoginVault {
 
 	/** The run's login files, only when the database says this run may have them now. */
 	async open(request: { readonly binding: ModelLoginRunBinding }, signal: AbortSignal): Promise<ClaudeLoginForRun> {
-		const opened = await this.#opened(parseModelLoginRunBinding(request.binding), "Claude login for a run", signal);
+		const opened = await this.#opened(
+			parseModelLoginRunBinding(request.binding),
+			"open",
+			"Claude login for a run",
+			signal,
+		);
 		if ("reason" in opened)
 			return { schema: "qorpera.claude-login-files-for-run/v1", state: "refused", reason: opened.reason };
 		return {
@@ -180,7 +188,8 @@ export class CloudClaudeLoginVault {
 		if (typeof request.baseEnvelopeSha256 !== "string" || !SHA256_HEX_PATTERN.test(request.baseEnvelopeSha256))
 			throw new Error(`${label} is invalid`);
 		const sent = claudeLoginSealFiles(request.files);
-		const current = await this.#opened(binding, label, signal);
+		// Its own re-open: a worker that has reported or was cancelled still seals back while its lease holds.
+		const current = await this.#opened(binding, "seal-back", label, signal);
 		if ("reason" in current)
 			return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: current.reason };
 		if (current.claudeLoginId !== claudeLoginId) throw new Error("Claude login seal-back names another login");
@@ -249,9 +258,11 @@ export class CloudClaudeLoginVault {
 	}
 
 	/** The run's login as the database hands it now, opened under the member's key with the version in its identity; or
-	 * the database's refusal of the login now. A run the database does not let have it is refused before (an error). */
+	 * the database's refusal of the login now. A run the database does not let have it is refused before (an error).
+	 * `open` asks as the open route does; `seal-back` through the seal-back's own re-open. */
 	async #opened(
 		binding: ModelLoginRunBinding,
+		purpose: "open" | "seal-back",
 		label: string,
 		signal: AbortSignal,
 	): Promise<
@@ -265,7 +276,12 @@ export class CloudClaudeLoginVault {
 				readonly files: Partial<Record<ClaudeLoginFileName, string>>;
 		  }
 	> {
-		const answer = parseRecord(await this.#authority.openClaudeLoginForRun(binding, signal), label);
+		const answer = parseRecord(
+			await (purpose === "open"
+				? this.#authority.openClaudeLoginForRun(binding, signal)
+				: this.#authority.openClaudeLoginForSealBack(binding, signal)),
+			label,
+		);
 		const reason = refused(answer, "qorpera.claude-login-for-run/v1", label);
 		if (reason) return { reason };
 		exactKeys(
