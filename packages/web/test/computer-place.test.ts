@@ -25,11 +25,20 @@ function setup() {
 	log.append(row);
 	body.append(log);
 	document.body.append(body);
+	// What a fixed box is placed against: the whole window here. The window's place is read from a still probe beside
+	// the panel (fixed, at nothing on every side), never from the panel, which the large view's zoom moves and scales
+	// while it enters: so the panel itself answers a rect in mid-zoom, as it did live on 14 Nov 2026.
+	const frame = { rect: DOMRect.fromRect({ x: 0, y: 0, width: 1280, height: 800 }) };
+	const zero = Element.prototype.getBoundingClientRect;
+	vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+		return this.hasAttribute("data-computer-place-probe") ? frame.rect : zero.call(this);
+	});
 	vi.spyOn(body, "getBoundingClientRect").mockReturnValue(
 		DOMRect.fromRect({ x: 300, y: 40, width: 900, height: 700 }),
 	);
-	// The panel, fixed with its box at nothing, lands on the whole window (the stylesheet sets no inset here).
-	vi.spyOn(panel, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ x: 0, y: 0, width: 1280, height: 800 }));
+	vi.spyOn(panel, "getBoundingClientRect").mockReturnValue(
+		DOMRect.fromRect({ x: 621, y: 174, width: 623, height: 390 }),
+	);
 	let resized = () => {};
 	const observe = vi.fn(),
 		disconnect = vi.fn();
@@ -45,7 +54,7 @@ function setup() {
 	);
 	const fit = attachComputerPlace(panel, stop.signal);
 	cleanup.push(() => stop.abort());
-	return { body, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit };
+	return { body, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit, frame };
 }
 
 function pointer(target: HTMLElement, type: string, options: MouseEventInit & { isPrimary?: boolean } = {}) {
@@ -91,6 +100,46 @@ describe("the computer's window in its thread", () => {
 		f.fit();
 		expect(box(f.panel)).toEqual(["", "", "", ""]);
 		expect(f.disconnect).toHaveBeenCalled();
+	});
+
+	it("reads nothing from the panel, which the view's zoom moves while it enters: the same box at every moment of it", () => {
+		const f = setup();
+		f.panel.classList.add("is-entered");
+		f.fit();
+		expect(box(f.panel)).toEqual(["40px", "300px", "80px", "60px"]);
+		// The thread's observer calls again while the zoom runs (it did live, 0.7 s into it): the panel answers another
+		// rect each time, and carries insets of its own. The box does not move.
+		for (const rect of [
+			{ x: 621, y: 174, width: 623, height: 390 },
+			{ x: 527, y: 72, width: 794, height: 568 },
+			{ x: 452, y: -9, width: 915, height: 951 },
+			{ x: 308, y: 104, width: 884, height: 628 },
+		]) {
+			vi.mocked(f.panel.getBoundingClientRect).mockReturnValue(DOMRect.fromRect(rect));
+			f.panel.style.top = `${rect.y}px`;
+			f.panel.style.left = "17px";
+			f.resized();
+			expect(box(f.panel)).toEqual(["40px", "300px", "80px", "60px"]);
+		}
+		// The probe is gone after every reading.
+		expect(document.querySelector("[data-computer-place-probe]")).toBeNull();
+	});
+
+	it("places the box against what contains a fixed box, when that is not the window", () => {
+		const f = setup();
+		// An ancestor that contains fixed boxes (a container query's container): the probe lands on it, as the panel will.
+		f.frame.rect = DOMRect.fromRect({ x: 100, y: 20, width: 1100, height: 760 });
+		f.panel.classList.add("is-entered");
+		f.fit();
+		expect(box(f.panel)).toEqual(["20px", "200px", "0px", "40px"]);
+	});
+
+	it("does nothing while the panel stands in no document", () => {
+		const f = setup();
+		f.panel.classList.add("is-entered");
+		f.panel.remove();
+		f.fit();
+		expect(box(f.panel)).toEqual(["", "", "", ""]);
 	});
 });
 
