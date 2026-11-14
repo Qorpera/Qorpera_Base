@@ -1835,7 +1835,11 @@ text, an account number, a single payment or the summary's items. Design: the co
   UTC), `etag` 32 hex that stay the same while the answer does (a client polls and compares it).
 - The `money-*` questions answer only a member who may read `bank/summary.json` by the folder's path authority; for
   anyone else, and for a question that is not there, P0002 "No question qorpera/<question> that you may read" (the
-  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are Europe/Copenhagen's, `YYYY-MM-DD`.
+  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are `YYYY-MM-DD`. "Today" and "this
+  month" (the default range, `money-kinds`' month) are the company's own, in its time zone (`time_zone` of
+  `qorpera_profile_team_info`, 20260930739000), or Europe/Copenhagen's while it has none or one the database does not
+  know. The answer does not name the zone (the shape has no place for it); a client that shows days reads the
+  company's zone from the team read.
   - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
     `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
     `paused_since`; the numbers are null without a summary.

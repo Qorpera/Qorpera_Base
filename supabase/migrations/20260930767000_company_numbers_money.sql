@@ -12,7 +12,7 @@
 --    The money questions, for whoever may read bank/summary.json by the folder's path authority (no new rule):
 --      money-now       one row always: state (none, waiting, current, paused), bank, balance, available, reserved,
 --                      as_of, paused_since; the numbers are null without a summary.
---      money-balance   day, balance (the end of each day) from `from` to `to`, Copenhagen days as YYYY-MM-DD; by
+--      money-balance   day, balance (the end of each day) from `from` to `to`, the company's days as YYYY-MM-DD; by
 --                      default the 90 days to today; at most 366 days.
 --      money-expected  day, balance: the summary's forecast, an estimate.
 --      money-months    month (YYYY-MM), money_in, money_out: the summary's twelve months.
@@ -20,7 +20,10 @@
 --                      the vault's own kinds (salaries, taxes, rent, utilities, subscriptions, fees, other), money in as
 --                      one kind, `all`, since the summary groups money in by who paid. `count` is null: the summary keeps
 --                      no count of payments (slice M2 adds days and counts from the vault).
---    Kroner as JSON numbers rounded to øre; the summary counts Danish kroner only. Days are Europe/Copenhagen's.
+--    Kroner as JSON numbers rounded to øre; the summary counts Danish kroner only. "Today" and "this month" (the default
+--    range, money-kinds' month) are the company's own, in its time zone (qorpera_profiles.time_zone, 20260930739000,
+--    taken from a member's browser), or Europe/Copenhagen's while it has none or one the database does not know (not in
+--    qorpera_runtime_time_zone_names). The answer does not name the zone: the gateway's shape has no place for it.
 --    Never answered: who paid or was paid, transfer texts, account numbers (`payTo`), single transactions, the summary's
 --    items. The `site` questions (sites, site-now, site-hours, site-days, site-pages) answer 0A000 "not counted yet":
 --    slice S1 counts them. Any other question, and a money question the caller may not read: P0002 "No question
@@ -68,7 +71,8 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare
 	v_params jsonb := coalesce(p_params, '{}'::jsonb);
 	v_now timestamptz := clock_timestamp();
-	v_today date := (clock_timestamp() at time zone 'Europe/Copenhagen')::date;
+	v_zone text;
+	v_today date;
 	v_takes text[];
 	v_key text;
 	v_status text;
@@ -82,6 +86,16 @@ declare
 	v_body jsonb;
 begin
 	-- Company views step 3, slice M1 (20260930767000)
+	-- The company's today, in its own zone; Copenhagen's while it has none, or one the database does not know.
+	select profile.time_zone into v_zone from public.qorpera_profiles as profile where profile.id = p_profile_id;
+	if v_zone is null or not exists (select 1 from public.qorpera_runtime_time_zone_names as known
+			where known.name = v_zone) then
+		v_zone := 'Europe/Copenhagen'; end if;
+	begin
+		v_today := (v_now at time zone v_zone)::date;
+	exception when others then
+		v_today := (v_now at time zone 'Europe/Copenhagen')::date;
+	end;
 	if jsonb_typeof(v_params) is distinct from 'object' then
 		raise exception 'Parameters are named values' using errcode = '22023'; end if;
 	if p_question is null or char_length(p_question) > 60 or p_question !~ '^[a-z0-9]+(-[a-z0-9]+)*$' then

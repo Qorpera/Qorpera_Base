@@ -8,7 +8,8 @@
 -- kroner rounded to øre; the etag (the same for the same answer, a member's and a run's alike, and new when the summary
 -- changes); privacy (no name, transfer text, account number or item of the summary in any answer); rights (an
 -- outsider, a member of another company, a member and a run that may not read bank/summary.json, a run asking another
--- company); the site questions' "not counted yet"; unknown questions and bad parameters.
+-- company); the site questions' "not counted yet"; unknown questions and bad parameters; "today" in the company's own
+-- time zone, Copenhagen's while it has none or one the database does not know.
 
 create function pg_temp.n_same(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
@@ -64,6 +65,10 @@ create function pg_temp.n_day(p_offset integer) returns text language sql as $$
 	select to_char(pg_temp.n_today() + p_offset, 'YYYY-MM-DD')
 $$;
 create function pg_temp.n_month() returns text language sql as $$ select to_char(pg_temp.n_today(), 'YYYY-MM') $$;
+-- A day in another zone.
+create function pg_temp.n_zone_day(p_zone text, p_offset integer) returns text language sql as $$
+	select to_char((clock_timestamp() at time zone p_zone)::date + p_offset, 'YYYY-MM-DD')
+$$;
 -- A summary as the vault's reduce makes it, with names, an account, transfer words and items that must never show.
 -- history: 400 days to today, the saldo of day today-i being 1000 + i (and 0.004 more, rounded away).
 create function pg_temp.n_summary(p_saldo numeric default 12345.678, p_paused text default null) returns jsonb
@@ -447,5 +452,45 @@ begin
 	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_member('92400000-0000-4000-8000-000000000001', null)$s$),
 		'22023 Name a question as qorpera/<question>', 'no name');
 end $$;
+
+-- 14. "Today" is the company's own. 924's company has no zone, so the checks above ran on Copenhagen's days. A company
+--     whose zone is a day off Copenhagen's now (Kiritimati, UTC+14, from 10:00 to 23:00 UTC; Pago Pago, UTC-11, at
+--     the other hours) gets the 90 days to its own today, for a member and a run alike, and its own month for
+--     money-kinds; a zone the database does not know, and no zone, are Copenhagen's.
+savepoint n_zone;
+do $$
+declare
+	v_zone text := case when pg_temp.n_zone_day('Pacific/Kiritimati', 0) <> pg_temp.n_day(0) then 'Pacific/Kiritimati'
+		else 'Pacific/Pago_Pago' end;
+	o constant uuid := '92400000-0000-4000-8000-000000000001';
+	v jsonb;
+begin
+	perform pg_temp.n_same((select time_zone from public.qorpera_profiles
+		where id = '92400000-0000-4000-8000-000000000010'), null, '924''s company has no zone');
+	perform pg_temp.n_same((pg_temp.n_zone_day(v_zone, 0) <> pg_temp.n_day(0))::text, 'true',
+		'the zone''s today is not Copenhagen''s: ' || v_zone);
+	update public.qorpera_profiles set time_zone = v_zone where id = '92400000-0000-4000-8000-000000000010';
+	v := pg_temp.n_member(o, 'money-balance');
+	perform pg_temp.n_same(v #>> '{rows,0,0}', pg_temp.n_zone_day(v_zone, -89), 'the 90 days to the zone''s today');
+	perform pg_temp.n_same(pg_temp.n_run('money-balance') #>> '{rows,0,0}', pg_temp.n_zone_day(v_zone, -89),
+		'a run''s 90 days, the same');
+	perform pg_temp.n_same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'asOf,columns,etag,more,rows',
+		'the zone is not in the answer');
+	perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds', '{"month":"2000-01"}'),
+		format('22023 qorpera/money-kinds answers this month only (%s), for now',
+			left(pg_temp.n_zone_day(v_zone, 0), 7)), 'the zone''s month');
+	-- A zone of the right shape that the database does not know: Copenhagen's.
+	update public.qorpera_profiles set time_zone = 'Mars/Olympus_Mons' where id = '92400000-0000-4000-8000-000000000010';
+	perform pg_temp.n_same(pg_temp.n_member(o, 'money-balance') #>> '{rows,0,0}', pg_temp.n_day(-89),
+		'an unknown zone is Copenhagen''s');
+	-- No zone again: Copenhagen's.
+	update public.qorpera_profiles set time_zone = null where id = '92400000-0000-4000-8000-000000000010';
+	perform pg_temp.n_same(pg_temp.n_member(o, 'money-balance') #>> '{rows,0,0}', pg_temp.n_day(-89),
+		'no zone is Copenhagen''s');
+	perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds', '{"month":"2000-01"}'),
+		format('22023 qorpera/money-kinds answers this month only (%s), for now', pg_temp.n_month()), 'Copenhagen''s month');
+end $$;
+rollback to savepoint n_zone;
+select pg_temp.base_claims('service_role');
 
 rollback;
