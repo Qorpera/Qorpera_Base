@@ -91,7 +91,7 @@ class H(BaseHTTPRequestHandler):
             log(base)
             new = "sk-ant-oat01-C2CAN" + "ARY-RFR-" + secrets.token_hex(8)
             return self._send(200, json.dumps({"token_type": "Bearer", "access_token": new, "refresh_token": new + "-r",
-                                               "expires_in": 28800, "scope": "user:inference user:profile user:sessions:claude_code",
+                                               "expires_in": int(sc.get("expiresIn", 28800)), "scope": "user:inference user:profile user:sessions:claude_code",
                                                "account": {"uuid": "00000000-0000-4000-8000-0000000000c2", "email_address": "c2@example.invalid"},
                                                "organization": {"uuid": "00000000-0000-4000-8000-0000000000c3"}}))
         if "count_tokens" in self.path:
@@ -136,7 +136,7 @@ class H(BaseHTTPRequestHandler):
             self.note_result(i, content_text(b.get("content")), b.get("is_error", False))
         nxt = (max(done) + 1) if done else 0
         if not main or nxt >= len(steps):
-            blocks = [("text", {"type": "text", "text": ""}, {"type": "text_delta", "text": "ok" if not main else "C2 done."})]
+            blocks = [("text", {"type": "text", "text": ""}, {"type": "text_delta", "text": "ok" if not main else sc.get("final", "C2 done.")})]
             stop = "end_turn"
         else:
             st = steps[nxt]
