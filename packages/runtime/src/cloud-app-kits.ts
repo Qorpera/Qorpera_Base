@@ -106,29 +106,34 @@ const KIT_OUTSIDE_QORPERA =
  * reads the data file, puts each such value's current number in its place and gives the engine the text it parses: a
  * value with no answer yet is null, and a `state` beside it says `"unknown"` (an answered one says `"known"`). Each
  * question with its params is watched once, however many values share it; a later answer that fails keeps the last good
- * one, and a watch the bridge could not start is no answer at once and is tried again at the next load. Loads run one
- * after another. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
+ * one. A watch the bridge could not start is no answer at once and is tried again at a later load: 10 seconds after
+ * the first refusal, twice as long after each one in a row (10 minutes at most), and never after the page's 100th
+ * refusal. Each refusal is a refused call to the app's frame, which stops a page that makes too many (the web's
+ * `MAX_REFUSED`), and the engine loads again at every live value's change: so a question that does not answer must not
+ * be asked at every load. Loads run one after another. When a watched value changes, the functions given to `QORPERA_KIT.onLive` run, at most once a frame.
  * `QORPERA_KIT.live` lists the places of the data that are bound and `QORPERA_KIT.changed` the ones that moved at the
  * last load, each as a JSON pointer. Where `qorpera.watch` is missing (outside Qorpera, or an older web app), a value is
  * its `example`, with `"assumed"` beside it, or not known when it has none.
  */
 const KIT_LIVE_VALUES = [
-	"(()=>{const K=window.QORPERA_KIT,q=window.qorpera,asks=new Map(),fns=[];let seen=new Map(),frame=0,waiting=0;",
+	"(()=>{const K=window.QORPERA_KIT,q=window.qorpera,asks=new Map(),fns=[];let seen=new Map(),frame=0,waiting=0,bad=0;",
 	'K.live=[];K.changed=[];K.onLive=(f)=>{if(typeof f==="function")fns.push(f)};',
 	'const num=(v)=>{const n=typeof v==="number"?v:typeof v==="string"&&v.trim()?Number(v):NaN;return Number.isFinite(n)?n:null};',
 	'const bound=(v)=>v&&typeof v==="object"&&!Array.isArray(v)&&typeof v.query==="string"&&Object.keys(v).every((k)=>["query","params","column","example"].includes(k));',
 	"const ping=()=>{if(frame||waiting)return;frame=1;const go=()=>{frame=0;for(const f of fns)try{f()}catch(e){}};",
 	"if(window.requestAnimationFrame)window.requestAnimationFrame(go);else setTimeout(go,16)};",
 	// One watch for each question with its params. A failed answer is no answer: the last good one stays. A watch that
-	// could not start (the bridge calls `failed`, or it throws) is no answer at once, and the next load starts it again
-	// (once, however many values share it).
+	// could not start (the bridge calls `failed`, or it throws) is no answer at once. A later load starts it again
+	// (once, however many values share it), but not before its wait is over (`w.t`: 10 s, doubled by each refusal in a
+	// row, `w.n`, up to 10 min; an answer ends the row) and not after the page's 100th refusal (`bad`).
 	// A question's key: its name and its params, in the order of their names (kitBindings keys it the same way).
 	'const prm=(b)=>b.params&&typeof b.params==="object"?b.params:{};',
 	"const keyOf=(b)=>{const p=prm(b);return JSON.stringify([b.query,Object.keys(p).sort().map((k)=>[k,p[k]])])};",
 	"const ask=(b,key)=>{const p=prm(b);let w=asks.get(key);",
-	"if(!w){w={dead:1};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}const dead=()=>{w.dead=1;w.ready()};",
-	"if(w.dead&&!w.used){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
-	"w.a=a;w.ready();if(s!==w.s){w.s=s;ping()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
+	"if(!w){w={dead:1,n:0,t:0};w.first=new Promise((r)=>{w.ready=r});asks.set(key,w)}",
+	"const dead=()=>{w.dead=1;bad++;w.t=Date.now()+Math.min(6e5,5e3*2**++w.n);w.ready()};",
+	"if(w.dead&&!w.used&&bad<100&&Date.now()>=w.t){w.dead=0;try{w.stop=q.watch(b.query,p,(a)=>{try{if(!a||!Array.isArray(a.rows))return;const s=JSON.stringify([a.columns,a.rows[0]]);",
+	"w.a=a;w.n=0;w.ready();if(s!==w.s){w.s=s;ping()}}catch(e){}},dead)}catch(e){dead()}}w.used=1;return w};",
 	'const walk=(v,h,k,path,out,d)=>{if(d>12||!v||typeof v!=="object")return;',
 	'if(h&&bound(v)){out.push({h,k,b:v,p:path,s:!Array.isArray(h)&&(k==="value"||"state" in h)});return}',
 	'for(const n of Object.keys(v))walk(v[n],v,n,path+"/"+n.replace(/~/g,"~0").replace(/\\//g,"~1"),out,d+1)};',

@@ -430,7 +430,7 @@ it("keeps the last good answer when a later ask fails", async () => {
 	]);
 });
 
-it("takes a watch the bridge could not start as no answer at once, keeps its last answer, and tries it again", async () => {
+it("takes a watch the bridge could not start as no answer at once, keeps its last answer, and tries it again after a wait", async () => {
 	vi.useFakeTimers();
 	try {
 		const db = databases({ "shop/visits": { visits: 4200 } });
@@ -469,15 +469,79 @@ it("takes a watch the bridge could not start as no answer at once, keeps its las
 			[null, "unknown"],
 			[4200, "known"],
 		]);
-		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(1);
+		const starts = () => watch.mock.calls.filter(([name]) => name === "shop/month").length;
+		expect(starts()).toBe(1);
 		allowed = true;
+		// Not at the next load: a refused start waits 10 seconds.
 		await kit.load();
-		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(9_999);
+		await kit.load();
+		expect(starts()).toBe(1);
+		await vi.advanceTimersByTimeAsync(1);
+		await kit.load();
+		expect(starts()).toBe(2);
 		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
-		// Refused again: the last good answer stays.
+		// Refused again: the last good answer stays. The answer ended the row of refusals, so the wait is 10 seconds
+		// again, and 20 after the refusal that follows it.
 		allowed = false;
+		await vi.advanceTimersByTimeAsync(10_000);
 		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
-		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(4);
+		expect(starts()).toBe(3);
+		await vi.advanceTimersByTimeAsync(19_999);
+		await kit.load();
+		expect(starts()).toBe(3);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		expect(starts()).toBe(4);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("waits twice as long after each refused start, 10 minutes at most, and stops after a page's 100th", async () => {
+	vi.useFakeTimers();
+	try {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		// shop/month never starts (no such database); shop/visits answers.
+		const watch = vi.fn(
+			(
+				name: string,
+				params: Record<string, unknown>,
+				listener: (answer: unknown) => void,
+				failed: (error: Error) => void,
+			) => {
+				if (name !== "shop/month") return db.watch(name, params, listener);
+				queueMicrotask(() => failed(new Error("No such database.")));
+				return () => undefined;
+			},
+		);
+		const { kit } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), watch, onChange() {} });
+		const starts = () => watch.mock.calls.filter(([name]) => name === "shop/month").length;
+		await kit.load();
+		expect(starts()).toBe(1);
+		// The engine loads at every live value's change: none of those loads asks again before the wait is over.
+		const waits = [10, 20, 40, 80, 160, 320, 600, 600, 600];
+		for (const [at, seconds] of waits.entries()) {
+			await vi.advanceTimersByTimeAsync(seconds * 1000 - 1);
+			for (let load = 0; load < 5; load++) await kit.load();
+			expect(starts()).toBe(at + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			await kit.load();
+			expect(starts()).toBe(at + 2);
+		}
+		// The page's 100th refusal is its last: far under the frame's limit of refused calls, however long it stays open.
+		for (let more = 0; more < 120; more++) {
+			await vi.advanceTimersByTimeAsync(600_000);
+			await kit.load();
+		}
+		expect(starts()).toBe(100);
+		// The value that answers is not touched by any of it.
+		expect(inputs(await kit.load()).map(({ value, state }) => [value, state])).toEqual([
+			[null, "unknown"],
+			[null, "unknown"],
+			[4200, "known"],
+		]);
+		expect(watch.mock.calls.filter(([name]) => name === "shop/visits")).toHaveLength(1);
 	} finally {
 		vi.useRealTimers();
 	}
