@@ -93,20 +93,24 @@ describe("the machine's own backdrop, as the web draws it", () => {
 				.split(/\s+/) ?? [];
 		const ink = (name: string) =>
 			Object.fromEntries(
-				[...(look.match(new RegExp(`${name}=\\(([^)]*)\\)`))?.[1] ?? "").matchAll(/\[(\w+)\]=([0-9a-f]{6})/g)].map((match) => [
-					match[1],
-					`#${match[2]}`,
-				]),
+				[...(look.match(new RegExp(`${name}=\\(([^)]*)\\)`))?.[1] ?? "").matchAll(/\[(\w+)\]=([0-9a-f]{6})/g)].map(
+					(match) => [match[1], `#${match[2]}`],
+				),
 			);
 		expect(ink("DATE_INK")).toEqual({ dark: DOCK_INK.dark.date, light: DOCK_INK.light.date });
 		expect(ink("TIME_INK")).toEqual({ dark: DOCK_INK.dark.time, light: DOCK_INK.light.time });
 		// The machine's tone of a ground: light from the middle of the scale up (tone_of).
-		expect(look).toContain('tone_of() { if (( 16#${1:0:2} >= 128 )); then echo light; else echo dark; fi; }');
+		expect(look).toMatch(
+			/\ntone_of\(\) \{ if \(\( 16#\$\{1:0:2\} >= 128 \)\); then echo light; else echo dark; fi; \}\n/,
+		);
 		table.forEach((hex, hour) => {
-			expect(hourColours(hour).tone, `hour ${hour}`).toBe(Number.parseInt(hex.slice(0, 2), 16) >= 128 ? "light" : "dark");
+			expect(hourColours(hour).tone, `hour ${hour}`).toBe(
+				Number.parseInt(hex.slice(0, 2), 16) >= 128 ? "light" : "dark",
+			);
 		});
 		const css = readFileSync(join(web, "src/styles/computer-scene.css"), "utf8");
-		const rule = (selector: string) => css.match(new RegExp(`\\n${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+		const rule = (selector: string) =>
+			css.match(new RegExp(`\\n${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
 		expect(rule(".computer-scene-dock")).not.toMatch(/background/);
 		expect(rule(".computer-scene-date")).toContain("color: var(--computer-scene-date-ink, #a3abba);");
 		expect(rule(".computer-scene-time")).toContain("color: var(--computer-scene-time-ink, #eef0f4);");
