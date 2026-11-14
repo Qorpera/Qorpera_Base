@@ -17,6 +17,7 @@ import {
 	cloudControlRefusalCode,
 	cloudPostgrestError,
 } from "./cloud-control-errors.ts";
+import { NativeHostCallUnknown } from "./cloud-native-host-dispatch.ts";
 import { CLOUD_TOOL_REQUEST_MAX_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -121,6 +122,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
 			"qorpera_company_machines_available",
+			// The agent's home (20260930752000): whether this run has one, and its session's close when the run ends.
+			"qorpera_company_home_available",
+			"qorpera_close_home_session",
 			// The folder core (core C3).
 			"qorpera_folder_read",
 			"qorpera_folder_list",
@@ -211,7 +215,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					signal: requestSignal,
 					headers,
 					body,
-				}).catch(() => {
+				}).catch((error: unknown) => {
+					// A call the native host's lists do not name was never sent: the host's own fault, not a lost answer.
+					if (error instanceof NativeHostCallUnknown) throw error;
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
 				});
 				requestSignal.throwIfAborted();
