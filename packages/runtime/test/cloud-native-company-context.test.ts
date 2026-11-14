@@ -11,6 +11,7 @@ import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall"
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
+	CLOUD_WAKE_TOOLS,
 	type CloudCompanyContextSource,
 	type CloudNativeCompanyContext,
 	type CloudNativeConversationTree,
@@ -145,7 +146,7 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 // the three tools, and never a secret in a step.
 it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
 	for (const said of [
-		"When data_query is offered, the company can keep data in databases of its own.",
+		"\n# Company databases\nThe company can keep data in databases of its own.",
 		"A database is the right home for many rows of the same shape, numbers that change, and things members act on",
 		"A file is the right home for what people read: plans, notes, documents and settings.",
 		'database.toml says what it is: format = "qorpera.database/v1"',
@@ -377,7 +378,7 @@ it.each([
 	expect(instructions.includes("qorpera.worker-completion-continuation/v1")).toBe(continues);
 	// A worker speaks to no one and keeps no standing work: staff judgement is the parent's.
 	for (const staff of [
-		"you are a dispatcher, not a hero",
+		"You are a dispatcher, not a hero",
 		"# Standing work",
 		"When a routine wakes you for your own work",
 		"When a member stopped your work, it stays stopped",
@@ -396,7 +397,7 @@ it("gives a human task's wake its own protocol, with the staff's judgement and n
 	expect(instructions).toContain("Follow the human-task skill");
 	expect(instructions).not.toContain("# This wake: a message from a coworker");
 	expect(instructions).not.toContain("qorpera.run-continuation/v1");
-	for (const staff of ["you are a dispatcher, not a hero", "# Writing to people"])
+	for (const staff of ["You are a dispatcher, not a hero", "# Writing to people"])
 		expect(instructions).toContain(staff);
 });
 
@@ -641,9 +642,7 @@ it("shows the changes waiting for review just before the skills, only when the r
 	expect(Object.keys(prompt).slice(-4)).toEqual(["proposals", "skills", "memory", "hireOverlay"]);
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(context))).not.toHaveProperty("proposals");
 	const instructions = compileCloudNativeCompanyInstructions(context);
-	expect(instructions).toContain(
-		"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer",
-	);
+	expect(instructions).toContain("\n# Changes waiting for review\nproposals lists changes you saved from a computer");
 	expect(instructions).toContain("never present a waiting change as done.");
 });
 
@@ -704,6 +703,226 @@ it("compiles the instructions an agent's runs share, up to the head and views, b
 	expect(plain.startsWith(`${cloudNativeStableInstructions(context)}\n`)).toBe(true);
 });
 
+// Track 3, T3-2 (14 November 2026): each run gets its situation's text. What an agent's runs share comes first and
+// stays byte for byte the same between its runs, whatever woke them (RUNTIME-AGENT-MEMORY-TREE.md §6.1): it reads the
+// tools those runs share (CLOUD_WAKE_TOOLS left out), the agent's kind and the vision's state, never the wake.
+/** A Co-Founder's company run with every staff tool, as the company runtime makes it on a host with machines. */
+const STAFF_TOOLS = [
+	"company_read",
+	"company_list",
+	"company_write",
+	"company_edit",
+	"company_move",
+	"company_mkdir",
+	"company_delete",
+	"table_read",
+	"table_write",
+	"save_app",
+	"post_app",
+	"make_picture",
+	"update_wall",
+	"data_describe",
+	"data_apply",
+	"data_query",
+	"read_context",
+	"send_coworker_message",
+	"manage_routine",
+	"organize_sidebar",
+	"organize_apps",
+	"add_review_rule",
+	"good_will_list",
+	"good_will_mark",
+	"crew_and_members",
+	"offer_agents_to_member",
+	"list_hooks",
+	"read_event",
+	"send_mail",
+	"find_mail",
+	"manage_hook",
+	"publish_site",
+	"unpublish_site",
+	"share_app",
+	"machine_start",
+	"machine_run",
+	"machine_read",
+	"machine_cancel",
+	"machine_stop",
+	"machine_delete",
+	"machine_list",
+	"machine_screen",
+	"update_memory",
+	"recall_memory",
+	"read_skill",
+	"search_skills",
+	"update_skill",
+	"hire_agent",
+	"create_group_chat",
+	"manage_todo",
+	"manage_worker",
+	"manage_code",
+];
+/** An agent's worker with write access on such a host. */
+const WORKER_TOOLS = [
+	"company_read",
+	"company_list",
+	"company_write",
+	"company_edit",
+	"company_move",
+	"company_mkdir",
+	"company_delete",
+	"table_read",
+	"table_write",
+	"save_app",
+	"post_app",
+	"make_picture",
+	"data_describe",
+	"data_query",
+	"read_context",
+	"machine_start",
+	"machine_run",
+	"machine_read",
+	"machine_cancel",
+	"machine_stop",
+	"machine_delete",
+	"machine_list",
+	"machine_screen",
+	"update_memory",
+	"recall_memory",
+	"read_skill",
+	"search_skills",
+	"update_skill",
+	"report_work",
+];
+const situationWake = (kind: string, source: string, final: string, extra: Record<string, unknown> = {}) =>
+	({
+		kind,
+		source: { kind: source, id: randomUUID(), occurrenceKey: `${source}:1` },
+		policy: { final },
+		...extra,
+	}) as never;
+
+it("gives every wake of one agent the same shared part, and varies only what follows the head", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.agentKind = "cofounder";
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const wakes: [string, never, string[]][] = [
+		["a member's message", situationWake("human", "input", "required"), ["send_message", "ask_member"]],
+		["a post in its thread", situationWake("room", "room", "required"), ["send_message", "ask_member"]],
+		[
+			"its scheduled routine",
+			situationWake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+			["send_message", "ask_member"],
+		],
+		[
+			"its dynamic routine",
+			situationWake("routine", "schedule", "optional", { routine: { dynamic: true } }),
+			["send_message", "ask_member", "decide_routine"],
+		],
+		[
+			"its workers' reports",
+			situationWake("agent", "worker-completion", "optional"),
+			["send_message", "ask_member", "apply_proposal", "discard_proposal"],
+		],
+		["a coworker's message", situationWake("agent", "coworker", "optional"), []],
+	];
+	const shared = new Set<string>();
+	const compiled = new Set<string>();
+	for (const [, wake, wakeTools] of wakes) {
+		for (const tool of wakeTools) expect(CLOUD_WAKE_TOOLS.has(tool)).toBe(true);
+		const parts = { head: "# Head\nBo's head.", tools: new Set([...STAFF_TOOLS, ...wakeTools]), visionAgreed: false };
+		const stable = cloudNativeStableInstructions(context, parts);
+		const instructions = compileCloudNativeCompanyInstructions(context, wake, parts);
+		expect(instructions.startsWith(`${stable}\n`)).toBe(true);
+		shared.add(stable);
+		compiled.add(instructions);
+	}
+	expect(shared.size).toBe(1);
+	expect(compiled.size).toBe(wakes.length);
+	// The planning run follows the head, in the routine runs only.
+	const [stable] = shared;
+	expect(stable).toContain("Your daily plan is a weekly routine");
+	expect(stable).toContain("If your plan routine is missing, set it up again.");
+	expect(stable).not.toContain("In a planning run, read the vision");
+	for (const instructions of compiled)
+		expect(instructions.includes("\n# Your daily plan\nIn a planning run, read the vision")).toBe(
+			instructions.includes("# This wake: your routine"),
+		);
+	// No sentence says a tool may not be there.
+	for (const instructions of compiled)
+		expect(instructions.match(/\b(?:is|are) offered\b/g) ?? []).toEqual(["is offered"]);
+	for (const instructions of compiled) expect(instructions).toContain("If no suitable card is offered");
+});
+
+it("says only what fits the run's tools, and leaves the founding work once the vision is agreed", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.agentKind = "cofounder";
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const member = situationWake("human", "input", "required");
+	const all = new Set([...STAFF_TOOLS, "send_message", "ask_member"]);
+	const without = (...tools: string[]) => new Set([...all].filter((tool) => !tools.includes(tool)));
+	const compile = (tools: Set<string>, visionAgreed = false) =>
+		compileCloudNativeCompanyInstructions(context, member, { head: "# Head", tools, visionAgreed });
+	const full = compile(all);
+	for (const section of ["# Standing work", "# Open work", "# Skills", "# Your notebook", "# Company databases"])
+		expect(full).toContain(`\n${section}\n`);
+	// A section, a line or a sentence about a tool the run lacks is left out.
+	expect(full).not.toContain("# Accounts on websites");
+	expect(full).not.toContain("# Changes waiting for review");
+	expect(compile(new Set([...all, "company_account", "apply_proposal"]))).toContain(
+		"\n# Accounts on websites\nThe company can hold",
+	);
+	expect(compile(without("update_skill"))).not.toContain("# Skills");
+	expect(compile(without("data_query"))).not.toContain("# Company databases");
+	const noMachines = compile(without("machine_start", "machine_run"));
+	expect(noMachines).not.toContain("- Work that needs commands");
+	expect(noMachines).not.toContain("Playwright's addInitScript");
+	expect(noMachines).toContain("Before you link or post an app, look at it. Then cover the words");
+	expect(full).toContain("company_delete) take company paths");
+	expect(compile(new Set([...all, "company_search"]))).toContain(
+		"company_delete, and company_search) take company paths",
+	);
+	expect(compile(without("hire_agent"))).not.toContain("hire its owner yourself");
+	expect(compile(without("manage_hook"))).not.toContain("create the company's main mailbox");
+	// Until the vision is agreed the founding and vision-draft work is there; after, only what still applies.
+	expect(full).toContain("Your first job is building the vision with the founders");
+	expect(full).toContain("write the whole vision in your own words as a draft");
+	const agreed = compile(all, true);
+	expect(agreed).not.toContain("Your first job is building the vision with the founders");
+	expect(agreed).not.toContain("write the whole vision in your own words as a draft");
+	for (const kept of [
+		"The company starts with the first conversation",
+		"Each agent works for one member, whose ChatGPT carries the work handed to it",
+		"When a founder joins later, greet them",
+		"You hire and manage",
+	])
+		expect(agreed).toContain(kept);
+});
+
+it("gives a worker no role section, no word on the company's bank, its voice, cards or held messages", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.agentKind = "cofounder";
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const worker = situationWake("agent", "worker-dispatch", "forbidden", { payload: { access: "write" } });
+	const tools = new Set(["company_read", "company_write", "save_app", "machine_start", "machine_run", "report_work"]);
+	const instructions = compileCloudNativeCompanyInstructions(context, worker, { head: "# Head", tools });
+	expect(instructions.startsWith(`${cloudNativeStableInstructions(context, { head: "# Head", tools }, true)}\n`)).toBe(
+		true,
+	);
+	for (const left of [
+		"# Your role",
+		"A company registers (CVR)",
+		"send_message is your only public voice",
+		"wake.payload.heldMessages",
+		"When a typed card fits",
+		"Start several workers at once",
+		"put a new app in its group",
+	])
+		expect(instructions).not.toContain(left);
+	expect(instructions).toContain("# This wake: you are a background worker");
+	expect(instructions).toContain("Each worker works in a loop on its own");
+	expect(instructions).not.toMatch(/\b(?:is|are) offered\b/);
+});
+
 it.each(["cofounder", "employee"] as const)(
 	"compiles %s behavior from the canonical discriminator, keeping the hire text out of platform instructions",
 	(kind) => {
@@ -738,11 +957,9 @@ it.each(["cofounder", "employee"] as const)(
 			own: { skills: [] },
 			company: { path: "QorperaOS/skills", skills: [] },
 		});
-		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
+		expect(instructions).toContain("\n# Skills\nKeep your know-how as skills.");
 		// The notebook is explained, not pushed: what it is, when to use it, and that a run with nothing to note is fine.
-		expect(instructions).toContain(
-			"\n# Your notebook\nWhen update_memory is offered, you have a notebook of your own.",
-		);
+		expect(instructions).toContain("\n# Your notebook\nYou have a notebook of your own.");
 		expect(instructions).toContain("many runs have nothing to note, and that is fine.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
@@ -1587,7 +1804,11 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 	return {
 		instructions: digest(
-			compileCloudNativeCompanyInstructions(context, parsedWake, { head: "# Your head\nThe head as data." }),
+			compileCloudNativeCompanyInstructions(context, parsedWake, {
+				head: "# Your head\nThe head as data.",
+				// The tools a run of that kind has (T3-2: its instructions fit them).
+				tools: new Set(kind === "worker" ? WORKER_TOOLS : [...STAFF_TOOLS, "send_message", "ask_member"]),
+			}),
 		),
 		prompt: digest(composeCloudNativeCompanyPrompt(context, parsedWake)),
 	};
@@ -1640,12 +1861,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Track 3, T3-1 (14 November 2026): the Company Computer, which no company has had since 3 October 2026, left the
 // words every run reads; laws 3 and 6 say what members see and which route is next today; and the run's ids and
 // versions (the bootstrap binding) left the instructions for the run's records. All three were measured once more.
+// Track 3, T3-2 (14 November 2026): each run's instructions fit its tools (a section or sentence about a tool it lacks
+// is left out, and no "when it is offered" is left), a worker gets no role section and no bank text, and the
+// Co-Founder's founding work stays only until the vision is agreed. The pins compile for a staff run's tools and a
+// worker's; all three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "de585ba78cc15d2f360422e3530da40dc4400e25f928985c812e6ee584539091",
+			instructions: "05fbc38354942d609f7638f028fa593b9d1d1e73cae459319dced9c0a2d298cf",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1653,7 +1878,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "030292a5bf8902af4098a0627e7ce9a216ec30081e564eef78a8665f1a06f50c",
+			instructions: "037da95092f39f1eec79f675851d85d2f90c2c8a056725caa09d5618d3782b05",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1661,7 +1886,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "de585ba78cc15d2f360422e3530da40dc4400e25f928985c812e6ee584539091",
+			instructions: "05fbc38354942d609f7638f028fa593b9d1d1e73cae459319dced9c0a2d298cf",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1886,7 +2111,7 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
 		"interface apps let members see and handle the company itself",
-		"goes into an app with save_app, when it is offered, on the day you make it",
+		"goes into an app with save_app on the day you make it",
 		"a picture, a sketch or a prototype that sits only in the folder is shown to no one",
 		"One app a thing, whoever worked on it: when the thing has an app, add to that one.",
 		"clickable screens for an app or a website, a 3D view or a rendered turntable for an object or a space",
@@ -1929,7 +2154,7 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		"A real thing is shown by its real picture",
 		"research that brings back no picture of a thing that can be seen is half done",
 		"An app that no longer matches the company is worse than no app, and no app is better than a page of text.",
-		"Before you link or post an app, look at it: when machine_run is offered, open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
+		"Before you link or post an app, look at it: open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
 		"Then cover the words in your mind: when what is left does not show what the thing is and how it stands, the page is a document, and you remake it with a kit.",
 		// The concepts app showed the brief as six boxes of text: "The concepts interface carries no concept of anything".
 		"it never holds the brief as text, it opens on the product's key moments as screens or scenes a founder steps through",
@@ -2001,7 +2226,7 @@ it("has the Co-Founder open the company's email in its first run, (10 November 2
 	// Jonas, 10 November: a company should have its email from the start; no company had a mailbox.
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	expect(cofounder).toContain(
-		"In that first run, before your hello, open the company's email so it works from day one: when manage_hook is offered, create the company's main mailbox (action create, kind mailbox) with the company's name in lowercase letters as its localPart",
+		"In that first run, before your hello, open the company's email so it works from day one: create the company's main mailbox (action create, kind mailbox) with the company's name in lowercase letters as its localPart",
 	);
 	expect(cofounder).toContain("Give the founders the address in your hello.");
 });
@@ -2036,7 +2261,7 @@ it("tells an agent to explore what is to be seen in loops, with demo videos in o
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
 		"do not settle on the first idea",
-		"start several workers at once, three to five, each with write access, its own clearly different idea",
+		"Start several workers at once, three to five, each with write access, its own clearly different idea",
 		"it makes its idea, looks at the result, improves what is weak, and goes round again for a few rounds",
 		"records a simple demo video of the idea",
 		"apt-get update and apt-get install -y ffmpeg, then npm install playwright and npx playwright install --with-deps chromium",
@@ -2114,7 +2339,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- A question: answer it in chat",
 		"- One file, such as a page, a document, a plan, a prototype or an HTML mockup: write it yourself, right away",
 		"hand it to a worker with saveTo set to the folder where the results belong",
-		"use a machine when one is offered",
+		"use a machine, and save the result in the company folder",
 		"It is the only work that needs a repository, and its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
 		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.
@@ -2132,7 +2357,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		// The 2026-10-22 amendment, items 5 and 6 (Jonas, 22 October): a conversation is the members' quick way in and
 		// deep work runs on its own at high effort; a server runs on Qorpera's own servers.
 		"Keep a conversation quick: deep work, such as research, analysis, strategy or building, runs on its own, in a worker, your own routine at effort high, or with the agent that owns it",
-		"- A server, a database or an app that must stay online: run it on Qorpera's own servers when a tool for them is offered, not with an outside host.",
+		"- A server, a database or an app that must stay online: run it on Qorpera's own servers, not with an outside host.",
 		"give a routine that does core work, such as research, analysis, strategy or building, effort high",
 		"Members use conversations to supervise the company and to get what they need quickly. Show the work simply: what is done, with links; what you decided, each with its reason in a line; and what you need from them.",
 	])

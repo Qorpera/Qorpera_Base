@@ -169,8 +169,9 @@ it("leaves out of the context message only what the head shows, and names the pr
 it("puts the head after everything an agent's runs share and before everything a wake changes", () => {
 	const { f, context } = setup();
 	const head = composeCloudAgentHead(context, vision("# Vision"), memory(["I am Nora"])).text;
-	// A worker's developer message matches its parent's up to the head (RUNTIME-AGENT-MEMORY-TREE.md §6.1), though its
-	// tools differ, so it reads no cached prefix (§12); a continuation changes only what follows.
+	// A continuation changes only what follows the head (RUNTIME-AGENT-MEMORY-TREE.md §6.1). A worker's tools differ from
+	// its parent's and come first in a request, so it reads no cached prefix of its parent's (§12): since T3-2 its own
+	// shared part leaves out the role section and the company's bank.
 	// Only the wake's source kind matters to the instructions here.
 	const worker = { kind: "agent", source: { kind: "worker-dispatch" } } as unknown as CloudWakeEnvelope;
 	const continued = parseCloudNativeCompanyContext(
@@ -183,7 +184,10 @@ it("puts the head after everything an agent's runs share and before everything a
 		compileCloudNativeCompanyInstructions(continued, null, { head }),
 	];
 	const prefixes = runs.map((instructions) => instructions.slice(0, instructions.indexOf(head) + head.length));
-	expect(new Set(prefixes).size).toBe(1);
+	expect(prefixes[2]).toBe(prefixes[0]);
+	expect(prefixes[1]).not.toBe(prefixes[0]);
+	expect(prefixes[1]).not.toContain("# Your role");
+	expect(prefixes[1]).not.toContain("A company registers (CVR)");
 	expect(prefixes[0]).toContain("# Your role: Co-Founder");
 	expect(prefixes[0]).toContain("\n# Your head\nThe next line is your head");
 	for (const later of ["# Standing work", "# This wake:", "# Continuing earlier work", "# Before you"])

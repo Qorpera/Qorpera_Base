@@ -11,7 +11,7 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
-import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
+import { cloudVisionAgreed, composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
 import {
@@ -560,6 +560,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// The run's opening (§5.4), once it is admitted and before the agent's thread starts. The settle builds the lines
 			// `[0, T)` is missing; the primary view and branches are then composed from the tree as stored. The context is
 			// hashed, released and bound to the admission, and becomes the agent's input and developer instructions.
+			// The run's tools by name, once its catalog is made (below), before its opening: its instructions fit them.
+			let offeredTools: ReadonlySet<string> | undefined;
 			const opening = async (openingSignal: AbortSignal): Promise<CloudCodexOpening> => {
 				stage = "prompt-composition";
 				let composed: CloudCodexOpening & { contextSha256: string; contextBytes: number };
@@ -589,6 +591,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const continuation = await continuationShown;
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
 					const views = redactCloudWebhookSecrets(view?.views ?? "");
+					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
+					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
+					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
 						wake,
@@ -622,7 +627,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								contextSha256,
 								headBytes: Buffer.byteLength(head.text),
 								stablePrefixSha256: createHash("sha256")
-									.update(cloudNativeStableInstructions(context, { head: head.text, views }))
+									.update(cloudNativeStableInstructions(context, parts, cloudWorkerToolFilter(wake).isWorker))
 									.digest("hex"),
 							},
 							wait,
@@ -630,7 +635,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						);
 					composed = {
 						prompt,
-						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
+						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
 						// Every request of a run with the view shares its conversation's cache key (§6.2).
 						composeContext:
 							view && context.identity.sessionId !== null
@@ -973,261 +978,264 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							this.#machines && machinesAvailable && identity.audienceKind === "company"
 								? this.#machines(binding)
 								: undefined;
-						return {
-							captures: computer?.captures,
-							folderReports: computer?.folderReports,
-							tools: [
-								...(computer?.tools ?? []),
-								// A run's file tools act through the folder core with its own authority (P19), and so do the
-								// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
-								...[
-									...cloudFolderFileTools({ folder: folder.client, operations, identity }),
-									...cloudInterfaceTools({
-										folder: folder.client,
-										identity,
-										timeZone: wake.time.timeZone,
-									}),
-									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
-									// Interface apps: pages the agent makes to show members its work (5 November 2026).
-									...cloudAppTools({ folder: folder.client, operations, identity }),
-									// A picture the agent makes, saved in the folder as a write is (20260930746000).
-									...(pictures
-										? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
-										: []),
-									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
-									// run of the agent; a worker reports to its agent instead.
-									...(identity.audienceKind === "company" && !work.isWorker
-										? cloudWallTools({
-												folder: folder.client,
-												operations,
-												identity,
-												handle: folder.handle,
-												timeZone: wake.time.timeZone,
-											})
-										: []),
-								].filter(work.companyFile),
-								...(folderSearch
-									? [
-											cloudFolderSearchTool({
-												search: folderSearch,
-												folder: folder.client,
-												runId: identity.runId,
-											}),
-										]
+						const runTools: CloudNativeTool[] = [
+							...(computer?.tools ?? []),
+							// A run's file tools act through the folder core with its own authority (P19), and so do the
+							// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
+							...[
+								...cloudFolderFileTools({ folder: folder.client, operations, identity }),
+								...cloudInterfaceTools({
+									folder: folder.client,
+									identity,
+									timeZone: wake.time.timeZone,
+								}),
+								...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
+								// Interface apps: pages the agent makes to show members its work (5 November 2026).
+								...cloudAppTools({ folder: folder.client, operations, identity }),
+								// A picture the agent makes, saved in the folder as a write is (20260930746000).
+								...(pictures
+									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
 									: []),
-								// The company's databases (slice 5), on a host that names the data gateway's run door: every
-								// run describes and asks them; a worker does not apply steps.
-								...(this.#companyData
-									? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
-									: []),
-								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
-								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
-								// A worker has no outbound effects: no mouth, no connectors.
-								...(this.#secretBroker && !work.isWorker
-									? cloudSecretTools({
-											descriptors: connectorDescriptors,
-											binding,
-											control: this.#paths,
+								// The agent's wall above its thread (5 November 2026): its own report, kept by a company
+								// run of the agent; a worker reports to its agent instead.
+								...(identity.audienceKind === "company" && !work.isWorker
+									? cloudWallTools({
+											folder: folder.client,
 											operations,
-											broker: this.#secretBroker,
+											identity,
+											handle: folder.handle,
+											timeZone: wake.time.timeZone,
 										})
 									: []),
-								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
-								// company folder (A1-7, migration 20260930072000), whose vault writes their connection files.
-								...(this.#companyAccounts && !work.isWorker
-									? [
-											cloudCompanyAccountTool({
-												binding,
-												identity,
-												control: this.#paths,
-												operations,
-												accounts: this.#companyAccounts,
-											}),
-										]
-									: []),
-								...(work.isWorker
-									? []
-									: [
-											cloudCoworkerMessageTool(binding, identity, wakeControl),
-											...cloudRoutineTools(
-												binding,
-												identity,
-												dynamicRoutine && wake.routine?.routineKey
-													? {
-															routineKey: wake.routine.routineKey,
-															decisionOwed: () => routineDecisionOwed,
-															settled: () => {
-																routineDecisionOwed = false;
-															},
-														}
-													: undefined,
-												new CloudFolderRoutines({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-													// The routine that woke this run, which it may not pause or remove.
-													...(wake.kind === "routine" && wake.routine
-														? { ownRoutineId: wake.routine.id }
-														: {}),
-												}),
-											),
-											// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
-											// routine's run is offered the decision.
-											...(dynamicRoutine && wake.routine?.routineKey
-												? [
-														cloudRoutineDecisionTool(binding, identity, {
-															decisionOwed: () => routineDecisionOwed,
-															decided: () => {
-																routineDecisionOwed = false;
-															},
-															folderDecision: new CloudFolderRoutineDecision({
-																folder: folder.client,
-																operations,
-																identity,
-																handle: folder.handle,
-																routineKey: wake.routine.routineKey,
-																routineId: wake.routine.id,
-															}),
-														}),
-													]
-												: []),
-											...cloudSidebarTools(binding, identity, {
-												folderSidebar: new CloudFolderSidebar({
-													folder: folder.client,
-													operations,
-													identity,
-													// The Co-Founder stays on top, outside the sections.
-													people: new Map(
-														[
-															...(context.agentKind === "cofounder" ? [] : [context.agent]),
-															...context.coworkers,
-														].map((agent) => [agent.id, agent.name]),
-													),
-													peopleComplete: !context.coworkersTruncated,
-												}),
-											}),
-											// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
-											cloudAppGroupsTool({ folder: folder.client, operations, identity }),
-											...cloudReviewRuleTools(binding, identity, this.#paths),
-											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
-											// an agent owns the company's money.
-											...cloudGoodWillTools(binding, identity, this.#paths),
-											// The Co-Founder deals the team out between the members (20260930702000).
-											...(context.agentKind === "cofounder"
-												? cloudMemberOfferTools(binding, identity, this.#paths)
-												: []),
-											// The agent changes the company's hooks through its folder client (E3a).
-											...cloudEventTools(binding, identity, this.#paths, folder.client),
-											// Company sites (20260930550000): a static website from the company folder at a
-											// private, password-protected link, and taking one offline; private app links (v195): one
-											// port of an always-on machine at such a link (share_app).
-											...cloudSiteTools({
-												binding,
-												identity,
-												control: this.#paths,
-												folder: folder.client,
-												...(machineGateway ? { machines: { gateway: machineGateway, operations } } : {}),
-											}),
-										]),
-								// Machines are the company's: any agent run in a company conversation may start and
-								// use them and hears about them in that conversation; a worker uses them like its agent
-								// but waits for its own commands in its run (Jonas, 2026-09-28).
-								...(machineGateway
-									? cloudMachineTools({
+							].filter(work.companyFile),
+							...(folderSearch
+								? [
+										cloudFolderSearchTool({
+											search: folderSearch,
+											folder: folder.client,
+											runId: identity.runId,
+										}),
+									]
+								: []),
+							// The company's databases (slice 5), on a host that names the data gateway's run door: every
+							// run describes and asks them; a worker does not apply steps.
+							...(this.#companyData
+								? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
+								: []),
+							cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
+							...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
+							// A worker has no outbound effects: no mouth, no connectors.
+							...(this.#secretBroker && !work.isWorker
+								? cloudSecretTools({
+										descriptors: connectorDescriptors,
+										binding,
+										control: this.#paths,
+										operations,
+										broker: this.#secretBroker,
+									})
+								: []),
+							// The company's own website accounts (A1-4): not a worker's. They serve companies on the
+							// company folder (A1-7, migration 20260930072000), whose vault writes their connection files.
+							...(this.#companyAccounts && !work.isWorker
+								? [
+										cloudCompanyAccountTool({
 											binding,
 											identity,
 											control: this.#paths,
 											operations,
-											gateway: machineGateway,
-											worker: work.isWorker,
-											...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
-										})
-									: []),
-								// The notebook is the agent's own: a worker of the same agent recalls it,
-								// and writes to it only when its dispatch allows Company File writes.
-								...notebooks
-									.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
-									.filter(
-										(tool) =>
-											tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
-									),
-								// Skills the same way: every run reads and searches them. Only a company run saves one
-								// (a member's private conversation never feeds a shared library), and a worker only
-								// when its dispatch allows Company File writes.
-								...notebooks
-									.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
-									.filter(
-										(tool) =>
-											tool.name !== "update_skill" ||
-											(identity.audienceKind === "company" &&
-												work.companyFile({ ...tool, name: "company_write" })),
-									),
-								...(identity.audienceKind === "company"
-									? [
-											...(work.isWorker
-												? []
-												: cloudHiringTools(identity, {
-														folderHiring: new CloudFolderHiring({
+											accounts: this.#companyAccounts,
+										}),
+									]
+								: []),
+							...(work.isWorker
+								? []
+								: [
+										cloudCoworkerMessageTool(binding, identity, wakeControl),
+										...cloudRoutineTools(
+											binding,
+											identity,
+											dynamicRoutine && wake.routine?.routineKey
+												? {
+														routineKey: wake.routine.routineKey,
+														decisionOwed: () => routineDecisionOwed,
+														settled: () => {
+															routineDecisionOwed = false;
+														},
+													}
+												: undefined,
+											new CloudFolderRoutines({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												// The routine that woke this run, which it may not pause or remove.
+												...(wake.kind === "routine" && wake.routine
+													? { ownRoutineId: wake.routine.id }
+													: {}),
+											}),
+										),
+										// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
+										// routine's run is offered the decision.
+										...(dynamicRoutine && wake.routine?.routineKey
+											? [
+													cloudRoutineDecisionTool(binding, identity, {
+														decisionOwed: () => routineDecisionOwed,
+														decided: () => {
+															routineDecisionOwed = false;
+														},
+														folderDecision: new CloudFolderRoutineDecision({
 															folder: folder.client,
 															operations,
 															identity,
+															handle: folder.handle,
+															routineKey: wake.routine.routineKey,
+															routineId: wake.routine.id,
 														}),
-														folderGroupChats: new CloudFolderGroupChats({
-															folder: folder.client,
-															operations,
-															identity,
-														}),
-													})),
-											...cloudWorkerTools(binding, identity, wake, {
-												machines: Boolean(this.#machines) && machinesAvailable,
-												folderTodos: new CloudFolderTodos({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-												}),
-												folderWorkers: new CloudFolderWorkers({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-													// A worker run's own folder, where it reports.
-													...(work.isWorker && typeof wake.payload.outputFolder === "string"
-														? { outputFolder: wake.payload.outputFolder }
-														: {}),
-												}),
-											}).map(
-												(tool): CloudNativeTool =>
-													tool.source === "worker" && tool.name === "report_work"
-														? {
-																...tool,
-																// The worker's saved report is noted: a turn that ends without one is asked for it.
-																execute: async (value, toolContext) => {
-																	const content = await tool.execute(value, toolContext);
-																	if (content.completesTurn === true) workerReported = true;
-																	return content;
-																},
-															}
-														: tool,
-											),
-											// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
-											// out of main again and describes one; a worker reports to its agent instead.
-											...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
-										]
-									: []),
-								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
-								// Cards belong to a member's own conversation or the agent's own thread:
-								// never a group chat, never a worker. The kernel refuses the rest too.
-								...(identity.sessionId &&
-								wake.policy.final !== "forbidden" &&
-								(wake.kind !== "room" || cloudWakeIsOwnThread(wake)) &&
-								!work.isWorker
-									? [ask]
-									: []),
-								// Listed only for a run that may raise their cards (composeContext).
-								...(proposals ? proposals.tools(operations) : []),
-							],
+													}),
+												]
+											: []),
+										...cloudSidebarTools(binding, identity, {
+											folderSidebar: new CloudFolderSidebar({
+												folder: folder.client,
+												operations,
+												identity,
+												// The Co-Founder stays on top, outside the sections.
+												people: new Map(
+													[
+														...(context.agentKind === "cofounder" ? [] : [context.agent]),
+														...context.coworkers,
+													].map((agent) => [agent.id, agent.name]),
+												),
+												peopleComplete: !context.coworkersTruncated,
+											}),
+										}),
+										// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
+										cloudAppGroupsTool({ folder: folder.client, operations, identity }),
+										...cloudReviewRuleTools(binding, identity, this.#paths),
+										// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
+										// an agent owns the company's money.
+										...cloudGoodWillTools(binding, identity, this.#paths),
+										// The Co-Founder deals the team out between the members (20260930702000).
+										...(context.agentKind === "cofounder"
+											? cloudMemberOfferTools(binding, identity, this.#paths)
+											: []),
+										// The agent changes the company's hooks through its folder client (E3a).
+										...cloudEventTools(binding, identity, this.#paths, folder.client),
+										// Company sites (20260930550000): a static website from the company folder at a
+										// private, password-protected link, and taking one offline; private app links (v195): one
+										// port of an always-on machine at such a link (share_app).
+										...cloudSiteTools({
+											binding,
+											identity,
+											control: this.#paths,
+											folder: folder.client,
+											...(machineGateway ? { machines: { gateway: machineGateway, operations } } : {}),
+										}),
+									]),
+							// Machines are the company's: any agent run in a company conversation may start and
+							// use them and hears about them in that conversation; a worker uses them like its agent
+							// but waits for its own commands in its run (Jonas, 2026-09-28).
+							...(machineGateway
+								? cloudMachineTools({
+										binding,
+										identity,
+										control: this.#paths,
+										operations,
+										gateway: machineGateway,
+										worker: work.isWorker,
+										...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+									})
+								: []),
+							// The notebook is the agent's own: a worker of the same agent recalls it,
+							// and writes to it only when its dispatch allows Company File writes.
+							...notebooks
+								.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
+								.filter(
+									(tool) =>
+										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
+								),
+							// Skills the same way: every run reads and searches them. Only a company run saves one
+							// (a member's private conversation never feeds a shared library), and a worker only
+							// when its dispatch allows Company File writes.
+							...notebooks
+								.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
+								.filter(
+									(tool) =>
+										tool.name !== "update_skill" ||
+										(identity.audienceKind === "company" &&
+											work.companyFile({ ...tool, name: "company_write" })),
+								),
+							...(identity.audienceKind === "company"
+								? [
+										...(work.isWorker
+											? []
+											: cloudHiringTools(identity, {
+													folderHiring: new CloudFolderHiring({
+														folder: folder.client,
+														operations,
+														identity,
+													}),
+													folderGroupChats: new CloudFolderGroupChats({
+														folder: folder.client,
+														operations,
+														identity,
+													}),
+												})),
+										...cloudWorkerTools(binding, identity, wake, {
+											machines: Boolean(this.#machines) && machinesAvailable,
+											folderTodos: new CloudFolderTodos({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+											}),
+											folderWorkers: new CloudFolderWorkers({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												// A worker run's own folder, where it reports.
+												...(work.isWorker && typeof wake.payload.outputFolder === "string"
+													? { outputFolder: wake.payload.outputFolder }
+													: {}),
+											}),
+										}).map(
+											(tool): CloudNativeTool =>
+												tool.source === "worker" && tool.name === "report_work"
+													? {
+															...tool,
+															// The worker's saved report is noted: a turn that ends without one is asked for it.
+															execute: async (value, toolContext) => {
+																const content = await tool.execute(value, toolContext);
+																if (content.completesTurn === true) workerReported = true;
+																return content;
+															},
+														}
+													: tool,
+										),
+										// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
+										// out of main again and describes one; a worker reports to its agent instead.
+										...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
+									]
+								: []),
+							...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
+							// Cards belong to a member's own conversation or the agent's own thread:
+							// never a group chat, never a worker. The kernel refuses the rest too.
+							...(identity.sessionId &&
+							wake.policy.final !== "forbidden" &&
+							(wake.kind !== "room" || cloudWakeIsOwnThread(wake)) &&
+							!work.isWorker
+								? [ask]
+								: []),
+							// Listed only for a run that may raise their cards (composeContext).
+							...(proposals ? proposals.tools(operations) : []),
+						];
+						// Its instructions say only what fits these tools (track 3, T3-2).
+						offeredTools = new Set(runTools.map((tool) => tool.name));
+						return {
+							captures: computer?.captures,
+							folderReports: computer?.folderReports,
+							tools: runTools,
 							assertContext: (requestSignal, timeoutMs) =>
 								gateway.assertReadableContext(requestSignal, timeoutMs),
 							checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),

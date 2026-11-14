@@ -1066,8 +1066,15 @@ it.each([
 		expect(f.control.sendMessage).toHaveBeenCalledTimes(3);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const head = headLine(evidence.threadParameters.developerInstructions);
+		// Compiled for the run's own tools (T3-2), as its catalog names them; the fixture has no vision.
+		const tools = new Set<string>(
+			evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name),
+		);
 		expect(evidence.threadParameters.developerInstructions).toBe(
-			[CLOUD_TOOL_RESULT_INSTRUCTIONS, compileCloudNativeCompanyInstructions(f.context, null, { head })].join("\n"),
+			[
+				CLOUD_TOOL_RESULT_INSTRUCTIONS,
+				compileCloudNativeCompanyInstructions(f.context, null, { head, tools, visionAgreed: false }),
+			].join("\n"),
 		);
 		expect(evidence.threadParameters.developerInstructions).toContain(CLOUD_RUNTIME_CONSTITUTION);
 		expect(evidence.threadParameters.developerInstructions).toContain("one live company folder");
