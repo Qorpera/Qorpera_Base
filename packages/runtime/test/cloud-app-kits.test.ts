@@ -8,6 +8,8 @@ import {
 	KIT_ENGINE_JS,
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
+	KIT_LIVE_QUESTIONS,
+	kitBindings,
 	kitDataFile,
 	kitMedia,
 	kitNotes,
@@ -21,7 +23,7 @@ import {
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 /* The data kits of interface apps (RUNTIME-INTERFACE-APPS.md §3b; Jonas, 13 November 2026: apps "are supposed to be
@@ -106,9 +108,6 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 		expect(Buffer.byteLength(KIT_ENGINE_JS[kit]), kit).toBeLessThan(128 * 1024);
 		// A guide is written for an agent, and small enough that the four sit in one schema with room to spare.
 		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThan(4608);
-		// And 200 bytes under that for now: a change held for later (#1744) adds about that much to the model and path
-		// guides, and must still fit when it lands.
-		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThanOrEqual(4400);
 		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once.
 		expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
 		// Each guide's example is data its own kit reads.
@@ -211,6 +210,351 @@ it("writes a kit's page that names its pictures, reads its data, and opens outsi
 	expect(page).not.toContain("tell");
 	// A language the data does not give as a code leaves the page in English.
 	expect(kitPage("m", "model", "M", { ...MODEL, lang: "dansk<" }, () => true)).toContain('<html lang="en">');
+});
+
+/* Live values from the company's databases: where a kit takes a number, its data may name a question of a database
+ * instead. The page's own script, before the engine, puts the current number in its place. */
+
+const ORDERS = {
+	lang: "en",
+	title: "Orders",
+	groups: [
+		{
+			label: "Shop",
+			inputs: [
+				{
+					id: "orders",
+					label: "Orders",
+					min: 0,
+					max: 1000,
+					value: { query: "shop/month", column: "orders", example: 120 },
+				},
+				{
+					id: "revenue",
+					label: "Revenue",
+					min: 0,
+					max: 99000,
+					state: "assumed",
+					value: { query: "shop/month", column: "revenue" },
+				},
+				{
+					id: "visits",
+					label: "Visits",
+					min: 0,
+					max: 9000,
+					start: 500,
+					state: "unknown",
+					value: { query: "shop/visits", params: { days: 30 } },
+				},
+			],
+		},
+	],
+};
+const BOUND = ["/groups/0/inputs/0/value", "/groups/0/inputs/1/value", "/groups/0/inputs/2/value"];
+
+/** The script a kit's page runs before its engine, as kitPage writes it. */
+const pageScript = (page: string) => /<script>(window\.QORPERA_KIT = [^\n]*)<\/script>/.exec(page)?.[1] ?? "";
+
+interface LiveKit {
+	load(): Promise<string>;
+	onLive(listener: () => void): void;
+	live: string[];
+	changed: string[];
+}
+type Row = Record<string, number | string | null>;
+
+/** A company's databases as the bridge gives them to a page: each question's answer, given to a watch at once and
+ * again when it changed. `fail` is an ask that failed, as the bridge hands it on. */
+function databases(answers: Record<string, Row>) {
+	const now = new Map(Object.entries(answers));
+	const watches: { name: string; listener: (answer: unknown) => void; stopped: boolean }[] = [];
+	const answer = (row: Row) => ({
+		columns: Object.keys(row),
+		rows: [row],
+		more: false,
+		asOf: new Date().toISOString(),
+	});
+	const watch = vi.fn((name: string, _params: Record<string, unknown>, listener: (answer: unknown) => void) => {
+		const one = { name, listener, stopped: false };
+		watches.push(one);
+		const row = now.get(name);
+		if (row) queueMicrotask(() => listener(answer(row)));
+		return () => {
+			one.stopped = true;
+		};
+	});
+	const tell = (name: string, given: unknown) => {
+		for (const one of watches) if (one.name === name && !one.stopped) one.listener(given);
+	};
+	const set = (name: string, row: Row) => {
+		now.set(name, row);
+		tell(name, answer(row));
+	};
+	const fail = (name: string) => tell(name, { error: "The database is busy." });
+	return { watch, set, fail, watches };
+}
+
+/** A kit's page opened on a stand-in window, with the bridge it is given (none: outside Qorpera) and its frames, which
+ * are drawn by hand. */
+function openPage(data: Record<string, unknown>, qorpera?: Record<string, unknown>) {
+	const page = kitPage("orders", "model", "Orders", data, () => true);
+	const saved = /<script type="application\/json" id="kit-data">(.*)<\/script>/.exec(page)?.[1] ?? "";
+	const frames: (() => void)[] = [];
+	const window: Record<string, unknown> = {
+		qorpera,
+		requestAnimationFrame: (frame: () => void) => frames.push(frame),
+	};
+	new Function("window", "document", pageScript(page))(window, { getElementById: () => ({ textContent: saved }) });
+	const drawFrames = () => {
+		for (const frame of frames.splice(0)) frame();
+	};
+	return { kit: window.QORPERA_KIT as LiveKit, drawFrames };
+}
+const inside = (data: Record<string, unknown>, db: ReturnType<typeof databases>) =>
+	openPage(data, { read: vi.fn(async () => JSON.stringify(data)), watch: db.watch, onChange() {} });
+interface Input {
+	readonly id: string;
+	readonly value: unknown;
+	readonly state?: string;
+	readonly start?: number;
+}
+/** Each input of the model as the engine gets it: its id, value, state and start. */
+const inputs = (text: string) =>
+	(JSON.parse(text) as { groups: { inputs: Input[] }[] }).groups[0].inputs.map(({ id, value, state, start }) => ({
+		id,
+		value,
+		state,
+		start,
+	}));
+
+it("writes the live values' script into every kit's page, small and before the engine", () => {
+	const page = kitPage("orders", "model", "Orders", ORDERS, () => true);
+	const script = pageScript(page);
+	expect(script).toContain("if(!window.qorpera){");
+	expect(script).toContain("K.load=()=>");
+	expect(script).toContain("K.onLive=");
+	expect(page.indexOf(script)).toBeLessThan(page.indexOf('<script src="engine.js"></script>'));
+	expect(() => new Script(script)).not.toThrow();
+	// Every app of a kit carries it.
+	expect(Buffer.byteLength(script)).toBeLessThan(3584);
+	expect(pageScript(kitPage("marked", "board", "Marked", BOARD, () => true))).toContain("K.load=()=>");
+});
+
+it("puts each live value's number in its place and asks each question once", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: "51000.50" }, "shop/visits": { visits: 4200 } });
+	const { kit } = inside(ORDERS, db);
+	expect(inputs(await kit.load())).toEqual([
+		{ id: "orders", value: 340, state: "known" },
+		// A number the database gives as text is a number.
+		{ id: "revenue", value: 51000.5, state: "known" },
+		// With no column, the first column is the value.
+		{ id: "visits", value: 4200, state: "known", start: 500 },
+	]);
+	// Two values of one question are one watch; a question with params is its own.
+	expect(db.watch).toHaveBeenCalledTimes(2);
+	expect(db.watch.mock.calls.map(([name, params]) => [name, params])).toEqual([
+		["shop/month", {}],
+		["shop/visits", { days: 30 }],
+	]);
+	expect(kit.live).toEqual(BOUND);
+	expect(kit.changed).toEqual([]);
+	await kit.load();
+	expect(db.watch).toHaveBeenCalledTimes(2);
+	// Data with no live value is the text as it is stored, and its questions are no longer watched.
+	const plain = JSON.stringify(MODEL);
+	const read = vi.fn(async () => plain);
+	const { kit: kept } = openPage(MODEL, { read, watch: db.watch, onChange() {} });
+	expect(await kept.load()).toBe(plain);
+	expect(kept.live).toEqual([]);
+	let text = JSON.stringify(ORDERS);
+	const { kit: moving } = openPage(ORDERS, { read: async () => text, watch: db.watch, onChange() {} });
+	await moving.load();
+	text = JSON.stringify(MODEL);
+	await moving.load();
+	expect(db.watches.slice(2).map((one) => one.stopped)).toEqual([true, true]);
+});
+
+it("tells the engine once a frame when a value moved, and which moved", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const { kit, drawFrames } = inside(ORDERS, db);
+	const live = vi.fn();
+	const broken = vi.fn(() => {
+		throw new Error("An engine's own mistake");
+	});
+	kit.onLive(broken);
+	kit.onLive(live);
+	await kit.load();
+	db.set("shop/month", { orders: 350, revenue: 51000 });
+	db.set("shop/month", { orders: 360, revenue: 51000 });
+	expect(live).not.toHaveBeenCalled();
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 360, state: "known" });
+	expect(kit.changed).toEqual(["/groups/0/inputs/0/value"]);
+	// The same answer again is no change.
+	db.set("shop/month", { orders: 360, revenue: 51000 });
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	await kit.load();
+	expect(kit.changed).toEqual([]);
+});
+
+it("keeps the last good answer when a later ask fails", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const { kit, drawFrames } = inside(ORDERS, db);
+	const live = vi.fn();
+	kit.onLive(live);
+	await kit.load();
+	db.fail("shop/month");
+	drawFrames();
+	expect(live).not.toHaveBeenCalled();
+	expect(inputs(await kit.load()).slice(0, 2)).toEqual([
+		{ id: "orders", value: 340, state: "known" },
+		{ id: "revenue", value: 51000, state: "known" },
+	]);
+	expect(kit.changed).toEqual([]);
+	// A bridge whose watch throws gives the engine no value there, and no mistake.
+	const { kit: refused } = openPage(ORDERS, {
+		read: async () => JSON.stringify(ORDERS),
+		watch: () => {
+			throw new Error("Not now.");
+		},
+		onChange() {},
+	});
+	expect(inputs(await refused.load()).map(({ value, state }) => [value, state])).toEqual([
+		[null, "unknown"],
+		[null, "unknown"],
+		[null, "unknown"],
+	]);
+});
+
+it("takes a watch the bridge could not start as no answer at once, keeps its last answer, and tries it again", async () => {
+	vi.useFakeTimers();
+	try {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		// The bridge refuses shop/month until it is allowed, and then answers it once and gives up on it.
+		let allowed = false;
+		const watch = vi.fn(
+			(
+				name: string,
+				params: Record<string, unknown>,
+				listener: (answer: unknown) => void,
+				failed: (error: Error) => void,
+			) => {
+				if (name !== "shop/month") return db.watch(name, params, listener);
+				queueMicrotask(() => {
+					if (allowed)
+						listener({
+							columns: ["orders", "revenue"],
+							rows: [{ orders: 340, revenue: 51000 }],
+							more: false,
+							asOf: "",
+						});
+					failed(new Error("Too many watches."));
+				});
+				return () => undefined;
+			},
+		);
+		const { kit } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), watch, onChange() {} });
+		let text: string | null = null;
+		void kit.load().then((loaded) => {
+			text = loaded;
+		});
+		// No three seconds' wait for a watch that was refused.
+		await vi.advanceTimersByTimeAsync(0);
+		expect(inputs(text ?? "").map(({ value, state }) => [value, state])).toEqual([
+			[null, "unknown"],
+			[null, "unknown"],
+			[4200, "known"],
+		]);
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(1);
+		allowed = true;
+		await kit.load();
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(2);
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		// Refused again: the last good answer stays.
+		allowed = false;
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		expect(watch.mock.calls.filter(([name]) => name === "shop/month")).toHaveLength(4);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("loads one at a time, so a load asked for while one waits on its read ends in the newer answer", async () => {
+	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
+	const reads: ((text: string) => void)[] = [];
+	const read = vi.fn(() => new Promise<string>((done) => reads.push(done)));
+	const { kit, drawFrames } = openPage(ORDERS, { read, watch: db.watch, onChange() {} });
+	const live = vi.fn();
+	kit.onLive(live);
+	const turn = () => new Promise((done) => setTimeout(done, 0));
+	const first = kit.load();
+	await turn();
+	reads.shift()?.(JSON.stringify(ORDERS));
+	await first;
+	// A load waits on its read when the answer moves, and the engine asks for another load.
+	const older = kit.load();
+	await turn();
+	db.set("shop/month", { orders: 350, revenue: 51000 });
+	drawFrames();
+	expect(live).toHaveBeenCalledTimes(1);
+	const newer = kit.load();
+	await turn();
+	// The newer load reads only once the older one is done.
+	expect(read).toHaveBeenCalledTimes(2);
+	reads.shift()?.(JSON.stringify(ORDERS));
+	expect(inputs(await older)[0]).toEqual({ id: "orders", value: 350, state: "known" });
+	await turn();
+	expect(read).toHaveBeenCalledTimes(3);
+	reads.shift()?.(JSON.stringify(ORDERS));
+	expect(inputs(await newer)[0]).toEqual({ id: "orders", value: 350, state: "known" });
+	expect(kit.changed).toEqual([]);
+});
+
+it("waits a few seconds at most for the first answers, and a later one comes through onLive", async () => {
+	vi.useFakeTimers();
+	try {
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		const { kit, drawFrames } = inside(ORDERS, db);
+		const live = vi.fn();
+		kit.onLive(live);
+		let text: string | null = null;
+		void kit.load().then((loaded) => {
+			text = loaded;
+		});
+		await vi.advanceTimersByTimeAsync(2999);
+		expect(text).toBeNull();
+		await vi.advanceTimersByTimeAsync(1);
+		// Not known yet, never the example inside Qorpera; an input's start stays where the slider waits.
+		expect(inputs(text ?? "")).toEqual([
+			{ id: "orders", value: null, state: "unknown" },
+			{ id: "revenue", value: null, state: "unknown" },
+			{ id: "visits", value: 4200, state: "known", start: 500 },
+		]);
+		db.set("shop/month", { orders: 340, revenue: 51000 });
+		drawFrames();
+		expect(live).toHaveBeenCalledTimes(1);
+		expect(inputs(await kit.load())[0]).toEqual({ id: "orders", value: 340, state: "known" });
+		expect(kit.changed).toEqual(["/groups/0/inputs/0/value", "/groups/0/inputs/1/value"]);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("shows a live value's example outside Qorpera and in a web app with no watch, and else not known", async () => {
+	const examples = [
+		{ id: "orders", value: 120, state: "assumed" },
+		{ id: "revenue", value: null, state: "unknown" },
+		{ id: "visits", value: null, state: "unknown", start: 500 },
+	];
+	const { kit } = openPage(ORDERS);
+	expect(inputs(await kit.load())).toEqual(examples);
+	expect(kit.live).toEqual(BOUND);
+	const { kit: older } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), onChange() {} });
+	expect(inputs(await older.load())).toEqual(examples);
 });
 
 it("reads a kit's data, or says in words why it does not read", () => {
@@ -382,4 +726,189 @@ it("names in the page the pictures the folder holds, and says which it lacks", a
 	const page = f.text("apps/marked/index.html");
 	expect(page).toContain('data-kit-src="pictures/halo.webp"');
 	expect(page).not.toContain('data-kit-src="pictures/arc-one.webp"');
+});
+
+it("finds the questions a kit's data names exactly as the page's script does", async () => {
+	const deep = (depth: number): unknown => (depth === 0 ? { query: "shop/deep" } : { next: deep(depth - 1) });
+	const samples: Record<string, unknown>[] = [
+		{ a: { query: "shop/month" } },
+		{ a: { query: "shop/month", params: { days: 30 }, column: "orders", example: 3 } },
+		{ a: [{ query: "shop/month" }, { query: "shop/month" }, { query: "shop/month", params: { days: 7 } }] },
+		{ a: { query: "shop/month", note: "a key a binding has not" } },
+		{ a: { query: 5 } },
+		{ a: ["query"], query: "shop/month" },
+		{ a: deep(10) },
+		{ a: deep(11) },
+		{ a: deep(12) },
+		// The same params in another order are the same question.
+		{
+			a: { query: "shop/sales", params: { since: 1, until: 2 } },
+			b: { query: "shop/sales", params: { until: 2, since: 1 } },
+			c: { query: "shop/sales", params: { until: 3, since: 1 } },
+		},
+	];
+	for (const sample of samples) {
+		// The page asks once for each question it finds; a watch the bridge refuses lets it go on at once.
+		const watch = vi.fn((_name: string, _params: unknown, _listener: unknown, failed: (error: Error) => void) => {
+			failed(new Error("Not now."));
+			return () => undefined;
+		});
+		const { kit } = openPage(sample, { read: async () => JSON.stringify(sample), watch, onChange() {} });
+		await kit.load();
+		const label = JSON.stringify(sample);
+		expect(kitBindings(sample), label).toHaveLength(watch.mock.calls.length);
+		expect(kitBindings(sample).length > 0, label).toBe(kit.live.length > 0);
+	}
+	expect(kitBindings(samples[2])).toHaveLength(2);
+	expect(kitBindings(samples[3])).toEqual([]);
+	expect(kitBindings(samples[9])).toHaveLength(2);
+	// Five questions, each named with its params in both orders, are five, not past what a page keeps live.
+	const twice = {
+		...MODEL,
+		groups: [
+			{
+				label: "Sales",
+				inputs: Array.from({ length: 10 }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: {
+						query: `shop/q${n % 5}`,
+						params: n < 5 ? { since: 1, until: 2 } : { until: 2, since: 1 },
+					},
+				})),
+			},
+		],
+	};
+	expect(kitBindings(twice)).toHaveLength(5);
+	expect(kitNotes("model", twice, () => true)).toEqual([]);
+});
+
+it("stops the watches the data no longer names before it starts new ones, within a bridge's limit", async () => {
+	// A bridge that keeps at most eight watches at once, and refuses a ninth.
+	const open = new Set<string>();
+	const watch = vi.fn(
+		(name: string, _params: unknown, listener: (answer: unknown) => void, failed: (error: Error) => void) => {
+			if (open.size >= KIT_LIVE_QUESTIONS) {
+				queueMicrotask(() => failed(new Error("Too many watches.")));
+				return () => undefined;
+			}
+			open.add(name);
+			queueMicrotask(() => listener({ columns: ["n"], rows: [{ n: 7 }], more: false, asOf: "" }));
+			return () => {
+				open.delete(name);
+			};
+		},
+	);
+	const asking = (first: number) => ({
+		...MODEL,
+		groups: [
+			{
+				label: "Numbers",
+				inputs: Array.from({ length: KIT_LIVE_QUESTIONS }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: { query: `shop/q${first + n}` },
+				})),
+			},
+		],
+	});
+	let data = asking(0);
+	const { kit } = openPage(data, { read: async () => JSON.stringify(data), watch, onChange() {} });
+	expect(inputs(await kit.load()).every(({ value }) => value === 7)).toBe(true);
+	// The data now names eight other questions: the eight old watches go first, and the new ones all answer.
+	data = asking(KIT_LIVE_QUESTIONS);
+	expect(inputs(await kit.load()).map(({ value, state }) => [value, state])).toEqual(
+		Array.from({ length: KIT_LIVE_QUESTIONS }, () => [7, "known"]),
+	);
+	expect([...open].sort()).toEqual(
+		Array.from({ length: KIT_LIVE_QUESTIONS }, (_, n) => `shop/q${KIT_LIVE_QUESTIONS + n}`).sort(),
+	);
+});
+
+it("tells the maker when the data names more questions than a page keeps live", () => {
+	const asking = (count: number) => ({
+		...MODEL,
+		groups: [
+			{
+				label: "Numbers",
+				inputs: Array.from({ length: count }, (_, n) => ({
+					id: `n${n}`,
+					label: `N${n}`,
+					value: { query: `shop/q${n}`, params: { n } },
+				})),
+			},
+		],
+	});
+	expect(kitNotes("model", asking(8), () => true)).toEqual([]);
+	expect(kitNotes("model", asking(9), () => true)).toEqual([
+		"model.json names 9 different questions of the company's databases: a page keeps 8 live, and the rest show as not known.",
+	]);
+});
+
+it("adds data to a kit app's reads when its data names a question, and only adds it", async () => {
+	const LOOK =
+		"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	// A new app whose data names a question: data joins the reads the agent gave.
+	const made = read(
+		await f.call(
+			"save_app",
+			save("orders", "make-1", { title: "Orders", kit: "model", reads: ["files"] }, [
+				{ path: "model.json", text: JSON.stringify(ORDERS) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(manifestOf(f, "orders")?.reads).toEqual(["files", "data"]);
+	expect(made.look).toContain(LOOK);
+	const bare = read(
+		await f.call(
+			"save_app",
+			save("bare", "make-2", { title: "Bare", kit: "model" }, [
+				{ path: "model.json", text: JSON.stringify(ORDERS) },
+			]),
+		),
+	);
+	expect(manifestOf(f, "bare")?.reads).toEqual(["data"]);
+	expect(bare.look).toContain(LOOK);
+	// An app with no question keeps its manifest as it is, through a change too.
+	await f.call(
+		"save_app",
+		save("plain", "make-3", { title: "Plain", kit: "model" }, [{ path: "model.json", text: JSON.stringify(MODEL) }]),
+	);
+	const plain = manifestOf(f, "plain");
+	expect(plain?.reads).toEqual([]);
+	const manifest = f.text("apps/plain/app.toml");
+	const kept = read(
+		await f.call(
+			"save_app",
+			save("plain", "change-1", null, [{ path: "model.json", text: JSON.stringify({ ...MODEL, line: "Now" }) }]),
+		),
+	);
+	expect(kept.files.map((file: { path: string }) => file.path)).not.toContain("apps/plain/app.toml");
+	expect(f.text("apps/plain/app.toml")).toBe(manifest);
+	expect(kept.look ?? []).not.toContain(LOOK);
+	// The change that brings the first question adds data, the manifest otherwise as it was.
+	const asked = read(
+		await f.call("save_app", save("plain", "change-2", null, [{ path: "model.json", text: JSON.stringify(ORDERS) }])),
+	);
+	expect(asked.state).toBe("applied");
+	expect(manifestOf(f, "plain")).toEqual({ ...plain, reads: ["data"] });
+	expect(asked.look).toContain(LOOK);
+	// The questions go away: data stays.
+	await f.call("save_app", save("plain", "change-3", null, [{ path: "model.json", text: JSON.stringify(MODEL) }]));
+	expect(manifestOf(f, "plain")?.reads).toEqual(["data"]);
+	// An app with no kit may name data itself.
+	const own = read(
+		await f.call(
+			"save_app",
+			save("tool", "make-4", { title: "Tool", reads: ["data"] }, [{ path: "index.html", text: "<p>Orders</p>" }]),
+		),
+	);
+	expect(own.state).toBe("applied");
+	expect(manifestOf(f, "tool")?.reads).toEqual(["data"]);
 });

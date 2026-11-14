@@ -32,6 +32,8 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
   - `source`: an `https:` or `folder:` link. Shown as a small ↗.
 - `figures`: up to 3 numbers the data cannot give, `{"value", "label", "unit", "state"}`. `value` up to 10
   characters, `label` up to 28. Use `"state": "unknown"` for a number nobody knows: it shows "?".
+- A step's or a figure's `value` may be live from a company database: `{"query": "<database>/<question>", "params": {},
+  "column": "n", "example": 120}`. Known once it answers, else unknown. `example` shows only outside Qorpera.
 - `next`: what will fill the hole, drawn as a small flag in it: `{"text", "step", "lane", "by"}`. `text` up to 60.
   `lane` is a lane id or `"all"`. `by` is the agent who does it.
 

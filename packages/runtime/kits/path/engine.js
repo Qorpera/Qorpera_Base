@@ -1528,7 +1528,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
 			const app = KIT.app || "";
 			const file = KIT.data || "path.json";
-			const res = await bridge.read(`apps/${app}/${file}`);
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(`apps/${app}/${file}`));
 			txt = typeof res === "string" ? res : res && (res.text ?? res.content);
 			raw = JSON.parse(String(txt));
 			const next = normalize(raw);
@@ -1552,6 +1553,8 @@ a.pk-row:hover .go{color:var(--q-accent)}
 	}
 	function start() {
 		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
 		try {
 			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
 		} catch (e) {

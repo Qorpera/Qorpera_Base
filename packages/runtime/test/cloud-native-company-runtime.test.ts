@@ -3302,6 +3302,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// (13 November 2026).
 	// The same day make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again,
 	// measured on the tree with the kits, the company databases and the answer-first change.
+	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
+	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3352,10 +3354,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"bc02e489616219d76dbc05b9ea1d8035dca33f088d8b3a4dd85d91a10529e787",
+		"6c7ed1d1f3674e0e254b99a4dad106d89f93f51245c348831787a4213d841f68",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"7ef848f3244c2e9048dbc0c97f4b8f6173eacc1328b6be053fdfe3af0622dbcb",
+		"61e7ecace302195b65a18a0bd78ec14f50a4ae165f698cf24f22ed5fcde1e153",
 	);
 });
 
