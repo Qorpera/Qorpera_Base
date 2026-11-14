@@ -1222,9 +1222,14 @@ should feel like the company is conscious almost"; no tool could archive an agen
 `review_required`).
 - `{agent, reason, operationKey}`: `agent` is the handle (folder name), `reason` one sentence a founder reads (at most
   280 characters).
-- Before the automatic review (`prepare`), the agent's `agent.md` is read: the Co-Founder, the calling agent, an agent
-  already archived and a handle that is no agent's folder are refused (`REFUSED: …`), and the card ("End an agent's
-  role") names the agent as its file has it, with the reason. Review class `delegation`, as SQL's for a status change.
+- Before the automatic review (`prepare`), the agent's `agent.md` is read: the Co-Founder, the calling agent and a
+  handle that is no agent's folder are refused (`REFUSED: …`), and the card ("End an agent's role") names the agent as
+  its file has it, with the reason. Review class `delegation`, as SQL's for a status change.
+- An agent already archived is not refused before the receipt (review r1 of #1819): the same call repeated after its
+  archive landed, in this run or a resumed one, replays its stored answer from the receipt. A new call on an archived
+  agent finds no receipt and is answered `{outcome: "refused", reason: "already_ended"}` under its own, settled by one
+  unit the folder core refuses with no effect (a `write` with no `expectedVersion` at a path that exists, "exists"),
+  with no review; nothing is left unconfirmed and the card says "Its role has already ended: nothing changes".
 - Under the receipt: one `write` unit, `setCompanyStateSettings(text, {status: "archived"})` over the version read,
   staged, its review recorded (`recordReview`, tool `end_role`; the recorder takes `end_role` since 20260930766000) and
   committed with it. The follow-up queue then pauses its routines, revokes its access and closes its threads; nothing

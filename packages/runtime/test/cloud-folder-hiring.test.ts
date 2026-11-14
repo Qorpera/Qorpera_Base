@@ -8,7 +8,11 @@ import {
 	cloudHiringTools,
 } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	type CloudNativeTool,
+	CloudToolArgumentRefusal,
+	CloudToolRefusal,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -336,22 +340,71 @@ it("ends a role by setting agent.md to archived, recording the call's review for
 		instructions: "Own Research.",
 	});
 	expect([...f.folders]).toContain("QorperaOS/agents/research");
-	// Once ended, a new call to end it is refused before any review.
-	await refuses(f.hiring().prepareEndRole(END, f.context.signal), "Research's role has already ended");
+	// Once ended, prepare says so for the card and refuses nothing: a repeat of this call must reach its receipt.
+	expect(await f.hiring().prepareEndRole(END, f.context.signal)).toEqual({ ...END, name: "Research", ended: true });
 });
 
-it("refuses before the review the Co-Founder, the calling agent, an ended role and a folder that is no agent's", async () => {
+// Review r1 of #1819 (F1): a repeated end_role after its archive landed and its answer was lost must reach its receipt,
+// in the same run and in a resumed one (no tool or operations memory), and never be refused before it.
+it("answers a repeated end_role from its receipt after the archive landed, in this run and in a resumed one", async () => {
+	const f = await roles();
+	const toolOf = () => {
+		const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+		const tools = cloudHiringTools(f.identity, {
+			folderHiring: f.hiring(operations),
+			folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+		});
+		return tools[2] as CloudNativeTool;
+	};
+	const call = async (tool: CloudNativeTool) => {
+		const prepared = await (tool.prepare as NonNullable<CloudNativeTool["prepare"]>)(
+			tool.parseArguments(END),
+			f.context,
+		);
+		return parse((await tool.execute(prepared, f.context)) as { value: unknown });
+	};
+	// The first call lands; its answer never reaches the model.
+	const tool = toolOf();
+	const first = await call(tool);
+	expect(first).toMatchObject({ outcome: "saved" });
+	// The same call again in this run, and in a resumed run whose tool and operations remember nothing: the receipt.
+	for (const again of [tool, toolOf()]) expect(await call(again)).toEqual(first);
+	expect(f.commits).toHaveLength(1);
+	expect(f.recordings).toHaveLength(1);
+});
+
+it("answers a new end_role on an agent already archived as already ended, its receipt settled, nothing changed", async () => {
+	const f = await roles();
+	const before = f.text("QorperaOS/agents/market/agent.md");
+	const ended = parse(await f.hiring().endRole({ ...END, operationKey: "end-2", agent: "market" }, f.context));
+	expect(ended).toMatchObject({ outcome: "refused", reason: "already_ended", agent: { name: "Market" } });
+	expect(ended.next).toBe("Market's role has already ended: nothing changed. A member can bring it back.");
+	// One unit the folder refuses with no effect, carrying no review; the file is as it was.
+	expect(f.commits).toHaveLength(1);
+	expect(f.commits[0]?.reviewId ?? null).toBeNull();
+	expect(f.commits[0]?.units.map((unit) => [unit.op, unit.path, "expectedVersion" in unit])).toEqual([
+		["write", "QorperaOS/agents/market/agent.md", false],
+	]);
+	expect(f.recordings).toEqual([]);
+	expect(f.text("QorperaOS/agents/market/agent.md")).toBe(before);
+	// The receipt is completed, not left unconfirmed: the run's next change goes ahead.
+	expect([...f.ledger.values()].every((row) => row.result !== null)).toBe(true);
+	expect(parse(await f.hiring().endRole(END, { ...f.context, callId: randomUUID() }))).toMatchObject({
+		outcome: "saved",
+	});
+});
+
+it("refuses before the review the Co-Founder, the calling agent and a folder that is no agent's", async () => {
 	const f = await roles();
 	for (const [agent, reason] of [
 		["co-founder", "The Co-Founder's role does not end"],
 		["nora", "An agent does not end its own role"],
-		["market", "Market's role has already ended"],
 		["sales", "No agent has the folder QorperaOS/agents/sales"],
 		["groups", "No agent has the folder QorperaOS/agents/groups"],
 		["Not A Handle", "No agent has the folder"],
 	] as const)
 		await refuses(f.hiring().prepareEndRole({ ...END, agent }, f.context.signal), reason);
-	// The same refusals stand at the effect, but for an ended role: a replay must reach its receipt.
+	// The same refusals stand at the effect; none of them changes when the call's own archive lands.
 	await refuses(f.hiring().endRole({ ...END, agent: "nora" }, f.context), "An agent does not end its own role");
 	const { actionReviewId: _, ...unreviewed } = f.context;
 	await refuses(f.hiring().endRole(END, unreviewed), "needs the automatic review's approval");

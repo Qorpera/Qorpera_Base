@@ -1048,7 +1048,12 @@ export function describeCloudAction(
 		title = "End an agent's role";
 		target = text(args.name) || text(args.agent) || null;
 		add("reason", args.reason);
-		add("effect", "Its routines pause and its threads close; its files stay, and a member can bring it back");
+		add(
+			"effect",
+			args.ended === true
+				? "Its role has already ended: nothing changes"
+				: "Its routines pause and its threads close; its files stay, and a member can bring it back",
+		);
 	} else if (tool.name === "create_group_chat") {
 		title = "Start a group chat";
 		target = text(args.name) || text(args.title) || null;

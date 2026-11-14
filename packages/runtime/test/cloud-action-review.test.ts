@@ -3129,6 +3129,16 @@ describe("company sites (20260930550000)", () => {
 				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
 			},
 		});
+		// One already ended says so on its card (review r1 of #1819: it is answered after its receipt, not refused).
+		expect(
+			describeCloudAction(tool("end_role"), {
+				operationKey: "k",
+				agent: "research",
+				reason: "The customer interviews are done.",
+				name: "Research",
+				ended: true,
+			}).details.effect,
+		).toBe("Its role has already ended: nothing changes");
 		// The call names only the slug: the card is true for a website and an app link alike (v195).
 		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({
 			title: "Take a website or app link offline",
