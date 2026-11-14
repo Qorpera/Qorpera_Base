@@ -2,7 +2,8 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
 
 /* An agent's wall (Jonas, 5 November 2026: "a poster or wall of updates kept within rules, instead of many new
  * messages"): what the agent has done, with links, what it is working on, and what waits on a member, kept in place in
- * `QorperaOS/agents/<handle>/wall.md`. The agent keeps it with `update_wall`, and the web pins it above the agent's
+ * `QorperaOS/agents/<handle>/wall.md`. Agents kept it with `update_wall` until 14 November 2026, when the founder dropped
+ * the wall for agents ("it's the wrong medium for activity"); the web pins it above the agent's
  * thread. It is an ordinary file of the folder, so a member may edit it too; the write tools refuse a wall that breaks
  * the rules below. This module is the format both sides read. Browser-safe.
  *

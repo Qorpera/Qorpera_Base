@@ -1147,7 +1147,6 @@ it.each([
 				"send_message",
 				"update_memory",
 				"update_skill",
-				"update_wall",
 				// The Co-Founder deals the team out between the members (20260930702000).
 				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
 			].sort(),
@@ -3316,6 +3315,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	// On 14 November 2026 list_hooks, manage_hook and ask_member's secret card no longer name the Company Computer's
 	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
+	// The same day update_wall left every catalog (the founder: "rather drop the wall - it's the wrong medium for
+	// activity"), and organize_apps no longer says "or on your wall", so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3329,7 +3330,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"save_app",
 		"post_app",
 		"make_picture",
-		"update_wall",
 		"data_describe",
 		"data_apply",
 		"data_query",
@@ -3366,10 +3366,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"825fdc12e53f710b2a2a4731826483f195a07b69eb0dd7c70d53038ac9549362",
+		"d6cbac16dc0684877675b9a24d77c8c2c27f92be366807bd558c83dc79415899",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"63b1fd6332fa56dd67080e34e482f7d91b9ba68dd25bab98c89561e34293fdfb",
+		"8b5fab295597c778b540a1a056c3125524f4b38324d5ef65580b4d972de2a662",
 	);
 });
 

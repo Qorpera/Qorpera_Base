@@ -193,15 +193,15 @@ export const CLOUD_NATIVE_FENCE_FRAME_BYTES = 64 * 1024 * 1024;
 /** What still runs after a run's final send, a card's included: only its own bookkeeping, so the member gets the answer
  * without waiting for it (2026-11-13 amendment, "the answer first"). Any other call, but the answer's own call again (its
  * key replays it), runs nothing and ends the turn. The kernel admits these tools' folder receipts after the final, and no
- * other (20260930748000). */
+ * other (20260930748000; its list still names update_wall, which no run is offered since 14 November 2026: changing it
+ * would need a migration and changes nothing). */
 export const CLOUD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set([
-	"update_wall",
 	"manage_todo",
 	"organize_apps",
 	"organize_sidebar",
 ]);
 const AFTER_ANSWER =
-	"TOOL_UNAVAILABLE: the final send is made, so only the wall, to-do list, apps and sidebar change now; this call ran nothing";
+	"TOOL_UNAVAILABLE: the final send is made, so only the to-do list, apps and sidebar change now; this call ran nothing";
 
 /** Keeps a key in insertion order and forgets the oldest past the window. */
 function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {

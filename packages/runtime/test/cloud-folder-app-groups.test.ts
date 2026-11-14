@@ -321,7 +321,7 @@ it("tells the rules within the bytes a tool's description may hold, and is revie
 		"The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front.",
 		"Two group levels at most. Three to twelve apps in a group; a group with one app goes away",
 		"what a member changed in their own drawer is theirs",
-		"After a change, say it in one line to the member who asked, or on your wall.",
+		"After a change, say it in one line to the member who asked.",
 		// The groups' colours (12 November 2026).
 		"Give every group a colour that sets it apart from the others and fits its product or area, by the palette's names",
 		"a group inside a group usually takes its parent's colour, so leave its own unset.",

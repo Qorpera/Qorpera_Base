@@ -7,7 +7,6 @@ import {
 import type { JsonValue } from "@qorpera/contracts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
-import { CLOUD_WALL_TOOL_DESCRIPTION } from "@qorpera/runtime/cloud-folder-wall";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	CLOUD_COMPANY_TOP_FOLDERS,
@@ -79,7 +78,6 @@ it("tells every run once that only its bookkeeping follows its final send, namin
 		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 		CLOUD_AGENT_SEND_INSTRUCTIONS,
 		CLOUD_ASK_MEMBER_INSTRUCTIONS,
-		CLOUD_WALL_TOOL_DESCRIPTION,
 	])
 		expect(text).not.toMatch(
 			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
@@ -704,7 +702,6 @@ const STAFF_TOOLS = [
 	"save_app",
 	"post_app",
 	"make_picture",
-	"update_wall",
 	"data_describe",
 	"data_apply",
 	"data_query",
@@ -832,7 +829,6 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	for (const section of [
 		"# What members see",
 		"# Cards",
-		"# Your wall",
 		"# Writing for members",
 		"# Apps",
 		"# Concepts",
@@ -874,7 +870,6 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 		"# Company databases",
 		"# Code projects",
 		"# Ideas worth seeing several ways",
-		"# Your wall",
 	])
 		expect(full).toContain(`\n${section}\n`);
 	// A section, a line or a sentence about a tool the run lacks is left out.
@@ -887,7 +882,6 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(compile(without("update_skill"))).toContain("\n# Your notebook and skills\n");
 	expect(compile(without("update_skill", "update_memory"))).not.toContain("# Your notebook and skills");
 	expect(compile(without("data_query"))).not.toContain("# Company databases");
-	expect(compile(without("update_wall"))).not.toContain("# Your wall");
 	const noMachines = compile(without("machine_start", "machine_run"));
 	expect(noMachines).not.toContain("- Commands (");
 	expect(noMachines).not.toContain("Playwright's addInitScript");
@@ -1890,12 +1884,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Track 3, T3-3 (14 November 2026): one voice. Purpose and people come first, the tool-result rules stand once after the
 // company's files, the sections a run's tools call for are shared before the head, and the hire overlay is v17 (the
 // prompt names its version). All three were measured once more.
+// The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
+// no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
+// instructions were measured once more; a worker's never named the wall.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "435ef376adab05905efa0f2233f9155ab21d14cb039504f00e6967704148a069",
+			instructions: "f29d1d5d3e156637a687426a7a8af998d1e105d08cb7fe0a1e0b539edcc92a8c",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1911,7 +1908,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "435ef376adab05905efa0f2233f9155ab21d14cb039504f00e6967704148a069",
+			instructions: "f29d1d5d3e156637a687426a7a8af998d1e105d08cb7fe0a1e0b539edcc92a8c",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
@@ -1975,14 +1972,14 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
 		"often not experts in software, law or money, so write to them in plain words and bring them decisions, not homework",
-		"So write little and show a lot: a picture, an app or a wall item beats a paragraph, and a paragraph beats a page.",
+		"So write little and show a lot: a picture or an app beats a paragraph, and a paragraph beats a page.",
 		"Link, never paste:",
 		"Plain words, and the higher your place, the plainer: the Co-Founder uses everyday words only",
 		"only an agent with a narrow technical job uses its field's terms, and only those its members use",
 		'No formulas, made-up scores ("7/10"), labels, abbreviations, ids, error codes, tool names or platform words',
-		"The company speaks its founders' language: write every message, card, wall item and file for the team in it, also when no member started the run",
+		"The company speaks its founders' language: write every message, card and file for the team in it, also when no member started the run",
 		"answer a member who writes in another language in theirs, and write for outsiders in theirs",
-		"Never send only to say that work started, goes on or has not changed",
+		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed",
 		"Say each thing once: a correction goes in one line of your next message",
 		"To a coworker, write what you need, what you hand over or what changed for them",
 		"pass a member's request on in their own words",
@@ -1998,15 +1995,17 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 	expect(worker).toContain("Members may read your files: write them in plain words, in the company's language.");
 });
 
-it("tells an agent to keep its wall instead of sending status messages", () => {
+// The founder, 14 November 2026, asked whether to drop the forced first message: "rather drop the wall - it's the wrong
+// medium for activity". The short first message tells a member that work has started; what waits on them is a card;
+// agents keep no wall and are told of none.
+it("tells a member work has started with the acknowledgement, shows what waits on a card, and keeps no wall", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).not.toMatch(/\bupdate_wall\b|# Your wall|your wall|wall item/);
 	for (const rule of [
-		"\n# Your wall\nYour wall, pinned above your thread, shows what you have done, what you are doing and what waits on members",
-		"a finished item moves to done with a link, each card you raise joins what waits and leaves once answered, a wrong item is fixed where it stands",
-		"Members follow you there instead of in messages",
-		"Never send only to say that work started, goes on or has not changed: your wall says that.",
-		"The wall sends no notice: a decision also goes on a card, and a result also gets one line with its link in your message.",
-		"A message that opens with a quoted line (`> …`) answers a question from your wall.",
+		"it is how the member learns that work has started",
+		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed: the final send says once what is done and what carries the rest.",
+		"a card is where what waits on a member shows",
+		"When work goes on after your turn, say what carries it (a worker, a routine, a todo)",
 		// Jonas, 11 November 2026: a headline says what members now have, never the step.
 		'Write it in everyday words and the active voice: never the step you took ("Prices checked"), and never the team\'s housekeeping',
 	])
@@ -2145,11 +2144,10 @@ it("has an interface app show a thing to see and handle, never a document or a s
 	// to be objects, models, apps and videos that are visual-first to let you see the company."
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		// The split: agents work, files hold, apps show; the state of the work is read on the wall.
+		// The split: agents work, files hold, apps show.
 		"The agents do the work",
 		"The company is its files",
 		"It is never a document: a page to read is a file and stays in the folder.",
-		"Members follow you there instead of in messages",
 		// The four forms, and a thing, not an area.
 		"an object to turn (the product, a place), a model to try (the numbers, a process), an app to use (the product, a working tool) or a video that explains",
 		"never per area or per agent",
@@ -2994,7 +2992,7 @@ it("tells a turn that ended with its closing act undone what is missing, and not
 it("tells an agent to ask what its work waits for on a card that says what is stopped", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"When work cannot go on without a member's answer, ask on a card, never only in a message: the card shows that work has stopped at them.",
+		"When work cannot go on without a member's answer, ask on a card, never only in a message: a card is where what waits on a member shows, and it tells them that work has stopped at them.",
 		'Say on it what has stopped ("I\'ve stopped the price list until you pick one").',
 		"Ideas to take or leave, offers and news go in messages.",
 		"A declined, dismissed or expired card is an answer, never consent",

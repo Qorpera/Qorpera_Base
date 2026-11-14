@@ -1015,25 +1015,25 @@ it("leaves the turn open after a confirmed final send: the model ends it, and th
 	});
 });
 /** A bookkeeping tool of the run's (CLOUD_AFTER_ANSWER_TOOLS), as the fixture calls it. */
-function wallTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }))): CloudNativeTool {
+function todoTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }))): CloudNativeTool {
 	return {
-		name: "update_wall",
+		name: "manage_todo",
 		source: "company_file",
-		description: "Synthetic wall.",
+		description: "Synthetic todo.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		parseArguments: () => ({}),
 		execute,
 	};
 }
 it("runs the run's bookkeeping after the answer, and the turn goes on until the model ends it", async () => {
-	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_WALL" }));
-	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), wallTool(execute)] });
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }));
+	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), todoTool(execute)] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toBeNull();
 	expect(execute).toHaveBeenCalledOnce();
-	const wall = JSON.parse(recorded.outputs[1].output);
-	expect(wall).toMatchObject({ status: "ok", content: { text: "PUBLIC_WALL" } });
+	const todo = JSON.parse(recorded.outputs[1].output);
+	expect(todo).toMatchObject({ status: "ok", content: { text: "PUBLIC_TODO" } });
 });
 it("lets the answer's own call again after it: its key replays it, and the turn goes on", async () => {
 	const send = publicSendTool();

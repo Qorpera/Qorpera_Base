@@ -50,7 +50,7 @@ const FOUNDER_RULES = [
 	["P5 from the first conversation", "from the first conversation on"],
 	["P6 full ambition", "full ambition"],
 	["P7 show, do not tell", "write little and show a lot"],
-	["P7 the wall", "Members follow you there instead of in messages"],
+	["P7 work started: the acknowledgement", "it is how the member learns that work has started"],
 	["P8 purpose before rules", "# Your company\n"],
 	["P9 the tool-result rules once", "# Tool results\n"],
 ];
@@ -72,7 +72,6 @@ async function bundle(scratch) {
 				`export {cloudAppTools} from "${src("cloud-folder-app-tools")}";`,
 				`export {cloudPictureTool} from "${src("cloud-folder-picture-tool")}";`,
 				`export {CloudPictureChannel} from "${src("cloud-picture-channel")}";`,
-				`export {cloudWallTools} from "${src("cloud-folder-wall")}";`,
 				`export {cloudDataTools} from "${src("cloud-data-tools")}";`,
 				`export {cloudCoworkerMessageTool} from "${src("cloud-wake-bus")}";`,
 				`export {cloudRoutineTools} from "${src("cloud-routine-tools")}";`,
@@ -308,9 +307,6 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 			...mine.cloudInterfaceWriteTools({ folder, operations, identity }),
 			...mine.cloudAppTools({ folder, operations, identity }),
 			mine.cloudPictureTool({ folder, operations, identity, pictures: new mine.CloudPictureChannel() }),
-			...(work.isWorker
-				? []
-				: mine.cloudWallTools({ folder, operations, identity, handle: "alice", timeZone: "Europe/Copenhagen" })),
 		].filter(work.companyFile),
 		...mine.cloudDataTools({ folder, door: standIn(), apply: !work.isWorker }),
 		mine.cloudCompanyContextTool(context, binding, standIn()),

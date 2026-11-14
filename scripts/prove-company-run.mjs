@@ -54,7 +54,6 @@ async function bundle(scratch) {
 				'export {cloudNativeContextIdentity} from "./packages/runtime/src/cloud-native-context-composition.ts";',
 				'export {CLOUD_AFTER_ANSWER_TOOLS, CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
 				'export {CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput, parseCloudAgentSendReceipt} from "./packages/runtime/src/cloud-agent-mouth.ts";',
-				'export {cloudWallTools} from "./packages/runtime/src/cloud-folder-wall.ts";',
 				'export {cloudWorkerTools} from "./packages/runtime/src/cloud-worker-tools.ts";',
 				'export {CloudFolderTodos} from "./packages/runtime/src/cloud-folder-todos.ts";',
 				'export {CloudFolderWorkers} from "./packages/runtime/src/cloud-folder-workers.ts";',
