@@ -25,7 +25,7 @@ import {
 import { DesktopHoldLedger } from "../src/app/views/desktop-holds.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
-import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
+import { createWebMachineScreens, MACHINE_START_REFUSALS } from "../src/cloud/machine-screens.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
 import { ComputerScene } from "../src/ui/computer-scene.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
@@ -146,7 +146,7 @@ function setup(
 		/** What the member's actions answer, in turn (then done, exit 0). */
 		actAnswers: [] as ActAnswer[],
 		/** What the member's starts of the desktop answer, in turn (then started), and a gate each waits on. */
-		startAnswers: [] as ({ outcome: "started" | "running" | "opened" } | { code: string })[],
+		startAnswers: [] as ({ outcome: "started" | "running" | "opened" } | { code: string } | { status: number })[],
 		/** The company's apps the window offers to open (20260930758000): none unless a test names some. */
 		apps: [] as { name: string; path: string }[],
 		startGate: undefined as Promise<void> | undefined,
@@ -272,6 +272,7 @@ function setup(
 			const answer = state.startAnswers.shift() ?? { outcome: body.open === undefined ? "started" : "opened" };
 			if (state.startGate) await state.startGate;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
+			if ("status" in answer) return new Response("", { status: answer.status });
 			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
 		}
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/pointer")) {
@@ -1847,6 +1848,139 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		await advance(LOOK_EVERY_MS * 4);
 		expect(t.opens).toEqual([]);
 	});
+});
+
+describe("every answer to an open, from both callers, with and without a picture (review r2 of #1781)", () => {
+	const apps = [
+		{ name: "A", path: "apps/a" },
+		{ name: "B", path: "apps/b" },
+	];
+	type StartAnswer = { outcome: "started" | "running" | "opened" } | { code: string } | { status: number };
+	/** Every answer the start route can give a request that opens something. */
+	const answers: [string, StartAnswer][] = [
+		...[...MACHINE_START_REFUSALS].map((code): [string, StartAnswer] => [code, { code }]),
+		["a failed request", { status: 503 }],
+		["started", { outcome: "started" }],
+		["running", { outcome: "running" }],
+		["opened", { outcome: "opened" }],
+	];
+	const NOT_THERE = "That is not in the company folder any more.";
+	const NO_FOLDER = "This computer cannot see the company folder yet. It can after it has slept and woken.";
+	const FAILED = "The computer could not open it. Try again.";
+	/** What the window does with an answer to the member's newest choice: its words (null: none of an open's), whether
+	 * Try again asks for the same open, whether it is tried again by itself, and whether the row is only a world without
+	 * a picture (a machine too small for one, or one it may not show). */
+	function expected(name: string, caller: "turnOn" | "openNow") {
+		const none = { words: null as string | null, retry: false, again: false, noPicture: false };
+		if (name === "opened" || name === "DESKTOP_MEMBER_IN_CONTROL") return none;
+		if (name === "DESKTOP_OPEN_NOT_FOUND" || name === "DESKTOP_OPEN_PATH_INVALID")
+			return { ...none, words: NOT_THERE };
+		if (name === "DESKTOP_OPEN_NO_FOLDER") return { ...none, words: NO_FOLDER };
+		if (name === "DESKTOP_START_TOO_SOON") return { ...none, again: true };
+		if (caller === "turnOn") {
+			if (name === "DESKTOP_MACHINE_TOO_SMALL")
+				return { ...none, words: "This computer is too small for a screen.", noPicture: true };
+			if (name === "MACHINE_NEEDS_COMPANY_VIEW")
+				return {
+					...none,
+					words: "The screen is hidden because it may show files you can't open.",
+					noPicture: true,
+				};
+			if (name === "MACHINE_NOT_RUNNING" || name === "MACHINE_BOOT_CHANGED") return { ...none, again: true };
+		}
+		return { ...none, words: FAILED, retry: true };
+	}
+	/** What the window says where the member sees it: the state's words without a picture, the note under one. */
+	function says(p: ComputerPanel): string {
+		const parts: string[] = [];
+		const loading = p.el.querySelector<HTMLElement>(".computer-loading");
+		if (loading && !loading.hidden) parts.push(status(p) ?? "", detail(p) ?? "");
+		const words = p.el.querySelector<HTMLElement>(".machine-screen-control");
+		if (words && !words.hidden) parts.push(words.querySelector(".machine-screen-control-note")?.textContent ?? "");
+		return parts.join(" | ");
+	}
+	/** The Try again the member sees: under the picture, or the state's own button. */
+	function tryAgain(p: ComputerPanel): HTMLButtonElement | null {
+		const under = p.el.querySelector<HTMLButtonElement>(".machine-screen-open-again");
+		if (under && !under.hidden && !p.el.querySelector<HTMLElement>(".machine-screen-control")?.hidden) return under;
+		const state = action(p);
+		return state?.textContent === "Try again" ? state : null;
+	}
+	const opener = (p: ComputerPanel) => p.el.querySelector<HTMLButtonElement>(":scope > .computer-opener")!;
+	function choose(p: ComputerPanel, row: number) {
+		opener(p).click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+	}
+	/** A window with Open where the caller is the one asked for: the screen off (turnOn) or shown (openNow). */
+	async function at(caller: "turnOn" | "openNow") {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = caller === "turnOn" ? { code: "DESKTOP_NOT_RUNNING" } : { picture: 1 };
+		const p = panel(s);
+		await flush();
+		return { s, p };
+	}
+
+	for (const caller of ["turnOn", "openNow"] as const)
+		for (const picture of [false, true])
+			for (const [name, answer] of answers) {
+				const want = expected(name, caller);
+				if (want.noPicture && picture) continue;
+				it(`${caller}, ${picture ? "a picture after" : "no picture after"}: ${name}`, async () => {
+					const { s, p } = await at(caller);
+					s.state.startAnswers.push(answer);
+					choose(p, 0);
+					await flush();
+					// After the answer, the screen is as the row's world has it.
+					s.state.fallback = picture ? { picture: 1 } : { code: "DESKTOP_NOT_RUNNING" };
+					await advance(LOOK_EVERY_MS);
+					await advance(LOOK_EVERY_MS);
+					if (want.again) {
+						// Tried again by itself, with the same open (and opened then).
+						await advance(START_AGAIN_MS * 2);
+						expect(s.opens).toEqual(["apps/a", "apps/a"]);
+						expect(says(p)).not.toContain(FAILED);
+						return;
+					}
+					if (want.words !== null) expect(says(p)).toContain(want.words);
+					for (const words of [NOT_THERE, NO_FOLDER, FAILED])
+						if (words !== want.words) expect(says(p)).not.toContain(words);
+					expect(tryAgain(p) !== null && want.retry).toBe(want.retry);
+					if (want.retry) {
+						await advance(START_AGAIN_MS);
+						tryAgain(p)!.click();
+						await flush();
+						expect(s.opens).toEqual(["apps/a", "apps/a"]);
+					} else {
+						// No Try again carries the path: a press of the state's own button sends no open.
+						await advance(START_AGAIN_MS);
+						action(p)?.click();
+						await flush();
+						expect(s.opens).toEqual(["apps/a"]);
+					}
+				});
+				it(`${caller}: ${name} to a choice a newer one replaced changes nothing, and the newer goes out`, async () => {
+					const { s, p } = await at(caller);
+					let release = () => {};
+					s.state.startGate = new Promise<void>((resolve) => {
+						release = resolve;
+					});
+					s.state.startAnswers.push(answer);
+					choose(p, 0);
+					await flush();
+					s.state.startGate = undefined;
+					choose(p, 1);
+					await flush();
+					release();
+					await flush();
+					await advance(LOOK_EVERY_MS);
+					await advance(START_AGAIN_MS + LOOK_EVERY_MS * 2);
+					// The newer choice went out (once), and nothing of the older answer is said.
+					expect(s.opens.filter((path) => path === "apps/b")).toHaveLength(1);
+					expect(s.opens[0]).toBe("apps/a");
+					for (const words of [NOT_THERE, NO_FOLDER, FAILED]) expect(says(p)).not.toContain(words);
+				});
+			}
 });
 
 describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPEN-BRIEF, 13 Nov 2026)", () => {
