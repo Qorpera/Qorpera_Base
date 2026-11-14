@@ -1172,8 +1172,16 @@ export function mountFigureMotion(
 		// Until the motion's code and the artwork in this colour are both here the figure's place stays empty, and
 		// the figure then fades in.
 		canvas.dataset.arrive = "";
-		// Once: a panel shown again later must not fade its figures in anew.
-		canvas.addEventListener("animationend", () => delete canvas.dataset.arrive, { once: true });
+		// Once, ended or cut short: a panel shown again later must not fade its figures in anew. The fade is the
+		// figure's own: a view that waits for its own animation to end (the question dock) never hears of it.
+		const arrived = (event: AnimationEvent) => {
+			event.stopPropagation();
+			delete canvas.dataset.arrive;
+			canvas.removeEventListener("animationend", arrived);
+			canvas.removeEventListener("animationcancel", arrived);
+		};
+		canvas.addEventListener("animationend", arrived);
+		canvas.addEventListener("animationcancel", arrived);
 		void Promise.all([prepare(entry), loadFigureMotion()])
 			.then(() => {
 				if (live.has(entry)) begin();
