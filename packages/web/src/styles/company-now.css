@@ -1,0 +1,131 @@
+/* The company's page, `#/c/{id}/now` (app/views/company-now.ts; Jonas, 14 Nov 2026: "It should feel like the company is
+ * conscious almost"). A pure picture: the company's sentence and one short line, the things of its reading as shapes
+ * that fill, the agents at them, a quiet line of what changed and the composer. No header bar, no boxes, no cards.
+ * Inside the picture every length goes by --u, the design pixels of one unit of its canvas (app/reading-layout.ts), so
+ * the picture scales whole and never overlaps itself; the view sets places and sizes inline with designPx. */
+.page.company-now {
+	display: flex; flex-direction: column; height: 100%; max-width: none; padding: 0; overflow: hidden; background: var(--bg);
+	/* The rail's selection colour (styles/app.css --rail-selection), and a light mix of it on the page. */
+	--now-solid: var(--composer-accent);
+	--now-pale: color-mix(in srgb, var(--now-solid) 17%, var(--bg));
+	--now-dash: var(--text-soft);
+	--u: calc(0.769 * var(--px));
+}
+/* Standing still: grey and still. */
+.page.company-now.is-still {
+	--now-solid: color-mix(in srgb, var(--text-soft) 75%, var(--bg));
+	--now-pale: color-mix(in srgb, var(--text-soft) 16%, var(--bg));
+}
+
+.now-head { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 640px; padding: 38px 43px 0; }
+.now-title { margin: 0; color: var(--text); font-size: 23px; font-weight: 700; line-height: 29px; letter-spacing: -0.01em; text-wrap: pretty; }
+.now-line { margin: 0; color: var(--text-muted); font-size: 14px; line-height: 20px; }
+.now-line[hidden], .now-settings[hidden], .now-changes[hidden], .now-note[hidden] { display: none; }
+.now-settings {
+	margin-top: 8px; min-height: 32px; padding: 6px 14px; border: 0; border-radius: 9px;
+	background: var(--text); color: var(--bg); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.now-settings:hover { background: color-mix(in srgb, var(--text) 85%, var(--bg)); }
+.now-settings:focus-visible { outline: 2px solid var(--now-solid); outline-offset: 2px; }
+
+.now-stage { flex: 1; min-height: 0; display: flex; overflow: auto; }
+.now-canvas { position: relative; flex: none; margin: auto; }
+
+/* A thing: its shape, pale, with the solid colour filling it from the bottom; a dashed outline while nothing is in it. */
+.now-thing {
+	position: absolute; display: flex; flex-direction: column; align-items: center;
+	transition: left var(--motion-spring) var(--ease-spring), top var(--motion-spring) var(--ease-spring),
+		width var(--motion-spring) var(--ease-spring);
+}
+.now-shape {
+	position: relative; flex: none;
+	transition: width var(--motion-spring) var(--ease-spring), height var(--motion-spring) var(--ease-spring);
+}
+.now-shape svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
+.now-shape path { fill-rule: evenodd; stroke-width: 5; stroke-linejoin: round; transition: fill var(--motion-slow) ease, stroke var(--motion-slow) ease; }
+.now-pale path { fill: var(--now-pale); stroke: var(--now-pale); }
+.now-solid path { fill: var(--now-solid); stroke: var(--now-solid); }
+.now-dash { opacity: 0; transition: opacity var(--motion-slow) ease; }
+.now-dash path { fill: none; stroke: var(--now-dash); stroke-width: 2.6; stroke-dasharray: 6 7; stroke-linecap: round; }
+.now-pale { transition: opacity var(--motion-slow) ease; }
+.now-thing.is-empty .now-dash { opacity: 1; }
+.now-thing.is-empty .now-pale { opacity: 0; }
+.now-fill { position: absolute; left: 0; bottom: 0; width: 100%; overflow: hidden; transition: height var(--motion-spring) var(--ease-out); }
+.now-shape .now-fill .now-solid { top: auto; bottom: 0; height: var(--size); }
+.now-thing-name {
+	display: -webkit-box; max-width: 100%; padding-top: calc(12 * var(--u)); overflow: hidden;
+	color: var(--text); font-size: calc(16 * var(--u)); font-weight: 600; line-height: calc(22 * var(--u)); text-align: center;
+	-webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.now-thing-state {
+	max-width: 100%; overflow: hidden; color: var(--text-muted); font-size: calc(14 * var(--u)); line-height: calc(20 * var(--u));
+	text-align: center; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The agents and the members' faces at a thing's lower corners, over the shapes. Each keeps its element, so a change of
+ * the reading walks it to its new place. */
+.now-figure {
+	position: absolute; z-index: 2; display: block; border-radius: 50%; color: inherit;
+	transition: left var(--motion-spring) var(--ease-spring), top var(--motion-spring) var(--ease-spring),
+		width var(--motion-spring) var(--ease-spring), height var(--motion-spring) var(--ease-spring);
+}
+.now-figure:hover { text-decoration: none; }
+.now-figure .figure { width: 100%; height: 100%; }
+.now-figure:focus-visible { outline: 2px solid var(--now-solid); outline-offset: 2px; }
+/* The status dot as the rail draws it (styles/app.css .rail-row-status), on the page's own ground. */
+.now-figure-status {
+	position: absolute; z-index: 2; right: -2%; bottom: -4%; width: 26%; height: 26%; border-radius: 50%;
+	background: var(--agent-active); box-shadow: 0 0 0 2px var(--bg);
+}
+.now-figure:has(> .alert-mark) > .figure { opacity: 0; transform: scale(0.3, 0.6); }
+.now-figure.is-still .figure { filter: grayscale(1); opacity: 0.6; }
+.now-face .person-avatar {
+	width: 100%; height: 100%; font-size: calc(15 * var(--u));
+	box-shadow: 0 0 0 calc(3 * var(--u)) var(--bg), 0 1px 4px rgb(0 0 0 / 18%);
+}
+/* A figure that joins slides in as a hire does in the rail (styles/motion.css hire-place); one that leaves fades. */
+.now-figure.is-arriving { animation: now-arrive 1200ms both; }
+@keyframes now-arrive {
+	0% { opacity: 0; transform: translateX(80%) rotate(6deg); animation-timing-function: var(--ease-out); }
+	36% { opacity: 1; transform: translateX(-4%) rotate(-1deg); animation-timing-function: var(--ease-in-out); }
+	100% { transform: none; }
+}
+.now-thing.is-arriving { animation: now-grow var(--motion-spring) var(--ease-spring) both; }
+@keyframes now-grow { from { opacity: 0; transform: scale(0.6); } }
+:is(.now-figure, .now-thing).is-leaving { animation: now-leave var(--motion-slow) var(--ease-in) both; }
+@keyframes now-leave { to { opacity: 0; transform: scale(0.85); } }
+
+/* Before the first reading: the company's figures in a row, the Co-Founder first. */
+.now-canvas.is-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; max-width: 640px; padding: 24px; }
+.now-figure.is-flow { position: relative; flex: none; }
+
+/* What changed in the team: one quiet line near the foot, and "Not right?". */
+.now-changes {
+	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 8px;
+	padding: 6px 24px 10px; color: var(--text); font-size: 12px; line-height: 18px;
+}
+.now-change { display: inline-flex; align-items: center; gap: 7px; }
+.now-change .figure { flex: none; }
+.now-change.is-ended .figure { filter: grayscale(1); opacity: 0.6; }
+.now-change-dot { color: var(--text-soft); }
+.now-pill {
+	min-height: 26px; margin-left: 6px; padding: 3px 12px; border: 1px solid var(--border-strong); border-radius: 999px;
+	background: var(--bg); color: var(--text); font: inherit; font-size: 11px; font-weight: 500; cursor: pointer;
+}
+.now-pill:hover { background: var(--hover); }
+.now-pill:focus-visible { outline: 2px solid var(--now-solid); outline-offset: 2px; }
+.now-note { flex: none; margin: 0 24px 4px; color: var(--danger); font-size: 12px; text-align: center; }
+
+/* The composer's look (styles/conversation.css .composer), with the company's name in it. */
+.now-ask { flex: none; max-width: 760px; margin: 0 auto; padding: 4px 16px 12px; }
+.now-ask .composer-shell { padding-right: 36px; }
+
+/* A phone: the title keeps more of the width. */
+@media (max-width: 600px) {
+	.now-head { padding: 22px 20px 0; }
+	.now-title { font-size: 20px; line-height: 26px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.now-figure.is-arriving, .now-thing.is-arriving, :is(.now-figure, .now-thing).is-leaving { animation: none; }
+}

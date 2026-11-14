@@ -272,11 +272,12 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			item.getAttribute("aria-checked"),
 		]);
 
-	it("names the company and opens the member's companies from the name, this one checked, then New company", () => {
+	it("names the company and opens the member's companies from the arrow, this one checked, then New company", () => {
 		const { element, other } = rail(home);
-		const name = element.querySelector<HTMLButtonElement>(".rail-company")!;
-		expect(name.textContent).toBe(profileA.profileName);
+		expect(element.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+		const name = element.querySelector<HTMLButtonElement>(".rail-company-chevron")!;
 		expect(name.getAttribute("aria-haspopup")).toBe("menu");
+		expect(name.getAttribute("aria-label")).toBe("Your companies");
 		// No figure stands beside the name.
 		expect(element.querySelector(".rail-toolbar .figure, .rail-toolbar .company-logo")).toBeNull();
 		name.click();
@@ -628,6 +629,28 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		controller.store.set({ apps: [] });
 		draw(home);
 		expect(element.querySelector(".rail-concepts")).toBeNull();
+	});
+
+	it("opens the company's page from the name, lit while it is open, with no agent's row lit", () => {
+		const { element, draw } = rail(home);
+		const place = element.querySelector<HTMLElement>(".rail-company")!;
+		const name = element.querySelector<HTMLElement>(".rail-company-name")!;
+		// A link of the app's own, reached by the keyboard, with no menu of its own.
+		expect(name.getAttribute("role")).toBe("link");
+		expect(name.tabIndex).toBe(0);
+		expect(name.getAttribute("aria-haspopup")).toBeNull();
+		expect(name.dataset.href).toBe(`#/c/${profileA.profileId}/now`);
+		name.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/now`);
+		expect(document.querySelector(".context-menu")).toBeNull();
+		expect(place.classList.contains("is-current")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "now" });
+		expect(place.classList.contains("is-current")).toBe(true);
+		expect(name.getAttribute("aria-current")).toBe("page");
+		expect(element.querySelector(".rail-row.active, .rail-pin.active, .cofounder-home.active")).toBeNull();
+		draw(home);
+		expect(place.classList.contains("is-current")).toBe(false);
+		expect(name.hasAttribute("aria-current")).toBe(false);
 	});
 
 	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {

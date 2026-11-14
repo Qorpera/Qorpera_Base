@@ -4,6 +4,7 @@ import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt
 import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
+import { readCompanyStanding } from "../cloud/company-standing.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
@@ -62,6 +63,7 @@ import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { CompanyNowView } from "./views/company-now.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -458,6 +460,11 @@ export function mountApplication(
 	let companyApps: CompanyApps | undefined;
 	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
 	let agentNotes: AgentNotes | undefined;
+	/** The company's page, told of each change hint of the folder through whichever apps reader the open company has now
+	 * (it is made again when the company opens again). */
+	const readingListeners = new Set<() => void>();
+	/** The company's page, its reading of itself (`#/c/{id}/now`), kept while that route shows. */
+	let nowPage: { readonly company: CompanyController; readonly view: CompanyNowView } | undefined;
 	/** Makes the side panel of a Company File page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
 	/** The agent's app on its own page (`#/c/{id}/a/{name}`), while that route shows. */
@@ -658,6 +665,9 @@ export function mountApplication(
 		appReturn = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
+		// The company's page reads on a clock and on the tab's return: it ends with its company (review r1 F2 of #1818).
+		nowPage?.view.dispose();
+		nowPage = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
@@ -1374,7 +1384,7 @@ export function mountApplication(
 			// name is inert under it).
 			const target =
 				navigationFocus === "rail"
-					? (rail.querySelector<HTMLElement>(".rail-toolbar:not(.is-searching) .rail-company") ??
+					? (rail.querySelector<HTMLElement>(".rail-toolbar:not(.is-searching) .rail-company-name") ??
 						rail.querySelector<HTMLInputElement>(".rail-search input"))
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
@@ -1609,7 +1619,10 @@ export function mountApplication(
 			);
 			agentNotes = notes;
 			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
-			apps.onChange(() => notes.changed());
+			apps.onChange(() => {
+				for (const listener of [...readingListeners]) listener();
+				notes.changed();
+			});
 			apps.open();
 			notes.open();
 		}
@@ -1739,6 +1752,10 @@ export function mountApplication(
 		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
 			whatsNewPage?.view.dispose();
 			whatsNewPage = undefined;
+		}
+		if (route.section !== "now" || nowPage?.company !== controller) {
+			nowPage?.view.dispose();
+			nowPage = undefined;
 		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
@@ -2263,6 +2280,61 @@ export function mountApplication(
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "now": {
+				// The company's reading of itself as a picture (Jonas, 14 Nov 2026: "It should feel like the company is
+				// conscious almost"): every member sees it. A question asked there is the member's own message in the
+				// Co-Founder's thread, which then opens.
+				if (!nowPage) {
+					const profileId = controller.profile.profileId;
+					let accounts: TellAccounts | undefined;
+					const cofounder = () => {
+						const id = controller.cofounderId();
+						if (!id) throw new Error(t("This company has no Co-Founder yet."));
+						return id;
+					};
+					const view = new CompanyNowView(controller, {
+						folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+						onFolderChange: (listener) => {
+							readingListeners.add(listener);
+							return () => readingListeners.delete(listener);
+						},
+						standing: () => readCompanyStanding(cloud, profileId),
+						openSettings: (tab) => openSettings(tab),
+						// Each opens the Co-Founder's thread only while the member is still on this page (as bank.ts does).
+						ask: async (text) => {
+							const from = location.hash;
+							accounts ??= createWebNativeSubscription(
+								cloud,
+								profileId,
+								controller.userId,
+								controller.signal,
+								companyCurrent,
+							);
+							const told = await tellAgent(controller, accounts, cofounder(), { text, quotes: [] });
+							if (company === controller && location.hash === from) location.hash = told.href;
+						},
+						// "Not right?" adds its draft once: a second press, or a second visit, finds it there already (review
+						// r1 F4 of #1818; the view ignores presses while one is on its way).
+						draft: async (text) => {
+							const from = location.hash;
+							const opened = await controller.openCofounderConversation();
+							if (!opened.sessionId)
+								throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+							const room = controller.roomDrafts.room(opened.sessionId);
+							if (room) await room.refresh();
+							controller.roomDrafts.follow(opened.sessionId);
+							if (company !== controller) return;
+							if (!(controller.conversation(opened.sessionId).get().draft ?? "").includes(text))
+								controller.addToDraft(opened.sessionId, { text, quotes: [] });
+							if (location.hash === from) location.hash = `#/c/${profileId}`;
+						},
+					});
+					nowPage = { company: controller, view };
+				}
+				nowPage.view.update();
+				if (nowPage.view.el.parentElement !== main) replace(main, nowPage.view.el);
 				return;
 			}
 			case "whats-new": {

@@ -69,6 +69,14 @@ describe("company routes", () => {
 		expect(parseRoute(`#/c/${profileA.profileId}/whats-new/extra`)).toMatchObject({ section: "whats-new" });
 	});
 
+	it("opens the company's page, its reading of itself, from the company's name", () => {
+		const route = parseRoute(`#/c/${profileA.profileId}/now`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "now" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/now`);
+		expect(parseRoute(`#/c/${profileA.profileId}/now/extra`)).toMatchObject({ section: "now" });
+		expect(parseRoute(`#/c/${profileA.profileId}/nowhere`)).toMatchObject({ section: "home" });
+	});
+
 	it("opens the Company File for its removed history page", () => {
 		expect(parseRoute(`#/c/${profileA.profileId}/file/history`)).toEqual({
 			name: "company",

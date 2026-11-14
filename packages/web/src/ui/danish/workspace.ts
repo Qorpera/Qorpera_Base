@@ -137,6 +137,29 @@ export const WORKSPACE: Record<string, string> = {
 	// A board and the members source (app/interface-board.ts, app/interface-claims.ts, app/views/interface.ts)
 	Shared: "Fælles",
 	"Open pile": "Åben bunke",
+	// The company's page, its reading of itself (app/views/company-now.ts)
+	"Ask {company}…": "Spørg {company} …",
+	"It opens again at {time}.": "Den åbner igen kl. {time}.",
+	"It opens again on {date}.": "Den åbner igen den {date}.",
+	"Not right?": "Ikke rigtigt?",
+	"Not right: {changes}.": "Ikke rigtigt: {changes}.",
+	"This company has no Co-Founder yet.": "Virksomheden har ingen Co-Founder endnu.",
+	"Use another sign-in": "Brug et andet login",
+	"We are finding our feet. The first reading comes with the next plan.":
+		"Vi er ved at finde fodfæste. Den første aflæsning kommer med den næste plan.",
+	"We have stood still since {time}.": "Vi har stået stille siden {time}.",
+	"We have stood still.": "Vi har stået stille.",
+	"What changed": "Hvad der er ændret",
+	"You have not connected ChatGPT, so none of us can work.":
+		"Du har ikke forbundet ChatGPT, så ingen af os kan arbejde.",
+	"Your ChatGPT is full, so none of us can work.": "Din ChatGPT er fuld, så ingen af os kan arbejde.",
+	"Your ChatGPT needs a new sign-in, so none of us can work.":
+		"Din ChatGPT skal logges ind igen, så ingen af os kan arbejde.",
+	"{member} has no ChatGPT yet, so none of us can work.":
+		"{member} har ingen ChatGPT endnu, så ingen af os kan arbejde.",
+	"{member}'s ChatGPT is full, so none of us can work.": "{member}s ChatGPT er fuld, så ingen af os kan arbejde.",
+	"{member}'s ChatGPT needs a new sign-in, so none of us can work.":
+		"{member}s ChatGPT skal logges ind igen, så ingen af os kan arbejde.",
 	// The Members page: who each agent works for (app/views/members.ts)
 	Members: "Medlemmer",
 	"1 agent": "1 agent",
