@@ -1101,6 +1101,41 @@ describe("company machine host", () => {
 		});
 	});
 
+	it("puts to sleep and deletes its own instance an earlier release made, which it never runs, and nobody else's", async () => {
+		const configs = (target: LxdInstanceRecord) => [target.config, target.expandedConfig] as Record<string, string>[];
+		const actions = (f: Awaited<ReturnType<typeof fixture>>) =>
+			f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action);
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		// What a later release finds on an instance an earlier one made: a key it no longer sets, a device it no longer adds.
+		const old = f.instance()!;
+		for (const config of configs(old)) delete config["security.devlxd"];
+		const devices = { ...old.devices, gpu: { type: "gpu", gputype: "virtio" } };
+		Object.assign(old, { devices, expandedDevices: structuredClone(devices) });
+		const drifted = { placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_DRIFTED" };
+		expect(await f.host.pass(f.signal)).toEqual([drifted]);
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.instance()?.status).toBe("Stopped");
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+		Object.assign(f.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+		expect(actions(f)).toEqual(["create", "start", "stop", "delete"]);
+		// An instance of this name that is not this placement's own (another binding's digest) is neither stopped nor deleted.
+		const g = await fixture();
+		await g.host.pass(g.signal);
+		for (const config of configs(g.instance()!)) config["user.qorpera.instance_sha256"] = "f".repeat(64);
+		g.entry.sleepDue = true;
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "stop" }]);
+		Object.assign(g.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "delete" }]);
+		expect(g.instance()?.status).toBe("Running");
+		expect(actions(g)).toEqual(["create", "start"]);
+		expect(g.methods()).not.toContain("qorpera_suspend_company_machine");
+		expect(g.methods()).not.toContain("qorpera_release_company_machine");
+	});
+
 	it("waits when SQL refuses the effect, and deletes an asleep machine before releasing it", async () => {
 		const f = await fixture();
 		f.refusals.set("run", "NODE_CAPACITY_EXHAUSTED");
