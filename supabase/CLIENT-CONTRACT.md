@@ -1810,7 +1810,9 @@ member may delete it. A company whose routines stand still cannot write its own 
 - `qorpera_read_company_standing(profile)`: `{schema: "qorpera.company-standing/v1", stopped, since, why, member,
   resetsAt, waiting}`. `waiting` counts the company's routine wakes that are due and still queued; `since` is the
   time the oldest of them has waited from (null when none waits). `stopped` is true when that one has waited more than
-  30 minutes and no run of the company has started since. `why` reads the login of the member each waiting wake would
+  30 minutes and no routine wake of the company was given a run in the last 30 minutes: a member's own turn, a room
+  delivery or a worker's run does not count, so a company whose members chat while its routines wait for days reads
+  as stopped. `why` reads the login of the member each waiting wake would
   be paid by (its routine's payer, the member who saved it; else the member its agent works for), in the order the
   wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
   `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`

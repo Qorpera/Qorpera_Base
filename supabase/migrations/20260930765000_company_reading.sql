@@ -16,7 +16,10 @@
 --    role ended since the reading was saved; the question cards nobody has answered yet; each member's login; and when
 --    the reading was saved. A host call of the Co-Founder's company run only, built to stay under 8 KiB.
 -- 3. qorpera_read_company_standing(company): a member's read of whether the company can run. A company whose routines
---    stand still cannot write its own reading, so the platform says it: since when, and whose login holds it.
+--    stand still cannot write its own reading, so the platform says it: since when, and whose login holds it. Stopped
+--    means the routines stand still: a routine wake has waited more than 30 minutes and no routine wake was given a run
+--    in the last 30 minutes. A member's own turn, a room delivery or a worker's run does not count: at Brooks routine
+--    wakes waited from 9 November while members' turns ran on 10, 11 and 14 November (the lead, 14 November 2026).
 --
 -- Every patched or new body carries the marker 20260930765000.
 
@@ -346,7 +349,9 @@ insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_descr
 -- 3. The company's standing ------------------------------------------------------------------------------------------
 
 -- Whether the company can run, for its members: the routine wakes that are due and still queued; stopped when the
--- oldest has waited more than 30 minutes and no run of the company started since; why, from the login of the member
+-- oldest has waited more than 30 minutes and no routine wake of the company was given a run in the last 30 minutes (a
+-- wake with wake_kind routine whose run_id is a run created since; a member's turn, a room delivery or a worker's run
+-- is not the routines running); why, from the login of the member
 -- each waiting wake would be paid by (its routine's payer, else the member its agent works for), the first that is not
 -- ready in the order the wakes wait: login_full (with resetsAt), sign_in, no_login. Null when every one is ready.
 create function public.qorpera_read_company_standing(p_profile_id uuid)
@@ -365,7 +370,9 @@ begin
 	where wake.profile_id = p_profile_id and wake.status = 'queued' and wake.wake_kind = 'routine' and wake.not_before <= v_now;
 	v_stopped := v_oldest is not null and v_oldest < v_now - interval '30 minutes'
 		and not exists (select 1 from public.qorpera_execution_runs as run
-			where run.profile_id = p_profile_id and run.created_at > v_oldest);
+			join public.qorpera_wake_occurrences as ran on ran.run_id = run.id
+			where run.profile_id = p_profile_id and run.created_at > v_now - interval '30 minutes'
+				and ran.profile_id = p_profile_id and ran.wake_kind = 'routine');
 	select payer.user_id, payer.login into v_member, v_login
 	from (
 		select earliest.user_id, earliest.waits_from, public.qorpera_works_for_login_state(p_profile_id, earliest.user_id) as login
