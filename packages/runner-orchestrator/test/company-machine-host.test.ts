@@ -6701,7 +6701,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 	});
 
 	it("hashes the machine's Codex once per boot and refuses a home whose Codex is not the pinned build", async () => {
-		const { f, exec, session } = await home();
+		const { f, exec, pipe, session } = await home();
 		f.homeSessions.push(session(), session(id(40)));
 		const first = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
 		const second = await f.host.execServer({ placementId: id(6), sessionId: id(40), bootId: f.boot }, f.signal);
@@ -6729,10 +6729,7 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		const boot = existsSync("/proc/sys/kernel/random/boot_id")
 			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
 			: undefined;
-		const hash = f.client.execInstancePipe as unknown as ReturnType<typeof vi.fn>;
-		const script = hash.mock.calls
-			.map((call) => (call[2] as LxdExecPipeRequest).command)
-			.find((c) => !c.includes("exec-server"))?.[2];
+		const script = pipe.mock.calls.map((call) => call[2].command).find((c) => !c.includes("exec-server"))?.[2];
 		if (!boot || !script) return;
 		const shell = (bootId: string, path: string) =>
 			spawnSync("/bin/sh", ["-c", script, bootId, path], { encoding: "utf8" });
