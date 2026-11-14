@@ -349,6 +349,9 @@ in every app of the kit.
 | `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
 | `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
 | `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+| `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
+| `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
+| `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -360,7 +363,7 @@ call the web does not already answer.
 | `engine.js` | Qorpera's | the kit's engine (`packages/runtime/kits/<kit>/engine.js`). The runtime holds each engine's and guide's text (`cloud-app-kit-engines.generated.ts`, written by `npm run generate:app-kits`, held to the sources by a test) |
 | `index.html` | Qorpera's | the page (`kitPage` in `cloud-app-kits.ts`) |
 
-- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` one of the four, a new app needs its data file
+- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` a data kit, a new app needs its data file
   among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
   not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
   `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
@@ -389,11 +392,22 @@ call the web does not already answer.
   page's few own words in English unless the data's `words` give them in its language.
 - **What a member does** goes through the bar (§5), from a button that says what it does: `board`'s `choose` answers
   the agent's open question that points at the app (`answers`), and `model`'s `save` keeps a member's numbers in a
-  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app.
+  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app. A `stack` is all
+  answers: each card's buttons are the options of the open question whose title is the card's (or whose id its
+  `question` names), a press is `qorpera.answer(id, value)`, an open question no card names is drawn as a plain card,
+  and a card whose question closed elsewhere counts as answered. So `save_app` adds `questions` to a stack's reads and
+  `answers` to its writes (never takes them away), as it adds `data` where the data names a database's question.
+- **The agents' figures.** A field `figure` whose text is a figure's id (`crown`, `rocket`, …) puts that figure in the
+  page (`kitFigures`): a small WebP of the web's artwork as a data: URL, under `#kit-media` as
+  `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
+  `packages/runtime/kits/figures/<id>.webp`, and `npm run generate:app-kits` writes them into
+  `cloud-app-kit-figures.generated.ts`. `stack` and `shelf` draw the asking agent or the maker by it; with none, the
+  name's first letter in a soft circle.
 - **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
   interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
   (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
-  and `model`'s note under an input's label (with `tell` every label opens one). A press asks
+  `model`'s note under an input's label (with `tell` every label opens one), `shelf`'s opened thing, and the card in
+  front of a `stack` (there only where `words.tell` names it). A press asks
   `tell({about, at, text})`: `about` is the thing's name (`path`: "step · lane", the lane left out on a path with no
   lanes; `object`: the part, and the variant shown when there are several; `model`: "label · the value as shown"),
   one line cut at a word to 60 characters; `at` its id (`path`: `lane:step`, or the step's id on a path with no lanes),
@@ -1064,7 +1078,7 @@ thread's "Quoted from an email" title).
    card in the thread (`views/conversation.ts`). No migration and no node change. Next, in a change of its own that rides a runtime cut: the prompt line that tells an agent what the first
    line means (sent from that app's page, about that thing), and the kits' buttons and guides that ask for a note.
 10. The data kits (§3b, 13 November 2026): four more names for the manifest's `kit`
-    (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/{model,board,path,object}/`),
+    (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/<kit>/`),
     the page, the pictures it names and the read of the data (`cloud-app-kits.ts`), `save_app` writing engine and page
     with the guides on the schema field (where no model received them: step 11), and the agents' instructions: an app is an object, a model, an app or a
     video, one app a thing, never a document or the state of someone's work (hire overlay v16). No migration, no node

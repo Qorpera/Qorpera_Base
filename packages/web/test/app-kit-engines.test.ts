@@ -3,14 +3,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
-/* The data kits' engines (packages/runtime/kits/{model,board,path,object}/engine.js; RUNTIME-INTERFACE-APPS.md §3b),
+/* The data kits' engines (packages/runtime/kits/<kit>/engine.js; RUNTIME-INTERFACE-APPS.md §3b),
  * run in a DOM. save_app writes an engine into an app's folder and the web hands it to the app's frame knowing nothing
  * of it, so it is tested here, where there is a DOM: each engine is driven through a stand-in for the page's bridge,
  * `window.qorpera` (reads that fail and then work, questions that come later, the rows a Save asks for), with the ten
  * seconds of the bridge's pace on a fake clock, and a page that changes size. What they draw is looked at in a browser. */
 
-const KITS = ["model", "board", "path", "object"] as const;
+const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf"] as const;
 type Kit = (typeof KITS)[number];
+/** The kits where a member opens a thing, with a note to the app's owner at its foot. */
+const THING_KITS = ["model", "board", "path", "object", "shelf"] as const;
+type ThingKit = (typeof THING_KITS)[number];
 // From the web package's own folder, where its tests run.
 const kitFile = (kit: Kit, name: string) => readFileSync(resolve(`../runtime/kits/${kit}/${name}`), "utf8");
 /** A kit's guide example: the data in its KIT.md, as an agent reads it. */
@@ -820,7 +823,7 @@ describe("each data kit's note to the app's owner", () => {
 	 * not take (two of them, so two such things can be told apart). */
 	const KIT_THING: Readonly<
 		Record<
-			Kit,
+			ThingKit,
 			{
 				readonly data: (things: readonly Thing[], words: unknown) => string;
 				readonly open: (thing: Thing, index: number) => void;
@@ -921,9 +924,24 @@ describe("each data kit's note to the app's owner", () => {
 			at: (thing) => thing.id,
 			odd: ["part one", "part two"],
 		},
+		shelf: {
+			data: (things, words) =>
+				JSON.stringify({
+					lang: "en",
+					title: "Lamps",
+					words,
+					things: things.map((thing) => ({ id: thing.id, name: thing.name, value: 10, max: 20, ask: thing.ask })),
+				}),
+			open: (thing) => press(`.sh-thing[data-id="${thing.id}"]`),
+			shown: ".sh-sheet.is-open",
+			close: () => press(".sh-sheet .sh-x"),
+			about: (thing) => thing.name,
+			at: (thing) => thing.id,
+			odd: ["lamp one", "lamp two"],
+		},
 	};
-	const BUTTON = ".bk-tell-b, .pk-tell-b, .ok-tell-b, .mk-tell-b";
-	const WHY = ".bk-tell-why, .pk-tell-why, .ok-tell-why, .mk-tell-why";
+	const BUTTON = ".bk-tell-b, .pk-tell-b, .ok-tell-b, .mk-tell-b, .sh-tell-b";
+	const WHY = ".bk-tell-why, .pk-tell-why, .ok-tell-why, .mk-tell-why, .sh-tell-why";
 	const WORDS = { tell: "Ask Ida", told: "Sent to Ida" };
 	const LYS: Thing = { id: "lys", name: "Lys", ask: "Get a quote from them" };
 	const press = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
@@ -931,7 +949,7 @@ describe("each data kit's note to the app's owner", () => {
 		document.querySelectorAll<HTMLElement>(selector)[index]?.click();
 	const button = () => document.querySelector<HTMLButtonElement>(BUTTON);
 
-	it.each(KITS)("of %s draws no button for a note where the page's bridge has no tell", async (kit) => {
+	it.each(THING_KITS)("of %s draws no button for a note where the page's bridge has no tell", async (kit) => {
 		const thing = KIT_THING[kit];
 		await open(kit, thing.data([LYS], WORDS));
 		thing.open(LYS, 0);
@@ -939,7 +957,7 @@ describe("each data kit's note to the app's owner", () => {
 		expect(button()).toBeNull();
 	});
 
-	it.each(KITS)(
+	it.each(THING_KITS)(
 		"of %s asks for a note once, from a press on the button at the foot of what a member opened",
 		async (kit) => {
 			const thing = KIT_THING[kit];
@@ -970,7 +988,7 @@ describe("each data kit's note to the app's owner", () => {
 		},
 	);
 
-	it.each(KITS)("of %s says for a few seconds why a note did not go, and keeps its button", async (kit) => {
+	it.each(THING_KITS)("of %s says for a few seconds why a note did not go, and keeps its button", async (kit) => {
 		const thing = KIT_THING[kit];
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
 			throw new Error("The member said not now.");
@@ -1006,34 +1024,37 @@ describe("each data kit's note to the app's owner", () => {
 		expect(why?.textContent).toBe("");
 	});
 
-	it.each(KITS)("of %s keeps each thing's note its own, also where the call takes neither thing's id", async (kit) => {
-		// Two things of the same name whose ids the call cannot take: both send no `at`, and the note of one said
-		// nothing about the other (their state was once kept under what went out, which was empty for both).
-		const thing = KIT_THING[kit];
-		const one: Thing = { id: thing.odd[0], name: "Lys", ask: "Get a quote from them" };
-		const two: Thing = { id: thing.odd[1], name: "Lys", ask: "Get a quote from them" };
-		const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
-		await open(kit, thing.data([one, two], WORDS), undefined, tell);
-		thing.open(one, 0);
-		button()?.click();
-		await settle();
-		expect(tell).toHaveBeenCalledWith({ about: thing.about(one), text: "Get a quote from them" });
-		expect(button()?.textContent).toBe("Sent to Ida");
-		thing.close();
-		// The other thing offers its own button, and sends its own note.
-		thing.open(two, 1);
-		expect(button()?.textContent).toBe("Ask Ida");
-		button()?.click();
-		await settle();
-		expect(tell).toHaveBeenCalledTimes(2);
-		expect(button()?.textContent).toBe("Sent to Ida");
-		// And the first one is still sent: each thing keeps its own.
-		thing.close();
-		thing.open(one, 0);
-		expect(button()?.textContent).toBe("Sent to Ida");
-	});
+	it.each(THING_KITS)(
+		"of %s keeps each thing's note its own, also where the call takes neither thing's id",
+		async (kit) => {
+			// Two things of the same name whose ids the call cannot take: both send no `at`, and the note of one said
+			// nothing about the other (their state was once kept under what went out, which was empty for both).
+			const thing = KIT_THING[kit];
+			const one: Thing = { id: thing.odd[0], name: "Lys", ask: "Get a quote from them" };
+			const two: Thing = { id: thing.odd[1], name: "Lys", ask: "Get a quote from them" };
+			const tell = vi.fn(async (_note: unknown): Promise<unknown> => ({ sent: true }));
+			await open(kit, thing.data([one, two], WORDS), undefined, tell);
+			thing.open(one, 0);
+			button()?.click();
+			await settle();
+			expect(tell).toHaveBeenCalledWith({ about: thing.about(one), text: "Get a quote from them" });
+			expect(button()?.textContent).toBe("Sent to Ida");
+			thing.close();
+			// The other thing offers its own button, and sends its own note.
+			thing.open(two, 1);
+			expect(button()?.textContent).toBe("Ask Ida");
+			button()?.click();
+			await settle();
+			expect(tell).toHaveBeenCalledTimes(2);
+			expect(button()?.textContent).toBe("Sent to Ida");
+			// And the first one is still sent: each thing keeps its own.
+			thing.close();
+			thing.open(one, 0);
+			expect(button()?.textContent).toBe("Sent to Ida");
+		},
+	);
 
-	it.each(KITS)("of %s takes nothing of a closed detail into the member's way", async (kit) => {
+	it.each(THING_KITS)("of %s takes nothing of a closed detail into the member's way", async (kit) => {
 		// A detail faded out but left in the page kept its note's button in the tab order, so Shift+Tab reached it and
 		// asked about a thing no longer open.
 		const thing = KIT_THING[kit];
@@ -1059,7 +1080,7 @@ describe("each data kit's note to the app's owner", () => {
 		expect(tell).not.toHaveBeenCalled();
 	});
 
-	it.each(KITS)("of %s takes the reason a note did not go away at once when the detail closes", async (kit) => {
+	it.each(THING_KITS)("of %s takes the reason a note did not go away at once when the detail closes", async (kit) => {
 		const thing = KIT_THING[kit];
 		const tell = vi.fn(async (_note: unknown): Promise<unknown> => {
 			throw new Error("The member said not now.");
@@ -1078,7 +1099,7 @@ describe("each data kit's note to the app's owner", () => {
 		expect(button()?.textContent).toBe("Ask Ida");
 	});
 
-	it.each(KITS)(
+	it.each(THING_KITS)(
 		"of %s names no thing the call cannot take, sends no draft past 40 characters, and draws a mark without words",
 		async (kit) => {
 			const thing = KIT_THING[kit];
@@ -1133,6 +1154,9 @@ describe("a kit's page as a concept", () => {
 		board: { root: "bk--bare", header: ".bk-titles", kept: ".bk-item" },
 		path: { root: "pk--bare", header: ".pk-head", kept: ".pk-node" },
 		object: { root: "ok--bare", header: ".ok-head", kept: ".ok-strip button" },
+		curve: { root: "ck--bare", header: ".ck-head", kept: ".ck-plot" },
+		stack: { root: "st--bare", header: ".st-head", kept: ".st-card" },
+		shelf: { root: "sh--bare", header: ".sh-head", kept: ".sh-thing" },
 	};
 	/** What the page shows of an element: jsdom reads the engine's own stylesheet for a class selector. */
 	const shows = (selector: string) => {
@@ -1157,5 +1181,312 @@ describe("a kit's page as a concept", () => {
 		expect(shows(BARE[kit].header)).toBe(false);
 		// every control is still there; how little room the stage then keeps around it is looked at in a browser
 		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
+	});
+});
+
+describe("the curve kit's engine", () => {
+	const money = {
+		lang: "en",
+		title: "Money ahead",
+		unit: "kr",
+		points: [
+			{ label: "Sep", value: 37200 },
+			{ label: "Oct", value: 45600 },
+			{ label: "Nov", value: 62400 },
+			{ label: "Dec", value: 58000, band: [52000, 65000] },
+			{ label: "Jan", band: [40000, 58000] },
+			{ label: "Feb" },
+		],
+		now: "Nov",
+		safe: { value: 25000, label: "safe level" },
+		marks: [{ at: "Dec", text: "low point" }],
+	};
+	const big = () => document.querySelector(".ck-n")?.textContent;
+	const under = () => document.querySelector(".ck-sub")?.textContent;
+
+	it("draws the past as an area, what is expected as a band, now, the safe level, a mark and the fog", async () => {
+		await open("curve", JSON.stringify(money));
+		// the big number counts to its figure as the page opens
+		drawFrames(100);
+		expect(document.querySelectorAll(".ck-area")).toHaveLength(1);
+		expect(document.querySelector(".ck-past")).not.toBeNull();
+		expect(document.querySelector(".ck-band")).not.toBeNull();
+		// a dotted line where a value is expected, and none where only the band is
+		expect(document.querySelectorAll(".ck-ahead")).toHaveLength(1);
+		expect(document.querySelector(".ck-now")).not.toBeNull();
+		expect(document.querySelector(".ck-safe-t")?.textContent).toBe("safe level");
+		expect(document.querySelector(".ck-mark-t")?.textContent).toBe("low point");
+		expect(document.querySelector(".ck-mark-v")?.textContent).toBe("58,000");
+		// a point nobody has said anything about is fog with a question mark, never a number
+		expect(document.querySelector(".ck-q")?.textContent).toBe("?");
+		// the big number is the value now
+		expect(big()).toBe("62,400");
+		expect(under()).toBe("now");
+	});
+
+	it("lets the big number follow the arrow keys along the curve, a band for a point with no value", async () => {
+		await open("curve", JSON.stringify(money));
+		const plot = document.querySelector<HTMLElement>(".ck-plot");
+		expect(plot?.getAttribute("role")).toBe("slider");
+		const key = (name: string) => plot?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+		key("ArrowRight");
+		expect(big()).toBe("58,000");
+		expect(under()).toBe("Decexpected52,000 to 65,000");
+		expect(plot?.getAttribute("aria-valuetext")).toBe("Dec: 58,000 kr");
+		key("ArrowRight");
+		expect(big()).toBe("40,000–58,000");
+		key("Home");
+		expect(big()).toBe("37,200");
+		expect(under()).toBe("Sep");
+		key("Escape");
+		expect(big()).toBe("62,400");
+	});
+
+	it("draws a live value as known, and again at once when it moves", async () => {
+		const live = {
+			...money,
+			points: money.points.map((point, at) =>
+				at === 2 ? { label: "Nov", value: { query: "bank/balance", column: "balance" } } : point,
+			),
+		};
+		const db = databases({ "bank/balance": { balance: 62400 } });
+		const { qorpera } = await openLive("curve", live, db);
+		drawFrames(100);
+		expect(big()).toBe("62,400");
+		db.set("bank/balance", { balance: 63100 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(big()).toBe("63,100");
+	});
+
+	it.each(WITHOUT_WATCH)("draws a live value's example %s as assumed", async (_where, db) => {
+		const live = {
+			...money,
+			points: money.points.map((point, at) =>
+				at === 2 ? { label: "Nov", value: { query: "bank/balance", example: 61000 } } : point,
+			),
+		};
+		await openLive("curve", live, db);
+		drawFrames(100);
+		expect(big()).toBe("61,000");
+		expect(under()).toBe("nowassumed");
+	});
+
+	it("draws a live value with no answer yet as not known, with no number", async () => {
+		const live = {
+			...money,
+			points: money.points.map((point, at) =>
+				at === 2 ? { label: "Nov", value: { query: "bank/balance" } } : point,
+			),
+		};
+		await openLive("curve", live, databases({}));
+		await settle(3000);
+		expect(big()).toBe("?");
+		expect(under()).toBe("nownot known");
+	});
+});
+
+describe("the stack kit's engine", () => {
+	const stack = JSON.stringify({
+		lang: "en",
+		title: "Wants your yes",
+		cards: [
+			{ id: "parts", title: "Pay the parts bill?", value: 4200, unit: "kr", line: "Due Friday", by: "Mads" },
+			{ id: "vat", title: "Send the VAT return?", value: 3120, unit: "kr", by: "Co-Founder" },
+			{ id: "box", title: "Order new boxes?", value: 900, unit: "kr", answer: "Yes" },
+		],
+	});
+	const ask = (id: string, title: string, labels = ["No", "Yes"]): Question => ({
+		id,
+		agent: "Mads",
+		title,
+		body: "",
+		options: labels.map((label) => ({ label, value: label.toLowerCase(), description: "" })),
+		multiSelect: false,
+	});
+	const PARTS = ask("q-parts", "Pay the parts bill?", ["No", "Change", "Yes"]);
+	const VAT = ask("q-vat", "Send the VAT return?");
+	const front = () => document.querySelector(".st-card h2")?.textContent;
+	const buttons = () => [...document.querySelectorAll<HTMLButtonElement>(".st-acts .st-b")];
+
+	it("draws a card's open question as its buttons, the last the main one, and answers it from a press", async () => {
+		const { qorpera } = await open("stack", stack, (bridge) => {
+			bridge.questions = [PARTS, VAT];
+		});
+		expect(front()).toBe("Pay the parts bill?");
+		expect(document.querySelector(".st-num b")?.textContent).toBe("4,200");
+		expect(buttons().map((button) => button.textContent)).toEqual(["No", "Change", "Yes"]);
+		expect(buttons().map((button) => button.classList.contains("main"))).toEqual([false, false, true]);
+		// Nothing answers by itself.
+		await settle(60000);
+		expect(qorpera.answer).not.toHaveBeenCalled();
+		buttons()[2]?.click();
+		// One answer a press: the other buttons wait.
+		buttons()[0]?.click();
+		await settle();
+		expect(qorpera.answer).toHaveBeenCalledTimes(1);
+		expect(qorpera.answer).toHaveBeenCalledWith("q-parts", "yes");
+		// The card is stamped with the answer, then the next comes forward.
+		expect(document.querySelector(".st-stamp")?.textContent).toBe("Yes");
+		await settle(1200);
+		expect(front()).toBe("Send the VAT return?");
+		expect(document.querySelectorAll(".st-dot.done")).toHaveLength(2);
+		buttons()[1]?.click();
+		await settle(1200);
+		expect(qorpera.answer).toHaveBeenLastCalledWith("q-vat", "yes");
+		expect(document.querySelector(".st-done h2")?.textContent).toBe("Nothing waits on you");
+		expect(document.querySelector(".st-done p")?.textContent).toBe("3 answered");
+	});
+
+	it("says why an answer did not go, and keeps the card and its buttons", async () => {
+		const { qorpera } = await open("stack", stack, (bridge) => {
+			bridge.questions = [PARTS];
+		});
+		qorpera.answer.mockRejectedValueOnce(new Error("The member said not now."));
+		buttons()[2]?.click();
+		await settle(2000);
+		expect(document.querySelector(".st-why")?.textContent).toBe("The member said not now.");
+		expect(front()).toBe("Pay the parts bill?");
+		expect(buttons().every((button) => !button.disabled)).toBe(true);
+	});
+
+	it("shows no button for a card whose question is not open", async () => {
+		await open("stack", stack);
+		expect(front()).toBe("Pay the parts bill?");
+		expect(buttons()).toHaveLength(0);
+		expect(document.querySelector(".st-wait")?.textContent).toBe("Not asked yet");
+	});
+
+	it("takes a card whose question was answered in the chat as done, and shows an open question no card names", async () => {
+		const { now, change } = await open("stack", stack, (bridge) => {
+			bridge.questions = [PARTS, ask("q-other", "Hire a photographer?")];
+		});
+		expect(document.querySelectorAll(".st-dot:not(.done)")).toHaveLength(3);
+		now.questions = [ask("q-other", "Hire a photographer?")];
+		change();
+		await settle(10000);
+		// parts went: answered elsewhere; the question no card names is a card of its own, before the cards not asked
+		expect(front()).toBe("Hire a photographer?");
+		expect(document.querySelectorAll(".st-dot.done")).toHaveLength(2);
+		expect(buttons().map((button) => button.textContent)).toEqual(["No", "Yes"]);
+	});
+
+	it("asks for the questions again ten seconds after the call failed, until it works, and then waits", async () => {
+		const { now, qorpera } = await open("stack", stack, (bridge) => {
+			bridge.questions = new Error("Too many calls");
+		});
+		expect(buttons()).toHaveLength(0);
+		now.questions = [PARTS];
+		await settle(10000);
+		expect(qorpera.questions).toHaveBeenCalledTimes(2);
+		expect(buttons()).toHaveLength(3);
+		await settle(60000);
+		expect(qorpera.questions).toHaveBeenCalledTimes(2);
+		expect(qorpera.read).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws a card's live value, and again at once when it moves", async () => {
+		const data = {
+			lang: "en",
+			title: "Bills",
+			cards: [
+				{
+					id: "a",
+					title: "Remind Café Nordlys?",
+					paper: true,
+					value: { query: "shop/owed", column: "amount" },
+					unit: "kr",
+				},
+			],
+			total: { value: { query: "shop/owed", column: "total" }, label: "owed to us" },
+		};
+		const db = databases({ "shop/owed": { amount: 3480, total: 9840 } });
+		await openLive("stack", data, db);
+		expect(document.querySelector(".st-card.paper .st-num b")?.textContent).toBe("3,480");
+		expect(document.querySelector(".st-total-n")?.textContent).toBe("9,840");
+		db.set("shop/owed", { amount: 3500, total: 9860 });
+		drawFrames();
+		await settle();
+		expect(document.querySelector(".st-card.paper .st-num b")?.textContent).toBe("3,500");
+		expect(document.querySelector(".st-total-n")?.textContent).toBe("9,860");
+	});
+});
+
+describe("the shelf kit's engine", () => {
+	const shelf = {
+		lang: "en",
+		title: "Lamps in stock",
+		unit: "in stock",
+		things: [
+			{ id: "desk", name: "Desk lamp", value: 212, max: 240, low: 20 },
+			{ id: "mushroom", name: "Mushroom lamp", value: 9, max: 240, low: 20, note: "Order more?", by: "Mads" },
+			{ id: "floor", name: "Floor lamp", state: "unknown", max: 240 },
+		],
+	};
+	const thing = (id: string) => document.querySelector(`.sh-thing[data-id="${id}"]`);
+
+	it("stands each thing on the shelf with a level behind it, a low one warm, and a hole where it is not known", async () => {
+		await open("shelf", JSON.stringify(shelf));
+		// the numbers count to their figures as the page opens
+		drawFrames(100);
+		expect(document.querySelectorAll(".sh-thing")).toHaveLength(3);
+		expect((thing("desk")?.querySelector(".sh-level") as HTMLElement).style.height).toBe("83%");
+		expect(thing("desk")?.querySelector(".sh-num b")?.textContent).toBe("212");
+		expect(thing("mushroom")?.querySelector(".sh-level")?.classList.contains("low")).toBe(true);
+		expect(thing("mushroom")?.querySelector(".sh-num")?.classList.contains("low")).toBe(true);
+		expect(thing("mushroom")?.querySelector(".sh-note")?.textContent).toBe("MOrder more?");
+		expect(thing("floor")?.querySelector(".sh-level")?.classList.contains("unk")).toBe(true);
+		expect(thing("floor")?.querySelector(".sh-num b")?.textContent).toBe("?");
+		// a picture the page does not name is a quiet placeholder
+		expect(thing("desk")?.querySelector(".sh-ph")).not.toBeNull();
+	});
+
+	it("opens a thing larger, and closes it again with Escape, the focus back on the thing", async () => {
+		await open("shelf", JSON.stringify(shelf));
+		(thing("mushroom") as HTMLButtonElement).click();
+		expect(document.querySelector(".sh-sheet.is-open h2")?.textContent).toBe("Mushroom lamp");
+		expect(thing("mushroom")?.getAttribute("aria-expanded")).toBe("true");
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(document.querySelector(".sh-sheet.is-open")).toBeNull();
+		expect(document.activeElement).toBe(thing("mushroom"));
+	});
+
+	it("shows the agent's figure the page carries, and the maker's under a thing with no level", async () => {
+		const crown = document.createElement("div");
+		crown.id = "kit-media";
+		crown.hidden = true;
+		crown.innerHTML = '<img data-kit-src="figure:crown" src="data:image/webp;base64,AA==" alt="">';
+		document.body.append(crown);
+		await open(
+			"shelf",
+			JSON.stringify({
+				lang: "en",
+				title: "Made",
+				things: [{ id: "box", name: "New box", by: "Theo", figure: "crown" }],
+			}),
+		);
+		expect(document.querySelector(".sh-frame")).not.toBeNull();
+		expect(document.querySelector(".sh-maker img")?.getAttribute("src")).toBe("data:image/webp;base64,AA==");
+		expect(document.querySelector(".sh-maker")?.textContent).toBe("Theo");
+		// the page keeps the pictures it names where they are
+		expect(document.getElementById("kit-media")).not.toBeNull();
+	});
+
+	it("draws a thing's live value and its level, and again at once when it moves", async () => {
+		const data = {
+			...shelf,
+			things: [{ id: "desk", name: "Desk lamp", max: 200, low: 20, value: { query: "shop/stock", column: "desk" } }],
+		};
+		const db = databases({ "shop/stock": { desk: 150 } });
+		await openLive("shelf", data, db);
+		drawFrames(100);
+		expect(thing("desk")?.querySelector(".sh-num b")?.textContent).toBe("150");
+		expect((thing("desk")?.querySelector(".sh-level") as HTMLElement).style.height).toBe("71%");
+		db.set("shop/stock", { desk: 12 });
+		drawFrames();
+		await settle();
+		expect(thing("desk")?.querySelector(".sh-num b")?.textContent).toBe("12");
+		expect(thing("desk")?.querySelector(".sh-num")?.classList.contains("low")).toBe(true);
 	});
 });
