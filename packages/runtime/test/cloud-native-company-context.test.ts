@@ -1640,12 +1640,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // being prepared; 13 November 2026), the staff instructions were measured once more on the merged tree.
 // With both on one tree (master's starter set and step 5.1's D1a; release v247's candidate, 14 November 2026) the staff
 // instructions were measured once more.
+// With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
+// received; 20260930762000, 14 November 2026), all three instructions were measured once more.
+// With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
+// and a private conversation's instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "d831f085fcae6d1ecb58aec2ebba8dd23a67af80929e740b740ca5c2e9996540",
+			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1653,7 +1657,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "20a7e04501a91c4a9a2e456de8c47e11ee0728dda5152c158a7b08e3a10421d1",
+			instructions: "1d31664cbdb78bd48da2f14d3e4e553bf3dba87bb555423d9f21c8e42def3daa",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1661,7 +1665,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "d831f085fcae6d1ecb58aec2ebba8dd23a67af80929e740b740ca5c2e9996540",
+			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

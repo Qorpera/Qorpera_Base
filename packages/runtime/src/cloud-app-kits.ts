@@ -56,7 +56,7 @@ export const KIT_ENGINE_JS: Readonly<Record<DataKit, string>> = Object.freeze({
 });
 
 /** What an agent is told of each kit (packages/runtime/kits/<kit>/KIT.md): what it draws and what its data holds.
- * save_app's schema carries them on `kit`, so a guide and its engine reach a run in the same bundle. */
+ * app_guide answers with them (cloud-app-guides.ts), so a guide and its engine reach a run in the same bundle. */
 export const KIT_GUIDE: Readonly<Record<DataKit, string>> = Object.freeze({
 	model: MODEL_KIT_GUIDE,
 	board: BOARD_KIT_GUIDE,
@@ -241,6 +241,19 @@ export function parseKitData(
 	const missing = KIT_NEEDS[kit].filter((key) => data[key] === undefined || data[key] === null);
 	if (missing.length > 0)
 		return { problem: `${file} has no ${missing.join(" and no ")}: the ${kit} kit draws nothing without` };
+	// A model of no input draws a line that says so and nothing else (14 November 2026: an agent that had never been
+	// given the kit's guide answered "model.json has no groups" with `{"groups":[]}`, and the save passed).
+	if (
+		kit === "model" &&
+		!(
+			Array.isArray(data.groups) &&
+			data.groups.some((group: unknown) => {
+				const inputs = typeof group === "object" && group !== null ? (group as { inputs?: unknown }).inputs : null;
+				return Array.isArray(inputs) && inputs.length > 0;
+			})
+		)
+	)
+		return { problem: `${file} has no input in its groups: the model kit draws nothing without one` };
 	if (kit === "object" && data.turntable === undefined && data.picture === undefined && data.variants === undefined)
 		return { problem: `${file} has no turntable, picture or variants: the object kit has no thing to show` };
 	return { data };
