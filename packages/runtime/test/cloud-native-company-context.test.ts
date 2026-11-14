@@ -1912,12 +1912,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Track 3, T3-3 (14 November 2026): one voice. Purpose and people come first, the tool-result rules stand once after the
 // company's files, the sections a run's tools call for are shared before the head, and the hire overlay is v17 (the
 // prompt names its version). All three were measured once more.
+// Review r1 of #1803: using skills in every run that can load one, the constitution and the after-answer bookkeeping
+// for the run's own tools, the secrets rule in a worker's words, a broken connection and the card that fits are back,
+// and the hand-off once every founder approves is a piece of its own. The instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "435ef376adab05905efa0f2233f9155ab21d14cb039504f00e6967704148a069",
+			instructions: "630473b23b814a29528466de94e5ab9802b0b76b9fe95ced3d6159d15d7114f8",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1925,7 +1928,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "ebc7a9c0e1454fc0d8a79b5219f9cbb6544f46eba766dc74f39154ad4644f254",
+			instructions: "39f414fa0fbfeb6ebdfee85086359a4860e59884528b59ca2ff37ec3726b9243",
 			prompt: "28ad297bf4b4ac59bc82cc15e387e30cffe46da8c888d462f1f3518924469c91",
 		},
 	],
@@ -1933,7 +1936,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "435ef376adab05905efa0f2233f9155ab21d14cb039504f00e6967704148a069",
+			instructions: "630473b23b814a29528466de94e5ab9802b0b76b9fe95ced3d6159d15d7114f8",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
