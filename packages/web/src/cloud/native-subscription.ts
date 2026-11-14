@@ -407,7 +407,7 @@ export function createWebNativeSubscription(
 	};
 	let pendingMetadataRefresh: Promise<void> | undefined;
 	let metadataAdmission:
-		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
+		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean; requestId?: string }
 		| undefined;
 	const admit = () => {
 		const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -721,7 +721,10 @@ export function createWebNativeSubscription(
 										settle(observed.expiresAt);
 										return;
 									}
-									pending = observed.status !== "completed";
+									// A pending attempt that is this page's own (an uncertain guest answer left it so) is
+									// admission's to answer again: it answers the same request, never busy, and the page
+									// asks the guest again. Only another's pending attempt is watched.
+									pending = observed.status !== "completed" && observed.requestId !== admission.requestId;
 								}
 							}
 							if (pending || busy) {
@@ -751,6 +754,7 @@ export function createWebNativeSubscription(
 						)
 							throw new Error("Account refresh authority changed");
 						admission.expiresAt = Date.parse(authority.expiresAt);
+						admission.requestId = authority.requestId;
 						if (authority.status === "completed") {
 							settle(authority.expiresAt);
 							return;

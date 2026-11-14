@@ -157,9 +157,20 @@ describe("account metadata refresh transport", () => {
 			.mockResolvedValueOnce(Response.json(f.receipt))
 			.mockResolvedValueOnce(Response.json({}, { status: 503 }));
 		await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
+		// The server still shows the page's own attempt as pending: nothing marks a failed guest route.
+		f.fetcher.mockResolvedValueOnce(Response.json(f.receipt));
 		const retried = f.client.refreshAccountMetadata!();
 		await f.guestStarted.promise;
-		// Each attempt is a read, the admission and the guest: the retry sends the same admission and the same request.
+		// Each attempt is a read, the admission and the guest. The retry does not watch its own pending attempt: it
+		// sends the same admission, which answers the same request, and asks the guest again.
+		expect(f.fetcher.mock.calls.map(([url]) => String(url).split("/").pop())).toEqual([
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+			"qorpera_get_native_account_refresh",
+			"qorpera_begin_native_account_refresh",
+			"account-refresh",
+		]);
 		expect(f.fetcher.mock.calls[1]?.[1]?.body).toBe(f.fetcher.mock.calls[4]?.[1]?.body);
 		expect(f.fetcher.mock.calls[2]?.[1]?.body).toBe(f.fetcher.mock.calls[5]?.[1]?.body);
 		f.finish();
@@ -335,6 +346,38 @@ describe("account metadata refresh transport", () => {
 			// The pending attempt is only read (2 s, 3 s, 4.5 s, 6.75 s, then every 10 s); admission is never asked.
 			expect(urls.filter((url) => url === "qorpera_begin_native_account_refresh")).toHaveLength(0);
 			expect(reads).toBe(6);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("after an uncertain guest answer, still only watches a pending attempt that is not its own", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = setup();
+			f.fetcher
+				.mockResolvedValueOnce(Response.json(null))
+				.mockResolvedValueOnce(Response.json(f.receipt))
+				.mockResolvedValueOnce(Response.json({}, { status: 503 }));
+			await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
+			// Another tab's attempt is pending now (the page's own has run out on the server, say).
+			const other = { ...f.receipt, request_id: id(111) };
+			const urls: string[] = [];
+			let reads = 0;
+			f.fetcher.mockImplementation(async (url: string | URL | Request) => {
+				urls.push(String(url).split("/").pop()!);
+				if (String(url).endsWith("qorpera_get_native_account_refresh"))
+					return Response.json(++reads < 3 ? other : { ...other, status: "completed" });
+				throw new Error("Unexpected route");
+			});
+			const retried = f.client.refreshAccountMetadata!();
+			await vi.advanceTimersByTimeAsync(60_000);
+			await retried;
+			// Read at once, after 2 s and after 3 s more; neither admission nor the guest is asked.
+			expect(urls).toEqual([
+				"qorpera_get_native_account_refresh",
+				"qorpera_get_native_account_refresh",
+				"qorpera_get_native_account_refresh",
+			]);
 		} finally {
 			vi.useRealTimers();
 		}
