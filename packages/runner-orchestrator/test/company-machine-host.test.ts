@@ -2478,7 +2478,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 	const startHeld =
 		"a start shows no output: machine_read shows it once the company folder has released what the machine read";
 	const earlier =
-		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)";
+		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again";
 
 	it("after its own restart, keeps /company for a guest whose earlier helper takes the folder", async () => {
 		for (const pins of takers) {
@@ -2544,7 +2544,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		}
 	});
 
-	it("hands its own view to each new boot of a machine that wakes on its own disk with an earlier helper that takes the folder", async () => {
+	it("hands its own view to each new boot of a machine whose earlier helper takes the folder, also after its own restart", async () => {
 		for (const pins of takers) {
 			const f = await fixture({ folder: true, ...pins });
 			expect(await f.host.pass(f.signal)).toEqual([
@@ -2554,7 +2554,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			const sleepAndWake = async () => {
 				f.entry.sleepDue = true;
 				expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
-				// It wakes on the disk it slept on, its earlier helper and all: a new boot.
+				// It boots again with the same earlier helper (whichever disk SQL gives it: here the same one).
 				Object.assign(f.entry, { sleepDue: false, runningAt: null, bootId: null });
 				f.reboot();
 			};
@@ -2581,7 +2581,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		}
 	});
 
-	it("gives no view to an earlier helper the list leaves out, at a wake or after its own restart, and says where /company is", async () => {
+	it("gives no view to an earlier helper the list leaves out, at its start or after its own restart, and says why", async () => {
 		for (const pins of others) {
 			const g = await fixture({ folder: true, ...pins });
 			expect(await g.host.pass(g.signal)).toEqual([
@@ -2607,7 +2607,12 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 
 	it("lets a list name only an earlier helper it still trusts", async () => {
 		// The current helper, or one not among the earlier ones, is no earlier helper that takes the folder.
-		for (const pins of [{ folderHelperSha256s: [helperSha256] }, { ...moved, folderHelperSha256s: ["1".repeat(64)] }])
+		// A helper named twice is refused too.
+		for (const pins of [
+			{ folderHelperSha256s: [helperSha256] },
+			{ ...moved, folderHelperSha256s: ["1".repeat(64)] },
+			{ ...moved, folderHelperSha256s: [helperSha256, helperSha256] },
+		])
 			await expect(fixture({ folder: true, ...pins })).rejects.toThrow("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
 		// A guest whose helper the node does not trust is refused as before, whatever the list names.
 		const g = await fixture({
@@ -3417,7 +3422,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
+			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });
