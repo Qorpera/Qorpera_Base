@@ -153,10 +153,12 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					h("span", { class: "context-menu-label" }, entry.label),
 					h("span", { class: "context-menu-chevron" }, icon("chevron")),
 				);
-				// A panel's first control takes focus as a submenu's first row does.
+				// A panel's first control takes focus as a submenu's first row does, or the one it marks (`data-autofocus`).
 				const first = (el: HTMLElement) =>
 					entry.kind === "panel"
-						? el.querySelector<HTMLElement>("button:not(:disabled)[tabindex='0'], button:not(:disabled)")
+						? el.querySelector<HTMLElement>(
+								"[data-autofocus], button:not(:disabled)[tabindex='0'], button:not(:disabled)",
+							)
 						: menuItems(el)[0];
 				const open = (focusFirst: boolean) => {
 					if (submenu?.trigger === trigger) {
