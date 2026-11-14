@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseRecord, parseUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { CLAUDE_LOGIN_FILES, CLAUDE_LOGIN_FILES_SCHEMA } from "./cloud-model-login-sign-in.ts";
 import { type ModelLoginRunBinding, parseModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { CLAUDE_LOGIN_FIELD, checkClaudeLoginFiles } from "./cloud-model-login-vault-sign-in.ts";
@@ -19,8 +20,6 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * used.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** As the sign-in reads them: each login file holds 2 to 16 KiB. */
@@ -87,18 +86,8 @@ export type ClaudeLoginSealAnswer =
 			readonly reason: ClaudeLoginRefusal;
 	  };
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	if (Object.keys(value).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error(`${label} is invalid`);
-	return value;
 }
 
 function version(value: unknown, label: string): number {
@@ -122,7 +111,7 @@ function refused(answer: Record<string, unknown>, schema: string, label: string)
 /** The login files a run host may send back: only Claude Code's login files, `.credentials.json` among them, each a
  * base64 file of 2 bytes to 16 KiB, in the order the sign-in keeps them. */
 export function claudeLoginSealFiles(value: unknown): Partial<Record<ClaudeLoginFileName, string>> {
-	const input = record(value, "Claude login files");
+	const input = parseRecord(value, "Claude login files");
 	const names = Object.keys(input);
 	if (
 		!names.includes(".credentials.json") ||
@@ -175,9 +164,9 @@ export class CloudClaudeLoginVault {
 	async sealBack(request: ClaudeLoginSealRequest, signal: AbortSignal): Promise<ClaudeLoginSealAnswer> {
 		const binding = parseModelLoginRunBinding(request.binding);
 		const label = "Claude login seal-back";
-		const claudeLoginId = uuid(request.claudeLoginId, label);
+		const claudeLoginId = parseUuid(request.claudeLoginId, label);
 		const baseVersion = version(request.baseVersion, label);
-		if (typeof request.baseEnvelopeSha256 !== "string" || !SHA.test(request.baseEnvelopeSha256))
+		if (typeof request.baseEnvelopeSha256 !== "string" || !SHA256_HEX_PATTERN.test(request.baseEnvelopeSha256))
 			throw new Error(`${label} is invalid`);
 		const sent = claudeLoginSealFiles(request.files);
 		const current = await this.#opened(binding, label, signal);
@@ -200,7 +189,7 @@ export class CloudClaudeLoginVault {
 		);
 		let answer: Record<string, unknown>;
 		try {
-			answer = record(
+			answer = parseRecord(
 				await this.#authority.sealClaudeLoginBack(
 					{
 						binding,
@@ -222,7 +211,7 @@ export class CloudClaudeLoginVault {
 		if (sealReason) return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: sealReason };
 		if (answer.state === "stale") {
 			exactKeys(answer, ["schema", "state", "claudeLoginId", "version"], label);
-			if (uuid(answer.claudeLoginId, label) !== claudeLoginId) throw new Error(`${label} is invalid`);
+			if (parseUuid(answer.claudeLoginId, label) !== claudeLoginId) throw new Error(`${label} is invalid`);
 			return {
 				schema: "qorpera.claude-login-seal/v1",
 				state: "stale",
@@ -233,7 +222,7 @@ export class CloudClaudeLoginVault {
 		exactKeys(answer, ["schema", "state", "claudeLoginId", "version", "envelopeSha256"], label);
 		if (
 			answer.state !== "sealed" ||
-			uuid(answer.claudeLoginId, label) !== claudeLoginId ||
+			parseUuid(answer.claudeLoginId, label) !== claudeLoginId ||
 			version(answer.version, label) !== baseVersion + 1
 		)
 			throw new Error(`${label} is invalid`);
@@ -257,7 +246,7 @@ export class CloudClaudeLoginVault {
 				readonly files: Partial<Record<ClaudeLoginFileName, string>>;
 		  }
 	> {
-		const answer = record(await this.#authority.openClaudeLoginForRun(binding, signal), label);
+		const answer = parseRecord(await this.#authority.openClaudeLoginForRun(binding, signal), label);
 		const reason = refused(answer, "qorpera.claude-login-for-run/v1", label);
 		if (reason) return { reason };
 		exactKeys(
@@ -279,12 +268,12 @@ export class CloudClaudeLoginVault {
 			typeof answer.keyId !== "string" ||
 			!KEY_ID.test(answer.keyId) ||
 			typeof answer.envelopeSha256 !== "string" ||
-			!SHA.test(answer.envelopeSha256) ||
+			!SHA256_HEX_PATTERN.test(answer.envelopeSha256) ||
 			typeof answer.encryptedEnvelopeBase64 !== "string"
 		)
 			throw new Error(`${label} is invalid`);
-		const claudeLoginId = uuid(answer.claudeLoginId, label);
-		const memberId = uuid(answer.ownerUserId, label);
+		const claudeLoginId = parseUuid(answer.claudeLoginId, label);
+		const memberId = parseUuid(answer.ownerUserId, label);
 		const loginVersion = version(answer.version, label);
 		const keyId = answer.keyId;
 		const envelopeSha256 = answer.envelopeSha256;

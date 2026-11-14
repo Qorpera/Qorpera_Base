@@ -6,7 +6,7 @@
 -- 1. The open: the sealed files with their digest, the member and key, version 1.
 -- 2. Who may ask, each refused whole (42501) and naming nothing: another company's broker authority, a wrong capability,
 --    the agent's own conversation run, a plain worker's run, the run once its member's lease is not its own (taken by
---    another wake, or its wake ended), and a seal naming another login.
+--    another wake, or its wake ended), the run once its worker has reported, and a seal naming another login.
 -- 3. The seal-back: a compare-and-swap on the version and envelope opened; the version goes up by one; a repeat of the
 --    saved seal answers it again; a stale base answers stale and the newer envelope stays; a key other than the
 --    login's, an envelope that is not its digest, and shapes out of bounds are invalid (22023).
@@ -133,6 +133,19 @@ begin
 		update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
 		where id = (pg_temp.c4_worker('12690000-0000-4000-8000-0000000000b1')).occurrence_id;
 		perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_open()') = '42501', '2: a lease that ended');
+		raise exception 'c4b-undo';
+	exception when raise_exception then if sqlerrm <> 'c4b-undo' then raise; end if;
+	end;
+	-- The worker has reported (its run goes on, its lease still holds): its login is no longer this run's to open.
+	begin
+		set local session_replication_role = replica;
+		update public.qorpera_runtime_workers set state = 'succeeded', result = '{}'::jsonb, reported_at = clock_timestamp()
+		where id = '12690000-0000-4000-8000-0000000000b1';
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(public.qorpera_claude_worker_lease_live(pg_temp.c4_lease()), '2: its lease still holds');
+		perform pg_temp.base_assert(pg_temp.c4b_state('select pg_temp.c4b_open()') = '42501', '2: a worker that has reported');
+		perform pg_temp.base_assert(pg_temp.c4b_state(format('select pg_temp.c4b_seal(1, %L, %L)',
+			pg_temp.c4b_sha('canary-c4b-sealed-1'), 'canary-c4b-renewed')) = '42501', '2: nor its seal-back');
 		raise exception 'c4b-undo';
 	exception when raise_exception then if sqlerrm <> 'c4b-undo' then raise; end if;
 	end;
