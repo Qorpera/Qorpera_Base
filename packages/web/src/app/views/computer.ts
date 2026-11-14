@@ -2244,7 +2244,12 @@ export class ComputerPanel {
 		// Handing the picture another input can drop input it held for a sharing that ended without the member's doing, which
 		// says so (review r5 F2 of #1701): the note shows at once.
 		if (!note && this.#controlNote.textContent !== "") this.#controls.hidden = !picture;
-		if (entering) this.#view?.focusScreen();
+		// An entry that comes late (a computer that woke a while after the card's Open computer) never takes the keyboard
+		// from where the member went meanwhile: the composer stays usable under the frame, and keys go where the focus is
+		// (review r2 F1 of #1812). The picture gets the keyboard only from the window itself, or from nowhere.
+		const active = document.activeElement;
+		if (entering && (active === null || active === document.body || this.el.contains(active)))
+			this.#view?.focusScreen();
 		// The live picture follows the input the picture takes (20260930745000): of that hold or that sharing, or none.
 		this.#syncStream(picture && entered ? (hold ?? (sharing ? this.#shared : undefined)) : undefined);
 	}

@@ -1510,10 +1510,37 @@ describe("an agent's computer window", () => {
 		expect(p.el.classList.contains("is-entered")).toBe(true);
 		expect(p.holding).toBe(false);
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([]);
+		// The focus was nowhere: the picture has the keyboard, as after a click on it.
+		expect(document.activeElement).toBe(canvas(p));
 		// Once: back in the preview, the next picture enters nothing by itself.
 		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
 		await advance(LOOK_EVERY_MS);
 		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+
+	it("enters late without taking the keyboard from where the member went meanwhile: what they type in the composer stays there (review r2 F1 of #1812)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		p.enterWhenShown();
+		await flush();
+		// The computer is still waking: the member goes to the composer, outside the window, and types to the agent.
+		const composer = document.createElement("textarea");
+		document.body.append(composer);
+		composer.focus();
+		expect(document.activeElement).toBe(composer);
+		s.state.fallback = { picture: 1 };
+		await advance(SCREEN_OFF_EVERY_MS);
+		await flush();
+		// The frame enters, as the member asked, and the keyboard stays where they are.
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(document.activeElement).toBe(composer);
+		const sent = s.acts.length;
+		for (const value of ["H", "e", "j"]) key(composer, value);
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts).toHaveLength(sent);
 	});
 
 	it("keeps the thread's foot (the composer, the notices above it) reachable while entered, and a key typed there never reaches the computer", async () => {
