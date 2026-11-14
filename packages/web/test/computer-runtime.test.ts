@@ -1948,6 +1948,31 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(p.el.textContent).not.toContain("could not open it");
 	});
 
+	it("makes no choice of a pick after a pause when the list read after it says the member may no longer act: nothing is woken, started or opened", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		choose(p, 2);
+		await flush();
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		// Meanwhile the member's access was taken down to watching.
+		s.state.canTakeOver = false;
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(p.choices.map((choice) => [choice.path, choice.ended, choice.said])).toEqual([
+			["notes/plan.md", "replaced", undefined],
+		]);
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(0);
+		expect(s.starts).toEqual([]);
+		expect(s.opens).toEqual([]);
+		expect(opener(p).hidden).toBe(true);
+	});
+
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;

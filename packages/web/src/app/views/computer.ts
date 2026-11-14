@@ -3188,7 +3188,13 @@ export class ComputerPanel {
 		if (!choice || choice.freshAfter === undefined || this.#listedRead <= choice.freshAfter) return;
 		choice.freshAfter = undefined;
 		const machine = this.#pick();
-		if (machine?.machineId === choice.machineId) this.#beginChoice(computer, machine, signal);
+		// What #choose asks of the list it reads, it asks of this one: the machine is the one shown, and the member may
+		// act on it. Else the pick is no choice, as it would not have been one on this list: nothing was sent for it.
+		if (machine?.machineId !== choice.machineId || this.#listed?.canTakeOver !== true) {
+			this.#endChoice("replaced");
+			return;
+		}
+		this.#beginChoice(computer, machine, signal);
 	}
 
 	/** The choice that waits goes when it can, one request at a time: on a desktop that runs (a screen the member sees,
