@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { finish, pass, proveCompanyRun, repositoryRoot } from "./prove-company-run.mjs";
+import { finish, pass, platformCommit, proveCompanyRun, repositoryRoot, textObjects } from "./prove-company-run.mjs";
 
 // What the provider is sent (agents' instructions, track 3, step S0): the first request of four kinds of company run,
 // as the real patched Codex sends it to a scripted provider (scripts/prove-company-run.mjs says what is real and what
@@ -25,6 +25,7 @@ import { finish, pass, proveCompanyRun, repositoryRoot } from "./prove-company-r
 // The head (vision, job, notebook facts) and the context message are small stand-ins of fixed size; their bytes are
 // reported but are not a measure of a real company.
 
+const NOTE = "# Prices\n\nThe price list is ready: 40 kr a cup.\n";
 const KINDS = ["cofounder-member", "employee-member", "employee-worker", "employee-routine"];
 
 /** One phrase of today's text per founder rule (PLAN.md §3), and the kinds of run that read it. */
@@ -398,9 +399,13 @@ async function main() {
 				name: `qorpera_prove_first_${kind.replaceAll("-", "_")}`,
 				prompt,
 				runtimeInstructions: instructions,
-				setup: "",
-				objects: new Map(),
-				calls: [],
+				// One read, so the run keeps a log (the harness reads it back); the first request comes before it.
+				setup: platformCommit("prove-first-notes", [
+					{ op: "mkdir", path: "notes" },
+					{ op: "write", path: "notes/prices.md", text: NOTE },
+				]),
+				objects: textObjects([NOTE]),
+				calls: [() => ({ name: "company_list", arguments: { path: "notes" } })],
 				tools: (_code, { binding, folder, operations, identity }) => {
 					const context = contextOf(kind, identity);
 					tools = toolsOf(mine, kind, context, wakeOf(kind, context.identity), { binding, folder, operations, identity });
