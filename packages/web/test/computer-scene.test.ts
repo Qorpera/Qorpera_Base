@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BACKDROP_SOURCES, desktopBackdrops } from "../scripts/desktop-backdrops.mjs";
 import { ComputerPanel } from "../src/app/views/computer.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
-import { ComputerScene, desktopClock, hourColours, lidColour } from "../src/ui/computer-scene.ts";
+import { ComputerScene, DOCK_INK, desktopClock, hourColours, lidColour } from "../src/ui/computer-scene.ts";
 import { fixture, id, profileA, settle, staff, userA } from "./fixtures.ts";
 
 /* The desktop the member is about to see while an agent's computer sleeps or starts (COMPUTER-OPEN-BRIEF, 13 Nov 2026):
@@ -79,6 +79,56 @@ describe("the machine's own backdrop, as the web draws it", () => {
 			expect(Math.abs((g as number) - (want[1] as number))).toBeLessThanOrEqual(1);
 			expect(Math.abs((b as number) - (want[2] as number))).toBeLessThanOrEqual(1);
 		});
+	});
+
+	it("writes on the dock in the ink the machine uses for the hour's ground: the dock stands on the wallpaper (14 Nov 2026)", () => {
+		// Jonas: "the docker should also not be black - it should be transparrant/wallpapers color". The machine's dock is
+		// the hour's ground and its date and time are dark on a light ground (deploy/machine/desktop-look): the scene's
+		// dock has no colour either, and takes the same ink for the same hours.
+		const look = readFileSync(join(repo, "deploy/machine/desktop-look"), "utf8");
+		const table =
+			look
+				.match(/GROUND=\(([\s\S]*?)\)/)?.[1]
+				?.trim()
+				.split(/\s+/) ?? [];
+		const ink = (name: string) =>
+			Object.fromEntries(
+				[...(look.match(new RegExp(`${name}=\\(([^)]*)\\)`))?.[1] ?? "").matchAll(/\[(\w+)\]=([0-9a-f]{6})/g)].map((match) => [
+					match[1],
+					`#${match[2]}`,
+				]),
+			);
+		expect(ink("DATE_INK")).toEqual({ dark: DOCK_INK.dark.date, light: DOCK_INK.light.date });
+		expect(ink("TIME_INK")).toEqual({ dark: DOCK_INK.dark.time, light: DOCK_INK.light.time });
+		// The machine's tone of a ground: light from the middle of the scale up (tone_of).
+		expect(look).toContain('tone_of() { if (( 16#${1:0:2} >= 128 )); then echo light; else echo dark; fi; }');
+		table.forEach((hex, hour) => {
+			expect(hourColours(hour).tone, `hour ${hour}`).toBe(Number.parseInt(hex.slice(0, 2), 16) >= 128 ? "light" : "dark");
+		});
+		const css = readFileSync(join(web, "src/styles/computer-scene.css"), "utf8");
+		const rule = (selector: string) => css.match(new RegExp(`\\n${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+		expect(rule(".computer-scene-dock")).not.toMatch(/background/);
+		expect(rule(".computer-scene-date")).toContain("color: var(--computer-scene-date-ink, #a3abba);");
+		expect(rule(".computer-scene-time")).toContain("color: var(--computer-scene-time-ink, #eef0f4);");
+		// The scene carries the hour's ink: noon in one zone, midnight in another.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.stubGlobal("fetch", async () => new Response("{}", { status: 404 }));
+		try {
+			vi.setSystemTime(new Date("2026-11-14T12:10:00Z"));
+			const day = new ComputerScene({ figure: "neutral", color: "#2563eb", timeZone: "UTC" });
+			day.set("screen");
+			expect(day.el.style.getPropertyValue("--computer-scene-date-ink")).toBe(DOCK_INK.light.date);
+			expect(day.el.style.getPropertyValue("--computer-scene-time-ink")).toBe(DOCK_INK.light.time);
+			day.dispose();
+			const night = new ComputerScene({ figure: "neutral", color: "#2563eb", timeZone: "Pacific/Auckland" });
+			night.set("screen");
+			expect(night.el.style.getPropertyValue("--computer-scene-date-ink")).toBe(DOCK_INK.dark.date);
+			expect(night.el.style.getPropertyValue("--computer-scene-time-ink")).toBe(DOCK_INK.dark.time);
+			night.dispose();
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("reads the hour and the dock's clocks in the company's zone, else in UTC as the machine does", () => {
