@@ -478,7 +478,11 @@ begin
 				then greatest(v_hour_from, least(v_hour_from + interval '167 hours', v_now_hour)) else v_now_hour end);
 		v_hour_from := coalesce(v_hour_from, v_hour_to - interval '47 hours');
 		if v_hour_from > v_hour_to then raise exception ':from is after :to' using errcode = '22023'; end if;
-		if v_hour_to - v_hour_from > interval '167 hours' then
+		-- Two days named: at most 7 of the company's days, a week with its 25-hour day too; times: at most 168 hours.
+		if (p_params ->> 'from') ~ '^\d{4}-\d{2}-\d{2}$' and (p_params ->> 'to') ~ '^\d{4}-\d{2}-\d{2}$' then
+			if (p_params ->> 'to')::date - (p_params ->> 'from')::date > 6 then
+				raise exception 'From :from to :to is at most 7 days' using errcode = '22023'; end if;
+		elsif v_hour_to - v_hour_from > interval '167 hours' then
 			raise exception 'From :from to :to is at most 7 days' using errcode = '22023'; end if;
 		v_columns := array['site', 'hour', 'hour_local', 'views', 'visits'];
 		select jsonb_agg(jsonb_build_array(cell.slug, to_char(cell.hour at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),

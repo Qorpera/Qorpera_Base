@@ -486,6 +486,12 @@ begin
 		'169 hours');
 	perform pg_temp.s_same(pg_temp.s_refused('site-hours', jsonb_build_object('from', pg_temp.s_iso(pg_temp.s_hour()
 		- interval '167 hours'), 'to', pg_temp.s_iso(pg_temp.s_hour()))), 'ok', '168 hours');
+	-- Seven of the company's days named, with the night summer time ends (Copenhagen, 25 Oct 2026): 169 hours, allowed.
+	v_rows := pg_temp.s_rows('site-hours', jsonb_build_object('site', 'count-blog', 'from', '2026-10-19', 'to', '2026-10-25'));
+	perform pg_temp.s_same(jsonb_array_length(v_rows)::text || ' ' || (v_rows -> 0 ->> 2) || ' ' || (v_rows -> -1 ->> 2),
+		'169 2026-10-19T00:00 2026-10-25T23:00', 'a week of days with its 25-hour day');
+	perform pg_temp.s_same(pg_temp.s_refused('site-hours', jsonb_build_object('from', '2026-10-19', 'to', '2026-10-26')),
+		'22023 From :from to :to is at most 7 days', 'eight days named');
 	foreach v_want in array array['2026-11-14T08:00', '2026-11-14 08:00Z', '2026-11-14T8:00Z', '2026-13-14T08:00Z',
 		'2026-11-31', 'yesterday', '2026-11-14T08Z', '2026-11-14T25:00Z'] loop
 		perform pg_temp.s_same(pg_temp.s_refused('site-hours', jsonb_build_object('from', v_want)),
