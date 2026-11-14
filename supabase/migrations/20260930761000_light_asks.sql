@@ -12,7 +12,7 @@
 --    company account pays.
 -- 3. The run reads the kind and the input from its wake, asks the model, and stores the answer with
 --    qorpera_native_light_ask_answer. It says nothing: an agent wake's policy forbids a send, and the run has no
---    conversation.
+--    conversation. It offers no tool: its admission takes an empty tool catalog, and only an empty one.
 -- 4. The asker reads the answer with qorpera_read_light_ask. An ask not answered within ten minutes reads as failed, and
 --    its wake no longer runs.
 -- Bounds: 8 waiting asks a member in a company; an input of 4 KiB; an answer of 200 characters; asks a day old go when
@@ -90,6 +90,14 @@ create function public.qorpera_light_ask_expires_at(p_created_at timestamptz)
 returns timestamptz language sql immutable set search_path = '' as $$
 	-- 20260930761000 (light asks).
 	select p_created_at + interval '10 minutes'
+$$;
+
+-- Whether a run is a light ask's: the run of an `agent` wake whose source is a light ask.
+create function public.qorpera_run_answers_light_ask(p_run_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930761000 (light asks).
+	select exists (select 1 from public.qorpera_wake_occurrences wake
+		where wake.run_id = p_run_id and wake.wake_kind = 'agent' and wake.source_kind = 'light-ask')
 $$;
 
 -- A kind's input, as the cloud takes it. `name-app-group`: the apps of a new group of the member's apps drawer (2 to
@@ -381,9 +389,26 @@ select pg_temp.light_ask_replace('public.qorpera_run_autonomous_authority(public
 			and w.requested_by_user_id = p_run.requested_by_user_id) then return true; end if;$new$]
 ]);
 
+select pg_temp.light_ask_replace('public.qorpera_begin_native_company_execution_v3(jsonb, text, text, text, text)'::regprocedure, array[
+	array[$old$	if jsonb_array_length(v_catalog -> 'tools') < 1
+$old$,
+		$new$	-- 20260930761000 (light asks): a light ask's run offers no tool, and every other run at least one.
+	if (jsonb_array_length(v_catalog -> 'tools') < 1) is distinct from public.qorpera_run_answers_light_ask(v_run.id)
+$new$]
+]);
+
+select pg_temp.light_ask_replace('public.qorpera_begin_native_company_execution_v2(jsonb, text, text, text, text, text, integer)'::regprocedure, array[
+	array[$old$	if jsonb_array_length(v_catalog -> 'tools') < 1
+$old$,
+		$new$	-- 20260930761000 (light asks): a light ask's run offers no tool, and every other run at least one.
+	if (jsonb_array_length(v_catalog -> 'tools') < 1) is distinct from public.qorpera_run_answers_light_ask(v_run.id)
+$new$]
+]);
+
 -- 7. Who may call what ----------------------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_light_ask_expires_at(timestamptz),
+	public.qorpera_run_answers_light_ask(uuid),
 	public.qorpera_light_ask_input_valid(text, jsonb),
 	public.qorpera_light_ask_sponsor(uuid, uuid),
 	public.qorpera_light_ask_json(public.qorpera_light_asks),
@@ -410,7 +435,9 @@ begin
 		'public.qorpera_runtime_wake_policy_internal(uuid)',
 		'public.qorpera_folder_read_wake(jsonb)',
 		'public.qorpera_folder_materialize_company(uuid, integer)',
-		'public.qorpera_run_autonomous_authority(public.qorpera_execution_runs)'
+		'public.qorpera_run_autonomous_authority(public.qorpera_execution_runs)',
+		'public.qorpera_begin_native_company_execution_v3(jsonb, text, text, text, text)',
+		'public.qorpera_begin_native_company_execution_v2(jsonb, text, text, text, text, text, integer)'
 	]::regprocedure[] loop
 		if position('20260930761000' in pg_get_functiondef(v_function)) = 0 then
 			raise exception '% does not carry 20260930761000', v_function; end if;

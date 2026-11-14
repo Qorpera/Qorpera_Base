@@ -7,8 +7,9 @@
 --    conversation, the payload from the ask), authorized; a repeat answers the same ask.
 -- 3. The materializer makes its run, on a login that does not allow unattended use too; the run's authority and its
 --    policy (no send).
--- 4. The run reads its wake (the kind, the input, no held coworker messages) and stores the answer, once; Anna reads
---    it, and nobody else does.
+-- 4. The run reads its wake (the kind, the input, no held coworker messages), is admitted with no tool and only with
+--    none, and stores the answer, once; Anna reads it, and nobody else does. The run ends silent. Any other run needs
+--    a tool and stores no answer.
 -- 5. No answer; an ask past its time; eight waiting asks; no login of one's own; a paused company.
 -- 6. The markers. Rolled back at the end.
 
@@ -53,12 +54,12 @@ create function pg_temp.wake_of(p_ask uuid) returns public.qorpera_wake_occurren
 $$;
 -- A light wake's run, leased, with the native rows its binding needs (915's, on the run the materializer made: its
 -- reservation, budget and model policy are the materializer's own).
-create function pg_temp.leased(p_wake uuid) returns jsonb language plpgsql as $$
+create function pg_temp.leased_run(p_run uuid) returns jsonb language plpgsql as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_sponsor public.qorpera_execution_sponsor_versions%rowtype;
 	v_capsule uuid; v_runner uuid := extensions.gen_random_uuid(); v_assignment uuid := extensions.gen_random_uuid();
 	v_lease uuid := extensions.gen_random_uuid();
 begin
-	select * into strict v_run from public.qorpera_execution_runs where source_kind = 'wake' and source_id = p_wake;
+	select * into strict v_run from public.qorpera_execution_runs where id = p_run;
 	select * into strict v_sponsor from public.qorpera_execution_sponsor_versions
 	where binding_id = v_run.sponsor_binding_id and version = v_run.sponsor_version;
 	select credential_capsule_id into strict v_capsule from public.qorpera_provider_connection_versions
@@ -71,8 +72,14 @@ begin
 		v_run.created_by_user_id, v_run.compute_identity_id);
 	update public.qorpera_runner_jobs set status = 'leased', runner_id = v_runner, client_lease_id = v_assignment,
 		lease_token_sha256 = repeat('a', 64), lease_expires_at = clock_timestamp() + interval '1 hour' where id = v_run.job_id;
+	-- A real orchestrator and claim: this file is one transaction, so a later update of the assignment checks its keys.
+	insert into public.qorpera_runner_orchestrators(id, display_name, provider_adapter, control_token_sha256, control_token_expires_at)
+	values (v_runner, 'Light orchestrator', 'fixture', encode(extensions.digest(v_runner::text, 'sha256'), 'hex'),
+		clock_timestamp() + interval '1 hour');
+	insert into public.qorpera_runner_job_claims(id, orchestrator_id, client_claim_id, job_id, run_id, status, lease_expires_at)
+	values (v_lease, v_runner, v_lease, v_run.job_id, v_run.id, 'accepted', clock_timestamp() + interval '1 hour');
 	insert into public.qorpera_runner_assignments(id, claim_id, job_id, run_id, runner_id, capability_sha256, status, expires_at, accepted_at)
-	values (v_assignment, extensions.gen_random_uuid(), v_run.job_id, v_run.id, v_runner, repeat('e', 64), 'accepted',
+	values (v_assignment, v_lease, v_run.job_id, v_run.id, v_runner, repeat('e', 64), 'accepted',
 		clock_timestamp() + interval '1 hour', clock_timestamp());
 	insert into public.qorpera_native_provider_connection_leases(id, run_id, job_id, provider_connection_id, provider_connection_version,
 		credential_capsule_id, compute_identity_id, runner_id, assignment_id, lease_token_sha256, expires_at)
@@ -83,6 +90,37 @@ begin
 		'assignmentId', v_assignment, 'credentialCapsuleId', v_capsule, 'computeIdentityId', v_run.compute_identity_id,
 		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', v_run.model_id);
 end $$;
+create function pg_temp.leased(p_wake uuid) returns jsonb language sql as $$
+	select pg_temp.leased_run((select id from public.qorpera_execution_runs where source_kind = 'wake' and source_id = p_wake))
+$$;
+-- A run's admission with a tool catalog of `p_tools` tools (the manifest's binary, the run's bundle and policy).
+create function pg_temp.admit(p_binding jsonb, p_tools integer) returns jsonb language plpgsql as $$
+declare v_run public.qorpera_execution_runs%rowtype;
+begin
+	perform pg_temp.as_service();
+	select * into strict v_run from public.qorpera_execution_runs where id = (p_binding ->> 'runId')::uuid;
+	return public.qorpera_begin_native_company_execution_v3(p_binding,
+		public.qorpera_execution_runtime_manifest(v_run) ->> 'nativeBinarySha256', v_run.runtime_bundle_sha256,
+		v_run.reasoning_policy_sha256,
+		jsonb_build_object('type', 'namespace', 'name', 'qorpera', 'description', 'Fixture catalog', 'tools',
+			(select coalesce(jsonb_agg(jsonb_build_object('type', 'function', 'name', 'tool_' || n, 'description', 'Fixture tool',
+				'inputSchema', '{"type":"object","additionalProperties":false}'::jsonb)), '[]'::jsonb)
+			from generate_series(1, p_tools) n))::text);
+end $$;
+-- The runtime's completion of a run that sent nothing (658's).
+create function pg_temp.complete(p_binding jsonb) returns jsonb language sql as $$
+	select public.qorpera_complete_runner_job_v6((p_binding ->> 'runnerId')::uuid, repeat('f', 64), (p_binding ->> 'jobId')::uuid,
+		repeat('a', 64), '12580000-0000-4000-8000-0000000000a1', '12580000-0000-4000-8000-0000000000a2', null,
+		jsonb_build_object('schema','qorpera.runner-result/v1','runtime','company-path-v1','backend','native-company-runtime',
+			'native_lease_id', p_binding ->> 'leaseId',
+			'substrate_version_id', (select substrate_version_id from public.qorpera_runner_jobs where id = (p_binding ->> 'jobId')::uuid),
+			'output_count',0,'output_bytes',0,'publication',null,
+			'backend_result',jsonb_build_object('schema','qorpera.native-harness-result/v2','run_id',p_binding ->> 'runId',
+				'message_count',0,'final_message_id',null,'provider_session_id','light-thread-' || (p_binding ->> 'runId')),
+			'usage','{"schema":"qorpera.runner-usage/v1","execution_ms":50,"input_bytes":0,"output_bytes":0,"result_bytes":300,
+				"limits":{"wall_time_ms":1000,"memory_bytes":67108864,"cpu_millis":1000,"max_pids":16,
+					"max_input_bytes":1048576,"max_output_bytes":0,"max_result_bytes":4096}}'::jsonb))
+$$;
 create function pg_temp.answer(p_binding jsonb, p_answer text) returns jsonb language plpgsql as $$
 declare v_result jsonb;
 begin
@@ -108,7 +146,7 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_native_light_ask_answer(jsonb,text)', 'EXECUTE')
 		or not has_function_privilege('service_role', 'public.qorpera_native_light_ask_answer(jsonb,text)', 'EXECUTE') then
 		raise exception 'The answer is not the native host''s call alone'; end if;
-	foreach v_function in array array['public.qorpera_light_ask_sponsor(uuid,uuid)',
+	foreach v_function in array array['public.qorpera_light_ask_sponsor(uuid,uuid)', 'public.qorpera_run_answers_light_ask(uuid)',
 		'public.qorpera_light_ask_input_valid(text,jsonb)', 'public.qorpera_light_ask_json(public.qorpera_light_asks)',
 		'public.qorpera_light_ask_expires_at(timestamptz)'] loop
 		if has_function_privilege('anon', v_function, 'EXECUTE') or has_function_privilege('authenticated', v_function, 'EXECUTE')
@@ -315,6 +353,20 @@ begin
 		or v_envelope ->> 'actorStaffId' is not null or v_envelope -> 'causal' ->> 'rootId' is distinct from v_wake.id::text
 		or v_envelope -> 'payload' is distinct from v_wake.payload then
 		raise exception 'The run''s wake: %', v_envelope; end if;
+	-- Its admission: a light ask's run offers no tool. A catalog with one is refused, the empty one is taken, and the
+	-- bound context writes the run's start.
+	begin
+		perform pg_temp.admit(v_binding, 1);
+		raise exception 'A light run was admitted with a tool';
+	exception when invalid_parameter_value then null;
+	end;
+	if pg_temp.admit(v_binding, 0) ->> 'schema' is distinct from 'qorpera.native-company-execution-admission/v1' then
+		raise exception 'A light run was not admitted with no tool'; end if;
+	v_receipt := public.qorpera_bind_native_company_context(v_binding, repeat('c', 64), 120);
+	if v_receipt ->> 'schema' is distinct from 'qorpera.native-company-execution-start/v1'
+		or not exists (select 1 from public.qorpera_execution_run_events where run_id = (v_binding ->> 'runId')::uuid
+			and event_type = 'runner_started' and payload ->> 'schema' = 'qorpera.native-company-execution-start/v1') then
+		raise exception 'The light run''s start was not written: %', v_receipt; end if;
 	-- Before the answer Anna reads it as waiting.
 	if pg_temp.read('85600000-0000-4000-8000-000000000001', v_ask) ->> 'state' is distinct from 'waiting' then
 		raise exception 'The ask does not read as waiting'; end if;
@@ -334,6 +386,44 @@ begin
 	perform pg_temp.as_user('85600000-0000-4000-8000-000000000001');
 	if public.qorpera_read_light_ask(current_setting('qorpera_test.old')::uuid, v_ask) is not null then
 		raise exception 'An ask reads under another company'; end if;
+end $$;
+-- The run ends as a silent run ends: completed with no send and no conversation, its wake with it.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.light_binding')::jsonb; v_done jsonb;
+	v_wake public.qorpera_wake_occurrences; v_run public.qorpera_execution_runs;
+begin
+	perform pg_temp.as_service();
+	v_done := pg_temp.complete(v_binding);
+	select * into strict v_run from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
+	v_wake := pg_temp.wake_of(current_setting('qorpera_test.ask')::uuid);
+	if v_done ->> 'status' is distinct from 'completed' or v_wake.status <> 'completed'
+		or exists (select 1 from public.qorpera_agent_sends where run_id = v_run.id)
+		or not exists (select 1 from public.qorpera_execution_run_results result where result.run_id = v_run.id
+			and result.transcript_end_sequence = v_run.transcript_start_sequence and result.company_disposition = 'unchanged') then
+		raise exception 'The light run did not end silent: % %', v_done, to_jsonb(v_wake); end if;
+	-- The answer stands after the run.
+	if (pg_temp.ask_row(current_setting('qorpera_test.ask')::uuid)).answer is distinct from 'Money matters' then
+		raise exception 'The answer went with the run'; end if;
+end $$;
+-- Every other run offers at least one tool: Anna's first run, made in the same pass, is refused with none.
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.leased_run((select id from public.qorpera_execution_runs
+		where profile_id = current_setting('qorpera_test.table')::uuid and source_kind = 'session_turn'));
+	begin
+		perform pg_temp.admit(v_binding, 0);
+		raise exception 'A run that is no light ask''s was admitted with no tool';
+	exception when invalid_parameter_value then null;
+	end;
+	if pg_temp.admit(v_binding, 1) ->> 'schema' is distinct from 'qorpera.native-company-execution-admission/v1' then
+		raise exception 'A run with a tool was not admitted'; end if;
+	-- And it stores no light answer.
+	begin
+		perform pg_temp.answer(v_binding, 'Mine');
+		raise exception 'A run that is no light ask''s stored an answer';
+	exception when insufficient_privilege then null;
+	end;
 end $$;
 -- Only a member reads; only the native host answers, and only for a light ask's run.
 select pg_temp.as_service();
@@ -431,6 +521,8 @@ begin
 		'public.qorpera_runtime_wake_policy_internal(uuid)', 'public.qorpera_folder_read_wake(jsonb)',
 		'public.qorpera_folder_materialize_company(uuid,integer)',
 		'public.qorpera_run_autonomous_authority(public.qorpera_execution_runs)',
+		'public.qorpera_begin_native_company_execution_v3(jsonb,text,text,text,text)',
+		'public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)',
 		'public.qorpera_request_light_ask(uuid,uuid,text,jsonb)', 'public.qorpera_read_light_ask(uuid,uuid)',
 		'public.qorpera_native_light_ask_answer(jsonb,text)']::regprocedure[] loop
 		if position('20260930761000' in pg_get_functiondef(v_function)) = 0 then
