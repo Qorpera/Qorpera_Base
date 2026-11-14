@@ -543,7 +543,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
-	"Choose a computer": "Vælg en computer",
 	// A member opens one of the company's apps on the computer (20260930758000).
 	"Open on this computer": "Åbn på denne computer",
 	"That is not in the company folder any more.": "Det ligger ikke længere i virksomhedens mappe.",
@@ -564,9 +563,6 @@ export const WORKSPACE: Record<string, string> = {
 	"{members} are using it too.": "{members} bruger den også.",
 	"You can watch. Someone with edit access can use the computer.":
 		"Du kan se med. En med redigeringsadgang kan bruge computeren.",
-	"Type privately": "Skriv privat",
-	"For passwords: {name} gets no pictures of the screen until you're done.":
-		"Til adgangskoder: {name} får ingen billeder af skærmen, før du er færdig.",
 	"Typing privately. {name} gets no pictures of the screen until you're done.":
 		"Du skriver privat. {name} får ingen billeder af skærmen, før du er færdig.",
 	"Typing privately. Choose Enter to click and type.": "Du skriver privat. Vælg Gå ind for at klikke og skrive.",

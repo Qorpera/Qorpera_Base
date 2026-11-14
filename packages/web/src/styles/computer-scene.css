@@ -91,6 +91,11 @@
 	.computer-scene * { transition: none !important; }
 	.computer-panel .machine-screen.is-arriving { animation: none; }
 }
-/* On the dark screen the window's own ✕ and switcher take the dark surface's ink (dark.css), not a glow meant for a
-   light picture (review r1 on the real component). */
-.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }
+/* On the dark screen the window's own ✕ takes the dark surface's ink (dark.css), not a glow meant for a
+   light picture (review r1 on the real component). The same where the window says something in plain words and
+   shows neither a picture nor the scene (the screen off, a start that failed): its body is dark there in the light
+   theme too, and the picture's dark ink with its white halo was hard to read on it (seen on screenshots, 14 Nov
+   2026). Not while the words are the scene's own strip (`.is-scene`): the scene's lit phases (starting, screen) draw
+   a light desktop by day, and keep the picture's ink (review r1 of #1801). */
+.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])),
+.computer-panel:has(.computer-loading:not([hidden], .is-scene)) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }

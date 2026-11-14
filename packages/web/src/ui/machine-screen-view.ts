@@ -161,7 +161,7 @@ interface StreamPaint {
  *  - the window's own pictures and the live picture have a canvas each, so neither source ever writes where the other
  *    draws; exactly one of the two is shown, and a look can neither overwrite the live picture nor clear its size nor
  *    end it.
- *  - inside one live picture the messages apply strictly in the order they arrived (size, areas, cursor), however long
+ *  - inside one live picture the messages apply strictly in the order they arrived (size, areas), however long
  *    any one of them takes to decode: only the decoding runs side by side, never the applying. Nothing of a stream is
  *    ever dropped to keep that order; a stream's work is discarded only when the WHOLE stream is dropped.
  *  - of the window's own looks only the newest paints (`#lookTurn`): an older one that decodes later is dropped, since
@@ -188,7 +188,7 @@ export interface MachineScreenViewOptions {
 	/** The panel's body: the view sits over its state text while it shows a picture. */
 	readonly mount: HTMLElement;
 	readonly title: string;
-	/** The view entered (full size in the thread, or full screen) or went back to the preview. */
+	/** The view entered (the frame over the thread) or went back to the preview. */
 	readonly onExpandedChange: (expanded: boolean) => void;
 	/** Decodes a picture (default createImageBitmap, off the main thread). */
 	readonly decode?: (png: Blob) => Promise<MachineScreenPicture>;
@@ -203,7 +203,7 @@ export interface MachineScreenViewOptions {
  * While the member holds the desktop (20260930713000, `capture`), the picture takes their input: clicks, double and
  * right clicks, drags and the wheel at the screen's own pixels (the picture's natural size, wherever it is drawn), keys
  * that are not text by their X names, typed text gathered into one action (TYPE_BATCH_MS), and what they paste. The
- * panel captures only while the view is entered (the frame in the thread, or full screen): in the preview (a row of its
+ * panel captures only while the view is entered (the frame over the thread): in the preview (a row of its
  * thread) a click opens the large view, and a desktop is not driven at that size. A slot under the picture holds the
  * take-over controls the panel gives it.
  */
@@ -212,8 +212,6 @@ export class MachineScreenView {
 	readonly #options: MachineScreenViewOptions;
 	readonly #heading = h("span");
 	readonly #hint = h("small");
-	/** Says when the browser refused full screen, so the entered frame is not taken for it. Empty until then. */
-	readonly #note = h("small", { class: "screen-viewer-note", role: "status", "aria-live": "polite" });
 	readonly #back = h("button", {
 		type: "button",
 		class: "screen-viewer-back",
@@ -230,8 +228,9 @@ export class MachineScreenView {
 	readonly #streamCanvas = h("canvas", { class: "machine-screen-canvas", role: "img", hidden: true });
 	/** "Live" while the pictures come, "Updating…" while the last one is held. */
 	readonly #mark = h("span", { class: "machine-screen-mark", hidden: true });
-	readonly #switcherSlot = h("span", { class: "machine-screen-switcher-slot" });
-	/** The take-over controls under the picture (the panel's: Take over, or what holding means and Hand back). */
+	/** Where Open stands in the large view: beside the title (the panel keeps its own on the preview). */
+	readonly #openerSlot = h("span", { class: "machine-screen-opener-slot" });
+	/** The controls under the picture (the panel's: the words of sharing, or what a private hold means and Done). */
 	readonly #controlSlot = h("div", { class: "machine-screen-control-slot" });
 	/** Where the take-over controls stand in the large view: a slim row of the frame under its titlebar, never on the
 	 * desktop's picture (its dock and clock; v239 real test, 13 Nov 2026). */
@@ -291,16 +290,12 @@ export class MachineScreenView {
 	 * waiting list and its own count of what it holds; when it is dropped, its queue goes, every waiter is let go at once
 	 * so nothing of a later stream waits behind it, and each of its bitmaps is closed as it lands. */
 	#paint: StreamPaint | null = null;
-	/** The live picture's pointer shape (a data URL and its hot spot), shown over the picture while it takes input. */
-	#cursor = "";
-	#fullscreenAttempt = 0;
-	#ownedFullscreen = false;
 
 	constructor(options: MachineScreenViewOptions) {
 		this.#options = options;
-		const headingWrap = h("span", { class: "screen-viewer-heading" }, this.#heading, this.#hint, this.#note);
+		const headingWrap = h("span", { class: "screen-viewer-heading" }, this.#heading, this.#hint);
 		const controls = h("div", { class: "screen-viewer-controls" }, this.#back);
-		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#switcherSlot, controls);
+		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#openerSlot, controls);
 		const stage = h(
 			"div",
 			{ class: "screen-viewer-stage" },
@@ -325,16 +320,6 @@ export class MachineScreenView {
 		const signal = this.#stop.signal;
 		this.#enter.addEventListener("click", () => this.#enterView(), { signal });
 		this.#back.addEventListener("click", () => this.back(), { signal });
-		document.addEventListener(
-			"fullscreenchange",
-			() => {
-				const active = document.fullscreenElement === this.el;
-				if (active) this.#note.textContent = "";
-				if (this.#ownedFullscreen && !active) this.back();
-				this.#ownedFullscreen = active;
-			},
-			{ signal },
-		);
 	}
 
 	get entered(): boolean {
@@ -353,7 +338,7 @@ export class MachineScreenView {
 	}
 
 	/** Both pictures of this view, in the order they stand (review r6 of #1746): the window's own and the live one. What
-	 * belongs to the picture as a thing the member sees and acts on — its label, its role, its input, its pointer shape —
+	 * belongs to the picture as a thing the member sees and acts on — its label, its role, its input —
 	 * is on both, so taking over keeps working across the moment the live picture appears or ends. */
 	get #canvases(): readonly HTMLCanvasElement[] {
 		return [this.#canvas, this.#streamCanvas];
@@ -377,9 +362,9 @@ export class MachineScreenView {
 		if (held) shown.focus({ preventScroll: true });
 	}
 
-	/** The machine switcher, in the titlebar beside the title while entered (the panel keeps its own on the preview). */
-	setSwitcher(switcher: HTMLElement | null): void {
-		this.#switcherSlot.replaceChildren(...(switcher ? [switcher] : []));
+	/** Open (20260930758000), in the titlebar beside the title while entered. */
+	setOpener(opener: HTMLElement | null): void {
+		this.#openerSlot.replaceChildren(...(opener ? [opener] : []));
 	}
 
 	/** The take-over controls: on the picture's foot in the preview, in the frame's row above the picture entered (full
@@ -425,7 +410,6 @@ export class MachineScreenView {
 		this.#input = input;
 		this.#press = null;
 		this.el.classList.toggle("is-controlling", input !== null);
-		this.#showCursor();
 		if (!input) {
 			for (const canvas of this.#canvases) {
 				canvas.removeAttribute("tabindex");
@@ -799,25 +783,19 @@ export class MachineScreenView {
 	}
 
 	/** One message of the desktop's live picture (20260930745000), drawn after those before it: the screen's size (what
-	 * was drawn goes), changed areas at their places, the pointer's shape. A picture of a look still being decoded is
+	 * was drawn goes) and changed areas at their places. The desktop's pointer shape is not shown (Jonas, 14 Nov 2026:
+	 * "let's actually hide the agent cursor when inside of the agents computer"): over the picture the member keeps
+	 * their own pointer, so its message is answered at once and nothing of it is read. A picture of a look still being decoded is
 	 * dropped (the stream's is newer). Answers `"drawn"`, `"dropped"` (the picture was cleared or the stream ended while
 	 * it decoded: discarded work, no fault of the stream) or `"failed"` (an area that does not decode, or does not fit
 	 * the screen: that stream is of no use). The caller must tell the last two apart, or a draw discarded at a renewal
 	 * would end the stream that replaced it (review r2 F4 of #1746). */
 	async stream(message: MachineStreamMessage): Promise<"drawn" | "dropped" | "failed" | "overflow"> {
+		if (message.kind === "cursor") return "drawn";
 		const paint = this.#paintFor();
-		const bytes =
-			message.kind === "rects"
-				? message.rects.reduce((sum, rect) => sum + rect.png.size, 0)
-				: message.kind === "cursor"
-					? (message.png?.size ?? 0)
-					: 0;
+		const bytes = message.kind === "rects" ? message.rects.reduce((sum, rect) => sum + rect.png.size, 0) : 0;
 		const pixels =
-			message.kind === "rects"
-				? message.rects.reduce((sum, rect) => sum + rect.width * rect.height, 0)
-				: message.kind === "cursor"
-					? message.width * message.height
-					: 0;
+			message.kind === "rects" ? message.rects.reduce((sum, rect) => sum + rect.width * rect.height, 0) : 0;
 		// Past what this stream may hold while it decodes, nothing of the message is begun: the window ends that stream
 		// and its own pictures carry on (review r3 F1 of #1746).
 		if (
@@ -861,7 +839,6 @@ export class MachineScreenView {
 			}
 		};
 		const pictures = message.kind === "rects" ? Promise.all(message.rects.map(one)) : Promise.resolve([]);
-		const cursor = message.kind === "cursor" && message.png ? dataUrl(message.png) : Promise.resolve("");
 		// This stream's messages reach the canvas in the order they came (its areas change regions, so order matters):
 		// each waits for the one before it, inside this stream alone, never for anything of another stream (r4 F1).
 		const behind = paint.chain;
@@ -874,14 +851,7 @@ export class MachineScreenView {
 		// (`stale()` above); those already decoded were closed by the drop with the job.
 		const decoded = await this.#whileLive(paint, pictures);
 		const turn = decoded === GONE ? GONE : await this.#whileLive(paint, behind);
-		const url =
-			turn === GONE || message.kind !== "cursor"
-				? ""
-				: await this.#whileLive(
-						paint,
-						cursor.catch(() => ""),
-					);
-		if (decoded === GONE || turn === GONE || url === GONE || paint.dropped || this.#stop.signal.aborted) {
+		if (decoded === GONE || turn === GONE || paint.dropped || this.#stop.signal.aborted) {
 			this.#dispose(job);
 			paint.jobs.delete(job);
 			letGo();
@@ -901,11 +871,6 @@ export class MachineScreenView {
 					// dies with it, and the fit check below is against it alone.
 					paint.size = { width: message.width, height: message.height };
 					// A size alone shows nothing: the window keeps its own pictures until pixels of this stream land.
-					return "drawn";
-				}
-				if (message.kind === "cursor") {
-					this.#cursor = url ? `url("${url}") ${message.hotX} ${message.hotY}, default` : "";
-					this.#showCursor();
 					return "drawn";
 				}
 				// The safe mode (review r5 of #1746): anything that does not agree — an area outside the size this stream
@@ -996,8 +961,8 @@ export class MachineScreenView {
 		if (paint.showing) this.#handBack();
 		else this.#streamCanvas.hidden = true;
 		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped: a later
-		// message starts on a settled chain, and every message already waiting — on a decode, on the one before it, on
-		// its pointer shape — answers now, because each of those awaits is raced against the stream's end.
+		// message starts on a settled chain, and every message already waiting — on a decode or on the one before it —
+		// answers now, because each of those awaits is raced against the stream's end.
 		paint.chain = Promise.resolve();
 		for (const cancel of paint.cancels) cancel();
 		paint.cancels.clear();
@@ -1092,12 +1057,6 @@ export class MachineScreenView {
 		return { messages: paint.held.size, bytes: paint.bytes, pixels: paint.pixels, decoding: paint.decoding };
 	}
 
-	/** The live picture's pointer shape over the picture while it takes input; the page's own otherwise. */
-	#showCursor(): void {
-		const shape = this.#input ? this.#cursor : "";
-		for (const canvas of this.#canvases) if (canvas.style.cursor !== shape) canvas.style.cursor = shape;
-	}
-
 	/** The picture up is the screen as it is now (the member had it already). */
 	live(): void {
 		if (!this.#shown) return;
@@ -1118,15 +1077,13 @@ export class MachineScreenView {
 
 	/**
 	 * The live picture ended (20260930745000): its canvas is hidden and the window's own picture is what shows again
-	 * (review r6 of #1746), the pointer is the page's own again, and that stream's work is dropped — its queue goes, everyone waiting for one of its decoding turns is let go, and
+	 * (review r6 of #1746), and that stream's work is dropped — its queue goes, everyone waiting for one of its decoding turns is let go, and
 	 * each of its pictures is closed as it lands, so a replacement shares nothing with it and waits for none of it
 	 * (review r2 F4 and r4 F1 of #1746).
 	 */
 	streamEnded(): void {
 		this.#cleared++;
 		this.#dropPaint();
-		this.#cursor = "";
-		this.#showCursor();
 	}
 
 	/** No picture any more: the view goes away, and the panel's state text shows. */
@@ -1136,8 +1093,6 @@ export class MachineScreenView {
 		this.#lookTurn++;
 		this.#cleared++;
 		this.#dropPaint();
-		this.#cursor = "";
-		this.#showCursor();
 		this.back();
 		this.#shown = false;
 		this.el.hidden = true;
@@ -1155,23 +1110,19 @@ export class MachineScreenView {
 		});
 	}
 
-	/** Enters the frame in the thread, as Enter does but without asking for full screen: only the member's own press on
-	 * Enter asks for that. The panel's take-over pressed in the preview comes here, so the picture can take their input.
-	 * Nothing while no picture shows. */
+	/** Enters the frame over the thread, as Enter does (the panel's take-over pressed in the preview, a click on the
+	 * picture, an open chosen there), so the picture can take the member's input. Nothing while no picture shows. */
 	enterFrame(): void {
 		if (this.#entered || this.#enter.disabled) return;
 		this.#setEntered(true);
 	}
 
-	/** Back to the preview, from the entered frame or full screen. */
+	/** Back to the preview, from the entered frame. */
 	back(): void {
 		if (!this.#entered) return;
-		this.#fullscreenAttempt++;
 		const focused = this.el.contains(document.activeElement);
 		this.#setEntered(false);
 		if (focused) this.el.focus();
-		if (document.fullscreenElement === this.el && typeof document.exitFullscreen === "function")
-			void document.exitFullscreen().catch(() => undefined);
 	}
 
 	dispose(): void {
@@ -1194,46 +1145,15 @@ export class MachineScreenView {
 		if (focused instanceof HTMLElement) focused.focus();
 		this.#back.hidden = !value;
 		this.#enter.hidden = value;
-		if (!value) this.#note.textContent = "";
 		this.#options.onExpandedChange(value);
 	}
 
-	/** Entering takes the browser full screen, with the frame around the picture; "Back to thread" is the way out, and
-	 * leaving full screen any other way (Escape, the system) goes back too. Refused, the entered frame stays in the
-	 * thread and says so. */
+	/** Enter (Jonas, 14 Nov 2026: "the enter should just be like clicking it and making it take up the page. the full
+	 * screen takeover is too much I think"): the frame takes up the page over the thread, as a click on the picture does;
+	 * the browser is never asked for full screen. "Back to thread" and Escape are the way back. */
 	#enterView(): void {
 		if (this.#entered || this.#enter.disabled) return;
 		this.#setEntered(true);
 		this.#back.focus();
-		const supports =
-			document.fullscreenEnabled !== false &&
-			typeof this.el.requestFullscreen === "function" &&
-			typeof document.exitFullscreen === "function";
-		if (!supports) return;
-		const attempt = ++this.#fullscreenAttempt;
-		const refused = () => {
-			if (attempt === this.#fullscreenAttempt && this.#entered && document.fullscreenElement !== this.el)
-				this.#note.textContent = t("Full screen unavailable");
-		};
-		const slow = setTimeout(refused, 2000);
-		// Asked before any await, so the click's user activation holds.
-		void this.el
-			.requestFullscreen()
-			.then(() => {
-				if (!this.#entered && document.fullscreenElement === this.el) return document.exitFullscreen();
-				return undefined;
-			})
-			.catch(() => setTimeout(refused, 0))
-			.finally(() => clearTimeout(slow));
 	}
-}
-
-/** A PNG as a data URL (what a CSS cursor takes everywhere). */
-function dataUrl(png: Blob): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onload = () => (typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("unread")));
-		reader.onerror = () => reject(new Error("unread"));
-		reader.readAsDataURL(png);
-	});
 }
