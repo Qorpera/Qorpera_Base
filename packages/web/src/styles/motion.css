@@ -212,20 +212,16 @@
 @keyframes fold-ghost { to { opacity: 0; } }
 /* A question answered or declined settles to its quiet colours. */
 .interaction-card.is-decided { animation: decided-line var(--motion-slow) var(--ease-out) both; }
-/* A card that waits for the member: its ring breathes, slowly, until it has its answer. Only the ring's opacity moves. */
-.interaction-card.is-asking::after { animation: asking-ring 1.8s ease-in-out infinite alternate; }
-@keyframes asking-ring { from { opacity: 1; } to { opacity: 0.25; } }
-@media (prefers-reduced-motion: reduce) { .interaction-card.is-asking::after { animation: none; } }
 /* In a thread it is the exchange it was (styles/conversation.css): the member's own answer rises into its place as a
  * sent message does, and a line's mark pops as a decided approval's. */
 .interaction-card.is-exchange.is-decided > .is-said.mine > .bubble { transform-origin: 100% 100%; animation: decided-answer var(--motion-spring) var(--ease-spring) both; }
 @keyframes decided-answer { from { opacity: 0; transform: translateY(14px) scale(0.9); } 35% { opacity: 1; } }
 .interaction-card.is-exchange.is-decided > .is-done > .review-mark { animation: decided-mark var(--motion-base) var(--ease-out) 140ms both; }
 
-/* ---- the agent's computer: it opens out of the thread's top right corner ---- */
+/* ---- the agent's computer: it opens out of the agent's figure beside it in the thread ---- */
 
 .computer-panel {
-	transform-origin: calc(100% - 12px) -32px;
+	transform-origin: -32px 26px;
 	animation: computer-open var(--motion-spring) var(--ease-spring) both;
 }
 @keyframes computer-open {

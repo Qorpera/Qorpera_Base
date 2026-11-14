@@ -5,7 +5,14 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { type AppBrand, type AppLook, readAppBrand } from "../interface-app-style.ts";
-import { AppBridge, type AppBridgeHost, type AppLink, assembleApp, type CompanyApp } from "../interface-apps.ts";
+import {
+	AppBridge,
+	type AppBridgeHost,
+	type AppDataPage,
+	type AppLink,
+	assembleApp,
+	type CompanyApp,
+} from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
@@ -20,12 +27,12 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   in its page, and Close put it away.
  * - A concept of the company's product fills the Concepts viewer's stage (views/concepts.ts; Jonas, 8 November 2026:
  *   "a fullscreen view of the selected concept"). It has no header at all: the concept's own design owns the whole
- *   area, and the viewer's side panel says whose it is, with Reload and Show in Storage.
+ *   area, and the viewer's side panel lists it with who made it; its row's menu has Reload and Show in Storage.
  * Either way:
- * - Beside the chat, the header (and for a concept the viewer's side panel) is drawn outside the frame, and says whose
- *   page it is and that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this
- *   app's own (security review r1, H2). An app's own page says neither since it lost its header: what Qorpera draws
- *   there is the bar of a request and the questions dock.
+ * - Beside the chat, the header is drawn outside the frame, and says whose page it is and that Qorpera never asks for
+ *   a password in it, so a page that draws a sign-in can't pass for this app's own (security review r1, H2). An app's
+ *   own page says neither since it lost its header, and a concept neither since its viewer's strip went (Jonas,
+ *   13 November 2026): what Qorpera draws there is the bar of a request and the questions dock.
  * - When an app's page can't be shown, the line that says why carries the ways on a header had: Reload, the app's
  *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
@@ -42,8 +49,10 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   app opens and on Reload; a page that follows the app's light and dark is shown afresh when that changes. A concept
  *   and a page of the Company File are shown exactly as written.
  * - A link the member clicks in an app's page opens here, never in the frame (§4): another app on its page, a file of
- *   the company in Storage, a web page in a new tab. A tab the browser stops is offered in a line of Qorpera's own
- *   above the frame, where the member's click opens it. A page of the Company File opens no links. */
+ *   the company in Storage, or a web page in a new tab, which opens only after the member has seen its whole address
+ *   on the bar and pressed Open there (Jonas, 13 November 2026: "Show the address first"; views/app-ask-bar.ts). A tab
+ *   the browser still stops is offered in a line of Qorpera's own above the frame, where the member's click opens it.
+ *   A page of the Company File opens no links. */
 
 /** What is shown: an app by its name, or a page of the Company File by its path. */
 export type AppPanelTarget =
@@ -55,7 +64,7 @@ export type SidePanelTarget = Extract<AppPanelTarget, { kind: "page" }>;
 
 /** Where it stands: beside the chat, with Close; as a page of its own, with no header (`back` is where a page that
  * can't be shown leads); or as the Concepts viewer's concept, with no header either (the viewer's side panel has the
- * way back and the controls). */
+ * way back, and its rows' menus the controls). */
 export type AppPanelPlacement =
 	| { readonly kind: "beside"; readonly onClose: () => void }
 	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } }
@@ -101,10 +110,9 @@ const control = (name: string, label: string, onclick: () => void) =>
 	h("button", { type: "button", class: "side-panel-button", title: label, "aria-label": label, onclick }, icon(name));
 
 /** Opens a web page in a new tab, as a link in a message opens: with no way back to this window, and with no referrer
- * (the site sends none, public/_headers). False when the browser stopped the tab. The member's click was in the frame:
- * a browser counts it for the pages the frame stands in, or it does not and stops the tab as a pop-up. The tab is asked
- * for without `noopener`, which would hide whether it opened; its way back is cut at once, before it has loaded
- * anything. */
+ * (the site sends none, public/_headers). False when the browser stopped the tab. It runs in the member's press on the
+ * bar's Open, so the browser counts that press and opens it. The tab is asked for without `noopener`, which would hide
+ * whether it opened; its way back is cut at once, before it has loaded anything. */
 function openTab(href: string): boolean {
 	const tab = window.open(href, "_blank");
 	if (!tab) return false;
@@ -145,6 +153,9 @@ export class AppPanel {
 	 * manifest changed, so the page never reads or asks for more (or less) than the manifest says now (review r1 of
 	 * #1633, F1 and F2). Undefined for a page of the Company File, which reads nothing. */
 	#serving: Serving | undefined;
+	/** An app's frame only: where its watched values go (app/interface-apps.ts `CompanyData`). They end with the frame,
+	 * and when the manifest no longer reads `data`. */
+	#data: (AppDataPage & { readonly frame: AppFrame; readonly stop: AbortController }) | undefined;
 	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
 	#unlisten: (() => void) | undefined;
 
@@ -377,6 +388,11 @@ export class AppPanel {
 	 * shown. One the member already allowed is on its way and is not touched. */
 	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
 		this.#ask?.cancel();
+		// What the page watched it may not watch any more: its watches end, and the page keeps what it shows.
+		if (!app || !(app.manifest.reads as readonly string[]).includes("data")) {
+			this.#data?.stop.abort();
+			this.#data = undefined;
+		}
 		this.#unlisten?.();
 		this.#unlisten = undefined;
 		if (!app) {
@@ -398,6 +414,7 @@ export class AppPanel {
 						live() ? bar.ask(ask, perform, keep) : Promise.resolve({ outcome: "gone" as const }),
 				},
 				(link) => this.#follow(link),
+				() => this.#dataPage(),
 			),
 		};
 		this.#serving = serving;
@@ -408,6 +425,23 @@ export class AppPanel {
 			if (this.#serving === serving && this.#frame) void serving.bridge.restore();
 		});
 		if (this.#frame) void serving.bridge.restore();
+	}
+
+	/** The frame on screen as the page its watched values go to: one for each frame, ending with it. */
+	#dataPage(): AppDataPage | undefined {
+		const frame = this.#frame;
+		if (!frame || frame.signal.aborted) return undefined;
+		if (this.#data?.frame !== frame) {
+			this.#data?.stop.abort();
+			const stop = new AbortController();
+			this.#data = {
+				frame,
+				stop,
+				signal: AbortSignal.any([frame.signal, stop.signal, this.#lifetime.signal]),
+				send: (watch, value) => frame.data(watch, value),
+			};
+		}
+		return this.#data;
 	}
 
 	#answer(call: AppCall): Promise<AppAnswer> {

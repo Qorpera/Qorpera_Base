@@ -26,9 +26,9 @@ const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
 // Connections open at once: a model request makes two, its context composition and then its fence, and the
-// agent, one reviewer, one voice call and JOBS compactor threads (RUNTIME-AGENT-MEMORY-TREE.md §7.1) may each have a
-// prewarm and a turn's request open together. More is a flood, not a run.
-export const CLOUD_NATIVE_FENCE_MAX_CONNECTIONS = 2 * 2 * (3 + JOBS);
+// agent, one reviewer, one voice call, one picture call and JOBS compactor threads (RUNTIME-AGENT-MEMORY-TREE.md §7.1)
+// may each have a prewarm and a turn's request open together. More is a flood, not a run.
+export const CLOUD_NATIVE_FENCE_MAX_CONNECTIONS = 2 * 2 * (4 + JOBS);
 // No stopwatch from a request's connection to its reply (5 Oct 2026; 4 s here and 5 s in Codex until then): the
 // checks before release take as long as the database does, and only the run's end stops them (`signal`: its
 // authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
@@ -113,9 +113,9 @@ export async function startCloudNativeResultFence(options: {
 	assertSession: (request: CloudNativeFenceRequest) => void;
 	/** Auto-review (v130): a reviewer thread's request is answered with the host's own
 	 * verdict acknowledgements, never the agent's tool results, and is not the agent's
-	 * context. A memory compactor thread's and a voice call's have no tools: each output is
-	 * answered as unavailable, and neither is the agent's context. Returns undefined for
-	 * every other request. */
+	 * context. A memory compactor thread's, a voice call's and a picture call's have no tools
+	 * of the host's: each output is answered as unavailable, and none is the agent's context.
+	 * Returns undefined for every other request. */
 	releaseReviewOutputs?: (request: CloudNativeFenceRequest) => CloudNativeFencedResult[] | undefined;
 	/** Cloud runtime records exact released evidence before a provider request can leave. */
 	recordContextView?: (

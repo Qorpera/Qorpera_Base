@@ -6,6 +6,9 @@ export interface CloudConfig {
 	officeViewerOrigin?: string;
 	nativeProviderLoginUrl?: string;
 	memberCompanyGatewayUrl?: string;
+	/** Node 1's door of members' live pictures of agents' desktops (`wss://screens.…`, 20260930745000): the large view
+	 * streams a desktop from there; without it, the window keeps its looks. */
+	machineStreamUrl?: string;
 }
 
 /** A build given no configuration (development) talks to the live cloud the release build uses: project
@@ -65,6 +68,7 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 					"officeViewerOrigin",
 					"nativeProviderLoginUrl",
 					"memberCompanyGatewayUrl",
+					"machineStreamUrl",
 				].includes(key),
 		)
 	)
@@ -84,6 +88,7 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 		memberCompanyGatewayUrl !== `${projectUrl}/functions/v1/member-company-gateway`
 	)
 		throw new Error("Expected the exact project member gateway URL");
+	const machineStreamUrl = input.machineStreamUrl === undefined ? undefined : origin(input.machineStreamUrl, "wss:");
 	return {
 		projectUrl,
 		objectGatewayUrl,
@@ -91,6 +96,7 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 		...(officeViewerOrigin ? { officeViewerOrigin } : {}),
 		...(nativeProviderLoginUrl ? { nativeProviderLoginUrl } : {}),
 		...(memberCompanyGatewayUrl ? { memberCompanyGatewayUrl } : {}),
+		...(machineStreamUrl ? { machineStreamUrl } : {}),
 	};
 }
 
@@ -116,6 +122,7 @@ export function cloudConnectSources(config: CloudConfig): string {
 			checked.objectGatewayUrl,
 			...(checked.officeViewerOrigin ? [checked.officeViewerOrigin] : []),
 			...(checked.nativeProviderLoginUrl ? [new URL(checked.nativeProviderLoginUrl).origin] : []),
+			...(checked.machineStreamUrl ? [checked.machineStreamUrl] : []),
 		]),
 	].join(" ");
 }

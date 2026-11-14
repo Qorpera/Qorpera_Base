@@ -6,14 +6,18 @@
 // Proves: (a) init, then the gateway makes a company database and answers a question; (b) the database's port is not
 // published, the gateway's is, on loopback; (e) a slow or failing statement's values never reach the log; (c) a
 // point-in-time restore holds exactly the rows up to the time; (d) a standby streams over TLS, takes over, and its
-// gateway answers with every committed row; (f) everything is removed. Every container is capped (docker-compose.yml,
+// gateway answers with every committed row; (g) the run door: over TLS with the kit's CA pinned and the right token a
+// call reaches it, a wrong token and a pass that redeems to nothing get the same 401, without DATA_RUN_LISTEN no run
+// door listens, the token is in no log, and the promoted standby's door answers too; (f) everything is removed. Every container is capped (docker-compose.yml,
 // drill.yml, DATA_DB_MEMORY), every published port is on 127.0.0.1, and nothing is pulled: the images must be there.
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { companyDatabase, folderPassword } from "../gateway/gateway.mjs";
 import { check, finish, note, sleep } from "../proof/lib.mjs";
@@ -36,6 +40,12 @@ const DOTENV = join(KIT, ".env");
 const BARE = { PATH: process.env.PATH, HOME: process.env.HOME ?? "/root" };
 const ENV = "64000000-0000-4000-8000-000000000001";
 const MEMBER = "64000000-0000-4000-8000-000000000002";
+const RUN_ID = "64000000-0000-4000-8000-000000000003";
+// The one name every provider host dials (lib.sh RUN_DOOR_NAMES): the drill checks the cert against it.
+const RUN_DOOR_NAME = "10.41.0.1";
+const newPass = () => randomBytes(32).toString("base64url");
+// Passes the stand-in redeems once each for "shop": A's first, B's after the take-over (each machine has its own stand-in).
+const PASSES = { a: Array.from({ length: 20 }, newPass), b: Array.from({ length: 6 }, newPass) };
 const STORE = companyDatabase(ENV);
 // Company values that must never reach the server's log: a parameter, a parameter a cast fails on, a row's value a
 // constraint names, and a word in a slow statement's own text.
@@ -103,11 +113,12 @@ const freePort = () =>
 	});
 
 // ---- the three stand-in machines
-const machine = (name, linkName, port, files = ["docker-compose.yml", "drill/drill.yml"]) => ({
+const machine = (name, linkName, port, files = ["docker-compose.yml", "drill/drill.yml"], runPort = null) => ({
 	name,
 	project: `${RUN}-${name}`,
 	local: join(WORK, name),
 	port,
+	runPort,
 	env: {
 		...process.env,
 		COMPOSE_PROJECT_NAME: `${RUN}-${name}`,
@@ -115,6 +126,7 @@ const machine = (name, linkName, port, files = ["docker-compose.yml", "drill/dri
 		DATA_LOCAL: join(WORK, name),
 		DATA_BACKUP: NAS,
 		DATA_GATEWAY_LISTEN: `127.0.0.1:${port}`,
+		DATA_RUN_LISTEN: runPort ? `127.0.0.1:${runPort}` : "",
 		DATA_PLATFORM_URL: "http://platform-standin:8000",
 		DATA_PLATFORM_KEY: "drill-publishable-key",
 		DATA_GATEWAY_PACKAGE: PACKAGE,
@@ -169,13 +181,57 @@ const ask = async (m, verb, body, waitMs = 30_000) => {
 	return answer;
 };
 
-const A = machine("a", "data-primary", await freePort());
-const B = machine("b", "data-standby", await freePort());
+// ---- an agent's tool on the run door, as cloud-data-tools.ts calls it: HTTPS with the kit's CA pinned and the name
+// the nodes dial checked, the token as the bearer, a pass in the body. A `need` is asked again with the next pass.
+const door = (m, verb, body, { token, ca = null, pin = true }) =>
+	new Promise((done) => {
+		const text = JSON.stringify(body);
+		const request = https.request(
+			{
+				host: "127.0.0.1",
+				port: m.runPort,
+				method: "POST",
+				path: `/v1/run-data/${verb}`,
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) },
+				agent: false,
+				timeout: 30_000,
+				...(pin ? { ca, checkServerIdentity: (_, cert) => tls.checkServerIdentity(RUN_DOOR_NAME, cert) } : {}),
+			},
+			(response) => {
+				const parts = [];
+				response.on("data", (part) => parts.push(part));
+				response.on("end", () => {
+					let value = null;
+					try {
+						value = JSON.parse(Buffer.concat(parts).toString("utf8"));
+					} catch {}
+					done({ status: response.statusCode, value });
+				});
+			},
+		);
+		request.on("timeout", () => request.destroy(new Error("timed out")));
+		request.on("error", (error) => done({ status: 0, value: null, error: String(error?.code ?? error?.message ?? error) }));
+		request.end(text);
+	});
+const doorAsk = async (m, verb, body, options) => {
+	const queue = PASSES[m.name];
+	let answer = await door(m, verb, { ...body, pass: queue.shift() }, options);
+	for (let round = 0; answer.status === 200 && answer.value?.need && round < 3; round++) {
+		const texts = Object.fromEntries(answer.value.need.map((wanted) => [wanted.sha256, TEXT_BY_HASH.get(wanted.sha256)]));
+		answer = await door(m, verb, { ...body, pass: queue.shift(), texts }, options);
+	}
+	return answer;
+};
+
+// A and B run the run door (run-door.yml, on its own loopback port); R, the restore, never does.
+const WITH_DOOR = ["docker-compose.yml", "drill/drill.yml", "run-door.yml"];
+const A = machine("a", "data-primary", await freePort(), WITH_DOOR, await freePort());
+const B = machine("b", "data-standby", await freePort(), WITH_DOOR, await freePort());
 const R = machine("r", "data-restore", await freePort(), ["docker-compose.yml"]);
 // A, the primary, has its settings in the kit's .env alone, with a relative COMPOSE_FILE, as a machine's setup writes
 // it. B's come from the environment, which wins over that .env. R is the README's restore line: a project and a folder
 // in the environment, the rest from A's .env.
-const DOTENV_KEYS = ["COMPOSE_PROJECT_NAME", "DATA_LOCAL", "DATA_BACKUP", "DATA_GATEWAY_LISTEN", "DATA_PLATFORM_URL", "DATA_PLATFORM_KEY",
+const DOTENV_KEYS = ["COMPOSE_PROJECT_NAME", "DATA_LOCAL", "DATA_BACKUP", "DATA_GATEWAY_LISTEN", "DATA_RUN_LISTEN", "DATA_PLATFORM_URL", "DATA_PLATFORM_KEY",
 	"DATA_GATEWAY_PACKAGE", "DATA_DB_CPUS", "DATA_DB_MEMORY", "DRILL_LINK_NETWORK", "DRILL_LINK_NAME", "DRILL_FOLDER"];
 A.scriptEnv = BARE;
 B.scriptEnv = B.env;
@@ -202,7 +258,11 @@ try {
 	check("the gateway is packaged into one file with its sha256 (scripts/package-company-data-gateway.mjs)", packaged.ok && existsSync(join(PACKAGE, "qorpera-company-data-gateway.mjs.sha256")), tail(packaged.err, 3));
 	if (!packaged.ok) throw new Error("no package");
 	mkdirSync(FOLDER, { mode: 0o755 });
-	writeFileSync(join(FOLDER, "folder.json"), JSON.stringify({ member: MEMBER, files: FILES }), { mode: 0o644 });
+	writeFileSync(
+		join(FOLDER, "folder.json"),
+		JSON.stringify({ member: MEMBER, environment: ENV, run: RUN_ID, files: FILES, passes: Object.fromEntries([...PASSES.a, ...PASSES.b].map((pass) => [pass, "shop"])) }),
+		{ mode: 0o644 },
+	);
 	const link = run("docker", ["network", "create", "--internal", "--label", `cdkit.run=${RUN}`, LINK]);
 	if (!link.ok) throw new Error(`the link network: ${link.err}`);
 	const linkSubnet = run("docker", ["network", "inspect", "-f", "{{(index .IPAM.Config 0).Subnet}}", LINK]).out.trim();
@@ -250,9 +310,120 @@ try {
 	const dbPorts = run("docker", ["port", container(A, "data-db")]).out.trim();
 	const gatewayPorts = run("docker", ["port", container(A, "data-gateway")]).out.trim();
 	check("(b) the database's port is published on no host address", dbPorts === "", dbPorts || "none");
-	check("(b) the gateway's port is published on 127.0.0.1 only", gatewayPorts === `8480/tcp -> 127.0.0.1:${A.port}`, gatewayPorts);
+	const ports = (text) => text.split("\n").filter((line) => !line.includes("[::]")).sort().join(" | ");
+	check("(b) the gateway's port and its run door's are published on 127.0.0.1 only",
+		ports(gatewayPorts) === `8480/tcp -> 127.0.0.1:${A.port} | 8481/tcp -> 127.0.0.1:${A.runPort}`, gatewayPorts);
 	const superuser = compose(A, ["run", "--rm", "--no-deps", "-T", "-e", "PGPASSWORD=x", "--entrypoint", "psql", "data-db", "host=data-db dbname=postgres user=postgres sslmode=require connect_timeout=5", "-c", "select 1"]);
 	check("(b) the superuser cannot log in over the network, even from the compose network", !superuser.ok && /pg_hba\.conf rejects connection/.test(superuser.err), tail(superuser.err, 1));
+
+	// ---- (g) the run door
+	const RUN_SECRETS = join(A.local, "secrets/run-door");
+	const runToken = readFileSync(join(RUN_SECRETS, "token"), "utf8").trim();
+	const caPem = readFileSync(join(A.local, "ca/ca.crt"), "utf8");
+	check("(g) init made the run door's secrets, the gateway's user's: the folder 0500, the token (43 characters) and the key 0400",
+		mode(RUN_SECRETS) === "500" && owner(RUN_SECRETS) === "65534" && mode(join(RUN_SECRETS, "token")) === "400" && owner(join(RUN_SECRETS, "token")) === "65534" &&
+			mode(join(RUN_SECRETS, "door.key")) === "400" && owner(join(RUN_SECRETS, "door.key")) === "65534" && /^[A-Za-z0-9_-]{43}$/.test(runToken),
+		`${mode(RUN_SECRETS)} ${mode(join(RUN_SECRETS, "token"))} ${mode(join(RUN_SECRETS, "door.key"))}`);
+	const doorCert = new X509Certificate(readFileSync(join(RUN_SECRETS, "door.crt")));
+	const caCert = new X509Certificate(caPem);
+	check(`(g) the run door's cert holds one name, IP ${RUN_DOOR_NAME}, and the kit's CA signed it`,
+		doorCert.subjectAltName === `IP Address:${RUN_DOOR_NAME}` && doorCert.checkIssued(caCert) && doorCert.verify(caCert.publicKey), doorCert.subjectAltName);
+	const doorLog = run("docker", ["logs", container(A, "data-gateway")]);
+	check("(g) the gateway says its run door listens over TLS", /run door listening on 0\.0\.0\.0:8481 over TLS/.test(`${doorLog.out}${doorLog.err}`));
+	const reached = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	check("(g) over TLS, the kit's CA pinned and the name checked, the right token and a pass reach the run door: describe answers",
+		reached.status === 200 && reached.value?.databases?.[0]?.database === "shop", `${reached.status} ${reached.error ?? JSON.stringify(reached.value).slice(0, 200)}`);
+	const runCount = await doorAsk(A, "query", { database: "shop", question: "count" }, { token: runToken, ca: caPem });
+	check("(g) a run's question through the run door answers", runCount.status === 200 && runCount.value?.rows?.[0]?.[0] === 10, `${runCount.status} ${JSON.stringify(runCount.value).slice(0, 200)}`);
+	const spare = PASSES.a.shift();
+	const nothing = await door(A, "describe", { database: "shop", pass: newPass() }, { token: runToken, ca: caPem });
+	const wrong = await door(A, "describe", { database: "shop", pass: spare }, { token: randomBytes(32).toString("base64url"), ca: caPem });
+	const noPass = await door(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	const same = (one) => one.status === 401 && JSON.stringify(one.value) === JSON.stringify({ error: "Not allowed" });
+	check("(g) a pass that redeems to nothing, a wrong token and no pass get one answer: 401 Not allowed",
+		same(nothing) && same(wrong) && same(noPass), [nothing, wrong, noPass].map((one) => `${one.status} ${JSON.stringify(one.value)}`).join("; "));
+	const afterWrong = await door(A, "describe", { database: "shop", pass: spare }, { token: runToken, ca: caPem });
+	const spentAgain = await door(A, "describe", { database: "shop", pass: spare }, { token: runToken, ca: caPem });
+	check("(g) a wrong token never spends the pass (the gateway checks the token first), and a pass redeems once",
+		afterWrong.status === 200 && same(spentAgain), `${afterWrong.status} then ${spentAgain.status}`);
+	const unpinned = await door(A, "describe", { database: "shop", pass: newPass() }, { token: runToken, pin: false });
+	check("(g) without the kit's CA the run door's cert is not trusted", unpinned.status === 0 && /CERT|SELF_SIGNED|UNABLE/.test(unpinned.error ?? ""), unpinned.error ?? String(unpinned.status));
+	const plainHttp = await fetch(`http://127.0.0.1:${A.runPort}/v1/run-data/describe`, { method: "POST", body: "{}", signal: AbortSignal.timeout(5_000) }).then(
+		(response) => `${response.status}`,
+		() => "refused",
+	);
+	check("(g) the run door takes no plain HTTP", plainHttp === "refused" || plainHttp === "400", plainHttp);
+
+	// The documented upgrade: compose.sh, from /, with only the kit's .env: the gateway comes back with its run door.
+	const gatewayBefore = container(A, "data-gateway");
+	const recreate = () => script(A, "compose.sh", ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120", "data-gateway"]);
+	const upgraded = recreate();
+	const afterUpgrade = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	const statusOn = script(A, "run-door.sh", ["status"]);
+	check("(g) the documented upgrade (compose.sh up -d data-gateway, from /, only the kit's .env) brings the gateway back with its run door",
+		upgraded.ok && container(A, "data-gateway") !== gatewayBefore && afterUpgrade.status === 200 && statusOn.ok && /^run door: on$/m.test(statusOn.out),
+		`${upgraded.ok ? "" : tail(upgraded.err, 2)} ${afterUpgrade.status} ${afterUpgrade.error ?? ""} | ${`${statusOn.out}`.trim().split("\n").join(" / ")}`);
+	// A door whose token cannot be read stays shut and says why; the members' door is up as always.
+	renameSync(join(RUN_SECRETS, "token"), join(RUN_SECRETS, "token.away"));
+	const shutUp = recreate();
+	const shutLog = run("docker", ["logs", container(A, "data-gateway")]);
+	const shutMembers = await ask(A, "query", { database: "shop", question: "count" });
+	const shutDoor = await door(A, "describe", { database: "shop", pass: PASSES.a.shift() }, { token: runToken, ca: caPem });
+	const statusOff = script(A, "run-door.sh", ["status"]);
+	check("(g) a run door whose token cannot be read: the gateway starts, members are served, the door stays shut, its log and run-door.sh status say why",
+		shutUp.ok && shutMembers.status === 200 && shutDoor.status === 0 &&
+			/data gateway: run door: off \(its token cannot be read \(ENOENT\)\)/.test(`${shutLog.out}${shutLog.err}`) &&
+			!statusOff.ok && /^run door: off \(its token cannot be read/m.test(statusOff.out) && /secrets: 2 of 3/.test(statusOff.out),
+		`${shutUp.ok ? "" : tail(shutUp.err, 2)} members ${shutMembers.status}; door ${shutDoor.status} ${shutDoor.error ?? ""} | ${`${statusOff.out}`.trim().split("\n").join(" / ")}`);
+	renameSync(join(RUN_SECRETS, "token.away"), join(RUN_SECRETS, "token"));
+	const backUp = recreate();
+	const afterBack = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	check("(g) with the token back and the gateway made again by compose.sh, the door answers", backUp.ok && afterBack.status === 200 && script(A, "run-door.sh", ["status"]).ok,
+		`${afterBack.status} ${afterBack.error ?? ""}`);
+	// A machine with no run-door folder at all (its kit came before the door): status still answers. Asked while the
+	// folder is really gone and before the gateway is made again: docker would make an empty folder for the mount.
+	renameSync(RUN_SECRETS, `${RUN_SECRETS}.away`);
+	const statusNone = script(A, "run-door.sh", ["status"]);
+	check("(g) with no run-door folder at all, run-door.sh status still answers: 0 of 3 secrets, and the gateway's last word on its door",
+		!existsSync(RUN_SECRETS) && /secrets: 0 of 3/.test(statusNone.out) && /^run door: (on|off)/m.test(statusNone.out),
+		`${`${statusNone.out}`.trim().split("\n").join(" / ")} ${tail(statusNone.err, 1)}`);
+	renameSync(`${RUN_SECRETS}.away`, RUN_SECRETS);
+	// A lost key beside a cert that is still there: make gives the door a new key and cert, the token stays.
+	rmSync(join(RUN_SECRETS, "door.key"));
+	const remade = script(A, "run-door.sh", ["make"]);
+	const remadeUp = recreate();
+	const afterRemade = await doorAsk(A, "describe", { database: "shop" }, { token: runToken, ca: caPem });
+	check("(g) run-door.sh make gives a door whose key was lost a new key and cert, keeps the token, and the door answers",
+		remade.ok && /the cert/.test(remade.out) && existsSync(join(RUN_SECRETS, "door.key")) && remadeUp.ok && afterRemade.status === 200 &&
+			readFileSync(join(RUN_SECRETS, "token"), "utf8").trim() === runToken,
+		`${`${remade.out}`.trim().split("\n").join(" / ")} | ${afterRemade.status} ${afterRemade.error ?? ""}`);
+	const doorStatusText = `${statusOn.out}${statusOn.err}${statusOff.out}${statusOff.err}${shutLog.out}${shutLog.err}${statusNone.out}${statusNone.err}${remade.out}${remade.err}`;
+
+	// Without DATA_RUN_LISTEN: the same machine's gateway again, as a machine without the setting starts it.
+	const plainEnv = { ...A.env, COMPOSE_FILE: ["docker-compose.yml", "drill/drill.yml"].map((file) => join(KIT, file)).join(":"), DATA_RUN_LISTEN: "" };
+	const noDoor = run("docker", ["compose", "up", "-d", "--wait", "--wait-timeout", "120", "data-gateway"], { env: plainEnv });
+	const noDoorId = container(A, "data-gateway");
+	const noDoorPorts = run("docker", ["port", noDoorId]).out.trim();
+	const noDoorLog = run("docker", ["logs", noDoorId]);
+	const inside = run("docker", ["exec", noDoorId, "node", "-e",
+		"require('node:net').connect(8481, '127.0.0.1').on('connect', () => process.exit(1)).on('error', () => process.exit(0))"]);
+	const outside = await new Promise((done) => {
+		const socket = net.connect(A.runPort, "127.0.0.1");
+		socket.setTimeout(5_000, () => {
+			socket.destroy();
+			done("silent");
+		});
+		socket.on("connect", () => {
+			socket.destroy();
+			done("connected");
+		});
+		socket.on("error", () => done("refused"));
+	});
+	const stillMembers = await ask(A, "query", { database: "shop", question: "count" });
+	check("(g) without DATA_RUN_LISTEN no run door listens: no port published, nothing on 8481 inside, the gateway says so; members are still served",
+		noDoor.ok && ports(noDoorPorts) === `8480/tcp -> 127.0.0.1:${A.port}` && inside.ok && outside === "refused" &&
+			/data gateway: no run door/.test(`${noDoorLog.out}${noDoorLog.err}`) && stillMembers.status === 200,
+		`${noDoor.ok ? "" : tail(noDoor.err, 2)} ports ${noDoorPorts}; inside ${inside.status}; outside ${outside}; members ${stillMembers.status}`);
 
 	// ---- (e) no company value in the log; the server's own lines still are
 	const slow = await ask(A, "query", { database: "shop", question: "slow", params: { value: SECRET } });
@@ -303,6 +474,14 @@ try {
 	for (const [what, value] of [["a parameter", SECRET], ["a value a cast failed on", MARKER_CAST], ["a row's value a constraint named", MARKER_ROW], ["a word in a slow statement's text", MARKER_TEXT],
 		["a word inside the function the watcher ended", MARKER_LOOP], ["the first locking session's value", MARKER_LOCK_A], ["the second locking session's value", MARKER_LOCK_B]])
 		check(`(e) ${what} is not in the database's log`, !log.includes(value), `${log.split("\n").length} lines searched`);
+	const everyLog = [log, `${init.out}${init.err}`, `${doorLog.out}${doorLog.err}`, `${noDoorLog.out}${noDoorLog.err}`, doorStatusText,
+		...["data-gateway", "platform-standin"].map((service) => {
+			const one = run("docker", ["logs", container(A, service)]);
+			return `${one.out}${one.err}`;
+		}),
+		run("docker", ["inspect", "-f", "{{range .Config.Env}}{{.}} {{end}}", container(A, "data-gateway")]).out];
+	check("(g) the run door's token is in no log: init's output, the gateway's (with and without the door), the stand-in's, the database's, the gateway's environment",
+		runToken.length === 43 && everyLog.every((one) => !one.includes(runToken)), `${everyLog.length} texts searched`);
 	check("(e) the server's own lines are: start-up, checkpoints, the refused superuser login",
 		/database system is ready to accept connections/.test(log) && /checkpoint complete/.test(log) && /pg_hba\.conf rejects connection for host .* user "postgres"/.test(log));
 
@@ -407,6 +586,17 @@ rm -f "$f" "$src" "$src.back"`]);
 	const committedCount = Number(committed.split(" ")[0]);
 	check("(d) the gateway on the promoted store answers with every committed row", afterTakeOver.status === 200 && afterTakeOver.value.rows?.[0]?.[0] === committedCount, `${JSON.stringify(afterTakeOver.value.rows)} want ${committedCount}`);
 	check("(d) the promoted store holds the same rows: count and hash", sql(B, ROWS, STORE) === committed, committed);
+	const bPorts = run("docker", ["port", container(B, "data-gateway")]).out.trim();
+	const bToken = readFileSync(join(B.local, "secrets/run-door/token"), "utf8").trim();
+	const bCount = await doorAsk(B, "query", { database: "shop", question: "count" }, { token: runToken, ca: caPem });
+	check("(g) the promoted standby's gateway has the same run door: the same token (standby.sh pack), its port published, a run's question answered with every committed row",
+		bToken === runToken && ports(bPorts) === `8480/tcp -> 127.0.0.1:${B.port} | 8481/tcp -> 127.0.0.1:${B.runPort}` && bCount.status === 200 && bCount.value?.rows?.[0]?.[0] === committedCount,
+		`${bPorts}; ${bCount.status} ${bCount.error ?? JSON.stringify(bCount.value).slice(0, 160)}`);
+	const bLogs = [unpack, promote].map((one) => `${one.out}${one.err}`).concat(["data-gateway", "data-db", "platform-standin"].map((service) => {
+		const one = run("docker", ["logs", container(B, service)]);
+		return `${one.out}${one.err}`;
+	}));
+	check("(g) the token is in no log on the standby's machine either", bLogs.every((one) => !one.includes(runToken)), `${bLogs.length} texts searched`);
 	insert(B, "after take-over", 1);
 	check("(d) the promoted store takes writes", sql(B, "select count(*) from shop.orders where note like 'after take-over%'", STORE) === "1");
 } catch (error) {

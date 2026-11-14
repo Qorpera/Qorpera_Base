@@ -292,7 +292,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} asks you": "{name} spørger dig",
 	"Sending to {name}…": "Sender til {name}…",
 	"Sent to {name}": "Sendt til {name}",
-	"Open the chat": "Åbn chatten",
 	"Previous question": "Forrige spørgsmål",
 	"Next question": "Næste spørgsmål",
 	"Hide the question": "Skjul spørgsmålet",
@@ -303,6 +302,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
 	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
 	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	// A web page a link in the app leads to, shown before it opens (Jonas, 13 November 2026: "Show the address first").
+	"This app wants to open a web page": "Appen vil åbne en webside",
+	Site: "Websted",
 	"Your answer": "Dit svar",
 	Table: "Tabel",
 	Row: "Række",
@@ -334,8 +336,8 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
 	Concepts: "Koncepter",
-	"Show the concepts": "Vis koncepterne",
-	"Hide the concepts": "Skjul koncepterne",
+	"Show sidebar": "Vis sidepanelet",
+	"Hide sidebar": "Skjul sidepanelet",
 	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
 	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
 	"Open the newest concept": "Åbn det nyeste koncept",

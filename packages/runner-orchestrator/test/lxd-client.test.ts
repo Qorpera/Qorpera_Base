@@ -311,6 +311,68 @@ describe("LXD Unix client", () => {
 		]);
 		expect(urls).toEqual(["/1.0/storage-pools/qorpera-vm/volumes/custom?recursion=1&project=qn25b2"]);
 	});
+	it("reads one VM disk's own use, and nothing for one LXD does not have or gives no use for (20260930757000)", async () => {
+		const urls: string[] = [];
+		// As node 2's LXD 6.9 answered on 13 Nov 2026 (lanes/agent-box-20261113/home/node-read-pool.out).
+		const socket = await unixServer((_method, url) => {
+			urls.push(url);
+			if (url.includes("/qorpera-machine-running/"))
+				return {
+					body: { type: "sync", status_code: 200, metadata: { usage: { total: 42949672960, used: 30721536 } } },
+				};
+			if (url.includes("/qorpera-machine-nousage/"))
+				return { body: { type: "sync", status_code: 200, metadata: { usage: null } } };
+			if (url.includes("/qorpera-machine-fraction/"))
+				return { body: { type: "sync", status_code: 200, metadata: { usage: { used: 1.5 } } } };
+			return {
+				status: 404,
+				body: {
+					type: "error",
+					error_code: 404,
+					error: 'Failed fetching instance "x" in project "machines": Instance not found',
+				},
+			};
+		});
+		const client = new LxdUnixClient(socket);
+		const read = (name: string) =>
+			client.readStorageVolumeUse("qorpera-vm", "machines", name, new AbortController().signal);
+		expect(await read("qorpera-machine-running")).toBe(30721536);
+		expect(await read("qorpera-machine-gone")).toBeUndefined();
+		expect(await read("qorpera-machine-nousage")).toBeUndefined();
+		expect(await read("qorpera-machine-fraction")).toBeUndefined();
+		expect(urls[0]).toBe(
+			"/1.0/storage-pools/qorpera-vm/volumes/virtual-machine/qorpera-machine-running/state?project=machines",
+		);
+		const before = urls.length;
+		await expect(read("a/b")).rejects.toThrow("LXD storage scope is invalid");
+		await expect(
+			client.readStorageVolumeUse("../pools", "machines", "x", new AbortController().signal),
+		).rejects.toThrow("LXD storage scope is invalid");
+		expect(urls).toHaveLength(before);
+	});
+	it("reads a pool's own figures, and fails on figures that are not whole byte counts", async () => {
+		let space: unknown = { total: 1589674780672, used: 579340568064 };
+		const urls: string[] = [];
+		const socket = await unixServer((_method, url) => {
+			urls.push(url);
+			return { body: { type: "sync", status_code: 200, metadata: { inodes: { total: 0, used: 0 }, space } } };
+		});
+		const client = new LxdUnixClient(socket);
+		const read = () => client.readStoragePoolSpace("qorpera-vm", new AbortController().signal);
+		expect(await read()).toEqual({ totalBytes: 1589674780672, usedBytes: 579340568064 });
+		expect(urls).toEqual(["/1.0/storage-pools/qorpera-vm/resources"]);
+		space = { total: 100, used: 101 };
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = { total: 0, used: 0 };
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = { total: 100.5, used: 1 };
+		await expect(read()).rejects.toThrow("LXD storage pool use is invalid");
+		space = undefined;
+		await expect(read()).rejects.toThrow("LXD storage pool space is invalid");
+		await expect(client.readStoragePoolSpace("../pools", new AbortController().signal)).rejects.toThrow(
+			"LXD storage scope is invalid",
+		);
+	});
 	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
 		const dispatch = new AbortController(),
 			caller = new AbortController();

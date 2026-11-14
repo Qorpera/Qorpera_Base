@@ -29,14 +29,26 @@ import {
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	type CompanyMachineHostOptions,
+	type CompanyMachineMemberStream,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
+	desktopRelay,
 	LxdCompanyMachineHost,
+	MAX_WATCHED_DESKTOPS,
 } from "../src/company-machine-host.ts";
+import {
+	COMPANY_MACHINE_DESKTOP_VIEW,
+	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+	DesktopStream,
+	RFB_VERSION,
+} from "../src/company-machine-stream.ts";
+import type { DesktopRelaySpec } from "../src/company-machine-stream-process.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
 import type {
 	LxdExecPipeRequest,
 	LxdExecStreamRequest,
+	LxdInstanceExecPipeClient,
 	LxdInstanceRecord,
 	LxdTrackedInstanceAction,
 } from "../src/lxd-client.ts";
@@ -104,6 +116,7 @@ async function fixture(
 	options: {
 		helperSha256?: string;
 		previousHelperSha256s?: string[];
+		folderHelperSha256s?: string[];
 		folder?: boolean;
 		passHoldMs?: number;
 		guestReadyTimeoutMs?: number;
@@ -117,6 +130,11 @@ async function fixture(
 		now?: () => number;
 		/** What the guest's helper says at its claim it takes for a page (keyholes S1); a helper from before says nothing. */
 		guestPageBytes?: number;
+		/** How desktops are watched (default: in this process, through the fake client). */
+		desktopStreams?: CompanyMachineHostOptions["desktopStreams"];
+		/** How far apart instances start (default here: no wait). */
+		desktopStartGapMs?: number | undefined;
+		nodeStartGapMs?: number | undefined;
 	} = {},
 ) {
 	const { folder: withFolder, guestPageBytes, ...pins } = options;
@@ -140,6 +158,8 @@ async function fixture(
 	const memberReads: unknown[] = [];
 	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
 	const pictureChecks: unknown[] = [];
+	/** What a live picture's release cycle answers, in turn (then ok; 20260930745000). */
+	const streamReleases: unknown[] = [];
 	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
 	const clipboardClears: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
@@ -233,6 +253,11 @@ async function fixture(
 				const next = pictureChecks.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
+			}
+			if (method === "qorpera_member_machine_stream_release") {
+				const next = streamReleases.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.member-machine-stream-release/v1", state: "ok" };
 			}
 			if (method === "qorpera_machine_desktop_clipboard_cleared") {
 				const next = clipboardClears.shift();
@@ -463,6 +488,15 @@ async function fixture(
 			agentPlug,
 			// A pass waits for every step here, unless a test says otherwise.
 			passHoldMs: Number.POSITIVE_INFINITY,
+			// Watched desktops in this process, through this fake client (the executor's are processes of their own:
+			// company-machine-stream-process.test.ts), started without waiting unless a test says otherwise.
+			desktopStartGapMs: 0,
+			nodeStartGapMs: 0,
+			desktopStreams: (spec, ended) =>
+				new DesktopStream({
+					run: desktopRelay(client as unknown as Required<LxdInstanceExecPipeClient>, spec),
+					ended,
+				}),
 			...pins,
 			...upgraded,
 			...(withFolder ? { folder } : {}),
@@ -479,6 +513,7 @@ async function fixture(
 		inherits,
 		memberReads,
 		pictureChecks,
+		streamReleases,
 		clipboardClears,
 		busy,
 		client,
@@ -951,6 +986,108 @@ describe("company machine host", () => {
 		]);
 	});
 
+	it("reports its pool's real use beside the passes, at most every 30 s, keeps a sleeping disk's read, and goes on without it (20260930757000)", async () => {
+		let clock = Date.parse("2026-11-13T20:00:00Z");
+		const f = await fixture({ now: () => clock });
+		const reads: string[] = [];
+		let gate: Promise<void> | undefined;
+		let poolFails = false;
+		Object.assign(f.client, {
+			readStorageVolumeUse: vi.fn(async (pool: string, project: string, name: string) => {
+				reads.push(`${pool}/${project}/${name}`);
+				return 4096;
+			}),
+			readStoragePoolSpace: vi.fn(async (pool: string) => {
+				await gate;
+				reads.push(`pool:${pool}`);
+				if (poolFails) throw new Error("LXD storage pool use is invalid");
+				return { totalBytes: 1_000_000, usedBytes: 400 };
+			}),
+		});
+		// A new process: with both reads it reports.
+		f.restart();
+		const reports = () =>
+			f.calls.filter((call) => call.method === "qorpera_report_executor_disk").map((call) => call.args);
+		// The first pass starts the report and does not wait for it: LXD held up holds up no admission.
+		let open: () => void = () => {};
+		gate = new Promise<void>((done) => {
+			open = done;
+		});
+		await f.host.pass(f.signal);
+		expect(f.methods()).toContain("qorpera_admit_executor_machines");
+		expect(reports()).toEqual([]);
+		open();
+		await f.host.settled();
+		gate = undefined;
+		// Nothing was listed yet: the pool alone.
+		expect(reads).toEqual(["pool:machines"]);
+		expect(reports()).toEqual([
+			{
+				p_owner: "mx-a",
+				p_machine_id_sha256: "d".repeat(64),
+				p_report: {
+					schema: "qorpera.machine-executor-disk/v1",
+					pool: "machines",
+					totalBytes: 1_000_000,
+					usedBytes: 400,
+					placements: {},
+				},
+			},
+		]);
+		// Within 30 s: nothing is read.
+		clock += 29_999;
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads).toHaveLength(1);
+		// Then the listed placement's disk, by its own name, and the pool last.
+		const disk = `machines/machines/${lxdCompanyMachineName(id(6))}`;
+		clock += 1;
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads.slice(1)).toEqual([disk, "pool:machines"]);
+		expect(reports().at(-1)).toMatchObject({ p_report: { placements: { [id(6)]: 4096 } } });
+		// It sleeps (for a day, as the list says): read once more and kept; after that only the pool is read, and the
+		// report still names it.
+		Object.assign(f.entry, { asleepSince: new Date(clock - 86400_000).toISOString() });
+		await f.host.pass(f.signal);
+		clock += 30_000;
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads.slice(3)).toEqual([disk, "pool:machines"]);
+		clock += 30_000;
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(reads.slice(5)).toEqual(["pool:machines"]);
+		expect(reports().at(-1)).toMatchObject({ p_report: { placements: { [id(6)]: 4096 } } });
+		// LXD fails: no report, and the passes go on as ever; so when the kernel's call fails.
+		const before = reports().length;
+		poolFails = true;
+		clock += 30_000;
+		Object.assign(f.entry, { asleepSince: null, runningAt: new Date().toISOString(), bootId: f.boot });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.settled();
+		expect(reports()).toHaveLength(before);
+		poolFails = false;
+		f.busy.add("qorpera_report_executor_disk");
+		clock += 30_000;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.settled();
+		expect(reports()).toHaveLength(before + 1);
+	});
+
+	it("reports nothing without LXD's two reads, as before 20260930757000", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(f.methods()).not.toContain("qorpera_report_executor_disk");
+		// One of the two is not enough.
+		Object.assign(f.client, { readStoragePoolSpace: vi.fn(async () => ({ totalBytes: 1000, usedBytes: 400 })) });
+		f.restart();
+		await f.host.pass(f.signal);
+		await f.host.settled();
+		expect(f.methods()).not.toContain("qorpera_report_executor_disk");
+	});
+
 	it("deletes a retired placement (its machine moved on) and releases it", async () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
@@ -962,6 +1099,41 @@ describe("company machine host", () => {
 		expect(f.calls.find((call) => call.method === "qorpera_release_company_machine")?.args).toMatchObject({
 			p_placement_id: id(6),
 		});
+	});
+
+	it("puts to sleep and deletes its own instance an earlier release made, which it never runs, and nobody else's", async () => {
+		const configs = (target: LxdInstanceRecord) => [target.config, target.expandedConfig] as Record<string, string>[];
+		const actions = (f: Awaited<ReturnType<typeof fixture>>) =>
+			f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action);
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		// What a later release finds on an instance an earlier one made: a key it no longer sets, a device it no longer adds.
+		const old = f.instance()!;
+		for (const config of configs(old)) delete config["security.devlxd"];
+		const devices = { ...old.devices, gpu: { type: "gpu", gputype: "virtio" } };
+		Object.assign(old, { devices, expandedDevices: structuredClone(devices) });
+		const drifted = { placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_DRIFTED" };
+		expect(await f.host.pass(f.signal)).toEqual([drifted]);
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.instance()?.status).toBe("Stopped");
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+		Object.assign(f.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+		expect(actions(f)).toEqual(["create", "start", "stop", "delete"]);
+		// An instance of this name that is not this placement's own (another binding's digest) is neither stopped nor deleted.
+		const g = await fixture();
+		await g.host.pass(g.signal);
+		for (const config of configs(g.instance()!)) config["user.qorpera.instance_sha256"] = "f".repeat(64);
+		g.entry.sleepDue = true;
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "stop" }]);
+		Object.assign(g.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "delete" }]);
+		expect(g.instance()?.status).toBe("Running");
+		expect(actions(g)).toEqual(["create", "start"]);
+		expect(g.methods()).not.toContain("qorpera_suspend_company_machine");
+		expect(g.methods()).not.toContain("qorpera_release_company_machine");
 	});
 
 	it("waits when SQL refuses the effect, and deletes an asleep machine before releasing it", async () => {
@@ -1768,7 +1940,8 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 	});
 
 	it("gives a guest of an earlier image no view, and fences it while the service may have one reach it", async () => {
-		const pins = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] };
+		// One the node's list leaves out (without a list every earlier helper takes the folder).
+		const pins = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256], folderHelperSha256s: [] };
 		const f = await fixture({ folder: true, ...pins });
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
@@ -2299,8 +2472,9 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		await f.host.pass(f.signal);
 		f.running();
 		const [view] = f.views.opened;
-		// The node's helper moved on; the guest still runs, mounted, with the one it booted with.
-		f.restart({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		// The node's helper moved on; the guest still runs, mounted, with the one it booted with, which the node's list
+		// leaves out of those that take the folder.
+		f.restart({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256], folderHelperSha256s: [] });
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
 		]);
@@ -2325,6 +2499,167 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			machine: id(6),
 			final: [view.viewId],
 		});
+	});
+
+	// The node's helper moved on while the guest still runs, mounted, with the one it booted with (14 Nov 2026: image
+	// c03bca32's fee9f69d, then 24b9a08e). Without folderHelperSha256s every earlier helper takes the folder as the current
+	// one does; given, only those it names do.
+	const moved = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] };
+	const takers = [moved, { ...moved, folderHelperSha256s: [helperSha256] }];
+	const others = [
+		{ ...moved, folderHelperSha256s: [] },
+		{ ...moved, previousHelperSha256s: [helperSha256, "1".repeat(64)], folderHelperSha256s: ["1".repeat(64)] },
+	];
+	const startHeld =
+		"a start shows no output: machine_read shows it once the company folder has released what the machine read";
+	const earlier =
+		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)";
+
+	it("after its own restart, keeps /company for a guest whose earlier helper takes the folder", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true });
+			await f.host.pass(f.signal);
+			f.running();
+			const [view] = f.views.opened;
+			// An executor that names the helper among none that take the folder fences the boot without /company.
+			f.restart(others[0]);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+			]);
+			// One whose earlier helpers take it keeps the view the service holds, at its first pass, the machine running.
+			f.restart(pins);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_HELD" },
+			]);
+			expect(f.service.requests.at(-1)).toEqual({ op: "boundary", machine: id(6), final: [] });
+			expect(f.views.opened).toHaveLength(1);
+			expect(f.handovers).toHaveLength(1);
+			expect(f.order).not.toContain("reboot");
+			// Its receipts say /company is there, and its commands stay fenced.
+			const commandId = randomUUID();
+			f.result(finished);
+			expect((await start(f, commandId)).companyFolder).toEqual({ company: "mounted", heldBack: startHeld });
+			expect(f.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6), commandId });
+			expect((await read(f, commandId)).companyFolder).toEqual({ company: "mounted" });
+			// The held view is the boot's own: closed by the core, it restarts the guest as any boot's would.
+			f.service.held = [];
+			f.service.closed = [view.viewId];
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_RESTART:VIEW_CLOSED" },
+			]);
+			expect(f.order.at(-1)).toBe("reboot");
+		}
+	});
+
+	it("hands its own view to a guest whose earlier helper takes the folder, at its start or when none is held", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true, ...pins });
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			expect(f.views.opened).toHaveLength(1);
+			expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual([f.views.opened[0].viewId]);
+			// After the executor's restart with the service holding no view of the machine: a new one, handed over, and
+			// the machine not restarted.
+			const g = await fixture({ folder: true });
+			await g.host.pass(g.signal);
+			g.running();
+			g.service.held = [];
+			g.restart(pins);
+			expect(await g.host.pass(g.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			expect(g.views.opened).toHaveLength(2);
+			expect(g.handovers.map((handover) => handover.stdin.viewId)).toEqual(
+				g.views.opened.map((view) => view.viewId),
+			);
+			expect(g.order).not.toContain("reboot");
+			g.result(finished);
+			expect((await start(g)).companyFolder).toMatchObject({ company: "mounted" });
+		}
+	});
+
+	it("hands its own view to each new boot of a machine whose earlier helper takes the folder, also after its own restart", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true, ...pins });
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			f.running();
+			const sleepAndWake = async () => {
+				f.entry.sleepDue = true;
+				expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+				// It boots again with the same earlier helper (whichever disk SQL gives it: here the same one).
+				Object.assign(f.entry, { sleepDue: false, runningAt: null, bootId: null });
+				f.reboot();
+			};
+			await sleepAndWake();
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			// And again after the executor restarted while it slept.
+			f.running();
+			await sleepAndWake();
+			f.restart(pins);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			// Each boot its own view, handed over once, and the last boot's commands run with /company.
+			expect(f.views.opened).toHaveLength(3);
+			expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual(
+				f.views.opened.map((view) => view.viewId),
+			);
+			f.running();
+			f.result(finished);
+			expect((await start(f)).companyFolder).toEqual({ company: "mounted", heldBack: startHeld });
+			expect(f.order).not.toContain("reboot");
+		}
+	});
+
+	it("gives no view to an earlier helper the list leaves out, at its start or after its own restart, and says why", async () => {
+		for (const pins of others) {
+			const g = await fixture({ folder: true, ...pins });
+			expect(await g.host.pass(g.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
+			]);
+			g.running();
+			g.result(finished);
+			expect((await start(g)).companyFolder).toEqual({ company: "none", why: earlier });
+			expect(g.handovers).toEqual([]);
+			expect(g.methods()).not.toContain("qorpera_folder_view_open");
+			// A running boot that took a view under the current helper: fenced after the restart, no new view.
+			const h = await fixture({ folder: true });
+			await h.host.pass(h.signal);
+			h.running();
+			h.restart(pins);
+			expect(await h.host.pass(h.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+			]);
+			expect(h.views.opened).toHaveLength(1);
+			expect(h.handovers).toHaveLength(1);
+		}
+	});
+
+	it("lets a list name only an earlier helper it still trusts", async () => {
+		// The current helper, or one not among the earlier ones, is no earlier helper that takes the folder.
+		// A helper named twice is refused too.
+		for (const pins of [
+			{ folderHelperSha256s: [helperSha256] },
+			{ ...moved, folderHelperSha256s: ["1".repeat(64)] },
+			{ ...moved, folderHelperSha256s: [helperSha256, helperSha256] },
+		])
+			await expect(fixture({ folder: true, ...pins })).rejects.toThrow("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
+		// A guest whose helper the node does not trust is refused as before, whatever the list names.
+		const g = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: ["1".repeat(64)],
+			folderHelperSha256s: ["1".repeat(64)],
+		});
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
+		]);
+		expect(g.handovers).toEqual([]);
 	});
 });
 
@@ -2553,7 +2888,12 @@ describe("company machine host when a test machine's folder can never be proven 
 		expect(await start(f)).toMatchObject({ state: "running" });
 		expect(reboots(f)).toBe(2);
 		// A boot fenced without a view of its own (a guest of an earlier image, while the service held one) restarts too.
-		const g = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		const g = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: [helperSha256],
+			folderHelperSha256s: [],
+		});
 		g.service.held = [randomUUID()];
 		expect(await g.host.pass(g.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
@@ -3105,14 +3445,19 @@ describe("company machine host's report of the company folder on each receipt (F
 			expect(told(receipt)).toEqual({ company: "none", why });
 		}
 		// A guest of an earlier image.
-		const old = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		const old = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: [helperSha256],
+			folderHelperSha256s: [],
+		});
 		expect(await old.host.pass(old.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
 		]);
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });
@@ -5064,6 +5409,311 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			expect(() => f.host.memberPointer(move(wrong)), JSON.stringify(wrong)).toThrow(
 				"COMPANY_MACHINE_MEMBER_POINTER_INVALID",
 			);
+	});
+});
+
+describe("a member's live picture of a desktop (20260930745000)", () => {
+	/** The desktop's VNC server, as the relay hands it on: its handshake, then the updates the test sends. */
+	async function relayed(options: { folder?: boolean } = {}) {
+		const f = await fixture(options);
+		const relays: {
+			request: LxdExecPipeRequest;
+			signal: AbortSignal;
+			sent: Buffer[];
+			out: (bytes: Buffer) => void;
+			end: (code: number) => void;
+		}[] = [];
+		const order: string[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (given.command[2] === COMPANY_MACHINE_DESKTOP_VIEW) {
+				order.push("relay");
+				let finish: (code: number) => void = () => {};
+				const ended = new Promise<number>((resolve) => {
+					finish = resolve;
+				});
+				const relay = {
+					request: given,
+					signal,
+					sent: [] as Buffer[],
+					out: (bytes: Buffer) => given.stdout?.(bytes),
+					end: finish,
+				};
+				relays.push(relay);
+				signal.addEventListener("abort", () => finish(137), { once: true });
+				void (async () => {
+					for await (const chunk of given.stdin as AsyncIterable<Uint8Array>) relay.sent.push(Buffer.from(chunk));
+				})();
+				const init = Buffer.alloc(24 + 2);
+				init.writeUInt16BE(64, 0);
+				init.writeUInt16BE(40, 2);
+				init.writeUInt32BE(2, 20);
+				init.write(":1", 24, "latin1");
+				for (const part of [RFB_VERSION, Buffer.from([1, 1]), Buffer.alloc(4), init])
+					given.stdout?.(Buffer.from(part));
+				return { exitCode: await ended, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			if (given.command[2] === COMPANY_MACHINE_POINTER_FENCE) {
+				order.push("fence");
+				return {
+					exitCode: 0,
+					stdout: Buffer.from(`${given.command[4]} ${"a".repeat(32)}`),
+					stderrTail: Buffer.alloc(0),
+				};
+			}
+			if (given.command[2] === COMPANY_MACHINE_MEMBER_POINTER) {
+				order.push("mover");
+				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+				return { exitCode: 137, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			}
+			throw new Error(`unexpected ${given.command[2]?.slice(0, 40)}`);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const update = (rgb: [number, number, number]) => {
+			const head = Buffer.alloc(4 + 12);
+			head.writeUInt16BE(1, 2);
+			head.writeUInt16BE(64, 8);
+			head.writeUInt16BE(40, 10);
+			const pixels = Buffer.alloc(64 * 40 * 4);
+			for (let i = 0; i < 64 * 40; i++) pixels.set([rgb[2], rgb[1], rgb[0], 0], i * 4);
+			return Buffer.concat([head, pixels]);
+		};
+		return { f, pipe, relays, order, update };
+	}
+	const stream = (change: Partial<CompanyMachineMemberStream> = {}): CompanyMachineMemberStream => ({
+		placementId: id(6),
+		bootId: id(7),
+		userId: id(21),
+		generation: 4,
+		epoch: null,
+		...change,
+	});
+	const sinkOf = () => {
+		const messages: Buffer[] = [];
+		return { messages, send: vi.fn(async (message: Buffer) => void messages.push(message)) };
+	};
+	const settle = async () => {
+		for (let n = 0; n < 20; n++) await new Promise((resolve) => setImmediate(resolve));
+	};
+
+	it("runs one relay per desktop for every member, the fixed script as root on SQL's boot, and lets each member's changes go after that member's own SQL cycle", async () => {
+		const { f, pipe, relays, update } = await relayed();
+		const a = sinkOf();
+		const b = sinkOf();
+		const stopA = new AbortController();
+		const stopB = new AbortController();
+		const watchingA = f.host.memberStream(stream(), a, stopA.signal);
+		const watchingB = f.host.memberStream(stream({ userId: id(22), epoch: 3, generation: 9 }), b, stopB.signal);
+		await settle();
+		expect(relays).toHaveLength(1);
+		const [project, name, given] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(given.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_DESKTOP_VIEW,
+			id(7),
+			COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+		]);
+		expect(given).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+		expect(typeof given.stdout).toBe("function");
+		relays[0]!.out(update([255, 0, 0]));
+		await vi.waitFor(() => expect(a.messages.some((message) => message[0] === 2)).toBe(true));
+		await vi.waitFor(() => expect(b.messages.some((message) => message[0] === 2)).toBe(true));
+		// Each member's own cycle, with its own hold: shared (no epoch), and private under its epoch in its seat.
+		const cycles = f.calls
+			.filter((call) => call.method === "qorpera_member_machine_stream_release")
+			.map((call) => call.args);
+		expect(cycles).toContainEqual({
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+			p_user_id: id(21),
+			p_generation: 4,
+			p_epoch: null,
+		});
+		expect(cycles).toContainEqual({
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+			p_user_id: id(22),
+			p_generation: 9,
+			p_epoch: 3,
+		});
+		stopA.abort();
+		stopB.abort();
+		expect(await watchingA).toBe("closed");
+		expect(await watchingB).toBe("closed");
+		await settle();
+		expect(relays[0]!.signal.aborted).toBe(true);
+	});
+
+	it("ends a member's stream on SQL's refusal or a read of the machine's the member may not read, with nothing of the change sent", async () => {
+		for (const [refusal, reason] of [
+			[
+				{ schema: "qorpera.member-machine-stream-release/v1", state: "refused", reason: "DESKTOP_HELD_SINCE" },
+				"DESKTOP_HELD_SINCE",
+			],
+			[
+				{ schema: "qorpera.member-machine-stream-release/v1", state: "refused", reason: "STREAM_NOT_ALLOWED" },
+				"STREAM_NOT_ALLOWED",
+			],
+			[new CodingControlRefused("qorpera.test-machine/member-unreadable", null), "MEMBER_CANNOT_READ"],
+		] as const) {
+			const { f, relays, update } = await relayed();
+			const sink = sinkOf();
+			const watching = f.host.memberStream(stream(), sink, new AbortController().signal);
+			await settle();
+			// The first cycle (the size) passes; the next one, for the red screen, is refused.
+			await vi.waitFor(() => expect(sink.messages).toHaveLength(1));
+			f.streamReleases.push(refusal);
+			relays[0]!.out(update([255, 0, 0]));
+			expect(await watching).toBe(reason);
+			expect(sink.messages.map((message) => message[0])).toEqual([1]);
+			await settle();
+			expect(relays[0]!.signal.aborted).toBe(true);
+		}
+	});
+
+	it("confirms the pointer fence on the desktop before any of a member's changes go while a mover is around, and asks the folder's boundary when the boot has /company", async () => {
+		const { f, relays, order, update } = await relayed({ folder: true });
+		f.host.memberPointer({
+			placementId: id(6),
+			bootId: id(7),
+			userId: id(21),
+			generation: 4,
+			private: false,
+			x: 1,
+			y: 1,
+		});
+		await settle();
+		const sink = sinkOf();
+		const stop = new AbortController();
+		const watching = f.host.memberStream(stream(), sink, stop.signal);
+		await settle();
+		relays[0]!.out(update([0, 255, 0]));
+		await vi.waitFor(() => expect(sink.messages.some((message) => message[0] === 2)).toBe(true));
+		// The fence came before the relay and the mover; every cycle asked the folder, then SQL.
+		expect(order.slice(0, 2)).toEqual(["fence", "mover"]);
+		const cycle = f.order.filter(
+			(step) => step === "folder:boundary" || step === "sql:qorpera_member_machine_stream_release",
+		);
+		expect(cycle.slice(0, 2)).toEqual(["folder:boundary", "sql:qorpera_member_machine_stream_release"]);
+		stop.abort();
+		await watching;
+	});
+
+	it("ends every member's stream when the relay ends (the desktop off, another boot) and starts a new one for the next member", async () => {
+		const { f, relays } = await relayed();
+		const watching = f.host.memberStream(stream(), sinkOf(), new AbortController().signal);
+		await settle();
+		relays[0]!.end(95);
+		expect(await watching).toBe("DESKTOP_NOT_RUNNING");
+		await settle();
+		const stop = new AbortController();
+		const next = f.host.memberStream(stream(), sinkOf(), stop.signal);
+		await settle();
+		expect(relays).toHaveLength(2);
+		stop.abort();
+		await next;
+	});
+
+	it("takes only a stream on ids, a whole generation and a whole epoch or none", async () => {
+		const { f } = await relayed();
+		for (const wrong of [
+			{ placementId: "x" },
+			{ generation: -1 },
+			{ generation: 1.5 },
+			{ epoch: -1 },
+			{ userId: "u" },
+		])
+			await expect(f.host.memberStream(stream(wrong), sinkOf(), f.signal), JSON.stringify(wrong)).rejects.toThrow(
+				"COMPANY_MACHINE_MEMBER_STREAM_INVALID",
+			);
+	});
+
+	it("starts a desktop's instance at most once every 2 s and the node's at most every 500 ms, and a member's start waits its turn, never refused for it", async () => {
+		const { f } = await relayed();
+		const made: { at: number; spec: DesktopRelaySpec; ended: () => void; desktop: { ended: string | null } }[] = [];
+		f.restart({
+			desktopStartGapMs: undefined,
+			nodeStartGapMs: undefined,
+			desktopStreams: (spec, ended) => {
+				const desktop = { ended: null as string | null, watch: async () => "closed" };
+				made.push({ at: performance.now(), spec, ended, desktop });
+				return desktop;
+			},
+		});
+		const began = performance.now();
+		// Three desktops at once: one at a time, 500 ms apart.
+		const asked = [100, 101, 102].map((n) => f.host.memberStream(stream({ placementId: id(n) }), sinkOf(), f.signal));
+		expect(await Promise.all(asked)).toEqual(["closed", "closed", "closed"]);
+		// Each started once, in whichever order their waits ended, 500 ms apart.
+		expect(made.map((one) => one.spec.name).sort()).toEqual([100, 101, 102].map((n) => lxdCompanyMachineName(id(n))));
+		expect((made[1]!.at - made[0]!.at) / 100).toBeGreaterThanOrEqual(4.5);
+		expect((made[2]!.at - made[1]!.at) / 100).toBeGreaterThanOrEqual(4.5);
+		// The first desktop again, its instance ended: no sooner than 2 s after its last start, and no later, even with the
+		// wall clock stepped back an hour meanwhile (the pacing runs on a monotonic clock).
+		const first = made.find((one) => one.spec.name === lxdCompanyMachineName(id(100)))!;
+		first.desktop.ended = "idle";
+		first.ended();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(Date.now() - 3_600_000);
+			expect(await f.host.memberStream(stream({ placementId: id(100) }), sinkOf(), f.signal)).toBe("closed");
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(made).toHaveLength(4);
+		expect(made[3]!.at - first.at).toBeGreaterThanOrEqual(1990);
+		expect(performance.now() - began).toBeLessThan(5000);
+		// A member who leaves while waiting is not started at all.
+		const second = made.find((one) => one.spec.name === lxdCompanyMachineName(id(101)))!;
+		second.desktop.ended = "idle";
+		second.ended();
+		const leaving = new AbortController();
+		const left = f.host.memberStream(stream({ placementId: id(101) }), sinkOf(), leaving.signal);
+		leaving.abort();
+		expect(await left).toBe("closed");
+		expect(made).toHaveLength(4);
+	}, 20_000);
+
+	it("watches a desktop only through the executor's way of watching outside its own process, and at most MAX_WATCHED_DESKTOPS at once", async () => {
+		const { f } = await relayed();
+		// Without one, a member's live picture is refused: never read on this loop because an option was left out.
+		f.restart({ desktopStreams: undefined });
+		expect(await f.host.memberStream(stream(), sinkOf(), f.signal)).toBe("STREAM_UNAVAILABLE");
+		// With one: each desktop is watched once for all its members, up to the node's cap.
+		const made: { spec: DesktopRelaySpec; ended: () => void; desktop: { ended: string | null } }[] = [];
+		f.restart({
+			desktopStreams: (spec, ended) => {
+				const desktop = { ended: null as string | null, watch: () => new Promise<string>(() => {}) };
+				made.push({ spec, ended, desktop });
+				return desktop;
+			},
+		});
+		for (let n = 0; n < MAX_WATCHED_DESKTOPS; n++)
+			void f.host.memberStream(stream({ placementId: id(100 + n) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS);
+		// What a watcher is told: the machine, and the relay of SQL's boot (as root, inside it; nothing else).
+		expect(made[0]!.spec.name).toBe(lxdCompanyMachineName(id(100)));
+		expect(made[0]!.spec.command).toEqual([
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_DESKTOP_VIEW,
+			id(7),
+			COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
+		]);
+		// A further desktop is refused (the window keeps its pictures); one already watched takes another member.
+		expect(await f.host.memberStream(stream({ placementId: id(200) }), sinkOf(), f.signal)).toBe("STREAM_BUSY");
+		void f.host.memberStream(stream({ placementId: id(100), userId: id(22) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS);
+		// One ends: its place is free again.
+		made[0]!.desktop.ended = "idle";
+		made[0]!.ended();
+		void f.host.memberStream(stream({ placementId: id(200) }), sinkOf(), f.signal);
+		await settle();
+		expect(made).toHaveLength(MAX_WATCHED_DESKTOPS + 1);
 	});
 });
 

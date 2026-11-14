@@ -152,6 +152,8 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// How a part of an interface app is made: the runtime's own text (20260930762000).
+		["app_guide", { about: "model" }, "read"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// The node's folder search (F3): a read with the run's own view.
@@ -217,6 +219,17 @@ describe("which calls are reviewed", () => {
 		["data_describe", {}, "read"],
 		["data_query", { database: "shop", sql: "select 1" }, "read"],
 		["data_apply", { database: "shop" }, "internal"],
+		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
+		[
+			"make_picture",
+			{ operationKey: "k", path: "pictures/mug.png", prompt: "A mug", expectedVersion: null },
+			"internal",
+		],
+		[
+			"make_picture",
+			{ operationKey: "k", path: "apps/sales/mug.png", prompt: "A mug", expectedVersion: null, foreignOwner: true },
+			"delegation",
+		],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them

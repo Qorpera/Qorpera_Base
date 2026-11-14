@@ -3,7 +3,8 @@ import { UUID_PATTERN } from "./parse.ts";
 
 /**
  * Member surface for the company's websites: the password-protected sites the company's agents publish at
- * sites.qorpera.com/<slug>/, and the private app links they share from an always-on machine (an app site, v195:
+ * sites.qorpera.com/<slug>/ (from own code storage step 5.1, at an address of their own, https://<slug>.qorpera.com/),
+ * and the private app links they share from an always-on machine (an app site, v195:
  * https://<slug>-preview.qorpera.com/, one port of the machine behind the same password). Every member lists them,
  * with their links. Only owners and admins read or change a
  * site's password and take a site offline; the kernel refuses anyone else (42501). RPCs listed in
@@ -21,7 +22,8 @@ export interface CompanySite {
 	/** The title the agent gave the site, or null. */
 	title: string | null;
 	kind: CompanySiteKind;
-	/** The plain link a founder shares: https://sites.qorpera.com/<slug>/, or an app's own host. */
+	/** The plain link a founder shares: https://sites.qorpera.com/<slug>/ or, once sites have addresses of their own
+	 * (step 5.1), https://<slug>.qorpera.com/; an app's own host. */
 	url: string;
 	/** "publishing": the first upload has not finished, so the link does not work yet; "off" (an app link): it is not
 	 * shared now, or its machine was deleted. */
@@ -48,6 +50,16 @@ export interface CompanySitePassword {
 
 /** A site's name in its link, as the kernel allows it. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
+/** A website's own host (own code storage step 5.1; Jonas, 13 Nov 2026: "Use qorpera.com"), by the one host rule SQL,
+ * site-serve and the web share: the one label before qorpera.com is a name of letters and digits in runs joined by
+ * single hyphens (group 1, which can never hold `--`), then `--next` for the look at a version before it goes live
+ * (group 2), which is never a site's address in the list. So `shop--next` is always site shop's next host, never a name
+ * of its own, and `shop-next` is a plain name. The name's length is its own rule (SLUG). The URL parser has lower-cased
+ * the host already. The domain is pinned, not read from the answer: the row names none (a key more would break this
+ * closed parse in every open tab), and a domain taken from the link itself would let any host through. Its text
+ * `(--next)?\.qorpera\.com$` is also this change's marker: the operator turns own hosts on only once the live web bundle
+ * holds it (step 5.1's gate). */
+const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
 /** A machine's name, as an agent gives one. */
 const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_KEYS = [
@@ -78,8 +90,9 @@ function closedRecord(value: unknown, keys: readonly string[]): Record<string, u
 const count = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-/** The site's own link: https, no sign-in, query or fragment, and the site's name as its whole path; an app's, the
- * site's name at the start of its own host, with nothing after it. */
+/** The site's own link: https, no sign-in, query or fragment. A website's has the site's name as its whole path, or is
+ * the site's own host with nothing after it; an app's, the site's name at the start of its own host, with nothing after
+ * it. */
 function siteUrl(value: unknown, slug: string, kind: CompanySiteKind): string | undefined {
 	if (typeof value !== "string") return undefined;
 	let url: URL;
@@ -94,11 +107,19 @@ function siteUrl(value: unknown, slug: string, kind: CompanySiteKind): string | 
 		!url.search &&
 		!url.hash &&
 		(kind === "files"
-			? url.pathname === `/${slug}/`
+			? url.pathname === `/${slug}/` || ownHost(url, value, slug)
 			: url.pathname === "/" && url.hostname.startsWith(slug) && /^[-.]/.test(url.hostname.slice(slug.length))) &&
 		url.href === value
 		? value
 		: undefined;
+}
+
+/** Whether a website's link is its own host, exactly `https://<slug>.qorpera.com/`: never another site's, never a next
+ * host, with no port and not even an empty query or fragment. A name with `--` (which the kernel refuses from step 5.1)
+ * never equals group 1, so it has no host here. */
+function ownHost(url: URL, value: string, slug: string): boolean {
+	const host = SITE_HOST.exec(url.hostname);
+	return host?.[1] === slug && host[2] === undefined && value === `https://${url.hostname}/`;
 }
 
 /** One `qorpera.company-site/v1` row, exactly as the kernel lists it; anything else is refused. */

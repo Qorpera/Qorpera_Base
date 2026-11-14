@@ -18,11 +18,9 @@ import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
-import { conversationClockLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { sentTimeText } from "../src/ui/sent-time-hover.ts";
 import {
 	deferred,
 	event,
@@ -2733,6 +2731,8 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(chip.contains(described)).toBe(true);
 		expect(described?.classList.contains("visually-hidden")).toBe(true);
 		expect(described?.textContent).toMatch(/\d/);
+		// No time on a hover: a status line, not a message (Jonas, 14 Nov 2026).
+		expect(chip.hasAttribute("data-sent-at")).toBe(false);
 		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
 		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
 	});
@@ -2937,8 +2937,8 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect(line!.getAttribute("aria-label")).toBe("Messaged Helper and Nova");
 			const chip = line!.querySelectorAll<HTMLButtonElement>(".peer-chip")[1]!;
 			expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Nova");
-			// The chip shows the name; its hover adds the time of day.
-			expect(sentTimeText(chip)).toBe(conversationClockLabel(new Date(timestamp)));
+			// The chip shows the name and no time on a hover: a status line, not a message (Jonas, 14 Nov 2026).
+			expect(chip.hasAttribute("data-sent-at")).toBe(false);
 			expect(chip.hasAttribute("title")).toBe(false);
 			// Review of #1651 round 1, F3: a screen reader hears the time as the chip's description.
 			const described = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
@@ -2993,8 +2993,8 @@ describe("messages between two agents (contract 14.6)", () => {
 				expect(chip.classList.contains("figure-only")).toBe(true);
 				expect(chip.querySelector(":scope > span:not(.figure, .visually-hidden)")).toBeNull();
 				expect(document.getElementById(chip.getAttribute("aria-describedby") ?? "")?.textContent).toBeTruthy();
-				// A face alone: its hover shows the time alone, as every other one does.
-				expect(sentTimeText(chip as HTMLElement)).toMatch(/^\d{1,2}:\d{2}/);
+				// A face alone, with no time on a hover either.
+				expect(chip.hasAttribute("data-sent-at")).toBe(false);
 			}
 		});
 

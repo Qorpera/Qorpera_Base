@@ -403,6 +403,61 @@ describe("a member's pointer through the executor's member listener (20260930744
 		expect(s.looked).not.toHaveBeenCalled();
 	});
 
+	it("sells a live picture's ticket on a pass and its hold, for the browser's Origin the member bridge passed on, and refuses one without it (20260930745000)", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			undefined,
+			async () => ({ ticket: "T".repeat(43), seconds: 30 }),
+		);
+		const sold = await post(
+			s.url("/pointer"),
+			{ stream: { pass, hold: { generation: 7 } } },
+			{ origin: "https://app.qorpera.com" },
+		);
+		expect(sold.status).toBe(200);
+		expect(await sold.json()).toEqual({
+			schema: "qorpera.member-machine-pointer/v1",
+			ticket: "T".repeat(43),
+			seconds: 30,
+		});
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			{
+				companyId: s.companyId,
+				machineId: s.machineId,
+				token,
+				stream: { pass, hold: { generation: 7 } },
+				origin: "https://app.qorpera.com",
+			},
+			expect.any(AbortSignal),
+		);
+		await post(
+			s.url("/pointer"),
+			{ stream: { pass, hold: { seat: 3, epoch: 1 } } },
+			{ origin: "https://app.qorpera.com" },
+		);
+		expect(s.pointed).toHaveBeenLastCalledWith(
+			expect.objectContaining({ stream: { pass, hold: { epoch: 1, seat: 3 } } }),
+			expect.any(AbortSignal),
+		);
+		const calls = s.pointed.mock.calls.length;
+		for (const [body, origin] of [
+			[{ stream: { pass, hold: { generation: 7 } } }, undefined],
+			[{ stream: { pass, hold: { generation: 7 } } }, "null"],
+			[{ stream: { pass, hold: { generation: 7 } } }, "http://evil.example"],
+			[{ stream: { pass, hold: { generation: 7 }, x: 1 } }, "https://app.qorpera.com"],
+			[{ stream: { pass } }, "https://app.qorpera.com"],
+			[{ stream: { pass, hold: { epoch: 1 } } }, "https://app.qorpera.com"],
+			[{ stream: { pass: "pass", hold: { generation: 7 } } }, "https://app.qorpera.com"],
+			[{ stream: { pass, hold: { generation: 7 } }, x: 1 }, "https://app.qorpera.com"],
+		] as const)
+			expect(
+				(await post(s.url("/pointer"), body, origin ? { origin } : {})).status,
+				`${JSON.stringify(body)} ${origin}`,
+			).toBe(400);
+		expect(s.pointed.mock.calls.length).toBe(calls);
+	});
+
 	it("refuses a body that is not a begin or a move as 400, and without the route it is 404", async () => {
 		const s = await service(
 			async () => ({ etag, png: picture }),

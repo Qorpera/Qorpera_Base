@@ -42,7 +42,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
-import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { appIconEmblem, type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -864,12 +864,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(list, company, (event) => openRailMenu(company, created, event));
+		pressToOpenMenu(list, company.signal, (event) => openRailMenu(company, created, event));
 		// A right-click on a page in the drawer hides it, as on an agent.
 		appsDrawer.addEventListener("contextmenu", (event) => openDrawerMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(appsDrawer, company, (event) => openDrawerMenu(company, created, event));
+		pressToOpenMenu(appsDrawer, company.signal, (event) => openDrawerMenu(company, created, event));
 		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent, group chat or contact one place.
 		list.addEventListener(
 			"keydown",
@@ -2169,7 +2169,18 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	const box = animate ? grid.getBoundingClientRect() : undefined;
 	// A tile that went and comes back is an ordinary tile again.
 	for (const element of drawn) if (element.classList.contains("is-leaving")) unleave(element);
-	reconcile(grid, drawn);
+	// A tile already on its way out (a group folded a moment ago) keeps that way out, its fold included (review F1,
+	// round 3, on #1729), and stands in the grid until it ends, whatever is drawn meanwhile (round 4): another group
+	// opening, or a draw that changes no tile, as the answer to the write that made a group is (14 Nov 2026).
+	const kept = new Set(drawn);
+	const going = ([...grid.children] as HTMLElement[]).filter(
+		(element) => !kept.has(element) && leavingTiles.has(element),
+	);
+	// They stay where they stand, after the drawn tiles, never taken out and put back: that would start a plain fade
+	// (a CSS animation) again from whole (review F1 on #1795).
+	reconcile(grid, [...drawn, ...going]);
+	// The draw gave each its key again: out of the drawer's order while it goes, as when it first left.
+	for (const element of going) element.removeAttribute("data-app-key");
 	// Folding a group: its tile, where its apps go back into (Jonas, 13 Nov 2026: "missing an animation when a group is
 	// collapsing").
 	const folding = parts.appFolding;
@@ -2177,7 +2188,6 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	if (!before || !box) return;
 	const groupTile = folding ? drawn.find((element) => element.dataset.appKey === folding) : undefined;
 	const target = groupTile?.querySelector(".rail-app-stand")?.getBoundingClientRect();
-	const kept = new Set(drawn);
 	let entering = 0;
 	for (const element of drawn) {
 		const was = before.get(element);
@@ -2199,14 +2209,6 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 			});
 	}
 	const centre = (rect: DOMRect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-	// A tile already on its way out (another group folded a moment ago) keeps that way out, its fold included (review F1,
-	// round 3, on #1729), and stands in the grid until it ends, as the draw took it out (round 4).
-	for (const element of before.keys())
-		if (!kept.has(element) && leavingTiles.has(element)) {
-			// The draw gave it its key again: out of the drawer's order while it goes, as when it first left.
-			element.removeAttribute("data-app-key");
-			if (element.parentElement !== grid) grid.append(element);
-		}
 	const leaving = [...before].filter(([element]) => !kept.has(element) && !leavingTiles.has(element));
 	// Into the group's tile, the nearest first (review F3 on #1729: the drawer's order is not the distance once a row
 	// wraps).
@@ -2323,12 +2325,12 @@ function mergeApps(company: CompanyController, parts: RailParts, dragged: string
 	}
 	const nameOf = (drawer: string) =>
 		parts.appsGrid.querySelector(`[data-app-key="${drawer}"] .rail-app-name`)?.textContent ?? "";
-	// Letting go makes the group at once, open, named from the two apps (Jonas, 12 Nov 2026: "if i drag interfaces over
-	// each other and let go it should create a group"); Rename group in its menu changes the name.
+	// Letting go makes the group at once, named from the two apps (Jonas, 12 Nov 2026: "if i drag interfaces over each
+	// other and let go it should create a group"); Rename group in its menu changes the name. It starts folded, the two
+	// apps going into its tile as a folding group's do (Jonas, 14 Nov 2026: "it should also start out collapsed").
 	const name = suggestGroupName(nameOf(onto), nameOf(dragged), t("Group"));
 	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
-	parts.appGroupsOpen.add(id);
-	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	parts.appFolding = groupKey(id);
 	void company.changeAppLayout(makeAppGroup(layout, parts.appTree, key, to.key, name, id));
 }
 
@@ -3256,72 +3258,6 @@ function hiddenPageRow(model: {
 		);
 	});
 	return row;
-}
-
-/** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event). */
-function pressToOpenMenu(list: HTMLElement, company: CompanyController, open: (event: MouseEvent) => void): void {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let start: { x: number; y: number } | undefined;
-	// When a press last opened a menu; never, at first, so the page's first 800 ms
-	// (performance.now() counts from its start) do not swallow a right-click.
-	let opened = Number.NEGATIVE_INFINITY;
-	const clear = () => {
-		clearTimeout(timer);
-		timer = undefined;
-	};
-	const signal = company.signal;
-	list.addEventListener(
-		"pointerdown",
-		(event) => {
-			if (event.pointerType !== "touch") return;
-			clear();
-			start = { x: event.clientX, y: event.clientY };
-			const target = event.target as Element;
-			timer = setTimeout(() => {
-				timer = undefined;
-				opened = performance.now();
-				const synthetic = new MouseEvent("contextmenu", {
-					clientX: start!.x,
-					clientY: start!.y,
-					bubbles: true,
-					cancelable: true,
-				});
-				Object.defineProperty(synthetic, "target", { value: target });
-				open(synthetic);
-			}, 550);
-		},
-		{ signal },
-	);
-	list.addEventListener(
-		"pointermove",
-		(event) => {
-			if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) clear();
-		},
-		{ signal },
-	);
-	for (const type of ["pointerup", "pointercancel", "scroll"])
-		list.addEventListener(type, clear, { signal, passive: true });
-	// The browser's own long-press menu (Android) and the tap that ends the press do nothing more.
-	list.addEventListener(
-		"contextmenu",
-		(event) => {
-			if (performance.now() - opened < 800) {
-				event.preventDefault();
-				event.stopImmediatePropagation();
-			}
-		},
-		{ capture: true, signal },
-	);
-	list.addEventListener(
-		"click",
-		(event) => {
-			if (performance.now() - opened < 800) {
-				event.preventDefault();
-				event.stopPropagation();
-			}
-		},
-		{ capture: true, signal },
-	);
 }
 
 /** The section an item stands in, or undefined for Unassigned (a placement in a section that is gone included). */

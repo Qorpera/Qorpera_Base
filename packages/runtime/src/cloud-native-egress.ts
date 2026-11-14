@@ -20,6 +20,11 @@ const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
 const MAX_CONNECTIONS = 8;
+const IDLE_MS = 30_000;
+/** How long a connection may be silent while a picture is being made (`allowLongWaits`): Codex's images request sends
+ * nothing back until the picture exists, which takes up to a few minutes, and keeps no ping on the connection (Codex
+ * 0.155.1, ext/image-generation/src/backend.rs). Longer than a picture call waits (CLOUD_PICTURE_MS, 4 minutes). */
+export const NATIVE_EGRESS_LONG_IDLE_MS = 5 * 60_000;
 
 export function nativeEgressPublicAddress(address: string): boolean {
 	if (!isIPv4(address)) return false;
@@ -139,6 +144,10 @@ export interface NativeEgressRelay {
 	 * any closer has not run, and each closer counts once. When the last one runs, new connections to the host are
 	 * refused again and the ones open to it are cut. */
 	allowRealtime?: () => () => void;
+	/** A Codex login's relay only, for a picture call: until the returned closer runs, every connection, open or new,
+	 * may be silent for NATIVE_EGRESS_LONG_IDLE_MS instead of 30 s. It lets no other host through. Windows nest as
+	 * `allowRealtime`'s do; when the last one closes, every connection's 30 s count starts again. */
+	allowLongWaits?: () => () => void;
 }
 
 /** Private per-execution Unix capability. No HTTP endpoint, bearer token,
@@ -179,6 +188,13 @@ export async function startNativeCodexEgress(options: {
 	let realtimeWindows = 0;
 	const realtimeTunnels = new Set<() => void>();
 	const realtime = hosts === NATIVE_CODEX_EGRESS_HOSTS;
+	// The picture calls' windows still open (allowLongWaits), and every socket whose silence is counted.
+	let longWaitWindows = 0;
+	const timed = new Set<Socket>();
+	const idleMs = (): number => (longWaitWindows > 0 ? NATIVE_EGRESS_LONG_IDLE_MS : IDLE_MS);
+	const retime = (): void => {
+		for (const socket of timed) socket.setTimeout(idleMs());
+	};
 	const controller = new AbortController();
 	const signal = AbortSignal.any([options.signal, controller.signal]);
 	const server = createServer((peer) => {
@@ -213,9 +229,12 @@ export async function startNativeCodexEgress(options: {
 			attempt.abort();
 			attemptSignal.removeEventListener("abort", close);
 			peers.delete(peer);
+			timed.delete(peer);
+			if (upstream) timed.delete(upstream);
 			upstream?.destroy();
 		});
-		peer.setTimeout(30_000, close);
+		timed.add(peer);
+		peer.setTimeout(idleMs(), close);
 		const accept = async (): Promise<void> => {
 			if (!host) {
 				const end = buffered.indexOf("\r\n\r\n");
@@ -272,11 +291,15 @@ export async function startNativeCodexEgress(options: {
 			upstream = transport.connect(addresses[0]);
 			upstreams.add(upstream);
 			upstream.once("close", () => {
-				if (upstream) upstreams.delete(upstream);
+				if (upstream) {
+					upstreams.delete(upstream);
+					timed.delete(upstream);
+				}
 				close();
 			});
 			upstream.on("error", close);
-			upstream.setTimeout(30_000, close);
+			timed.add(upstream);
+			upstream.setTimeout(idleMs(), close);
 			upstream.once("connect", () => {
 				if (attemptSignal.aborted) {
 					close();
@@ -340,9 +363,20 @@ export async function startNativeCodexEgress(options: {
 				if (realtimeWindows === 0) for (const cut of [...realtimeTunnels]) cut();
 			};
 		};
+		const allowLongWaits = (): (() => void) => {
+			longWaitWindows += 1;
+			if (longWaitWindows === 1) retime();
+			let open = true;
+			return () => {
+				if (!open) return;
+				open = false;
+				longWaitWindows -= 1;
+				if (longWaitWindows === 0) retime();
+			};
+		};
 		return {
 			path,
-			...(realtime ? { allowRealtime } : {}),
+			...(realtime ? { allowRealtime, allowLongWaits } : {}),
 			close() {
 				closing ??= new Promise<void>((resolve) => {
 					controller.abort();

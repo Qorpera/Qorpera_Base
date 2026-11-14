@@ -224,6 +224,8 @@ export async function launchIsolatedNativeProcess(options: {
 	close(): Promise<void>;
 	/** The relay's voice call window (NativeEgressRelay.allowRealtime): a Codex login's process only. */
 	allowRealtime?: () => () => void;
+	/** The relay's window for a picture call (NativeEgressRelay.allowLongWaits): a Codex login's process only. */
+	allowLongWaits?: () => () => void;
 }> {
 	if (process.platform !== "linux" || !process.getuid?.())
 		throw new Error("Native containment requires unprivileged Linux");
@@ -288,6 +290,7 @@ export async function launchIsolatedNativeProcess(options: {
 		return {
 			child: launched,
 			...(relay.allowRealtime ? { allowRealtime: relay.allowRealtime } : {}),
+			...(relay.allowLongWaits ? { allowLongWaits: relay.allowLongWaits } : {}),
 			async close() {
 				options.signal.removeEventListener("abort", stop);
 				stop();
