@@ -87,6 +87,9 @@ const receiptsOf = (db, runId) =>
 		'input', r.input_sha256, 'status', r.status, 'committed', r.folder_commit_id is not null) order by r.created_at), '[]')::text
 		from public.qorpera_run_operation_receipts r where r.run_id = '${runId}'`);
 
+/** A text with every id (a uuid) the database made for its run written as <id>. */
+const ids = (text) => (typeof text === "string" ? text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>") : text);
+
 /** A work-log step as the two runs can be compared: what does not name the run, its call or its time. */
 function stepOf(step) {
 	const { j, tool, args, args_bytes: argsBytes, result, paths } = step.value;
@@ -98,7 +101,7 @@ function stepOf(step) {
 		status: result?.status,
 		resultTool: result?.provenance?.tool,
 		argumentSha256: result?.provenance?.argumentSha256,
-		text: result?.content?.text,
+		text: ids(result?.content?.text),
 		paths,
 	};
 }
@@ -208,12 +211,15 @@ async function main() {
 		// The two runs, side by side.
 		const { direct: a, onDemand: b } = stored;
 		process.stdout.write(`receipts direct: ${JSON.stringify(a.receipts)}\nreceipts on demand: ${JSON.stringify(b.receipts)}\n`);
-		const kept = (receipts) => receipts.filter((receipt) => receipt.key.startsWith("update_memory:"));
+		// A receipt's input digest covers the run's identity with the operation (cloudNativeToolOperationEnvelope), so it
+		// is the run's own; the rest is the operation's.
+		const kept = (receipts) =>
+			receipts.filter((receipt) => receipt.key.startsWith("update_memory:")).map(({ input: _input, ...receipt }) => receipt);
 		assert.equal(kept(a.receipts).length, 1);
 		assert.deepEqual(kept(b.receipts), kept(a.receipts));
 		assert.equal(b.receipts.length, a.receipts.length, "no other receipt in either run");
 		pass(
-			`the same receipt: ${JSON.stringify(kept(b.receipts)[0])} (its operation key and input digest equal, completed, with its folder commit)`,
+			`the same receipt: ${JSON.stringify(kept(b.receipts)[0])} (the same operation key, completed, with its folder commit; its input digest binds its own run)`,
 		);
 		const asked = (run) => run.reviewed.filter((call) => call.tool === "update_memory");
 		process.stdout.write(`review direct: ${JSON.stringify(asked(direct.run))}\nreview on demand: ${JSON.stringify(asked(onDemand.run))}\n`);
@@ -242,9 +248,9 @@ async function main() {
 			],
 		);
 		pass("the same work-log step for the change: update_memory, its arguments, digest, answer and paths");
-		assert.equal(b.output.envelope.content.text, a.output.envelope.content.text);
+		assert.equal(ids(b.output.envelope.content.text), ids(a.output.envelope.content.text));
 		assert.equal(b.output.envelope.provenance.argumentSha256, a.output.envelope.provenance.argumentSha256);
-		pass("the same answer to the model, byte for byte but for the run's and the call's ids");
+		pass("the same answer to the model, but for the ids each database made");
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
 	}
