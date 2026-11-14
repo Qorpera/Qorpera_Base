@@ -575,10 +575,101 @@ describe("a visual choice", () => {
 			}),
 			context({ image, app }),
 		);
-		expect(card.querySelectorAll(".choice-box")).toHaveLength(3);
+		// The option with no preview is a pill under the boxes, never an empty box beside a picture.
+		expect(card.querySelectorAll(".choice-box")).toHaveLength(2);
+		expect(
+			[...card.querySelectorAll(".interaction-choices > .choice-others > button")].map((pill) => pill.textContent),
+		).toEqual(["Noget skal ændres"]);
 		// The cover could not be read: the frame goes rather than stand empty.
 		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture")).toHaveLength(0));
-		expect(card.textContent).toContain("Noget skal ændres");
+	});
+
+	it("picks an option without a picture from its pill, and keeps a lone picture box to a column", () => {
+		const ctx = context({ image: async () => null, app });
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			ctx,
+		);
+		expect((card.querySelector(".interaction-choices") as HTMLElement).style.getPropertyValue("--choices")).toBe("2");
+		card.querySelector<HTMLButtonElement>(".choice-others > button")?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["nej"] });
+	});
+
+	it("shows an app the question's words link once: its cover on that card, the option that previews it a pill", async () => {
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const ctx = context({ image, app, inThread: true });
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				body: "[Prøv de seks scener](app:saml-concepts), især det gradvise morgenlys.",
+				payload: {
+					allowCustom: true,
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			ctx,
+		);
+		// One card for the app, the words' own; no boxes, no second link under the options.
+		expect([...card.querySelectorAll<HTMLElement>(".app-card")].map((link) => link.dataset.appName)).toEqual([
+			"saml-concepts",
+		]);
+		expect(card.querySelector(".interaction-choices, .choice-box")).toBeNull();
+		expect([...card.querySelectorAll(".interaction-options > button")].map((pill) => pill.textContent)).toEqual([
+			"Ja, sådan",
+			"Noget skal ændres",
+		]);
+		const linkCard = card.querySelector<HTMLElement>(".interaction-body .app-card");
+		await vi.waitFor(() => expect(linkCard?.querySelector(":scope > .choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		card.querySelector<HTMLButtonElement>(".interaction-options > button")?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["ja"] });
+		created.mockRestore();
+	});
+
+	it("puts an app's cover on the words' card once the apps are read, and none for an app without one", async () => {
+		let known: Record<string, InteractionCardApp> = {};
+		const apps = (name: string) => known[name];
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe?",
+				body: "[Prøv de seks scener](app:saml-concepts) og [demoen](app:bundle-demo).",
+				payload: {
+					options: [
+						{ label: "Ja", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Demoen", value: "demo", preview: "app:bundle-demo" },
+					],
+				},
+			}),
+			context({ image, app: apps, inThread: true }),
+		);
+		expect(card.querySelector(".choice-picture")).toBeNull();
+		known = {
+			"saml-concepts": { title: "Entirely you", emblem: "page", cover: "apps/saml-concepts/cover.png" },
+			"bundle-demo": { title: "The bundle demo", emblem: "star", cover: null },
+		};
+		refreshAppPreviews(card, apps, image);
+		const [first, second] = card.querySelectorAll<HTMLElement>(".interaction-body .app-card");
+		await vi.waitFor(() => expect(first?.querySelector(":scope > .choice-picture img")).not.toBeNull());
+		// The demo has no cover: its card stays as it is, never an emblem drawn twice.
+		expect(second?.querySelector(".choice-picture")).toBeNull();
+		created.mockRestore();
 	});
 
 	it("brings an app's preview in once the company's apps are read, keeping the answer being given", async () => {
@@ -608,6 +699,7 @@ describe("a visual choice", () => {
 		expect(titles()).toEqual(["saml-concepts", "bundle-demo"]);
 		// The member picks an option and starts on an answer of their own.
 		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		expect(boxes).toHaveLength(2);
 		boxes[1]?.click();
 		const field = card.querySelector<HTMLInputElement>(".interaction-field");
 		if (!field) throw new Error("no field");
@@ -621,11 +713,11 @@ describe("a visual choice", () => {
 		await vi.waitFor(() => expect(boxes[0]?.querySelector(".choice-picture img")).not.toBeNull());
 		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
 		expect(boxes[1]?.querySelector(".choice-app-name")?.textContent).toBe("The bundle demo");
-		expect(boxes[2]?.querySelector(".choice-picture")).toBeNull();
+		expect(card.querySelector(".choice-others")?.textContent).toBe("Noget skal ændres");
 		expect(titles()).toEqual(["Entirely you", "The bundle demo"]);
 		// In place: the same boxes, the pick and the words as they were.
 		expect([...card.querySelectorAll(".choice-box")]).toEqual(boxes);
-		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
 		expect(card.querySelector(".interaction-field")).toBe(field);
 		expect(field.value).toBe("Lidt varmere lys");
 		// Nothing is drawn again while the apps stay as they are; a change to one is followed.
