@@ -7,40 +7,19 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024599_runtime_bundle_activation_v245.sql";
-const activationVersion = 245;
-const previousActivationVersion = 244;
-const previousActivationSha256 = "4a51aee23402fe95b41b5c5dc9c7fe71b1fb1057b27239f1b0ebddbf98e2bbe4";
-// This release's own migrations, which its activation requires before it registers the bundle (v245): one entry per
+const activation = "supabase/migrations/20260929024699_runtime_bundle_activation_v246.sql";
+const activationVersion = 246;
+const previousActivationVersion = 245;
+const previousActivationSha256 = "8eab2780076d59239b3102771024c9b85a67502c57462b7d262af871de7c14a3";
+// This release's own migrations, which its activation requires before it registers the bundle (v246): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v246 replaces these entries with the migrations v246 brings (or an empty list).
-// v246's activation already requires v245 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v245's release (the joint cut) runs its four migrations, in number order, BEFORE the executors
-// and this switch. An entry sorting before the activation file is checked on every database; one sorting
-// after it only on a database past 20260930534000, since a fresh chain in file order reaches it only after the
-// activation (as with the guards in the activation's text below).
-const activationRequires = Object.freeze([
-	[
-		"20260930745000_machine_desktop_stream",
-		"the live picture: the executor this release moves lets a picture go only against qorpera_member_machine_stream_release; it rides in this release's migrate, before this switch",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_member_machine_stream_release(uuid,uuid,uuid,bigint,bigint)') and strpos(prosrc, '20260930745000') > 0)",
-	],
-	[
-		"20260930746000_make_picture_tool",
-		"make_picture (#1738): a run's observation naming the tool is refused until the closed list of tool operations carries it",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930746000') > 0)",
-	],
-	[
-		"20260930755000_machine_start_waits",
-		"each machine_start wait kept (#1771): this bundle's machine tools report how a start waited through machine_manage's action waited",
-		"to_regclass('public.qorpera_company_machine_start_waits') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_native_machine_manage(jsonb,jsonb)') and strpos(prosrc, '20260930755000') > 0)",
-	],
-	[
-		"20260930757000_sleeping_disk_kept",
-		"a sleeping machine keeps its disk (#1773): this bundle's machine texts promise diskFreed, which the machine view carries from this migration on",
-		"to_regprocedure('public.qorpera_report_executor_disk(text,text,jsonb)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_machine_view(public.qorpera_company_machines)') and strpos(prosrc, '20260930757000') > 0)",
-	],
-]);
+// version lines, when it sets them: v247 replaces these entries with the migrations v247 brings (or an empty list).
+// v247's activation already requires v246 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v246 carries no migration of its own (company databases open to pages: #1744, #1778, and
+// #1765's words: a runtime bundle alone), so its list is empty. An entry sorting before the activation file is checked
+// on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file order
+// reaches it only after the activation (as with the guards in the activation's text below).
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
