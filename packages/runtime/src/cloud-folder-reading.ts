@@ -13,7 +13,7 @@ import {
 	type ReadingThing,
 	writeReadingFile,
 } from "@qorpera/cloud-client/company-state-files";
-import type { JsonValue } from "@qorpera/contracts";
+import { isUuid, type JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderUnit } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { invalidMessage } from "./cloud-folder-hiring.ts";
@@ -54,7 +54,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 const TOOL_VERSION = "folder-v2/1";
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** The saved changes stay through a save that does not move attention while they are younger than this. */
 const CHANGES_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
 /** Why a team stays as it is, in characters. */
@@ -381,7 +380,7 @@ export class CloudFolderReading {
 				throw new CloudToolRefusal(
 					`${change.agent} is not an agent's folder under ${osPath("agents")}/: a change names the agent by its folder name`,
 				);
-		const waited = [...new Set(request.things.flatMap((thing) => thing.waitsFor))].filter((id) => UUID.test(id));
+		const waited = [...new Set(request.things.flatMap((thing) => thing.waitsFor))].filter((id) => isUuid(id));
 		if (!waited.length) return;
 		const members = await this.#members(signal);
 		const stranger = waited.find((id) => !members.has(id));
