@@ -83,14 +83,14 @@ test("packages and pins the shared execution service", async () => {
 		assert.match(hostUnit, /^InaccessiblePaths=\/var\/lib\/qorpera\/identities /m);
 		assert.match(hostUnit, /^RestrictNamespaces=user mnt pid net ipc uts cgroup$/m);
 		assert.match(hostUnit, /^Restart=no$/m);
-		// The Claude Code box's mount (slice C2): the FUSE device alone joins the slot's private /dev; nothing else of
-		// the unit's hardening moves.
+		// The Claude Code box's mount (slice C2): the FUSE device alone joins the slot's private /dev, and only where the
+		// host has it (the dash: a host without it still starts its runs); nothing else of the unit's hardening moves.
 		assert.match(hostUnit, /^PrivateDevices=yes$/m);
 		assert.match(hostUnit, /^DeviceAllow=\/dev\/fuse rw$/m);
-		assert.match(hostUnit, /^BindPaths=\/dev\/fuse$/m);
+		assert.match(hostUnit, /^BindPaths=-\/dev\/fuse$/m);
 		assert.deepEqual(hostUnit.match(/^(?:DeviceAllow|BindPaths|BindReadOnlyPaths|DevicePolicy)=.*$/gm), [
 			"DeviceAllow=/dev/fuse rw",
-			"BindPaths=/dev/fuse",
+			"BindPaths=-/dev/fuse",
 		]);
 		for (const line of ["NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=", "ProtectSystem=strict"])
 			assert.ok(hostUnit.split("\n").includes(line), line);

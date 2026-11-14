@@ -449,6 +449,7 @@ claude_box_refuse() {
 }
 for part in "${CLAUDE_DIR}/claude:0:0:555" "${CLAUDE_DIR}/artifact.json:0:0:444" \
 	/opt/qorpera-runner/qorpera-claude-box-stage.sh:0:0:555 /opt/qorpera-runner/qorpera-claude-home-shell.mjs:0:0:555 \
+	/opt/qorpera-runner/qorpera-native-isolation-child.mjs:0:0:555 \
 	"/opt/qorpera-runner/qorpera-claude-box-ns:0:$(getent group "${CLAUDE_BOX_GROUP}" | cut -d: -f3):750" \
 	/etc/apparmor.d/qorpera-claude-box-ns:0:0:644 /usr/bin/sshfs:0:0:755 /usr/bin/bwrap:0:0:755 /usr/bin/node:0:0:755; do
 	path=${part%%:*}
