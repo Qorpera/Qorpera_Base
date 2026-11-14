@@ -111,6 +111,9 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_code_import.sql",
 			// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
 			"_company_data_pass.sql",
+			// The Co-Founder's senses, the facts its reading of the company is written from (20260930765000); by its number
+			// too, since 20260930724000_usage_wall_ends_on_any_company_reading.sql ends the same way.
+			"765000_company_reading.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -143,7 +146,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(133);
+	expect(rows).toHaveLength(134);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

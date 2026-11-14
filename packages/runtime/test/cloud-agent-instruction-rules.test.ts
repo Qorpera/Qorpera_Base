@@ -27,6 +27,7 @@ const COFOUNDER_TOOLS = [
 	"data_apply",
 	"data_describe",
 	"data_query",
+	"end_role",
 	"find_mail",
 	"good_will_list",
 	"good_will_mark",
@@ -66,10 +67,12 @@ const COFOUNDER_TOOLS = [
 	"table_write",
 	"unpublish_site",
 	"update_memory",
+	"update_reading",
 	"update_skill",
 ];
+/** The company's reading of itself (20260930766000): update_reading is the Co-Founder's, end_role any run's that hires. */
 const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
-	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member",
+	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member" && tool !== "update_reading",
 );
 const WORKER_TOOLS = [
 	"company_delete",
@@ -110,6 +113,7 @@ const PRIVATE_TOOLS = EMPLOYEE_TOOLS.filter(
 		!tool.startsWith("machine_") &&
 		![
 			"create_group_chat",
+			"end_role",
 			"hire_agent",
 			"manage_code",
 			"manage_todo",
@@ -1115,12 +1119,7 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	["7", "done is a claim", "Treat every report of done as a claim", PLANNING],
 	["7", "apps remade with a kit", "tell its owner to remake it and name the kit", PLANNING],
-	[
-		"7",
-		"the company app",
-		"Keep one posted app of your own, named company, that shows the plan as a picture, never a list",
-		PLANNING,
-	],
+	// The Co-Founder's own company app gave way to the company's page, which shows the reading (overlay v18).
 	[
 		"7",
 		"the apps drawer's signs",
@@ -1148,6 +1147,71 @@ const RULES: [string, string, string, Run[]][] = [
 		PLANNING,
 	],
 	["7", "good will", "by you with good_will_mark, then show the members once what counted", PLANNING],
+	// The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
+	// conscious almost").
+	[
+		"7",
+		"a founder's ask goes to its owner",
+		"When the ask is work an agent owns, hand it to that owner in the same run and tell the founder who has it; do it yourself only when it is one step and nobody owns it.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"an existing agent only with the same kind of work and room",
+		"give it to an existing agent only when it is the same kind of work and that agent has room, otherwise hire.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"keep the reading",
+		"Keep the company's reading of itself, QorperaOS/vision/reading.md: where the company stands now, in its own words, as we.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"when the reading is saved",
+		"Save it with update_reading whenever it has stopped being true (a founder's decision, a finding that changes the picture, a first customer, a hire, a blocker gone) and in every planning run.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"answer as the company",
+		"When a founder asks how the company is doing, answer as the company, from the reading and the team's files",
+		COFOUNDER,
+	],
+	["7", "the senses", "Start with your context's senses", PLANNING],
+	["7", "what the senses show", "a card nobody answered, a login that holds the company still", PLANNING],
+	[
+		"7",
+		"the team decision",
+		"When the company's attention has moved, and every Monday, decide the team for where the company stands now",
+		PLANNING,
+	],
+	["7", "end a role", "whose work is over (end the role with end_role and say why)", PLANNING],
+	[
+		"7",
+		"none is an answer",
+		"update_reading asks for this decision when attention moves, and none with the reason is an answer.",
+		PLANNING,
+	],
+	[
+		"7",
+		"an unanswered vision card",
+		"A card still unanswered after two working days no longer holds the company",
+		FOUNDING,
+	],
+	[
+		"4",
+		"senses in the context",
+		"- senses: the platform's facts about the whole company as this run started",
+		COFOUNDER,
+	],
+	[
+		"9",
+		"the reading in the head",
+		"Its reading, when the company has one, is the company's own account of where it stands now",
+		ALL,
+	],
 	// 8. The employee's role.
 	["8", "own the outcomes", "You own the outcomes in your job description, your list of responsibilities.", EMPLOYEE],
 	[
@@ -1192,6 +1256,24 @@ const RULES: [string, string, string, Run[]][] = [
 		"8",
 		"a real exception",
 		"Raise a real exception when your job description says to, with the evidence and a recommended next step",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"the reading at each wake",
+		"At each wake, ask what your responsibilities call for given that, not what your routine said last time: conclude a routine whose purpose has passed and set up the one the work now needs.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"lessons out of routines",
+		"What you learn belongs in your notebook or the files, never in a routine's instructions.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"tell the Co-Founder",
+		"When the reading is wrong about your area, or your area has grown into work for another owner, tell the Co-Founder in one line.",
 		EMPLOYEE,
 	],
 	[
@@ -1653,6 +1735,19 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
+		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.
+		[
+			"keeping the reading",
+			"Keep the company's reading of itself",
+			[...EMPLOYEE, ...WORKERS, "private-conversation"],
+		],
+		["the senses", "- senses:", [...EMPLOYEE, ...WORKERS, "private-conversation"]],
+		["the team decision", "decide the team for where the company stands now", ["cofounder-member", ...EMPLOYEE]],
+		[
+			"the owner's wake question",
+			"At each wake, ask what your responsibilities call for",
+			[...COFOUNDER, ...WORKERS],
+		],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);

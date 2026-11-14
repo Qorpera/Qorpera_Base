@@ -425,6 +425,16 @@ async function fixture(
 					workers: { active: 5, blocked: 1 },
 				};
 			}
+			// The Co-Founder's senses (20260930765000), as qorpera_describe_company_senses answers them.
+			if (method === "qorpera_describe_company_senses") {
+				if (mode === "company-worker") throw new Error("A worker reads no senses");
+				return {
+					schema: "qorpera.company-senses/v1",
+					runId: f.binding.runId,
+					agents: [{ handle: "nora", todos: { open: 40, blocked: 2, doneLast7d: 0 } }],
+					questions: { count: 0, oldest: [] },
+				};
+			}
 			if (method === "qorpera_list_native_connector_tools") {
 				return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 			}
@@ -1124,6 +1134,8 @@ it.each([
 				"ask_member",
 				"create_group_chat",
 				"hire_agent",
+				// Ending an agent's role, beside hiring (20260930766000).
+				"end_role",
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
@@ -1152,7 +1164,8 @@ it.each([
 				"update_memory",
 				"update_skill",
 				// The Co-Founder deals the team out between the members (20260930702000).
-				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
+				// The Co-Founder keeps the company's reading of itself (20260930766000).
+				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member", "update_reading"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1165,7 +1178,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v17",
+			schema: "qorpera.hire-overlay/v18",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1177,6 +1190,21 @@ it.each([
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+		// The Co-Founder's company runs read the company's senses beside it; no other run asks for them.
+		const asked = f.pathCall.mock.calls.map(([method]) => method);
+		if (agentKind === "cofounder") {
+			expect(prompt.senses).toEqual({
+				schema: "qorpera.company-senses/v1",
+				runId: f.binding.runId,
+				agents: [{ handle: "nora", todos: { open: 40, blocked: 2, doneLast7d: 0 } }],
+				questions: { count: 0, oldest: [] },
+			});
+			expect(Object.keys(prompt).indexOf("senses")).toBe(Object.keys(prompt).indexOf("openWork") + 1);
+			expect(asked).toContain("qorpera_describe_company_senses");
+		} else {
+			expect(prompt).not.toHaveProperty("senses");
+			expect(asked).not.toContain("qorpera_describe_company_senses");
+		}
 		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
 		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
 		expect(prompt.skills).toMatchObject({
@@ -2654,6 +2682,27 @@ it("starts the run without the open-work count when the kernel cannot give it", 
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
+it("starts the Co-Founder's run with null senses when their read fails", async () => {
+	const f = await fixture("company-runtime");
+	f.context.agentKind = "cofounder";
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_senses") throw new Error("Senses unavailable");
+		return original(method, args, signal);
+	});
+	const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+	} finally {
+		errors.mockRestore();
+	}
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const prompt = JSON.parse(evidence.turnParameters.input[0].text);
+	expect(prompt).toHaveProperty("senses", null);
+	expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+});
+
 it("asks for the run's context and its wake together, and reports a context failure first", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
@@ -3321,6 +3370,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
 	// The same day update_wall left every catalog (the founder: "rather drop the wall - it's the wrong medium for
 	// activity"), and organize_apps no longer says "or on your wall", so both moved again.
+	// Later that day the Co-Founder's update_reading came after offer_agents_to_member and end_role after
+	// create_group_chat (the company's reading of itself, 20260930766000), and hire_agent's description says an existing
+	// coworker takes new work only when it is the same kind and it has room, so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3348,6 +3400,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"good_will_mark",
 		"crew_and_members",
 		"offer_agents_to_member",
+		"update_reading",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3363,6 +3416,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"update_skill",
 		"hire_agent",
 		"create_group_chat",
+		"end_role",
 		"manage_todo",
 		"manage_worker",
 		"manage_code",
@@ -3370,10 +3424,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"d6cbac16dc0684877675b9a24d77c8c2c27f92be366807bd558c83dc79415899",
+		"be69d55abd7e5c32ae7fc8163f4bac3e67341cce6dedf824f8aa58c2980caa03",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"8b5fab295597c778b540a1a056c3125524f4b38324d5ef65580b4d972de2a662",
+		"b5bf895140bbcc79691c1b0d6ee081db181c7c6e27f6de2d94547320634bc9dd",
 	);
 });
 

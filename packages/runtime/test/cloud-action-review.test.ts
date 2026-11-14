@@ -193,6 +193,13 @@ describe("which calls are reviewed", () => {
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
+		// The company's reading of itself (20260930766000): saving it is bookkeeping; ending a role changes who works here.
+		["update_reading", { operationKey: "k", attention: "product" }, "internal"],
+		[
+			"end_role",
+			{ operationKey: "k", agent: "research", reason: "The interviews are done.", name: "Research" },
+			"delegation",
+		],
 		["manage_routine", { action: "list" }, "read"],
 		["manage_routine", { action: "upsert" }, "delegation"],
 		["manage_routine", { action: "conclude" }, "delegation"],
@@ -3105,6 +3112,22 @@ describe("company sites (20260930550000)", () => {
 		).toMatchObject({
 			title: "Publish a website from another folder",
 			details: { from: "Webshop v2", "until now from": "Webshop" },
+		});
+		// Ending a role (20260930766000): its prepared arguments name the agent as its agent.md has it, and the reason.
+		expect(
+			describeCloudAction(tool("end_role"), {
+				operationKey: "k",
+				agent: "research",
+				reason: "The customer interviews are done.",
+				name: "Research",
+			}),
+		).toEqual({
+			title: "End an agent's role",
+			target: "Research",
+			details: {
+				reason: "The customer interviews are done.",
+				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
+			},
 		});
 		// The call names only the slug: the card is true for a website and an app link alike (v195).
 		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({

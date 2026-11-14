@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { parseCompanyStateFile, writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { type CloudFolderHire, CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
-import { CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER, cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
+import {
+	CLOUD_END_ROLE_TOOL_DESCRIPTION,
+	CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER,
+	cloudHiringTools,
+} from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -258,4 +262,138 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(
 		/check QorperaOS\/agents\/ before hiring again/,
 	);
+});
+
+// Ending a role (the company's reading of itself, 20260930766000): agent.md set to archived through a reviewed commit.
+const agentMd = (
+	id: string,
+	name: string,
+	kind: "co-founder" | "agent" = "agent",
+	status: "active" | "archived" = "active",
+) =>
+	writeAgentFile({
+		id,
+		name,
+		role: name,
+		agentKind: kind,
+		status,
+		colour: null,
+		figure: null,
+		model: null,
+		effort: null,
+		instructions: `Own ${name}.`,
+	});
+async function roles() {
+	const research = randomUUID();
+	const f = await fixture({
+		files: {
+			"QorperaOS/agents/research/agent.md": agentMd(research, "Research"),
+			"QorperaOS/agents/market/agent.md": agentMd(randomUUID(), "Market", "agent", "archived"),
+			"QorperaOS/agents/co-founder/agent.md": agentMd(randomUUID(), "Co-Founder", "co-founder"),
+		},
+	});
+	f.seed("QorperaOS/agents/nora/agent.md", agentMd(f.identity.staffAgentId, "Nora"));
+	return { ...f, research };
+}
+const END = { operationKey: "end-1", agent: "research", reason: "The customer interviews are done." };
+
+it("ends a role by setting agent.md to archived, recording the call's review for exactly that change", async () => {
+	const f = await roles();
+	const prepared = await f.hiring().prepareEndRole(END, f.context.signal);
+	expect(prepared).toEqual({ ...END, name: "Research" });
+	const result = parse(await f.hiring().endRole(END, f.context));
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-role-end-receipt/v1",
+		runId: f.identity.runId,
+		outcome: "saved",
+		agent: { id: f.research, name: "Research", folder: "QorperaOS/agents/research" },
+	});
+	expect(result.next).toBe(
+		"Research's role has ended. The platform now pauses its routines and closes its threads by itself; its files stay, and a member can bring it back. Tell the founders who and why.",
+	);
+	expect(f.commits).toHaveLength(1);
+	const [commit] = f.commits;
+	expect(commit).toMatchObject({ key: "end-role:end-1", receiptId: result.receiptId });
+	expect(commit?.units.map((unit) => [unit.op, unit.path, typeof unit.expectedVersion])).toEqual([
+		["write", "QorperaOS/agents/research/agent.md", "string"],
+	]);
+	expect(f.recordings[0]?.p_request).toEqual({
+		actionReviewId: f.context.actionReviewId,
+		tool: "end_role",
+		argumentSha256: f.context.argumentSha256,
+		units: commit?.units,
+	});
+	const agent = parseCompanyStateFile(
+		"QorperaOS/agents/research/agent.md",
+		f.text("QorperaOS/agents/research/agent.md") ?? "",
+	);
+	// Only the status changed: nothing else is deleted.
+	expect(agent?.ok && agent.file).toMatchObject({
+		kind: "agent",
+		id: f.research,
+		name: "Research",
+		status: "archived",
+		instructions: "Own Research.",
+	});
+	expect([...f.folders]).toContain("QorperaOS/agents/research");
+	// Once ended, a new call to end it is refused before any review.
+	await refuses(f.hiring().prepareEndRole(END, f.context.signal), "Research's role has already ended");
+});
+
+it("refuses before the review the Co-Founder, the calling agent, an ended role and a folder that is no agent's", async () => {
+	const f = await roles();
+	for (const [agent, reason] of [
+		["co-founder", "The Co-Founder's role does not end"],
+		["nora", "An agent does not end its own role"],
+		["market", "Market's role has already ended"],
+		["sales", "No agent has the folder QorperaOS/agents/sales"],
+		["groups", "No agent has the folder QorperaOS/agents/groups"],
+		["Not A Handle", "No agent has the folder"],
+	] as const)
+		await refuses(f.hiring().prepareEndRole({ ...END, agent }, f.context.signal), reason);
+	// The same refusals stand at the effect, but for an ended role: a replay must reach its receipt.
+	await refuses(f.hiring().endRole({ ...END, agent: "nora" }, f.context), "An agent does not end its own role");
+	const { actionReviewId: _, ...unreviewed } = f.context;
+	await refuses(f.hiring().endRole(END, unreviewed), "needs the automatic review's approval");
+	expect(f.commits).toEqual([]);
+	expect(f.recordings).toEqual([]);
+});
+
+it("tells the model an end that waits for a member not to call again, and is the end_role tool", async () => {
+	const waiting = await fixture(
+		{ files: { "QorperaOS/agents/research/agent.md": agentMd(randomUUID(), "Research") } },
+		{
+			hook: (path) =>
+				path.endsWith("research/agent.md") ? { outcome: "waiting_for_review", reason: "waiting_for_review" } : null,
+		},
+	);
+	const result = parse(await waiting.hiring().endRole(END, waiting.context));
+	expect(result).toMatchObject({ outcome: "waiting_for_review" });
+	expect(result.next).toContain("do not call again");
+	const f = await roles();
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tools = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
+	expect(tools.map((tool) => tool.name)).toEqual(["hire_agent", "create_group_chat", "end_role"]);
+	const tool = tools[2]!;
+	expect(tool.description).toBe(CLOUD_END_ROLE_TOOL_DESCRIPTION);
+	expect(tool.description).toContain("agent is its folder name under QorperaOS/agents/; reason is one sentence");
+	expect(() => tool.parseArguments({ ...END, reason: "Two\nlines" })).toThrow(CloudToolArgumentRefusal);
+	expect(() => tool.parseArguments({ ...END, reason: "x".repeat(281) })).toThrow(CloudToolArgumentRefusal);
+	expect(() => tool.parseArguments({ ...END, extra: 1 })).toThrow();
+	const parsed = tool.parseArguments(END);
+	// The card names the agent: prepare reads it before the review.
+	const prepared = await tool.prepare!(parsed, f.context);
+	expect(prepared).toEqual({ ...END, name: "Research" });
+	expect(parse((await tool.execute(prepared, f.context)) as { value: unknown })).toMatchObject({ outcome: "saved" });
+	expect(() => tool.parseArguments({ ...END, reason: "Another reason." })).toThrow(
+		/already used in this run for ending another role/,
+	);
+	// hire_agent says when an existing coworker takes new work.
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain(
+		"Give it to an existing coworker only when it is the same kind of work and that coworker has room; otherwise hire.",
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).not.toContain("beats a new hire");
 });

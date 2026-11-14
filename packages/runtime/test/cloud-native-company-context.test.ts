@@ -715,6 +715,7 @@ const STAFF_TOOLS = [
 	"good_will_mark",
 	"crew_and_members",
 	"offer_agents_to_member",
+	"update_reading",
 	"list_hooks",
 	"read_event",
 	"send_mail",
@@ -738,6 +739,7 @@ const STAFF_TOOLS = [
 	"update_skill",
 	"hire_agent",
 	"create_group_chat",
+	"end_role",
 	"manage_todo",
 	"manage_worker",
 	"manage_code",
@@ -846,7 +848,7 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	expect(stable).not.toContain("# Changes waiting for review");
 	// The planning run follows the head, in the routine runs only.
 	for (const instructions of compiled)
-		expect(instructions.includes("\n# Your planning run\nIn a planning run, read the vision")).toBe(
+		expect(instructions.includes("\n# Your planning run\nStart with your context's senses")).toBe(
 			instructions.includes("# This run: your routine"),
 		);
 	// No sentence says a tool may not be there.
@@ -895,6 +897,23 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(compile(without("manage_hook"))).not.toContain("open the company's email");
 	expect(compile(without("manage_hook"))).toContain("Say in a few lines who you hired and what each finds out first.");
 	expect(compile(without("offer_agents_to_member"))).not.toContain("offer_agents_to_member");
+	// The reading and its senses are the Co-Founder's in the company runs that keep it (update_reading); end_role is named
+	// only to a run that has it.
+	expect(full).toContain("Keep the company's reading of itself, QorperaOS/vision/reading.md");
+	expect(full).toContain("\n- senses: the platform's facts about the whole company as this run started");
+	for (const gone of ["update_reading", "Keep the company's reading of itself", "- senses:"])
+		expect(compile(without("update_reading"))).not.toContain(gone);
+	const planning = (tools: Set<string>) =>
+		compileCloudNativeCompanyInstructions(
+			context,
+			situationWake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+			{ head: "# Head", tools },
+		);
+	expect(planning(all)).toContain("whose work is over (end the role with end_role and say why)");
+	expect(planning(without("end_role"))).toContain("whose work is over (end the role and say why)");
+	expect(planning(without("end_role"))).not.toContain("end_role");
+	expect(planning(without("update_reading"))).not.toContain("decide the team for where the company stands now");
+	expect(planning(without("update_reading"))).toContain("Start with your context's senses");
 	// Until the vision is agreed the founding section is there; after, only what still applies.
 	expect(full).toContain("\n# Founding the company\n");
 	expect(full).toContain("Your first job is to build it with the founders until every founder agrees");
@@ -1912,29 +1931,33 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
 // no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
 // instructions were measured once more; a worker's never named the wall. Both, merged, measured once more.
+// The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
+// conscious almost"): the head's words name the reading (every run, a worker's too), a staff run's context names
+// senses where it keeps the reading, the Co-Founder's and the owner's roles take their new sentences, and every prompt
+// names overlay v18. All three were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
-			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
+			instructions: "d8c4bcb1b691faf126333177039ea455c5319dbedc1bb5ab0ed2bbc5253cc231",
+			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "39f414fa0fbfeb6ebdfee85086359a4860e59884528b59ca2ff37ec3726b9243",
-			prompt: "28ad297bf4b4ac59bc82cc15e387e30cffe46da8c888d462f1f3518924469c91",
+			instructions: "c3e23ba793c58349d977d817b00e28973967f31395d6a61095977fb13e1bfe7f",
+			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
-			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
+			instructions: "d8c4bcb1b691faf126333177039ea455c5319dbedc1bb5ab0ed2bbc5253cc231",
+			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -2207,7 +2230,8 @@ it("has an interface app show a thing to see and handle, never a document or a s
 	expect(cofounder).toContain(
 		"when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit",
 	);
-	expect(cofounder).toContain("Keep one posted app of your own, named company, that shows the plan as a picture");
+	// The company's page shows the reading instead of the Co-Founder's own company app (overlay v18).
+	expect(cofounder).not.toContain("Keep one posted app of your own, named company");
 });
 
 it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {
@@ -3024,4 +3048,42 @@ it("tells an agent to ask what its work waits for on a card that says what is st
 	])
 		expect(instructions).toContain(rule);
 	expect(instructions).not.toContain("put a new question you ask them on it");
+});
+
+// The company's reading of itself (the founder, 14 November 2026: "It should feel like the company is conscious
+// almost"): the Co-Founder's company runs carry the platform's facts about the company, senses, next to openWork, as
+// qorpera_describe_company_senses answers them; null when that read failed; no key at all in any other run.
+it("puts the senses next to open work when the run has them, null when their read failed, and nowhere else", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.agentKind = "cofounder";
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const openWork = { todos: { open: 1, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+	const senses = {
+		schema: "qorpera.company-senses/v1",
+		runId: f.binding.runId,
+		agents: [{ handle: "co-founder", todos: { open: 3, blocked: 1, doneLast7d: 0 } }],
+		questions: { count: 1, oldest: [] },
+	};
+	const prompt = (value?: JsonValue | null) =>
+		JSON.parse(
+			composeCloudNativeCompanyPrompt(
+				context,
+				null,
+				undefined,
+				undefined,
+				openWork,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				[],
+				value,
+			),
+		);
+	const keys = Object.keys(prompt(senses));
+	expect(keys.indexOf("senses")).toBe(keys.indexOf("openWork") + 1);
+	expect(prompt(senses).senses).toEqual(senses);
+	expect(prompt(null)).toHaveProperty("senses", null);
+	expect(prompt()).not.toHaveProperty("senses");
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(context, null))).not.toHaveProperty("senses");
 });
