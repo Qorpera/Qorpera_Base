@@ -81,7 +81,8 @@ function localPipe(config) {
 		signal.addEventListener("abort", stop, { once: true });
 		let stderr = Buffer.alloc(0);
 		child.stdin.on("error", () => undefined);
-		child.stdout.on("data", (chunk) => request.onStdout?.(chunk));
+		const kept = [];
+		child.stdout.on("data", (chunk) => (request.onStdout ? request.onStdout(chunk) : kept.push(chunk)));
 		child.stderr.on("data", (chunk) => {
 			stderr = Buffer.concat([stderr, chunk]).subarray(-request.stderrTailBytes);
 		});
@@ -93,7 +94,7 @@ function localPipe(config) {
 		})();
 		const [code] = await new Promise((resolve) => child.on("close", (...end) => resolve(end)));
 		signal.removeEventListener("abort", stop);
-		return { exitCode: code ?? 137, stdout: Buffer.alloc(0), stderrTail: stderr };
+		return { exitCode: code ?? 137, stdout: Buffer.concat(kept), stderrTail: stderr };
 	};
 }
 
@@ -704,7 +705,8 @@ async function driver() {
 
 		// 11. The machine's Codex is checked before it runs: hashed once per boot (its cost is in the first channel's
 		// exec events above: the sha256sum exec), and a home whose Codex is another build, or none, is refused in words.
-		const hashes = execEvents.filter((event) => event.event === "exec-end" && event.label === "main" && event.hash);
+		// The hashes that read the file (the session on another boot is refused by the same shell, 97, and keeps nothing).
+		const hashes = execEvents.filter((event) => event.event === "exec-end" && event.label === "main" && event.hash && event.exitCode === 0);
 		say(`TIMING the Codex hash at the first channel of the boot: ${hashes.map((event) => `${event.ms} ms`).join(", ")} (${hashes.length} hash for ${execEvents.filter((event) => event.event === "exec" && event.label === "main" && !event.hash).length} channels on the main executor)`);
 		const refusedWith = async (label) => {
 			const fresh = await startExecutor(label);
