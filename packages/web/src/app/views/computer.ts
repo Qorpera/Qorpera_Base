@@ -78,7 +78,8 @@ const POINTER_PASSING: ReadonlySet<string> = new Set([
 /** The desktop's live picture in the large view (20260930745000): its pointer pass is begun again when less than
  * STREAM_RENEW_MS is left of it (before the pointer's own POINTER_RENEW_MS: one renewal serves both), and whether it may
  * go on is checked every STREAM_CHECK_MS; at most one stream opens a second. A stream that failed is tried again after
- * STREAM_RETRY_MS times the failures in a row; STREAM_FAILURES of them turn it off for the page for STREAM_OFF_MS (the
+ * STREAM_RETRY_MS times the failures in a row (only a socket that drew pixels ends the run: its size alone does not);
+ * STREAM_FAILURES of them turn it off for the page for STREAM_OFF_MS (the
  * looks go on); a refusal or the desktop's end waits STREAM_PAUSE_MS, and the looks say why meanwhile. A node that
  * watches as many desktops as it may (STREAM_BUSY) is asked again after STREAM_BUSY_MS, the looks going on as they were. */
 const STREAM_RENEW_MS = 4000;
@@ -296,6 +297,9 @@ interface PageStream {
 	readonly sender: PageHold | SharedInput;
 	readonly stop: AbortController;
 	live: boolean;
+	/** Whether the socket now open drew pixels of the screen (a size alone is not a picture): only that ends a run of
+	 * failures (the v245 release review F3). */
+	drew: boolean;
 }
 
 /** One input on its way, and when the member made its parts (INPUT_MAX_AGE_MS: from their events, through every buffer). */
@@ -1939,7 +1943,7 @@ export class ComputerPanel {
 		const stream = this.#stream;
 		if (stream && (stream.sender !== sender || !this.#streamWanted(stream.sender))) this.#endStream(stream);
 		if (!sender || this.#stream || !this.#streamWanted(sender)) return;
-		const next: PageStream = { sender, stop: new AbortController(), live: false };
+		const next: PageStream = { sender, stop: new AbortController(), live: false, drew: false };
 		this.#stream = next;
 		void this.#keepStream(next);
 	}
@@ -2073,6 +2077,7 @@ export class ComputerPanel {
 				const pass = sender.pointer.pass;
 				if (signal.aborted || !pass) continue;
 				openedAt = Date.now();
+				stream.drew = false;
 				const end = await open(
 					sender.machineId,
 					{ pass: pass.id, hold },
@@ -2080,6 +2085,9 @@ export class ComputerPanel {
 					signal,
 				).catch(() => ({ kind: "failed", delivered: false }) as const);
 				if (signal.aborted) return;
+				// Only pixels drawn count as this socket having worked: a stream that sends its size and then fails, again and
+				// again, never showed the member anything, so it must reach the cutoff (the v245 release review F3).
+				const drew = stream.drew;
 				// Whatever comes next, the looks show the screen until another stream does.
 				this.#view?.streamEnded();
 				this.#streamLive(stream, false);
@@ -2110,11 +2118,11 @@ export class ComputerPanel {
 					this.#streamRefused(sender, end.code);
 					return;
 				}
-				if (end.kind === "renew" && end.delivered) {
+				if (end.kind === "renew" && drew) {
 					failures = 0;
 					continue;
 				}
-				failures = end.delivered ? 1 : failures + 1;
+				failures = drew ? 1 : failures + 1;
 				if (failures >= STREAM_FAILURES) {
 					this.#streamAfter = Date.now() + STREAM_OFF_MS;
 					return;
@@ -2136,7 +2144,10 @@ export class ComputerPanel {
 			if (this.#stream !== stream) return;
 			// The looks stop only once PIXELS of this stream are on the canvas, never at its size message: a stream that
 			// opens and then draws nothing must leave the member the pictures they had (review r4 F1 of #1746).
-			if (drawn === "drawn" && message.kind === "rects") this.#streamLive(stream, true);
+			if (drawn === "drawn" && message.kind === "rects") {
+				stream.drew = true;
+				this.#streamLive(stream, true);
+			}
 			// Work the picture discarded (it was cleared, or this stream ended while the area decoded) is no fault of the
 			// stream: a renewal reuses this PageStream, so taking it for a failure would end the socket that replaced it
 			// (review r2 F4 of #1746). A picture that could not be drawn ends it, and so does more waiting to be decoded

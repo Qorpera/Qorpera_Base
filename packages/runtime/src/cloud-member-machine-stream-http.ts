@@ -15,12 +15,47 @@ import type { Writable } from "node:stream";
 // runner-orchestrator's company-machine-stream.ts: the size, changed areas as PNG, the pointer's shape). A close says
 // why it ended: 4001 the pass ran out (the window buys another), 4003 a release cycle refused (its reason), 4004 the
 // desktop ended (off, restarted, another boot), 1000 the member closed it, 1001 the executor stops.
+//
+// THE CLIENT'S SIDE, AS AN INVARIANT (the v245 release review F1, and the lead's words on it): WHATEVER A CLIENT SENDS ON
+// AN UPGRADED STREAM, THE LISTENER SPENDS A BOUNDED AMOUNT OF WORK ON IT AND HOLDS A BOUNDED NUMBER OF BYTES FOR IT; ONCE A
+// STREAM IS ENDED, NOTHING MORE OF ITS INPUT IS READ. The upgrade before it is Node's to bound: its request whole within
+// 5 s (checked every second), headers at most Node's 16 KiB, at most 256 connections, nothing after the request taken.
+// After it:
+//  - What is kept of a client's input is at most one control frame's bytes (CLIENT_FRAME_BYTES): a read is parsed where
+//    it is, a frame's first two bytes are checked (a control frame, masked, at most 125 bytes) BEFORE anything of it is
+//    copied, and only a frame split across reads waits, in a carry of exactly that size. Nothing is joined.
+//  - A browser's frames are rare: a pong for each of our pings, one close, and seldom a ping of its own. Past
+//    CLIENT_FRAMES frames or CLIENT_READS reads in a CLIENT_WINDOW_MS window the client is not a correct one: ended
+//    (1008), and no longer read. Every frame costs at most CLIENT_FRAME_BYTES bytes looked at, every read one call.
+//  - A pong is written only while at most MAX_UNFLUSHED_PONGS of them wait unflushed (a client that does not read its
+//    pongs is ended); our own ping goes only once the last was answered, and a pong answers it only once it has LEFT
+//    this process (its write's callback ran): any other pong is a frame and nothing more, so the deadline, counted from
+//    the ping's write, ends a client that does not read whatever it sends (review r14). What waits to be written to a
+//    client is the pictures' bound (MEMBER_STREAM_HIGH_WATER_BYTES and a message, MEMBER_STREAM_UNFLUSHED_MESSAGES and
+//    one), at most four pongs, one ping and the close.
+//  - Ended means not read: the socket is paused and its data handler taken off at once, the carry let go; the close
+//    frame is written, and the socket destroyed once that is flushed, or after 2 s at the latest. (Paused, Node takes
+//    at most its readable high-water mark from the kernel, never looked at, and gone with the socket.)
+//  - Its windows run on a monotonic clock (performance.now()): a wall clock stepped back changes nothing.
 
 export const CLOUD_MEMBER_MACHINE_STREAM_PROTOCOL = "qorpera.machine-stream.v1";
 const ROUTE = /^\/v1\/member-machine-streams\/([A-Za-z0-9_-]{43})$/;
 const ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-/** What a member's stream may say back at most at once (a ping, a pong, a close): control frames only. */
-const MAX_INCOMING_BYTES = 256;
+/** The most a client's frame may be here: a control frame (a ping, a pong, a close), its 2 bytes of head, its 4 of mask
+ * and at most 125 of payload. What the listener keeps of a client's input is at most this. */
+const CLIENT_FRAME_BYTES = 2 + 4 + 125;
+/** A correct browser sends in any 10 s at most: a pong (our pings are 30 s apart), a close, and a ping of its own now and
+ * then (browsers send none of their own; a proxy on the way that keeps the line alive, at most about one a second): about
+ * a dozen at the very most. 32 is well past that and still nothing for the executor's loop (64 streams: about 200 frames
+ * a second in all, each at most 131 bytes looked at). */
+const CLIENT_WINDOW_MS = 10_000;
+const CLIENT_FRAMES = 32;
+/** And at most this many reads in a window: a correct client's frames come whole, one read each; a frame split a byte a
+ * read is 131 reads at the most, so one such frame still passes. A client that trickles bytes costs at most this. */
+const CLIENT_READS = 256;
+/** Pongs written to a client and not yet flushed: a correct browser reads what it is sent, and its own pings are rare. At
+ * this many, its next ping ends it (1008): pongs never pile up for a client that does not read them. */
+const MAX_UNFLUSHED_PONGS = 4;
 /** Past this much waiting to go out, a send waits for the way to drain. */
 export const MEMBER_STREAM_HIGH_WATER_BYTES = 2 * 1024 * 1024;
 /** And past this many messages written and not yet flushed (the lead's review r12, second round): a member that stops
@@ -129,16 +164,16 @@ function frameHead(opcode: number, length: number): Buffer {
 	}
 	return head;
 }
-function frame(opcode: number, payload: Buffer): Buffer {
-	return Buffer.concat([frameHead(opcode, payload.byteLength), payload]);
-}
 function closeFrame(code: number, reason: string): Buffer {
 	const text = Buffer.from(reason, "utf8").subarray(0, 123);
-	const payload = Buffer.alloc(2 + text.byteLength);
-	payload.writeUInt16BE(code, 0);
-	text.copy(payload, 2);
-	return frame(0x8, payload);
+	const close = Buffer.alloc(4 + text.byteLength);
+	close[0] = 0x88;
+	close[1] = 2 + text.byteLength;
+	close.writeUInt16BE(code, 2);
+	text.copy(close, 4);
+	return close;
 }
+const now = (): number => performance.now();
 function refuse(socket: Socket): void {
 	socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
 	socket.destroy();
@@ -251,64 +286,127 @@ export class CloudMemberMachineStreamListener {
 		const stop = new AbortController();
 		const open = { stop, socket };
 		this.#open.add(open);
-		let incoming = Buffer.alloc(0);
 		let ended = false;
-		let lastPong = Date.now();
+		/** A frame split across reads waits here, at most CLIENT_FRAME_BYTES; null once ended (let go). */
+		let carry: Buffer | null = Buffer.alloc(CLIENT_FRAME_BYTES);
+		let carried = 0;
+		let windowAt = now();
+		let frames = 0;
+		let reads = 0;
+		let pongs = 0;
+		/** When our ping was written, until its pong comes: one at a time. */
+		let pingAt: number | null = null;
+		/** Whether that ping has left this process (its write's callback ran): only then can a pong answer it. */
+		let pingLeft = false;
 		const end = (code: number, reason: string) => {
 			if (ended) return;
 			ended = true;
 			stop.abort(reason || "closed");
 			globalThis.clearInterval(pinger);
 			this.#open.delete(open);
-			if (!socket.destroyed) socket.end(closeFrame(code, reason));
-			// A browser that never answers the close is let go of after a moment.
+			// Ended means not read: nothing more of the client's input is taken, and what was kept of it goes.
+			socket.off("data", onData);
+			socket.pause();
+			carry = null;
+			carried = 0;
+			if (socket.destroyed) return;
+			// The close goes after what was already written; the socket goes once it is flushed, or after 2 s at the latest
+			// (a client that does not read).
 			const late = globalThis.setTimeout(() => socket.destroy(), 2000);
 			socket.once("close", () => globalThis.clearTimeout(late));
+			socket.end(closeFrame(code, reason), () => socket.destroy());
 		};
 		const pinger = globalThis.setInterval(() => {
-			if (Date.now() - lastPong > PONG_WITHIN_MS) {
-				end(1001, "");
-				socket.destroy();
-				return;
-			}
-			if (!socket.destroyed) socket.write(frame(0x9, Buffer.alloc(0)));
-		}, PING_EVERY_MS);
-		socket.on("data", (chunk: Buffer) => {
-			incoming = Buffer.concat([incoming, chunk]);
-			if (incoming.byteLength > MAX_INCOMING_BYTES + 14) {
-				end(1009, "");
-				return;
-			}
-			for (;;) {
-				if (incoming.byteLength < 2) return;
-				const first = incoming[0] as number;
-				const second = incoming[1] as number;
-				const opcode = first & 0x0f;
-				const masked = (second & 0x80) !== 0;
-				const length = second & 0x7f;
-				// Only whole, masked control frames come from a browser here: anything else ends the stream.
-				if ((first & 0x70) !== 0 || !masked || length > 125 || (first & 0x80) === 0) {
-					end(1002, "");
-					return;
+			if (pingAt !== null) {
+				// Unanswered: no second ping on top of it, and the stream ends once PONG_WITHIN_MS passed without its pong.
+				if (now() - pingAt >= PONG_WITHIN_MS) {
+					end(1001, "");
+					socket.destroy();
 				}
-				if (opcode !== 0x8 && opcode !== 0x9 && opcode !== 0xa) {
-					// It only shows: a browser that sends data is ended.
+				return;
+			}
+			pingAt = now();
+			pingLeft = false;
+			if (!socket.destroyed)
+				socket.write(frameHead(0x9, 0), (error) => {
+					if (!error) pingLeft = true;
+				});
+		}, PING_EVERY_MS);
+		const onData = (chunk: Buffer) => {
+			const kept = carry;
+			if (ended || !kept) return;
+			const at = now();
+			if (at - windowAt >= CLIENT_WINDOW_MS) {
+				windowAt = at;
+				frames = 0;
+				reads = 0;
+			}
+			if (++reads > CLIENT_READS) {
+				end(1008, "");
+				return;
+			}
+			let from = 0;
+			/** The i-th byte of what waits: the carry first, then this read where it is. */
+			const byte = (i: number): number => (i < carried ? kept[i] : chunk[from + i - carried]) as number;
+			for (;;) {
+				const have = carried + chunk.byteLength - from;
+				if (have === 0) return;
+				// Only whole, masked control frames come from a browser here, each checked before a byte of it is kept: a
+				// data frame ends the stream (1008: it only shows), anything else that is not a control frame too (1002).
+				const first = byte(0);
+				const opcode = first & 0x0f;
+				if (opcode <= 0x2) {
 					end(1008, "");
 					return;
 				}
-				if (incoming.byteLength < 6 + length) return;
-				const mask = incoming.subarray(2, 6);
-				const payload = Buffer.from(incoming.subarray(6, 6 + length));
-				for (let i = 0; i < payload.byteLength; i++) payload[i] = (payload[i] as number) ^ (mask[i % 4] as number);
-				incoming = incoming.subarray(6 + length);
-				if (opcode === 0x9) socket.write(frame(0xa, payload));
-				else if (opcode === 0xa) lastPong = Date.now();
-				else {
+				if ((first & 0x80) === 0 || (first & 0x70) !== 0 || (opcode !== 0x8 && opcode !== 0x9 && opcode !== 0xa)) {
+					end(1002, "");
+					return;
+				}
+				if (have < 2) break;
+				const second = byte(1);
+				const length = second & 0x7f;
+				if ((second & 0x80) === 0 || length > 125) {
+					end(1002, "");
+					return;
+				}
+				const total = 6 + length;
+				if (have < total) break;
+				if (++frames > CLIENT_FRAMES) {
+					end(1008, "");
+					return;
+				}
+				if (opcode === 0x9) {
+					if (pongs >= MAX_UNFLUSHED_PONGS) {
+						end(1008, "");
+						return;
+					}
+					// Its answer: a buffer of its own, at most 127 bytes, unmasked as it is copied.
+					const pong = Buffer.alloc(2 + length);
+					pong[0] = 0x8a;
+					pong[1] = length;
+					for (let i = 0; i < length; i++) pong[2 + i] = byte(6 + i) ^ byte(2 + (i % 4));
+					pongs++;
+					socket.write(pong, () => {
+						pongs--;
+					});
+				} else if (opcode === 0xa) {
+					// The answer to our ping, once that ping has left this process: a pong while none is out, or while ours
+					// still waits unflushed behind what the client does not read, counts as a frame and nothing more (review
+					// r14: unasked pongs must not keep a client that reads nothing alive).
+					if (pingAt !== null && pingLeft) pingAt = null;
+				} else {
 					end(1000, "");
 					return;
 				}
+				from += total - carried;
+				carried = 0;
 			}
-		});
+			// Less than a frame is left, and its length is known to fit (under 2 bytes, or under its checked total): it
+			// waits for the next read.
+			carried += chunk.copy(kept, carried, from);
+		};
+		socket.on("data", onData);
 		// The browser's side ended (the upgraded socket is half-open: its end alone is no close): the stream ends too.
 		socket.on("end", () => {
 			if (!ended) end(1001, "");
@@ -325,13 +423,15 @@ export class CloudMemberMachineStreamListener {
 				globalThis.clearInterval(pinger);
 				this.#open.delete(open);
 			}
+			carry = null;
 		});
 		const way: MemberStreamWay = { unflushed: 0 };
 		const sink: CloudMemberMachineStreamSink = {
 			send: async (message) => {
 				if (ended || socket.destroyed) throw new Error("MEMBER_MACHINE_STREAM_CLOSED");
-				// The head and the picture as writes in one, corked: the picture's bytes are never copied here.
-				await writeMemberStreamMessage(socket, way, frameHead(0x2, message.byteLength), message);
+				// The head and the picture as writes in one, corked: the picture's bytes are never copied here. A send waiting
+				// for the way ends with the stream, not with the socket's last 2 s.
+				await writeMemberStreamMessage(socket, way, frameHead(0x2, message.byteLength), message, stop.signal);
 			},
 		};
 		void run(sink, stop.signal).then(
