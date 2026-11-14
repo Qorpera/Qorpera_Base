@@ -2378,7 +2378,7 @@ export class LxdCompanyMachineHost {
 		const plan = this.#plan(e);
 		const instance = await this.#options.client.getInstance(plan.project, plan.name, signal);
 		if (!instance) return false;
-		plan.assertInstance(instance);
+		plan.assertInstance(instance, "run");
 		return instance.status === "Running";
 	}
 	async #step(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
