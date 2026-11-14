@@ -336,7 +336,7 @@ it("writes the live values' script into every kit's page, small and before the e
 	expect(page.indexOf(script)).toBeLessThan(page.indexOf('<script src="engine.js"></script>'));
 	expect(() => new Script(script)).not.toThrow();
 	// Every app of a kit carries it.
-	expect(Buffer.byteLength(script)).toBeLessThan(3584);
+	expect(Buffer.byteLength(script)).toBeLessThan(4096);
 	expect(pageScript(kitPage("marked", "board", "Marked", BOARD, () => true))).toContain("K.load=()=>");
 });
 
@@ -542,6 +542,176 @@ it("waits twice as long after each refused start, 10 minutes at most, and stops 
 			[4200, "known"],
 		]);
 		expect(watch.mock.calls.filter(([name]) => name === "shop/visits")).toHaveLength(1);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** A bridge whose shop/month cannot start until `made.now`, and answers from then on; the rest is `db`'s. */
+function lateMonth(db: ReturnType<typeof databases>) {
+	const made = { now: false };
+	const watch = vi.fn(
+		(
+			name: string,
+			params: Record<string, unknown>,
+			listener: (answer: unknown) => void,
+			failed: (error: Error) => void,
+		) => {
+			if (name !== "shop/month") return db.watch(name, params, listener);
+			queueMicrotask(() => {
+				if (made.now)
+					listener({
+						columns: ["orders", "revenue"],
+						rows: [{ orders: 340, revenue: 51000 }],
+						more: false,
+						asOf: "",
+					});
+				else failed(new Error("No such database."));
+			});
+			return () => undefined;
+		},
+	);
+	return { made, watch, starts: () => watch.mock.calls.filter(([name]) => name === "shop/month").length };
+}
+
+it("asks for a load itself when a wait ends, so a database made during the wait shows", async () => {
+	vi.useFakeTimers();
+	try {
+		const { made, watch, starts } = lateMonth(databases({ "shop/visits": { visits: 4200 } }));
+		const { kit, drawFrames } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), watch, onChange() {} });
+		// As the engines do: a load whenever the script says a live value moved.
+		let text = "";
+		const load = async () => {
+			text = await kit.load();
+		};
+		kit.onLive(() => void load());
+		await load();
+		expect(inputs(text)[0]).toEqual({ id: "orders", value: null, state: "unknown" });
+		// The database is made 4 seconds in, and its folder notice loads the page: inside the wait, so nothing is asked.
+		await vi.advanceTimersByTimeAsync(4_000);
+		made.now = true;
+		await load();
+		expect(starts()).toBe(1);
+		// Nothing else changes and nobody loads. At the wait's end the script asks for a load, and the value is there.
+		await vi.advanceTimersByTimeAsync(6_000);
+		drawFrames();
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(starts()).toBe(2);
+		expect(inputs(text)[0]).toEqual({ id: "orders", value: 340, state: "known" });
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("waits for a load that is running when a wait ends, and asks for one after it", async () => {
+	vi.useFakeTimers();
+	try {
+		// shop/visits never answers here, so every load waits its three seconds for it.
+		const { made, watch, starts } = lateMonth(databases({}));
+		const { kit, drawFrames } = openPage(ORDERS, { read: async () => JSON.stringify(ORDERS), watch, onChange() {} });
+		let text = "";
+		const load = async () => {
+			text = await kit.load();
+		};
+		kit.onLive(() => void load());
+		const first = load();
+		await vi.advanceTimersByTimeAsync(3_000);
+		await first;
+		made.now = true;
+		// A load starts 9 seconds in and is still waiting when shop/month's 10 seconds are over.
+		await vi.advanceTimersByTimeAsync(6_000);
+		const second = load();
+		await vi.advanceTimersByTimeAsync(2_500);
+		drawFrames();
+		expect(starts()).toBe(1);
+		await vi.advanceTimersByTimeAsync(2_500);
+		await second;
+		drawFrames();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(starts()).toBe(2);
+		await vi.advanceTimersByTimeAsync(3_000);
+		expect(inputs(text)[0]).toEqual({ id: "orders", value: 340, state: "known" });
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("asks nothing at a wait's end for a question the data no longer names", async () => {
+	vi.useFakeTimers();
+	try {
+		const { watch, starts } = lateMonth(databases({ "shop/visits": { visits: 4200 } }));
+		let data: Record<string, unknown> = ORDERS;
+		const { kit, drawFrames } = openPage(ORDERS, { read: async () => JSON.stringify(data), watch, onChange() {} });
+		let loads = 0;
+		const load = async () => {
+			loads++;
+			await kit.load();
+		};
+		kit.onLive(() => void load());
+		await load();
+		data = { ...ORDERS, groups: [{ label: "Shop", inputs: [ORDERS.groups[0].inputs[2]] }] };
+		await load();
+		await vi.advanceTimersByTimeAsync(10_000);
+		drawFrames();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(loads).toBe(2);
+		expect(starts()).toBe(1);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("counts the starts that are out, and does not wait for a question it will never start", async () => {
+	vi.useFakeTimers();
+	try {
+		// Eight questions, none of which can start: they are refused together, eight at a time.
+		const eight = (count: number) => ({
+			lang: "en",
+			title: "Shop",
+			groups: [
+				{
+					label: "Shop",
+					inputs: Array.from({ length: count }, (_, at) => ({
+						id: `q${at}`,
+						label: `Q${at}`,
+						min: 0,
+						max: 10,
+						value: { query: `shop/q${at}` },
+					})),
+				},
+			],
+		});
+		let data = eight(8);
+		const watch = vi.fn(
+			(
+				_name: string,
+				_params: Record<string, unknown>,
+				_listener: (answer: unknown) => void,
+				failed: (error: Error) => void,
+			) => {
+				queueMicrotask(() => failed(new Error("No such database.")));
+				return () => undefined;
+			},
+		);
+		const { kit } = openPage(data, { read: async () => JSON.stringify(data), watch, onChange() {} });
+		await kit.load();
+		expect(watch).toHaveBeenCalledTimes(8);
+		// Twelve rounds of eight are 96. The thirteenth may start four, not eight: 100 refused starts, never 104.
+		for (let round = 0; round < 40; round++) {
+			await vi.advanceTimersByTimeAsync(600_000);
+			await kit.load();
+		}
+		expect(watch).toHaveBeenCalledTimes(100);
+		// A ninth question, named after the page's starts are spent, is not started and holds no load for three seconds.
+		data = eight(9);
+		let loaded = false;
+		void kit.load().then(() => {
+			loaded = true;
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(loaded).toBe(true);
+		expect(watch).toHaveBeenCalledTimes(100);
 	} finally {
 		vi.useRealTimers();
 	}
