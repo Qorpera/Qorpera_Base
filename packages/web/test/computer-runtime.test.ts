@@ -1866,6 +1866,42 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
 	});
 
+	it("keeps the file dialog open through a pause, and a pick there is the member's word that they watch: the computer wakes once and the open goes out (review r3 F1 of #1808)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		const dialogs = heldDialogs(s);
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		choose(p, 2);
+		await flush();
+		expect(dialogs).toHaveLength(1);
+		// Half an hour with the dialog left open: the window pauses at its next turn (an asleep computer's is the next
+		// read of the machines), and the dialog stays.
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		expect(dialogs[0]!.signal.aborted).toBe(false);
+		// The member comes back and picks: no longer paused, the computer is woken once.
+		s.state.machines = [machine(1, { state: "starting" })];
+		dialogs[0]!.answer("notes/plan.md");
+		await flush();
+		expect(status(p)).not.toBe("Paused to save power. Still watching?");
+		expect(p.choices.map((choice) => choice.path)).toEqual(["notes/plan.md"]);
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+		// It runs with its screen off: the list is read again, and the start that turns the screen on carries the open.
+		s.state.machines = [machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.opens).toEqual(["notes/plan.md"]);
+		expect(s.starts).toHaveLength(1);
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+	});
+
 	it("is the wish from asleep: one press wakes it, turns the screen on and opens it, once it runs", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		s.state.apps = apps;

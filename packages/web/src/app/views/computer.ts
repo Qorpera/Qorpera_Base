@@ -3120,6 +3120,16 @@ export class ComputerPanel {
 		const computer = this.#computer;
 		const machine = this.#pick();
 		if (!computer || !machine || this.#listed?.canTakeOver !== true || signal.aborted) return;
+		// A choice is the member's word that they watch, as a press on the paused window is: a file picked in a dialog that
+		// stayed open through a pause leaves the pause, so the list is read and the screen looked at again and the choice
+		// is served (review r3 F1 of #1808). Paused, the loop pumps the choice and nothing else.
+		if (this.#paused) {
+			this.#paused = false;
+			this.#confirm = true;
+			this.#lastLook = Number.NEGATIVE_INFINITY;
+			this.#listStale = true;
+			this.#show("loading");
+		}
 		this.#touched();
 		const machineId = machine.machineId;
 		this.#endChoice("replaced");
