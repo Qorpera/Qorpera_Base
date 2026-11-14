@@ -336,7 +336,8 @@ export interface CloudCodingCommandServiceOptions {
 	 * The agent's home on the same ingress (slice 1): the one route that keeps a channel open, so a run's Codex can
 	 * run its own shell and file tools on its machine. `authorize` is SQL's
 	 * (`qorpera_authorize_home_session`), asked after the holder is proven and before a byte reaches the machine;
-	 * `open` starts `codex exec-server --listen stdio` on the machine as its agent account, on this node's own machine
+	 * `open` starts `codex exec-server --listen stdio` on the machine as its agent account (or, for a channel of kind
+	 * `sftp`, OpenSSH's `sftp-server`: Claude Code's file channel, slice C1), on this node's own machine
 	 * or, for a machine another node holds, through that node's peer listener (as a machine command is forwarded).
 	 */
 	home?: {
@@ -478,7 +479,8 @@ export class HttpCloudCodingCommandService {
 				socket.end(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
 				return;
 			}
-			side = await home.open(authority, { binding, holder }, controller.signal);
+			// One session's authority for every kind of channel (slice C1): the kind only says what runs on the machine.
+			side = await home.open(authority, { binding, holder, kind: handshake.kind ?? "exec" }, controller.signal);
 			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
 			// A front ends an upgraded connection that is quiet for its read timeout: while the channel is open this end
 			// says it is there, and the run's own such lines go no further than here.

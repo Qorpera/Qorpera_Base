@@ -6,7 +6,7 @@
 # sftp-server (copied from the test VM's own package, same Ubuntu release). And a tree of 5,000 files to measure on.
 # Run as root through run-on-node --sudo. Idempotent: an existing c2-home is reused.
 set -euo pipefail
-H=c2-home
+H=${C2_HOME:-qorpera-machine-c2e000000000400080000000000000d2}
 HERE=$(cd "$(dirname "$0")" && pwd)
 L() { lxc "$@" </dev/null; }
 X() { lxc exec $H -- "$@" </dev/null; }

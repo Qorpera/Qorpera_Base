@@ -198,3 +198,38 @@ it("says the home was lost when the channel ends under a command, and opens a ne
 	expect(home.opened).toHaveLength(2);
 	await shell.close();
 });
+
+it("opens one new channel for the commands that waited on an opening that failed (review round 1, F2)", async () => {
+	let opens = 0;
+	const working = fakeHome((message, send) => {
+		if (message.method !== "process/start") return;
+		const processId = (message.params as { processId: string }).processId;
+		send({ id: message.id, result: {} });
+		send({ method: "process/exited", params: { processId, exitCode: 0 } });
+		send({ method: "process/closed", params: { processId } });
+	});
+	const channel: CloudClaudeHomeChannel = {
+		open: async (input, signal) => {
+			opens += 1;
+			if (opens === 1) {
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				throw Object.assign(new Error("refused"), { reason: "MACHINE_NOT_RUNNING" });
+			}
+			return working.channel.open(input, signal);
+		},
+	};
+	const { shell } = await shellWith(channel);
+	const first = command(shell.socketPath, { cmd: "true", cwd: "/company", env: {} });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	// Two more arrive while the first opening is still pending, and wait on it.
+	const [a, b] = await Promise.all([
+		command(shell.socketPath, { cmd: "true", cwd: "/company", env: {} }),
+		command(shell.socketPath, { cmd: "true", cwd: "/company", env: {} }),
+	]);
+	expect((await first).code).toBe(255);
+	expect((await first).err).toContain("(MACHINE_NOT_RUNNING)");
+	expect([a.code, b.code]).toEqual([0, 0]);
+	expect(opens).toBe(2);
+	expect(shell.counts.channels).toBe(1);
+	await shell.close();
+});

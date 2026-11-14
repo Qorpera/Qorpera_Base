@@ -1,10 +1,15 @@
 // C2 proof: the driver (packages/runtime/src/cloud-claude-box.ts) as the run host runs it: an unprivileged account
 // in a unit hardened like the company host, its home over the gateway (gateway.py, C1's contract), Claude Code's model
 // a scripted stub reached through the driver's own egress relay (the proof transport sends Anthropic's hosts to it).
-// Made-up sign-ins only. Usage (as the proof's account): node prove.ts MODE LABEL
+// Made-up sign-ins only. prove.sh bundles it (esbuild) with the repository's own sources and runs the bundle.
+// Usage (as the proof's account): node prove.bundle.mjs MODE LABEL
 //   MODE: shell | files | a5 (token on fd 3, attack + next run) | a6 (login FILE, attack + next run with the same folder)
 //         | a2 (login file, no deny rules, no follow_symlinks) | a3 (login file, no deny rules) | cred-fresh |
-//         cred-expired | cred-bare | two (two members at once; the first is ended mid-command)
+//         cred-expired | cred-bare | two (two members at once; the first is ended mid-command) | alias (A6 with the
+//         login file's other names) | stop (the run's signal stops it mid-command, a Write waiting) | bench | look
+// The home's channels: BASE/proof.json says which (`gateway`: gateway.py on a Unix socket or TCP; `route`: the coding
+// executor's own ingress, router, host and LXD exec, as scripts/prove-home-sftp.mjs stands them up), and which
+// namespace helper and node the run host has.
 // Prints one JSON line per run ("RUN {...}") and "PROOF-END".
 
 import { spawn } from "node:child_process";
@@ -12,19 +17,34 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
-import { CLAUDE_BOX_CONFIGURATION, type ClaudeBoxProofWeakening, launchClaudeCodeBox } from "./src/cloud-claude-box.ts";
-import type { CloudClaudeHomeChannel, CloudClaudeHomeStream } from "./src/cloud-claude-home-shell.ts";
+import {
+	CLAUDE_BOX_CONFIGURATION,
+	type ClaudeBoxProofWeakening,
+	launchClaudeCodeBox,
+} from "../../../packages/runtime/src/cloud-claude-box.ts";
+import type { CloudClaudeHomeChannel, CloudClaudeHomeStream } from "../../../packages/runtime/src/cloud-claude-home-shell.ts";
+import { createCloudHomeChannel } from "../../../packages/runtime/src/cloud-home-channel-client.ts";
+import type { CloudNativeToolBinding } from "../../../packages/runtime/src/cloud-native-tool-authority.ts";
 
 const P = "/opt/qorpera-c2-proof";
 const BASE = "/var/lib/c2-proof";
-const GATEWAY = "/run/c2-gw/gw.sock";
 const STUB_PORT = 18443;
+interface ProofConfig {
+	channel:
+		| { kind: "gateway"; socket?: string; host?: string; port?: number }
+		| { kind: "route"; port: number; token: string; binding: CloudNativeToolBinding; holder: string };
+	namespaceHelper?: string;
+	node?: string;
+	/** The machine the channels name (the route's stood-in SQL answers for one machine id). */
+	machineId?: string;
+}
+const PROOF = JSON.parse(readFileSync(join(BASE, "proof.json"), "utf8")) as ProofConfig;
 const [mode = "shell", label = "x"] = process.argv.slice(2);
 const OUT = join(BASE, `out-${label}`);
 mkdirSync(OUT, { recursive: true, mode: 0o700 });
 const CANARY = new RegExp(`${"C2CAN"}ARY-(FD|FILE|RFR|FD2)-[0-9a-f]{16}`, "g");
 const tags = (text: string): string[] => [...new Set([...text.matchAll(CANARY)].map((m) => m[1]))].sort();
-const MACHINE = "00000000-0000-4000-8000-00000000c2c2";
+const MACHINE = PROOF.machineId ?? "00000000-0000-4000-8000-00000000c2c2";
 
 const configuration = {
 	...CLAUDE_BOX_CONFIGURATION,
@@ -33,17 +53,21 @@ const configuration = {
 	shellClient: `${P}/src/cloud-claude-home-shell-client.ts`,
 	stage: `${P}/qorpera-claude-box-stage.sh`,
 	// On the test VM unprivileged user namespaces are not restricted (sysctl 0), so util-linux's own unshare stands in
-	// for the run host's profiled copy (fusegate3.log proved the copy with its profile on a stock Ubuntu 26.04).
-	namespaceHelper: "/usr/bin/unshare",
+	// for the run host's profiled copy; the stock host's proof names the profiled copy (stock.sh).
+	namespaceHelper: PROOF.namespaceHelper ?? "/usr/bin/unshare",
 	sshfs: `${P}/sshfs`,
-	node: process.execPath,
+	node: PROOF.node ?? process.execPath,
 };
 
 /** The home's channels through the gateway: the kind and the session in the first line, as C1's handshake carries them. */
-const channel: CloudClaudeHomeChannel = {
+const gatewayChannel: CloudClaudeHomeChannel = {
 	open: (input, signal) =>
 		new Promise<CloudClaudeHomeStream>((resolve, reject) => {
-			const socket: Socket = createConnection(GATEWAY);
+			const where = PROOF.channel.kind === "gateway" ? PROOF.channel : {};
+			const socket: Socket =
+				"socket" in where && where.socket
+					? createConnection(where.socket)
+					: createConnection({ host: (where as { host?: string }).host, port: (where as { port?: number }).port ?? 0 });
 			const abort = (): void => {
 				socket.destroy();
 				reject(new Error("stopped"));
@@ -109,6 +133,21 @@ const channel: CloudClaudeHomeChannel = {
 };
 
 /** Anthropic's hosts, as the run's egress relay dials them, go to this run's stub. */
+/** The real route: the runtime's own channel client against the coding executor's ingress (C1). */
+const channel: CloudClaudeHomeChannel =
+	PROOF.channel.kind === "route"
+		? createCloudHomeChannel({
+				url: `http://127.0.0.1:${PROOF.channel.port}`,
+				token: PROOF.channel.token,
+				binding: PROOF.channel.binding,
+				holder: (() => {
+					const holder = (PROOF.channel as { holder: string }).holder;
+					return () => holder;
+				})(),
+				allowLoopback: true,
+			})
+		: gatewayChannel;
+
 const transport = (port: number) => ({
 	resolve: async () => ["93.184.216.34"],
 	connect: () => createConnection({ host: "127.0.0.1", port }),
@@ -231,6 +270,8 @@ interface RunOptions {
 	during?: (scratch: string) => Promise<void>;
 	/** The stub's port (two runs at once each have their own). */
 	port?: number;
+	/** Stop the run through its own signal this many ms after the stub saw the result of the step of this name. */
+	abortAfter?: { step: string; ms: number };
 }
 
 async function run(options: RunOptions): Promise<Record<string, unknown>> {
@@ -267,7 +308,25 @@ async function run(options: RunOptions): Promise<Record<string, unknown>> {
 		})();
 		if (options.during) await options.during(scratch);
 		let code: number;
-		if (options.endAfterMs !== undefined) {
+		if (options.abortAfter) {
+			const log = join(OUT, `stub-${options.tag}.jsonl`);
+			const seen = (): boolean => {
+				try {
+					return readFileSync(log, "utf8").includes(`"name": "${options.abortAfter?.step}"`);
+				} catch {
+					return false;
+				}
+			};
+			while (!seen()) await new Promise((resolve) => setTimeout(resolve, 100));
+			await new Promise((resolve) => setTimeout(resolve, options.abortAfter?.ms));
+			record.stoppedBySignalAtMs = Date.now() - t0;
+			controller.abort();
+			code = await box.exited;
+			record.exitedAfterStopMs = Date.now() - t0 - (record.stoppedBySignalAtMs as number);
+			// Long enough for the command that was running and the Write behind it to have reached the home, were the box
+			// still there (the command sleeps 8 s): prove.sh then looks at the home.
+			await new Promise((resolve) => setTimeout(resolve, 15_000));
+		} else if (options.endAfterMs !== undefined) {
 			await new Promise((resolve) => setTimeout(resolve, options.endAfterMs));
 			record.endedByRun = true;
 			await box.close();
@@ -354,6 +413,12 @@ async function main(): Promise<void> {
 		const folder = loginFolder(files);
 		await run({ tag: `${mode}-s1`, scenario: scen("recon"), login: { folder } });
 		await run({ tag: `${mode}-s2`, scenario: scen("attack-next"), login: { folder } });
+	} else if (mode === "alias") {
+		const folder = loginFolder({ ".credentials.json": credentials("FILE", false), ".claude.json": ONBOARDED });
+		await run({ tag: "alias-s1", scenario: scen("alias"), login: { folder } });
+		await run({ tag: "alias-s2", scenario: scen("attack-next"), login: { folder } });
+	} else if (mode === "stop") {
+		await run({ tag: "stop", scenario: scen("stop"), login: { token: token() }, abortAfter: { step: "bg-long", ms: 3000 } });
 	} else if (mode === "two") {
 		// The second member's scenario names this path (scen.py second ... /var/lib/c2-proof/run-first).
 		const first = join(BASE, "run-first");
