@@ -117,24 +117,35 @@ begin
 		'outputs', '[]'::jsonb), '1b: the member''s name and no outputs yet: ' || v::text);
 	begin
 		set local session_replication_role = replica;
-		-- The home's commits under the run (no receipt), and a tool's commit under a receipt (its report).
-		insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id, receipt_id, units, created_at)
-		values (extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-home-1', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, jsonb_build_array(
-					jsonb_build_object('op', 'write', 'path', 'onboarding/a.pdf', 'outcome', 'saved'),
-					jsonb_build_object('op', 'delete', 'path', 'onboarding/old.pdf', 'outcome', 'saved'),
-					jsonb_build_object('op', 'write', 'path', 'onboarding/refused.md', 'outcome', 'refused')), clock_timestamp() - interval '1 minute'),
-			(extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-home-2', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, jsonb_build_array(
-					jsonb_build_object('op', 'write', 'path', 'onboarding/b.md', 'outcome', 'saved'),
-					jsonb_build_object('op', 'write', 'path', 'onboarding/a.pdf', 'outcome', 'saved')), clock_timestamp()),
-			(extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', 'c4c-report', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), jsonb_build_array(
-					jsonb_build_object('op', 'write', 'path', 'onboarding/pdf/results.md', 'outcome', 'saved')), clock_timestamp());
+		-- Two commits of the machine's folder view as the run (the home's window credited them), and a commit of the run's
+		-- own (its report, no view): only the view's files are outputs, newest first; a folder, a delete are not.
+		insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id,
+			receipt_id, view_id, units, created_at)
+		values ('12700000-0000-4000-8000-0000000000e1', '92400000-0000-4000-8000-000000000020', 'c4c-home-1', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), '[]'::jsonb,
+				clock_timestamp() - interval '1 minute'),
+			('12700000-0000-4000-8000-0000000000e2', '92400000-0000-4000-8000-000000000020', 'c4c-home-2', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), '[]'::jsonb,
+				clock_timestamp()),
+			('12700000-0000-4000-8000-0000000000e3', '92400000-0000-4000-8000-000000000020', 'c4c-report', 'staff_agent',
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), null, '[]'::jsonb,
+				clock_timestamp());
+		insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no,
+			created_at)
+		select extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', x.path,
+			extensions.digest(public.qorpera_folder_key(x.path), 'sha256'), x.op, x.kind, x.commit_id::uuid, x.n,
+			clock_timestamp() - make_interval(secs => x.ago)
+		from (values ('onboarding/a.pdf', 'write', 'file', '12700000-0000-4000-8000-0000000000e1', 1, 60),
+			('onboarding/old.pdf', 'delete', 'file', '12700000-0000-4000-8000-0000000000e1', 2, 60),
+			('onboarding/new-folder', 'mkdir', 'folder', '12700000-0000-4000-8000-0000000000e1', 3, 60),
+			('onboarding/b.md', 'write', 'file', '12700000-0000-4000-8000-0000000000e2', 1, 0),
+			('onboarding/a.pdf', 'write', 'file', '12700000-0000-4000-8000-0000000000e2', 2, 0),
+			('QorperaOS/agents/alice/todos/onboarding/pdf/results.md', 'write', 'file', '12700000-0000-4000-8000-0000000000e3', 1, 0))
+			as x(path, op, kind, commit_id, n, ago);
 		set local session_replication_role = origin;
 		v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
 		perform pg_temp.base_assert(v -> 'outputs' = '["onboarding/a.pdf", "onboarding/b.md"]'::jsonb,
-			'1b: what its home saved, newest first, without deletes, refusals or its report: ' || v::text);
+			'1b: what its home wrote, newest first, without deletes, folders or its report: ' || v::text);
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;

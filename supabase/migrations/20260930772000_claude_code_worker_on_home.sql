@@ -115,10 +115,11 @@ select pg_temp.c4c_replace('public.qorpera_company_state_worker_rules(uuid,uuid,
 -- 4. What the worker's run reads of itself ---------------------------------------------------------------------------------
 
 -- For the run of a Claude Code worker, through the native host (scope `binding`): the name of the member it works for,
--- as the dispatch's words say it (never an id), for its failure words; and what its run changed in the company folder
--- outside its own report, newest first: the saved units of the run's commits that no tool's receipt carries, which are
--- the commits the home's folder window credited to the run (Claude Code has no other way to write). A deleted path is
--- not an output. At most 64 paths. Another run is refused (42501).
+-- as the dispatch's words say it (never an id), for its failure words; and the files its run wrote through the
+-- machine's folder view, newest first: the commits a view made as this run, which are the ones the home's folder window
+-- credited to it (Claude Code has no other way to write; the run's own report and work log are not commits of a view).
+-- Each is a file this run wrote, as the report's rule takes a listed file (20260928469130). At most 64 paths. Another
+-- run is refused (42501).
 create function public.qorpera_claude_worker_run_facts(p_binding jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_worker public.qorpera_runtime_workers%rowtype; v_paths jsonb;
@@ -131,12 +132,11 @@ begin
 	if v_worker.id is null or v_worker.harness is distinct from 'claude-code' then
 		raise exception 'The run is no Claude Code worker''s' using errcode = '42501'; end if;
 	select coalesce(jsonb_agg(changed.path order by changed.at desc, changed.path), '[]'::jsonb) into v_paths
-	from (select unit ->> 'path' as path, max(c.created_at) as at
-		from public.qorpera_folder_commits c cross join lateral jsonb_array_elements(c.units) unit
-		where c.run_id = v_run.id and c.environment_id = v_run.environment_id and c.receipt_id is null
-			and unit ->> 'outcome' = 'saved' and unit ->> 'op' is distinct from 'delete'
-			and jsonb_typeof(unit -> 'path') = 'string'
-		group by unit ->> 'path' order by max(c.created_at) desc, unit ->> 'path' limit 64) changed;
+	from (select v.path, max(v.created_at) as at
+		from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
+		where c.run_id = v_run.id and c.environment_id = v_run.environment_id and c.view_id is not null
+			and v.kind = 'file' and v.op in ('write', 'move_in', 'copy')
+		group by v.path order by max(v.created_at) desc, v.path limit 64) changed;
 	return jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1',
 		'member', public.qorpera_claude_worker_member_name(v_run.profile_id, v_worker.requested_by_user_id),
 		'outputs', v_paths);

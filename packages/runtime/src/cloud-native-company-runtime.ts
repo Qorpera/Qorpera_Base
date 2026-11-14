@@ -1777,8 +1777,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				argumentSha256: createHash("sha256").update(reportText).digest("hex"),
 				signal: runSignal,
 			});
-			const answer = saved.kind === "text" ? (JSON.parse(saved.value) as { outcome?: unknown }) : {};
-			if (answer.outcome !== "saved") throw new Error("The Claude Code worker's report was not saved");
+			const answer =
+				saved.kind === "text" ? (JSON.parse(saved.value) as { outcome?: unknown; reason?: unknown; problems?: unknown }) : {};
+			// The folder core's own reason and problems name rules and paths, never the report's text.
+			if (answer.outcome !== "saved")
+				throw new Error(
+					`The Claude Code worker's report was not saved (${String(answer.outcome)}: ${String(answer.reason)} ${JSON.stringify(answer.problems ?? []).slice(0, 600)})`,
+				);
 			return {
 				providerSessionId: claudeWorkerSessionId(outcome),
 				delivery: { messageCount: 0, finalMessageId: null },
