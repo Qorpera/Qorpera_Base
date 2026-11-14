@@ -28,9 +28,25 @@
 -- * A running machine is untouched (it is reserved; nothing here runs for it), and a placement moved for any other
 --   reason (no room on its node, the folder's new-disk rule, a give-away under real disk pressure) moves as before.
 --
--- No table changes. The function is replaced in place (create or replace through its own definition): no table lock;
--- admissions running meanwhile finish on the old body. Patched by exact text: the migration fails unless the old line is
--- there exactly once. The new body names this migration, for the deploy guards.
+-- The way out when the executor no longer accepts a kept machine's guest helper (review r1 F2 of #1788). Only the executor
+-- knows the helpers it accepts (helperSha256 and previousHelperSha256s, at most 16); one dropped from that list made every
+-- machine of its image fail each start with COMPANY_MACHINE_HELPER_DIFFERS, for good, as SQL keeps its placement now. The
+-- executor already records that code on the placement (qorpera_record_company_machine_error, stage start). From now on
+-- that record also retires the placement when it was made under an EARLIER policy of its executor (its binding does not
+-- hold the executor's policy now), awake or asleep, wanted running or not, under the same check the record makes (the
+-- placement's executor and node, not retired, not removed): its commands end lost (the runs that asked are told), and
+-- the machine keeps when its disk went (disk_freed_at), so its view says diskFreed and a take-again says it starts empty.
+-- The executor then stops it if it holds room and deletes its VM and disk (removeDue), as any retired placement. A
+-- machine still wanted running starts on a new disk at its next admission, on the current policy; one not wanted running
+-- stays without a placement until it is asked for again. It cannot loop: a placement on the current policy is never
+-- retired this way (its image's helper is the executor's current one; were the executor configured with another, every
+-- new machine would fail alike, and retiring would only make one VM after another). Once retired, a second record is
+-- a no-op. A company whose fence is busy past its brief wait is retired at the next record; the record itself goes on.
+-- Any other code, and the error's recording, are as before.
+--
+-- No table changes. The two functions are replaced in place (create or replace through their own definition): no table
+-- lock; calls running meanwhile finish on the old body. Patched by exact text: the migration fails unless each old text
+-- is there exactly once. The new bodies name this migration, for the deploy guards.
 set local lock_timeout = '3s';
 
 do $$
@@ -47,5 +63,57 @@ begin
 	if position('20260930760000' in v_definition) > 0 then raise exception '20260930760000 is already applied'; end if;
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
 		raise exception '20260930760000 anchor differs in qorpera_admit_company_machine: %', left(v_old, 80); end if;
+	execute replace(v_definition, v_old, v_new);
+end $$;
+
+-- The way out for a kept machine whose guest helper its executor refuses (review r1 F2 of #1788). Internal: called by
+-- qorpera_record_company_machine_error, which checked the service role. Locks as custody does: the company's fence
+-- (briefly), the machine, then the placement. True when it retired the placement.
+create function public.qorpera_company_machine_helper_refused(p_placement_id uuid, p_owner text, p_machine_id_sha256 text)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine public.qorpera_company_machines%rowtype;
+	v_policy jsonb;
+begin
+	-- 20260930760000
+	perform public.qorpera_company_machine_fence_briefly(placement.profile_id) from public.qorpera_company_machine_placements placement
+	where placement.id = p_placement_id;
+	select machine.* into v_machine from public.qorpera_company_machines machine join public.qorpera_company_machine_placements placement
+		on placement.machine_id = machine.id where placement.id = p_placement_id for update of machine;
+	select * into v_placement from public.qorpera_company_machine_placements where id = p_placement_id for update;
+	-- The record's own check: the placement of this executor on its node, still current.
+	if v_placement.id is null or v_placement.owner is distinct from p_owner or v_placement.machine_id_sha256 is distinct from p_machine_id_sha256
+		or v_placement.retired_at is not null or v_placement.removed_at is not null then
+		return false; end if;
+	-- Only one made under an earlier policy of its executor: a new placement, on the current policy, is never retired so.
+	select policy into v_policy from public.qorpera_machine_executors where owner = v_placement.owner;
+	if v_placement.binding @> v_policy then return false; end if;
+	-- Its programs stop with it; the runs that asked are told.
+	perform public.qorpera_end_company_machine_commands(v_machine, 'lost');
+	update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = v_placement.id;
+	-- Its disk goes with the placement: the machine is told (its view's diskFreed, a take-again's reused).
+	update public.qorpera_company_machines set disk_freed_at = clock_timestamp() where id = v_machine.id;
+	return true;
+end $$;
+revoke all on function public.qorpera_company_machine_helper_refused(uuid, text, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+do $$
+declare v_definition text := pg_get_functiondef('public.qorpera_record_company_machine_error(uuid,text,text,text,text)'::regprocedure);
+	v_old text := $old$		raise exception 'Machine error invalid' using errcode = '22023'; end if;
+$old$;
+	v_new text := $new$		raise exception 'Machine error invalid' using errcode = '22023'; end if;
+	-- 20260930760000: a guest helper its executor refuses, on a placement of an earlier policy, retires that placement (the
+	-- machine is told; it starts on a new disk when asked). A busy company is retired at a later record; this one goes on.
+	if p_code = 'COMPANY_MACHINE_HELPER_DIFFERS' then
+		begin
+			perform public.qorpera_company_machine_helper_refused(p_placement_id, p_owner, p_machine_id_sha256);
+		exception when lock_not_available then null;
+		end;
+	end if;
+$new$;
+begin
+	if position('20260930760000' in v_definition) > 0 then raise exception '20260930760000 is already applied'; end if;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception '20260930760000 anchor differs in qorpera_record_company_machine_error: %', left(v_old, 80); end if;
 	execute replace(v_definition, v_old, v_new);
 end $$;

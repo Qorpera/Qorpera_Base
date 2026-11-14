@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A company machine's words follow its disk being kept across an image switch (migration `20260930760000`, #1788): a boot whose earlier helper takes no `/company` says a new machine has it (`FOLDER_VIEWLESS["old-helper"]`), not that it gets it after a sleep and wake; two comments say the same. No behaviour changes.
 
 ### Breaking Changes
 

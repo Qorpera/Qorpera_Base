@@ -3248,7 +3248,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });
