@@ -1843,7 +1843,9 @@ text, an account number, a single payment or the summary's items. Design: the co
   `20260930769000`), the summary's own days and month are the vault's UTC ones, taken at its fetch, and can lead or
   lag the company's by hours: `money-balance`'s default range ends on the summary's newest day when that is the
   company's tomorrow, and `money-kinds`' "this month" is the summary's own month when that is the month of the
-  company's yesterday, today or tomorrow (either month may be named as `month`; the company's own then has no rows).
+  company's today or tomorrow (a month that leads, in a zone behind UTC; either month may be named as `month`, and the
+  company's own then has no rows). A summary of an earlier month is never this month's: the company's month has no
+  rows until the vault fetches again.
   - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
     `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
     `paused_since`; the numbers are null without a summary.

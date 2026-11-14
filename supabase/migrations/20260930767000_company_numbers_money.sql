@@ -27,9 +27,10 @@
 --    Until slice M2 (migration 20260930769000 makes the vault count in the company's zone) the summary's own days and
 --    month are the vault's UTC ones, taken at the fetch, and lead or lag the company's by hours. So money-balance's
 --    default range ends on the summary's newest day when that is the company's tomorrow (never later), and money-kinds'
---    "this month" is the summary's own month when that is the month of the company's yesterday, today or tomorrow (a
---    fetch just past midnight UTC in a zone behind it): that month is answered and may be named as :month, beside the
---    company's own month, which then answers no rows.
+--    "this month" is the summary's own month when that is the month of the company's today or tomorrow (a fetch just
+--    past midnight UTC on the 1st, in a zone behind UTC): that month is answered and may be named as :month, beside the
+--    company's own month, which then answers no rows. A summary of an earlier month (a fetch before the company's
+--    month began, and none since) is never "this month": the company's month answers no rows.
 --    Never answered: who paid or was paid, transfer texts, account numbers (`payTo`), single transactions, the summary's
 --    items. The `site` questions (sites, site-now, site-hours, site-days, site-pages) answer 0A000 "not counted yet":
 --    slice S1 counts them. Any other question, and a money question the caller may not read: P0002 "No question
@@ -72,11 +73,12 @@ begin
 end $$;
 
 -- The month money-kinds answers as "this month": the summary's own (the vault's UTC month at its fetch) when that is the
--- month of the company's yesterday, today or tomorrow, else the company's own month.
+-- month of the company's today or tomorrow (a month that leads, in a zone behind UTC), else the company's own month. A
+-- month that lags is never taken: a stale summary of last month is not this month's.
 create function public.qorpera_company_numbers_kinds_month(p_today date, p_summary_month text)
 returns text language sql immutable set search_path = '' as $$
-	select case when p_summary_month in (to_char(p_today - 1, 'YYYY-MM'), to_char(p_today, 'YYYY-MM'),
-		to_char(p_today + 1, 'YYYY-MM')) then p_summary_month else to_char(p_today, 'YYYY-MM') end
+	select case when p_summary_month in (to_char(p_today, 'YYYY-MM'), to_char(p_today + 1, 'YYYY-MM'))
+		then p_summary_month else to_char(p_today, 'YYYY-MM') end
 $$;
 
 -- The day money-balance's default range ends on: the company's today, or the summary's newest day (the vault's UTC
