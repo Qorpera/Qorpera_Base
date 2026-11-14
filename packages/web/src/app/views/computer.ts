@@ -607,10 +607,6 @@ export class ComputerPanel {
 	 * yet, a click waiting for its second, a wheel turn, a press) to the input it gathered it for, which takes it only
 	 * while that is still the window's (review r2 F1 of #1701). */
 	#shared: SharedInput | undefined;
-	/** The member acted on this window (claim): it is theirs, never the rule's (20260930742000). */
-	#members = false;
-	/** The window is closing by the rule's own close (closeByRule): nothing is given back. */
-	#quiet = false;
 	/** The first time this browser shares a computer, the large view says so in one quiet line, until it goes back. */
 	#introduce = !sharedSeen();
 	#introShown = false;
@@ -678,9 +674,6 @@ export class ComputerPanel {
 			this.#closeButton,
 		);
 		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
-		// Any touch of the window is the member's act on it (20260930742000), seen before the window's own handlers.
-		for (const event of ["pointerdown", "keydown", "wheel", "click", "focusin"] as const)
-			this.el.addEventListener(event, () => this.claim(), { capture: true, passive: true, signal });
 		// The window stands in its thread (computer-place.ts): a press marks its focus, which keeps the hover controls down
 		// after it; entered, it is fixed over the thread it stands in.
 		this.#fitPreview = attachComputerPlace(this.el, signal);
@@ -729,7 +722,6 @@ export class ComputerPanel {
 			mount: this.#body,
 			title: this.#titleText(),
 			onExpandedChange: (expanded) => {
-				if (expanded) this.claim();
 				this.#setExpanded(expanded);
 				// The line that says the computer is shared was said: once is enough (20260930734000).
 				if (!expanded && this.#introShown) this.#introduce = false;
@@ -808,18 +800,14 @@ export class ComputerPanel {
 			this.#quicken();
 		});
 		if (unsubscribe) signal.addEventListener("abort", unsubscribe, { once: true });
-		// The member's click opened it: the first list read decides what starts (OPEN_STARTS). It is theirs.
-		if (open.asked) {
-			this.claim();
-			this.#ask = { before: this.#listReads, at: Date.now() };
-		}
+		// The member's click opened it: the first list read decides what starts (OPEN_STARTS).
+		if (open.asked) this.#ask = { before: this.#listReads, at: Date.now() };
 		void this.#loop(computer, signal).catch(() => undefined);
 	}
 
 	/** The member's own click asked for this computer again (the window stands open, or shows again in a thread): the
 	 * first list read begun after it decides what starts (OPEN_STARTS), as at a first open. */
 	ask(): void {
-		this.claim();
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		this.#ask = { before: this.#listReads, at: Date.now() };
 		this.#wakeFailed = undefined;
@@ -893,7 +881,6 @@ export class ComputerPanel {
 	/** Take the desktop over (the window's Take over, or the agent's take-over card): at once when the window shows a
 	 * running desktop, or as soon as it does. */
 	takeOver(): void {
-		this.claim();
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		// Shared input on its way goes no further: what comes next is private (review r1 F1 of #1701).
 		this.#endShared();
@@ -945,7 +932,6 @@ export class ComputerPanel {
 	 * growing waits, never renews the hold and never takes it up again from the list (review r1 F4, F5; r2). A hold never
 	 * given back ends by itself in 5 minutes. */
 	handBack(): Promise<boolean> {
-		this.claim();
 		this.#wantTakeOver = undefined;
 		this.#released();
 		// A hold of the member's the window shows from elsewhere is owed from this click, at the epoch the list gave: its
@@ -997,42 +983,13 @@ export class ComputerPanel {
 	}
 
 	focus(): void {
-		this.claim();
 		this.el.focus();
-	}
-
-	/** The member's act on this window (20260930742000), from inside it (a press, a key, a wheel, an input, a button) or
-	 * from outside (the agent's card's Computer, Take over and I'm done, the take-over card): set at the act, before any
-	 * request goes, and never cleared. A window the rule opened by itself (computer-by-itself.ts) is the member's from
-	 * then on: the rule never closes it, whatever answer comes, or none. */
-	claim(): void {
-		this.#members = true;
-	}
-
-	/** Whether the rule that opened this window by itself may close it now: nothing of the member's is alive in it (no
-	 * act of theirs ever, so no request of theirs in flight; no hold; no large view). */
-	get closableByRule(): boolean {
-		return !this.#members && !this.holding && !this.el.classList.contains("is-entered") && !this.#stop.signal.aborted;
-	}
-
-	/** The rule's own close (20260930742000): only takes the window away. It does nothing unless closableByRule, and it
-	 * never gives a desktop back or calls off a request (there is none of the member's): the ledger is not asked. */
-	closeByRule(): boolean {
-		if (!this.closableByRule) return false;
-		this.#quiet = true;
-		this.dispose();
-		return true;
 	}
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
-		// The window closes (the member's or the rule's): a choice standing ends with it, replaced.
+		// The window closes: a choice standing ends with it, replaced.
 		this.#endChoice("replaced");
-		// The rule's close (closeByRule): nothing of the member's is here to give back or end; only the window goes.
-		if (this.#quiet) {
-			this.#teardown();
-			return;
-		}
 		// The window closes: what the member may hold of the agent's desktops goes back through the company's ledger, which
 		// outlives the window, asks again until the database confirms, and keeps the take-over card waiting till then
 		// (review r2 F4). A take-over still on its way is answered first; what it gets goes back as it comes. As the
@@ -1046,9 +1003,8 @@ export class ComputerPanel {
 		this.#teardown();
 	}
 
-	/** Everything the window runs ends, on both of its closes (the member's and the rule's): its signal (every listener,
-	 * the loop and its waits, the hints, the holds' subscription, the drag), its timers, the picture's view and the
-	 * scene. Never the release ledger: the member's close asks that first, the rule's never needs it. */
+	/** Everything the window runs ends as it closes: its signal (every listener, the loop and its waits, the hints, the
+	 * holds' subscription), its timers, the picture's view and the scene. The release ledger is asked first (dispose). */
 	#teardown(): void {
 		this.#stop.abort();
 		this.#poke();
@@ -1504,7 +1460,6 @@ export class ComputerPanel {
 	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
 	 * window's, of the computer chosen now (review r2 F1 of #1701). */
 	#enqueue(hold: PageHold, action: MachineDesktopAction, made: InputSpan): void {
-		this.claim();
 		if (
 			this.#hold !== hold ||
 			hold.stop.signal.aborted ||
@@ -1520,7 +1475,6 @@ export class ComputerPanel {
 	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
 	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
 	#share(shared: SharedInput, action: MachineDesktopAction, made: InputSpan): void {
-		this.claim();
 		if (this.#shared !== shared || shared.stop.signal.aborted || !this.#sharingOf(shared)) {
 			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701). This
 			// input is dropped with it: said when the member did not end it (review r5 F2).
@@ -2506,7 +2460,6 @@ export class ComputerPanel {
 	 * its screen comes on when it runs (20260930714000). A wake that fails ends the wish at once and says so, with Try
 	 * again; the list says where it stands. */
 	async #wake(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
-		this.claim();
 		if (this.#waking) return;
 		this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
 		this.#startEnded = undefined;
@@ -2748,7 +2701,6 @@ export class ComputerPanel {
 
 	/** The state's own button: wake the machine, keep watching, or try again. */
 	async #act(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
-		this.claim();
 		const state = this.#loading.dataset.state;
 		this.#touched();
 		// Try again after an open that failed: that same open (start and open), as the member chose it.
@@ -2798,7 +2750,6 @@ export class ComputerPanel {
 	 * The wish is this page's, for that computer: it ends at its picture, a refusal, a close, a switch, or WANT_ON_MS. Never
 	 * on open: a computer costs hours, so it takes a press. */
 	async #startComputer(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
-		this.claim();
 		const chosen = this.#chosen;
 		this.#making = true;
 		this.#startRefused = undefined;
@@ -2869,7 +2820,6 @@ export class ComputerPanel {
 	 * its way up, keeps it, and the next look tells. Nothing of it touches the window once the member chose another
 	 * machine or closed it. */
 	async #turnOn(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
-		this.claim();
 		if (this.#turningOn) return;
 		this.#turningOn = true;
 		this.#startedAt = Date.now();
@@ -3357,14 +3307,8 @@ export class ComputerPanel {
  */
 export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
-	/** When a window shows by itself in its agent's thread, and goes again (20260930742000). */
-	readonly byItself = new ComputerByItself({
-		current: (agentId) => {
-			const panel = this.#panels.get(agentId);
-			return panel ? { el: panel.el, theirs: !panel.closableByRule } : undefined;
-		},
-		close: (agentId) => this.closeByRule(agentId),
-	});
+	/** When a window shows by itself in its agent's thread (20260930742000). */
+	readonly byItself = new ComputerByItself();
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #options: ComputerPanelOptions;
@@ -3383,8 +3327,6 @@ export class ComputerPanels {
 	 * or not (a closed window's hand-back is still the ledger's). True once nothing of the agent's is held; false while
 	 * something is not confirmed (asked again meanwhile; the lease ends by itself in 5 minutes). */
 	releaseAgent(agentId: string): Promise<boolean> {
-		// The take-over card's I'm done: the member's act on the agent's window (20260930742000).
-		this.#panels.get(agentId)?.claim();
 		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId, "handed_back", true);
 	}
 
@@ -3417,21 +3359,9 @@ export class ComputerPanels {
 		return panel;
 	}
 
-	/** The rule's close of a window it opened by itself (computer-by-itself.ts): only when the window says nothing of the
-	 * member's is alive in it; never gives anything back. Whether it closed. */
-	closeByRule(agentId: string): boolean {
-		const panel = this.#panels.get(agentId);
-		if (!panel?.closeByRule()) return false;
-		this.byItself.released(agentId);
-		this.#panels.delete(agentId);
-		return true;
-	}
-
 	/** End the agent's panel. */
 	close(agentId: string): void {
 		const panel = this.#panels.get(agentId);
-		// Whatever closes it, the window that showed by itself is no longer the rule's (20260930742000).
-		this.byItself.released(agentId);
 		this.#panels.delete(agentId);
 		panel?.dispose();
 	}
