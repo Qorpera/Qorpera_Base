@@ -1392,7 +1392,7 @@ describe("an agent's computer window", () => {
 		expect(s.looks.at(-1)?.url).toMatch(watching(1));
 	});
 
-	it("opens the switcher's menu inside the full-screen frame, where the browser shows it (review r1 F3)", async () => {
+	it("opens the switcher's menu as every menu, in the preview and in the entered frame: the browser is never full screen (Jonas, 14 Nov 2026)", async () => {
 		const s = setup({ machines: [machine(1), machine(2)] });
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1401,17 +1401,16 @@ describe("an agent's computer window", () => {
 		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
 		expect(openMenu()!.el.parentElement).toBe(document.body);
 		openMenu()!.close();
-		const overlay = p.el.querySelector<HTMLElement>(".machine-screen")!;
 		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
-		const inFrame = overlay.querySelector<HTMLButtonElement>(".computer-switcher")!;
+		const inFrame = p.el
+			.querySelector<HTMLElement>(".machine-screen")!
+			.querySelector<HTMLButtonElement>(".computer-switcher")!;
 		expect(inFrame.hidden).toBe(false);
 		expect(inFrame.textContent).toBe("desk-1");
-		// Full screen: the browser shows only the full-screen element, so the menu goes inside it.
-		Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => overlay });
-		cleanup.push(() => Reflect.deleteProperty(document, "fullscreenElement"));
+		// Entered, the frame takes up the page, and its menu is the page's too.
 		inFrame.click();
 		const menu = openMenu()!.el;
-		expect(menu.parentElement).toBe(overlay);
+		expect(menu.parentElement).toBe(document.body);
 		expect([...menu.querySelectorAll("[role^=menuitem]")].map((row) => row.textContent)).toEqual([
 			expect.stringContaining("desk-1"),
 			expect.stringContaining("desk-2"),
@@ -1424,11 +1423,117 @@ describe("an agent's computer window", () => {
 		expect(p.el.classList.contains("is-entered")).toBe(true);
 		expect(mark(p)).toBe("Live");
 		expect(inFrame.textContent).toBe("desk-2");
-		// The browser refused full screen: the entered frame stays in the page, and so does the menu.
-		Reflect.deleteProperty(document, "fullscreenElement");
-		inFrame.click();
-		expect(openMenu()!.el.parentElement).toBe(document.body);
-		openMenu()!.close();
+	});
+
+	it("enters with Enter as with a click on the picture: the frame takes up the page and the browser is never asked for full screen (Jonas, 14 Nov 2026)", async () => {
+		// Any request for full screen fails the test.
+		const full = vi.fn(async () => {});
+		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
+		Object.defineProperty(document, "fullscreenEnabled", { configurable: true, value: true });
+		Object.defineProperty(document, "exitFullscreen", { configurable: true, value: vi.fn(async () => {}) });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen;
+			Reflect.deleteProperty(document, "fullscreenEnabled");
+			Reflect.deleteProperty(document, "exitFullscreen");
+		});
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		inBox(p, 800, 500);
+		const entered = () => p.el.classList.contains("is-entered");
+		const back = () => p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
+		// Enter: the frame over the thread, the way back focused, and no full screen.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		expect(entered()).toBe(true);
+		expect(document.activeElement).toBe(back());
+		expect(p.el.querySelector(".screen-viewer-note")).toBeNull();
+		// Back to thread.
+		back().click();
+		await flush();
+		expect(entered()).toBe(false);
+		// A click on the picture does the same.
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(entered()).toBe(true);
+		// Escape is the way back too (the way back has focus, not the picture).
+		back().focus();
+		key(back(), "Escape");
+		await flush();
+		expect(entered()).toBe(false);
+		// The row's own controls keep what they do: none of them enters.
+		for (const control of [
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!,
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-close")!,
+		]) {
+			press(control, 10, 10);
+			expect(entered()).toBe(false);
+		}
+		expect(full).not.toHaveBeenCalled();
+		expect(document.fullscreenElement ?? null).toBeNull();
+	});
+
+	it("enters nothing at a click while no picture shows", async () => {
+		const full = vi.fn(async () => {});
+		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen;
+		});
+		const s = setup({ machines: [machine(1, { state: "stopped" })], canWake: false });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		press(p.el.querySelector<HTMLElement>(".computer-panel-body")!, 200, 120);
+		await flush();
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(full).not.toHaveBeenCalled();
+	});
+
+	it("keeps the thread's foot (the composer, the notices above it) reachable while entered, and a key typed there never reaches the computer", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s, false);
+		// A thread as conversation.ts lays it out: the header, the messages with the window in a row, and the foot.
+		const pane = document.createElement("div");
+		pane.className = "thread-conversation";
+		const header = document.createElement("header");
+		header.className = "thread-header";
+		const messages = document.createElement("div");
+		messages.className = "messages";
+		const older = document.createElement("div");
+		const foot = document.createElement("div");
+		foot.className = "thread-foot";
+		const composer = document.createElement("textarea");
+		foot.append(composer);
+		const row = document.createElement("div");
+		messages.append(older, row);
+		pane.append(header, messages, foot);
+		document.body.append(pane);
+		p.attach(row, () => p.dispose());
+		await flush();
+		inBox(p, 800, 500);
+		// The member enters and acts at once: the picture takes clicks and keys.
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(older.inert).toBe(true);
+		// (jsdom keeps `inert` only where it was set.)
+		expect(foot.inert ?? false).toBe(false);
+		expect(header.inert ?? false).toBe(false);
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		const sent = s.acts.length;
+		expect(sent).toBeGreaterThan(0);
+		// Keys typed in the composer stay there.
+		composer.focus();
+		for (const value of ["H", "e", "j", "Enter", "Escape"]) key(composer, value);
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts).toHaveLength(sent);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		expect(older.inert ?? false).toBe(false);
 	});
 
 	it("says it cannot reach the computer after two failed reads, and tries again", async () => {

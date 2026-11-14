@@ -364,7 +364,7 @@ interface TakeAttempt {
  * not the screen. While the picture changes or the member acts, the window looks every 450 ms. What the member may
  * hold, and every hand-back until it is confirmed, is the company's ledger's (DesktopHoldLedger), not the window's:
  * closing the window forgets nothing (review r2 of #1661). The picture takes the member's input only in the large view
- * (entered in the thread, or full screen; v234 in production: in the preview a press drags the window, and a desktop
+ * (entered over the thread; v234 in production: in the preview a press drags the window, and a desktop
  * cannot be driven at that size): a private hold of this page's enters the frame in the thread by itself once a picture
  * shows, and back in the preview the picture is watched only and the words say how to use it.
  *
@@ -603,7 +603,6 @@ export class ComputerPanel {
 				if (!matchesKey(event, "dismiss")) return;
 				// The member holds the desktop and the picture has the keyboard: Escape is the computer's.
 				if (this.#view?.takesKeysFrom(event.target)) return;
-				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
 				if (this.#view?.entered) this.#view.back();
@@ -734,14 +733,16 @@ export class ComputerPanel {
 		return this.el.parentElement !== null;
 	}
 
-	/** The window stands in the thread's log: while the large view is open, everything of the conversation but the header
-	 * and the way down to the window is covered, so nothing under it is reachable (review r1 F1 of #1685). */
+	/** The window stands in the thread's log: while the large view is open, everything of the conversation but the header,
+	 * the foot (the composer and the notices above it, which the view leaves in sight: computer-place.ts) and the way down
+	 * to the window is covered, so nothing under it is reachable (review r1 F1 of #1685). */
 	#coverThread(): void {
 		const pane = this.el.closest(".thread-conversation");
 		for (let node: Element = this.el; pane && node !== pane && node.parentElement; node = node.parentElement)
 			for (const child of node.parentElement.children) {
 				if (child === node || !(child instanceof HTMLElement)) continue;
-				if (child.classList.contains("thread-header") || this.#covered.has(child)) continue;
+				if (child.classList.contains("thread-header") || child.classList.contains("thread-foot")) continue;
+				if (this.#covered.has(child)) continue;
 				this.#covered.set(child, child.inert);
 				child.inert = true;
 			}
@@ -996,7 +997,7 @@ export class ComputerPanel {
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
 				// The last machine's picture stays, marked, until the next one's comes (or the next one says why there is
-				// none): a member who switches full screen stays full screen.
+				// none): a member who switches in the entered frame stays in it.
 				this.#view?.updating();
 				// The member's word is per machine: the next machine's first look says it again, so its desktop stays on
 				// while they watch it (review r1 F2).
@@ -2149,7 +2150,6 @@ export class ComputerPanel {
 		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared(true);
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
-		// Never full screen here: only the member's own press on Enter asks for that.
 		const entering = this.#enterOnHold && holding && picture && this.el.parentElement !== null;
 		if (entering) {
 			this.#enterOnHold = false;
@@ -2747,14 +2747,11 @@ export class ComputerPanel {
 				event.stopPropagation();
 				const rect = button.getBoundingClientRect();
 				const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-				// Full screen, the browser shows only the full-screen element: the menu goes inside it (review r1 F3).
-				const full = document.fullscreenElement;
 				openContextMenu({
 					label: t("Choose a computer"),
 					x: rect.left,
 					y: rect.bottom + 4,
 					opener: button,
-					...(full instanceof HTMLElement && full.contains(button) ? { container: full } : {}),
 					items: desktops.map((machine) => ({
 						label: machine.name,
 						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,
