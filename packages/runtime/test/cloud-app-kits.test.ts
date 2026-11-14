@@ -717,6 +717,34 @@ it("counts the starts that are out, and does not wait for a question it will nev
 	}
 });
 
+it("gives a start back when the data drops a question whose start is still out", async () => {
+	vi.useFakeTimers();
+	try {
+		// The data names a question that neither answers nor is refused, and drops it for another, 100 times over.
+		const db = databases({ "shop/visits": { visits: 4200 } });
+		const one = (query: string) => ({
+			lang: "en",
+			title: "Shop",
+			groups: [{ label: "Shop", inputs: [{ id: "a", label: "A", min: 0, max: 10, value: { query } }] }],
+		});
+		let data = one("shop/slow0");
+		const { kit } = openPage(data, { read: async () => JSON.stringify(data), watch: db.watch, onChange() {} });
+		for (let edit = 0; edit < 100; edit++) {
+			data = one(`shop/slow${edit}`);
+			const load = kit.load();
+			await vi.advanceTimersByTimeAsync(3_000);
+			await load;
+		}
+		expect(db.watch).toHaveBeenCalledTimes(100);
+		expect(db.watches.filter((watch) => watch.stopped)).toHaveLength(99);
+		// None of them spent a start: a question that answers is still started.
+		data = one("shop/visits");
+		expect(inputs(await kit.load())[0]).toEqual({ id: "a", value: 4200, state: "known" });
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("loads one at a time, so a load asked for while one waits on its read ends in the newer answer", async () => {
 	const db = databases({ "shop/month": { orders: 340, revenue: 51000 }, "shop/visits": { visits: 4200 } });
 	const reads: ((text: string) => void)[] = [];
