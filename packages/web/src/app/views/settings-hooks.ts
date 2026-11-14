@@ -124,6 +124,7 @@ export class HooksView {
 	/** Told after a hook was added, paused, resumed or removed. */
 	readonly #changed: () => void;
 	readonly #card: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #under: ((hook: EventHook) => HTMLElement | null) | undefined;
 	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
 	readonly #added: ((hook: EventHook) => void) | undefined;
 	#drawnManage: boolean | undefined;
@@ -153,6 +154,9 @@ export class HooksView {
 			/** More of a hook, drawn in its card between its words and its buttons (the Mailbox: who answers a
 			 * mailbox). The page that gives it calls `redraw` when what it shows changed. */
 			card?: (hook: EventHook) => HTMLElement | null;
+			/** More of a hook, drawn across its card under its line (the Mailbox: how each agent answers a mailbox). The
+			 * same `redraw` draws it again. */
+			under?: (hook: EventHook) => HTMLElement | null;
 			/** More of the form that adds one, drawn under its fields (the Mailbox: who answers the new mailbox). */
 			form?: (kind: HookKind) => HTMLElement | null;
 			/** Told the hook the form made. */
@@ -163,6 +167,7 @@ export class HooksView {
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#changed = options.changed ?? (() => {});
 		this.#card = options.card;
+		this.#under = options.under;
 		this.#formExtra = options.form;
 		this.#added = options.added;
 		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
@@ -423,6 +428,7 @@ export class HooksView {
 			),
 			this.#card?.(hook) ?? null,
 			h("div", { class: "connection-actions" }, ...actions),
+			this.#under?.(hook) ?? null,
 			address,
 			this.#outcomeLine(hook.id),
 		);

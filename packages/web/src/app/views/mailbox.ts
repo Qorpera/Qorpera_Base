@@ -1,4 +1,5 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { cloudRoutineTriggerOfFile } from "@qorpera/cloud-client/cloud-routine-file";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
@@ -121,6 +122,19 @@ interface MailboxUi {
 	answerErrors: Record<string, string>;
 	/** Who answers the address the Add form makes; nobody until the member picks. */
 	addAgent: string | null;
+	/** How that agent answers the new address: the member's own words, written into its routine. A new one for each
+	 * form, so its field starts empty. */
+	addHow: { text: string };
+	/** The member's words on how an agent answers an address, while they write them: one at a time. */
+	how: {
+		readonly hookId: string;
+		readonly address: string;
+		readonly agent: string;
+		text: string;
+		saving: boolean;
+	} | null;
+	/** Why how an agent answers could not be saved, by `hookId:agent`. */
+	howErrors: Record<string, string>;
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
@@ -199,6 +213,9 @@ interface ManageViews {
 	shown: string;
 }
 const manageViews = new WeakMap<MailboxUi, ManageViews>();
+/** The company's routines as this page read them last, for how each agent answers an address; none before the first
+ * read. `reading` is the read on its way: a read begun after a change wins over an older one. */
+const routinesRead = new WeakMap<MailboxUi, { list: readonly WebRoutine[] | null; reading: number }>();
 /** A page's addresses being given to agents, one after another: the last of them. */
 const answerings = new WeakMap<MailboxUi, Promise<void>>();
 /** Who answers an address as the routines said when it was last given or taken on a page, by address, where the
@@ -372,7 +389,7 @@ export interface MailboxManage {
 	readonly digitalPost: DigitalPostClient;
 	/** The routines behind "who answers an address": an agent answers one through a routine that starts on its mail.
 	 * Without them, and the member's accounts, who answers an address is only shown. */
-	readonly routines?: Pick<WebRoutines, "list" | "save" | "setEnabled">;
+	readonly routines?: Pick<WebRoutines, "list" | "open" | "save" | "setEnabled">;
 	/** The signed-in member's own model accounts: such a routine runs on one of them. */
 	readonly accounts?: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 }
@@ -410,6 +427,9 @@ export function renderMailbox(
 			answering: null,
 			answerErrors: {},
 			addAgent: null,
+			addHow: { text: "" },
+			how: null,
+			howErrors: {},
 			busy: false,
 			error: null,
 			toast: null,
@@ -442,6 +462,8 @@ export function renderMailbox(
 		// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
 		// draws them from it, also when it reads the same as the last one.
 		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
+		// How each agent answers an address, as its routine says.
+		routinesRead.get(ui)?.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
 		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
@@ -783,14 +805,17 @@ function manageOf(page: Page): ManageViews | null {
 				kinds: ["mailbox"],
 				changed,
 				card: (hook) => answerer(drawn(), calls, hook),
+				under: (hook) => howTheyAnswer(drawn(), calls, hook),
 				form: () => newAnswerer(drawn(), calls),
-				// The new address goes to the agent its form named.
+				// The new address goes to the agent its form named, with the words on how it answers.
 				added: (hook) => {
 					const now = drawn();
 					const agent = now.ui.addAgent;
+					const how = now.ui.addHow.text;
 					now.ui.addAgent = null;
+					now.ui.addHow = { text: "" };
 					if (agent && hook.email)
-						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true);
+						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true, how);
 				},
 			}),
 		};
@@ -799,6 +824,8 @@ function manageOf(page: Page): ManageViews | null {
 	views.page = page;
 	if (access.canManage())
 		views.post ??= new DigitalPostView(views.calls.digitalPost, company.signal, { access, changed });
+	// How each agent answers is in its routine: read once the member may change it.
+	if (assigns(page, views.calls) && !routinesRead.has(ui)) void readRoutines(page, views.calls);
 	views.hooks.update();
 	// Who answers an address is the mail's to say: its lines are drawn again when that, or what the member is doing
 	// about it, changed. A form being filled is otherwise left alone.
@@ -809,6 +836,10 @@ function manageOf(page: Page): ManageViews | null {
 		ui.answering,
 		ui.answerErrors,
 		ui.addAgent,
+		// How each agent answers, and the words being written: not what is typed, which the field keeps itself.
+		routinesRead.get(ui)?.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
+		ui.how && [ui.how.hookId, ui.how.agent, ui.how.saving],
+		ui.howErrors,
 		assigns(page, views.calls),
 		state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
 	]);
@@ -2047,6 +2078,16 @@ function newAnswerer(page: Page, calls: MailboxManage): HTMLElement | null {
 				return items;
 			}),
 		),
+		chosen
+			? h(
+					"label",
+					{ class: "mailbox-how-new" },
+					h("span", { class: "mailbox-how-title" }, t("How {name} answers", { name: chosen.displayName })),
+					howField(ui.addHow, "add-how", ui.addHow.text, false, (text) => {
+						ui.addHow.text = text;
+					}),
+				)
+			: null,
 	);
 }
 
@@ -2070,11 +2111,12 @@ function answerWith(
 	target: { readonly address: string; readonly hookId: string },
 	agentId: string,
 	on: boolean,
+	how?: string,
 ): Promise<void> {
 	const before = page.ui.answering ? answerings.get(page.ui) : undefined;
 	const turn = before
-		? before.then(() => giveAddress(page, calls, target, agentId, on))
-		: giveAddress(page, calls, target, agentId, on);
+		? before.then(() => giveAddress(page, calls, target, agentId, on, how))
+		: giveAddress(page, calls, target, agentId, on, how);
 	answerings.set(page.ui, turn);
 	return turn;
 }
@@ -2111,6 +2153,10 @@ function newestFirst(a: WebRoutine, b: WebRoutine): number {
  *   email. Of the routines this began and those begun meanwhile, the one the cloud saved last is kept, here and on
  *   the other member's page, and the others stop. A routine at work before is nobody's to stop here.
  *
+ * `how` is the member's words on how the agent answers, from the form that made the address: a new routine is
+ * written with them. Picked from the address's own menu (no `how`), the member is asked for them next, where the agent
+ * has none yet.
+ *
  * The company's mail is read again after, so the line says who answers it now. What could not be done is kept for the
  * address's line; nothing is thrown. */
 async function giveAddress(
@@ -2119,6 +2165,7 @@ async function giveAddress(
 	target: { readonly address: string; readonly hookId: string },
 	agentId: string,
 	on: boolean,
+	how?: string,
 ): Promise<void> {
 	const { company, ui } = page;
 	const { routines, accounts } = calls;
@@ -2127,6 +2174,8 @@ async function giveAddress(
 	if (!routines || !accounts || (on && !agent)) return;
 	const name = agentName(page, agentId);
 	const focus = `answerer:${target.hookId}`;
+	// An agent taken off the address: the words on how it answers are no longer asked for.
+	if (!on && ui.how?.hookId === target.hookId && ui.how.agent === agentId && !ui.how.saving) ui.how = null;
 	ui.answering = { address: target.address, agent: agentId, on };
 	const { [target.address]: _said, ...rest } = ui.answerErrors;
 	ui.answerErrors = rest;
@@ -2160,9 +2209,12 @@ async function giveAddress(
 						clientRoutineId: crypto.randomUUID(),
 						staffAgentId: agentId,
 						title: t("Answer email to {address}", { address: target.address }),
-						prompt: t(
-							"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.",
-							{ address: target.address },
+						prompt: withHow(
+							t(
+								"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.",
+								{ address: target.address },
+							),
+							how ?? "",
 						),
 						trigger: {
 							id: "file",
@@ -2225,10 +2277,16 @@ async function giveAddress(
 		if (held.answers) agents.push(agentId);
 		kept.set(target.address, { agents, read: company.store.get().mail?.addresses });
 	}
+	// How each agent answers is read again too: a routine taken up again keeps its words.
+	await readRoutines(page, calls);
 	const listed = handlersOf(page, target.address);
 	ui.answering = null;
 	const reached = held !== null && held.answers === on;
 	if (held && reached && !held.twice) {
+		// Picked from the address's menu: how the agent answers is asked next, where it has no words of the member's.
+		const routine = on && how === undefined ? answeringRoutine(page, target.hookId, agentId) : undefined;
+		const ask = routine !== undefined && !splitHow(routine.prompt).how && ui.how === null;
+		if (ask) ui.how = { hookId: target.hookId, address: target.address, agent: agentId, text: "", saving: false };
 		say(
 			page,
 			!on
@@ -2237,7 +2295,7 @@ async function giveAddress(
 					? t("{name} answers {address} too", { name, address: target.address })
 					: t("{name} answers {address}", { name, address: target.address }),
 			on ? agentId : null,
-			focus,
+			ask ? howKey(target.hookId, agentId) : focus,
 		);
 		return;
 	}
@@ -2260,6 +2318,325 @@ async function giveAddress(
 							: t("It could not be changed. Try again."),
 	};
 	page.redraw(focus);
+}
+
+// How an agent answers an address ------------------------------------------------------------------------------------
+
+/** The heading the member's words on how an agent answers stand under, in its routine's instructions. Read in English
+ * and in the interface's language, so a routine written in either is found. */
+const HOW_HEADING = "How to answer";
+
+/** A routine's instructions, split where the member's words on how its agent answers begin (`withHow` writes them
+ * under a heading of their own): what the page wrote first (`base`), and those words (`how`, empty without). */
+function splitHow(prompt: string): { readonly base: string; readonly how: string } {
+	const headings = new Set([HOW_HEADING, t("How to answer")]);
+	const lines = prompt.split("\n");
+	const at = lines.findIndex((line) => {
+		const heading = /^##\s+(.+?)\s*$/.exec(line);
+		return heading !== null && headings.has(heading[1]!);
+	});
+	if (at < 0) return { base: prompt.trim(), how: "" };
+	return {
+		base: lines.slice(0, at).join("\n").trim(),
+		how: lines
+			.slice(at + 1)
+			.join("\n")
+			.trim(),
+	};
+}
+
+/** A routine's instructions with the member's words on how its agent answers in place of any before; none without. */
+function withHow(prompt: string, how: string): string {
+	const { base } = splitHow(prompt);
+	const words = how.trim();
+	return words ? `${base}\n\n## ${t("How to answer")}\n\n${words}` : base;
+}
+
+/** The focus key of how an agent answers an address. */
+function howKey(hookId: string, agentId: string): string {
+	return `how:${hookId}:${agentId}`;
+}
+
+/** Reads the company's routines again, for how each agent answers, and draws the page. A read begun later wins; one
+ * that fails leaves the last read, and the next change reads again. */
+async function readRoutines(page: Page, calls: MailboxManage): Promise<void> {
+	const { routines } = calls;
+	if (!routines) return;
+	const kept = routinesRead.get(page.ui) ?? { list: null, reading: 0 };
+	routinesRead.set(page.ui, kept);
+	const reading = ++kept.reading;
+	try {
+		const list = await routines.list();
+		if (kept.reading !== reading || page.company.signal.aborted) return;
+		kept.list = list;
+	} catch {
+		return;
+	}
+	page.redraw();
+}
+
+/** The routine an agent answers an address with, as the page read them last: the one at work saved last. */
+function answeringRoutine(page: Page, hookId: string, agentId: string): WebRoutine | undefined {
+	const list = routinesRead.get(page.ui)?.list ?? [];
+	return list
+		.filter(
+			(routine) =>
+				routine.staffAgentId === agentId &&
+				routine.status === "active" &&
+				routine.triggers.some(
+					(trigger) => trigger.kind === "listener" && trigger.source === "event" && trigger.hookId === hookId,
+				),
+		)
+		.sort(newestFirst)[0];
+}
+
+/** The fields the member writes how an agent answers in, by what they are written for (`owner`): a redraw of the
+ * address lines draws the same field again, so it keeps its words, its caret and the focus. */
+const howFields = new WeakMap<object, HTMLTextAreaElement>();
+
+/** The field for the member's words on how an agent answers: it grows with them. ⌘/Ctrl-Enter is `submit`, Escape
+ * `cancel`. */
+function howField(
+	owner: object,
+	key: string,
+	text: string,
+	disabled: boolean,
+	change: (text: string) => void,
+	keys: { readonly submit?: () => void; readonly cancel?: () => void } = {},
+): HTMLTextAreaElement {
+	let field = howFields.get(owner);
+	if (!field) {
+		const made = h("textarea", {
+			rows: 3,
+			maxlength: "4000",
+			placeholder: t(
+				"For example: answer in Danish, short and warm. Sign as the team. Ask me before you promise a price or a date.",
+			),
+			"data-focus-key": key,
+			oninput: () => change(made.value),
+			onkeydown: (event: KeyboardEvent) => {
+				if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && keys.submit) {
+					event.preventDefault();
+					keys.submit();
+				} else if (event.key === "Escape" && keys.cancel) {
+					event.preventDefault();
+					keys.cancel();
+				}
+			},
+		});
+		made.value = text;
+		field = made;
+		howFields.set(owner, field);
+	}
+	field.disabled = disabled;
+	return field;
+}
+
+/** How each agent that answers an address answers it, under the address's line, for an owner or admin: the member's
+ * own words in its routine, which they add or change here. None where no agent answers it, or before the routines
+ * are read. */
+function howTheyAnswer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElement | null {
+	const email = hook.email;
+	if (!email || !assigns(page, calls)) return null;
+	const target = { address: email, hookId: hook.id };
+	const lines = handlersOf(page, email).flatMap((each) => {
+		const routine = answeringRoutine(page, hook.id, each.staffAgentId);
+		return routine ? [howLine(page, calls, target, each.staffAgentId, routine)] : [];
+	});
+	return lines.length ? h("div", { class: "mailbox-how-list" }, ...lines) : null;
+}
+
+/** How one agent answers an address: the member's words, or a way to give some; while they write them, the field. */
+function howLine(
+	page: Page,
+	calls: MailboxManage,
+	target: { readonly address: string; readonly hookId: string },
+	agentId: string,
+	routine: WebRoutine,
+): HTMLElement {
+	const { ui, company } = page;
+	const name = agentName(page, agentId);
+	const key = howKey(target.hookId, agentId);
+	const words = splitHow(routine.prompt).how;
+	const said = ui.howErrors[`${target.hookId}:${agentId}`];
+	const error = said ? h("p", { class: "mailbox-error", role: "alert" }, said) : null;
+	const editing = ui.how?.hookId === target.hookId && ui.how.agent === agentId ? ui.how : null;
+	if (!editing) {
+		const open = () => {
+			ui.how = { hookId: target.hookId, address: target.address, agent: agentId, text: words, saving: false };
+			const { [`${target.hookId}:${agentId}`]: _said, ...rest } = ui.howErrors;
+			ui.howErrors = rest;
+			page.redraw(key);
+		};
+		const busy = ui.how !== null || ui.answering !== null;
+		if (!words)
+			return h(
+				"div",
+				{ class: "mailbox-how is-empty" },
+				h(
+					"button",
+					{
+						type: "button",
+						class: "mailbox-text is-quiet mailbox-how-add",
+						disabled: busy,
+						"data-focus-key": `${key}:edit`,
+						onclick: open,
+					},
+					icon("edit"),
+					t("Tell {name} how to answer", { name }),
+				),
+				error,
+			);
+		return h(
+			"div",
+			{ class: "mailbox-how" },
+			h(
+				"div",
+				{ class: "mailbox-how-copy" },
+				h("span", { class: "mailbox-how-title" }, t("How {name} answers", { name })),
+				h("p", { class: "mailbox-how-words" }, words),
+			),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-quiet",
+					disabled: busy,
+					"data-focus-key": `${key}:edit`,
+					"aria-label": t("Change how {name} answers", { name }),
+					onclick: open,
+				},
+				t("Edit"),
+			),
+			error,
+		);
+	}
+	const cancel = () => {
+		if (editing.saving) return;
+		ui.how = null;
+		page.redraw(`${key}:edit`);
+	};
+	const save = () => void saveHow(page, calls);
+	const field = howField(
+		editing,
+		key,
+		editing.text,
+		editing.saving,
+		(text) => {
+			editing.text = text;
+		},
+		{ submit: save, cancel },
+	);
+	field.id = `mailbox-how-${target.hookId}-${agentId}`;
+	// Saving makes the routine the member's: it runs on their own model account from then on.
+	const other =
+		routine.runsForUserId && routine.runsForUserId !== company.userId
+			? (company.store.get().team?.members.find((member) => member.userId === routine.runsForUserId)?.displayName ??
+				t("another member"))
+			: null;
+	return h(
+		"div",
+		{ class: "mailbox-how is-editing" },
+		h("label", { class: "mailbox-how-title", for: field.id }, t("How {name} answers", { name })),
+		field,
+		other
+			? h(
+					"p",
+					{ class: "mailbox-how-note" },
+					t("{name} answers on {member}'s model account now. Saving moves it to yours.", { name, member: other }),
+				)
+			: null,
+		error,
+		h(
+			"div",
+			{ class: "mailbox-how-foot" },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-send",
+					disabled: editing.saving,
+					"aria-busy": editing.saving ? "true" : null,
+					"data-focus-key": `${key}:save`,
+					onclick: save,
+				},
+				editing.saving ? t("Saving…") : t("Save"),
+			),
+			h(
+				"button",
+				{ type: "button", class: "mailbox-text is-quiet", disabled: editing.saving, onclick: cancel },
+				t("Cancel"),
+			),
+		),
+	);
+}
+
+/** Saves the member's words on how an agent answers an address into the routine it answers with: its file as it is now,
+ * the instructions under their own heading the only change, on the member's own model account (a save makes the
+ * routine theirs, as the routines' own editor does). What could not be done is said under the field, which stays. */
+async function saveHow(page: Page, calls: MailboxManage): Promise<void> {
+	const { ui, company } = page;
+	const editing = ui.how;
+	const { routines, accounts } = calls;
+	if (!editing || editing.saving || !routines || !accounts) return;
+	const { hookId, address, agent } = editing;
+	const name = agentName(page, agent);
+	const key = howKey(hookId, agent);
+	const said = `${hookId}:${agent}`;
+	editing.saving = true;
+	const { [said]: _said, ...rest } = ui.howErrors;
+	ui.howErrors = rest;
+	page.redraw(key);
+	try {
+		const [routine] = (await listeners(routines, hookId))
+			.filter((each) => each.staffAgentId === agent && each.status === "active")
+			.sort(newestFirst);
+		if (!routine) throw new Error(t("{name} no longer answers {address}", { name, address }));
+		const opened = await routines.open(routine);
+		const trigger = cloudRoutineTriggerOfFile(opened.file);
+		if (!trigger) throw new Error(t("This routine could not be opened."));
+		const account = payingAccount(await accounts(company.signal));
+		if (!account)
+			throw new Error(
+				t(
+					"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+				),
+			);
+		await routines.save(
+			{
+				clientRoutineId: opened.file.id,
+				staffAgentId: agent,
+				title: opened.file.title,
+				prompt: withHow(opened.file.instructions, editing.text),
+				trigger,
+				effort: opened.file.effort,
+				opened,
+			},
+			account,
+			crypto.randomUUID(),
+		);
+	} catch (error) {
+		editing.saving = false;
+		ui.howErrors = {
+			...ui.howErrors,
+			[said]:
+				error instanceof WebCompanyFolderRejectedError
+					? withProblems(t("How {name} answers could not be saved.", { name }), error.problems)
+					: describeError(error),
+		};
+		page.redraw(key);
+		return;
+	}
+	await readRoutines(page, calls);
+	if (ui.how === editing) ui.how = null;
+	say(
+		page,
+		editing.text.trim()
+			? t("Saved how {name} answers {address}", { name, address })
+			: t("{name} answers {address} without your instructions now", { name, address }),
+		agent,
+		`${key}:edit`,
+	);
 }
 
 // Writing an email ------------------------------------------------------------------------------------------------

@@ -418,6 +418,38 @@ span.mailbox-open { cursor: default; }
 .mailbox-answerer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
 .mailbox-answerer:not(.is-current) { border-style: dashed; color: var(--mailbox-accent-text); font-weight: 600; }
 .mailbox-answerer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+/* How each agent answers an address, under its line: the member's own words, or a quiet way to give some; while they
+   write them, a soft field that grows with the words, and Save. In the form that adds an address, the field under the
+   chip. */
+.mailbox-manage .service-card > .mailbox-how-list { grid-column: 1 / -1; }
+.mailbox-how-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: -4px 0 4px; }
+.mailbox-how { display: flex; align-items: flex-start; gap: 4px 16px; min-width: 0; max-width: 760px; }
+.mailbox-how.is-empty { margin-left: -12px; }
+.mailbox-how.is-empty .mailbox-error { align-self: center; }
+.mailbox-how-copy { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mailbox-how-title { color: var(--text-muted); font-size: 13px; font-weight: 600; }
+.mailbox-how-words {
+	display: -webkit-box; margin: 0; overflow: hidden; color: var(--text); font-size: 14px; line-height: 1.5;
+	white-space: pre-line; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+}
+.mailbox-how > .mailbox-text { flex: none; margin: -4px -12px 0 0; }
+.mailbox-how > .mailbox-error { flex-basis: 100%; margin: 0; }
+.mailbox-how.is-editing { flex-direction: column; align-items: stretch; gap: 8px; animation: mailbox-in var(--motion-fast) var(--ease-out) both; }
+:is(.mailbox-how, .mailbox-how-new) textarea {
+	field-sizing: content; min-height: 5.6em; max-height: 18em; padding: 10px 14px; border: 1px solid var(--border-strong);
+	border-radius: 12px; resize: none; background: var(--bg); color: var(--text); font: inherit; font-size: 14.5px;
+	font-weight: 400; line-height: 1.5; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+:is(.mailbox-how, .mailbox-how-new) textarea::placeholder { color: var(--text-muted); }
+:is(.mailbox-how, .mailbox-how-new) textarea:focus-visible {
+	outline: none; border-color: var(--mailbox-accent); box-shadow: 0 0 0 3px var(--mailbox-tint-strong);
+}
+:is(.mailbox-how, .mailbox-how-new) textarea:disabled { color: var(--text-muted); }
+:root[data-theme="dark"] :is(.mailbox-how, .mailbox-how-new) textarea { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.mailbox-how-note { margin: 0; color: var(--text-muted); font-size: 13px; }
+.mailbox-how-foot { display: flex; align-items: center; gap: 8px; }
+.mailbox-how-add { padding-left: 12px; }
+.mailbox-how-new { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
 .mailbox-answerer:disabled { cursor: default; }
 .mailbox-answerer:disabled:not([aria-busy="true"]) { opacity: 0.5; }
 .mailbox-nobody {

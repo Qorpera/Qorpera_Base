@@ -350,6 +350,17 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} answers {address}": "{name} svarer på {address}",
 	"{name} answers {address} too": "{name} svarer også på {address}",
 	"{name} no longer answers {address}": "{name} svarer ikke længere på {address}",
+	"How to answer": "Sådan svarer du",
+	"How {name} answers": "Sådan svarer {name}",
+	"Tell {name} how to answer": "Fortæl {name}, hvordan der skal svares",
+	"Change how {name} answers": "Skift, hvordan {name} svarer",
+	"For example: answer in Danish, short and warm. Sign as the team. Ask me before you promise a price or a date.":
+		"For eksempel: svar på dansk, kort og venligt. Skriv under som holdet. Spørg mig, før du lover en pris eller en dato.",
+	"{name} answers on {member}'s model account now. Saving moves it to yours.":
+		"{name} svarer nu på {member}s modelkonto. Når du gemmer, flytter det til din.",
+	"How {name} answers could not be saved.": "Det kunne ikke gemmes, hvordan {name} svarer.",
+	"Saved how {name} answers {address}": "Gemt, hvordan {name} svarer på {address}",
+	"{name} answers {address} without your instructions now": "{name} svarer nu på {address} uden dine instruktioner",
 	"{first} and {second}": "{first} og {second}",
 	"Answer email to {address}": "Svar på e-mail til {address}",
 	"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.":
