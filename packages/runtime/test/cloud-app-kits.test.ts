@@ -717,40 +717,16 @@ it("counts the starts that are out, and does not wait for a question it will nev
 	}
 });
 
-it("gives a start back when the data drops a question whose start is still out", async () => {
+it("keeps a start that is out in the page's count when the data drops its question, until it answers", async () => {
 	vi.useFakeTimers();
 	try {
-		// The data names a question that neither answers nor is refused, and drops it for another, 100 times over.
+		// A slow bridge: a start is answered or refused only when the test says so.
 		const db = databases({ "shop/visits": { visits: 4200 } });
-		const one = (query: string) => ({
-			lang: "en",
-			title: "Shop",
-			groups: [{ label: "Shop", inputs: [{ id: "a", label: "A", min: 0, max: 10, value: { query } }] }],
-		});
-		let data = one("shop/slow0");
-		const { kit } = openPage(data, { read: async () => JSON.stringify(data), watch: db.watch, onChange() {} });
-		for (let edit = 0; edit < 100; edit++) {
-			data = one(`shop/slow${edit}`);
-			const load = kit.load();
-			await vi.advanceTimersByTimeAsync(3_000);
-			await load;
-		}
-		expect(db.watch).toHaveBeenCalledTimes(100);
-		expect(db.watches.filter((watch) => watch.stopped)).toHaveLength(99);
-		// None of them spent a start: a question that answers is still started.
-		data = one("shop/visits");
-		expect(inputs(await kit.load())[0]).toEqual({ id: "a", value: 4200, state: "known" });
-	} finally {
-		vi.useRealTimers();
-	}
-});
-
-it("counts a refusal a bridge tells of after the data dropped its question, and hears nothing else of it", async () => {
-	vi.useFakeTimers();
-	try {
-		// A bridge that keeps telling a stopped watch: each start's callbacks are kept and called late.
-		const db = databases({ "shop/visits": { visits: 4200 } });
-		const kept: { listener: (answer: unknown) => void; failed: (error: Error) => void }[] = [];
+		const out: {
+			listener: (answer: unknown) => void;
+			failed: (error: Error) => void;
+			stopped: boolean;
+		}[] = [];
 		const watch = vi.fn(
 			(
 				name: string,
@@ -759,8 +735,11 @@ it("counts a refusal a bridge tells of after the data dropped its question, and 
 				failed: (error: Error) => void,
 			) => {
 				if (name === "shop/visits") return db.watch(name, params, listener);
-				kept.push({ listener, failed });
-				return () => undefined;
+				const one = { listener, failed, stopped: false };
+				out.push(one);
+				return () => {
+					one.stopped = true;
+				};
 			},
 		);
 		const many = (queries: string[]) => ({
@@ -783,31 +762,40 @@ it("counts a refusal a bridge tells of after the data dropped its question, and 
 		const { kit, drawFrames } = openPage(data, { read: async () => JSON.stringify(data), watch, onChange() {} });
 		const live = vi.fn();
 		kit.onLive(live);
-		for (let edit = 0; edit < 100; edit++) {
-			data = many([`shop/slow${edit}`]);
+		const loadSlowly = async () => {
 			const load = kit.load();
 			await vi.advanceTimersByTimeAsync(3_000);
-			await load;
+			return inputs(await load).map(({ value, state }) => [value, state]);
+		};
+		// The data names a new question at every edit, each while the last one's start is still out.
+		for (let edit = 0; edit < 100; edit++) {
+			data = many([`shop/slow${edit}`]);
+			await loadSlowly();
 		}
+		// 100 starts are out: none was given back at its drop, and none is stopped before its start answers.
 		expect(watch).toHaveBeenCalledTimes(100);
-		// A late answer of a dropped question moves nothing and asks for no load.
-		kept[0].listener({ columns: ["n"], rows: [{ n: 7 }], more: false, asOf: "" });
-		drawFrames();
-		expect(live).not.toHaveBeenCalled();
-		// The 99 dropped ones are refused late: with shop/slow99 still out, the page's 100 starts are spent.
-		for (const one of kept.slice(0, 99)) one.failed(new Error("No such database."));
+		expect(out.filter((one) => one.stopped)).toHaveLength(0);
+		// So nothing more starts, not even a question that would answer: the frame can be refused 100 times, never more.
 		data = many(["shop/slow99", "shop/visits"]);
-		const load = kit.load();
-		await vi.advanceTimersByTimeAsync(3_000);
-		expect(inputs(await load).map(({ value, state }) => [value, state])).toEqual([
+		expect(await loadSlowly()).toEqual([
 			[null, "unknown"],
 			[null, "unknown"],
 		]);
-		// And a dropped question is never asked again at a wait's end.
+		expect(watch).toHaveBeenCalledTimes(100);
+		// 50 dropped starts answer late: each gives its start back and is stopped then. 49 are refused late: they stay
+		// counted. Neither moves a value, asks for a load or starts a wait.
+		for (const one of out.slice(0, 50)) one.listener({ columns: ["n"], rows: [{ n: 7 }], more: false, asOf: "" });
+		for (const one of out.slice(50, 99)) one.failed(new Error("No such database."));
+		expect(out.filter((one) => one.stopped)).toHaveLength(50);
 		await vi.advanceTimersByTimeAsync(600_000);
 		drawFrames();
 		expect(live).not.toHaveBeenCalled();
-		expect(watch).toHaveBeenCalledTimes(100);
+		// The starts that came back are there for the question that answers.
+		expect(await loadSlowly()).toEqual([
+			[null, "unknown"],
+			[4200, "known"],
+		]);
+		expect(watch).toHaveBeenCalledTimes(101);
 	} finally {
 		vi.useRealTimers();
 	}
