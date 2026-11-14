@@ -32,6 +32,12 @@
 # runs from root's shell are installed, since that is how agents look at pages
 # without a screen. An agent that has a Dockerfile builds
 # and runs it inside its machine; images are not made from Dockerfiles.
+# Since 13 Nov 2026 also what a render that has to look real needs (README, "Renders"): Blender's official build
+# (Cycles on the processors, OpenImageDenoise), a starter set of light, materials and furniture at /opt/qorpera-assets
+# (Poly Haven, CC0: every file fetched from where deploy/machine/render-assets.tsv says and checked against its
+# sha-256), and the picture tools beside ffmpeg (ImageMagick, WebP, Pillow and numpy for Python). Agents fetched
+# Blender onto every machine by themselves and lit boxes against a black world. And the font and PDF tools they
+# installed again and again: fonttools with brotli (a brand font cut down and written as WOFF2), poppler-utils and pypdf.
 #
 # The builder runs in the node's declared image build space (the observer
 # policy's buildSpace: its project and its only network) as a build machine:
@@ -67,6 +73,10 @@ PLAYWRIGHT_VERSION=1.65.0
 CHROMIUM_VERSION=151.0.7922.34
 CHROMIUM_URL=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip
 CHROMIUM_SHA256=ae8736ac28bc69278551500f219fc749575648263c43ec5990749eff43b9fcf8
+# Blender, the official build: blender-BLENDER_VERSION-linux-x64.tar.xz in the release's own list of sha-256
+# (https://download.blender.org/release/Blender4.3/blender-4.3.2.sha256).
+BLENDER_VERSION=4.3.2
+BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
 EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
@@ -80,7 +90,8 @@ for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine
 	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	machine-memory lxd-agent-memory.conf qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service \
-	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder manifest.json; do
+	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles render-check.py render-assets.tsv \
+	render-assets.md render-assets-preview.jpg desktop-art.tar qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -124,12 +135,15 @@ lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
 	UV_SHA256="$UV_SHA256" MISE_VERSION="$MISE_VERSION" MISE_SHA256="$MISE_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
 	TSX_VERSION="$TSX_VERSION" CHROMIUM_URL="$CHROMIUM_URL" CHROMIUM_SHA256="$CHROMIUM_SHA256" \
-	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
+	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" BLENDER_VERSION="$BLENDER_VERSION" BLENDER_SHA256="$BLENDER_SHA256" \
+	bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
+		imagemagick webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1 \
+		poppler-utils python3-fonttools python3-brotli python3-pypdf \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
 		adwaita-icon-theme \
 		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor earlyoom \
@@ -172,6 +186,18 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	unzip -q /tmp/chromium.zip -d /tmp/chromium
 	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
 	rm -rf /tmp/chromium.zip /tmp/chromium
+	# Blender, the official build, pinned: it brings Cycles, OpenImageDenoise and its own Python, and asks the system
+	# only for the X and GL libraries apt installed above.
+	curl -fsSLo /tmp/blender.tar.xz "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+	echo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum -c -
+	tar -xJf /tmp/blender.tar.xz -C /opt --no-same-owner
+	rm -f /tmp/blender.tar.xz
+	chmod -R u=rwX,go=rX "/opt/blender-${BLENDER_VERSION}-linux-x64"
+	ln -sfn "/opt/blender-${BLENDER_VERSION}-linux-x64" /opt/blender
+	ln -sf /opt/blender/blender /usr/local/bin/blender
+	# Where the starter set for renders goes: the package brings its list, its guide and its picture, and the checks
+	# below fetch the files the list names.
+	install -d -o root -g root -m 0755 /opt/qorpera-assets
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
@@ -218,6 +244,10 @@ lx file push "$PACKAGE/desktop-look" "$BUILDER/opt/qorpera-machine/desktop-look"
 lx file push "$PACKAGE/desktop-dock-open" "$BUILDER/opt/qorpera-machine/desktop-dock-open" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-files" "$BUILDER/opt/qorpera-machine/desktop-files" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-desktop.tmpfiles" "$BUILDER/etc/tmpfiles.d/qorpera-machine-desktop.conf" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/render-check.py" "$BUILDER/opt/qorpera-machine/render-check.py" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/render-assets.tsv" "$BUILDER/opt/qorpera-assets/SOURCES.tsv" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/render-assets.md" "$BUILDER/opt/qorpera-assets/README.md" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/render-assets-preview.jpg" "$BUILDER/opt/qorpera-assets/preview.jpg" --uid 0 --gid 0 --mode 0444
 # The desktop pictures, unpacked by the checks below.
 lx file push "$PACKAGE/desktop-art.tar" "$BUILDER/tmp/desktop-art.tar" --uid 0 --gid 0 --mode 0644
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
@@ -226,7 +256,7 @@ for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machi
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
 lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
-	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
+	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" BLENDER_VERSION="$BLENDER_VERSION" bash -euo pipefail -c '
 	systemctl daemon-reload
 	systemctl enable qorpera-machine-watchdog.timer qorpera-machine-memory.service qorpera-machine-memory-guard.service
 	# The desktop look (12 Nov 2026): the pictures, root-owned and read-only for everyone else; the unit that hears a
@@ -350,6 +380,49 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	done
 	unzip -v >/dev/null
 	ffmpeg -version >/dev/null
+	# Renders (13 Nov 2026). The starter set: every file its list names, from where the list says (Poly Haven, CC0) and
+	# with the sha-256 the list pins; nothing else beside the list, the guide and the picture; root-owned and read-only.
+	while IFS=$(printf "\t") read -r path url sha256 bytes; do
+		[[ $path =~ ^(hdris|textures|models)/[A-Za-z0-9_/.-]+$ && $path != *..* && $sha256 =~ ^[0-9a-f]{64}$ &&
+			$bytes =~ ^[0-9]+$ && $url == https://dl.polyhaven.org/file/ph-assets/* ]] ||
+			{ echo "the starter set lists something it should not: $path" >&2; exit 1; }
+		install -d -o root -g root -m 0755 "$(dirname "/opt/qorpera-assets/$path")"
+		curl -fsSL --retry 3 -o "/opt/qorpera-assets/$path" "$url"
+		echo "$sha256  /opt/qorpera-assets/$path" | sha256sum -c --quiet - ||
+			{ echo "a file of the starter set is not the pinned one: $path" >&2; exit 1; }
+	done </opt/qorpera-assets/SOURCES.tsv
+	chown -R root:root /opt/qorpera-assets
+	chmod -R a=rX,u+w /opt/qorpera-assets
+	[[ $(find /opt/qorpera-assets -type f | wc -l) == $(( $(wc -l </opt/qorpera-assets/SOURCES.tsv) + 3 )) ]] ||
+		{ echo "the starter set holds more or less than its list, its guide and its picture" >&2; exit 1; }
+	# A link is left out of the mode test: its own mode is always rwxrwxrwx and means nothing (the lib folder of
+	# Blender holds 81 links, which refused the first build on a node). Who may replace a link is decided by the
+	# folder it is in, and every folder is in this search.
+	[[ -z $(find /opt/qorpera-assets /opt/blender/ ! -user root -o ! -group root -o ! -type l -perm /022) ]] ||
+		{ echo "someone but root could change Blender or the starter set" >&2; exit 1; }
+	# Blender is the pinned build, runs without a screen and renders: one small frame of the starter set, with Cycles
+	# and OpenImageDenoise (render-check.py says what it asks of the frame).
+	# Its home is under /tmp, so what it writes there goes with the clean-up at the end of this build.
+	mkdir -p /tmp/render-home
+	[[ $(HOME=/tmp/render-home blender --version | head -1) == "Blender ${BLENDER_VERSION}" ]] || { echo "blender is not ${BLENDER_VERSION}" >&2; exit 1; }
+	HOME=/tmp/render-home blender -b --factory-startup --python-exit-code 1 -P /opt/qorpera-machine/render-check.py -- /opt/qorpera-assets /tmp/render-check.png
+	[[ $(file -b /tmp/render-check.png) == "PNG image data, 320 x 180,"* ]] || { echo "the render check left no frame" >&2; exit 1; }
+	# Pictures: ImageMagick writes the frame as WebP (what the object kit asks a turntable in), and Python opens that
+	# WebP and decodes all of it, so an image whose Pillow cannot read WebP is refused.
+	convert /tmp/render-check.png /tmp/render-check.webp
+	[[ $(file -b /tmp/render-check.webp) == *"Web/P image"* ]] || { echo "ImageMagick wrote no WebP" >&2; exit 1; }
+	cwebp -quiet /tmp/render-check.png -o /tmp/render-check-2.webp
+	python3 -c "from PIL import Image; import numpy; picture = Image.open(\"/tmp/render-check.webp\"); picture.load(); assert picture.size == (320, 180) and numpy.asarray(picture).shape[:2] == (180, 320)"
+	# Fonts and PDFs: what agents installed onto their machines again and again besides (the heads of production
+	# machine commands, 4 to 13 Nov 2026). A font is written as WOFF2, which fonttools does only with brotli; a PDF
+	# that pypdf writes is read back by pypdf and by poppler.
+	python3 -c "from fontTools.ttLib import TTFont; font = TTFont(\"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf\"); font.flavor = \"woff2\"; font.save(\"/tmp/font-check.woff2\")"
+	[[ $(head -c 4 /tmp/font-check.woff2) == wOF2 ]] || { echo "fonttools wrote no WOFF2" >&2; exit 1; }
+	python3 -c "import pypdf; pdf = pypdf.PdfWriter(); pdf.add_blank_page(width=200, height=200); pdf.write(\"/tmp/pdf-check.pdf\"); assert len(pypdf.PdfReader(\"/tmp/pdf-check.pdf\").pages) == 1"
+	pdftotext /tmp/pdf-check.pdf /tmp/pdf-check.txt
+	rm -f /tmp/font-check.woff2 /tmp/pdf-check.pdf /tmp/pdf-check.txt
+	# What the render tools take of a machine root (the room that is left is measured after the last clean-up below).
+	echo "Blender takes $(du -sm /opt/blender/ | cut -f1) MiB and the starter set $(du -sm /opt/qorpera-assets | cut -f1) MiB of the image" >&2
 	# Pages without a screen: root runs the image Chromium headless (its wrapper drops the sandbox root cannot use), and
 	# a login shell in an empty folder finds Playwright and its browser with nothing installed.
 	[[ $(chromium --headless --dump-dom "data:text/html,<p>qorpera-root-headless</p>" 2>/dev/null) == *qorpera-root-headless* ]] ||
@@ -1051,6 +1124,14 @@ JS
 	cloud-init clean --logs --machine-id
 	rm -f /etc/ssh/ssh_host_*
 	journalctl --rotate --vacuum-time=1s >/dev/null 2>&1 || true
+	# The builder has the smallest machine disk (10 GiB): say how much of it is free, and refuse an image that leaves
+	# that machine too little room to work in. Measured here, after the clean-up, because that is what a machine gets:
+	# the packages apt downloaded and the caches of this build are gone (measured before it, the second build on a
+	# node counted them and refused an image at 1013 MiB).
+	sync
+	free_mib=$(df -BM --output=avail / | tail -1 | tr -dc 0-9)
+	echo "the root has $free_mib MiB free with everything installed" >&2
+	(( free_mib >= 1536 )) || { echo "the image leaves the smallest machine only $free_mib MiB free: too little to work in" >&2; exit 1; }
 	sync
 '
 lx stop "$BUILDER"

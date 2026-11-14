@@ -43,7 +43,9 @@ const units = [
 // that ends one program when it runs out (machine-memory, with the two units above), and the LXD agent's protection;
 // and the desktop's look, which the session writes at every start (desktop-look), the program root starts for a press
 // on the dock (desktop-dock-open, with the two dock units above) and the folder such a press asks in; and what
-// `desktop` does with files where the desktop's account can reach (desktop-files).
+// `desktop` does with files where the desktop's account can reach (desktop-files). Since 13 Nov 2026 also what the
+// image's render tools need from the repository: the build's render check, and the starter set's list (each file's
+// address and sha-256, which the build fetches), its guide for agents and a picture of everything in it.
 const files = [
 	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
@@ -71,6 +73,10 @@ const files = [
 		installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
 		mode: "0644",
 	},
+	{ file: "render-check.py", installedPath: "/opt/qorpera-machine/render-check.py", mode: "0444" },
+	{ file: "render-assets.tsv", installedPath: "/opt/qorpera-assets/SOURCES.tsv", mode: "0444" },
+	{ file: "render-assets.md", installedPath: "/opt/qorpera-assets/README.md", mode: "0444" },
+	{ file: "render-assets-preview.jpg", installedPath: "/opt/qorpera-assets/preview.jpg", mode: "0444" },
 ];
 await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // The desktop's pictures (the dock icons and the backdrop sets), one archive the image build unpacks at

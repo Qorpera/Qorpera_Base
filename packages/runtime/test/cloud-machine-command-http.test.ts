@@ -20,6 +20,7 @@ import {
 	localMemberMachinePointer,
 	localMemberMachineScreen,
 	localMemberMachineStart,
+	localMemberMachineStream,
 	MachineCommandRouter,
 	MEMBER_POINTER_MOVES_PER_SECOND,
 	MEMBER_TOUCHED_TOLD_MS,
@@ -30,6 +31,7 @@ import type {
 	CompanyMachineMemberLookOutcome,
 	CompanyMachineMemberPointerOutcome,
 	CompanyMachineMemberStartOutcome,
+	CompanyMachineMemberStream,
 } from "../../runner-orchestrator/src/company-machine-host.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../src/cloud-command-pages.ts";
@@ -2391,10 +2393,14 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 
 	it("begins a pass as the member, reads it once as the executor, and moves on it with no SQL per move", async () => {
 		const f = fixture();
-		expect(await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)).toEqual({
-			pass: f.passId,
-			milliseconds: 10000,
-		});
+		// What is left of its 10 s once SQL's answer came (v242 release review r1 F2).
+		const begun = (await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal)) as {
+			pass: string;
+			milliseconds: number;
+		};
+		expect(begun.pass).toBe(f.passId);
+		expect(begun.milliseconds).toBeGreaterThan(9900);
+		expect(begun.milliseconds).toBeLessThanOrEqual(10000);
 		expect(f.memberPointerBegin).toHaveBeenCalledWith(
 			"eyJh.eyJz.c2ln",
 			{ companyId: f.companyId, machineId: f.machineId, hold: { generation: 4 } },
@@ -2422,6 +2428,49 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		});
 	});
 
+	it("bounds begins, the one pointer request that calls out: one per token at a time, 16 at once, 40 a second, refused before any call (20260930745000)", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(Date.parse("2026-11-13T10:00:00.250Z"));
+			const f = fixture();
+			const waiting: (() => void)[] = [];
+			f.memberPointerBegin.mockImplementation(
+				() =>
+					new Promise<typeof f.passId>((resolve) => {
+						waiting.push(() => resolve(f.passId));
+					}),
+			);
+			const begin = (token: string) =>
+				f.router.memberPointer({ ...f.where, token, begin: { generation: 4 } }, f.signal);
+			// One token: a second begin while its first is on its way is refused at once, with no call.
+			const first = begin("eyJh.eyJz.dG9rZW4tMA");
+			await expect(begin("eyJh.eyJz.dG9rZW4tMA")).rejects.toThrow("MEMBER_POINTER_BUSY");
+			expect(f.memberPointerBegin).toHaveBeenCalledTimes(1);
+			// Sixteen tokens on their way at once; the seventeenth is refused before any call.
+			const going = [first];
+			for (let n = 1; n < 16; n++) going.push(begin(`eyJh.eyJz.dG9rZW4t${n}`));
+			await expect(begin("eyJh.eyJz.c2V2ZW50ZWVu")).rejects.toThrow("MEMBER_POINTER_BUSY");
+			expect(f.memberPointerBegin).toHaveBeenCalledTimes(16);
+			for (const done of waiting.splice(0)) done();
+			await Promise.all(going);
+			// Forty begins in one second, whatever their tokens; the forty-first waits for the next second.
+			f.memberPointerBegin.mockImplementation(async () => f.passId);
+			for (let n = 16; n < 40; n++) await begin(`eyJh.eyJz.dG9rZW4t${n}`);
+			await expect(begin("eyJh.eyJz.Zm9ydHktb25l")).rejects.toThrow("MEMBER_POINTER_BUSY");
+			expect(f.memberPointerBegin).toHaveBeenCalledTimes(40);
+			vi.setSystemTime(Date.parse("2026-11-13T10:00:01.000Z"));
+			await expect(begin("eyJh.eyJz.Zm9ydHktb25l")).resolves.toEqual({ pass: f.passId, milliseconds: 10000 });
+			// A begin that failed gives its token's place back.
+			f.memberPointerBegin.mockImplementationOnce(async () => {
+				throw new Error("MEMBER_POINTER_BEGIN_UNCONFIRMED");
+			});
+			await expect(begin("eyJh.eyJz.ZmFpbHM")).rejects.toThrow("MEMBER_POINTER_BEGIN_UNCONFIRMED");
+			await expect(begin("eyJh.eyJz.ZmFpbHM")).resolves.toEqual({ pass: f.passId, milliseconds: 10000 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("moves only on the pass's own token, company and machine, while it lasts, at most 30 a second", async () => {
 		const f = fixture();
 		await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
@@ -2443,15 +2492,79 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		// Past the bound in one second: dropped, never queued.
 		expect(moves.filter((move) => move.moved)).toHaveLength(MEMBER_POINTER_MOVES_PER_SECOND);
 		expect(f.host.memberPointer).toHaveBeenCalledTimes(MEMBER_POINTER_MOVES_PER_SECOND);
-		// A pass that ran out moves nothing.
+		// A pass that ran out moves nothing: refused at its begin (v242 release review r1 F2), never kept.
 		const short = fixture();
 		short.call.mockImplementation(async (_method: string, args: Record<string, unknown>) =>
 			short.answer(args.p_owner as string, { milliseconds: 0 }),
 		);
-		await short.router.memberPointer({ ...short.where, begin: { generation: 4 } }, short.signal);
+		await expect(
+			short.router.memberPointer({ ...short.where, begin: { generation: 4 } }, short.signal),
+		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
 		await expect(
 			short.router.memberPointer({ ...short.where, pass: short.passId, x: 1, y: 1 }, short.signal),
 		).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+		expect(short.host.memberPointer).not.toHaveBeenCalled();
+	});
+
+	it("counts a pass's time from when SQL was asked, not from its answer, and refuses one with nothing left before its first move, here and on the machine's node (v242 release review r1 F2)", async () => {
+		vi.useFakeTimers();
+		try {
+			/** SQL answers after `delay` ms, with `left` ms of the pass. */
+			const slow = (f: ReturnType<typeof fixture>, delay: number, left: number) =>
+				f.call.mockImplementation(
+					(_method: string, args: Record<string, unknown>) =>
+						new Promise((resolve) =>
+							setTimeout(() => resolve(f.answer(args.p_owner as string, { milliseconds: left })), delay),
+						),
+				);
+			// 600 ms left when SQL was asked, its answer 500 ms on the way: 100 ms of it are left, and said so.
+			const f = fixture();
+			slow(f, 500, 600);
+			const begun = f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
+			await vi.advanceTimersByTimeAsync(500);
+			expect(await begun).toEqual({ pass: f.passId, milliseconds: 100 });
+			await vi.advanceTimersByTimeAsync(50);
+			expect(await f.router.memberPointer({ ...f.where, pass: f.passId, x: 1, y: 1 }, f.signal)).toEqual({
+				moved: true,
+			});
+			await vi.advanceTimersByTimeAsync(60);
+			await expect(
+				f.router.memberPointer({ ...f.where, pass: f.passId, x: 2, y: 1 }, f.signal),
+			).rejects.toMatchObject({
+				code: "POINTER_PASS_ENDED",
+			});
+			expect(f.host.memberPointer).toHaveBeenCalledTimes(1);
+			// 400 ms left, 500 ms on the way: nothing left, refused at the begin, never kept.
+			const late = fixture();
+			slow(late, 500, 400);
+			const refused = expect(
+				late.router.memberPointer({ ...late.where, begin: { generation: 4 } }, late.signal),
+			).rejects.toMatchObject({ code: "POINTER_PASS_ENDED" });
+			await vi.advanceTimersByTimeAsync(500);
+			await refused;
+			// The machine's node, on the first move it is sent: none left, or all of it gone on the way, moves nothing.
+			for (const [delay, left] of [
+				[0, 0],
+				[500, 300],
+			] as const) {
+				const node = fixture("mx-a");
+				slow(node, delay, left);
+				const request = parseCloudMemberMachinePointerPeerRequest({
+					schema: "qorpera.member-machine-pointer-http/v1",
+					passId: node.passId,
+					x: 9,
+					y: 10,
+				});
+				const moved = expect(node.router.memberPointerPeer(request, node.signal)).rejects.toMatchObject({
+					code: "POINTER_PASS_ENDED",
+				});
+				await vi.advanceTimersByTimeAsync(delay);
+				await moved;
+				expect(node.host.memberPointer).not.toHaveBeenCalled();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("tells SQL's refusals and a pass SQL no longer holds, and forgets a pass the host refused", async () => {
@@ -2790,5 +2903,389 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			{ schema: "qorpera.member-machine-start-answer/v1", startId, outcome: "started", more: 1 },
 		])
 			expect(() => parseCloudMemberMachineStartAnswer(request, bad)).toThrow();
+	});
+});
+
+describe("a member's live picture of a desktop (20260930745000)", () => {
+	function fixture(owner = "mx-a") {
+		const ids = {
+			passId: randomUUID(),
+			companyId: randomUUID(),
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+			userId: randomUUID(),
+		};
+		const answer = (requestOwner: string, change: Record<string, unknown> = {}) => ({
+			schema: "qorpera.member-machine-desktop-pointer-authority/v1",
+			state: "authorized",
+			passId: ids.passId,
+			machineId: ids.machineId,
+			placementId: ids.placementId,
+			bootId: ids.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: ids.userId,
+			generation: 4,
+			private: false,
+			milliseconds: 10000,
+			served: requestOwner === "mx-a",
+			...change,
+		});
+		let read: (owner: string) => unknown = (requestOwner) => answer(requestOwner);
+		const call = vi.fn(async (_method: string, args: Record<string, unknown>) => read(args.p_owner as string));
+		/** This node's desktop: sends what the test gives it, until the stream's signal aborts. */
+		const streamed: { stream: CompanyMachineMemberStream; signal: AbortSignal }[] = [];
+		const host = {
+			memberStream: vi.fn(
+				async (
+					stream: CompanyMachineMemberStream,
+					sink: { send(message: Buffer): Promise<void> },
+					signal: AbortSignal,
+				) => {
+					streamed.push({ stream, signal });
+					await sink.send(Buffer.from([1, 0, 64, 0, 40]));
+					await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+					return "closed";
+				},
+			),
+		};
+		let peerAnswer: (body: unknown) => Response = () => new Response(null, { status: 500 });
+		const sent: { url: string; body: unknown }[] = [];
+		const router = new MachineCommandRouter({
+			owner,
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
+			].filter((peer) => peer.owner !== owner),
+			control: closed({ call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			memberPointerBegin: vi.fn(async () => ids.passId),
+			memberStreamLocal: localMemberMachineStream(host),
+			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+				const body = JSON.parse(String(init?.body));
+				sent.push({ url: String(input), body });
+				return peerAnswer(body);
+			}) as typeof fetch,
+		});
+		const token = "eyJh.eyJz.c2ln";
+		const where = { companyId: ids.companyId, machineId: ids.machineId, token };
+		const origin = "https://app.qorpera.com";
+		return {
+			...ids,
+			answer,
+			call,
+			host,
+			router,
+			where,
+			origin,
+			streamed,
+			sent,
+			reads: (next: (owner: string) => unknown) => {
+				read = next;
+			},
+			peer: (next: (body: unknown) => Response) => {
+				peerAnswer = next;
+			},
+			/** A pass of the member's, then a ticket for it. */
+			ticket: async (hold: { generation: number } | { epoch: number; seat: number } = { generation: 4 }) => {
+				await router.memberPointer(
+					{ ...where, begin: "epoch" in hold ? hold : { generation: hold.generation } },
+					new AbortController().signal,
+				);
+				return router.memberPointer(
+					{ ...where, stream: { pass: ids.passId, hold }, origin },
+					new AbortController().signal,
+				);
+			},
+			signal: new AbortController().signal,
+		};
+	}
+	const sinkOf = () => {
+		const messages: Buffer[] = [];
+		return {
+			messages,
+			send: vi.fn(async (message: Buffer) => void messages.push(message)),
+		};
+	};
+
+	it("sells a ticket only on the member's own live pass, of its company, machine and hold: 32 random bytes, used once", async () => {
+		const f = fixture();
+		const sold = (await f.ticket()) as { ticket: string; seconds: number };
+		expect(sold.seconds).toBe(30);
+		expect(sold.ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect((await f.ticket()) as { ticket: string }).not.toEqual(sold);
+		for (const wrong of [
+			{
+				...f.where,
+				token: "eyJh.eyJz.b3RoZXI",
+				stream: { pass: f.passId, hold: { generation: 4 } },
+				origin: f.origin,
+			},
+			{ ...f.where, companyId: randomUUID(), stream: { pass: f.passId, hold: { generation: 4 } }, origin: f.origin },
+			{ ...f.where, machineId: randomUUID(), stream: { pass: f.passId, hold: { generation: 4 } }, origin: f.origin },
+			{ ...f.where, stream: { pass: randomUUID(), hold: { generation: 4 } }, origin: f.origin },
+			// Another hold than the pass's: another generation, or a private one on a shared pass.
+			{ ...f.where, stream: { pass: f.passId, hold: { generation: 5 } }, origin: f.origin },
+			{ ...f.where, stream: { pass: f.passId, hold: { epoch: 1, seat: 4 } }, origin: f.origin },
+		])
+			await expect(f.router.memberPointer(wrong, f.signal), JSON.stringify(wrong)).rejects.toEqual(
+				new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED"),
+			);
+		// The admission uses it up, whatever comes of it: another Origin, then the right one.
+		const again = (await f.ticket()) as { ticket: string };
+		expect(f.router.admitMemberStream(again.ticket, "https://elsewhere.example")).toBeNull();
+		expect(f.router.admitMemberStream(again.ticket, f.origin)).toBeNull();
+		expect(f.router.admitMemberStream("x".repeat(43), f.origin)).toBeNull();
+	});
+
+	it("admits a ticket within its 30 s, at most two streams of a member and eight of a machine", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = fixture();
+			const late = (await f.ticket()) as { ticket: string };
+			vi.advanceTimersByTime(30_001);
+			expect(f.router.admitMemberStream(late.ticket, f.origin)).toBeNull();
+			const runs = [];
+			for (let n = 0; n < 2; n++) {
+				const run = f.router.admitMemberStream(((await f.ticket()) as { ticket: string }).ticket, f.origin);
+				expect(run).not.toBeNull();
+				runs.push(run);
+			}
+			// A third of the same member: refused (404 at the listener), the ticket used up.
+			expect(f.router.admitMemberStream(((await f.ticket()) as { ticket: string }).ticket, f.origin)).toBeNull();
+			// An admitted ticket never run gives its place back after a moment.
+			vi.advanceTimersByTime(10_001);
+			expect(f.router.admitMemberStream(((await f.ticket()) as { ticket: string }).ticket, f.origin)).not.toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("streams this node's desktop for the member's hold while a live pass of that hold is held, and ends POINTER_PASS_ENDED once none is", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = fixture();
+			const sold = (await f.ticket()) as { ticket: string };
+			const run = f.router.admitMemberStream(sold.ticket, f.origin);
+			const sink = sinkOf();
+			const ended = run!(sink, f.signal);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(f.streamed.map((one) => one.stream)).toEqual([
+				{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, generation: 4, epoch: null },
+			]);
+			expect(sink.messages).toHaveLength(1);
+			// The window renews the pass while it watches: the stream goes on past the first pass's 10 s.
+			vi.advanceTimersByTime(8000);
+			await f.router.memberPointer({ ...f.where, begin: { generation: 4 } }, f.signal);
+			await vi.advanceTimersByTimeAsync(4000);
+			expect(f.streamed[0]!.signal.aborted).toBe(false);
+			// No renewal: within a second of the last pass's end the stream ends.
+			await vi.advanceTimersByTimeAsync(7000);
+			expect(f.streamed[0]!.signal.aborted).toBe(true);
+			expect(await ended).toBe("POINTER_PASS_ENDED");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("relays a desktop of another node through that node's peer listener, which reads the newest pass itself; a private hold names its epoch", async () => {
+		const f = fixture("mx-c");
+		const frames = (...parts: [1 | 2, Buffer][]) =>
+			Buffer.concat(
+				parts.map(([kind, payload]) => {
+					const head = Buffer.alloc(5);
+					head[0] = kind;
+					head.writeUInt32BE(payload.byteLength, 1);
+					return Buffer.concat([head, payload]);
+				}),
+			);
+		f.peer(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							const bytes = frames(
+								[1, Buffer.from("first")],
+								[1, Buffer.from("second")],
+								[2, Buffer.from("DESKTOP_HELD_SINCE")],
+							);
+							// In uneven pieces, as a network gives them.
+							controller.enqueue(bytes.subarray(0, 7));
+							controller.enqueue(bytes.subarray(7, 20));
+							controller.enqueue(bytes.subarray(20));
+							controller.close();
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		f.reads((requestOwner) => f.answer(requestOwner, { private: true, generation: 9 }));
+		const sold = (await f.ticket({ epoch: 3, seat: 9 })) as { ticket: string };
+		const sink = sinkOf();
+		expect(await f.router.admitMemberStream(sold.ticket, f.origin)!(sink, f.signal)).toBe("DESKTOP_HELD_SINCE");
+		expect(sink.messages.map(String)).toEqual(["first", "second"]);
+		expect(f.sent.at(-1)).toEqual({
+			url: "https://node-a.example/v1/machine-commands/member-stream",
+			body: { schema: "qorpera.member-machine-stream-http/v1", passId: f.passId, epoch: 3 },
+		});
+		expect(f.host.memberStream).not.toHaveBeenCalled();
+	});
+
+	it("joins a peer's large frame from its small pieces once, never a growing buffer copied again for every piece (v245 release review)", async () => {
+		const f = fixture("mx-c");
+		// A whole 8 MiB picture, then the end, in 1 KiB pieces, with the frames' heads split across pieces too.
+		const picture = Buffer.alloc(8 * 1024 * 1024);
+		for (let i = 0; i < picture.length; i += 997) picture[i] = i & 0xff;
+		const head = (kind: number, length: number) => {
+			const out = Buffer.alloc(5);
+			out[0] = kind;
+			out.writeUInt32BE(length, 1);
+			return out;
+		};
+		const reason = Buffer.from("DESKTOP_ENDED");
+		const bytes = Buffer.concat([
+			head(1, picture.length),
+			picture,
+			head(1, 3),
+			Buffer.from("abc"),
+			head(2, reason.length),
+			reason,
+		]);
+		f.peer(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							for (let at = 0; at < bytes.length; at += 1024) controller.enqueue(bytes.subarray(at, at + 1024));
+							controller.close();
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		f.reads((requestOwner) => f.answer(requestOwner, { private: true, generation: 9 }));
+		const sold = (await f.ticket({ epoch: 3, seat: 9 })) as { ticket: string };
+		const sink = sinkOf();
+		const began = performance.now();
+		expect(await f.router.admitMemberStream(sold.ticket, f.origin)!(sink, f.signal)).toBe("DESKTOP_ENDED");
+		// Before: 8,192 pieces each copying all that came before them, about 34 GB of copying on node 1's event loop.
+		expect(performance.now() - began).toBeLessThan(3000);
+		expect(sink.messages).toHaveLength(2);
+		expect(Buffer.from(sink.messages[0]!).equals(picture)).toBe(true);
+		expect(String(sink.messages[1])).toBe("abc");
+	});
+
+	it("gives up a peer's send the moment the stream is cancelled, and sends nothing after it (review r2 F3 of #1746)", async () => {
+		const f = fixture("mx-c");
+		// The machine's node keeps sending; the member's browser answers pings but never reads.
+		f.peer(
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							const frame = (payload: Buffer) => {
+								const head = Buffer.alloc(5);
+								head[0] = 1;
+								head.writeUInt32BE(payload.byteLength, 1);
+								return Buffer.concat([head, payload]);
+							};
+							for (let n = 0; n < 5; n++) controller.enqueue(frame(Buffer.from(`picture ${n}`)));
+							// The request stays open, as a real one does while the desktop is watched.
+						},
+					}),
+					{ headers: { "content-type": "application/octet-stream" } },
+				),
+		);
+		let blocked = 0;
+		const sink = {
+			send: vi.fn(async () => {
+				blocked++;
+				await new Promise<void>(() => {});
+			}),
+		};
+		const stop = new AbortController();
+		const sold = (await f.ticket()) as { ticket: string };
+		const run = f.router.admitMemberStream(sold.ticket, f.origin);
+		const ending = run!(sink, stop.signal);
+		await vi.waitFor(() => expect(blocked).toBe(1));
+		// The pass ends (or the member closes it): the peer's own await is let go at once, and nothing more is sent.
+		stop.abort();
+		expect(await ending).toBe("closed");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(sink.send).toHaveBeenCalledTimes(1);
+	});
+
+	it("serves a peer's stream from the pass it reads itself, of the hold named, over the peer listener, until the asking executor closes it", async () => {
+		const a = fixture("mx-a");
+		const token = randomBytes(32).toString("base64url");
+		const http = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: null,
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(a.router, { call: a.call }, true) },
+		});
+		const port = await http.start();
+		cleanups.push(() => http.close());
+		const peer = createHttpMemberMachineScreenPeer({ url: `http://127.0.0.1:${port}`, token, allowLoopback: true });
+		const stop = new AbortController();
+		const sink = sinkOf();
+		const ending = peer.memberStream({ passId: a.passId, epoch: null }, sink, stop.signal);
+		await vi.waitFor(() => expect(sink.messages).toHaveLength(1));
+		expect(a.streamed[0]!.stream).toEqual({
+			placementId: a.placementId,
+			bootId: a.bootId,
+			userId: a.userId,
+			generation: 4,
+			epoch: null,
+		});
+		// The asking executor closes it: the desktop's stream here ends with it.
+		stop.abort();
+		expect(await ending).toBe("closed");
+		await vi.waitFor(() => expect(a.streamed[0]!.signal.aborted).toBe(true));
+		// A hold that is not the pass's (an epoch for a shared pass): refused before anything, its code back.
+		expect(await peer.memberStream({ passId: a.passId, epoch: 2 }, sinkOf(), new AbortController().signal)).toBe(
+			"POINTER_PASS_ENDED",
+		);
+		// A pass SQL no longer holds.
+		a.reads(() => {
+			throw new Error("gone");
+		});
+		expect(await peer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
+			"STREAM_UNAVAILABLE",
+		);
+		// A pass with nothing left once SQL answered: refused before anything is shown (v242 release review r1 F2).
+		a.reads((owner) => a.answer(owner, { milliseconds: 0 }));
+		expect(await peer.memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal)).toBe(
+			"POINTER_PASS_ENDED",
+		);
+		expect(a.streamed).toHaveLength(1);
+		// On the ingress (not the peer listener): no such route.
+		const ingress = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: async () => {},
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(a.router, { call: a.call }, false) },
+		});
+		const ingressPort = await ingress.start();
+		cleanups.push(() => ingress.close());
+		expect(
+			await createHttpMemberMachineScreenPeer({
+				url: `http://127.0.0.1:${ingressPort}`,
+				token,
+				allowLoopback: true,
+			}).memberStream({ passId: a.passId, epoch: null }, sinkOf(), new AbortController().signal),
+		).toBe("STREAM_UNAVAILABLE");
 	});
 });
