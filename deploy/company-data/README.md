@@ -76,7 +76,9 @@ after it ran and before it is committed, and whatever is refused is rolled back 
   `copy`, a `do` and every other command is refused.
 - It may delete rows: that is the change's own defined act. It may not drop or empty a table or drop a column, which
   the write login can only do through a function a step made as its owner: that is a step's work, which waits for a
-  member. The statement's deferred work runs before this check and the transaction is sealed with it, as a step's.
+  member. The statement's deferred work runs before this check. A change's transaction is not sealed as a step's is:
+  a seal is a row kept for good, and a change may delete rows anyway, so work a step's function defers a second time
+  to the commit is not seen (it reaches only the folder's own tables, whose rows a change may delete as it is).
 - It may not leave a table without Qorpera's triggers.
 - While the company's database is at its size limit, only a delete runs.
 - What the statement sends back is counted as it arrives. Past 1 MiB (`changeBytes`) the gateway closes the
@@ -89,6 +91,8 @@ after it ran and before it is committed, and whatever is refused is rolled back 
 (the member looking reads as `you`); `values` is every value the statement takes, also one the words do not name;
 `sha256` is the file's hash. Sent back with the change, `sha256` makes the gateway run only that text: a file changed
 since answers 409. A caller that leaves before the change began gets none; once begun, the change runs to its end.
+A change is not run twice for one call, and a call is not remembered: a caller whose call ended without an answer does
+not know whether the change ran, and reads before it asks again (`data_change` says so).
 
 A table's `rows` are counted when it is described, as the database folder's read login, each count a question of its
 own (read only, a question's time at most): tables first, the smallest first, then views. `rows` is never a guess.

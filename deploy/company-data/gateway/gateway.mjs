@@ -709,8 +709,10 @@ export class Gateway {
 	 * - a statement that is no insert, update, delete, merge or select is rolled back (a `set`, a `copy`, a `do`);
 	 * - so is one that dropped or emptied a table or dropped a column, which the write role can only do through a
 	 *   function a step made: that is a step's work, which waits for a member. Deleting rows is the change's own
-	 *   defined act and runs (§8). The statement's deferred work runs before this check and the transaction is sealed
-	 *   with it, as a step's is, so nothing is destroyed at commit that the check did not see;
+	 *   defined act and runs (§8). The statement's deferred work runs before this check. The transaction is not
+	 *   sealed as a step's is: a seal is a row kept for good, one for every change a company ever runs, and a change
+	 *   may delete rows anyway. So work that a step's function defers a second time, past this check to the commit,
+	 *   is not seen; it can reach only the folder's own tables, whose every row a change may delete as it is;
 	 * - so is one that left a table without Qorpera's triggers;
 	 * - a company at its size limit runs only a delete, so it can make room.
 	 * A write is no subquery, so the statement cannot be wrapped as a question's is, and what it sends back is counted
@@ -763,7 +765,7 @@ export class Gateway {
 			if (!CHANGE_COMMANDS.includes(result.command))
 				await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
 			await client.query("set constraints all immediate");
-			const effects = (await client.query("select kind, object, rows from qorpera_data.seal()")).rows;
+			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
 			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
 			if (beyond.length > 0)
 				await undone(

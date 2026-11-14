@@ -392,9 +392,10 @@ data/shop/snapshot/
 - The statement is an insert, an update, a delete, a merge or a select that calls a function a step made, and nothing
   else. What it did is read before it is committed, as a step's is: a change that dropped or emptied a table or
   dropped a column (which the write role can only do through a function a step made as its owner) is rolled back,
-  because that is a step's work and waits for a member. The answer is `{ changed, columns, rows, more, asOf }`: how
-  many rows the statement wrote, and what it gives back (`returning`), cut as a question's answer is. A statement
-  that sends back more than 1 MiB is stopped and rolled back.
+  because that is a step's work and waits for a member. A change's transaction is not sealed as a step's is: a seal
+  is a row kept for good, one for every change, and a change may delete rows anyway. The answer is
+  `{ changed, columns, rows, more, asOf }`: how many rows the statement wrote, and what it gives back (`returning`),
+  cut as a question's answer is. A statement that sends back more than 1 MiB is stopped and rolled back.
 - A member's change from an interface is asked on the bar the platform draws, with the file's words and values. The
   gateway gives the bar the words with the values in place, each value apart from the words, every value the
   statement takes, and the file's hash; the member's yes runs the file with that hash and no other.
