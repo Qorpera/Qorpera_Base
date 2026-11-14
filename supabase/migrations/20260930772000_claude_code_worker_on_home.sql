@@ -116,8 +116,9 @@ select pg_temp.c4c_replace('public.qorpera_company_state_worker_rules(uuid,uuid,
 
 -- For the run of a Claude Code worker, through the native host (scope `binding`): the name of the member it works for,
 -- as the dispatch's words say it (never an id), for its failure words; and the files its run wrote through the
--- machine's folder view, newest first: the commits a view made as this run, which are the ones the home's folder window
--- credited to it (Claude Code has no other way to write; the run's own report and work log are not commits of a view).
+-- machine's folder view, newest first: the commits a machine's view (`test_machine`, the home's company-wide view) made
+-- as this run, which are the ones the home's folder window credited to it (Claude Code has no other way to write; the
+-- run's own report and work log are not a machine's).
 -- Each is a file this run wrote, as the report's rule takes a listed file (20260928469130). At most 64 paths. Another
 -- run is refused (42501).
 create function public.qorpera_claude_worker_run_facts(p_binding jsonb)
@@ -134,7 +135,8 @@ begin
 	select coalesce(jsonb_agg(changed.path order by changed.at desc, changed.path), '[]'::jsonb) into v_paths
 	from (select v.path, max(v.created_at) as at
 		from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
-		where c.run_id = v_run.id and c.environment_id = v_run.environment_id and c.view_id is not null
+		where c.run_id = v_run.id and c.environment_id = v_run.environment_id
+			and c.view_kind = 'test_machine'
 			and v.kind = 'file' and v.op in ('write', 'move_in', 'copy')
 		group by v.path order by max(v.created_at) desc, v.path limit 64) changed;
 	return jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1',

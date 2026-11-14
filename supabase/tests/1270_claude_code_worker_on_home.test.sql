@@ -118,17 +118,17 @@ begin
 	begin
 		set local session_replication_role = replica;
 		-- Two commits of the machine's folder view as the run (the home's window credited them), and a commit of the run's
-		-- own (its report, no view): only the view's files are outputs, newest first; a folder, a delete are not.
+		-- own through its run box (its report): only the view's files are outputs, newest first; a folder, a delete are not.
 		insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id,
-			receipt_id, view_id, units, created_at)
+			receipt_id, view_id, view_kind, units, created_at)
 		values ('12700000-0000-4000-8000-0000000000e1', '92400000-0000-4000-8000-000000000020', 'c4c-home-1', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), '[]'::jsonb,
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), 'test_machine', '[]'::jsonb,
 				clock_timestamp() - interval '1 minute'),
 			('12700000-0000-4000-8000-0000000000e2', '92400000-0000-4000-8000-000000000020', 'c4c-home-2', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), '[]'::jsonb,
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, null, extensions.gen_random_uuid(), 'test_machine', '[]'::jsonb,
 				clock_timestamp()),
 			('12700000-0000-4000-8000-0000000000e3', '92400000-0000-4000-8000-000000000020', 'c4c-report', 'staff_agent',
-				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), null, '[]'::jsonb,
+				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run_box', '[]'::jsonb,
 				clock_timestamp());
 		insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no,
 			created_at)
