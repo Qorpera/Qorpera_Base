@@ -29,6 +29,9 @@ import {
 	parseCompanyStateFile,
 	QORPERA_OS_KEY,
 	QORPERA_OS_ROOT,
+	READING_PATH,
+	READING_SHAPES,
+	type ReadingFile,
 	type RoutineFile,
 	setCompanyStateSettings,
 	WORKER_BRIEF_SECTIONS,
@@ -43,6 +46,7 @@ import {
 	writeHookFile,
 	writeHumanTaskFile,
 	writeMailboxFile,
+	writeReadingFile,
 	writeRoutineFile,
 	writeRuleFile,
 	writeSectionsFile,
@@ -705,6 +709,218 @@ describe("vision.md", () => {
 		expect(refused("QorperaOS/vision/vision.md", "## Nordlys\n")[0]?.code).toBe("body");
 		expect(refused("QorperaOS/vision/vision.md", "# \n")[0]?.code).toBe("body");
 		expect(refused("QorperaOS/vision/vision.md", `# ${"n".repeat(121)}\n`)[0]?.code).toBe("body");
+	});
+});
+
+describe("reading.md", () => {
+	const PATH = "QorperaOS/vision/reading.md";
+	const base = (): Omit<ReadingFile, "kind"> => ({
+		sentence: "We are finding our first ten clinics.",
+		line: "The booking product works; nobody has paid yet.",
+		attention: "sales",
+		things: [
+			{
+				key: "sales",
+				name: "Sales",
+				shape: "handshake",
+				full: 20,
+				state: "Three demos booked",
+				agents: ["anna-berg"],
+				waitsFor: [],
+			},
+			{
+				key: "product",
+				name: "Product",
+				shape: "screen",
+				full: 70,
+				state: "Booking works",
+				agents: ["tom-holm", "ida-lund"],
+				waitsFor: ["founders"],
+			},
+			{ key: "money", name: "Money", shape: "coin", full: 0, state: "No price yet", agents: [], waitsFor: [JONAS] },
+		],
+		changes: [
+			{ agent: "anna-berg", what: "joined", line: "Sales joined to find the first clinics." },
+			{ agent: "tom-holm", what: "changed", line: "Product now owns the booking page too." },
+		],
+		notes: ["We do not know what a clinic pays."],
+	});
+	const written = `---
+attention: sales
+---
+# We are finding our first ten clinics.
+The booking product works; nobody has paid yet.
+
+## Sales
+key: sales
+shape: handshake
+full: 20
+state: Three demos booked
+agents: [anna-berg]
+waits_for: []
+
+## Product
+key: product
+shape: screen
+full: 70
+state: Booking works
+agents: [tom-holm, ida-lund]
+waits_for: [founders]
+
+## Money
+key: money
+shape: coin
+full: 0
+state: No price yet
+agents: []
+waits_for: [${JONAS}]
+
+## Changed
+- anna-berg joined: Sales joined to find the first clinics.
+- tom-holm changed: Product now owns the booking page too.
+
+## Notes
+- We do not know what a clinic pays.
+`;
+	/** The written base with one line replaced. */
+	const edited = (from: string, to: string) => {
+		if (!written.includes(from)) throw new Error(`fixture: ${from}`);
+		return written.replace(from, to);
+	};
+	const problemsOf = (text: string) => refused(PATH, text).map((problem) => [problem.line, problem.key, problem.code]);
+
+	it("is a kind of its own next to the vision, not seeded and deletable", () => {
+		expect(READING_PATH).toBe(PATH);
+		expect(companyStatePath(PATH)).toEqual({
+			kind: "reading",
+			agent: null,
+			group: null,
+			name: null,
+			todo: null,
+			worker: null,
+		});
+		expect(companyStatePath("QorperaOS/Vision/Reading.MD")?.kind).toBe("reading");
+		expect(companyStatePathProblems(PATH)).toEqual([]);
+		expect(companyStatePathProblems("QorperaOS/vision/Reading.md").map((problem) => problem.code)).toEqual(["name"]);
+		expect(companyStatePath("QorperaOS/vision/readings.md")).toBeNull();
+		expect(companyStatePath("vision/reading.md")).toBeNull();
+		expect(COMPANY_STATE_SEEDED_PATHS).not.toContain(PATH);
+		expect(
+			companyStateSeedTree({ companyName: "Nordlys", cofounderId: ANNA }).map((entry) => entry.path),
+		).not.toContain(PATH);
+		expect(READING_SHAPES).toHaveLength(25);
+	});
+
+	it("writes a file a person can read, which reads back the same", () => {
+		expect(writeReadingFile(base())).toBe(written);
+		expect(ok(PATH, written)).toEqual({ kind: "reading", ...base() });
+		const bare = { ...base(), line: null, changes: [], notes: [] };
+		expect(writeReadingFile(bare)).not.toContain("## Changed");
+		expect(ok(PATH, writeReadingFile(bare))).toEqual({ kind: "reading", ...bare });
+		// Values that need quotes, and a sentence that ends in #.
+		const quoted = {
+			...base(),
+			sentence: "We are #1 #",
+			things: base().things.map((thing, index) =>
+				index === 0 ? { ...thing, key: "2026", state: "100", name: "C# work" } : thing,
+			),
+			attention: "2026",
+		};
+		const text = writeReadingFile(quoted);
+		expect(text).toContain('key: "2026"\n');
+		expect(text).toContain('state: "100"\n');
+		expect(text).toContain("# We are #1 # #\n");
+		expect(ok(PATH, text)).toEqual({ kind: "reading", ...quoted });
+	});
+
+	it("reads a file written by hand: lists over lines, notes, CRLF and blank lines", () => {
+		const hand = edited("agents: [tom-holm, ida-lund]\n", "agents:\n  - tom-holm  # the product lead\n  - ida-lund\n")
+			.replace("full: 70\n", "full: 70 # most of it\n")
+			.replace("# We are finding", "\n\n# We are finding")
+			.replaceAll("\n", "\r\n");
+		expect(ok(PATH, hand)).toEqual({ kind: "reading", ...base() });
+	});
+
+	it("names each problem with its line", () => {
+		expect(problemsOf(edited("attention: sales\n", ""))).toEqual([[null, "attention", "missing"]]);
+		expect(problemsOf(edited("attention: sales\n", "attention: sale\n"))).toEqual([[2, "attention", "value"]]);
+		expect(problemsOf(edited("attention: sales\n", "attention: sales\nthings: 3\n"))).toEqual([
+			[3, "things", "unknown_key"],
+		]);
+		expect(problemsOf(edited("shape: coin\n", "shape: coins\n"))).toEqual([[25, "shape", "value"]]);
+		expect(problemsOf(edited("key: money\n", "key: sales\n"))).toEqual([[null, "key", "value"]]);
+		expect(problemsOf(edited("key: money\n", "key: Money\n"))).toEqual([[24, "key", "value"]]);
+		expect(problemsOf(edited("key: money\n", `key: ${"m".repeat(33)}\n`))).toEqual([[24, "key", "value"]]);
+		expect(problemsOf(edited("key: money\n", ""))).toEqual([[23, "key", "missing"]]);
+		expect(problemsOf(edited("full: 0\n", "full: 101\n"))).toEqual([[26, "full", "value"]]);
+		expect(problemsOf(edited("full: 0\n", 'full: "0"\n'))).toEqual([[26, "full", "value"]]);
+		expect(problemsOf(edited("full: 0\n", "full: 0\ncolour: gold\n"))).toEqual([[27, "colour", "unknown_key"]]);
+		expect(problemsOf(edited("full: 0\n", "full: 0\n---\n"))).toEqual([[27, null, "syntax"]]);
+		expect(problemsOf(edited("state: No price yet\n", `state: ${"ø".repeat(21)}\n`))).toEqual([
+			[27, "state", "value"],
+		]);
+		expect(problemsOf(edited("## Money\n", `## ${"M".repeat(41)}\n`))).toEqual([[23, null, "body"]]);
+		expect(problemsOf(edited("agents: []\n", "agents: [anna-berg, anna-berg]\n"))).toEqual([[28, "agents", "value"]]);
+		expect(problemsOf(edited("agents: []\n", "agents: [Anna]\n"))).toEqual([[28, "agents", "value"]]);
+		expect(
+			problemsOf(edited("agents: []\n", `agents: [${Array.from({ length: 9 }, (_, n) => `a${n}`).join(", ")}]\n`)),
+		).toEqual([[28, "agents", "value"]]);
+		expect(problemsOf(edited(`waits_for: [${JONAS}]\n`, "waits_for: [jonas]\n"))).toEqual([
+			[29, "waits_for", "value"],
+		]);
+		expect(problemsOf(edited(`waits_for: [${JONAS}]\n`, `waits_for: [founders, ${JONAS}]\n`))).toEqual([
+			[29, "waits_for", "value"],
+		]);
+		expect(
+			problemsOf(edited(`waits_for: [${JONAS}]\n`, `waits_for: [${[ANNA, TOM, IDA, GROUP, JONAS].join(", ")}]\n`)),
+		).toEqual([[29, "waits_for", "value"]]);
+	});
+
+	it("holds the sentence, the line, the counts and the lists to their bounds", () => {
+		expect(problemsOf(edited("# We are finding our first ten clinics.\n", "We are finding.\n"))).toEqual([
+			[4, null, "body"],
+		]);
+		expect(problemsOf(edited("# We are finding our first ten clinics.", `# ${"w".repeat(201)}`))).toEqual([
+			[4, null, "body"],
+		]);
+		expect(problemsOf(edited("nobody has paid yet.\n", "nobody has paid yet.\nAnd more.\n"))).toEqual([
+			[6, null, "body"],
+		]);
+		expect(problemsOf(edited("nobody has paid yet.\n", `${"x".repeat(200)}\n`))).toEqual([[5, null, "body"]]);
+		expect(problemsOf(edited("nobody has paid yet.\n", "nobody has paid yet.\n# Again\n"))).toEqual([
+			[6, null, "body"],
+		]);
+		const money = written.slice(written.indexOf("## Money"), written.indexOf("## Changed"));
+		const two = written.replace(written.slice(written.indexOf("## Product"), written.indexOf("## Changed")), "");
+		expect(problemsOf(two)).toEqual([[4, null, "body"]]);
+		const many = written.replace(
+			"## Changed",
+			`${Array.from({ length: 5 }, (_, n) => money.replace("key: money", `key: money-${n}`)).join("")}## Changed`,
+		);
+		expect(problemsOf(many)).toEqual([[null, null, "body"]]);
+		expect(
+			problemsOf(
+				edited(
+					"- tom-holm changed: Product now owns the booking page too.\n",
+					`${Array.from({ length: 6 }, (_, n) => `- tom-holm changed: Step ${n}.`).join("\n")}\n`,
+				),
+			),
+		).toEqual([[null, null, "body"]]);
+		expect(problemsOf(edited("- tom-holm changed:", "- tom-holm left:"))).toEqual([[33, null, "body"]]);
+		expect(problemsOf(edited("- tom-holm changed:", "- Tom changed:"))).toEqual([[33, null, "body"]]);
+		expect(
+			problemsOf(edited("- tom-holm changed: Product", `- tom-holm changed: ${"p".repeat(121)} Product`)),
+		).toEqual([[33, null, "body"]]);
+		expect(problemsOf(edited("- We do not know", "We do not know"))).toEqual([[36, null, "body"]]);
+		expect(problemsOf(edited("- We do not know", `- ${"w".repeat(161)} We do not know`))).toEqual([
+			[36, null, "body"],
+		]);
+		expect(problemsOf(`${written}${Array.from({ length: 5 }, (_, n) => `- Note ${n}.`).join("\n")}\n`)).toEqual([
+			[null, null, "body"],
+		]);
+		expect(problemsOf(`${written}\n## Notes\n- Again.\n`)).toEqual([[38, null, "body"]]);
+		const large = refused(PATH, `${written}${"- x\n".repeat(1100)}`);
+		expect(large.map((problem) => problem.code)).toEqual(["too_large"]);
 	});
 });
 
