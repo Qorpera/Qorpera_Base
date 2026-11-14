@@ -33,6 +33,7 @@ import {
 	APP_MAX_BYTES,
 	APP_MAX_FILES,
 	APP_MEDIA_KINDS,
+	APP_NUMBERS_DATABASE,
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEO_KINDS,
 	APP_VIDEOS_MAX_BYTES,
@@ -43,6 +44,7 @@ import {
 	type AppRead,
 	appFileKind,
 	appLinkName,
+	appNumbersRead,
 	appRelativePath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
@@ -81,7 +83,9 @@ import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } f
  *   own folder always; with `files`, the company's own work (never QorperaOS/ or what the platform writes: mail, bank,
  *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them;
  *   with `questions`, the agents' open question cards that point at this app; with `data`, the answers of the company
- *   databases' named questions (`query`), and the same kept live (`watch`: CompanyData below).
+ *   databases' named questions (`query`), and the same kept live (`watch`: CompanyData below); with `money` and `site`,
+ *   the platform's own numbers of the company, asked the same way as questions of the reserved database `qorpera`
+ *   (`qorpera/money-now`, `qorpera/site-now`) and kept live by asking again (CompanyNumbers below).
  *   It never hands over who the member is, a token, or anything of this app's own state.
  * - The bridge changes nothing by itself. A page may ask for what the manifest's `writes` names (an answer to such a
  *   question, a row of a named table): the request is checked (app/app-actions.ts), put to the member on the bar outside
@@ -588,6 +592,9 @@ export interface AppBridgeHost {
 	/** The company's databases, asked and watched as the member; absent where the company has no member gateway
 	 * configured. */
 	readonly data?: CompanyData;
+	/** The platform's own numbers of the company (`qorpera/*`), asked and watched as the member; absent where none can
+	 * be asked. */
+	readonly numbers?: CompanyNumbers;
 	/** Who hears a note from an app, and the send (app/tell-agent.ts); absent where no note can be sent. */
 	readonly tell?: AppTellSource;
 }
@@ -627,6 +634,8 @@ const MAX_DATA_PARAMS = 16;
 const MAX_DATA_VALUE_CHARS = 1024;
 const DATA_PARAM = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const NO_DATA_READ = 'Add "data" to reads in app.toml to ask the company\'s databases';
+/** A question of the platform's numbers that is not one, in the cloud's own words for it. */
+const noNumbersQuestion = (question: string) => `No question ${APP_NUMBERS_DATABASE}/${question} that you may read`;
 /** What a page is told when its request did not become a change. */
 const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "opened" | "told" | "failed">, string>> =
 	{
@@ -941,31 +950,48 @@ export class AppBridge {
 	}
 
 	/** A named question of the company's databases: asked once (`query`), or asked and kept live (`watch`), whose later
-	 * answers go to the page as `qorpera-app-data` messages. A page gets each answer as `pageAnswer` makes it. */
+	 * answers go to the page as `qorpera-app-data` messages. A page gets each answer as `pageAnswer` makes it. A question
+	 * of the reserved database `qorpera` is one of the platform's own numbers: it needs `money` or `site` in `reads`
+	 * (`data` reads none of them, and they need no `data`), and goes to CompanyNumbers. */
 	async #data(call: AppCall): Promise<AppAnswer> {
-		if (!(this.#app.manifest.reads as readonly string[]).includes("data")) return refuse(NO_DATA_READ);
-		const data = this.#host.data;
-		if (!data) return refuse("This company's databases can't be asked from here");
 		const asked = appDataQuestion(call.params);
-		if (typeof asked === "string") return refuse(asked);
+		let source: CompanyLiveSource | undefined;
+		if (typeof asked !== "string" && asked.database === APP_NUMBERS_DATABASE) {
+			const read = appNumbersRead(asked.question);
+			if (read === null) return refuse(noNumbersQuestion(asked.question));
+			if (!this.#may(read))
+				return refuse(`Add "${read}" to reads in app.toml to ask ${APP_NUMBERS_DATABASE}/${asked.question}`);
+			source = this.#host.numbers;
+			if (!source) return refuse("The company's numbers can't be asked from here");
+		} else {
+			// A name of another shape from an app that asks only the platform's numbers is told what is wrong with it.
+			if (!this.#may("data"))
+				return refuse(
+					typeof asked === "string" && (this.#may("money") || this.#may("site")) ? asked : NO_DATA_READ,
+				);
+			source = this.#host.data;
+			if (!source) return refuse("This company's databases can't be asked from here");
+			if (typeof asked === "string") return refuse(asked);
+		}
+		const live = source;
 		try {
 			if (call.method === "query") {
-				const shown = fittedAnswer(await data.query(asked, this.#signal));
+				const shown = fittedAnswer(await live.query(asked, this.#signal));
 				return shown ? { ok: true, value: shown } : refuse(ANSWER_TOO_LARGE);
 			}
 			const page = this.#page?.();
 			if (!page || page.signal.aborted) return refuse("This page can't watch the company's databases");
 			// A later answer too large for the page is not sent: the watch ends there, its place is given back, and the
 			// page keeps the last answer it was sent.
-			const started = await data.watch(page.signal, asked, (watch, answer) => {
+			const started = await live.watch(page.signal, asked, (watch, answer) => {
 				const shown = fittedAnswer(answer);
 				if (shown) page.send(watch, shown);
-				else data.unwatch(page.signal, watch);
+				else live.unwatch(page.signal, watch);
 			});
 			const shown = fittedAnswer(started.answer);
 			if (shown) return { ok: true, value: { watch: started.watch, answer: shown } };
 			// A first answer too large: no watch is kept, and the page is told why.
-			data.unwatch(page.signal, started.watch);
+			live.unwatch(page.signal, started.watch);
 			return refuse(ANSWER_TOO_LARGE);
 		} catch (error) {
 			if (error instanceof CloudMemberDataError || error instanceof AppDataRefused) return refuse(error.message);
@@ -976,7 +1002,10 @@ export class AppBridge {
 	#unwatch(call: AppCall): AppAnswer {
 		const page = this.#page?.();
 		const watch = call.params.watch;
-		return page && typeof watch === "number" && this.#host.data?.unwatch(page.signal, watch)
+		// The databases' watches count up from 1 and the numbers' down from -1, so a watch is one source's alone.
+		return page &&
+			typeof watch === "number" &&
+			(this.#host.data?.unwatch(page.signal, watch) || this.#host.numbers?.unwatch(page.signal, watch))
 			? { ok: true, value: null }
 			: refuse("No such watch");
 	}
@@ -1103,6 +1132,21 @@ export function fittedAnswer(answer: CloudMemberDataAnswer): PageDataAnswer | nu
 	return UTF8.encode(JSON.stringify(shown)).byteLength > DATA_ANSWER_BYTES ? null : shown;
 }
 
+/** What a page's `query` and `watch` ask: the company's databases (CompanyData) or the platform's numbers
+ * (CompanyNumbers). A watch's id is unique among both in a tab. */
+export interface CompanyLiveSource {
+	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;
+	watch(
+		page: AbortSignal,
+		asked: CloudMemberDataQuestion,
+		push: (watch: number, answer: CloudMemberDataAnswer) => void,
+	): Promise<{ watch: number; answer: CloudMemberDataAnswer }>;
+	unwatch(page: AbortSignal, watch: number): boolean;
+	/** Ends the page's watches whose question `keep` does not keep (every one without it): the page may no longer ask
+	 * them, and keeps what it shows. */
+	release(page: AbortSignal, keep?: (asked: CloudMemberDataQuestion) => boolean): void;
+}
+
 /** What the company's watches need of the member's client of its databases (CloudMemberData). */
 export interface CompanyDataClient {
 	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;
@@ -1145,7 +1189,7 @@ interface DataWatcher {
  *   again when the tab is shown. A page's watches end when its own signal does (the app closed, or reloaded).
  * - Every call is the member's own, and `current` checks before and after it that the company is still the one on
  *   screen. */
-export class CompanyData {
+export class CompanyData implements CompanyLiveSource {
 	readonly #client: () => CompanyDataClient;
 	readonly #signal: AbortSignal;
 	readonly #current: () => void;
@@ -1274,6 +1318,13 @@ export class CompanyData {
 		return true;
 	}
 
+	/** Ends the page's watches whose question `keep` does not keep (every one without it). */
+	release(page: AbortSignal, keep: (asked: CloudMemberDataQuestion) => boolean = () => false): void {
+		const watchers = this.#pages.get(page);
+		if (!watchers) return;
+		for (const [watch, watcher] of [...watchers]) if (!keep(watcher.entry.asked)) this.unwatch(page, watch);
+	}
+
 	/** Ends the call in flight and any wait, and starts the next call in a moment, once the set has settled. */
 	#again(): void {
 		this.#call?.abort();
@@ -1350,6 +1401,234 @@ export class CompanyData {
 				}
 			this.#run();
 		})();
+	}
+}
+
+/* ---- The platform's numbers of the company ------------------------------------------------------------------ */
+
+/** How often a watched question of the platform's numbers is asked again while the tab is shown: who is on a site now
+ * every 15 s, a site's other numbers every minute, money every 5 minutes (the vault fetches the bank at most every six
+ * hours). */
+export function numbersPollMs(question: string): number {
+	if (question === "site-now") return 15_000;
+	return appNumbersRead(question) === "site" ? 60_000 : 300_000;
+}
+
+/** One question of the platform's numbers, asked as the member (cloud/company-numbers.ts). */
+export type CompanyNumbersClient = (asked: CloudMemberDataQuestion) => Promise<CloudMemberDataAnswer>;
+
+interface NumbersEntry {
+	readonly key: string;
+	readonly asked: CloudMemberDataQuestion;
+	/** The answer as last read; undefined until the first one is there. */
+	answer: CloudMemberDataAnswer | undefined;
+	readonly first: Promise<CloudMemberDataAnswer>;
+	readonly watchers: Set<NumbersWatcher>;
+	/** When it is asked again, and the timer that asks it while the tab is shown. */
+	due: number;
+	timer: ReturnType<typeof setTimeout> | undefined;
+	asking: boolean;
+}
+
+interface NumbersWatcher {
+	readonly watch: number;
+	readonly entry: NumbersEntry;
+	readonly push: (watch: number, answer: CloudMemberDataAnswer) => void;
+}
+
+/** The open company's platform numbers (`qorpera/money-now` and the like), asked as the member: one per open company,
+ * shared by every app's page. They are not held by any gateway: a watched question is asked again on its own clock
+ * (`numbersPollMs`), and its watchers hear only an answer whose etag differs from the last.
+ * - Two watches of the same question and parameters are one question; at most 8 watches a page and 24 questions a
+ *   company, as for the databases.
+ * - A question asked again that fails tells no page anything: it is asked again on its clock.
+ * - Nothing is asked while the tab is hidden; when it is shown, a question whose time passed is asked at once.
+ * - It stops when the company is put away (`signal`); a page's watches end when its own signal does.
+ * - A watch's id counts down from -1, so it is never one of CompanyData's, which count up from 1. */
+export class CompanyNumbers implements CompanyLiveSource {
+	readonly #client: CompanyNumbersClient;
+	readonly #signal: AbortSignal;
+	readonly #current: () => void;
+	readonly #entries = new Map<string, NumbersEntry>();
+	readonly #pages = new Map<AbortSignal, Map<number, NumbersWatcher>>();
+	#next = 0;
+
+	constructor(client: CompanyNumbersClient, signal: AbortSignal, current: () => void = () => {}) {
+		this.#client = client;
+		this.#signal = signal;
+		this.#current = current;
+		signal.addEventListener(
+			"abort",
+			() => {
+				for (const entry of this.#entries.values()) clearTimeout(entry.timer);
+				this.#entries.clear();
+				this.#pages.clear();
+			},
+			{ once: true },
+		);
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				for (const entry of this.#entries.values()) this.#schedule(entry);
+			},
+			{ signal },
+		);
+	}
+
+	/** The questions watched now (each once, however many pages watch it). */
+	get questions(): number {
+		return this.#entries.size;
+	}
+
+	/** One question's answer, as the member. */
+	async query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer> {
+		this.#current();
+		const answer = await this.#client(asked);
+		signal.throwIfAborted();
+		this.#signal.throwIfAborted();
+		this.#current();
+		return answer;
+	}
+
+	/** Starts a watch for the page whose lifetime `page` is: its first answer and its id. Later answers that differ go
+	 * to `push`. */
+	async watch(
+		page: AbortSignal,
+		asked: CloudMemberDataQuestion,
+		push: (watch: number, answer: CloudMemberDataAnswer) => void,
+	): Promise<{ watch: number; answer: CloudMemberDataAnswer }> {
+		if (this.#signal.aborted || page.aborted) throw new AppDataRefused("This page was put away");
+		const key = JSON.stringify([
+			asked.question,
+			Object.keys(asked.params)
+				.sort()
+				.map((name) => [name, asked.params[name]]),
+		]);
+		let watchers = this.#pages.get(page);
+		if ((watchers?.size ?? 0) >= PAGE_WATCHES)
+			throw new AppDataRefused(`A page watches at most ${PAGE_WATCHES} questions at once`);
+		let entry = this.#entries.get(key);
+		if (!entry) {
+			if (this.#entries.size >= CLOUD_MEMBER_DATA_WATCHES)
+				throw new AppDataRefused(
+					`The company's open apps watch at most ${CLOUD_MEMBER_DATA_WATCHES} of its numbers together`,
+				);
+			const first = this.query(asked, this.#signal);
+			const made: NumbersEntry = {
+				key,
+				asked,
+				answer: undefined,
+				first,
+				watchers: new Set(),
+				due: Number.POSITIVE_INFINITY,
+				timer: undefined,
+				asking: false,
+			};
+			entry = made;
+			this.#entries.set(key, made);
+			// Its first answer starts its clock. One that fails ends it with its watchers, below.
+			first.then(
+				(answer) => {
+					made.answer ??= answer;
+					made.due = Date.now() + numbersPollMs(asked.question);
+					if (this.#entries.get(key) === made) this.#schedule(made);
+				},
+				() => undefined,
+			);
+		}
+		if (!watchers) {
+			const made = new Map<number, NumbersWatcher>();
+			watchers = made;
+			this.#pages.set(page, made);
+			page.addEventListener(
+				"abort",
+				() => {
+					for (const watch of [...made.keys()]) this.unwatch(page, watch);
+					this.#pages.delete(page);
+				},
+				{ once: true },
+			);
+		}
+		const watcher: NumbersWatcher = { watch: --this.#next, entry, push };
+		entry.watchers.add(watcher);
+		watchers.set(watcher.watch, watcher);
+		let answer: CloudMemberDataAnswer;
+		try {
+			answer = entry.answer ?? (await entry.first);
+		} catch (error) {
+			this.unwatch(page, watcher.watch);
+			throw error;
+		}
+		if (!watchers.has(watcher.watch)) throw new AppDataRefused("This page was put away");
+		return { watch: watcher.watch, answer: entry.answer ?? answer };
+	}
+
+	/** Ends a watch of the page's; false when the page has no such watch. */
+	unwatch(page: AbortSignal, watch: number): boolean {
+		const watcher = this.#pages.get(page)?.get(watch);
+		if (!watcher) return false;
+		this.#pages.get(page)?.delete(watch);
+		const entry = watcher.entry;
+		entry.watchers.delete(watcher);
+		if (entry.watchers.size === 0 && this.#entries.get(entry.key) === entry) {
+			this.#entries.delete(entry.key);
+			clearTimeout(entry.timer);
+			entry.timer = undefined;
+		}
+		return true;
+	}
+
+	/** Ends the page's watches whose question `keep` does not keep (every one without it). */
+	release(page: AbortSignal, keep: (asked: CloudMemberDataQuestion) => boolean = () => false): void {
+		const watchers = this.#pages.get(page);
+		if (!watchers) return;
+		for (const [watch, watcher] of [...watchers]) if (!keep(watcher.entry.asked)) this.unwatch(page, watch);
+	}
+
+	/** Sets the question's timer for its next ask, or none while the tab is hidden, its first answer is not there yet or
+	 * it is being asked. */
+	#schedule(entry: NumbersEntry): void {
+		clearTimeout(entry.timer);
+		entry.timer = undefined;
+		if (
+			this.#signal.aborted ||
+			document.visibilityState === "hidden" ||
+			entry.answer === undefined ||
+			entry.asking ||
+			this.#entries.get(entry.key) !== entry
+		)
+			return;
+		entry.timer = setTimeout(
+			() => {
+				entry.timer = undefined;
+				void this.#ask(entry);
+			},
+			Math.max(0, entry.due - Date.now()),
+		);
+	}
+
+	async #ask(entry: NumbersEntry): Promise<void> {
+		if (this.#entries.get(entry.key) !== entry || document.visibilityState === "hidden") return;
+		entry.asking = true;
+		let fresh: CloudMemberDataAnswer | undefined;
+		try {
+			fresh = await this.query(entry.asked, this.#signal);
+		} catch {
+			// The page keeps what it shows; the question is asked again on its clock.
+		}
+		entry.asking = false;
+		entry.due = Date.now() + numbersPollMs(entry.asked.question);
+		if (this.#entries.get(entry.key) !== entry) return;
+		if (fresh && fresh.etag !== entry.answer?.etag) {
+			entry.answer = fresh;
+			for (const watcher of [...entry.watchers])
+				try {
+					watcher.push(watcher.watch, fresh);
+				} catch {
+					/* One page's trouble is not another's. */
+				}
+		}
+		this.#schedule(entry);
 	}
 }
 

@@ -3356,7 +3356,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
-	// again.
+	// again. The same day save_app's reads take money and site (the platform's own numbers of the company, asked as
+	// questions of the reserved database qorpera; company views step 3, slice W1, 20260930767000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3408,10 +3409,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"1c7de9c2ccd92a09914a4f54d842dedef3b33ea1ca9598d334c0c6dd19750372",
+		"86e5f39dc4320f956dfcaace7d32720ec4814b2f9c9a38e1bb463814104f91c8",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c750ea6f9ecbbb9613b3249b1b0306c00d3109311de4b8f6ef8c28ecc29213d0",
+		"d212b5f4eea14442700727de274e80e33dcb36dc49f4d845a8f17a5a7c932624",
 	);
 });
 

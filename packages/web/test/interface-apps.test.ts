@@ -20,12 +20,16 @@ import {
 	CompanyApps,
 	CompanyData,
 	type CompanyDataClient,
+	CompanyNumbers,
 	companyConcepts,
+	numbersPollMs,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
 	warmApps,
 } from "../src/app/interface-apps.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
+import { askCompanyNumbers } from "../src/cloud/company-numbers.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 
 /** A member's folder over fixed files: read, list and readFile as the cloud client answers them. */
@@ -1293,6 +1297,309 @@ describe("the company's databases on an app's page", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(calls).toHaveLength(3);
 		expect(data.questions).toBe(0);
+	});
+});
+
+describe("the company's own numbers on an app's page", () => {
+	type Answer = CloudMemberDataAnswer;
+	const asOf = "2026-11-14T10:00:00.000Z";
+	const result = (etag: string, rows: unknown[][] = [["current", 1200.5]]): Answer => ({
+		columns: ["state", "balance"],
+		rows,
+		more: false,
+		etag,
+		asOf,
+	});
+	const shown = (rows: Record<string, unknown>[]) => ({ columns: ["state", "balance"], rows, more: false, asOf });
+
+	const manifest = (reads: string[]): CompanyApp & { manifest: NonNullable<CompanyApp["manifest"]> } => {
+		const parsed = parseAppManifest('name = "Money"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		return {
+			name: "money",
+			path: "apps/money",
+			manifest: { ...parsed.manifest, reads: reads as never },
+			problems: [],
+			version: null,
+		};
+	};
+
+	function page() {
+		const stop = new AbortController();
+		const sent: { watch: number; value: unknown }[] = [];
+		return {
+			stop,
+			sent,
+			page: { signal: stop.signal, send: (watch: number, value: unknown) => sent.push({ watch, value }) },
+		};
+	}
+
+	/** The cloud's answers by question, which a case may change; every ask is kept. */
+	function setup(answers: Record<string, Answer | Error> = {}) {
+		const asked: CloudMemberDataQuestion[] = [];
+		const company = new AbortController();
+		const numbers = new CompanyNumbers(async (question) => {
+			asked.push(question);
+			const answer = answers[question.question] ?? result(`e-${question.question}`);
+			if (answer instanceof Error) throw answer;
+			return answer;
+		}, company.signal);
+		// The company's databases beside them: each question answered at once, a held call never answered.
+		const held: AbortSignal[] = [];
+		const client: CompanyDataClient = {
+			query: async (question) => result(`d-${question.question}`, [[1, 2]]),
+			watch: (_watches, signal) =>
+				new Promise((_resolve, reject) => {
+					held.push(signal);
+					signal.addEventListener("abort", () => reject(signal.reason));
+				}),
+		};
+		const data = new CompanyData(() => client, company.signal);
+		const bridge = (on: ReturnType<typeof page>, reads: string[], withNumbers = true) =>
+			new AppBridge(
+				{ folder: () => fakeFolder({}), agents: () => [], data, ...(withNumbers ? { numbers } : {}) },
+				manifest(reads),
+				crypto.randomUUID(),
+				new AbortController().signal,
+				undefined,
+				undefined,
+				() => on.page,
+			);
+		return { asked, answers, company, numbers, data, bridge };
+	}
+
+	let visibility: DocumentVisibilityState = "visible";
+	const show = (state: DocumentVisibilityState) => {
+		visibility = state;
+		document.dispatchEvent(new Event("visibilitychange"));
+	};
+	beforeEach(() => {
+		visibility = "visible";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const query = (name: unknown, params?: unknown) => ({ method: "query", params: { name, params } });
+	const watch = (name: unknown, params?: unknown) => ({ method: "watch", params: { name, params } });
+
+	it("asks a question of qorpera only with its own read, never with data's, and only one that is there", async () => {
+		const { bridge, asked } = setup({
+			"site-now": new CloudMemberDataError("qorpera/site-now is not counted yet: the sites' numbers come later"),
+		});
+		const on = page();
+		expect(await bridge(on, ["data"]).answer(query("qorpera/money-now"))).toEqual({
+			ok: false,
+			error: 'Add "money" to reads in app.toml to ask qorpera/money-now',
+		});
+		expect(await bridge(on, ["money"]).answer(watch("qorpera/site-now"))).toEqual({
+			ok: false,
+			error: 'Add "site" to reads in app.toml to ask qorpera/site-now',
+		});
+		expect(await bridge(on, ["money", "site"]).answer(query("qorpera/orders-now"))).toEqual({
+			ok: false,
+			error: "No question qorpera/orders-now that you may read",
+		});
+		// The numbers read no company database, and a name of another shape is told what is wrong with it.
+		expect(await bridge(on, ["money"]).answer(query("shop/sales"))).toEqual({
+			ok: false,
+			error: 'Add "data" to reads in app.toml to ask the company\'s databases',
+		});
+		expect(await bridge(on, ["money"]).answer(query("qorpera/Money-now"))).toEqual({
+			ok: false,
+			error: "Name a question as <database>/<question>",
+		});
+		expect(await bridge(on, ["money"], false).answer(query("qorpera/money-now"))).toEqual({
+			ok: false,
+			error: "The company's numbers can't be asked from here",
+		});
+		expect(asked).toEqual([]);
+		expect(
+			await bridge(on, ["money"]).answer(query("qorpera/money-balance", { from: "2026-11-01", to: null })),
+		).toEqual({ ok: true, value: shown([{ state: "current", balance: 1200.5 }]) });
+		expect(asked).toEqual([
+			{ database: "qorpera", question: "money-balance", params: { from: "2026-11-01", to: null } },
+		]);
+		expect(await bridge(on, ["site"]).answer(query("qorpera/sites"))).toMatchObject({ ok: true });
+		// The cloud's refusal reaches the page in its own words.
+		expect(await bridge(on, ["site"]).answer(watch("qorpera/site-now"))).toEqual({
+			ok: false,
+			error: "qorpera/site-now is not counted yet: the sites' numbers come later",
+		});
+	});
+
+	it("watches money by asking again every 5 minutes, and tells the page only of a new answer", async () => {
+		const { bridge, asked, answers } = setup();
+		const a = page();
+		expect(await bridge(a, ["money"]).answer(watch("qorpera/money-now"))).toEqual({
+			ok: true,
+			value: { watch: -1, answer: shown([{ state: "current", balance: 1200.5 }]) },
+		});
+		expect(asked).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(299_999);
+		expect(asked).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(asked).toHaveLength(2);
+		// The same etag: nothing for the page.
+		expect(a.sent).toEqual([]);
+		answers["money-now"] = result("e2", [["current", 990]]);
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(asked).toHaveLength(3);
+		expect(a.sent).toEqual([{ watch: -1, value: shown([{ state: "current", balance: 990 }]) }]);
+		// A failed ask tells the page nothing and is asked again on its clock.
+		answers["money-now"] = new CloudMemberDataError("Company numbers are unavailable");
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(asked).toHaveLength(4);
+		answers["money-now"] = result("e2", [["current", 990]]);
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(asked).toHaveLength(5);
+		expect(a.sent).toHaveLength(1);
+	});
+
+	it("asks who is on a site now every 15 s, and a site's other numbers every minute", async () => {
+		expect(numbersPollMs("site-now")).toBe(15_000);
+		expect(numbersPollMs("site-days")).toBe(60_000);
+		expect(numbersPollMs("sites")).toBe(60_000);
+		expect(numbersPollMs("money-kinds")).toBe(300_000);
+		const { bridge, asked } = setup();
+		const a = page();
+		await bridge(a, ["site"]).answer(watch("qorpera/site-now"));
+		await bridge(a, ["site"]).answer(watch("qorpera/site-days", { site: "shop" }));
+		const count = (question: string) => asked.filter((one) => one.question === question).length;
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect([count("site-now"), count("site-days")]).toEqual([2, 1]);
+		await vi.advanceTimersByTimeAsync(45_000);
+		expect([count("site-now"), count("site-days")]).toEqual([5, 2]);
+	});
+
+	it("shares a question two pages watch, with ids of their own beside the databases' watches", async () => {
+		const { bridge, asked, numbers, data } = setup();
+		const a = page();
+		const b = page();
+		expect(await bridge(a, ["data", "money"]).answer(watch("shop/sales"))).toMatchObject({
+			ok: true,
+			value: { watch: 1 },
+		});
+		expect(await bridge(a, ["data", "money"]).answer(watch("qorpera/money-now"))).toMatchObject({
+			ok: true,
+			value: { watch: -1 },
+		});
+		expect(await bridge(b, ["money"]).answer(watch("qorpera/money-now", {}))).toMatchObject({
+			ok: true,
+			value: { watch: -2 },
+		});
+		expect(asked).toHaveLength(1);
+		expect([numbers.questions, data.questions]).toEqual([1, 1]);
+		// Each ends as its own source's watch.
+		expect(await bridge(a, ["data", "money"]).answer({ method: "unwatch", params: { watch: -1 } })).toEqual({
+			ok: true,
+			value: null,
+		});
+		expect([numbers.questions, data.questions]).toEqual([1, 1]);
+		expect(await bridge(b, ["money"]).answer({ method: "unwatch", params: { watch: -2 } })).toMatchObject({
+			ok: true,
+		});
+		expect(await bridge(a, ["data", "money"]).answer({ method: "unwatch", params: { watch: 1 } })).toMatchObject({
+			ok: true,
+		});
+		expect([numbers.questions, data.questions]).toEqual([0, 0]);
+		expect(await bridge(a, ["money"]).answer({ method: "unwatch", params: { watch: -1 } })).toEqual({
+			ok: false,
+			error: "No such watch",
+		});
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(asked).toHaveLength(1);
+	});
+
+	it("ends only the page's watches it may no longer ask, and keeps the others", async () => {
+		const { bridge, numbers, data } = setup();
+		const a = page();
+		await bridge(a, ["data", "money", "site"]).answer(watch("shop/sales"));
+		await bridge(a, ["data", "money", "site"]).answer(watch("qorpera/money-now"));
+		await bridge(a, ["data", "money", "site"]).answer(watch("qorpera/site-now"));
+		numbers.release(a.page.signal, (asked) => asked.question.startsWith("site"));
+		expect([numbers.questions, data.questions]).toEqual([1, 1]);
+		data.release(a.page.signal);
+		expect([numbers.questions, data.questions]).toEqual([1, 0]);
+		numbers.release(a.page.signal);
+		expect(numbers.questions).toBe(0);
+	});
+
+	it("asks nothing in a hidden tab, at once when shown past its time, and stops with the page and company", async () => {
+		const { bridge, asked, numbers, company } = setup();
+		const a = page();
+		await bridge(a, ["money"]).answer(watch("qorpera/money-now"));
+		show("hidden");
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(asked).toHaveLength(1);
+		show("visible");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(asked).toHaveLength(2);
+		// Shown again before its time: asked when its time comes, not before.
+		show("hidden");
+		await vi.advanceTimersByTimeAsync(100_000);
+		show("visible");
+		await vi.advanceTimersByTimeAsync(199_999);
+		expect(asked).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(asked).toHaveLength(3);
+		// The page goes: its watches with it.
+		a.stop.abort();
+		expect(numbers.questions).toBe(0);
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(asked).toHaveLength(3);
+		// The company put away.
+		const b = page();
+		await bridge(b, ["money"]).answer(watch("qorpera/money-now"));
+		expect(asked).toHaveLength(4);
+		company.abort();
+		show("hidden");
+		show("visible");
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(asked).toHaveLength(4);
+		expect(numbers.questions).toBe(0);
+	});
+
+	it("asks the cloud as the member, parses its answer strictly, and keeps its refusal's words", async () => {
+		const rpc = vi.fn();
+		const cloud = { rpc } as never as Parameters<typeof askCompanyNumbers>[0];
+		const environment = "00000000-0000-4000-8000-000000000020";
+		const asked = { database: "qorpera", question: "money-now", params: { from: "2026-11-01" } };
+		rpc.mockResolvedValueOnce({ columns: ["state"], rows: [["none"]], more: false, asOf, etag: "0123456789abcdef" });
+		expect(await askCompanyNumbers(cloud, environment, asked)).toEqual({
+			columns: ["state"],
+			rows: [["none"]],
+			more: false,
+			asOf,
+			etag: "0123456789abcdef",
+		});
+		expect(rpc).toHaveBeenCalledWith("qorpera_member_company_numbers", {
+			p_environment_id: environment,
+			p_question: "money-now",
+			p_params: { from: "2026-11-01" },
+		});
+		rpc.mockResolvedValueOnce({ columns: ["state"], rows: [["none"]], more: false, asOf, etag: "e", schema: "x" });
+		await expect(askCompanyNumbers(cloud, environment, asked)).rejects.toThrow(
+			"The company's databases gave an answer this page does not know",
+		);
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_member_company_numbers",
+				{ message: "No question qorpera/money-now that you may read", code: "P0002" },
+				404,
+			),
+		);
+		const refused = await askCompanyNumbers(cloud, environment, asked).catch((error: unknown) => error);
+		expect(refused).toBeInstanceOf(CloudMemberDataError);
+		expect(refused).toMatchObject({ message: "No question qorpera/money-now that you may read", status: 404 });
+		rpc.mockRejectedValueOnce(
+			new CloudRpcError("qorpera_member_company_numbers", { message: "Could not find", code: "PGRST202" }, 404),
+		);
+		await expect(askCompanyNumbers(cloud, environment, asked)).rejects.toThrow(
+			"The company's numbers can't be asked on this cloud yet",
+		);
 	});
 });
 

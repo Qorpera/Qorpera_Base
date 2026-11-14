@@ -293,7 +293,9 @@
 	// once the member chose. A link the
 	// member clicked goes out on it too (`follow`), from this document alone: the page's object has no call for it.
 	// A question of the company's databases the page watches (`watch`) is asked once and its listener called with the
-	// answer; the app then sends each new answer with the watch's id, and only that watch's listener hears it. Its
+	// answer; the app then sends each new answer with the watch's id, and only that watch's listener hears it. The
+	// platform's own numbers are asked the same way, as questions of the database `qorpera` (`qorpera/money-now`): the
+	// app asks them again on its own clock and sends only an answer that changed, with a watch id below zero. Its
 	// answers are handled here with plain callbacks, never a promise, so nothing the page changes on Promise or Object
 	// stands between an answer and its listener. A watch the app refuses to start calls the page's `failed`, when it
 	// gave one, once with the app's words; what goes wrong after a watch started is not shown (the page keeps what it

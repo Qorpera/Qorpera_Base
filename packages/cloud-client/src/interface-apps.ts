@@ -27,9 +27,32 @@ export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
 export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
- * `data`: the company's databases, asked by their questions. */
-export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data"] as const);
+ * `data`: the company's databases, asked by their questions; `money` and `site`: the platform's own numbers of the
+ * company, asked as questions of the reserved database `qorpera` (APP_NUMBERS_DATABASE): `money` the bank's sums
+ * (`qorpera/money-*`), `site` the visits of the company's sites (`qorpera/sites`, `qorpera/site-*`). Neither needs
+ * `data`, and `data` reads neither. */
+export const APP_READS = Object.freeze([
+	"files",
+	"tables",
+	"todos",
+	"agents",
+	"questions",
+	"data",
+	"money",
+	"site",
+] as const);
 export type AppRead = (typeof APP_READS)[number];
+/** The database name no company database may carry (the data gateway refuses it): its questions are the platform's own
+ * numbers of the company (supabase/CLIENT-CONTRACT.md "The company's numbers"), answered in the data gateway's shape. */
+export const APP_NUMBERS_DATABASE = "qorpera";
+
+/** The read a question of the platform's numbers needs: `money` for `money-*`, `site` for `sites` and `site-*`; null for
+ * a name that is neither, which is no question there. */
+export function appNumbersRead(question: string): "money" | "site" | null {
+	if (/^money-[a-z0-9]/.test(question)) return "money";
+	if (question === "sites" || /^site-[a-z0-9]/.test(question)) return "site";
+	return null;
+}
 /** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
  * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in
  * them and its links open none (§4, §5). */

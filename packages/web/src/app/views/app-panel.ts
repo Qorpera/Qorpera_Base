@@ -1,4 +1,4 @@
-import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
+import { type AppManifest, appNumbersRead } from "@qorpera/cloud-client/interface-apps";
 import { type AppAnswer, type AppCall, AppFrame } from "../../ui/app-frame.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -388,10 +388,18 @@ export class AppPanel {
 	 * shown. One the member already allowed is on its way and is not touched. */
 	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
 		this.#ask?.cancel();
-		// What the page watched it may not watch any more: its watches end, and the page keeps what it shows.
-		if (!app || !(app.manifest.reads as readonly string[]).includes("data")) {
+		// What the page watched it may not watch any more: its watches end, and the page keeps what it shows. A page
+		// watches the company's databases with `data`, the platform's numbers with `money` or `site`.
+		const reads: readonly string[] = app?.manifest.reads ?? [];
+		if (!reads.some((read) => read === "data" || read === "money" || read === "site")) {
 			this.#data?.stop.abort();
 			this.#data = undefined;
+		} else if (this.#data) {
+			if (!reads.includes("data")) this.#host.data?.release(this.#data.signal);
+			this.#host.numbers?.release(this.#data.signal, (asked) => {
+				const read = appNumbersRead(asked.question);
+				return read !== null && reads.includes(read);
+			});
 		}
 		this.#unlisten?.();
 		this.#unlisten = undefined;
