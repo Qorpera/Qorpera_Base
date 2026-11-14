@@ -1959,9 +1959,10 @@ export class ComputerPanel {
 	/**
 	 * Whether the desktop's live picture may go on for this hold or sharing (20260930745000): the build names a stream
 	 * address and the way has the route; the window is open, in a thread, in a visible tab, watched (no pause, a touch in
-	 * the last 30 minutes, or in the computer's own seconds when it is awake only for a member), in the large view with this computer's picture up; no run of failures or refusal waits; and the
-	 * hold or sharing is the window's own and its pointer goes (as for a move: #pointerCurrent). Checked at every change the
-	 * window draws and every STREAM_CHECK_MS: false ends the stream.
+	 * the last 30 minutes, or in the computer's own seconds when it is awake only for a member: #pauseAfter), in the
+	 * large view with this computer's picture up; no run of failures or refusal waits; and the hold or sharing is the
+	 * window's own and its pointer goes (as for a move: #pointerCurrent). Checked at every change the window draws and
+	 * every STREAM_CHECK_MS: false ends the stream.
 	 */
 	#streamWanted(sender: PageHold | SharedInput): boolean {
 		return (
