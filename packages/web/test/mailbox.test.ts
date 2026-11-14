@@ -7,7 +7,13 @@ import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
-import type { WebRoutine, WebRoutineDraft, WebRoutineFile } from "../src/cloud/routines.ts";
+import {
+	type WebRoutine,
+	WebRoutineChangedError,
+	type WebRoutineDraft,
+	type WebRoutineFile,
+	type WebRoutinePayer,
+} from "../src/cloud/routines.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
@@ -189,6 +195,8 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 					},
 				};
 			}),
+			// Who pays for a routine: the cloud without the payer calls, unless a test says.
+			payer: vi.fn(async (): Promise<WebRoutinePayer | null> => null),
 			save: vi.fn(async (draft: WebRoutineDraft) => {
 				// An edit of a routine's file changes its instructions.
 				if (draft.opened) {
@@ -275,6 +283,18 @@ const tab = (main: HTMLElement, name: string) => button(main.querySelector(".mai
 function type(field: HTMLInputElement | HTMLTextAreaElement, value: string): void {
 	field.value = value;
 	field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+/** The panel beside the open menu, as its row opens it: how an agent answers. */
+const howPanel = () => document.querySelector<HTMLElement>(".context-panel .mailbox-how-panel");
+/** Opens the menu of `chip` and, from it, the panel its row `label` opens. */
+function openHow(chip: HTMLElement, label: string): HTMLElement {
+	chip.click();
+	const row = [...openMenu()!.el.querySelectorAll<HTMLButtonElement>(".context-menu-item")].find(
+		(each) => each.querySelector(".context-menu-label")?.textContent === label,
+	);
+	if (!row) throw new Error(`No row ${label}: ${texts(openMenu()!.el, ".context-menu-label").join(", ")}`);
+	row.click();
+	return howPanel()!;
 }
 /** The controls under `root` that can be used, each by its label or else by its focus key. */
 const usable = (root: ParentNode) =>
@@ -410,12 +430,16 @@ describe("the Inbox", () => {
 		menuRow("Bo").click();
 		expect(picked()).toBe("Bo");
 		expect(document.activeElement).toBe(answers());
-		// How Bo answers it is asked under his chip: the member's words go into his routine.
-		const how = none.main.querySelector<HTMLTextAreaElement>("#hook-form-mailbox .mailbox-how-new textarea")!;
-		expect(none.main.querySelector("#hook-form-mailbox .mailbox-how-new .mailbox-how-title")?.textContent).toBe(
-			"How Bo answers",
-		);
-		type(how, "Answer in Danish.\nSign as the Acme team.");
+		// How Bo answers it is in his chip's menu, beside it: the member's words go into his routine.
+		const panel = openHow(answers(), "Tell Bo how to answer");
+		expect(panel.querySelector(".mailbox-how-title")?.textContent).toBe("How Bo answers");
+		expect(document.activeElement).toBe(panel.querySelector("textarea"));
+		type(panel.querySelector("textarea")!, "Answer in Danish.\nSign as the Acme team.");
+		button(panel, "Save")!.click();
+		expect(openMenu()).toBeUndefined();
+		answers().click();
+		expect(texts(openMenu()!.el, ".context-menu-label").at(-1)).toBe("How Bo answers");
+		openMenu()!.close();
 		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
 		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
 		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
@@ -436,12 +460,8 @@ describe("the Inbox", () => {
 		await vi.waitFor(() =>
 			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
 		);
-		// Its words stand under the address; nothing more is asked.
-		tab(none.main, "Addresses");
-		await vi.waitFor(() =>
-			expect(texts(none.main, ".mailbox-how-words")).toEqual(["Answer in Danish.\nSign as the Acme team."]),
-		);
-		expect(none.main.querySelector(".mailbox-how.is-editing")).toBeNull();
+		// Nothing of them stands on the page: they are in Bo's menu.
+		expect(none.main.querySelector(".mailbox-how-panel, textarea")).toBeNull();
 	});
 });
 
@@ -933,11 +953,19 @@ describe("Sent, Addresses and Write", () => {
 		expect(card().querySelector(".settings-copy strong")?.textContent).toBe("hello@acme.example");
 		expect(main.querySelector(".mailbox-address")).toBeNull();
 		expect([said(), named()]).toEqual(["Answered by", "Ada"]);
-		expect(card().querySelector(".mailbox-week")?.textContent).toBe("12");
+		// The line says who answers it, and no more: no count, and no state while it is active.
+		expect(card().querySelector(".mailbox-week, .hook-state")).toBeNull();
 		expect(texts(card(), ".connection-actions button")).toEqual(["Pause", "Remove"]);
-		// The chip opens the agents, each one a box to tick: those who answer it are ticked.
+		// The chip opens the agents, each one a box to tick: those who answer it are ticked. Under them, how each one that
+		// answers it answers.
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
 		chip().click();
-		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual(["Co-Founder", "Ada", "Bo"]);
+		expect(texts(openMenu()!.el, ".context-menu-label")).toEqual([
+			"Co-Founder",
+			"Ada",
+			"Bo",
+			"Tell Ada how to answer",
+		]);
 		expect(menuRow("Ada").getAttribute("role")).toBe("menuitemcheckbox");
 		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("true");
 		expect(menuRow("Bo").getAttribute("aria-checked")).toBe("false");
@@ -974,13 +1002,15 @@ describe("Sent, Addresses and Write", () => {
 		expect(send).not.toHaveBeenCalled();
 		expect([said(), named()]).toEqual(["Answered by", "Ada and Bo"]);
 		expect(chip().disabled).toBe(false);
-		// Bo has no words of the member's on how he answers: they are asked for next, the field ready.
-		const field = () => card().querySelector<HTMLTextAreaElement>(".mailbox-how.is-editing textarea");
-		expect(card().querySelector(".mailbox-how.is-editing .mailbox-how-title")?.textContent).toBe("How Bo answers");
-		expect(document.activeElement).toBe(field());
-		button(card(), "Cancel")!.click();
-		expect(field()).toBeNull();
-		expect(texts(card(), ".mailbox-how-add")).toEqual(["Tell Ada how to answer", "Tell Bo how to answer"]);
+		expect(document.activeElement).toBe(chip());
+		// Nothing about how Bo answers stands on the page: it is in the chip's menu, under each agent who answers.
+		expect(card().querySelector("textarea")).toBeNull();
+		chip().click();
+		expect(texts(openMenu()!.el, ".context-menu-label").slice(3)).toEqual([
+			"Tell Ada how to answer",
+			"Tell Bo how to answer",
+		]);
+		openMenu()!.close();
 		// Ada's tick off: her routine stops, and Bo answers alone.
 		press("Ada");
 		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
@@ -1009,40 +1039,52 @@ describe("Sent, Addresses and Write", () => {
 		// The first agent on an address answers it alone.
 		press("Co-Founder");
 		await vi.waitFor(() => expect(toast()).toBe("Co-Founder answers hello@acme.example"));
-		// The company's addresses are made, paused and removed here, and Digital Post connected.
+		// The company's addresses are made, paused and removed here, and Digital Post connected. Add mailbox comes first,
+		// above the list, with Digital Post's pill beside it; its card opens under them.
 		expect(button(main, "Add mailbox")).toBeDefined();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='mailbox']")).not.toBeNull();
 		expect(main.querySelector(".mailbox-addresses .mailbox-manage [data-hooks='webhook']")).toBeNull();
-		expect(main.querySelector(".mailbox-addresses .mailbox-manage .digital-post")).not.toBeNull();
+		const section = main.querySelector<HTMLElement>("[data-hooks='mailbox']")!;
+		expect(section.firstElementChild?.classList.contains("connection-add-area")).toBe(true);
+		expect(texts(section.querySelector(".connection-add-row")!, "button")).toEqual(["Add mailbox", "Digital Post"]);
+		expect(main.querySelector(".mailbox-addresses .digital-post")).toBeNull();
+		button(main, "Digital Post")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".connection-add-area.is-top > .digital-post")).not.toBeNull());
+		expect(button(main, "Digital Post")!.getAttribute("aria-expanded")).toBe("true");
+		button(main, "Digital Post")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-addresses .digital-post")).toBeNull());
 	});
 
-	it("says under an address how each agent answers it, and saves the member's words into the agent's routine", async () => {
+	it("keeps how each agent answers in its chip's menu, and saves the member's words into the agent's routine", async () => {
 		const { main, manage, routines } = await mailbox(() => {});
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
-		await vi.waitFor(() => expect(main.querySelector(".mailbox-how-add")).not.toBeNull());
-		const card = () => main.querySelector<HTMLElement>(".hook-card")!;
-		const field = () => card().querySelector<HTMLTextAreaElement>(".mailbox-how.is-editing textarea");
+		await vi.waitFor(() => expect(main.querySelectorAll(".hook-card")).toHaveLength(1));
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
 		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const field = () => howPanel()!.querySelector("textarea")!;
 		const save = vi.mocked(manage.routines!.save);
-		// Ada answers it with no words of the member's yet: a quiet way to give some.
-		expect(texts(card(), ".mailbox-how-add")).toEqual(["Tell Ada how to answer"]);
-		button(card(), "Tell Ada how to answer")!.click();
+		const base = "Read each email that arrives at hello@acme.example and handle it for the company.";
+		// Ada answers it with no words of the member's yet: her row asks for some, and its panel reads her routine's file.
+		let panel = openHow(chip(), "Tell Ada how to answer");
 		expect(document.activeElement).toBe(field());
-		type(field()!, "  Answer in Danish, short and warm.  ");
-		button(card(), "Save")!.click();
-		await vi.waitFor(() => expect(toast()).toBe("Saved how Ada answers hello@acme.example"));
-		// Her routine's file is changed, on the member's own model account: its instructions get the words under their
-		// own heading, and how it runs stays as it was.
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
 		expect(manage.routines!.open).toHaveBeenCalledWith(expect.objectContaining({ routineId: id(801) }));
+		expect(field().value).toBe("");
+		type(field(), "  Answer in Danish, short and warm.  ");
+		button(panel, "Save")!.click();
+		await vi.waitFor(() => expect(toast()).toBe("Saved how Ada answers hello@acme.example"));
+		expect(howPanel()).toBeNull();
+		// Her routine's file is changed, on the member's own model account: its instructions get the words under their
+		// own heading, the same in every language, and how it runs stays as it was.
 		expect(save.mock.calls).toEqual([
 			[
 				{
 					clientRoutineId: id(801),
 					staffAgentId: ada.id,
 					title: expect.any(String),
-					prompt:
-						"Read each email that arrives at hello@acme.example and handle it for the company.\n\n## How to answer\n\nAnswer in Danish, short and warm.",
+					prompt: `${base}\n\n## How to answer\n\nAnswer in Danish, short and warm.`,
 					trigger: {
 						id: "file",
 						kind: "listener",
@@ -1060,57 +1102,159 @@ describe("Sent, Addresses and Write", () => {
 			],
 		]);
 		expect(routines.listening.filter((routine) => routine.status === "active")).toHaveLength(1);
-		expect(field()).toBeNull();
-		expect(texts(card(), ".mailbox-how-title")).toEqual(["How Ada answers"]);
-		expect(texts(card(), ".mailbox-how-words")).toEqual(["Answer in Danish, short and warm."]);
-		// Changed: the field opens on her words, and the new ones take their place.
-		button(card(), "Change how Ada answers")!.click();
-		expect(field()?.value).toBe("Answer in Danish, short and warm.");
-		type(field()!, "Answer in English.");
-		button(card(), "Save")!.click();
-		await vi.waitFor(() => expect(texts(card(), ".mailbox-how-words")).toEqual(["Answer in English."]));
-		expect(save.mock.calls.at(-1)?.[0].prompt).toBe(
-			"Read each email that arrives at hello@acme.example and handle it for the company.\n\n## How to answer\n\nAnswer in English.",
-		);
-		// Escape lets a change go; emptied, the words leave the routine.
-		button(card(), "Change how Ada answers")!.click();
-		type(field()!, "Something else");
-		field()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(field()).toBeNull();
-		expect(texts(card(), ".mailbox-how-words")).toEqual(["Answer in English."]);
-		button(card(), "Change how Ada answers")!.click();
-		expect(field()?.value).toBe("Answer in English.");
-		type(field()!, "");
-		field()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+		// Nothing of them stands on the page. Her row says she has words now, and its panel opens on them.
+		expect(main.querySelector(".mailbox-addresses textarea")).toBeNull();
+		chip().click();
+		await vi.waitFor(() => expect(texts(openMenu()!.el, ".context-menu-label").at(-1)).toBe("How Ada answers"));
+		openMenu()!.close();
+		panel = openHow(chip(), "How Ada answers");
+		await vi.waitFor(() => expect(field().value).toBe("Answer in Danish, short and warm."));
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		type(field(), "Answer in English.");
+		field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+		await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+		expect(save.mock.calls.at(-1)?.[0].prompt).toBe(`${base}\n\n## How to answer\n\nAnswer in English.`);
+		await vi.waitFor(() => expect(howPanel()).toBeNull());
+		// Cancel lets a change go.
+		panel = openHow(chip(), "How Ada answers");
+		await vi.waitFor(() => expect(field().value).toBe("Answer in English."));
+		type(field(), "Something else");
+		button(panel, "Cancel")!.click();
+		expect(howPanel()).toBeNull();
+		expect(save).toHaveBeenCalledTimes(2);
+		// Emptied, the words leave the routine.
+		panel = openHow(chip(), "How Ada answers");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		type(field(), "");
+		button(panel, "Save")!.click();
 		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example without your instructions now"));
-		expect(save.mock.calls.at(-1)?.[0].prompt).toBe(
-			"Read each email that arrives at hello@acme.example and handle it for the company.",
-		);
-		expect(texts(card(), ".mailbox-how-add")).toEqual(["Tell Ada how to answer"]);
+		expect(save.mock.calls.at(-1)?.[0].prompt).toBe(base);
 	});
 
-	it("says why how an agent answers could not be saved, and keeps the words", async () => {
+	it("finds a change made to how an agent answers while its panel was open, and writes nothing over it", async () => {
+		const { main, manage, routines } = await mailbox(() => {});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const field = () => howPanel()!.querySelector("textarea")!;
+		const save = vi.mocked(manage.routines!.save);
+		const panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		// Another member gives her words meanwhile: the save meets the change in her file, and is not written.
+		routines.listening[0]!.prompt += "\n\n## How to answer\n\nTheirs.";
+		save.mockRejectedValueOnce(new WebRoutineChangedError("This routine's file has changed."));
+		type(field(), "Mine.");
+		button(panel, "Save")!.click();
+		await vi.waitFor(() =>
+			expect(panel.querySelector(".mailbox-error")?.textContent).toBe(
+				"How Ada answers was changed meanwhile. Save again to put your words in its place.",
+			),
+		);
+		expect(field().value).toBe("Mine.");
+		const [first] = save.mock.calls;
+		expect(first![0].opened?.file.instructions).not.toContain("Theirs.");
+		// A second Save puts the member's words in their place, from the file as it is now, as a save of its own.
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		button(panel, "Save")!.click();
+		await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+		const second = save.mock.calls[1]!;
+		expect(second[0].opened?.file.instructions).toContain("Theirs.");
+		expect(second[0].prompt).toBe(
+			"Read each email that arrives at hello@acme.example and handle it for the company.\n\n## How to answer\n\nMine.",
+		);
+		expect(second[2]).not.toBe(first![2]);
+		await vi.waitFor(() => expect(howPanel()).toBeNull());
+	});
+
+	it("sends a save of how an agent answers again as it was after a failure, the words kept", async () => {
 		const { main, manage } = await mailbox(() => {});
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
 		tab(main, "Addresses");
-		await vi.waitFor(() => expect(main.querySelector(".mailbox-how-add")).not.toBeNull());
-		const card = () => main.querySelector<HTMLElement>(".hook-card")!;
-		const field = () => card().querySelector<HTMLTextAreaElement>(".mailbox-how.is-editing textarea");
-		vi.mocked(manage.routines!.save).mockRejectedValueOnce(new Error("The routine could not be saved."));
-		button(card(), "Tell Ada how to answer")!.click();
-		type(field()!, "Answer in Danish.");
-		button(card(), "Save")!.click();
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const field = () => howPanel()!.querySelector("textarea")!;
+		const save = vi.mocked(manage.routines!.save);
+		const panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		save.mockRejectedValueOnce(new Error("The routine could not be saved."));
+		type(field(), "Answer in Danish.");
+		button(panel, "Save")!.click();
 		await vi.waitFor(() =>
-			expect(card().querySelector(".mailbox-how .mailbox-error")?.textContent).toBe(
-				"The routine could not be saved.",
-			),
+			expect(panel.querySelector(".mailbox-error")?.textContent).toBe("The routine could not be saved."),
 		);
-		expect(field()?.value).toBe("Answer in Danish.");
-		expect(field()?.disabled).toBe(false);
-		// Another try goes.
-		button(card(), "Save")!.click();
-		await vi.waitFor(() => expect(texts(card(), ".mailbox-how-words")).toEqual(["Answer in Danish."]));
-		expect(card().querySelector(".mailbox-how .mailbox-error")).toBeNull();
+		expect(field().value).toBe("Answer in Danish.");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		// Another try is the same save: a request whose answer was lost goes again as it was.
+		button(panel, "Save")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Saved how Ada answers hello@acme.example"),
+		);
+		expect(save.mock.calls[1]![2]).toBe(save.mock.calls[0]![2]);
+	});
+
+	it("says before a save when another member's model account pays for how an agent answers", async () => {
+		const { main, manage } = await mailbox(() => {});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(manage.routines!.list).toHaveBeenCalled());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const note = () => howPanel()!.querySelector<HTMLElement>(".mailbox-how-note")!;
+		const payer = vi.mocked(manage.routines!.payer);
+		payer.mockResolvedValue({ payer: "member", payerUserId: "someone-else" } as WebRoutinePayer);
+		let panel = openHow(chip(), "Tell Ada how to answer");
+		await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+		expect(payer).toHaveBeenCalledWith(id(801));
+		expect([note().hidden, note().textContent]).toEqual([
+			false,
+			"Ada answers on another member's model account now. Saving moves it to yours.",
+		]);
+		openMenu()!.close();
+		// The company's account, or the member's own, is not moved: nothing is said.
+		for (const paying of [
+			{ payer: "company", payerUserId: null },
+			{ payer: "member", payerUserId: userA.id },
+		]) {
+			payer.mockResolvedValue(paying as WebRoutinePayer);
+			panel = openHow(chip(), "Tell Ada how to answer");
+			await vi.waitFor(() => expect(button(panel, "Save")!.disabled).toBe(false));
+			expect(note().hidden).toBe(true);
+			openMenu()!.close();
+		}
+	});
+
+	it("keeps the words from the Add form when the new address could not be given to its agent", async () => {
+		const none = await mailbox((mail) => {
+			mail.addresses = [];
+		});
+		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
+		button(none.main, "Add mailbox")!.click();
+		const answers = () => none.main.querySelector<HTMLButtonElement>("[data-focus-key='add-answerer']")!;
+		answers().click();
+		menuRow("Bo").click();
+		const panel = openHow(answers(), "Tell Bo how to answer");
+		type(panel.querySelector("textarea")!, "Answer in Danish.");
+		button(panel, "Save")!.click();
+		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
+		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		const save = vi.mocked(none.manage.routines!.save);
+		save.mockRejectedValueOnce(new Error("The company is paused."));
+		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
+		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(none.main, "Addresses");
+		const card = () => none.main.querySelector<HTMLElement>(".hook-card")!;
+		await vi.waitFor(() =>
+			expect(card().querySelector(".mailbox-error")?.textContent).toBe("The company is paused."),
+		);
+		// Given to Bo again, the address takes the words with it.
+		card().querySelector<HTMLButtonElement>(".mailbox-answerer")!.click();
+		menuRow("Bo").click();
+		await vi.waitFor(() =>
+			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
+		);
+		expect(
+			save.mock.calls.map((call) => call[0].prompt.endsWith("\n\n## How to answer\n\nAnswer in Danish.")),
+		).toEqual([true, true]);
 	});
 
 	// Review of #1719, rounds 1 and 2: a handover in steps could stop half way. One agent's answering is one thing now,

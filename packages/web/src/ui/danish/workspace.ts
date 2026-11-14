@@ -340,7 +340,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Send to {name}": "Send til {name}",
 	"{name} answers it": "{name} svarer på den",
 	"No agent answers it yet": "Ingen agent svarer på den endnu",
-	"in the last 7 days": "de seneste 7 dage",
 	Change: "Skift",
 	"Who answers it": "Hvem svarer på den",
 	"Choose who answers": "Vælg, hvem der svarer",
@@ -350,15 +349,15 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} answers {address}": "{name} svarer på {address}",
 	"{name} answers {address} too": "{name} svarer også på {address}",
 	"{name} no longer answers {address}": "{name} svarer ikke længere på {address}",
-	"How to answer": "Sådan svarer du",
 	"How {name} answers": "Sådan svarer {name}",
 	"Tell {name} how to answer": "Fortæl {name}, hvordan der skal svares",
-	"Change how {name} answers": "Skift, hvordan {name} svarer",
 	"For example: answer in Danish, short and warm. Sign as the team. Ask me before you promise a price or a date.":
 		"For eksempel: svar på dansk, kort og venligt. Skriv under som holdet. Spørg mig, før du lover en pris eller en dato.",
 	"{name} answers on {member}'s model account now. Saving moves it to yours.":
 		"{name} svarer nu på {member}s modelkonto. Når du gemmer, flytter det til din.",
 	"How {name} answers could not be saved.": "Det kunne ikke gemmes, hvordan {name} svarer.",
+	"How {name} answers was changed meanwhile. Save again to put your words in its place.":
+		"Hvordan {name} svarer, blev ændret imens. Gem igen for at sætte dine ord i stedet.",
 	"Saved how {name} answers {address}": "Gemt, hvordan {name} svarer på {address}",
 	"{name} answers {address} without your instructions now": "{name} svarer nu på {address} uden dine instruktioner",
 	"{first} and {second}": "{first} og {second}",

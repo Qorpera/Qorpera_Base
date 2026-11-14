@@ -114,6 +114,12 @@ function addError(kind: Kind, error: unknown): string {
 	return t(KIND_TEXT[kind].failed);
 }
 
+/** More beside the way to add a hook, and under it, where it stands above the list (`top`). */
+export interface HooksTop {
+	readonly beside?: () => HTMLElement | null;
+	readonly below?: () => HTMLElement | null;
+}
+
 export class HooksView {
 	readonly el = h("div", { class: "hooks" });
 	readonly #client: HooksClient;
@@ -124,7 +130,8 @@ export class HooksView {
 	/** Told after a hook was added, paused, resumed or removed. */
 	readonly #changed: () => void;
 	readonly #card: ((hook: EventHook) => HTMLElement | null) | undefined;
-	readonly #under: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #stateOf: ((hook: EventHook, text: string) => string | null) | undefined;
+	readonly #top: HooksTop | undefined;
 	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
 	readonly #added: ((hook: EventHook) => void) | undefined;
 	#drawnManage: boolean | undefined;
@@ -154,9 +161,12 @@ export class HooksView {
 			/** More of a hook, drawn in its card between its words and its buttons (the Mailbox: who answers a
 			 * mailbox). The page that gives it calls `redraw` when what it shows changed. */
 			card?: (hook: EventHook) => HTMLElement | null;
-			/** More of a hook, drawn across its card under its line (the Mailbox: how each agent answers a mailbox). The
-			 * same `redraw` draws it again. */
-			under?: (hook: EventHook) => HTMLElement | null;
+			/** What a hook's state line says, from what it says here (`text`); none for no line (the Mailbox: a paused
+			 * mailbox only). */
+			state?: (hook: EventHook, text: string) => string | null;
+			/** The way to add a hook first, above its list rather than under it, with more beside its button and under it
+			 * (the Mailbox: Digital Post's pill, and its card). The same `redraw` draws them again. */
+			top?: HooksTop;
 			/** More of the form that adds one, drawn under its fields (the Mailbox: who answers the new mailbox). */
 			form?: (kind: HookKind) => HTMLElement | null;
 			/** Told the hook the form made. */
@@ -167,7 +177,8 @@ export class HooksView {
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#changed = options.changed ?? (() => {});
 		this.#card = options.card;
-		this.#under = options.under;
+		this.#stateOf = options.state;
+		this.#top = options.top;
 		this.#formExtra = options.form;
 		this.#added = options.added;
 		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
@@ -345,6 +356,13 @@ export class HooksView {
 	}
 
 	/** The hook's state: whether it is on, when something last arrived, and who signs it. */
+	/** The hook's state line, as the page that shows it wants it. */
+	#stateLine(hook: EventHook): HTMLElement | null {
+		const text = this.#state(hook);
+		const shown = this.#stateOf ? this.#stateOf(hook, text) : text;
+		return shown ? h("small", { class: "hook-state" }, shown) : null;
+	}
+
 	#state(hook: EventHook): string {
 		const text = KIND_TEXT[kindOf(hook)];
 		return [
@@ -424,11 +442,10 @@ export class HooksView {
 				h("strong", null, title(hook)),
 				// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
 				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
-				h("small", { class: "hook-state" }, this.#state(hook)),
+				this.#stateLine(hook),
 			),
 			this.#card?.(hook) ?? null,
 			h("div", { class: "connection-actions" }, ...actions),
-			this.#under?.(hook) ?? null,
 			address,
 			this.#outcomeLine(hook.id),
 		);
@@ -520,11 +537,20 @@ export class HooksView {
 			add.dataset.focusKey = `hook-add:${kind}`;
 			add.setAttribute("aria-expanded", String(open));
 			add.setAttribute("aria-controls", `hook-form-${kind}`);
-			addArea = h("div", { class: "connection-add-area" }, add, open ? this.#form(kind) : null);
+			addArea = this.#top
+				? h(
+						"div",
+						{ class: "connection-add-area is-top" },
+						h("div", { class: "connection-add-row" }, add, this.#top.beside?.() ?? null),
+						open ? this.#form(kind) : null,
+						this.#top.below?.() ?? null,
+					)
+				: h("div", { class: "connection-add-area" }, add, open ? this.#form(kind) : null);
 		}
 		return h(
 			"section",
 			{ class: "settings-group", dataset: { hooks: kind } },
+			this.#top ? addArea : null,
 			h(
 				"div",
 				{ class: "connection-section-heading" },
@@ -540,7 +566,7 @@ export class HooksView {
 					: hooks.length
 						? null
 						: h("p", { class: "connection-empty muted" }, t(text.empty)),
-				addArea,
+				this.#top ? null : addArea,
 			),
 		);
 	}
