@@ -103,6 +103,39 @@ const WORKER_TOOLS = [
 	"update_skill",
 ];
 
+/** A member's private conversation, as the company runtime builds its catalog: no hiring, workers, code or machines
+ * (company runs only), and no update_skill (a private conversation never feeds a shared library). */
+const PRIVATE_TOOLS = EMPLOYEE_TOOLS.filter(
+	(tool) =>
+		!tool.startsWith("machine_") &&
+		![
+			"create_group_chat",
+			"hire_agent",
+			"manage_code",
+			"manage_todo",
+			"manage_worker",
+			"save_coding_value",
+			"update_skill",
+		].includes(tool),
+);
+/** A worker whose dispatch does not allow writes (cloudWorkerToolFilter): it reads, runs machines and reports. */
+const READ_ONLY_WORKER_TOOLS = WORKER_TOOLS.filter(
+	(tool) =>
+		![
+			"company_write",
+			"company_edit",
+			"company_move",
+			"company_mkdir",
+			"company_delete",
+			"table_write",
+			"save_app",
+			"post_app",
+			"make_picture",
+			"update_memory",
+			"update_skill",
+		].includes(tool),
+);
+
 const wake = (kind: string, source: string, final: string, extra: Record<string, unknown> = {}) =>
 	({
 		kind,
@@ -122,6 +155,12 @@ const RUNS = {
 		false,
 	],
 	"cofounder-worker": ["cofounder", wake("agent", "worker-dispatch", "forbidden"), WORKER_TOOLS, false],
+	"cofounder-routine-agreed": [
+		"cofounder",
+		wake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+		COFOUNDER_TOOLS,
+		true,
+	],
 	"employee-member": ["employee", wake("human", "input", "required"), EMPLOYEE_TOOLS, false],
 	"employee-routine": [
 		"employee",
@@ -161,6 +200,8 @@ const RUNS = {
 	"machine-event": ["employee", wake("agent", "machine-event", "optional"), EMPLOYEE_TOOLS, false],
 	"machine-checkin": ["employee", wake("agent", "machine-checkin", "optional"), EMPLOYEE_TOOLS, false],
 	"human-task": ["employee", wake("agent", "human-task", "optional"), EMPLOYEE_TOOLS, false],
+	"private-conversation": ["employee", wake("human", "input", "required"), PRIVATE_TOOLS, false],
+	"read-only-worker": ["employee", wake("agent", "worker-dispatch", "forbidden"), READ_ONLY_WORKER_TOOLS, false],
 } as const;
 type Run = keyof typeof RUNS;
 
@@ -178,7 +219,13 @@ const WORKERS: Run[] = ["cofounder-worker", "employee-worker"];
 const STAFF: Run[] = CORE.filter((run) => !WORKERS.includes(run));
 const COFOUNDER: Run[] = ["cofounder-member", "cofounder-member-agreed", "cofounder-routine"];
 const FOUNDING: Run[] = ["cofounder-member", "cofounder-routine"];
-const PLANNING: Run[] = ["cofounder-routine"];
+/** The hand-off once every founder approves: in the founding, and after it in the planning run that finishes it. */
+const HAND_OFF: Run[] = [...FOUNDING, "cofounder-routine-agreed"];
+const PLANNING: Run[] = ["cofounder-routine", "cofounder-routine-agreed"];
+/** Runs that can load a skill (read_skill): every kind, a member's private conversation and a read-only worker too. */
+const SKILLS_READ: Run[] = [...ALL, "private-conversation", "read-only-worker"];
+/** Runs a member speaks to. */
+const SPOKEN_TO: Run[] = [...STAFF, "private-conversation"];
 const EMPLOYEE: Run[] = ["employee-member", "employee-routine"];
 const MEMBER_TURN: Run[] = ["cofounder-member", "cofounder-member-agreed", "employee-member"];
 const FIRST_RUN: Run[] = ["cofounder-first-run", "employee-first-run"];
@@ -371,6 +418,26 @@ const RULES: [string, string, string, Run[]][] = [
 		"Secrets travel only on a secret card, into the vault: never ask for, write or pass a password, key or code anywhere else.",
 		STAFF,
 	],
+	// Review r1 of #1803: a worker writes files, tables and its notebook and has an internet shell, so it reads it too.
+	[
+		"2",
+		"L9 secrets: a worker's",
+		"Secrets travel only on a member's secret card, into the vault: never ask for, write or pass a password, key or code in a file, a table, your notebook, a command or your report.",
+		[...WORKERS, "read-only-worker"],
+	],
+	// Review r1 of #1803: a company that still has a connection is still offered its connector tools.
+	[
+		"2",
+		"L6 a broken connection",
+		"A broken connection is reported or repaired, never replaced by a browser sign-in.",
+		SPOKEN_TO,
+	],
+	[
+		"2",
+		"L6 a broken connection: a worker's",
+		"A broken connection is reported, never replaced by a browser sign-in.",
+		[...WORKERS, "read-only-worker"],
+	],
 	["2", "L9 never approve your own gated action", "You never approve your own gated action.", STAFF],
 	["2", "L9 a block is final", "A denial or safety block is final.", ALL],
 	[
@@ -459,9 +526,17 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"4",
 		"a skill called by name",
-		"a member calls one by writing /its-name: load it with read_skill and follow it for that request.",
-		STAFF,
+		"A member calls one by writing /its-name: load it with read_skill before you act on that message, and follow it for that request.",
+		SPOKEN_TO,
 	],
+	// Review r1 of #1803: using skills reaches every run that can load one, not only one that can save one.
+	[
+		"4",
+		"a task that fits a skill",
+		"When a task fits a skill, load it with read_skill and follow it within your permissions; search_skills finds more.",
+		SKILLS_READ,
+	],
+	["4", "skills grant nothing", "a skill guides the work and grants nothing", SKILLS_READ],
 	[
 		"4",
 		"the notebook in the context",
@@ -1015,16 +1090,16 @@ const RULES: [string, string, string, Run[]][] = [
 		"7",
 		"the run that every founder approves",
 		'write QorperaOS/vision/vision.md with the name as its first line and the last line "Agreed by <the founders>, <date>."',
-		FOUNDING,
+		HAND_OFF,
 	],
-	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", FOUNDING],
+	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", HAND_OFF],
 	[
 		"7",
 		"a failed founding step",
 		"If a step fails, say what is done and what is missing, and finish it in your next planning run.",
-		FOUNDING,
+		HAND_OFF,
 	],
-	["7", "the founding never restarts", "Once agreed, the founding never restarts.", FOUNDING],
+	["7", "the founding never restarts", "Once agreed, the founding never restarts.", HAND_OFF],
 	[
 		"7",
 		"a planning run's reading and fixes",
@@ -1036,7 +1111,7 @@ const RULES: [string, string, string, Run[]][] = [
 		"7",
 		"until agreed, the draft",
 		"Until the vision is agreed, also bring the team's findings into the draft and choose the next questions for the founders.",
-		PLANNING,
+		["cofounder-routine"],
 	],
 	["7", "done is a claim", "Treat every report of done as a claim", PLANNING],
 	["7", "apps remade with a kit", "tell its owner to remake it and name the kit", PLANNING],
@@ -1557,7 +1632,12 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		[
 			"the founding",
 			"# Founding the company",
-			["cofounder-member-agreed", ...STAFF.filter((run) => run.startsWith("employee")), ...WORKERS],
+			[
+				"cofounder-member-agreed",
+				"cofounder-routine-agreed",
+				...STAFF.filter((run) => run.startsWith("employee")),
+				...WORKERS,
+			],
 		],
 		[
 			"the planning run",
@@ -1567,6 +1647,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["a staff run's voice", "send_message is your one public voice", WORKERS],
 		["cards", "# Cards", WORKERS],
 		["the bank", "registers it (CVR)", WORKERS],
+		// Review r1 of #1803: the machine shell only where machine_run is, sending only where the run can send.
+		["the machine shell", "root shell", ["private-conversation"]],
+		["sending as part of the job", "Sending email and coworker messages", [...WORKERS, "read-only-worker"]],
+		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
+		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {

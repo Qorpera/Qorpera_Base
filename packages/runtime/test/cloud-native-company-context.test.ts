@@ -909,6 +909,28 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 		"You hire and manage",
 	])
 		expect(agreed).toContain(kept);
+	// A hand-off that failed after the "Agreed by" line landed: the next planning run still reads its steps, that it
+	// finishes the missing one, and that the onboarding never restarts (review r1 of #1799).
+	const hand = "close Start with the founders";
+	expect(full).toContain(hand);
+	expect(agreed).not.toContain(hand);
+	const agreedPlanning = compileCloudNativeCompanyInstructions(
+		context,
+		situationWake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+		{ head: "# Head", tools: all, visionAgreed: true },
+	);
+	expect(agreedPlanning).toContain("# Your planning run\n");
+	expect(agreedPlanning).not.toContain("# Founding the company");
+	expect(agreedPlanning).not.toContain("write the whole vision in your own words");
+	for (const kept of [
+		hand,
+		"say what is done and what is missing, and finish it in your next planning run",
+		"Once agreed, the founding never restarts.",
+	]) {
+		expect(agreedPlanning).toContain(kept);
+		expect(agreedPlanning.indexOf(kept)).toBeGreaterThan(agreedPlanning.indexOf("# Your planning run\n"));
+	}
+	expect(agreedPlanning.split("Once agreed, the founding never restarts.")).toHaveLength(2);
 });
 
 it("gives a worker no role section, no word on the company's bank, its voice, cards or held messages", () => {
@@ -983,7 +1005,7 @@ it.each(["cofounder", "employee"] as const)(
 		expect(instructions).toContain("save it as a skill with update_skill, with a description of when to use it");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
 		expect(instructions).toContain(
-			"a member calls one by writing /its-name: load it with read_skill and follow it for that request.",
+			"A member calls one by writing /its-name: load it with read_skill before you act on that message, and follow it for that request.",
 		);
 		expect(prompt.memory).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
@@ -1044,7 +1066,7 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"at most five short lines (what the company builds, for whom, the one or two choices that need them) and the link",
 		"buttons such as Approve and Change it",
 		"Revise until every founder approves.",
-		'Then, in that run and without asking again: write QorperaOS/vision/vision.md with the name as its first line and the last line "Agreed by',
+		'When every founder has approved, in that run and without asking again: write QorperaOS/vision/vision.md with the name as its first line and the last line "Agreed by',
 		"give every continuing responsibility an owner (check QorperaOS/agents/ first, so none is hired twice)",
 		"close Start with the founders",
 		"Once agreed, the founding never restarts.",
@@ -1884,15 +1906,18 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Track 3, T3-3 (14 November 2026): one voice. Purpose and people come first, the tool-result rules stand once after the
 // company's files, the sections a run's tools call for are shared before the head, and the hire overlay is v17 (the
 // prompt names its version). All three were measured once more.
+// Review r1 of #1803: using skills in every run that can load one, the constitution and the after-answer bookkeeping
+// for the run's own tools, the secrets rule in a worker's words, a broken connection and the card that fits are back,
+// and the hand-off once every founder approves is a piece of its own. The instructions were measured once more.
 // The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
 // no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
-// instructions were measured once more; a worker's never named the wall.
+// instructions were measured once more; a worker's never named the wall. Both, merged, measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "f29d1d5d3e156637a687426a7a8af998d1e105d08cb7fe0a1e0b539edcc92a8c",
+			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1900,7 +1925,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "ebc7a9c0e1454fc0d8a79b5219f9cbb6544f46eba766dc74f39154ad4644f254",
+			instructions: "39f414fa0fbfeb6ebdfee85086359a4860e59884528b59ca2ff37ec3726b9243",
 			prompt: "28ad297bf4b4ac59bc82cc15e387e30cffe46da8c888d462f1f3518924469c91",
 		},
 	],
@@ -1908,7 +1933,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "f29d1d5d3e156637a687426a7a8af998d1e105d08cb7fe0a1e0b539edcc92a8c",
+			instructions: "1bff96406af46ac83098cdcd55daba77777fb587a83e904a7da8250d087c3b89",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],

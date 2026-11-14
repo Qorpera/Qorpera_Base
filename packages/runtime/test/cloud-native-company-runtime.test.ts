@@ -46,7 +46,7 @@ import { CloudRunLogGone } from "@qorpera/runtime/cloud-run-log";
 import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
 import * as runtimeBundle from "@qorpera/runtime/cloud-runtime-bundle";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "@qorpera/runtime/cloud-runtime-bundle.generated";
-import { CLOUD_RUNTIME_CONSTITUTION } from "@qorpera/runtime/cloud-runtime-constitution";
+import { cloudRuntimeConstitution } from "@qorpera/runtime/cloud-runtime-constitution";
 import {
 	type CloudRuntimeObservation,
 	parseCloudRuntimeObservation,
@@ -1075,7 +1075,11 @@ it.each([
 			compileCloudNativeCompanyInstructions(f.context, null, { head, tools, visionAgreed: false }),
 		);
 		expect(evidence.threadParameters.developerInstructions.split(CLOUD_TOOL_RESULT_INSTRUCTIONS)).toHaveLength(2);
-		expect(evidence.threadParameters.developerInstructions.startsWith(CLOUD_RUNTIME_CONSTITUTION)).toBe(true);
+		expect(
+			evidence.threadParameters.developerInstructions.startsWith(
+				cloudRuntimeConstitution((tool) => tools.has(tool)),
+			),
+		).toBe(true);
 		expect(evidence.threadParameters.developerInstructions).toContain(
 			"one live folder, shared by every member and agent",
 		);
