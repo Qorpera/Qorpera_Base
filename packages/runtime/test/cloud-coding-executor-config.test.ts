@@ -102,30 +102,34 @@ describe("coding executor service configuration", () => {
 		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
 			...machines,
 			previousHelperSha256s: [],
-			folderHelperSha256s: [],
 			folder: false,
 		});
-		// The helpers of earlier images whose machines still run on this node.
-		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual({
-			...upgraded,
-			folderHelperSha256s: [],
-			folder: false,
-		});
+		// The helpers of earlier images whose machines this node still runs or wakes; without a list of those that take
+		// the company folder, none is named (every one of them does).
+		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64), "d".repeat(64)] };
+		const parsed = parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines;
+		expect(parsed).toEqual({ ...upgraded, folder: false });
+		expect(parsed).not.toHaveProperty("folderHelperSha256s");
 		// Each boot's company folder through the node's folder service (F3 6d): switched on only by true.
 		expect(
 			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...upgraded, folder: true } }).machines,
-		).toEqual({ ...upgraded, folderHelperSha256s: [], folder: true });
-		// Of the earlier helpers, those that take the company folder as the current one does.
-		const vouched = { ...upgraded, folderHelperSha256s: ["c".repeat(64)], folder: true };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), machines: vouched }).machines).toEqual(vouched);
+		).toEqual({ ...upgraded, folder: true });
+		// A list names exactly the earlier helpers that take the folder: none, or some of them, kept as given.
+		for (const folderHelperSha256s of [[], ["d".repeat(64)], ["c".repeat(64), "d".repeat(64)]]) {
+			const listed = { ...upgraded, folderHelperSha256s, folder: true };
+			expect(parseCodingExecutorConfiguration({ ...fixture(), machines: listed }).machines).toEqual(listed);
+		}
+		expect(
+			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...machines, folderHelperSha256s: [] } })
+				.machines,
+		).toEqual({ ...machines, previousHelperSha256s: [], folderHelperSha256s: [], folder: false });
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
 			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
 			{ ...machines, previousHelperSha256s: "c".repeat(64) },
-			{ ...machines, folderHelperSha256s: [] },
+			{ ...machines, folderHelperSha256s: ["c".repeat(64)] },
 			{ ...upgraded, folderHelperSha256s: ["b".repeat(64)] },
-			{ ...upgraded, folderHelperSha256s: ["d".repeat(64)] },
+			{ ...upgraded, folderHelperSha256s: ["e".repeat(64)] },
 			{ ...upgraded, folderHelperSha256s: ["c".repeat(64), "c".repeat(64)] },
 			{ ...upgraded, folderHelperSha256s: "c".repeat(64) },
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },

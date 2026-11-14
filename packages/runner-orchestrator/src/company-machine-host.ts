@@ -763,10 +763,10 @@ export interface CompanyMachineHostOptions {
 	/** Helpers of earlier images whose machines this node still runs or may wake on their own disks: trusted as the
 	 * current one is. */
 	previousHelperSha256s?: readonly string[];
-	/** Of those earlier helpers, the ones that take the company folder as the current one does (its `folder-mount` and the
-	 * folder program; every image's since v183, 19 Oct 2026): their boots get a view and keep the one the service holds,
-	 * as the current helper's do. Each is also in previousHelperSha256s. Any other earlier helper's boot gets none
-	 * (#settle). */
+	/** Given, the only earlier helpers that take the company folder as the current one does (its `folder-mount` and the
+	 * folder program), each also in previousHelperSha256s; an empty list: none. Absent: every earlier helper does, as
+	 * every image's has since v183 (19 Oct 2026). A boot of one that does gets a view and keeps the one the service holds,
+	 * as the current helper's do; any other earlier helper's boot gets none (#settle). */
 	folderHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
@@ -1899,16 +1899,19 @@ export class LxdCompanyMachineHost {
 	 * start gets a view of its own: opened in SQL as the platform for this boot, then handed to the guest. After this
 	 * process restarted, a view the service still holds keeps the boot's /company (a new one would take it away from the
 	 * commands that run) and its boundaries keep fencing. A boot that gets no view of its own (a guest of an earlier
-	 * image whose helper is not one of folderHelperSha256s, a refused open, views the guest answers closed) is left to
+	 * image whose helper does not take the folder, a refused open, views the guest answers closed) is left to
 	 * #viewless; a busy or unconfirmed open, or a hand-over without an answer, is tried again next pass, and starts wait
 	 * meanwhile. */
 	async #settle(e: CompanyMachineEntry, f: BootFolder, helperSha256: string, signal: AbortSignal): Promise<string> {
 		const folder = this.#options.folder as FolderControl;
-		// A guest of an earlier image settles as any other only when its helper is one the node's configuration says takes
-		// the company folder as the current one does (folderHelperSha256s): after this process restarted, the views the
-		// service holds then keep its /company. Any other earlier helper is handed no view: whether it ever took one is not
-		// this image's to say.
-		if (helperSha256 !== this.#options.helperSha256 && !this.#options.folderHelperSha256s?.includes(helperSha256))
+		// A guest of an earlier image settles as any other when its helper takes the company folder as the current one
+		// does: one folderHelperSha256s names, or without that list any earlier one this node trusts. After this process
+		// restarted, the views the service holds then keep its /company. Any other earlier helper is handed no view:
+		// whether it ever took one is not this image's to say.
+		if (
+			helperSha256 !== this.#options.helperSha256 &&
+			!(this.#options.folderHelperSha256s ?? this.#options.previousHelperSha256s ?? []).includes(helperSha256)
+		)
 			return this.#viewless(e, f, "old-helper", signal);
 		if (!f.asked) {
 			let held: string[];
