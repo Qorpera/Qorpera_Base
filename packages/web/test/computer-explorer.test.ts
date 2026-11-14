@@ -6,7 +6,6 @@ import { type ComputerPanel, ComputerPanels, KEEP_EVERY_MS, LOOK_EVERY_MS } from
 import { DesktopHoldLedger } from "../src/app/views/desktop-holds.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
-import { openMenu } from "../src/ui/context-menu.ts";
 import { fixture, id, profileA, settle, staff, userA } from "./fixtures.ts";
 import { Database, type HoldName, random, seating } from "./take-over-model.ts";
 
@@ -569,12 +568,12 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		return value && !value.hidden ? value : null;
 	};
 	const noted = () => p?.el.querySelector(".machine-screen-control-note")?.textContent ?? "";
-	/** The machine the window shows: the one chosen in its switcher, else its first (as #pick does), once its list came
-	 * (the switcher shows then); its own label may lag while the window's loop waits on a request. */
+	/** The machine the window shows: the one it was moved to (ComputerPanel.choose, the tests' own way since the window's
+	 * switcher went), else its first (as #pick does), once its list came (the window has a machine then); the window's
+	 * own may lag while its loop waits on a request. */
 	const shownMachine = (): string | undefined => {
 		if (machines.length === 1) return machines[0];
-		const switcher = p?.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
-		if (!switcher || switcher.hidden) return undefined;
+		if (p?.machineId === undefined) return undefined;
 		return chosen ?? machines[0];
 	};
 	const pressed = () => {
@@ -827,16 +826,13 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					weight: 2,
 					name: "switch",
 					run: () => {
-						const switcher = p?.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
+						// No control moves the window any more (Jonas, 14 Nov 2026): the kept method does, at once, as the
+						// switcher's menu did.
 						const shown = shownMachine();
-						if (!p || !switcher || switcher.hidden || machines.length < 2 || !shown) return false;
+						if (!p || machines.length < 2 || !shown) return false;
 						const other = machines.find((machine) => machine !== shown) as string;
-						switcher.click();
-						const items = [...(openMenu()?.el.querySelectorAll<HTMLElement>("[role^=menuitem]") ?? [])];
-						const item = items[machines.indexOf(other)];
-						if (!item) return false;
 						release([shown]);
-						item.click();
+						p.choose(other);
 						chosen = other;
 						return true;
 					},

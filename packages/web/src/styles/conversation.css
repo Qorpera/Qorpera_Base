@@ -844,25 +844,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-enter { top: 8px; transform: translateX(-50%); min-width: 0; min-height: 24px; padding: 2px 12px; font-size: 12px; }
 .computer-loading p.computer-loading-detail { margin-top: -6px; color: #8e9097; }
 .computer-loading p.computer-loading-detail[hidden] { display: none; }
-/* The machine switcher: on the preview top left, shown with the other hover controls; entered, beside the title. It opens the app's menu. */
-.computer-panel .computer-switcher { display: inline-flex; align-items: center; gap: 2px; max-width: calc(100% - 48px); height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
-.computer-panel .computer-switcher[hidden] { display: none; }
-.computer-panel .computer-switcher:hover, .computer-panel .computer-switcher.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
-.computer-panel .computer-switcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.computer-panel .computer-switcher .icon { flex: none; width: 14px; height: 14px; }
-.computer-panel > .computer-switcher { position: absolute; top: 6px; left: 6px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
-.computer-panel:hover > .computer-switcher, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-switcher, .computer-panel > .computer-switcher.menu-open { opacity: 1; pointer-events: auto; }
-.computer-panel.is-entered > .computer-switcher, .computer-panel:not(.is-entered) .machine-screen-switcher-slot { display: none; }
-.computer-panel.is-entered .machine-screen-switcher-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
-.computer-panel.is-entered .machine-screen .computer-switcher { max-width: 100%; }
-.computer-panel.is-entered .machine-screen .computer-switcher { color: rgb(255 255 255 / 82%); filter: none; }
-.computer-panel.is-entered .machine-screen .computer-switcher:hover, .computer-panel.is-entered .machine-screen .computer-switcher.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
-@media (hover: none) {
-	.computer-panel:not(.is-entered) > .computer-switcher { opacity: 1; pointer-events: auto; }
-}
-@media (prefers-reduced-motion: reduce) {
-	.computer-panel > .computer-switcher { transition: none; }
-}
 
 /* New conversation: a "To:" field with one short list hanging from it. */
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }
