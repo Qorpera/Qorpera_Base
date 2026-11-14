@@ -10,8 +10,9 @@
 -- 4. The senses of a small company: a blocked todo, a paused routine, an active one with a wake waiting, an unanswered
 --    and an answered card, a hire since the reading; the members' logins; under 8 KiB, a larger team cut to fit.
 -- 5. A run that is not the Co-Founder's is refused the senses.
--- 6. The standing's states: a wake waiting under 30 minutes; stopped with every login ready; stopped on a full login;
---    a non-member and anon are refused.
+-- 6. The standing's states: a wake waiting under 30 minutes; stopped with every login ready; a busy company (another
+--    routine wake got a run 10 minutes ago) not stopped; Brooks (wakes queued for days, a member's turn an hour ago)
+--    stopped; stopped on a full login; a non-member and anon are refused.
 -- 7. A member deletes the reading: the senses say there is none.
 
 create function pg_temp.rd_standing(p_user uuid) returns jsonb language plpgsql as $$
@@ -240,7 +241,7 @@ begin
 	perform pg_temp.base_assert(v -> 'stopped' = 'false' and v -> 'waiting' = '1' and v ->> 'since' is not null
 		and v -> 'why' = 'null', 'a wake under 30 minutes: ' || v::text);
 end $$;
--- It has waited 40 minutes, and the company's runs all started before it.
+-- It has waited 40 minutes, and no routine wake was given a run since (none ever was; the company's runs are older).
 set local session_replication_role = replica;
 update public.qorpera_wake_occurrences set created_at = statement_timestamp() - interval '40 minutes',
 	not_before = statement_timestamp() - interval '40 minutes'
@@ -255,6 +256,43 @@ begin
 		and abs(extract(epoch from (v ->> 'since')::timestamptz - (statement_timestamp() - interval '40 minutes'))) < 5
 		and v -> 'why' = 'null' and v -> 'member' = 'null' and v -> 'resetsAt' = 'null',
 		'stopped with every login ready (a viewer reads it too): ' || v::text);
+end $$;
+-- A busy company: Carol's slot has waited 40 minutes, but another routine wake was given a run 10 minutes ago (Bob's
+-- run of the card, made a routine wake of his routine here), so the routines run.
+savepoint rd_busy;
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences set wake_kind = 'routine', source_kind = 'schedule',
+	routine_id = '12630000-0000-4000-8000-0000000000a1',
+	routine_version = (select current_version from public.qorpera_cloud_routines where id = '12630000-0000-4000-8000-0000000000a1')
+where run_id = current_setting('qorpera_test.card_run')::uuid;
+update public.qorpera_execution_runs set created_at = statement_timestamp() - interval '10 minutes'
+where id = current_setting('qorpera_test.card_run')::uuid;
+set local session_replication_role = origin;
+do $$
+declare v jsonb := pg_temp.rd_standing('92400000-0000-4000-8000-000000000002');
+begin
+	perform pg_temp.base_assert((select count(*) from public.qorpera_wake_occurrences
+		where run_id = current_setting('qorpera_test.card_run')::uuid and wake_kind = 'routine') = 1, 'fixture: a routine wake''s run');
+	perform pg_temp.base_assert(v -> 'stopped' = 'false' and v -> 'waiting' = '1'
+		and abs(extract(epoch from (v ->> 'since')::timestamptz - (statement_timestamp() - interval '40 minutes'))) < 5,
+		'a routine run 10 minutes ago: the routines run: ' || v::text);
+end $$;
+rollback to savepoint rd_busy;
+-- Brooks (production, 14 November 2026): routine wakes queued for days while members' own turns started runs. Carol's
+-- slot has waited three days; Alice's run, a member's post, started an hour ago: the routines stand still all the same.
+set local session_replication_role = replica;
+update public.qorpera_wake_occurrences set created_at = statement_timestamp() - interval '3 days',
+	not_before = statement_timestamp() - interval '3 days'
+where id = '12630000-0000-4000-8000-0000000000c1';
+update public.qorpera_execution_runs set created_at = statement_timestamp() - interval '1 hour'
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+set local session_replication_role = origin;
+do $$
+declare v jsonb := pg_temp.rd_standing('92400000-0000-4000-8000-000000000001');
+begin
+	perform pg_temp.base_assert(v -> 'stopped' = 'true' and v -> 'waiting' = '1'
+		and abs(extract(epoch from (v ->> 'since')::timestamptz - (statement_timestamp() - interval '3 days'))) < 5,
+		'a member''s turn an hour ago does not make the routines run: ' || v::text);
 end $$;
 -- The owner's login, which pays Carol's routine (its saver), is at its limit until two days from now.
 insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)

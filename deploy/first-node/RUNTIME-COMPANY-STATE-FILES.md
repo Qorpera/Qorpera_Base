@@ -272,7 +272,10 @@ version and keeps no index; saving it is plain (review class), the company's own
 
 The facts the Co-Founder writes it from are `qorpera_describe_company_senses` (§5), and whether the
 company can run at all is the member's read `qorpera_read_company_standing` (CLIENT-CONTRACT.md):
-a company whose routines stand still cannot write its own reading.
+a company whose routines stand still cannot write its own reading. It reads as stopped when a routine
+wake has waited more than 30 minutes and no routine wake was given a run in the last 30 minutes; members'
+own turns do not count (at Brooks, routine wakes waited from 9 November while members' turns ran on 10,
+11 and 14 November).
 
 ### `QorperaOS/agents/<handle>/agent.md`
 
