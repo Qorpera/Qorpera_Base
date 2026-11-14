@@ -2858,9 +2858,13 @@ export class ComputerPanel {
 	/** A touch on the page: the member is there. Every few minutes it says again that they still watch (every minute for
 	 * a computer that is awake only for a member). */
 	#touched(): void {
-		this.#lastTouch = Date.now();
-		const every = this.#memberSleepMs() === undefined ? CONFIRM_EVERY_MS : MEMBER_CONFIRM_EVERY_MS;
-		if (Date.now() - this.#confirmedAt >= every) this.#confirm = true;
+		const now = Date.now();
+		this.#lastTouch = now;
+		if (this.#confirm) return;
+		const since = now - this.#confirmedAt;
+		// The computer shown is read only between the two intervals: a touch comes with every move of the pointer.
+		if (since >= CONFIRM_EVERY_MS || (since >= MEMBER_CONFIRM_EVERY_MS && this.#memberSleepMs() !== undefined))
+			this.#confirm = true;
 	}
 
 	/** For a computer that is awake only because a member woke it (20260930759000): how long after the member's last

@@ -6909,18 +6909,29 @@ describe("a computer that is awake only for a member pauses, and is seen, by its
 		document.dispatchEvent(new PointerEvent("pointermove"));
 		await advance(MACHINES_EVERY_MS);
 		expect(s.looks).toHaveLength(looked + 1);
-		// 10 minutes without a touch end the live picture and pause the window, as the looks would.
-		await advance(10 * 60_000);
-		expect(status(p)).toBe(PAUSED);
+		// 10 minutes without a touch end the live picture, by its own check and within two seconds: the last touch falls
+		// right after a read of the list, so the window's own next pass is still 13 s off when the 10 minutes are up.
+		const reads = lists(s);
+		while (lists(s) === reads) await advance(1000);
+		await advance(500);
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(10 * 60_000 - 2000);
+		expect(mark(p)).toBe("Live");
+		expect(s.sockets[0]!.closedWith).toBeUndefined();
+		await advance(4000);
 		expect(s.sockets[0]!.closedWith).toBeDefined();
+		// And the window pauses at its next pass, as under the looks.
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe(PAUSED);
 		p.dispose();
-		// Another computer under the live picture: a touch a minute on sends no look.
+		// Another computer under the live picture: no look carries the member's word, not even when it is due (5 minutes).
 		const t = setup({ stream: true });
-		await live(t);
+		const q = await live(t);
 		const other = t.looks.length;
-		await advance(MEMBER_CONFIRM_EVERY_MS);
+		await advance(5 * 60_000 + 1000);
 		document.dispatchEvent(new PointerEvent("pointermove"));
 		await advance(MACHINES_EVERY_MS);
 		expect(t.looks).toHaveLength(other);
+		expect(mark(q)).toBe("Live");
 	});
 });
