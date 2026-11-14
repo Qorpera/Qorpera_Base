@@ -1839,7 +1839,11 @@ text, an account number, a single payment or the summary's items. Design: the co
   month" (the default range, `money-kinds`' month) are the company's own, in its time zone (`time_zone` of
   `qorpera_profile_team_info`, 20260930739000), or Europe/Copenhagen's while it has none or one the database does not
   know. The answer does not name the zone (the shape has no place for it); a client that shows days reads the
-  company's zone from the team read.
+  company's zone from the team read. Until the vault counts in the company's zone (slice M2, migration
+  `20260930769000`), the summary's own days and month are the vault's UTC ones, taken at its fetch, and can lead or
+  lag the company's by hours: `money-balance`'s default range ends on the summary's newest day when that is the
+  company's tomorrow, and `money-kinds`' "this month" is the summary's own month when that is the month of the
+  company's yesterday, today or tomorrow (either month may be named as `month`; the company's own then has no rows).
   - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
     `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
     `paused_since`; the numbers are null without a summary.

@@ -24,6 +24,12 @@
 --    range, money-kinds' month) are the company's own, in its time zone (qorpera_profiles.time_zone, 20260930739000,
 --    taken from a member's browser), or Europe/Copenhagen's while it has none or one the database does not know (not in
 --    qorpera_runtime_time_zone_names). The answer does not name the zone: the gateway's shape has no place for it.
+--    Until slice M2 (migration 20260930769000 makes the vault count in the company's zone) the summary's own days and
+--    month are the vault's UTC ones, taken at the fetch, and lead or lag the company's by hours. So money-balance's
+--    default range ends on the summary's newest day when that is the company's tomorrow (never later), and money-kinds'
+--    "this month" is the summary's own month when that is the month of the company's yesterday, today or tomorrow (a
+--    fetch just past midnight UTC in a zone behind it): that month is answered and may be named as :month, beside the
+--    company's own month, which then answers no rows.
 --    Never answered: who paid or was paid, transfer texts, account numbers (`payTo`), single transactions, the summary's
 --    items. The `site` questions (sites, site-now, site-hours, site-days, site-pages) answer 0A000 "not counted yet":
 --    slice S1 counts them. Any other question, and a money question the caller may not read: P0002 "No question
@@ -65,6 +71,21 @@ begin
 	return v_day;
 end $$;
 
+-- The month money-kinds answers as "this month": the summary's own (the vault's UTC month at its fetch) when that is the
+-- month of the company's yesterday, today or tomorrow, else the company's own month.
+create function public.qorpera_company_numbers_kinds_month(p_today date, p_summary_month text)
+returns text language sql immutable set search_path = '' as $$
+	select case when p_summary_month in (to_char(p_today - 1, 'YYYY-MM'), to_char(p_today, 'YYYY-MM'),
+		to_char(p_today + 1, 'YYYY-MM')) then p_summary_month else to_char(p_today, 'YYYY-MM') end
+$$;
+
+-- The day money-balance's default range ends on: the company's today, or the summary's newest day (the vault's UTC
+-- day) when that is the company's tomorrow.
+create function public.qorpera_company_numbers_balance_end(p_today date, p_newest text)
+returns date language sql immutable set search_path = '' as $$
+	select case when p_newest = to_char(p_today + 1, 'YYYY-MM-DD') then p_today + 1 else p_today end
+$$;
+
 create function public.qorpera_company_numbers_answer(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_question text, p_params jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -81,6 +102,7 @@ declare
 	v_from date;
 	v_to date;
 	v_month text;
+	v_end date;
 	v_columns text[];
 	v_rows jsonb;
 	v_body jsonb;
@@ -144,9 +166,14 @@ begin
 				else 'null'::jsonb end));
 	when 'money-balance' then
 		v_from := public.qorpera_company_numbers_day(v_params, 'from');
-		-- Without :to, today; from a :from, at most its 366 days, and never before it.
+		-- Without :to, today, or the summary's newest day when that is the company's tomorrow (the vault's UTC day);
+		-- from a :from, at most its 366 days, and never before it.
+		v_end := public.qorpera_company_numbers_balance_end(v_today, (select max(point ->> 'date')
+			from jsonb_array_elements(case when jsonb_typeof(v_summary -> 'history') = 'array'
+				then v_summary -> 'history' else '[]'::jsonb end) as point
+			where jsonb_typeof(point) = 'object' and point ->> 'date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
 		v_to := coalesce(public.qorpera_company_numbers_day(v_params, 'to'),
-			case when v_from is not null then greatest(v_from, least(v_from + 365, v_today)) else v_today end);
+			case when v_from is not null then greatest(v_from, least(v_from + 365, v_end)) else v_end end);
 		v_from := coalesce(v_from, v_to - 89);
 		if v_from > v_to then raise exception ':from is after :to' using errcode = '22023'; end if;
 		if v_to - v_from + 1 > 366 then
@@ -176,15 +203,18 @@ begin
 			then v_summary -> 'months' else '[]'::jsonb end) as month
 		where jsonb_typeof(month) = 'object' and month ->> 'month' ~ '^[0-9]{4}-[0-9]{2}$';
 	when 'money-kinds' then
+		-- "This month": the summary's own when it is within a day of the company's (the vault's UTC month), else the
+		-- company's. Either may be named; the company's own, when it is not the summary's, answers no rows.
+		v_month := public.qorpera_company_numbers_kinds_month(v_today,
+			coalesce(v_summary #>> '{moneyOut,month}', v_summary #>> '{moneyIn,month}'));
 		if v_params ? 'month' and jsonb_typeof(v_params -> 'month') <> 'null' then
-			v_month := v_params ->> 'month';
-			if jsonb_typeof(v_params -> 'month') <> 'string' or v_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then
+			if jsonb_typeof(v_params -> 'month') <> 'string' or v_params ->> 'month' !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then
 				raise exception ':month is a month as YYYY-MM' using errcode = '22023'; end if;
-			if v_month <> to_char(v_today, 'YYYY-MM') then
-				raise exception 'qorpera/money-kinds answers this month only (%), for now', to_char(v_today, 'YYYY-MM')
+			if v_params ->> 'month' not in (v_month, to_char(v_today, 'YYYY-MM')) then
+				raise exception 'qorpera/money-kinds answers this month only (%), for now', v_month
 					using errcode = '22023'; end if;
+			v_month := v_params ->> 'month';
 		end if;
-		v_month := to_char(v_today, 'YYYY-MM');
 		v_columns := array['direction', 'kind', 'amount', 'count'];
 		-- The categories' totals only, never their items: money in as one kind, money out by the vault's own kinds, in
 		-- that fixed order. A summary of another month (an old one) has nothing for this month.
@@ -263,6 +293,10 @@ end $$;
 
 revoke all on function public.qorpera_company_numbers_kroner(jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_numbers_day(jsonb, text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_numbers_kinds_month(date, text)
+	from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_numbers_balance_end(date, text)
+	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_numbers_answer(uuid, uuid, jsonb, text, jsonb)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_member_company_numbers(uuid, text, jsonb)
