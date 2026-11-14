@@ -989,7 +989,7 @@ it.each(["cofounder", "employee"] as const)(
 		expect(instructions).toContain("save it as a skill with update_skill, with a description of when to use it");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
 		expect(instructions).toContain(
-			"a member calls one by writing /its-name: load it with read_skill and follow it for that request.",
+			"A member calls one by writing /its-name: load it with read_skill before you act on that message, and follow it for that request.",
 		);
 		expect(prompt.memory).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
@@ -1050,7 +1050,7 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"at most five short lines (what the company builds, for whom, the one or two choices that need them) and the link",
 		"buttons such as Approve and Change it",
 		"Revise until every founder approves.",
-		'Then, in that run and without asking again: write QorperaOS/vision/vision.md with the name as its first line and the last line "Agreed by',
+		'When every founder has approved, in that run and without asking again: write QorperaOS/vision/vision.md with the name as its first line and the last line "Agreed by',
 		"give every continuing responsibility an owner (check QorperaOS/agents/ first, so none is hired twice)",
 		"close Start with the founders",
 		"Once agreed, the founding never restarts.",

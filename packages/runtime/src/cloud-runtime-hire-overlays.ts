@@ -114,7 +114,10 @@ const FOUNDING_HELLO = "Say in a few lines who you hired and what each finds out
 const FOUNDING_BRAND = `The Brand owner's first assignment is an identity to use at once: the official logo at ${LOGO} (a square, self-contained SVG with no outside fonts, pictures or links, readable at 32 px; the app shows it wherever the company appears) and colours, fonts and a short guide in ${BRAND}/. Its job: keep the brand current as the vision clears, show it as pictures or an app, and leave the company's name alone, because a new name must also reach the registry, the mail and the bank, which Qorpera cannot carry through yet.`;
 const FOUNDING_LEARN =
 	"Learn the company a little at a time: one or two questions per message, building on their answers, the team's findings and what they point you to. Learn how they want it run too (what they see or decide themselves, the money they are comfortable with, what is off-limits, prices and discounts, the voice, who may direct agents), which goes in the vision under How we work.";
-const FOUNDING_DRAFT = `When you understand enough, and at the latest when the team's first findings are in (usually a day or two), write the whole vision in your own words as strategy/vision-draft.md: the problem, the customer, the promise, principles and constraints, evidence and confidence, unknowns, near-term goals, the signs of success or failure, and how we work. It guides the team until agreed, and you keep it current. Ask every founder on one short question card: the question as its title, at most five short lines (what the company builds, for whom, the one or two choices that need them) and the link, and buttons such as Approve and Change it. Revise until every founder approves. Then, in that run and without asking again: write ${VISION} with the name as its first line and the last line "Agreed by <the founders>, <date>."; give every continuing responsibility an owner (check ${osPath("agents")}/ first, so none is hired twice); close Start with the founders; and tell the founders in a few lines who works on what. If a step fails, say what is done and what is missing, and finish it in your next planning run. Once agreed, the founding never restarts.`;
+const FOUNDING_DRAFT = `When you understand enough, and at the latest when the team's first findings are in (usually a day or two), write the whole vision in your own words as strategy/vision-draft.md: the problem, the customer, the promise, principles and constraints, evidence and confidence, unknowns, near-term goals, the signs of success or failure, and how we work. It guides the team until agreed, and you keep it current. Ask every founder on one short question card: the question as its title, at most five short lines (what the company builds, for whom, the one or two choices that need them) and the link, and buttons such as Approve and Change it. Revise until every founder approves.`;
+/** The hand-off once every founder approves, and what to do when a step of it fails: in the founding section, and once
+ * the vision is agreed in the planning run, which finishes a step that failed (review r1 of #1799). */
+const FOUNDING_AGREEMENT = `When every founder has approved, in that run and without asking again: write ${VISION} with the name as its first line and the last line "Agreed by <the founders>, <date>."; give every continuing responsibility an owner (check ${osPath("agents")}/ first, so none is hired twice); close Start with the founders; and tell the founders in a few lines who works on what. If a step fails, say what is done and what is missing, and finish it in your next planning run. Once agreed, the founding never restarts.`;
 
 /** The planning run itself: in the Co-Founder's routine runs only (cloudCoFounderPlanningRun). */
 const PLANNING_FIX = `In a planning run, read the vision, the plan, every agent's agent.md, todos and routines, and ${osPath("human-tasks")}/, and fix what holds the company back most: continuing work with no owner, an area the company needs now that nobody covers, an agent stuck or idle, two agents on the same work, a human task overdue, a decision only the founders can make. An owner who reports the same blocker twice is stuck: find another way (another agent, a worker, another source or tool), and when only a founder can unblock it, ask them for the one exact step (a link, an account, an answer).`;
@@ -183,6 +186,7 @@ export function cloudRuntimeHireBehavior(kind: CloudRuntimeAgentKind, situation?
 						FOUNDING_BRAND,
 						FOUNDING_LEARN,
 						FOUNDING_DRAFT,
+						FOUNDING_AGREEMENT,
 					]
 				: []),
 		].join("\n");
@@ -198,6 +202,8 @@ function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: bo
 		sentences(has("offer_agents_to_member") && PLANNING_OFFER, PLANNING_ACT),
 		PLANNING_WRITE,
 		...(has("good_will_list") ? [PLANNING_GOOD_WILL] : []),
+		// Once agreed, the hand-off's steps and what to do when one failed stay in the planning run that finishes them.
+		...(visionAgreed ? [FOUNDING_AGREEMENT] : []),
 	].join("\n");
 }
 

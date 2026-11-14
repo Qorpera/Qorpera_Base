@@ -2,6 +2,8 @@ import {
 	CLOUD_RUNTIME_CONSTITUTION,
 	CLOUD_RUNTIME_CONSTITUTION_VERSION,
 	CLOUD_RUNTIME_WORKER_CONSTITUTION,
+	cloudRuntimeConstitution,
+	cloudRuntimeWorkerConstitution,
 } from "@qorpera/runtime/cloud-runtime-constitution";
 import { describe, expect, it } from "vitest";
 
@@ -48,6 +50,25 @@ describe("shared cloud runtime constitution", () => {
 		expect(CLOUD_RUNTIME_CONSTITUTION).toContain("members hear you only through send_message and cards");
 		expect(CLOUD_RUNTIME_WORKER_CONSTITUTION).toContain("your parent hears you only through report_work");
 		expect(CLOUD_RUNTIME_WORKER_CONSTITUTION).not.toContain("send_message");
+	});
+
+	// Review r1 of #1803: a run is told of the machine shell only when it has machine_run (a private conversation or a
+	// company without machines has none), and that sending is its job only when it can send.
+	it("names the machine shell and sending only to a run that has them", () => {
+		const none = () => false;
+		for (const text of [cloudRuntimeConstitution(none), cloudRuntimeWorkerConstitution(none)]) {
+			expect(text).toContain(
+				"Your tools are the qorpera tools. Nothing you write outside your tools reaches anyone",
+			);
+			expect(text).not.toMatch(/machine_run|root shell|Sending email/);
+		}
+		const shell = (tool: string) => tool === "machine_run";
+		expect(cloudRuntimeWorkerConstitution(shell)).toContain(
+			"Your tools are the qorpera tools; machine_run gives you a root shell with internet on a company machine. Nothing you write",
+		);
+		expect(cloudRuntimeConstitution((tool) => tool === "send_coworker_message")).toContain(
+			"Sending email and coworker messages with your tools is part of your job: the platform reviews what leaves the company.",
+		);
 	});
 
 	it("keeps what counts as an instruction apart from the information a run reads", () => {
