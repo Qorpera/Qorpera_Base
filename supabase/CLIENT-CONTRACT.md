@@ -1821,6 +1821,37 @@ with the member folder client. Storage → the repository's folder → "Download
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
+### The company's numbers: door `money` (20260930767000_company_numbers_money)
+
+The platform's own numbers of a company, asked by the reserved database name `qorpera` (no company database may carry
+it): an interface app's `qorpera.query("qorpera/money-now")` and `qorpera.watch(...)`, a kit's live number, an agent's
+`data_query {database: "qorpera"}`. Read only, from the vault's bank summary; sums only, never a name, a transfer's
+text, an account number, a single payment or the summary's items. Design: the company-views lane's DESIGN-3.md §E.
+
+- `qorpera_member_company_numbers(environment, question, params)` (authenticated): a member of a folder-v2 company
+  (42501 "Company numbers are unavailable" for anyone else). `question` is the name after `qorpera/`, `params` an
+  object of named values (`{}` or null for none). Answers the data gateway's answer shape `{columns, rows, more,
+  asOf, etag}`: `columns` the names, `rows` arrays in their order, `more` false, `asOf` the time of the answer (ISO,
+  UTC), `etag` 32 hex that stay the same while the answer does (a client polls and compares it).
+- The `money-*` questions answer only a member who may read `bank/summary.json` by the folder's path authority; for
+  anyone else, and for a question that is not there, P0002 "No question qorpera/<question> that you may read" (the
+  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are Europe/Copenhagen's, `YYYY-MM-DD`.
+  - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
+    `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
+    `paused_since`; the numbers are null without a summary.
+  - `money-balance` (`from`, `to`; default the 90 days to today, at most 366 days): `day`, `balance` (end of day).
+  - `money-expected`: `day`, `balance`, the summary's forecast (an estimate).
+  - `money-months`: `month` (`YYYY-MM`), `money_in`, `money_out`, the summary's months (twelve at most).
+  - `money-kinds` (`month`, this month only, the default): `direction` (`in`, `out`), `kind`, `amount`, `count`. Out
+    kinds `salaries`, `taxes`, `rent`, `utilities`, `subscriptions`, `fees`, `other`; money in is one kind, `all`.
+    `count` is null for now (the summary keeps no count of payments).
+- `sites`, `site-now`, `site-hours`, `site-days`, `site-pages`: 0A000 "qorpera/<question> is not counted yet: the
+  sites' numbers come later". A name of another shape, a parameter the question does not take or a value out of its
+  bounds: 22023 in plain words (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at
+  most 366 days`, ...).
+- A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
+  host's call (scope folder), with its own path authority.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's

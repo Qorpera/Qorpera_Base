@@ -218,6 +218,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_browser_profiles(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_browser_recovery(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_company_file_mode(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_member_company_numbers(uuid,text,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company; the platform''s numbers of the company (qorpera/money-*), only to a member who may read bank/summary.json, sums and counts only, read only (20260930767000)'),
 	('public.qorpera_member_company_state_folders(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only, readable files only (C4 P34a, routines P34r)'),
 	('public.qorpera_member_digital_post(uuid)', false, true, 'member: auth.uid() + membership; a read of the company''s Digital Post connection (20260930529000)'),
 	('public.qorpera_member_folder_agent_proposals(uuid,uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company; the open proposals waiting for the caller, readable ones only, read only (P40c)'),
