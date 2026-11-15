@@ -629,9 +629,14 @@ mod tests {
 		let (code, out, err) = printed(&addr, &temp, &["describe"]);
 		assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
 		assert!(err.contains("cannot be reached from this machine now: The view, its pass or this machine did not match"), "{err}");
-		// A node before the data role answers another protocol or none.
-		let (addr, _) = service(&temp, vec![Reply::Frame(kind::HELLO_OK, json!({"protocol": 4, "viewId": view().view_id}))]);
-		assert_eq!(printed(&addr, &temp, &["describe"]).0, EXIT_UNREACHABLE);
+		// A node that answers the hello at another protocol (a mount's), or for another view, is sent no call.
+		for ok in [json!({"protocol": 4, "viewId": view().view_id}), json!({"protocol": 5, "viewId": "another"})] {
+			let (addr, heard) = service_with(&temp, move |_, _| Reply::Frame(kind::HELLO_OK, ok.clone()));
+			let (code, out, err) = printed(&addr, &temp, &["describe"]);
+			assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
+			assert!(err.contains("the node answered for another view or protocol"), "{err}");
+			assert_eq!(heard.recv().unwrap().len(), 1);
+		}
 		let missing = format!("unix:{}", temp.0.join("nothing.sock").display());
 		assert_eq!(printed(&missing, &temp, &["describe"]).0, EXIT_UNREACHABLE);
 		// A read that got no answer could not be asked; a change that got none may have run.
