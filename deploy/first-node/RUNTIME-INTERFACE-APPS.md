@@ -719,6 +719,7 @@ await qorpera.list("reports")                 // a folder's entries: name, path,
 await qorpera.table("tasks")                  // a table's name, columns and rows
 await qorpera.todos()                         // each agent's todos: agent, title, status, updatedAt
 await qorpera.agents()                        // agents: name, role, working
+await qorpera.reading()                       // the company's reading of itself, its team and its standing (`reading`)
 await qorpera.questions()                     // the agents' open questions that point at this app
 qorpera.onChange(() => …)                     // the company's folder changed: read again
 
@@ -752,6 +753,21 @@ Rules:
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
+- **The company's reading** (`reading` in `reads`; the `map` kit; Jonas, 15 November 2026: "Use a map kit"): a page
+  reads no file of `QorperaOS/`, so the web reads `QorperaOS/vision/reading.md` as the member (`parseCompanyStateFile`,
+  kind `reading`; its bytes only when its version changed; a file that does not read keeps the last reading that did)
+  and answers plain names, never a path, a handle, a user id or an agent id (`app/company-reading.ts`):
+  `{reading: null | {sentence, line, attention, things: [{key, name, shape, full, state, agents: [{name, figure,
+  working}], waits: [{name, me}]}], changes: [{agent: {name, figure} | null, what, line}], notes}, team: [{name,
+  figure, working, cofounder}], standing: null | {stopped, since, why, member, resetsAt}}`. An agent is found by its
+  folder name and drawn by `figure`, one of the twelve a kit's page carries (`figureFor`, as the rail draws it: the
+  agent's own, else its template's, else one by its id); one the reading names that the company does not have, or
+  whose role ended, stands at no thing, while a change line keeps an ended agent's name and figure. `waits` names the
+  members a thing waits for (`founders` is every owner), `me` the member looking. `standing` is
+  `qorpera_read_company_standing` (null from a backend without it, asked no more), `member` the name of the member
+  whose login holds the company, null when it is the member looking. The team is the agents at work, the Co-Founder
+  first. The standing is read every 30 s while a page that reads `reading` is shown and the tab is, and when the tab
+  comes back; a change of it reaches the page as a change notice (`onChange`), as a change of the folder does.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
   ten, since it reads every agent's todos, and a request for a change, a note or a web page to open as five), a call's params at most
   4 KiB (a row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A

@@ -27,8 +27,9 @@ export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
 export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
- * `data`: the company's databases, asked by their questions. */
-export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data"] as const);
+ * `data`: the company's databases, asked by their questions; `reading`: the company's reading of itself
+ * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer). */
+export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data", "reading"] as const);
 export type AppRead = (typeof APP_READS)[number];
 /** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
  * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in

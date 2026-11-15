@@ -156,6 +156,12 @@ describe("interface apps", () => {
 		expect(appWriteTable("answers")).toBeNull();
 	});
 
+	it("reads reading, the company's reading of itself, as a read of its own", () => {
+		const parsed = parseAppManifest('name = "Map"\nreads = ["reading", "agents", "reading"]\n');
+		expect(parsed.ok && parsed.manifest.reads).toEqual(["reading", "agents"]);
+		if (parsed.ok) expect(parseAppManifest(writeAppManifest(parsed.manifest))).toEqual(parsed);
+	});
+
 	it("reads concept and cover, and refuses a cover that is no picture of the app", () => {
 		const parsed = parseAppManifest('name = "Shop"\nconcept = true\ncover = "./cover.PNG"\n');
 		expect(parsed.ok && parsed.manifest).toMatchObject({ concept: true, cover: "cover.PNG" });
