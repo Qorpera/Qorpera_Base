@@ -418,12 +418,13 @@ member, a run or a machine), and an applied step.
   (`rows`) and no row. A row with no key (a table made without one) is kept whole, with `key` null. The record is
   not counted in the company's 1 GiB: it has 100 MiB of its own, counted as the sum of its lines' `bytes` (never as
   the tables' size, which a removed line does not make smaller), and past that the oldest lines go first, so the
-  record can never close a company's writes and never empties itself. So the company's size, wherever it is read (the watcher's look that
-  closes writes, `describe`, a change's room), is the database's size less the record's two tables with their
+  record can never close a company's writes and never empties itself. So the company's size, wherever it is read (the watcher's look, which
+  tells agents at 80 % and closes writes at 100 %, `describe`, a change's room), is the database's size less the record's two tables with their
   indexes and TOAST. The gateway reads the record's size on its keeper connection to that company's database: with
   each write, where it holds that connection for the actor's line, and for the watcher's look whenever a company's
-  whole size is over its limit: the tables can hold more than the lines' 100 MiB (room kept from removed lines, row
-  headers, indexes), so no band bounds them, and only a company over its limit pays for the look. The actor's lines
+  whole size is over 80 % of its limit, where the watcher first speaks: the tables can hold more than the lines'
+  100 MiB (room kept from removed lines, row headers, indexes), so no band bounds them, and only a company that
+  large pays for the look. The actor's lines
   are small, are not counted in the 100 MiB, and go with their rows' lines. Part b changes those three places.
 - **The actor.** Before a write commits, the gateway writes `qorpera_data.change_log(txid, at, by_kind, by_id, via)`
   on its keeper connection: `by_kind` member, agent, machine or step; `via` the list, the change's or the step's
@@ -453,7 +454,7 @@ member or the agent from the lists it already holds.
 | Part | What | Tests |
 | --- | --- | --- |
 | a | The platform: the page `data`, `qorpera_member_folder_may_write` (one migration) | an SQL test |
-| b | The store and the gateway, reading: the record's tables and trigger, `describe` for a member, `rows`, a table's `watch`, who gets the list | the gateway's tests against a real PostgreSQL: a reader of a `:viewer` database gets no table by any road; no folder login reads the record, in its own folder or another's; a company whose record holds more than its free room still writes, also with the record's tables larger than 100 MiB; a record past its 100 MiB keeps its newest lines; what the trigger costs a statement, against P2's |
+| b | The store and the gateway, reading: the record's tables and trigger, `describe` for a member, `rows`, a table's `watch`, who gets the list | the gateway's tests against a real PostgreSQL: a reader of a `:viewer` database gets no table by any road; no folder login reads the record, in its own folder or another's; a company whose record holds more than its free room still writes, also with the record's tables larger than 100 MiB, and its agents are told at 80 % of its own data, not the record's; a record past its 100 MiB keeps its newest lines; what the trigger costs a statement, against P2's |
 | c | Writing: `edit`, the actor's line for every write road, the edge function's routes | the gateway's and the function's tests |
 | d | The agents' instructions: what `[list]` is, and that a database with private rows says `"writers"` | the runtime's pin tests |
 | e | The web: the page, the list, a row, an edit, a removal. It goes live only after b, c and d are | web tests; pictures at several widths, both themes |
