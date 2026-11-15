@@ -524,6 +524,10 @@ export const SETTINGS: Record<string, string> = {
 	// Look first: the ready version at the site's next address, before it goes live; and a site Qorpera took down (own
 	// code storage step 5.1)
 	"Look first": "Se den først",
+	// "A change is ready" in the agent's thread (app/views/thread-ready.ts)
+	"Ready to go live": "Klar til at gå live",
+	"and 1 more change": "og 1 ændring mere",
+	"and {count} more changes": "og {count} ændringer mere",
 	"The next version could not be opened. Try again.": "Den næste version kunne ikke åbnes. Prøv igen.",
 	"The next version could not be opened: Qorpera could not be reached. Try again.":
 		"Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen.",

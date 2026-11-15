@@ -55,17 +55,40 @@ import type {
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
-const state = vi.hoisted(() => ({ controlPath: "" }));
+const state = vi.hoisted(() => ({
+	controlPath: "",
+	/** A pass's hold in the test's hand (passHold), while a test holds it. */
+	passHold: undefined as { ms: number; ends: Set<() => void> } | undefined,
+}));
 // The host waits 500 ms before it looks again at a machine whose LXD effect it just dispatched (reconcileCodingMachine
 // answers "pending" after every create, start, stop and delete). Here LXD's fake settles each one at once, so that wait
 // was 128 of this file's 157 s (256 waits, 8 Nov). It is 5 ms here: the host still waits and looks again as often; only
-// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real.
+// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real, but for a pass's
+// hold that a test holds in its hand (passHold): that one ends when the test ends it, or on its signal.
 vi.mock("node:timers/promises", async (importOriginal) => {
 	const timers = await importOriginal<typeof TimersPromises>();
 	return {
 		...timers,
-		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) =>
-			timers.setTimeout(delay === 500 ? 5 : delay, value, options),
+		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) => {
+			const hold = state.passHold;
+			if (hold === undefined || delay !== hold.ms)
+				return timers.setTimeout(delay === 500 ? 5 : delay, value, options);
+			const signal = options?.signal;
+			return new Promise((settle, fail) => {
+				const end = (): void => {
+					hold.ends.delete(end);
+					signal?.removeEventListener("abort", abort);
+					settle(value);
+				};
+				const abort = (): void => {
+					hold.ends.delete(end);
+					fail(signal?.reason);
+				};
+				if (signal?.aborted) return abort();
+				signal?.addEventListener("abort", abort, { once: true });
+				hold.ends.add(end);
+			});
+		},
 	};
 });
 vi.mock("../src/coding-storage.ts", () => ({
@@ -82,6 +105,7 @@ vi.mock("../src/coding-storage.ts", () => ({
 
 const roots: string[] = [];
 afterEach(async () => {
+	state.passHold = undefined;
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -1470,6 +1494,22 @@ describe("company machine host's wake (perf A5)", () => {
 		for (let tries = 0; tries < 1000 && !done(); tries++) await new Promise((settle) => setTimeout(settle, 5));
 		expect(done()).toBe(true);
 	};
+	/** passHoldMs for the host, and the pass's hold in the test's hand: a pass answers without its steps only once
+	 * the test ends its hold; until then it waits for them, as with no hold. A real hold short enough to test with
+	 * (20 ms) was outrun on a loaded test machine by steps that were meant to end within their pass: a start's whole
+	 * step, or a running guest's, which then came with the pass after (13-14 Nov). */
+	function passHold() {
+		const hold = { ms: 3_600_007, ends: new Set<() => void>() };
+		state.passHold = hold;
+		return {
+			ms: hold.ms,
+			/** Ends the hold of the one pass that waits on it now. */
+			end: () => {
+				expect(hold.ends.size).toBe(1);
+				for (const end of [...hold.ends]) end();
+			},
+		};
+	}
 
 	it("a wake ends the wait before the next pass, and one during a pass leaves no wait after it", async () => {
 		const f = await fixture();
@@ -1560,7 +1600,8 @@ describe("company machine host's wake (perf A5)", () => {
 	});
 
 	it("one placement's slow step does not hold its pass, and none starts another until it ended", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1573,9 +1614,11 @@ describe("company machine host's wake (perf A5)", () => {
 			return exec(project, name, asked);
 		});
 		f.client.execInstance.mockClear();
-		// The pass answers though the guest does not, without its step.
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		// The pass answers though the guest does not, without its step: its hold ends while the step waits on the guest.
+		const passing = f.host.pass(f.signal);
 		await until(() => f.client.execInstance.mock.calls.length === 1);
+		hold.end();
+		expect(await passing).toEqual([]);
 		// The next one admits and lists, and does not start the placement again.
 		f.calls.length = 0;
 		expect(await f.host.pass(f.signal)).toEqual([]);
@@ -1583,17 +1626,21 @@ describe("company machine host's wake (perf A5)", () => {
 		expect(f.client.execInstance).toHaveBeenCalledTimes(1);
 		free();
 		await f.host.settled();
-		// Then its step comes up again as ever.
+		// Then its step comes up again as ever, in the next pass.
 		f.client.execInstance.mockImplementation(exec);
+		const before = f.client.execInstance.mock.calls.length;
 		await f.host.pass(f.signal);
-		expect(f.client.execInstance.mock.calls.map((call) => call[2][3]).slice(-2)).toEqual([
-			"refresh-lease",
-			"observe",
-		]);
+		expect(
+			f.client.execInstance.mock.calls
+				.slice(before)
+				.map((call) => call[2][3])
+				.slice(-2),
+		).toEqual(["refresh-lease", "observe"]);
 	});
 
 	it("hands over what a step that outlasted its pass came to, with the next pass", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1605,7 +1652,11 @@ describe("company machine host's wake (perf A5)", () => {
 			await held;
 			throw new Error("LXD instance command failed");
 		});
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		const asked = f.client.execInstance.mock.calls.length;
+		const passing = f.host.pass(f.signal);
+		await until(() => f.client.execInstance.mock.calls.length > asked);
+		hold.end();
+		expect(await passing).toEqual([]);
 		free();
 		await f.host.settled();
 		f.client.execInstance.mockImplementation(exec);
