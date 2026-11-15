@@ -155,6 +155,7 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"actions/<name>.sql (its changes: one insert, update, delete or merge each, :name for a value, -- lines on top that say in a member's words what it does, such as -- Mark order :id as shipped)",
 		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
 		"A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
+		'a database whose rows are private to each member (its questions name :viewer) says [list] members = "writers" in database.toml, so only those who may write the folder see whole tables.',
 		"Never put a secret in a step, a query, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
