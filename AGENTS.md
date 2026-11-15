@@ -27,7 +27,7 @@
 - A rule others must follow becomes a lint rule or a test, never a comment.
 - Something still to do gets done in the same change or is left out. No notes about later work.
 - One exception: code that looks wrong but is right, where no test can hold the reason. Start that comment with `WHY:` and keep it to three lines.
-- `npm run check` runs `check:comments`, which fails on every comment a change adds or edits unless it starts with `WHY:`. Tool directives (`biome-ignore`, `@ts-expect-error`, `shellcheck`) pass. Comments from before the rule stay until their lines are edited; then they follow it.
+- `node scripts/run-on-node.mjs changed` stops before any test, and `npm run check` fails (`check:comments`), on every comment a change adds or edits unless it starts with `WHY:`. Tool directives (`biome-ignore`, `@ts-expect-error`, `shellcheck`) pass on their own line. Comments from before the rule stay until their lines are edited, also when their code moves to another file.
 - Never put `WHY:` on a comment to get past the check. Delete the comment.
 
 ## Commands

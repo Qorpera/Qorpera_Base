@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SELF = "scripts/check-comments.mjs";
@@ -10,18 +9,8 @@ const SELF = "scripts/check-comments.mjs";
 export const MARKER = "WHY:";
 export const MAX_LINES = 3;
 
-const SCRIPT_KINDS = {
-	".ts": ts.ScriptKind.TS,
-	".mts": ts.ScriptKind.TS,
-	".cts": ts.ScriptKind.TS,
-	".tsx": ts.ScriptKind.TSX,
-	".js": ts.ScriptKind.JS,
-	".mjs": ts.ScriptKind.JS,
-	".cjs": ts.ScriptKind.JS,
-	".jsx": ts.ScriptKind.JSX,
-};
 const LANGUAGES = { ".rs": "rust", ".sql": "sql", ".sh": "shell", ".bash": "shell", ".py": "python" };
-for (const extension of Object.keys(SCRIPT_KINDS)) LANGUAGES[extension] = "script";
+for (const extension of [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]) LANGUAGES[extension] = "script";
 
 const SKIPPED_SEGMENTS = new Set(["node_modules", "dist", "vendor", "public", ".artifacts"]);
 const GENERATED = /\.generated\.|_runtime_bundle_activation_v\d+\.sql$/;
@@ -32,7 +21,6 @@ const DIRECTIVES = {
 	shell: /^shellcheck /,
 	python: /^(?:type:|noqa\b|pragma:|pylint:|mypy:|ruff:|fmt:|-\*- )/,
 };
-const TYPE_TAG = /^@(?:type|typedef|satisfies|import|template|param|returns?|deprecated|internal)\b/;
 const MARKERS = { rust: [MARKER, "SAFETY:"] };
 
 export function languageOf(path) {
@@ -66,23 +54,37 @@ function bodyLines(raw) {
 	return lines;
 }
 
+function isDirective(language, lines) {
+	return lines.length === 1 && DIRECTIVES[language] !== undefined && DIRECTIVES[language].test(lines[0]);
+}
+
 function toUnits(text, spans, language) {
 	const starts = lineStarts(text);
 	const units = [];
 	for (const [from, to] of [...spans].sort((left, right) => left[0] - right[0])) {
 		const raw = text.slice(from, to);
 		const line = lineAt(starts, from);
+		const lines = bodyLines(raw);
 		const comment = {
 			language,
 			line: line + 1,
 			endLine: lineAt(starts, Math.max(from, to - 1)) + 1,
 			block: raw.startsWith("/*"),
-			doc: raw.startsWith("/**"),
 			own: text.slice(starts[line], from).trim() === "",
-			lines: bodyLines(raw),
+			directive: isDirective(language, lines),
+			lines,
 		};
 		const last = units.at(-1);
-		if (last && !last.block && !comment.block && last.own && comment.own && comment.line === last.endLine + 1) {
+		const joins =
+			last !== undefined &&
+			!last.block &&
+			!comment.block &&
+			!last.directive &&
+			!comment.directive &&
+			last.own &&
+			comment.own &&
+			comment.line === last.endLine + 1;
+		if (joins) {
 			last.lines.push(...comment.lines);
 			last.endLine = comment.endLine;
 		} else units.push(comment);
@@ -90,42 +92,12 @@ function toUnits(text, spans, language) {
 	return units;
 }
 
-function isJsxParent(node) {
-	return node !== undefined && (ts.isJsxElement(node) || ts.isJsxFragment(node));
+function lineEnd(text, from, to) {
+	const end = text.indexOf("\n", from);
+	return end === -1 || end > to ? to : end;
 }
 
-function takesTrailingComments(token) {
-	const parent = token.parent;
-	if (token.kind === ts.SyntaxKind.CloseBraceToken) return !ts.isJsxExpression(parent) || !isJsxParent(parent.parent);
-	if (token.kind !== ts.SyntaxKind.GreaterThanToken) return true;
-	if (ts.isJsxOpeningElement(parent)) return token.end !== parent.end;
-	if (ts.isJsxOpeningFragment(parent)) return false;
-	if (ts.isJsxSelfClosingElement(parent)) return token.end !== parent.end || !isJsxParent(parent.parent);
-	if (ts.isJsxClosingElement(parent) || ts.isJsxClosingFragment(parent)) return !isJsxParent(parent.parent.parent);
-	return true;
-}
-
-function scriptSpans(path, text) {
-	const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, SCRIPT_KINDS[extname(path)]);
-	const spans = new Map();
-	const add = (ranges) => {
-		for (const range of ranges ?? []) spans.set(range.pos, [range.pos, range.end]);
-	};
-	const visit = (node) => {
-		if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
-		if (!ts.isToken(node)) {
-			for (const child of node.getChildren(source)) visit(child);
-			return;
-		}
-		if (node.kind === ts.SyntaxKind.JsxText) return;
-		add(ts.getLeadingCommentRanges(text, node.pos));
-		if (takesTrailingComments(node)) add(ts.getTrailingCommentRanges(text, node.end));
-	};
-	visit(source);
-	return [...spans.values()];
-}
-
-function blockEnd(text, from, to) {
+function nestedBlockEnd(text, from, to) {
 	let depth = 1;
 	let index = from + 2;
 	while (index < to && depth > 0) {
@@ -140,11 +112,6 @@ function blockEnd(text, from, to) {
 	return Math.min(index, to);
 }
 
-function lineEnd(text, from, to) {
-	const end = text.indexOf("\n", from);
-	return end === -1 || end > to ? to : end;
-}
-
 function quotedEnd(text, from, to, quote, backslash) {
 	let index = from + 1;
 	while (index < to) {
@@ -154,6 +121,114 @@ function quotedEnd(text, from, to, quote, backslash) {
 		else return index + 1;
 	}
 	return to;
+}
+
+const WORD = /[\p{L}\p{N}_$]+/uy;
+const PATTERN_MAY_FOLLOW = new Set([
+	"return",
+	"typeof",
+	"instanceof",
+	"in",
+	"of",
+	"new",
+	"delete",
+	"void",
+	"throw",
+	"case",
+	"do",
+	"else",
+	"yield",
+	"await",
+]);
+
+function patternEnd(text, from) {
+	let inClass = false;
+	for (let index = from + 1; index < text.length; index++) {
+		const character = text[index];
+		if (character === "\n") return -1;
+		if (character === "\\") index++;
+		else if (character === "[") inClass = true;
+		else if (character === "]") inClass = false;
+		else if (character === "/" && !inClass) {
+			let end = index + 1;
+			while (/[a-z]/i.test(text[end] ?? "")) end++;
+			return end;
+		}
+	}
+	return -1;
+}
+
+function scriptStringEnd(text, from) {
+	for (let index = from + 1; index < text.length; index++) {
+		if (text[index] === "\\") index++;
+		else if (text[index] === text[from]) return index + 1;
+		else if (text[index] === "\n") return index;
+	}
+	return text.length;
+}
+
+function templateTextEnd(text, from, slots) {
+	let index = from;
+	while (index < text.length) {
+		if (text[index] === "\\") index += 2;
+		else if (text[index] === "`") return index + 1;
+		else if (text.startsWith("${", index)) {
+			slots.push(0);
+			return index + 2;
+		} else index++;
+	}
+	return text.length;
+}
+
+function scriptSpans(text) {
+	const spans = [];
+	const slots = [];
+	let patternAllowed = true;
+	let index = text.startsWith("#!") ? lineEnd(text, 0, text.length) : 0;
+	const readTemplateText = (from) => {
+		const open = slots.length;
+		index = templateTextEnd(text, from, slots);
+		patternAllowed = slots.length > open;
+	};
+	while (index < text.length) {
+		const character = text[index];
+		if (text.startsWith("//", index)) {
+			const end = lineEnd(text, index, text.length);
+			spans.push([index, end]);
+			index = end;
+		} else if (text.startsWith("/*", index)) {
+			const close = text.indexOf("*/", index + 2);
+			const end = close === -1 ? text.length : close + 2;
+			spans.push([index, end]);
+			index = end;
+		} else if (character === "/") {
+			const end = patternAllowed ? patternEnd(text, index) : -1;
+			patternAllowed = end === -1;
+			index = end === -1 ? index + 1 : end;
+		} else if (character === '"' || character === "'") {
+			index = scriptStringEnd(text, index);
+			patternAllowed = false;
+		} else if (character === "`") readTemplateText(index + 1);
+		else if (character === "}" && slots.at(-1) === 0) {
+			slots.pop();
+			readTemplateText(index + 1);
+		} else if (character === "{" || character === "}") {
+			if (slots.length > 0) slots[slots.length - 1] += character === "{" ? 1 : -1;
+			patternAllowed = true;
+			index++;
+		} else if (character === ")" || character === "]") {
+			patternAllowed = false;
+			index++;
+		} else if ((character === "+" || character === "-") && text[index + 1] === character) index += 2;
+		else if (/\s/.test(character)) index++;
+		else {
+			WORD.lastIndex = index;
+			const word = WORD.exec(text)?.[0];
+			patternAllowed = word === undefined || PATTERN_MAY_FOLLOW.has(word);
+			index += word === undefined ? 1 : word.length;
+		}
+	}
+	return spans;
 }
 
 const IDENTIFIER_CHARACTER = /[A-Za-z0-9_]/;
@@ -169,7 +244,7 @@ function rustSpans(text) {
 			spans.push([index, end]);
 			index = end;
 		} else if (text.startsWith("/*", index)) {
-			const end = blockEnd(text, index, text.length);
+			const end = nestedBlockEnd(text, index, text.length);
 			spans.push([index, end]);
 			index = end;
 		} else if (character === '"') index = quotedEnd(text, index, text.length, '"', true);
@@ -206,7 +281,7 @@ function sqlSpans(text, from = 0, to = text.length, spans = []) {
 			spans.push([index, end]);
 			index = end;
 		} else if (text.startsWith("/*", index)) {
-			const end = blockEnd(text, index, to);
+			const end = nestedBlockEnd(text, index, to);
 			spans.push([index, end]);
 			index = end;
 		} else if (character === "'") {
@@ -232,41 +307,72 @@ function sqlSpans(text, from = 0, to = text.length, spans = []) {
 
 const HEREDOC = /(?<!<)<<-?\s*(['"\\]?)([A-Za-z_][A-Za-z0-9_]*)/;
 
-function hashSpans(text, shell) {
+function shellQuoteAfter(line, quote) {
+	let open = quote;
+	for (let index = 0; index < line.length; index++) {
+		const character = line[index];
+		if (open === "'") {
+			if (character === "'") open = null;
+		} else if (character === "\\") index++;
+		else if (open === '"') {
+			if (character === '"') open = null;
+		} else if (character === "'" || character === '"') open = character;
+		else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) return null;
+	}
+	return open;
+}
+
+function shellSpans(text) {
 	const spans = [];
 	let terminator = null;
+	let quote = null;
 	let offset = 0;
 	for (const line of text.split("\n")) {
 		const indent = line.length - line.trimStart().length;
 		if (terminator !== null) {
 			if (line.trim() === terminator) terminator = null;
-		} else if (line[indent] === "#") {
+		} else if (quote === null && line[indent] === "#") {
 			if (offset > 0 || !line.startsWith("#!")) spans.push([offset + indent, offset + line.length]);
-		} else if (shell) terminator = HEREDOC.exec(line)?.[2] ?? null;
+		} else {
+			if (quote === null) terminator = HEREDOC.exec(line)?.[2] ?? null;
+			quote = shellQuoteAfter(line, quote);
+		}
 		offset += line.length + 1;
 	}
 	return spans;
 }
 
+const TRIPLE_QUOTE = /"""|'''/g;
+
+function pythonSpans(text) {
+	const spans = [];
+	let triple = null;
+	let offset = 0;
+	for (const line of text.split("\n")) {
+		const indent = line.length - line.trimStart().length;
+		if (triple === null && line[indent] === "#") {
+			if (offset > 0 || !line.startsWith("#!")) spans.push([offset + indent, offset + line.length]);
+		} else {
+			for (const [mark] of line.matchAll(TRIPLE_QUOTE)) {
+				if (triple === null) triple = mark;
+				else if (triple === mark) triple = null;
+			}
+		}
+		offset += line.length + 1;
+	}
+	return spans;
+}
+
+const SCANNERS = { script: scriptSpans, rust: rustSpans, sql: sqlSpans, shell: shellSpans, python: pythonSpans };
+
 export function commentsIn(path, text) {
 	const language = languageOf(path);
-	if (language === null) return [];
-	const spans =
-		language === "script"
-			? scriptSpans(path, text)
-			: language === "rust"
-				? rustSpans(text)
-				: language === "sql"
-					? sqlSpans(text)
-					: hashSpans(text, language === "shell");
-	return toUnits(text, spans, language);
+	return language === null ? [] : toUnits(text, SCANNERS[language](text), language);
 }
 
 export function verdict(unit) {
 	const lines = unit.lines.filter((line) => line !== "");
-	if (lines.length === 0) return null;
-	if (DIRECTIVES[unit.language]?.test(lines[0])) return null;
-	if (unit.language === "script" && unit.doc && lines.every((line) => TYPE_TAG.test(line))) return null;
+	if (lines.length === 0 || isDirective(unit.language, lines)) return null;
 	const marker = (MARKERS[unit.language] ?? [MARKER]).find((candidate) => lines[0].startsWith(candidate));
 	if (marker === undefined) return "plain";
 	if (lines.length === 1 && lines[0].slice(marker.length).trim() === "") return "empty";
@@ -274,17 +380,33 @@ export function verdict(unit) {
 	return null;
 }
 
-export function newFindings(path, now, olds) {
-	const known = new Set();
-	for (const [oldPath, text] of olds) {
-		if (text === null) continue;
-		for (const unit of commentsIn(oldPath, text)) for (const line of unit.lines) known.add(line);
-	}
+export function commentLines(path, text, into = new Set()) {
+	if (text !== null) for (const unit of commentsIn(path, text)) for (const line of unit.lines) into.add(line);
+	return into;
+}
+
+export function newFindings(path, now, olds, elsewhere = new Set()) {
+	const known = new Set(elsewhere);
+	for (const [oldPath, text] of olds) commentLines(oldPath, text, known);
 	const findings = [];
+	const report = (unit, problem) => findings.push({ path, line: unit.line, problem, text: unit.lines.find((line) => line !== "") });
 	for (const unit of commentsIn(path, now)) {
-		if (!unit.lines.some((line) => line !== "" && !known.has(line))) continue;
-		const problem = verdict(unit);
-		if (problem !== null) findings.push({ path, line: unit.line, problem, text: unit.lines.find((line) => line !== "") });
+		const fresh = unit.lines.map((line) => line !== "" && !known.has(line));
+		const problem = fresh.includes(true) ? verdict(unit) : null;
+		if (problem === null) continue;
+		if (unit.block) {
+			report(unit, problem);
+			continue;
+		}
+		for (let start = 0; start < fresh.length; start++) {
+			if (!fresh[start]) continue;
+			let end = start;
+			while (fresh[end + 1]) end++;
+			const run = { ...unit, line: unit.line + start, lines: unit.lines.slice(start, end + 1) };
+			const runProblem = verdict(run);
+			if (runProblem !== null) report(run, runProblem);
+			start = end;
+		}
 	}
 	return findings;
 }
@@ -315,7 +437,7 @@ export function check({ base = "origin/master", head = null, cwd = root } = {}) 
 			const status = fields[index++];
 			const from = fields[index++];
 			const path = status.startsWith("R") || status.startsWith("C") ? fields[index++] : from;
-			if (!status.startsWith("D")) found.push({ path, from });
+			found.push({ path, from, deleted: status.startsWith("D") });
 		}
 		return found;
 	};
@@ -337,7 +459,7 @@ export function check({ base = "origin/master", head = null, cwd = root } = {}) 
 			if (holdsRule.get(parent) !== false || befores.some((before) => before.revision === parent)) continue;
 			befores.push({
 				revision: parent,
-				touched: new Set(changes(`${fork}...${parent}`).map((change) => change.path)),
+				touched: new Set(changes(`${fork}...${parent}`).flatMap((change) => (change.deleted ? [] : [change.path]))),
 				nameThen: new Map(changes(parent, ...upTo).map((change) => [change.path, change.from])),
 			});
 		}
@@ -346,22 +468,33 @@ export function check({ base = "origin/master", head = null, cwd = root } = {}) 
 	const changed = changes(fork, ...upTo);
 	if (head === null) {
 		for (const path of git("ls-files", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean)) {
-			changed.push({ path, from: path });
+			changed.push({ path, from: path, deleted: false });
 		}
 	}
+	let elsewhere = null;
+	const linesElsewhere = () => {
+		if (elsewhere !== null) return elsewhere;
+		elsewhere = new Set();
+		for (const { from } of changed) if (languageOf(from) !== null) commentLines(from, show(fork, from), elsewhere);
+		for (const before of befores) {
+			for (const path of before.touched) if (languageOf(path) !== null) commentLines(path, show(before.revision, path), elsewhere);
+		}
+		return elsewhere;
+	};
 
 	const findings = [];
-	for (const { path, from } of changed) {
-		if (languageOf(path) === null) continue;
+	for (const { path, from, deleted } of changed) {
+		if (deleted || languageOf(path) === null) continue;
 		const now = head === null ? read(join(cwd, path)) : show(head, path);
 		if (now === null) continue;
-		const olds = [[from, show(fork, from)]];
+		const olds = [[from, languageOf(from) === null ? null : show(fork, from)]];
 		if (newFindings(path, now, olds).length === 0) continue;
 		for (const before of befores) {
 			const earlier = before.nameThen.get(path) ?? path;
-			if (before.touched.has(earlier)) olds.push([earlier, show(before.revision, earlier)]);
+			if (before.touched.has(earlier) && languageOf(earlier) !== null) olds.push([earlier, show(before.revision, earlier)]);
 		}
-		findings.push(...newFindings(path, now, olds));
+		if (newFindings(path, now, olds).length === 0) continue;
+		findings.push(...newFindings(path, now, olds, linesElsewhere()));
 	}
 	return { skipped: false, findings };
 }
@@ -371,6 +504,21 @@ const PROBLEMS = {
 	empty: `"${MARKER}" with no reason after it`,
 	long: `"${MARKER}" comment longer than ${MAX_LINES} lines`,
 };
+
+export function describeFindings(findings) {
+	return [
+		...findings.map((finding) => {
+			const text = finding.text.length > 80 ? `${finding.text.slice(0, 77)}...` : finding.text;
+			return `${finding.path}:${finding.line}  ${PROBLEMS[finding.problem]}: ${text}`;
+		}),
+		"",
+		`${findings.length} new or edited comment(s) break the comment rule (AGENTS.md, "Comments").`,
+		"Delete the comment and let the code say it: a better name, a smaller function, a type.",
+		"A rule others must follow becomes a lint rule or a test. Something still to do gets done.",
+		"Keep a comment only where the code looks wrong but is right and no test can hold the reason:",
+		`start it with "${MARKER}" and keep it to ${MAX_LINES} lines. Do not add "${MARKER}" to anything else.`,
+	];
+}
 
 function main(args) {
 	const options = {};
@@ -393,20 +541,7 @@ function main(args) {
 		return 0;
 	}
 	if (result.findings.length === 0) return 0;
-	for (const finding of result.findings) {
-		const text = finding.text.length > 80 ? `${finding.text.slice(0, 77)}...` : finding.text;
-		console.error(`${finding.path}:${finding.line}  ${PROBLEMS[finding.problem]}: ${text}`);
-	}
-	console.error(
-		[
-			"",
-			`${result.findings.length} new or edited comment(s) break the comment rule (AGENTS.md, "Comments").`,
-			"Delete the comment and let the code say it: a better name, a smaller function, a type.",
-			"A rule others must follow becomes a lint rule or a test. Something still to do gets done.",
-			`Keep a comment only where the code looks wrong but is right and no test can hold the reason:`,
-			`start it with "${MARKER}" and keep it to ${MAX_LINES} lines. Do not add "${MARKER}" to anything else.`,
-		].join("\n"),
-	);
+	for (const line of describeFindings(result.findings)) console.error(line);
 	return 1;
 }
 
