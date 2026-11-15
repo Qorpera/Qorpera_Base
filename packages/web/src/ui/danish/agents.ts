@@ -343,7 +343,6 @@ export const AGENTS: Record<string, string> = {
 	// The rail's line under an idle agent's name (app/agent-line.ts)
 	"Didn't finish": "Blev ikke færdig",
 	"Resting until {time}": "Hviler til {time}",
-	"Waits on you: {item}": "Venter på dig: {item}",
 	"Next: {title} · {time}": "Næste: {title} · {time}",
 	"Hired {day}": "Ansat {day}",
 	Hired: "Ansat",

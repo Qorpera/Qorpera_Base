@@ -54,14 +54,7 @@ export interface WorkspaceActions {
 	/** Erases one message of a conversation for the whole company, and reads how far it got (summary trees M3c). The
 	 * route takes owners and admins; the thread offers it to them. */
 	messageErases?: WebMessageErases;
-	/** An agent's wall (QorperaOS/agents/<handle>/wall.md, app/agent-wall.ts), right above the composer of its own thread. */
-	agentWall?: {
-		/** The wall's text, read with the member's own folder client; null when the agent has none. */
-		read(staffAgentId: string, signal: AbortSignal): Promise<string | null>;
-		/** Calls `listener` after a change hint of the company's folder; answers the way to stop. */
-		onFolderChange(listener: () => void): () => void;
-	};
-	/** A picture of the company's folder for a preview (a wall item's, a question option's), read with the member's own
+	/** A picture of the company's folder for a preview (a question option's), read with the member's own
 	 * folder client; null when the path names no picture to show (app/folder-images.ts). */
 	folderImage?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** An app of the company by its name, for a question option whose preview names one (`app:<name>`): the card shows

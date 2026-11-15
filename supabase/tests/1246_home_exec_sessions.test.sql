@@ -17,6 +17,9 @@
 --    it afterwards. With the switch off again, even an open session's authority is refused.
 -- 5. The channel is the runtime's and the executor's: no API role may call any of the four functions, the switch's two
 --    tables are revoked from every role, and the session's columns are there.
+-- 6. The run's host reaches its two through the native host's entry point (20260928409985), as a real host must: it
+--    holds no service key. With the job's lease token, the entry point gives the job's own run its home and closes
+--    its session; for another run's binding it refuses both (42501), and nothing is closed.
 
 select pg_temp.base_claims('service_role');
 
@@ -304,4 +307,55 @@ begin
 		and column_name in ('id','machine_id','placement_id','boot_id','run_id','staff_agent_id','requested_by_user_id',
 			'opened_at','closed_at','close_reason')) = 10,
 		'5: the session''s columns are there');
+end $$;
+
+-- 6. Through the native host's entry point ------------------------------------------------------------------------------
+select set_config('qorpera_test.h1_token', 'h1246-lease-token-0123456789abcdef', false) \g /dev/null
+update public.qorpera_runner_jobs
+set lease_token_sha256 = encode(extensions.digest(convert_to(current_setting('qorpera_test.h1_token'), 'utf8'), 'sha256'), 'hex')
+where id = (pg_temp.h1_binding() ->> 'jobId')::uuid;
+-- The host's call as PostgREST makes it on the publishable key: the entry point, the job, its token, the call's name
+-- and its arguments. A refusal answers its SQLSTATE.
+create function pg_temp.h1_host(p_name text, p_args jsonb) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+	perform set_config('request.jwt.claims', '{"role":"anon"}', true);
+	perform set_config('request.path', '/rpc/qorpera_native_host_call', true);
+	v := public.qorpera_native_host_call((pg_temp.h1_binding() ->> 'jobId')::uuid, current_setting('qorpera_test.h1_token'),
+		p_name, p_args);
+	perform pg_temp.base_claims('service_role');
+	perform set_config('request.path', '', true);
+	return v;
+exception when others then
+	perform pg_temp.base_claims('service_role');
+	perform set_config('request.path', '', true);
+	return to_jsonb(sqlstate);
+end
+$$;
+do $$
+declare v jsonb; v_session uuid := extensions.gen_random_uuid();
+	v_other jsonb := pg_temp.h1_binding() || jsonb_build_object('runId', extensions.gen_random_uuid());
+begin
+	perform pg_temp.base_assert((select count(*) from public.qorpera_native_host_calls where scope = 'binding'
+		and budget = 'standard' and name in ('qorpera_company_home_available', 'qorpera_close_home_session')) = 2,
+		'6: both are the native host''s calls, by the run''s binding, on the standard budget');
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_native_host_calls
+		where name = 'qorpera_authorize_home_session'), '6: the executor''s authority is not the host''s');
+	-- The run's home, as the run's host asks it.
+	v := pg_temp.h1_host('qorpera_company_home_available', jsonb_build_object('p_binding', pg_temp.h1_binding()));
+	perform pg_temp.base_assert(v = pg_temp.h1_home() and v ->> 'available' = 'true' and v ->> 'machine' = 'home-a',
+		'6: the entry point gives the job''s own run its home: ' || v::text);
+	v := pg_temp.h1_host('qorpera_company_home_available', jsonb_build_object('p_binding', v_other));
+	perform pg_temp.base_assert(v = '"42501"'::jsonb, '6: and refuses another run''s binding: ' || v::text);
+	-- A session the executor opened for this run, closed by the run's host.
+	perform pg_temp.base_assert(pg_temp.h1_try('home-a', v_session) = 'authorized', '6: a session is open');
+	v := pg_temp.h1_host('qorpera_close_home_session',
+		jsonb_build_object('p_binding', v_other, 'p_session_id', v_session, 'p_reason', 'ended'));
+	perform pg_temp.base_assert(v = '"42501"'::jsonb and pg_temp.h1_sessions(v_session) #> '{0,closed}' = 'false'::jsonb,
+		'6: another run''s binding cannot close it: ' || v::text);
+	v := pg_temp.h1_host('qorpera_close_home_session',
+		jsonb_build_object('p_binding', pg_temp.h1_binding(), 'p_session_id', v_session, 'p_reason', 'ended'));
+	perform pg_temp.base_assert(v ->> 'state' = 'closed' and v ->> 'closeReason' = 'ended'
+		and pg_temp.h1_sessions(v_session) #>> '{0,why}' = 'ended',
+		'6: the job''s own run closes its session through the entry point: ' || v::text);
 end $$;
