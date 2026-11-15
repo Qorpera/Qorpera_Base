@@ -1,4 +1,4 @@
-import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
+import { OWED_APPS, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { captionHash, EXPLAINER_ENGINE_JS, explainerPage } from "@qorpera/runtime/cloud-app-kit-explainer";
@@ -249,8 +249,11 @@ it("holds every app to one look, with screens at the bar and three not to make",
 		"One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.",
 		"Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.",
 		"Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs",
+		// The views the company is owed, at their fixed folders (company views step 4, DESIGN-4.md O2a).
+		"- Some apps are views the company is owed, which members find first: apps/products (what it sells), apps/money (its money), apps/ads (its ads). Make one when asked, at exactly that folder; the platform draws the website itself.",
 	])
 		expect(look).toContain(rule);
+	for (const name of OWED_APPS) expect(look).toContain(`apps/${name} (`);
 	// Seven screens he liked and three he did not, a line each, each naming why.
 	const lines = (heading: string) => look.split(`\n\n${heading}:\n`)[1]?.split("\n\n")[0]?.split("\n") ?? [];
 	expect(lines("Screens at the bar").map((line) => line.split(":")[0])).toEqual([
@@ -530,6 +533,70 @@ it("tells the agent what a quick read of the saved entry page found, as advice",
 	const calm = read(await f.call("save_app", save("market", "change-2", null, [{ path: "index.html", text: PAGE }])));
 	expect(calm).toMatchObject({ state: "applied", created: false });
 	expect(calm).not.toHaveProperty("look");
+});
+
+it("tells the agent an app at an owed view's folder is that view, which members find first", async () => {
+	// Company views step 4 (lanes/company-views-20261114/DESIGN-4.md, O2a): apps/products, apps/money and apps/ads.
+	expect(OWED_APPS).toEqual(["products", "money", "ads"]);
+	const f = await fixture();
+	const show = (name: string) =>
+		`Saved. Show it to the member with a link in your message: [${name}](app:${name}). post_app shows it to every member in their apps.`;
+	for (const name of OWED_APPS) {
+		const made = read(
+			await f.call("save_app", save(name, `make-${name}`, manifest("View"), [{ path: "index.html", text: PAGE }])),
+		);
+		// A line to know, not to fix: next does not ask for a fix.
+		expect(made).toMatchObject({
+			state: "applied",
+			look: [`This is the company's ${name} view: members find it first in the apps drawer.`],
+			next: show(name),
+		});
+		// Every save of it says so, a change too.
+		const changed = read(
+			await f.call("save_app", save(name, `change-${name}`, null, [{ path: "state.json", text: "{}" }])),
+		);
+		expect(changed.look).toEqual([`This is the company's ${name} view: members find it first in the apps drawer.`]);
+	}
+	// Beside what a read of the page found, last; then the notes ask for a fix.
+	const wordy = read(
+		await f.call(
+			"save_app",
+			save("products", "wordy-1", null, [{ path: "index.html", text: `<h1>Lamps</h1><p>${words(501)}</p>` }]),
+		),
+	);
+	expect(wordy.look).toEqual([
+		`502 words: ${WORDS_NOTE}`,
+		UNSHOWN_NOTE,
+		"This is the company's products view: members find it first in the apps drawer.",
+	]);
+	expect(wordy.next).toContain("First fix what look names");
+	// Any other name, a concept at an owed folder (it shows inside Concepts) and a save of icons alone get none.
+	const other = read(
+		await f.call("save_app", save("products-2", "other-1", manifest("View"), [{ path: "index.html", text: PAGE }])),
+	);
+	expect(other).not.toHaveProperty("look");
+	const g = await fixture();
+	const concept = read(
+		await g.call(
+			"save_app",
+			save("money", "make-1", manifest("Money", { concept: true, cover: "./cover.webp" }), [
+				{ path: "index.html", text: PAGE },
+			]),
+		),
+	);
+	expect(concept).toMatchObject({ state: "applied" });
+	expect(concept).not.toHaveProperty("look");
+	// A change of it keeps it a concept, so still none (the change path reads concept from the stored manifest).
+	const kept = read(await g.call("save_app", save("money", "change-1", null, [{ path: "state.json", text: "{}" }])));
+	expect(kept).toMatchObject({ state: "applied", created: false });
+	expect(kept).not.toHaveProperty("look");
+	expect(parseAppManifest(g.text("apps/money/app.toml") ?? "")).toMatchObject({ manifest: { concept: true } });
+	const drawn = read(
+		await f.call("save_app", save("ads", "icons-1", null, [{ path: "icons/megaphone.svg", text: ICON }])),
+	);
+	expect(drawn).toMatchObject({ state: "applied" });
+	expect(drawn).not.toHaveProperty("look");
+	expect(drawn.next).toContain("Tell the member in one line what you drew");
 });
 
 it("marks an app as a concept with its cover, and keeps both when a later change leaves them out", async () => {
