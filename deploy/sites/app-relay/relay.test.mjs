@@ -20,6 +20,7 @@ import {
 	appHost,
 	CLEAR_GATE_COOKIE,
 	CLOSE,
+	changeFromAnotherSite,
 	clientAddress,
 	createRelay,
 	decodeFrame,
@@ -764,6 +765,104 @@ describe("app relay: end to end with the link program", () => {
 		assert.ok(!JSON.stringify(seen.headers).includes(token));
 	});
 
+	it("refuses a change another site sent, with 403 and no-store, before the database or the app see it", async () => {
+		const calls = db.calls.length;
+		const reached = app.seen.length;
+		const refuse = async (label, method, headers, session = token) => {
+			const answer = await visit("/echo?forged", {
+				method,
+				body: "amount=100&to=evil",
+				// A length of its own: Node frames a DELETE's body with none otherwise.
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+					"content-length": "18",
+					...(session ? { cookie: `${GATE_COOKIE}=${session}` } : {}),
+					...headers,
+				},
+			});
+			assert.equal(answer.status, 403, label);
+			assert.equal(answer.headers["cache-control"], "no-store", label);
+			assert.equal(answer.headers["content-type"], "text/html; charset=utf-8", label);
+			assert.equal(answer.headers["content-security-policy"], PAGE_SECURITY_POLICY, label);
+			assert.equal(answer.headers["set-cookie"], undefined, label);
+			return answer;
+		};
+		// Another company's site or app on a sibling name, another scheme, port or name: the Origin is not this host's.
+		for (const origin of [
+			`https://lab${SUFFIX}`,
+			"https://shop.example.test",
+			`http://${HOST}`,
+			`https://${HOST}:8443`,
+			`https://${HOST}.evil.example`,
+			"https://evil.example",
+			"null",
+		])
+			for (const method of ["POST", "PUT", "PATCH", "DELETE"])
+				await refuse(`${method} ${origin}`, method, { origin });
+		// The browser says the page that sent it is not this origin, whatever the Origin says (or without one).
+		for (const site of ["same-site", "cross-site"])
+			for (const origin of [undefined, ORIGIN, "null"])
+				await refuse(`${site} ${origin}`, "POST", { "sec-fetch-site": site, ...(origin ? { origin } : {}) });
+		// Origin "null" passes only when the browser says the request came from this very origin.
+		for (const site of ["none", "nonsense"])
+			await refuse(`null ${site}`, "POST", { origin: "null", "sec-fetch-site": site });
+		// A forged POST without a session: 403, not the password page, so the refusal comes first.
+		const probe = await refuse("no session", "POST", { origin: "https://evil.example" }, null);
+		assert.match(probe.text, /<h1>Sent from another site<\/h1>/);
+		const danish = await refuse("da", "POST", { origin: "https://evil.example", "accept-language": "da" });
+		assert.match(danish.text, /<h1>Sendt fra et andet site<\/h1>/);
+		assert.equal(db.calls.length, calls, "the database was not asked");
+		assert.equal(app.seen.length, reached, "nothing reached the app");
+	});
+
+	it("forwards a change from the app's own pages, a request without either header, and every GET, HEAD and OPTIONS", async () => {
+		const reached = app.seen.length;
+		const through = async (label, method, headers) => {
+			const answer = await visit("/echo?own", {
+				method,
+				body: method === "GET" || method === "HEAD" ? undefined : "x=1",
+				headers: withSession(
+					method === "GET" || method === "HEAD" ? headers : { "content-length": "3", ...headers },
+				),
+			});
+			assert.equal(answer.status, 201, label);
+			if (method !== "HEAD") assert.equal(JSON.parse(answer.text).method, method, label);
+		};
+		for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+			await through(`${method} own origin`, method, { origin: ORIGIN });
+			await through(`${method} own origin, same-origin`, method, {
+				origin: ORIGIN,
+				"sec-fetch-site": "same-origin",
+			});
+			// A page of the app under Referrer-Policy: no-referrer: its browser hides the origin, and says same-origin.
+			await through(`${method} null, same-origin`, method, { origin: "null", "sec-fetch-site": "same-origin" });
+			// As before: no Origin and no Sec-Fetch-Site (an old browser, another program), or a typed-in request.
+			await through(`${method} neither`, method, {});
+			await through(`${method} none`, method, { "sec-fetch-site": "none" });
+		}
+		// Safe methods pass whoever sent them: a link, a picture, a preflight (5.2 adds the headers for reading).
+		for (const method of ["GET", "HEAD", "OPTIONS"])
+			for (const headers of [
+				{ origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+				{ origin: `https://lab${SUFFIX}`, "sec-fetch-site": "same-site" },
+			])
+				await through(`${method} ${headers.origin}`, method, headers);
+		assert.equal(app.seen.length - reached, 4 * 5 + 3 * 2);
+	});
+
+	it("still unlocks from the password page's own form, and refuses its POST from another site", async () => {
+		const own = await unlock(PASSWORD, "/hello", { "sec-fetch-site": "same-origin" });
+		assert.equal(own.status, 303);
+		assert.match(own.headers["set-cookie"][0], /^__Host-qorpera_app=[A-Za-z0-9_-]{32}; Path=\/;/);
+		const calls = db.calls.length;
+		for (const site of ["same-site", "cross-site"]) {
+			const forged = await unlock(PASSWORD, "/hello", { "sec-fetch-site": site });
+			assert.equal(forged.status, 403, site);
+			assert.equal(forged.headers["set-cookie"], undefined, site);
+		}
+		assert.equal(db.calls.length, calls, "the database was not asked");
+	});
+
 	it("frames a chunked body for the app whatever the method, so it never reads it as a request of its own", async () => {
 		const smuggled = "GET /smuggled HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n";
 		const answer = await visit("/echo?chunked", {
@@ -1461,6 +1560,45 @@ describe("app relay: the pure parts", () => {
 			host: "shop-preview.example.test",
 			slug: "shop",
 		});
+	});
+
+	it("tells a change from another site by the method, Sec-Fetch-Site and Origin", () => {
+		const host = "shop-preview.qorpera.com";
+		const own = `https://${host}`;
+		const refused = (method, headers) => changeFromAnotherSite(method, headers, host);
+		for (const method of ["GET", "HEAD", "OPTIONS"])
+			assert.equal(
+				refused(method, { origin: "https://evil.example", "sec-fetch-site": "cross-site" }),
+				false,
+				method,
+			);
+		for (const method of ["POST", "PUT", "PATCH", "DELETE", "PROPFIND", "get"]) {
+			assert.equal(refused(method, {}), false, `${method}: neither header`);
+			assert.equal(refused(method, { origin: own }), false, `${method}: own origin`);
+			assert.equal(refused(method, { origin: own, "sec-fetch-site": "same-origin" }), false, method);
+			assert.equal(refused(method, { "sec-fetch-site": "none" }), false, `${method}: typed in`);
+			assert.equal(refused(method, { origin: "null", "sec-fetch-site": "same-origin" }), false, `${method}: null`);
+			for (const site of ["same-site", "cross-site"])
+				for (const origin of [undefined, own, "null"])
+					assert.equal(refused(method, { "sec-fetch-site": site, origin }), true, `${method} ${site} ${origin}`);
+			for (const origin of [
+				"null",
+				"https://lab-preview.qorpera.com",
+				"https://shop.qorpera.com",
+				"https://qorpera.com",
+				`http://${host}`,
+				`https://${host}:443`,
+				`https://${host}.`,
+				`${own}/`,
+				`https://SHOP-preview.qorpera.com`,
+				`${own}, ${own}`,
+				"",
+			]) {
+				assert.equal(refused(method, { origin }), true, `${method} ${origin}`);
+				assert.equal(refused(method, { origin, "sec-fetch-site": "none" }), true, `${method} ${origin} none`);
+			}
+			assert.equal(refused(method, { origin: "https://evil.example", "sec-fetch-site": "same-origin" }), true);
+		}
 	});
 
 	it("reads gate cookies and takes them out of what the app gets", () => {

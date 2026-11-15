@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
 	COMPANY_STATE_COFOUNDER_HANDLE,
 	COMPANY_STATE_FIRST_TODO_PATH,
@@ -1635,14 +1636,20 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 // With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
 // three were measured once more.
+// With own code storage step 5.1's D1a (changes/index.md says, for about a minute after a change goes in, that its site is
+// being prepared; 13 November 2026), the staff instructions were measured once more on the merged tree.
+// With both on one tree (master's starter set and step 5.1's D1a; release v247's candidate, 14 November 2026) the staff
+// instructions were measured once more.
 // With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
 // received; 20260930762000, 14 November 2026), all three instructions were measured once more.
+// With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
+// and a private conversation's instructions were measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1658,7 +1665,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1689,8 +1696,10 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
 		// Own code storage, step 6: after an operator's restore, changes/index.md names the changes it took out for 30 days.
 		"When changes/index.md says the repository was put back to an earlier copy, the changes it names are gone: make them again if they are still wanted.",
-		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
-		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live.',
+		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken; step
+		// 5.1 (D1a): changes/index.md also says, for about a minute after a change goes in, that its site is being prepared
+		// (its line "Being prepared for What's new: change N (about a minute).", written while sites have hosts of their own).
+		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live, and when a site is still being prepared, which takes about a minute after a change goes in.',
 		"An undo goes live only with the next change that passes.",
 		"When the live site is broken, ask a member at once to press Go back in What's new.",
 		// What #1643 said of a project's history and its hand-over stays.
@@ -1716,6 +1725,21 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	expect(worker).not.toContain(".qorpera/checks.json");
 	expect(worker).not.toContain('"site": {"folder": "dist"}');
 	expect(worker).not.toContain("put back to an earlier copy");
+	expect(worker).not.toContain("being prepared");
+});
+
+// Own code storage, step 5.1 (D1a): the line the agents are told to look for is the one the coding executor writes in
+// changes/index.md, "Being prepared for What's new: change N (about a minute).", while the kernel says what is being
+// prepared (only while sites have hosts of their own: migration 20260930756000's preparing).
+it("names the line the coding executor writes while a site is being prepared", () => {
+	const records = readFileSync(
+		new URL("../../runner-orchestrator/src/code-change-records.ts", import.meta.url),
+		"utf8",
+	);
+	expect(records).toMatch(/`Being prepared for What's new: change \$\{preparing\.change\} \(about a minute\)\.`/);
+	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
+		"changes/index.md says which version is live, and when a site is still being prepared, which takes about a minute after a change goes in.",
+	);
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
