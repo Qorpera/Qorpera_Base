@@ -189,6 +189,15 @@ Table `qorpera_event_deliveries`:
   removed over 30 days ago, and deletes hourly usage older than a day, at most `limit` rows of each
   kind a call. The coordinator schedules it every 5 minutes (pg_cron), which keeps ahead of dozens of
   companies at their budget. Events saved in the company folder stay there (below).
+- **Orders (20260930776000).** When a delivery of a Stripe hook turns `verified`, the trigger
+  `qorpera_orders_from_stripe` reads the body's checkout session, refund and dispute events into
+  `qorpera_orders`: a counts-only row a payment (when, amount, currency, refunded, dispute, state), keyed
+  by a hash of the company and the payment's id, with no buyer's data and no Stripe id. The company's
+  numbers answer them as `qorpera/orders-*` (supabase/CLIENT-CONTRACT.md, "The company's numbers").
+  The trigger never fails the verification: a body it cannot read is left as it is, and an order row
+  locked for more than 100 ms puts the delivery in `qorpera_order_retries` for the upkeep
+  (`qorpera_order_upkeep`, pg_cron job `qorpera-orders`, every 10 minutes), which retries it while its
+  body is kept. Deleting a hook keeps its orders (their hook id is cleared).
 
 **Answers.**
 

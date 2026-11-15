@@ -1990,6 +1990,41 @@ text, an account number, a single payment or the summary's items. Design: the co
   - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
     the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
     a site.
+- The `orders-*` questions (20260930776000_company_numbers_orders, door `orders`) answer any member of the company
+  (viewers too) and any run of it (the founder, 15 Nov 2026: everyone in the company, as site visits; the rule lives in
+  one SQL function, `qorpera_company_numbers_orders_readable`). They count the company's orders from its Stripe hooks:
+  when the vault verifies a Stripe delivery, the platform keeps one counts-only row a payment (when, how much, in what
+  currency, refunded so far, dispute, state), never a buyer's name, email, phone, address, country, IP, card, Stripe's
+  customer id, metadata, description or line items, and never Stripe's ids (a hash only). The events read are
+  `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
+  `charge.refunded`, `charge.dispute.created` and `charge.dispute.closed`: an agent picks these when it adds the hook's
+  endpoint at Stripe. A Checkout Session of mode `setup` is no order; a subscription's session counts by itself. Events
+  may come in any order (a refund before its session is kept and counted once the session comes).
+  - Every question takes `currency` (three letters, any case; by default the currency of most of the orders in the
+    last 90 days, else DKK) and `test` (`true` answers Stripe test-mode orders, kept apart from live ones; also the
+    string `"true"`). Money is a JSON number in the currency's major unit: two decimals, Stripe's zero-decimal
+    currencies (JPY, KRW, ...) whole, its three-decimal ones (KWD, BHD, ...) three. An order is a paid one: a session
+    still unpaid or whose payment failed is not counted (except in `orders-states`' `failed`). Only counts and sums,
+    never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
+  - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
+    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, no state of the
+    company's yet; null while the company has set no state of its own in 90 days, so it never grows for a shop that
+    ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
+    `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
+    currency; the rest the one asked.
+  - `orders-hours` (`currency`, `test`, `from`, `to` as `site-hours` takes them; default the 48 hours to this one, at
+    most 7 days): `hour` (ISO, UTC), `hour_local`, `orders`, `sales`; every hour, zeros included.
+  - `orders-days` (`currency`, `test`, `from`, `to`; default the 30 days to today, at most 400): `day`, `orders`,
+    `sales`, `refunds`; every day, zeros included.
+  - `orders-months` (`currency`, `test`): `month` (`YYYY-MM`), `orders`, `sales`, `refunds`: this month and the 11
+    before.
+  - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then): `state`, `orders`,
+    `amount`, one row each of `paid`, `packed`, `on_the_way`, `delivered`, `cancelled`, `failed`, in that order.
+    `packed` to `cancelled` are the company's own word (a later slice lets agents and members set them).
+  - Order rows are kept 400 days after the order; the days as long as the company. The upkeep (pg_cron, every 10
+    minutes) adds changed orders to their days and retries a delivery whose order was locked when it came (while its
+    body is kept, 7 days); until then the answers read the order rows, so a day is whole at any time. A day added keeps
+    the zone the company had then.
 - A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
   (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
 - A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native

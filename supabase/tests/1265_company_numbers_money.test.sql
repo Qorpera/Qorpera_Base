@@ -440,7 +440,7 @@ begin
 		perform pg_temp.n_same(pg_temp.n_refused(o, v_question), 'ok', v_question);
 	end loop;
 	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('site-now')$s$), 'ok', 'a run''s site-now');
-	foreach v_question in array array['money-days', 'money', 'orders-now', 'balance'] loop
+	foreach v_question in array array['money-days', 'money', 'stock-now', 'balance'] loop
 		perform pg_temp.n_same(pg_temp.n_refused(o, v_question),
 			format('P0002 No question qorpera/%s that you may read', v_question), v_question);
 	end loop;
