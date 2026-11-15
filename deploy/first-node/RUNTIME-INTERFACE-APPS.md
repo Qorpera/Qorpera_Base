@@ -161,7 +161,9 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   When the call wrote the entry page, its answer carries `look`: what a quick read of that page found (links that
   open nothing, §4, the first three named; three or more `<details>`; more than 500 words; more than 150 words with
   no picture, chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the
-  page. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
+  page. A save of an owed view (`apps/products`, `apps/money`, `apps/ads`; §3d) also carries, last in `look` and on
+  any save of it, the line that says it is that view: a line to know that asks for no fix, so `next` says "First fix
+  what look names" only when another note stands. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
   instead of write, which links open, the base style and phone width. How a page reads live data (§5), how it lets a
   member act (§5 "Changes") and the base style's variables and the company's colours (§2) are guides of `app_guide`
   (§3d: `reads`, `writes`, `style`), because a tool's own description holds 4096 bytes and its schema, as the model
@@ -579,7 +581,13 @@ system font; no scenes, skies or themed backdrops), the company's real things (p
 a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
 text cards or labelled diagram lines, and **copy the quality, not the layout**. A kit keeps its own form (the model
 kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
-hand, the page too. It tells seven screens he liked and
+hand, the page too. It says which apps are **views the company is owed** (company views step 4,
+lanes/company-views-20261114/DESIGN-4.md, 15 November 2026): `apps/products` (what it sells), `apps/money` (its
+money) and `apps/ads` (its ads), which members find first in the apps drawer; an agent makes one when asked, at exactly
+that folder, and never a website view, which the platform draws. The three names are one list, `OWED_APPS`
+(cloud-client `interface-apps.ts`); a save of one of them (not a concept, not icons alone) adds to its answer's `look`
+"This is the company's <name> view: members find it first in the apps drawer.", a line to know, not to fix, so `next`
+asks for a fix only when another note stands. It tells seven screens he liked and
 three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
 app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
 company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine

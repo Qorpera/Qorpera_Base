@@ -6,7 +6,9 @@
  *   change set under the call's receipt. It applies at once (review class internal): the files are the agent's own work.
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
- *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
+ *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice. A save of
+ *   an owed view (`OWED_APPS`, not a concept, not icons alone) adds to it, last, the line that says so (`owedAppNote`):
+ *   a line to know, which asks for no fix, so `next` asks for a fix only when another note stands.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
  *   for a data kit (model, board, path, object, curve, stack, shelf) the kit's engine and a page that names the
@@ -52,6 +54,7 @@ import {
 	appFolder,
 	appLinkName,
 	appRelativePath,
+	OWED_APPS,
 	parseAppManifest,
 	parseAppWrites,
 	setAppPosted,
@@ -573,8 +576,17 @@ function groupPlaced(grouped: Grouped, units: readonly CloudCompanyFolderUnitRes
 		: `not placed (${unit?.reason ?? unit?.outcome ?? "not saved"}): organize_apps move puts it in the group`;
 }
 
+/** The look's line for an app at one of the folders of the views the company is owed (`OWED_APPS`; company views
+ * step 4, lanes/company-views-20261114/DESIGN-4.md): the web shows it first in the apps drawer. A concept is none: it
+ * shows inside Concepts. */
+export function owedAppNote(name: string, concept: boolean): string | null {
+	const owed = OWED_APPS.find((each) => each === name);
+	return owed && !concept ? `This is the company's ${owed} view: members find it first in the apps drawer.` : null;
+}
+
 /** What the model is told after a commit, by each unit's outcome. `notes` is what a quick read of what this call
- * wrote found (`lookNotes`). A call that wrote icons alone answers where the member picks one. */
+ * wrote found (`lookNotes`); `owed` is the line of an owed view (`owedAppNote`), told beside them and nothing to fix.
+ * A call that wrote icons alone answers where the member picks one. */
 function savedText(
 	request: { name: string; operationKey: string; files: readonly AppFile[] },
 	receiptId: string,
@@ -582,12 +594,14 @@ function savedText(
 	created: boolean,
 	notes: readonly string[],
 	grouped: Grouped | null,
+	owed: string | null,
 ): string {
 	const saved = units.filter((unit) => unit.outcome === "saved").length;
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
 	const conflict = units.some((unit) => unit.outcome === "conflict");
-	const look = state === "applied" ? notes : [];
 	const drawn = request.files.length > 0 && request.files.every((file) => inIcons(file.path));
+	const fix = state === "applied" ? notes : [];
+	const look = state === "applied" && owed && !drawn ? [...fix, owed] : fix;
 	return cloudToolJsonText({
 		schema: "qorpera.app-save/v1",
 		state,
@@ -609,7 +623,7 @@ function savedText(
 			state === "applied" && drawn
 				? "Saved. Tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer."
 				: state === "applied"
-					? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
+					? `Saved. ${fix.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
 					: conflict
 						? "Some files changed while this call saved them: read the app's files again, then call again with a new operationKey."
 						: "Some files were not saved (their reasons): fix them and call again with a new operationKey.",
@@ -942,6 +956,7 @@ export function cloudAppTools(options: {
 							true,
 							look ?? lookNotes(request.files, manifest.kit, manifest.entry),
 							grouped,
+							owedAppNote(request.name, manifest.concept),
 						),
 					context,
 				);
@@ -1145,7 +1160,15 @@ export function cloudAppTools(options: {
 				digest,
 				[...units, ...groupUnits],
 				(receiptId, results) =>
-					savedText(request, receiptId, results, false, look ?? lookNotes(request.files, kit, entry), grouped),
+					savedText(
+						request,
+						receiptId,
+						results,
+						false,
+						look ?? lookNotes(request.files, kit, entry),
+						grouped,
+						owedAppNote(request.name, concept),
+					),
 				context,
 			);
 			return showCommitted(context, answer, reads);

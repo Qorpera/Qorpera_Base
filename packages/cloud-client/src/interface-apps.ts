@@ -26,6 +26,12 @@ export const APP_NAME_MAX_CHARS = 60;
 export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
 export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
+/** The apps that are views the company is owed, at their fixed folders (company views step 4,
+ * lanes/company-views-20261114/DESIGN-4.md: `apps/products`, `apps/money`, `apps/ads`), in this order: members find
+ * them first in the apps drawer, and the runtime's `look` guide and `save_app` say so. The web's drawer keeps the same
+ * list under the same name (views/shell.ts, PR #1842) until it reads this one. The website is drawn by the platform. */
+export const OWED_APPS = Object.freeze(["products", "money", "ads"] as const);
+export type OwedApp = (typeof OWED_APPS)[number];
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
  * `data`: the company's databases, asked by their questions. */
 export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data"] as const);
