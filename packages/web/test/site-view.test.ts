@@ -324,6 +324,26 @@ describe("the site's view", () => {
 		expect(text(".site-cover-words")).toBe("This website was taken offline.");
 	});
 
+	it("keeps the site showing, on purpose, when a page picked finds no pass for a while", async () => {
+		const answers: SiteMemberPass[] = [pass(0), { state: "limited", retryAfter: 5 }];
+		const { host } = open(
+			{ "site-pages": pages([["shop/index.html", 4]]) },
+			{ pass: vi.fn(async () => answers.shift()!) },
+		);
+		await settle();
+		door();
+		shown();
+		const src = frame().getAttribute("src");
+		document.querySelector<HTMLButtonElement>(".site-top")!.click();
+		await settle();
+		// No pass: the page stays as it is (the app can't move the frame to the site itself), nothing covers it.
+		expect(host.pass).toHaveBeenCalledTimes(2);
+		expect(frame().getAttribute("src")).toBe(src);
+		expect(posted).toHaveLength(1);
+		expect(document.querySelector<HTMLElement>(".site-cover")!.hidden).toBe(true);
+		expect(document.querySelector(".site-glass")!.classList.contains("is-shown")).toBe(true);
+	});
+
 	it("shows the old link's address while sites have no hosts of their own", async () => {
 		open({}, { site: { ...shop, url: "https://sites.qorpera.com/wristband-shop/" } });
 		expect(text(".site-address")).toBe("sites.qorpera.com/wristband-shop");

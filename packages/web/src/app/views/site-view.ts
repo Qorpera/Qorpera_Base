@@ -13,9 +13,9 @@ import type { CompanyLiveSource } from "../interface-apps.ts";
  * that page.
  *
  * - The pass (`qorpera_site_member_pass`, V1) is good once, for a minute, on the site's own host. The frame first loads
- *   the site door (public/site-door/), a page of this app's own; the view hands it the pass by postMessage, and the door
- *   posts it to `https://<host>/__qorpera/member` in its own document, never in an address; site-serve opens the site's
- *   own session in the frame and answers with the page. The door is a page of its own because the site's host takes a
+ *   the site door (public/site-door/), a page of this app's own that holds a frame of its own; the view hands it the
+ *   pass by postMessage, and the door posts it to `https://<host>/__qorpera/member` into the frame it holds, never in
+ *   an address; site-serve opens the site's own session in that frame and answers with the page. The door is a page of its own because the site's host takes a
  *   pass only with this app's exact Origin, and this app sends no referrer, under which a form of its own would say
  *   `Origin: null`; the door alone sends its origin. A fresh pass is asked on open, on Reload and for each page picked.
  * - The door holds the frame the site shows in: the app frames only its own pages, and only the door's policy frames
@@ -356,7 +356,8 @@ export class SiteView {
 				);
 				return;
 			}
-			// Shown once already: the page stays as it is.
+			// Shown once already: the page stays as it is, for Reload and a page picked alike. The app can't move the frame
+			// to the site itself (it frames only its own pages), and a word over the page would hide it for a moment's wait.
 			if (this.#shown) return;
 			this.#showCover(
 				state === "limited" ? t("Try again in a moment.") : t("This website can't be shown here right now."),

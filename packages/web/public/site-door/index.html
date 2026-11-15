@@ -1,10 +1,11 @@
 <!doctype html>
 <!-- The door a company's website opens through inside Qorpera (src/app/views/site-view.ts; company views step 4). The
-     site view's frame loads this page; the app hands it a member's pass by postMessage, and it posts the pass to the
-     site's own host, so the frame becomes the site. It is a page of its own so that the post carries this site's real
-     Origin, which the site's host checks: the app itself sends no referrer, and a form posted from it would say
-     Origin: null. Its headers (public/_headers, /site-door/*) send only the origin as referrer, let it post only to
-     the one path of a site's host that takes a pass, and let only this site frame it. -->
+     site view's frame loads this page, and this page holds the frame the site shows in (door.js); the app hands it a
+     member's pass by postMessage, and it posts the pass to the site's own host into that frame, so that frame becomes
+     the site. It is a page of its own so that the post carries this site's real Origin, which the site's host checks:
+     the app itself sends no referrer, and a form posted from it would say Origin: null. Its headers (public/_headers,
+     /site-door/*) send only the origin as referrer, let it frame only the sites' hosts (the app frames only its own
+     pages) and post only to the one path of a site's host that takes a pass, and let only this site frame it. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
