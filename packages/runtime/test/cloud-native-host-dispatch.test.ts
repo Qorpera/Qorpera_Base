@@ -111,6 +111,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_code_import.sql",
 			// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000).
 			"_company_data_pass.sql",
+			// The agent's home: the run's offer and its session's close (agent-box slice 1, 20260930752000).
+			"_home_exec_sessions.sql",
 			// A light ask's run stores its answer (light asks, 20260930761000).
 			"_light_asks.sql",
 			// A Claude Code worker's run reads its member's name and what its home changed (20260930772000).
@@ -147,7 +149,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(135);
+	expect(rows).toHaveLength(137);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

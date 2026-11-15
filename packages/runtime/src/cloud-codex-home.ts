@@ -33,6 +33,7 @@ import { CLOUD_MACHINE_HOME, type JsonValue, POSTGRES_UUID_PATTERN } from "@qorp
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import { type CloudHomeChannelKind, CloudHomeChannelRefused, cloudHomeChannelLines } from "./cloud-home-channel.ts";
 import type { CloudRunLog } from "./cloud-run-log.ts";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 /** The environment id the host registers for the home. Codex names it on every tool call it makes there. */
 export const CLOUD_HOME_ENVIRONMENT_ID = "home";
@@ -124,11 +125,17 @@ export interface CloudCompanyHome {
 	readonly machine: string;
 }
 
-/** SQL's answer, or undefined for a run with no home. Nothing of it is trusted beyond its shape. */
+/** SQL's answer: the home, or undefined for SQL's own "no home for this run". Nothing of it is trusted beyond its
+ * shape, and an answer of any other shape is no answer at all: it throws, so a run never takes a call that went wrong
+ * for a company without a home. */
 export function parseCloudCompanyHome(value: unknown): CloudCompanyHome | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const invalid = (): never => {
+		throw new CloudRuntimeDiagnosticError("invalid_response", "Home availability answer invalid");
+	};
+	if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
 	const record = value as Record<string, unknown>;
-	if (record.schema !== "qorpera.company-home/v1" || record.available !== true) return undefined;
+	if (record.schema !== "qorpera.company-home/v1" || typeof record.available !== "boolean") return invalid();
+	if (record.available === false) return undefined;
 	if (
 		typeof record.machineId !== "string" ||
 		!POSTGRES_UUID_PATTERN.test(record.machineId) ||
@@ -136,7 +143,7 @@ export function parseCloudCompanyHome(value: unknown): CloudCompanyHome | undefi
 		record.machine.length < 1 ||
 		record.machine.length > 200
 	)
-		return undefined;
+		return invalid();
 	return { machineId: record.machineId, machine: record.machine };
 }
 

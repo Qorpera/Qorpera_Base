@@ -64,6 +64,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { CloudControlRpcEnded, cloudControlRetryable, cloudControlTransientCode } from "./cloud-control-errors.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
@@ -428,15 +429,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						() => false,
 					)
 				: Promise.resolve(false);
-			// The agent's home, by the company's switch (20260930752000). Anything but a clear yes leaves this run
-			// exactly as it is today: no environment, no channel, the same tools and the same provider request.
+			// The agent's home, by the company's switch (20260930752000). SQL's "no home" leaves this run exactly as it is
+			// today: no environment, no channel, the same tools and the same provider request. An ask that cannot work (a
+			// call this host's lists or the entry point do not know, a refusal, an answer of another shape) fails the run in
+			// the home's own stage: every run would meet it alike, and taken for "no home" it would switch the home off for
+			// every company unseen. Only a lost answer leaves this attempt without a home, said in the host's journal: no
+			// answer or a late one, a 5xx that is not PostgREST's, or PostgREST's word that the statement ended on a
+			// transient SQLSTATE (a lock or statement timeout, a serialization failure, a lost connection, its pool wait).
+			// Any other SQLSTATE PostgREST answers (an internal error, a missing function or relation, a violated key) fails
+			// the run like a refusal: asking again changes nothing. The switch is off for most companies, so failing their
+			// runs for a lost answer buys nothing, and the next attempt asks again.
 			const homeRequest = this.#homeChannel
 				? cloudToolRequest(
 						(requestSignal) =>
 							this.#paths.call("qorpera_company_home_available", { p_binding: binding }, requestSignal),
 						signal,
-					).then(parseCloudCompanyHome, () => undefined)
+					).then(parseCloudCompanyHome, (error: unknown) => {
+						const lost =
+							error instanceof CloudControlRpcEnded
+								? error.sqlstate !== undefined && cloudControlTransientCode(error.sqlstate)
+								: cloudControlRetryable(error);
+						if (signal.aborted || !lost) throw error;
+						console.error(`The agent's home was not asked (${cloudRuntimeErrorCategory(error, signal)})`);
+						return undefined;
+					})
 				: Promise.resolve(undefined);
+			homeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
@@ -510,6 +528,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
+			stage = "codex-home";
 			const home = await homeRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
@@ -1012,12 +1031,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										...(input.log ? { steps: new CloudCodexHomeSteps(input.log) } : {}),
 										// The run's session is ended in SQL when the run ends, however it ended, so its
 										// next attempt opens its own instead of meeting this one (review round 1, F10).
+										// A close that fails does not fail the run, whose work is done (F10), but it is said
+										// in the host's journal, so a close no call reaches is never silent.
 										endSession: async (sessionId, reason) => {
-											await this.#paths.call(
-												"qorpera_close_home_session",
-												{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
-												AbortSignal.timeout(CLOUD_HOME_CLOSE_MS),
-											);
+											const closing = AbortSignal.timeout(CLOUD_HOME_CLOSE_MS);
+											try {
+												await this.#paths.call(
+													"qorpera_close_home_session",
+													{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
+													closing,
+												);
+											} catch (error) {
+												console.error(
+													`The agent's home session was not closed (${cloudRuntimeErrorCategory(error, closing)})`,
+												);
+												throw error;
+											}
 										},
 										signal: input.signal,
 									}),

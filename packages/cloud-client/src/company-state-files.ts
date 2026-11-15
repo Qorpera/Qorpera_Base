@@ -51,6 +51,8 @@ import {
 
 export type CompanyStateFileKind =
 	| "vision"
+	/** The company's reading of itself, `QorperaOS/vision/reading.md`. */
+	| "reading"
 	| "agent"
 	| "sections"
 	| "group"
@@ -185,6 +187,104 @@ export interface VisionFile {
 	readonly kind: "vision";
 	/** The company's name: the first line, `# <name>`. */
 	readonly name: string;
+}
+
+/** Where the company's reading of itself lives, next to the vision (Jonas, 14 November 2026: "It should feel like
+ * the company is conscious almost"). The Co-Founder writes it; it is not seeded and a member may delete it. */
+export const READING_PATH = osPath("vision/reading.md");
+/** The whole reading, in UTF-8 bytes: it is rewritten whole each time and every agent gets it at every run. */
+export const READING_FILE_MAX_BYTES = 4096;
+/** The emblems a thing of the reading is drawn with: a platform set, one per thing; the web draws them. */
+export const READING_SHAPES = Object.freeze([
+	"board",
+	"box",
+	"screen",
+	"phone",
+	"gear",
+	"code",
+	"person",
+	"people",
+	"heart",
+	"pin",
+	"globe",
+	"chart",
+	"coin",
+	"bank",
+	"drop",
+	"megaphone",
+	"cart",
+	"handshake",
+	"truck",
+	"factory",
+	"scale",
+	"document",
+	"chat",
+	"wrench",
+	"blob",
+] as const);
+/** What happened to an agent's role, as a line of `## Changed` says it. */
+export const READING_CHANGES = Object.freeze(["joined", "ended", "changed"] as const);
+/** The reading's bounds: texts in UTF-8 bytes, lists in entries. */
+export const READING_LIMITS = Object.freeze({
+	sentence: 200,
+	line: 200,
+	key: 32,
+	name: 40,
+	state: 40,
+	thingsMin: 3,
+	thingsMax: 7,
+	agents: 8,
+	waitsFor: 4,
+	changes: 6,
+	change: 120,
+	notes: 5,
+	note: 160,
+});
+/** The one entry of a thing's `waits_for` that stands for every founder. */
+export const READING_FOUNDERS = "founders";
+
+export type ReadingShape = (typeof READING_SHAPES)[number];
+
+/** One thing of the company as the reading sees it: a `## <name>` section of `key: value` lines. */
+export interface ReadingThing {
+	/** Lowercase letters, digits and single hyphens, unique in the file, at most 32 bytes. */
+	readonly key: string;
+	/** What a member reads under the shape: one line, at most 40 bytes. */
+	readonly name: string;
+	readonly shape: ReadingShape;
+	/** A whole number from 0 to 100: how much is known or built. */
+	readonly full: number;
+	/** A few words, one line, at most 40 bytes. */
+	readonly state: string;
+	/** Agent handles (their folder names under QorperaOS/agents), 0 to 8, each once. */
+	readonly agents: readonly string[];
+	/** Member user ids, or the single word "founders"; 0 to 4. */
+	readonly waitsFor: readonly string[];
+}
+
+/** One line of `## Changed`: `- <agent> joined|ended|changed: <line>`. */
+export interface ReadingChange {
+	readonly agent: string;
+	readonly what: (typeof READING_CHANGES)[number];
+	/** At most 120 bytes. */
+	readonly line: string;
+}
+
+/** `QorperaOS/vision/reading.md`: the company's reading of itself. */
+export interface ReadingFile {
+	readonly kind: "reading";
+	/** The company's own sentence: the first line, `# <sentence>`, at most 200 bytes. */
+	readonly sentence: string;
+	/** One short line under it, at most 200 bytes, or null. */
+	readonly line: string | null;
+	/** The key of the thing the company attends to now. */
+	readonly attention: string;
+	/** 3 to 7, in the file's order. */
+	readonly things: readonly ReadingThing[];
+	/** 0 to 6. */
+	readonly changes: readonly ReadingChange[];
+	/** 0 to 5 lines of `## Notes`, each at most 160 bytes. */
+	readonly notes: readonly string[];
 }
 
 export interface AgentFile {
@@ -426,6 +526,7 @@ export interface ContactFile {
 
 export type CompanyStateFile =
 	| VisionFile
+	| ReadingFile
 	| AgentFile
 	| SectionsFile
 	| GroupFile
@@ -481,6 +582,7 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	const tree = memoryTreeFilePath(path);
 	if (tree) return { ...none, kind: tree.kind, agent: tree.agent, group: tree.group };
 	if (parts.length === 2 && a === "vision" && b === "vision.md") return { kind: "vision", ...none };
+	if (parts.length === 2 && a === "vision" && b === "reading.md") return { kind: "reading", ...none };
 	if (parts.length === 2 && a === "agents" && b === "sections.md") return { kind: "sections", ...none };
 	if (parts.length === 2 && a === "connections" && stem(b) !== null) {
 		// A hook's and a mailbox's files take their prefixes before a vault connection's (E1).
@@ -1148,6 +1250,220 @@ function vision(split: Split, problems: Problems): VisionFile | null {
 		return null;
 	}
 	return { kind: "vision", name };
+}
+
+/** One line of text of at most `max` UTF-8 bytes, without controls, tabs or spaces at its ends. */
+function readingText(text: string, max: number): boolean {
+	return !!text && !NOT_ONE_LINE.test(text) && text === text.trim() && encoder.encode(text).byteLength <= max;
+}
+
+const READING_CHANGE_LINE = /^- ([^ ]+) ([a-z]+): (.*)$/;
+
+/** The reading (`QorperaOS/vision/reading.md`): `attention` in the settings; a body of `# <sentence>`, one short
+ * line, one `## <name>` section of `key: value` lines per thing (read by the settings reader), then the `## Changed`
+ * and `## Notes` lists. Everything a member reads under the picture is in the file, as a person would fix it. */
+function reading(split: Split, fields: Fields, problems: Problems): ReadingFile | null {
+	const limits = READING_LIMITS;
+	const attention = fields.text("attention", true, limits.key, { bytes: true });
+	fields.close("the reading");
+	const lines = split.body.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+	const at = (index: number) => split.bodyLine + index;
+	const first = lines.findIndex((line) => /[^ \t]/.test(line));
+	const marker = first < 0 ? null : /^# +/.exec(lines[first] ?? "");
+	const sentence = marker ? headingText((lines[first] ?? "").slice(marker[0].length)) : null;
+	if (!sentence)
+		problems.add(
+			"body",
+			first < 0 ? split.bodyLine : at(first),
+			null,
+			"the first line must be # and the company's sentence",
+		);
+	else if (encoder.encode(sentence).byteLength > limits.sentence)
+		problems.add("body", at(first), null, `the company's sentence must be at most ${limits.sentence} bytes`);
+	const isHeading = (line: string) => line === "##" || line.startsWith("## ");
+	const headings: number[] = [];
+	lines.forEach((line, index) => {
+		if (index > first && isHeading(line)) headings.push(index);
+	});
+	// The short line: the one line of text between the sentence and the first section.
+	let line: string | null = null;
+	const leadEnd = headings[0] ?? lines.length;
+	for (let index = first + 1; first >= 0 && index < leadEnd; index++) {
+		const text = trimSpaces(lines[index] ?? "");
+		if (!text) continue;
+		if (line !== null || text.startsWith("#"))
+			problems.add(
+				"body",
+				at(index),
+				null,
+				"under the sentence goes one short line; each thing is a ## section, and more goes in ## Notes",
+			);
+		else if (!readingText(text, limits.line))
+			problems.add(
+				"body",
+				at(index),
+				null,
+				`the line under the sentence is one line of at most ${limits.line} bytes`,
+			);
+		else line = text;
+	}
+	const things: ReadingThing[] = [];
+	const changes: ReadingChange[] = [];
+	const notes: string[] = [];
+	const lists = new Set<string>();
+	// The lines of the things' headings, the changes, the notes and the things' keys, so a count over its bound and a key
+	// used twice point at the first line too many.
+	const thingLines: number[] = [];
+	const changeLines: number[] = [];
+	const noteLines: number[] = [];
+	const keyLines: (number | null)[] = [];
+	let sections = 0;
+	headings.forEach((heading, number) => {
+		const name = headingText(lines[heading]?.slice(2) ?? "");
+		const section = lines.slice(heading + 1, headings[number + 1] ?? lines.length);
+		if (name === "Changed" || name === "Notes") {
+			if (lists.has(name)) problems.add("body", at(heading), null, `## ${name} comes once`);
+			lists.add(name);
+			section.forEach((raw, index) => {
+				const text = trimSpaces(raw);
+				if (!text) return;
+				const where = at(heading + 1 + index);
+				if (name === "Notes") {
+					const note = raw.startsWith("- ") ? trimSpaces(raw.slice(2)) : "";
+					if (!readingText(note, limits.note))
+						problems.add(
+							"body",
+							where,
+							null,
+							`under ## Notes each line is "- " and a note of at most ${limits.note} bytes`,
+						);
+					else {
+						notes.push(note);
+						noteLines.push(where);
+					}
+					return;
+				}
+				const change = READING_CHANGE_LINE.exec(raw);
+				const agent = change?.[1] ?? "";
+				const what = (change?.[2] ?? "") as ReadingChange["what"];
+				const said = trimSpaces(change?.[3] ?? "");
+				if (!change || !READING_CHANGES.includes(what) || !isCompanyStateName(agent))
+					problems.add(
+						"body",
+						where,
+						null,
+						'under ## Changed each line is "- <agent> joined: …", "- <agent> ended: …" or "- <agent> changed: …", with the agent\'s folder name',
+					);
+				else if (!readingText(said, limits.change))
+					problems.add("body", where, null, `what changed is one line of at most ${limits.change} bytes`);
+				else {
+					changes.push({ agent, what, line: said });
+					changeLines.push(where);
+				}
+			});
+			return;
+		}
+		sections++;
+		thingLines.push(at(heading));
+		if (!name || encoder.encode(name).byteLength > limits.name) {
+			problems.add("body", at(heading), null, `a thing's name is one line of 1–${limits.name} bytes`);
+			return;
+		}
+		const thing = readingThing(split, problems, heading, section);
+		if (thing) {
+			const { keyLine, ...read } = thing;
+			things.push({ ...read, name });
+			keyLines.push(keyLine);
+		}
+	});
+	if (sentence && sections < limits.thingsMin)
+		problems.add(
+			"body",
+			split.bodyLine,
+			null,
+			`the reading has at least ${limits.thingsMin} things, each a ## section`,
+		);
+	if (sections > limits.thingsMax)
+		problems.add(
+			"body",
+			thingLines[limits.thingsMax] ?? null,
+			null,
+			`the reading has at most ${limits.thingsMax} things`,
+		);
+	if (changes.length > limits.changes)
+		problems.add("body", changeLines[limits.changes] ?? null, null, `## Changed has at most ${limits.changes} lines`);
+	if (notes.length > limits.notes)
+		problems.add("body", noteLines[limits.notes] ?? null, null, `## Notes has at most ${limits.notes} lines`);
+	const keys = new Set<string>();
+	things.forEach((thing, index) => {
+		if (keys.has(thing.key))
+			problems.add("value", keyLines[index] ?? null, "key", `two things have the key ${thing.key}`);
+		keys.add(thing.key);
+	});
+	// Checked once every thing reads, so a broken thing is not also named as missing.
+	if (attention !== null && things.length === sections && !keys.has(attention))
+		problems.add(
+			"value",
+			fields.line("attention"),
+			"attention",
+			`attention names no thing; use the key of one: ${[...keys].join(", ")}`,
+		);
+	if (problems.list.length || !sentence || attention === null) return null;
+	return { kind: "reading", sentence, line, attention, things, changes, notes };
+}
+
+/** A thing's `key: value` lines, read by the settings reader with the file's own line numbers. */
+function readingThing(
+	parts: Split,
+	problems: Problems,
+	heading: number,
+	section: readonly string[],
+): (Omit<ReadingThing, "name"> & { readonly keyLine: number | null }) | null {
+	const limits = READING_LIMITS;
+	const local = new Problems();
+	const headingLine = parts.bodyLine + heading;
+	section.forEach((raw, index) => {
+		if (raw === "---") local.add("syntax", headingLine + 1 + index, null, "a thing's lines are key: value");
+	});
+	// Blank lines before the thing's lines keep each line's number in the file.
+	const text = `---\n${"\n".repeat(headingLine - 1)}${section.map((raw) => (raw === "---" ? "" : raw)).join("\n")}\n---\n`;
+	const fields = new Fields(split(text, true, local)?.front ?? new Map(), local);
+	const key = fields.text("key", true, limits.key, { bytes: true });
+	if (key !== null && !NAME.test(key))
+		local.add("value", fields.line("key"), "key", "key is lowercase letters a–z, digits and single hyphens");
+	const shape = fields.choice("shape", true, READING_SHAPES);
+	const full = fields.whole("full", true, 0, 100);
+	const state = fields.text("state", true, limits.state, { bytes: true });
+	const agents: string[] = [];
+	for (const item of fields.list("agents", false, true) ?? []) {
+		if (!isCompanyStateName(item.text))
+			local.add("value", item.line, "agents", `"${shown(item.text)}" is not an agent's folder name`);
+		else if (agents.includes(item.text)) local.add("value", item.line, "agents", `${item.text} is listed twice`);
+		else agents.push(item.text);
+	}
+	if (agents.length > limits.agents)
+		local.add("value", fields.line("agents"), "agents", `a thing has at most ${limits.agents} agents`);
+	const waitsFor: string[] = [];
+	for (const item of fields.list("waits_for", false, true) ?? []) {
+		if (!UUID.test(item.text) && item.text !== READING_FOUNDERS)
+			local.add(
+				"value",
+				item.line,
+				"waits_for",
+				`each of waits_for is a member's id, or the word ${READING_FOUNDERS}`,
+			);
+		else if (waitsFor.includes(item.text)) local.add("value", item.line, "waits_for", `${item.text} is listed twice`);
+		else waitsFor.push(item.text);
+	}
+	if (waitsFor.length > limits.waitsFor)
+		local.add("value", fields.line("waits_for"), "waits_for", `a thing waits for at most ${limits.waitsFor} members`);
+	else if (waitsFor.includes(READING_FOUNDERS) && waitsFor.length > 1)
+		local.add("value", fields.line("waits_for"), "waits_for", `${READING_FOUNDERS} stands alone in waits_for`);
+	fields.close("a thing of the reading");
+	// A problem without a line of its own points at the thing's heading.
+	for (const problem of local.list) problems.list.push({ ...problem, line: problem.line ?? headingLine });
+	if (local.list.length || key === null || shape === null || full === null || state === null) return null;
+	return { key, shape, full, state, agents, waitsFor, keyLine: fields.line("key") };
 }
 
 function agent(split: Split, fields: Fields, problems: Problems): AgentFile | null {
@@ -2263,6 +2579,15 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 		problems.add("too_large", null, null, `the file is larger than ${COMPANY_STATE_FILE_MAX_BYTES} bytes`);
 		return refused();
 	}
+	if (where.kind === "reading" && encoder.encode(text).byteLength > READING_FILE_MAX_BYTES) {
+		problems.add(
+			"too_large",
+			null,
+			null,
+			`the reading is larger than ${READING_FILE_MAX_BYTES} bytes; keep it short`,
+		);
+		return refused();
+	}
 	if (text.includes("\u0000") || LONE_SURROGATE.test(text)) {
 		problems.add("encoding", null, null, "the file must be plain UTF-8 text");
 		return refused();
@@ -2277,6 +2602,9 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 	switch (where.kind) {
 		case "vision":
 			file = vision(parts, problems);
+			break;
+		case "reading":
+			file = reading(parts, fields, problems);
 			break;
 		case "agent":
 			file = agent(parts, fields, problems);
@@ -2392,6 +2720,28 @@ function headingName(name: string): string {
 
 export function writeVisionFile(name: string, text: string): string {
 	return `# ${headingName(name)}\n${text.trim() ? `\n${text.trim()}\n` : ""}`;
+}
+
+/** The reading in the form a person reads and fixes by hand: `attention` in the settings, the sentence and its line,
+ * one `## <name>` section per thing, then `## Changed` and `## Notes` when they hold lines. */
+export function writeReadingFile(file: Omit<ReadingFile, "kind">): string {
+	const out = [`# ${headingName(file.sentence)}`];
+	if (file.line !== null) out.push(file.line);
+	for (const thing of file.things)
+		out.push(
+			"",
+			`## ${headingName(thing.name)}`,
+			`key: ${companyStateValue(thing.key)}`,
+			`shape: ${thing.shape}`,
+			`full: ${thing.full}`,
+			`state: ${companyStateValue(thing.state)}`,
+			`agents: ${listValue(thing.agents)}`,
+			`waits_for: ${listValue(thing.waitsFor)}`,
+		);
+	if (file.changes.length)
+		out.push("", "## Changed", ...file.changes.map((change) => `- ${change.agent} ${change.what}: ${change.line}`));
+	if (file.notes.length) out.push("", "## Notes", ...file.notes.map((note) => `- ${note}`));
+	return document([["attention", companyStateValue(file.attention)]], out.join("\n"));
 }
 
 export function writeAgentFile(file: Omit<AgentFile, "kind">): string {
