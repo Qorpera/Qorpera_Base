@@ -7,11 +7,11 @@ import { ENVIRONMENT, finish, pass, platformCommit, proveCompanyRun, sha256, tex
 //   QORPERA_CODEX_FENCE_BINARY=<patched codex> node scripts/prove-b2-answer-first.mjs
 //
 // Alice's run in her thread (SQL test 924) answers the owner. The tools are the runtime's own: the boundary, the folder
-// file tools, update_wall (cloudWallTools) and manage_todo (cloudWorkerTools on CloudFolderTodos), and send_message as
+// file tools, manage_todo (cloudWorkerTools on CloudFolderTodos), and send_message as
 // the company runtime makes it (its mouth, CloudAgentMouth, delivering through qorpera_send_native_agent_message; the
 // company runtime's own tool is built inline, so this proof builds the same tool from the same parts). Each model round
 // takes ROUND_MS, a round's fixed cost as Part D measured it (1.76 s), so the times below are a chat turn's shape.
-// - After: the run reads, answers, then keeps its wall and its to-do list. The answer is in the thread before either
+// - After: the run reads, answers, then keeps its to-do list (two todos). The answer is in the thread before either
 //   change is begun; both land after it, each with its receipt, commit, release and step; the model sees each result,
 //   and the turn ends when the model stops (one closing round).
 // - Before: the same work in today's order (bookkeeping, then the answer). The answer comes two rounds later.
@@ -28,7 +28,7 @@ const SETUP = platformCommit("prove-b2-notes", [
 	{ op: "mkdir", path: "notes" },
 	{ op: "write", path: NOTE.path, text: NOTE.text },
 ]);
-const WALL = "QorperaOS/agents/alice/wall.md";
+const REVIEW = "QorperaOS/agents/alice/todos/price-review.md";
 const TODO = "QorperaOS/agents/alice/todos/suppliers.md";
 
 const read = () => ({ name: "company_read", arguments: { path: NOTE.path } });
@@ -36,21 +36,18 @@ const answer = () => ({
 	name: "send_message",
 	arguments: { idempotencyKey: "answer", text: "The price list is ready: 40 kr a bag.", phase: "final" },
 });
-const wall = () => ({
-	name: "update_wall",
-	arguments: {
-		now: "Prices set, now choosing suppliers",
-		waiting: null,
-		working: [{ headline: "Choosing suppliers" }],
-		done: [{ headline: "Price list ready", detail: "40 kr a bag. [Prices](folder:notes/prices.md)" }],
-	},
+// Agents keep no wall since the founder's decision of 14 November 2026 ("rather drop the wall - it's the wrong medium
+// for activity"): the second piece of bookkeeping is a second todo.
+const review = () => ({
+	name: "manage_todo",
+	arguments: { action: "upsert", operationKey: "price-review", todoKey: "price-review", title: "Review prices in a month" },
 });
 const todo = () => ({
 	name: "manage_todo",
 	arguments: { action: "upsert", operationKey: "suppliers", todoKey: "suppliers", title: "Choose suppliers" },
 });
 
-/** The run's send_message, its wall and its to-do list, as the company runtime gives a company run of Alice's. `sent`
+/** The run's send_message and its to-do list, as the company runtime gives a company run of Alice's. `sent`
  * keeps when each send was confirmed. */
 function agentTools(sent) {
 	return (code, { db, binding, folder, operations, identity }) => {
@@ -104,7 +101,7 @@ function agentTools(sent) {
 				folderWorkers: new code.CloudFolderWorkers({ folder, operations, identity, handle: "alice" }),
 			})
 			.filter((tool) => tool.name === "manage_todo");
-		return [send, ...code.cloudWallTools({ folder, operations, identity, handle: "alice", timeZone: "UTC" }), ...todos];
+		return [send, ...todos];
 	};
 }
 
@@ -143,15 +140,15 @@ function timing(state, run, sent) {
 const times = {};
 
 async function main() {
-// 1. After: read, answer, then the wall and the to-do list -------------------------------------------------------------
+// 1. After: read, answer, then the to-do list (two todos) -------------------------------------------------------------
 {
 	const sent = [];
 	await proveCompanyRun({
 			name: "qorpera_prove_b2_after",
-			prompt: "Is the price list ready? Keep your wall and your to-do list in step.",
+			prompt: "Is the price list ready? Keep your to-do list in step.",
 			setup: SETUP,
 			objects: textObjects([NOTE.text]),
-			calls: [read, answer, wall, todo],
+			calls: [read, answer, review, todo],
 			tools: agentTools(sent),
 			roundMs: ROUND_MS,
 			async check({ code, db, binding, run, outputs, state, log }) {
@@ -161,13 +158,13 @@ async function main() {
 					[
 						["company_read", "ok"],
 						["send_message", "ok"],
-						["update_wall", "ok"],
+						["manage_todo", "ok"],
 						["manage_todo", "ok"],
 					],
 				);
 				assert.equal(state.agent.length, 5, "four calls, then the model's own end");
 				pass(
-					`the run read, answered, then kept its wall and to-do list: every call ran and the model saw each answer (${state.agent.length} model requests: the four calls and its own closing round)`,
+					`the run read, answered, then kept its to-do list: every call ran and the model saw each answer (${state.agent.length} model requests: the four calls and its own closing round)`,
 				);
 				const { sends, receipts } = stored(db, runId);
 				assert.deepEqual(
@@ -179,7 +176,7 @@ async function main() {
 				assert.deepEqual(
 					after.map((receipt) => [receipt.key.split(":")[0], receipt.status]),
 					[
-						["update_wall", "completed"],
+						["manage_todo", "completed"],
 						["manage_todo", "completed"],
 					],
 				);
@@ -188,19 +185,18 @@ async function main() {
 				pass(
 					`the answer was in the thread before either change was begun: ${after.map((r) => `${r.key.split(":")[0]} begun ${at(r.begun) - answered} ms and committed ${at(r.committed) - answered} ms after it`).join("; ")}; each receipt completed with its folder commit`,
 				);
-				const wallText = (await run.folder.readText(WALL, 64 * 1024, AbortSignal.timeout(30_000)))?.text ?? "";
-				assert.match(wallText, /Price list ready/);
-				assert.match(wallText, /Prices set, now choosing suppliers/);
+				const reviewText = (await run.folder.readText(REVIEW, 64 * 1024, AbortSignal.timeout(30_000)))?.text ?? "";
+				assert.match(reviewText, /Review prices in a month/);
 				const todoText = (await run.folder.readText(TODO, 64 * 1024, AbortSignal.timeout(30_000)))?.text ?? "";
 				assert.match(todoText, /Choose suppliers/);
-				pass(`the wall (${WALL}) and the to-do (${TODO}) hold what the run wrote after its answer`);
+				pass(`the todos (${REVIEW}, ${TODO}) hold what the run wrote after its answer`);
 				// The record: the run's log keeps every step in order, and the context view each output the model got.
 				assert.deepEqual(
 					log.index.map((step) => [step.tool, step.finished]),
 					[
 						["company_read", true],
 						["send_message", true],
-						["update_wall", true],
+						["manage_todo", true],
 						["manage_todo", true],
 					],
 				);
@@ -221,7 +217,7 @@ async function main() {
 				pass(
 					`the record holds after the answer as before it: the run's log keeps all ${log.index.length} steps in order with each envelope, and the context views each of the ${outputs.length} outputs the model got`,
 				);
-				assert.equal(code.CLOUD_AFTER_ANSWER_TOOLS.has("update_wall") && code.CLOUD_AFTER_ANSWER_TOOLS.has("manage_todo"), true);
+				assert.equal(code.CLOUD_AFTER_ANSWER_TOOLS.has("manage_todo") && !code.CLOUD_AFTER_ANSWER_TOOLS.has("update_wall"), true);
 				// The runner dies in the tail: the run's job fails after its answer. The member's thread shows the answer
 				// and nothing under it, because the agents' activity read no longer calls such a run needs_attention
 				// (20260930751000); the failure itself is kept for whoever looks after the platform.
@@ -260,10 +256,10 @@ async function main() {
 	const sent = [];
 	await proveCompanyRun({
 			name: "qorpera_prove_b2_before",
-			prompt: "Is the price list ready? Keep your wall and your to-do list in step.",
+			prompt: "Is the price list ready? Keep your to-do list in step.",
 			setup: SETUP,
 			objects: textObjects([NOTE.text]),
-			calls: [read, wall, todo, answer],
+			calls: [read, review, todo, answer],
 			tools: agentTools(sent),
 			roundMs: ROUND_MS,
 			async check({ db, binding, run, outputs, state }) {
@@ -301,7 +297,7 @@ async function main() {
 				assert.equal(refused.status, "denied");
 				assert.match(
 					refused.content.text,
-					/^TOOL_UNAVAILABLE: the final send is made, so only the wall, to-do list, apps and sidebar change now/,
+					/^TOOL_UNAVAILABLE: the final send is made, so only the to-do list, apps and sidebar change now/,
 				);
 				assert.deepEqual(
 					log.index.map((step) => [step.tool, step.finished]),
@@ -381,10 +377,10 @@ async function main() {
 	end $$;`;
 	await proveCompanyRun({
 			name: "qorpera_prove_b2_old_kernel",
-			prompt: "Is the price list ready? Keep your wall in step.",
+			prompt: "Is the price list ready? Keep your to-do list in step.",
 			setup: `${SETUP}\n${OLD_KERNEL}`,
 			objects: textObjects([NOTE.text]),
-			calls: [answer, wall],
+			calls: [answer, review],
 			tools: agentTools(sent),
 			async check({ db, binding, run, outputs }) {
 				assert.equal(
@@ -396,13 +392,13 @@ async function main() {
 				assert.equal(outputs[0].envelope.status, "ok");
 				assert.notEqual(outputs[1].envelope.status, "ok", outputs[1].output.slice(0, 300));
 				assert.deepEqual(stored(db, binding.runId).receipts, []);
-				assert.equal(await run.folder.readText(WALL, 64 * 1024, AbortSignal.timeout(30_000)), null);
+				assert.equal(await run.folder.readText(REVIEW, 64 * 1024, AbortSignal.timeout(30_000)), null);
 				assert.deepEqual(
 					stored(db, binding.runId).sends.map((send) => send.phase),
 					["final"],
 				);
 				pass(
-					`on a kernel without 20260930748000 the wall after the answer was answered ${outputs[1].envelope.status} ("${outputs[1].text.slice(0, 40)}"), no receipt was begun and no wall was written; the answer stands and the run's session ended`,
+					`on a kernel without 20260930748000 the todo after the answer was answered ${outputs[1].envelope.status} ("${outputs[1].text.slice(0, 40)}"), no receipt was begun and no todo was written; the answer stands and the run's session ended`,
 				);
 			},
 		});

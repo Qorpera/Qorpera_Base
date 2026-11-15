@@ -407,7 +407,9 @@ it("tells the model to check an outcome-unknown call before it repeats it under 
 		expect(text).not.toContain("PRIVATE_EFFECT_UNKNOWN");
 		expect(f.perform).toHaveBeenCalledTimes(1);
 		// The standing rule (same key, never a new one) names its one exception.
-		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain("OUTCOME_UNKNOWN is the one exception");
+		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
+			"- OUTCOME_UNKNOWN: your run was cut off while it ran, and the key is spent.",
+		);
 	} finally {
 		boundary.close();
 	}

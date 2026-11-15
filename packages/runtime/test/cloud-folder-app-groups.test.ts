@@ -315,23 +315,20 @@ it("says refused when the file changed since it was read, and its receipt still 
 it("tells the rules within the bytes a tool's description may hold, and is reviewed as the sidebar is", async () => {
 	expect(Buffer.byteLength(ORGANIZE_APPS_DESCRIPTION)).toBeLessThanOrEqual(4096);
 	for (const rule of [
-		"Group by what the founder thinks in: a product, a customer, a piece of work.",
-		"Never by agent, by kind of page (such as Reports) or by date.",
-		"Name a group in one to three words, in the company's own words.",
-		"The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front.",
-		"Two group levels at most. Three to twelve apps in a group; a group with one app goes away",
-		"what a member changed in their own drawer is theirs",
-		"After a change, say it in one line to the member who asked, or on your wall.",
+		"group by what the founder thinks in (a product, a customer, a piece of work), not by agent, by kind of page (such as Reports) or by date.",
+		"Name a group in one to three of the company's own words.",
+		"The basics (Mailbox, Bank, the finances, Members) stay loose at the front.",
+		"Two group levels at most, three to twelve apps in a group; a group of one app is ungrouped.",
+		"Members' own colours and changes in their own drawer are theirs and win there",
+		"After a change, say it in one line to the member who asked.",
 		// The groups' colours (12 November 2026).
-		"Give every group a colour that sets it apart from the others and fits its product or area, by the palette's names",
-		"a group inside a group usually takes its parent's colour, so leave its own unset.",
-		"Members can pick their own colours, which win in their drawer.",
-		`one of ${AGENT_COLOURS.join(", ")}; null takes it away.`,
+		"Give every group a colour that sets it apart and fits its product or area; a group inside a group takes its parent's, so leave its own unset.",
+		"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null.",
 	])
 		expect(ORGANIZE_APPS_DESCRIPTION).toContain(rule);
 	// The Co-Founder's tidy pass takes a group without a colour as a sign to sort the drawer.
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
-		"more than eight apps loose, a group with one app or with more than twelve, a top-level group without a colour, or a new product or area with no group of its own.",
+		"more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.",
 	);
 	const f = await fixture();
 	const tool = f.tool();

@@ -139,25 +139,17 @@ const SAVE_APP_EMBLEM =
 	"The app's own picture in the apps drawer, drawn in its colour; page when the app has none. Members may pick another for their own drawer, or one of the app's own icons (app_guide icons says how to draw those).";
 
 /**
- * save_app's description, last: how a page written by hand must be made (Jonas, 13 November 2026, on apps that
- * followed the rules of 10 November to the letter and were still documents in boxes: "they are supposed to be
- * objects, models, apps and videos that are visual-first"). Nearly every app is made from a kit, whose engine does
- * the drawing (`kit` says which); this names the few that are not: the product's own prototype, which follows the
- * product's design (the company context), and a working tool no kit draws. How to look at a page before showing it
- * is in the company context, which has the room. It says which links open (RUNTIME-INTERFACE-APPS.md §4) and points
- * to app_guide for the base style (§2) and the live data (§5).
+ * What app_guide tells the agent, as a contract (track 3, T3-5): what it answers, when to call it, and what it changes.
+ * The guides stood on save_app's fields until 14 November 2026 (#1804, cloud-app-guides.ts says why no model read them).
  */
-const SAVE_APP_DESIGN =
-	" A page you write by hand follows what the kits do. The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line under it, then the thing. Labels and numbers, never sentences; no boxes of text, no date, no list of what you did. What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about. Give the page something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the company's product follows the product's own design instead. Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens. Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: app_guide style says which, so use them, not colours of your own. Draw what the company already holds from its live data instead of typing it in: app_guide reads says how. The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.";
-
-/** What app_guide tells the agent (at most 4096 bytes, as every tool's description). */
-const APP_GUIDE_DESCRIPTION =
-	"Read how one part of an interface app is made, before you make it with save_app. " +
-	"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app. " +
-	"about a kit (model, board, path, object, curve, stack, shelf, map or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
-	"For a page written by hand: style is the base style every page starts from, the company's colours as CSS variables, and light and dark; reads is how the page's script reads the company's live data through the qorpera object, and how often; writes is how it lets a member answer a question or change a table's row. " +
-	"icons is how an app's own icons are drawn. " +
-	"The answer is the guide's text. It reads nothing of the company and changes nothing; read a guide again when you no longer have it.";
+const APP_GUIDE_DESCRIPTION = [
+	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
+	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
+	"- about a kit (model, board, path, object, curve, stack, shelf, map, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
+	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
+	"- icons: how an app's own icons are drawn.",
+	"The answer is the guide's text: read it again when you no longer have it.",
+].join("\n");
 
 const sha256hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -759,7 +751,19 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. It is never a document or a report: text to read stays a file in the folder. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: one of the ${INTERFACE_EMBLEMS.length} pictures its schema lists, colour: ${AGENT_COLOURS.join(", ")}, kit: the form Qorpera draws for you, of ${APP_KITS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine. kit says what each kit draws; app_guide says what its file holds: read the kit's guide before you write the file, since a kit's file is saved only in a run that has read it. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. Without a kit (for the product's own prototype or a working tool) the app is one page: only the entry opens, so put every view in it, as tabs or sections. Such a page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load one later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); no page has a network, so everything it needs is in the app. A new app needs a manifest and its entry (a kit writes the entry). It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. A concept opens full screen beside Qorpera's own panel, which names it and says who made it: its page is the visual, edge to edge, with no title, strapline, caption, frame or band, and only the few controls it needs, small and right at the visual. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
+		// Its fields say a line each since #1804 (the guides are app_guide's answers), so its schema stays under the 5,000
+		// bytes past which Codex sends no field description (T3-5's probe); what a call needs stands here.
+		description: [
+			"Make or change an interface app: a small web page in apps/<name>/ that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. Text to read stays a file. It applies at once.",
+			`- name: the app's folder (lowercase letters, digits and hyphens). manifest: title, and optionally about, emblem, colour, kit, entry (the page that opens, ${APP_DEFAULT_ENTRY} by default), reads, writes, concept and cover; null keeps the manifest. A new app needs a manifest and its entry, which a kit writes. group: a group of the apps drawer (organize_apps list) to put a new app in, last; a concept goes in none.`,
+			`- files: at most ${FILES_PER_CALL} a call (.html, .css, .js, .json, .svg, .md, .csv, .txt), each at most ${APP_FILE_MAX_BYTES / 1024} KiB; pages and code ${APP_MAX_BYTES / 1024 / 1024} MiB in all. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) written into the app's folder from a company machine may be ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each, ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all.`,
+			"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It gets its pictures and videos only where it names them as it opens (<img src>, <video src>, a poster, url() in its styles): a script cannot load one later, so put every picture it may show in the page, hidden ones too. Its other files it uses by relative paths, and a script reads text files with qorpera.read(path). No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+			"Live data: a page's script reads the company through the qorpera object (qorpera.read, list, table, todos, agents, questions; reads names its sources) and asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them). Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
+			"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+			"A concept (concept true, cover a picture of it) shows in the Concepts viewer, full screen beside Qorpera's own panel, which names it and says who made it: its page is the visual, edge to edge, with no title, strapline, caption, frame or band, only the few controls it needs, small and at the visual, and no base style.",
+			"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app. One operationKey for one change; a new change takes a new one.",
+		].join("\n"),
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1030,7 +1034,7 @@ export function cloudAppTools(options: {
 				concept = manifest.concept;
 				if (stored === "unreadable")
 					throw new CloudToolRefusal(
-						`APP_MANIFEST_UNREADABLE: ${manifestPath} is not text; replace it on the company's computer`,
+						`APP_MANIFEST_UNREADABLE: ${manifestPath} is not text; replace it on a machine`,
 					);
 				manifestOut = manifest;
 			} else if (storedParse?.ok) entry = storedParse.manifest.entry;
@@ -1206,7 +1210,7 @@ export function cloudAppTools(options: {
 		name: "post_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		description:
-			"Post an interface app so every member of the company sees it in their apps (posted true), or take it away (posted false). The app stays in the company folder either way, and a link to it in a message still opens it. Post what members should keep coming back to: the state of an area, a dashboard, a board, a living plan. Keep operationKey for the same change, and use a new one for any other change.",
+			"Post an interface app so every member sees it in their apps drawer (posted true), or take it away (posted false). The app stays in the company folder either way, and a link to it in a message still opens it. Post what members should keep coming back to: the state of an area, a dashboard, a board, a living plan.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
