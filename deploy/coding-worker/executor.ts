@@ -544,7 +544,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		memberShareBegin: (token: string, share: { companyId: string; machineId: string; action: MachineScreenAction;
 			generation?: number }, signal: AbortSignal) => memberControl.share(token, share, signal),
 		// A member's start of the desktop (20260930714000) is begun as the member too.
-		memberStartBegin: (token: string, start: { companyId: string; machineId: string }, signal: AbortSignal) =>
+		memberStartBegin: (token: string, start: { companyId: string; machineId: string; open?: string }, signal: AbortSignal) =>
 			memberControl.start(token, start, signal),
 		// A member's pointer pass (20260930744000) is begun as the member too; its moves ask SQL nothing.
 		memberPointerBegin: (token: string, begin: { companyId: string; machineId: string;

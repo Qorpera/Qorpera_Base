@@ -249,12 +249,28 @@ export function appCard(app: string, name: string | Node[], about?: string): HTM
 	);
 }
 
-/** `links` false draws a link as its text and an image as its alt text: nothing leaves the page or is fetched. */
-function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): Node[] {
+/** One of the company's sites a link leads to, as a thread knows it (app/views/thread-sites.ts): the site's id, and its
+ * card. */
+export interface LinkedSite {
+	readonly id: string;
+	readonly card: () => HTMLElement;
+}
+
+/** The sites a message's links lead to, found as it is drawn: each site once per message, its card waiting for the row
+ * under the words it stands in (`markdownBubbles`). */
+interface FoundSites {
+	readonly of: (href: string) => LinkedSite | undefined;
+	readonly seen: Set<string>;
+	cards: HTMLElement[];
+}
+
+/** `links` false draws a link as its text and an image as its alt text: nothing leaves the page or is fetched. `sites`:
+ * links to the company's own sites, found while drawing (a thread's message). */
+function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, sites?: FoundSites): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
 		const children = () =>
-			renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1, links);
+			renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites);
 		switch (token.type) {
 			case "space":
 			case "def":
@@ -273,7 +289,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 				const appOf = (part: MarkedToken) =>
 					links && part.type === "link" ? appLinkName(decodeEntities(part.href)) : undefined;
 				const inner = (part: MarkedToken) =>
-					renderTokens(("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[], depth + 1, links);
+					renderTokens(("tokens" in part ? (part.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites);
 				const named = new Set<string>();
 				const cards = parts.flatMap((part) => {
 					const app = appOf(part);
@@ -290,7 +306,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 						null,
 						parts.flatMap((part): Node[] => {
 							const app = appOf(part);
-							if (app === undefined) return renderTokens([part], depth + 1, links);
+							if (app === undefined) return renderTokens([part], depth + 1, links, sites);
 							return [
 								h(
 									"button",
@@ -341,7 +357,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 											"aria-label": t("Task status"),
 										})
 									: null,
-								renderTokens(item.tokens as MarkedToken[], depth + 1, links),
+								renderTokens(item.tokens as MarkedToken[], depth + 1, links, sites),
 							),
 						),
 					),
@@ -352,7 +368,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 						h(
 							heading ? "th" : "td",
 							heading ? { scope: "col" } : null,
-							renderTokens(cell.tokens as MarkedToken[], depth + 1, links),
+							renderTokens(cell.tokens as MarkedToken[], depth + 1, links, sites),
 						),
 					);
 				return [
@@ -397,6 +413,28 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 						),
 					];
 				const href = webHref(decodeEntities(token.href));
+				// One of the company's sites: the link stays a link, in the words' own colour, and the site's card stands in
+				// the row under the words (once per site in the message), as an app's does.
+				const site = href && token.type === "link" ? sites?.of(href) : undefined;
+				if (href && site) {
+					if (!sites?.seen.has(site.id)) {
+						sites?.seen.add(site.id);
+						sites?.cards.push(site.card());
+					}
+					return [
+						h(
+							"a",
+							{
+								href,
+								class: "site-link-word",
+								target: "_blank",
+								rel: "noopener noreferrer",
+								title: token.title,
+							},
+							content,
+						),
+					];
+				}
 				return [
 					href
 						? h("a", { href, target: "_blank", rel: "noopener noreferrer", title: token.title }, content)
@@ -468,8 +506,10 @@ export function markdownSourceOffset(node: Node, offset: number): number | undef
 
 /** Match the desktop's paragraph bubbles without splitting structured blocks.
  * Lex the whole send once so reference links can resolve across bubbles. This
- * is display grouping only: all admitted text stays in its canonical message. */
-export function markdownBubbles(source: string): HTMLElement[] {
+ * is display grouping only: all admitted text stays in its canonical message.
+ * `site`: the company's site a link leads to, in a thread: its card stands in a row of its own under the words that
+ * link it, as an app's card does, once per site in the message. */
+export function markdownBubbles(source: string, site?: (href: string) => LinkedSite | undefined): HTMLElement[] {
 	try {
 		const tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
 		const groups: MarkedToken[][] = [];
@@ -487,21 +527,27 @@ export function markdownBubbles(source: string): HTMLElement[] {
 			boundary = /\n[\t ]*\n[\t ]*$/.test(token.raw);
 		}
 		if (!groups.length) return [markdown(source)];
-		// A row of app cards is a part of its own, after the words it followed: the thread draws it without a bubble.
+		// A row of app cards is a part of its own, after the words it followed: the thread draws it without a bubble. So is
+		// the row of the sites the words link.
 		const parts: HTMLElement[] = [];
+		const sites: FoundSites | undefined = site ? { of: site, seen: new Set(), cards: [] } : undefined;
 		for (const group of groups) {
 			let prose: Node[] = [];
 			const words = () => {
 				if (prose.length) parts.push(h("div", { class: "message-prose" }, prose));
 				prose = [];
 			};
-			for (const node of renderTokens(group)) {
+			for (const node of renderTokens(group, 0, true, sites)) {
 				if (node instanceof HTMLElement && node.classList.contains("app-cards")) {
 					words();
 					parts.push(node);
 				} else prose.push(node);
 			}
 			words();
+			if (sites?.cards.length) {
+				parts.push(h("div", { class: "app-cards site-cards" }, sites.cards));
+				sites.cards = [];
+			}
 		}
 		return parts;
 	} catch {

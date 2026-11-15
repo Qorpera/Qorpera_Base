@@ -57,6 +57,17 @@ export interface CompanyFolderBrowserOptions {
 	readonly search?: HTMLInputElement;
 	readonly embedded?: boolean;
 	readonly onSectionChange?: (section: "documents" | "recents") => void;
+	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
+	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
+	 * changes the folder is reachable: no preview (so no history, Restore or download), no Recents, no code download or
+	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
+	readonly choose?: (pick: CompanyFolderPick | null) => void;
+}
+
+/** What choose mode picked: a file, or the folder open. */
+export interface CompanyFolderPick {
+	readonly path: string;
+	readonly kind: "file" | "folder";
 }
 
 type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
@@ -274,6 +285,8 @@ export class CompanyFolderBrowser {
 	/** Where the feed is followed from: everything up to it is on screen. */
 	#position: CloudMemberFolderFeedPosition | null = null;
 	#opened: Opened | null = null;
+	/** Choose mode: the file picked in the open folder, or null when the folder itself is the pick. */
+	#picked: string | null = null;
 	/** A restore whose answer was lost, by path, until it or another restore there has an answer. */
 	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
@@ -398,9 +411,11 @@ export class CompanyFolderBrowser {
 		this.#preview.hidden = true;
 		host.classList.add("files-page", "folder-page", "storage-browser");
 		host.classList.toggle("is-embedded", options.embedded === true);
+		host.classList.toggle("is-choosing", options.choose !== undefined);
 		replace(
 			host,
-			options.embedded
+			// Choose mode sits in its owner's dialog, which names it: no page heading, no Recents.
+			options.embedded || options.choose
 				? null
 				: h(
 						"header",
@@ -450,7 +465,8 @@ export class CompanyFolderBrowser {
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		const downloads = this.#downloads;
 		const client = this.#client;
-		const calls = this.#source.codeDownloads?.bind(this.#source);
+		// Choose mode offers no code download or import: it picks, nothing more.
+		const calls = this.#options.choose ? undefined : this.#source.codeDownloads?.bind(this.#source);
 		if (calls)
 			this.#code ??= new CodeDownload({
 				signal: this.#signal(),
@@ -706,12 +722,36 @@ export class CompanyFolderBrowser {
 		if (!append && (this.#position === null || page.asOfSeq > this.#position.afterSeq))
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
+		// A pick is of the folder shown: another folder, or a file no longer in it, leaves the folder as the pick.
+		if (moved || !this.#items.some((item) => item.path === this.#picked)) this.#picked = null;
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
 		this.#code?.enter(dir);
 		this.#import?.enter(dir);
 		this.#drawList(!append);
+		this.#tellPick();
 		if (jumped) await this.#refreshOpened();
+	}
+
+	/** Choose mode: a file's row picks it, or unpicks it when it is the pick; the rows are marked where they stand. */
+	#pick(path: string): void {
+		this.#picked = this.#picked === path ? null : path;
+		for (const main of this.#list.querySelectorAll<HTMLElement>("button.files-row-main[aria-pressed]")) {
+			const picked = main.dataset.path === this.#picked;
+			main.setAttribute("aria-pressed", String(picked));
+			main.closest(".files-row")?.classList.toggle("is-open", picked);
+		}
+		this.#tellPick();
+	}
+
+	#tellPick(): void {
+		this.#options.choose?.(
+			this.#picked !== null
+				? { path: this.#picked, kind: "file" }
+				: this.#dir
+					? { path: this.#dir, kind: "folder" }
+					: null,
+		);
 	}
 
 	async #enter(dir: string): Promise<void> {
@@ -745,7 +785,8 @@ export class CompanyFolderBrowser {
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
 		// The title already names the top folder, so the trail is drawn only below it.
-		this.#crumbs.hidden = this.#options.embedded === true && parts.length === 0;
+		this.#crumbs.hidden =
+			(this.#options.embedded === true || this.#options.choose !== undefined) && parts.length === 0;
 		const steps: HTMLElement[] = [
 			parts.length
 				? h(
@@ -823,10 +864,13 @@ export class CompanyFolderBrowser {
 						? "table"
 						: "file";
 		const label = fileKind(item);
+		// Choose mode: a folder opens as everywhere; a file picks; a link is shown and not picked.
+		const choosing = this.#options.choose !== undefined;
+		const picked = choosing && this.#picked === item.path;
 		return h(
 			"li",
 			{
-				class: `files-row${item.target !== null ? " is-link" : ""}${this.#opened?.path === item.path ? " is-open" : ""}`,
+				class: `files-row${item.target !== null ? " is-link" : ""}${(choosing ? picked : this.#opened?.path === item.path) ? " is-open" : ""}`,
 			},
 			h(
 				"button",
@@ -834,7 +878,12 @@ export class CompanyFolderBrowser {
 					type: "button",
 					class: "files-row-main",
 					"data-path": item.path,
-					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
+					...(choosing && !folder ? { "aria-pressed": String(picked) } : {}),
+					disabled: choosing && item.target !== null,
+					onclick: () =>
+						folder || !choosing
+							? void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item)))
+							: this.#pick(item.path),
 				},
 				h(
 					"span",

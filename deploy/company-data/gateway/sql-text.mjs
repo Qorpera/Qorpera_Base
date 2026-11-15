@@ -29,6 +29,29 @@ export function leadingWords(text) {
 	return words;
 }
 
+/** A file's words with a call's values in place, as a change's are shown to a member before they say yes (§8): the
+ * words' own text and `{ name, value }` in turn, so that whatever shows them can tell a value, which the caller
+ * chose, from the words the file's writer wrote. `values`: a Map from each parameter's name to its text or null. A
+ * `:name` that is no parameter stays as written; `::` is a cast. The words are cut at 1,000 characters and a value
+ * at 200.
+ * @param {string[]} words
+ * @param {Map<string, string | null>} values
+ * @returns {(string | { name: string, value: string | null })[]} */
+export function wordsWith(words, values) {
+	const text = words.join(" ").slice(0, 1000);
+	const parts = [];
+	let from = 0;
+	for (const found of text.matchAll(/(?<![:A-Za-z0-9_]):([a-z_][a-z0-9_]*)/g)) {
+		if (!values.has(found[1])) continue;
+		if (found.index > from) parts.push(text.slice(from, found.index));
+		const value = values.get(found[1]);
+		parts.push({ name: found[1], value: value === null || value.length <= 200 ? value : `${value.slice(0, 200)}…` });
+		from = found.index + found[0].length;
+	}
+	if (from < text.length) parts.push(text.slice(from));
+	return parts;
+}
+
 /**
  * @param {string} text the file's text
  * @returns {{ ok: true, sql: string, parameters: string[], words: string[] } | { ok: false, problem: string }}

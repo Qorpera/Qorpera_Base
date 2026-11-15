@@ -622,6 +622,104 @@ const MEMBER_START_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutco
 	97: { refused: "MACHINE_BOOT_CHANGED" },
 	98: { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" },
 });
+/** A member opens something of the company folder on the desktop (20260930758000), once the desktop runs: the image's own
+ * `desktop open` with ONE word, the path's real place in the machine. The path comes on stdin, whole (the x keeps its
+ * last line breaks from the command substitution; a path with a line break, which SQL's rule and the host's check never
+ * let through, opens nothing): no shell parses it, and nothing of ours carries it (our unit's name, its description and
+ * its arguments, our log lines). The image's own helper does name the opened folder in the machine's own journal (the
+ * `systemd-run` lines of the page's server and the browser it starts), exactly as for an agent's `desktop open`. On the boot
+ * named in `$0` (else 97), with the helper (else 98). The company folder is there when `/company` is a mount of its own
+ * (else 89: a machine on an earlier helper has no `/company`, and one whose view is not mounted has an empty directory on
+ * the root's device). The path's real place (every link
+ * followed, `realpath -e`) must be inside `/company` and exist (else 91: not there, or a link that leads out): what is
+ * opened is that real place, so a link swapped afterwards opens nothing else. The helper's own failure is 1 or 2, and
+ * anything else is too: the open failed. Its output goes nowhere. Plain sh, in a transient unit of its own
+ * (companyMachineMemberOpenCommand); what the helper starts runs on after the unit ends (its programs are launched
+ * outside the unit, as an agent's `desktop open` launches them outside its action's unit). */
+export const COMPANY_MACHINE_MEMBER_OPEN = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"command -v desktop >/dev/null 2>&1 || exit 98",
+	'dev=$(stat -c %d /company 2>/dev/null) && [ "$dev" != "$(stat -c %d /)" ] || exit 89',
+	"path=$(cat; printf x) || exit 1",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	"path=${path%x}",
+	// No path of the folder has a line break (SQL's rule and the host's check refuse one): one here is no path at all.
+	"case $path in '' | *'",
+	"'*) exit 91 ;; esac",
+	'real=$(realpath -e -- "/company/$path" 2>/dev/null) || exit 91',
+	"case $real in /company/*) ;; *) exit 91 ;; esac",
+	'desktop open "$real" >/dev/null 2>&1 || exit 1',
+].join("\n");
+/** An open runs at most this long in the machine (its unit's RuntimeMaxSec): the helper waits for the desktop's own lock
+ * (an agent's desktop command holds it a few seconds at most), then starts a server and the browser and returns. */
+const MEMBER_OPEN_UNIT_SECONDS = 8;
+/** The executor's own deadline for an open: the unit's limit and the way back. */
+const MEMBER_OPEN_MS = 10000;
+/** What an open's unit is called in the journal: a fixed few words, never its path. */
+const MEMBER_OPEN_DESCRIPTION = "qorpera member desktop open";
+/** How long an open waits for the desktop's one actor (an agent's action, a member's) to be done before it says the
+ * desktop is busy. */
+const MEMBER_OPEN_WAIT_MS = 3000;
+/** How long the desktop stays held after an open's unit ended: what it opened maps its window and takes the focus within
+ * about this, so a member's next input waits for it rather than landing in it. */
+const MEMBER_OPEN_SETTLE_MS = 2000;
+/**
+ * How a member's open runs (20260930758000): COMPANY_MACHINE_MEMBER_OPEN as a transient service, as a member's typed text
+ * runs (companyMachineMemberTypeCommand): `--pipe` hands it the path on stdin; its command line holds the constant
+ * script and the boot alone; systemd ends it at its limit with everything in its control group. `path` and `slice` are
+ * the tests' own (stand-in tools).
+ */
+export function companyMachineMemberOpenCommand(
+	bootId: string,
+	options: { seconds?: number; path?: string; slice?: string } = {},
+): string[] {
+	return [
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--wait",
+		"--pipe",
+		"--collect",
+		"--expand-environment=no",
+		`--slice=${options.slice ?? "qorpera-machine.slice"}`,
+		"-p",
+		`RuntimeMaxSec=${options.seconds ?? MEMBER_OPEN_UNIT_SECONDS}`,
+		"-p",
+		"KillMode=control-group",
+		"-p",
+		"KillSignal=SIGKILL",
+		`--description=${MEMBER_OPEN_DESCRIPTION}`,
+		`--setenv=PATH=${options.path ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+		"--setenv=HOME=/root",
+		"--setenv=LANG=C.UTF-8",
+		"--setenv=USER=root",
+		"--",
+		"/bin/sh",
+		"-c",
+		COMPANY_MACHINE_MEMBER_OPEN,
+		bootId,
+	];
+}
+/** The open's exits: 0 opened, 89 no company folder on this computer, 91 not in it, 97 another boot, 98 no desktop in the
+ * image. Anything else (the helper failed, or systemd's for a unit killed at its limit) is an open that failed. */
+const MEMBER_OPEN_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutcome>> = Object.freeze({
+	0: { outcome: "opened" },
+	89: { refused: "DESKTOP_OPEN_NO_FOLDER" },
+	91: { refused: "DESKTOP_OPEN_NOT_FOUND" },
+	97: { refused: "MACHINE_BOOT_CHANGED" },
+	98: { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" },
+});
+/** A path SQL kept for an open, checked again here before it goes to a machine: the folder's rule in its plain part (no
+ * empty piece, `.` or `..`, no leading `/`, no control character or backslash), at most 500 bytes. SQL's rule is the
+ * whole one; this one keeps anything else from ever reaching the script. */
+export function memberOpenPathValid(path: unknown): path is string {
+	return (
+		typeof path === "string" &&
+		Buffer.byteLength(path, "utf8") >= 1 &&
+		Buffer.byteLength(path, "utf8") <= 500 &&
+		!/[\p{Cc}\p{Cs}\\]/u.test(path) &&
+		path.split("/").every((piece) => piece !== "" && piece !== "." && piece !== "..")
+	);
+}
 /** Text `desktop type` pastes rather than types: anything beyond printable ASCII (deploy/machine/desktop, `type`). */
 const PASTED = /[^\x20-\x7e]/;
 /** The member read check's refusal: a read the machine was served is not the watching member's to read. */
@@ -731,6 +829,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_machine_desktop_clipboard_cleared",
 	// A member's live picture, one release cycle (20260930745000).
 	"qorpera_member_machine_stream_release",
+	// A member's open, right before it touches the desktop (20260930758000, review r1 F1 of #1781).
+	"qorpera_member_machine_desktop_open_check",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -792,6 +892,8 @@ export interface CompanyMachineHostOptions {
 	memberTypeTimeoutMs?: number;
 	/** How long a member's start may take on the machine (default 22 s): the tests' own shorter one. */
 	memberStartTimeoutMs?: number;
+	/** A member's open's deadline (20260930758000; the tests' own). */
+	memberOpenTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
 	/** Watches a desktop for members' live pictures (20260930745000): the executor's starts a process of its own for
@@ -994,11 +1096,16 @@ export interface CompanyMachineMemberStart {
 	placementId: string;
 	bootId: string;
 	startId: string;
+	/** What the start opens on the desktop once it runs (20260930758000): a path of the company folder relative to its
+	 * root, as SQL kept it on the start (the company folder's own path rule, at most 500 bytes). */
+	open?: string;
 }
-/** The desktop runs now (started by this start, or running already), or why not: too small, the machine changed, no
- * desktop in the image, or the desktop did not start (DESKTOP_DID_NOT_START). */
+/** The desktop runs now (started by this start, or running already; with `open`, and what it opens is open), or why not:
+ * too small, the machine changed, no desktop in the image, the desktop did not start (DESKTOP_DID_NOT_START); and for an
+ * open, not in the company folder (DESKTOP_OPEN_NOT_FOUND), no company folder on this computer (DESKTOP_OPEN_NO_FOLDER),
+ * or the helper could not open it (DESKTOP_DID_NOT_OPEN). */
 export type CompanyMachineMemberStartOutcome =
-	| { readonly outcome: "started" | "running" }
+	| { readonly outcome: "started" | "running" | "opened" }
 	| { readonly refused: string };
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
@@ -3210,7 +3317,10 @@ export class LxdCompanyMachineHost {
 	async memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_START_UNAVAILABLE");
-		if (![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)))
+		if (
+			![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)) ||
+			(start.open !== undefined && !memberOpenPathValid(start.open))
+		)
 			throw new Error("COMPANY_MACHINE_MEMBER_START_INVALID");
 		let exitCode: number;
 		try {
@@ -3233,7 +3343,86 @@ export class LxdCompanyMachineHost {
 			// Not answered in time: the unit ends at its own limit, and a desktop it started runs on.
 			return { refused: "DESKTOP_DID_NOT_START" };
 		}
-		return MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
+		const started = MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
+		if (start.open === undefined || "refused" in started) return started;
+		// The desktop runs. What the member chose opens on it (20260930758000), and an open is a member's action on the
+		// desktop (review r1 F1 of #1781): right before it touches the desktop it passes what a member's click passes on
+		// this host and in SQL. The one-actor rule (#holdDesktop, its grace as it stands: an agent's action or a member's
+		// on its way is waited for a moment, else DESKTOP_BUSY), the pointer's fence as a click moves and confirms it, and
+		// SQL's decision now, under the machine's lock (qorpera_member_machine_desktop_open_check, once): no other member
+		// types privately and none did since the open was begun, the member may still act and still reads the path. Else
+		// nothing opens, and the desktop the start started stays on.
+		if (!(await this.#holdDesktopWithin(start.placementId, MEMBER_OPEN_WAIT_MS, signal)))
+			return { refused: "DESKTOP_BUSY" };
+		this.#moveFence(start.placementId);
+		let checked: string;
+		try {
+			checked = await this.#openAllowed(start, signal);
+			if (checked === "ok") await this.#confirmFence(pipe, start.placementId, start.bootId, signal);
+		} catch (error) {
+			this.#releaseDesktop(start.placementId, true);
+			throw error;
+		}
+		if (checked !== "ok") {
+			this.#releaseDesktop(start.placementId, true);
+			return { refused: checked };
+		}
+		let ended = false;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(start.placementId),
+					{
+						command: companyMachineMemberOpenCommand(start.bootId),
+						environment: {},
+						cwd: "/",
+						stdin: Buffer.from(start.open, "utf8"),
+						maxStdoutBytes: 4096,
+						stderrTailBytes: 0,
+					},
+					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberOpenTimeoutMs ?? MEMBER_OPEN_MS)]),
+				)
+			).exitCode;
+			// systemd-run answered: its unit ended (by itself, or at its limit) with everything in it.
+			ended = exitCode < 128;
+		} catch {
+			signal.throwIfAborted();
+			return { refused: "DESKTOP_DID_NOT_OPEN" };
+		} finally {
+			// What it opened gets a moment to show before the next action (its window takes the focus as it maps); a unit
+			// that did not answer keeps the desktop for the grace, as a member's action that did not end cleanly does.
+			const now = this.#options.now ?? Date.now;
+			this.#screenBusy.set(start.placementId, now() + (ended ? MEMBER_OPEN_SETTLE_MS : SCREEN_ACTION_GRACE_MS));
+		}
+		return MEMBER_OPEN_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_OPEN" };
+	}
+
+	/** SQL's decision right before an open touches the desktop (20260930758000, review r1 F1 of #1781): "ok", or why not. */
+	async #openAllowed(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<string> {
+		const answer = record(
+			await this.#call(
+				"qorpera_member_machine_desktop_open_check",
+				{ p_start_id: start.startId, p_placement_id: start.placementId, p_boot_id: start.bootId },
+				signal,
+			),
+			"COMPANY_MACHINE_OPEN_CHECK_INVALID",
+		);
+		if (answer.schema !== "qorpera.member-machine-desktop-open-check/v1")
+			throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
+		if (answer.state === "ok" && Object.keys(answer).length === 2) return "ok";
+		if (
+			answer.state === "refused" &&
+			typeof answer.reason === "string" &&
+			[
+				"DESKTOP_MEMBER_IN_CONTROL",
+				"DESKTOP_OPEN_NOT_FOUND",
+				"MACHINE_NOT_RUNNING",
+				"MACHINE_BOOT_CHANGED",
+			].includes(answer.reason)
+		)
+			return answer.reason;
+		throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
 	}
 
 	/**

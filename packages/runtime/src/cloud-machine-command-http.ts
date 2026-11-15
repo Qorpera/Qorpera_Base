@@ -387,16 +387,19 @@ export function parseCloudMemberMachineActAnswer(
 // executor that took the member's request (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on
 // the peer listener only. It carries the single-use id SQL gave the start (qorpera_member_machine_desktop_start_begin);
 // the receiving executor reads SQL again, serves the start, and only ever runs it locally: the image's own
-// `desktop start`. The answer is whether the desktop started or ran already, or why it did not.
+// `desktop start`. The answer is whether the desktop started or ran already, or why it did not. A start that opens
+// something (20260930758000) is the same request: what it opens comes from SQL's read on the machine's node, never over
+// this route, and the answer is then "opened", or why not.
 export const CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA = "qorpera.member-machine-start-http/v1";
 export const CLOUD_MEMBER_MACHINE_START_SCHEMA = "qorpera.member-machine-start-answer/v1";
 export interface CloudMemberMachineStartPeerRequest {
 	readonly schema: typeof CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA;
 	readonly startId: string;
 }
-/** The desktop runs now: started by this start, or running already (the image's `desktop start` found it running). */
+/** The desktop runs now: started by this start, or running already (the image's `desktop start` found it running); for a
+ * start that opens something (20260930758000), it runs and that is open. */
 export interface CloudMemberMachineStart {
-	readonly outcome: "started" | "running";
+	readonly outcome: "started" | "running" | "opened";
 }
 /** Why a member's start did not end with a running desktop, sent back as 409 with its code: the machine is not running,
  * its disk has had a company folder view the member (or the agent it was started by) may not see, it is too small for a
@@ -410,6 +413,16 @@ export const CLOUD_MEMBER_MACHINE_START_REFUSALS = [
 	"MACHINE_BOOT_CHANGED",
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"DESKTOP_DID_NOT_START",
+	// A start that opens something (20260930758000): a path that is no path of the company folder, one the member may not
+	// read or that the computer does not have (told alike), someone else typing privately, a computer without the company
+	// folder, and an open that failed.
+	"DESKTOP_OPEN_PATH_INVALID",
+	"DESKTOP_OPEN_NOT_FOUND",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_OPEN_NO_FOLDER",
+	"DESKTOP_DID_NOT_OPEN",
+	// The desktop's one actor (an agent's action, a member's) did not let the open through in time (review r1 F1 of #1781).
+	"DESKTOP_BUSY",
 ] as const;
 export type CloudMemberMachineStartRefusalCode = (typeof CLOUD_MEMBER_MACHINE_START_REFUSALS)[number];
 export class CloudMemberMachineStartRefusal extends Error {
@@ -447,7 +460,7 @@ export function parseCloudMemberMachineStartAnswer(
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_START_SCHEMA ||
 		answer.startId !== request.startId ||
-		(answer.outcome !== "started" && answer.outcome !== "running")
+		(answer.outcome !== "started" && answer.outcome !== "running" && answer.outcome !== "opened")
 	)
 		throw new Error(ERROR);
 	return Object.freeze({ outcome: answer.outcome });

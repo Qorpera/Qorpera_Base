@@ -260,9 +260,21 @@ checks each entry as the caller and asks for the texts it does not hold.
    another), aborts the transaction, so nothing is destroyed that the check did not see.
 3. If it destroyed nothing, it commits and is recorded as applied, with its hash, in the company's own database in
    the same transaction.
-4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy. In
-   the first slices a held step stays held. With slice 7 it becomes an approval of contract 16.2 that only a member
-   can give, never the reviewer and never a rule; with the member's yes the same step is applied.
+4. If it destroyed something, it is rolled back and **held**. The caller is told exactly what it would destroy, and
+   an `allow` for exactly that: the step, the hash of its text and the hash of what it would destroy, counted rows
+   included. In the first slices a held step stayed held. Since slice 7 it becomes an approval of contract 16.2 that
+   only a member can give, never the reviewer and never a rule; with the member's yes the same step is applied:
+   - An agent calls `data_apply` with the held step's `allow`. Before anything is asked, the gateway runs the step
+     once more, keeps nothing, and says what it would destroy now (`check`); a step that is no longer held as the
+     `allow` says is refused there. What the gateway said is what the member's card shows.
+   - That call is always asked on a card. A denial by the reviewer stands; nothing else it says, and no rule, lets
+     the step through.
+   - The gateway trusts no word of the run's for the yes. The platform says it: the run's data pass carries the
+     `allow` only when a member answered Allow on the card of this agent's call and this very run used that answer
+     (`qorpera_run_data_pass_approved`, 20260930764000).
+   - The gateway applies the step only for a pass that carries its `allow`, and only while the step's text and all
+     it destroys are still what the `allow` says. A row more or less to delete is another yes: the step is held
+     again with a new `allow`. Rows that change all the time are better deleted by a named change (§8).
 
 Updating rows in a step is not "destroying": last night's snapshot and the WAL hold what was there.
 
@@ -293,7 +305,8 @@ the gateway, so a company can make room.
 - **Agents make and change databases** by writing the files, as they write any of the company's work, and call
   `data_apply`. No member is asked.
 - **What destroys data waits for a member**: a step that drops or empties a table, drops a column or deletes rows; and
-  deleting a database's folder. Until slice 7 these are refused with their reason.
+  deleting a database's folder. A step is held and applied on a member's yes (§3, "A step"); deleting a database's
+  folder is refused with its reason until its own part of slice 7.
 - **Interfaces and, later, the public reach rows only through questions and changes kept as files.** They never send
   SQL of their own. Agents may ask any read, because they analyse.
 - **Nothing is public** unless a file marks it public (slice 8).
@@ -389,7 +402,16 @@ data/shop/snapshot/
   role, 5 s. A member who may read a database may run its named changes; a database only some members may change is
   a folder only they may read.
   Deleting rows inside a named change is the company's own defined act and runs; the file says what it does.
-- A member's change from an interface is asked on the bar the platform draws, with the file's words and values.
+- The statement is an insert, an update, a delete, a merge or a select that calls a function a step made, and nothing
+  else. What it did is read before it is committed, as a step's is: a change that dropped or emptied a table or
+  dropped a column (which the write role can only do through a function a step made as its owner) is rolled back,
+  because that is a step's work and waits for a member. A change's transaction is not sealed as a step's is: a seal
+  is a row kept for good, one for every change, and a change may delete rows anyway. The answer is
+  `{ changed, columns, rows, more, asOf }`: how many rows the statement wrote, and what it gives back (`returning`),
+  cut as a question's answer is. A statement that sends back more than 1 MiB is stopped and rolled back.
+- A member's change from an interface is asked on the bar the platform draws, with the file's words and values. The
+  gateway gives the bar the words with the values in place, each value apart from the words, every value the
+  statement takes, and the file's hash; the member's yes runs the file with that hash and no other.
 - A step or a folder delete that destroys data becomes a member's approval (§3).
 - A routine may wake on a database: `when: data-change` with `watch: data/shop` and optionally a table. The gateway
   listens on a database a routine watches and turns a notice into a wake, claimed once, at most one a minute per
@@ -562,7 +584,7 @@ registry when a slice starts.
 | 4 | Interfaces: `query` and `watch` in the bridge, bindings in the kits | none; web tests | the web |
 | 5 | Agents: the run's data pass, `data_describe`, `data_apply`, `data_query`, their instructions; removal with the company | one migration (the pass, the tools' names in the observation list, the removal's call), one SQL test | the migration, a runtime bundle and image, the node release |
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
-| 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
+| 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change. Built in parts: (a) the gateway's `change` call and `data_change`; (b) the member's approval for a step that destroys; (c) `act` and the bar; (d) routines on a change | a migration and an SQL test for each of (a) and (b) | bundle, node release, a later gateway on the store's machines, web |
 | 8 | The product's doors, each after its own design | | |
 | 8a | The `data` command on a company machine (§9a), in four parts, after slice 7 | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
 | 9 | Qorpera's own data as tables | | |

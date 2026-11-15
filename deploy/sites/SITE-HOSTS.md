@@ -56,10 +56,17 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   object gateway), `inbox` and `send` (mail), later `screens` (#1746). The reserved list holds all of them.
 - **One origin per site.** No sandbox. The visitor's session is the host-only cookie `__Host-qorpera_site` (no Domain,
   `Path=/`, Secure, HttpOnly, SameSite=Lax). Private and next answers refuse to be read, framed or posted to by another
-  origin (`Cross-Origin-Resource-Policy: same-origin`, a Fetch Metadata check, `frame-ancestors 'self'` with
-  `X-Frame-Options: SAMEORIGIN`, the unlock's Origin check), service worker scripts are refused (404), and every answer
-  carries its own `Cache-Control` with `no-transform` (the zone would otherwise add a 4-hour browser cache). That is
-  part S1's (site-serve); listed here so an operator knows what a healthy site host answers.
+  origin (`Cross-Origin-Resource-Policy: same-origin`, a Fetch Metadata check, `frame-ancestors`, the unlock's Origin
+  check), service worker scripts are refused (404), and every answer carries its own `Cache-Control` with
+  `no-transform` (the zone would otherwise add a 4-hour browser cache). That is part S1's (site-serve); listed here so
+  an operator knows what a healthy site host answers. The frame rule differs by host (since 20260930774000, "Seen
+  inside Qorpera" below): a next host's answers carry `frame-ancestors 'self'` with `X-Frame-Options: SAMEORIGIN`; an
+  own host's carry `frame-ancestors 'self' <the web's origins>` and no `X-Frame-Options` (it cannot name another
+  origin), so the web can show the site in a frame.
+- **The platform's folder.** On every site host the folder `/__qorpera/` is the platform's: no site's file is ever
+  served from it (any path under it, written plainly or escaped, answers site-serve's 404 page), whatever a version
+  holds there. Today it holds one door, the members' `POST /__qorpera/member` on an own host (below). `/.qorpera/`
+  (the password form, Look first's ticket) can never be a site path at all: a site's path never starts with a dot.
 - **App links keep their hosts** (`<slug>-preview.qorpera.com`). From 5.1 every website is a same-site neighbour of
   every app link, so a site's page could make a visitor's browser post into an app on the visitor's Lax gate cookie.
   The relay therefore refuses a **change from another site** before the gate, the database or the app see it: any
@@ -72,6 +79,56 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   still load an app's scripts and pictures and frame it until 5.2 adds `Cross-Origin-Resource-Policy` and
   `frame-ancestors 'self'` to forwarded answers (the web app never frames an app link, so that change breaks nothing
   there).
+
+## Seen inside Qorpera: the members' pass (20260930774000)
+
+The web shows a company's website in a frame on its own host (company views step 4, V1; the lane's DESIGN-4.md). A
+member opens it without the site's password, and D22 below still holds: the member proves who they are to the
+database with their bearer token, and carries the proof to the site's host as a one-use pass in a form's body.
+
+1. **The pass.** The web calls `qorpera_site_member_pass(site)` (authenticated; any member of the site's company,
+   viewers too; 42501 for anyone else). It answers `{schema: "qorpera.site-member-pass/v1", state: "open", host, pass,
+   expiresAt, action}`: `pass` is 32 random bytes in base64url (43 characters), kept in the database only as its
+   SHA-256 (`qorpera_company_site_member_passes`), good for 60 seconds and one use, bound to that site and to its own
+   host `<slug>.qorpera.com`; `action` is `https://<host>/__qorpera/member`. Refused as a state, nothing written:
+   `off` while hosts are off, `gone` for a site taken down, `none` for a site not live, `limited` (with `retryAfter`
+   seconds) while the member holds 30 open passes.
+2. **The door.** The web posts a form, `application/x-www-form-urlencoded`, to `action` with the frame as its target:
+   `pass` (exactly one) and, if it wants, `path` (a path of the site, with or without its leading `/`). The pass is
+   never in a URL, so never in a log. site-serve takes it only as a POST whose `Origin` is exactly one of the web's
+   origins (`QORPERA_WEB_ORIGINS`, below): any other Origin, `null` or none answers 403 before the database is asked.
+   A document under `Referrer-Policy: no-referrer` (the app's today) sends `Origin: null` with a form, so the web
+   submits from a door page with a referrer policy of its own, or changes the app's (CLIENT-CONTRACT.md, "Seen inside
+   Qorpera").
+   It redeems the pass through `qorpera_site_member_pass_redeem(host, pass)` (service role only: the right host, not
+   expired, one use, the member still one of the company, the site live and not taken down, hosts on), sets the
+   session cookie `__Host-qorpera_site` (12 hours, the same cookie a right password sets, the session marked as a
+   member's) and answers 303 to `/` or to the form's `path` on this host (anything that is not a site path goes to
+   `/`). A pass that fails (any shape but 43 base64url characters, refused by the database) answers exactly as a wrong
+   password does: the password page, 401. Any other method on the door answers 405 (`Allow: POST`); the next host has
+   no door (404). A form whose body is not a small form answers 415, 413 or 400 (as the password form's).
+3. **The frame.** Every own-host answer carries `frame-ancestors 'self' <the web's origins>` and no
+   `X-Frame-Options`; the next host keeps `frame-ancestors 'self'` with `X-Frame-Options: SAMEORIGIN`. The Fetch
+   Metadata check lets a frame's navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: iframe`) through on an own
+   host only; the browser's `frame-ancestors` then decides who may show it (every browser that sends Fetch Metadata
+   enforces it), so a sibling's frame gets an answer its browser will not show. The cookie works in the frame:
+   `app.qorpera.com` and `<slug>.qorpera.com` are the same site, so the Lax cookie is first-party there. A frame's
+   page is never counted (only a document is), and a member's session is never counted anywhere (its views are no
+   visits: the count skips it).
+4. **The web's origins.** site-serve reads `QORPERA_WEB_ORIGINS` (the stack's JSON array of exact origins, which other
+   functions read too) and keeps its entries that are an https origin and nothing more, at most eight; anything else in
+   it is left out, and with none left, or the variable unset or unreadable, it uses `["https://app.qorpera.com"]`. It
+   never refuses to start over the value. No new variable, secret or cron job.
+5. **Roll.** The migration first (inert by itself: no one has a pass), then site-serve's new files as in Step 5
+   below, this time both `site-serve.ts` and `index.ts` (it reads `QORPERA_WEB_ORIGINS` now), each with its sum line in
+   `functions/SOURCE`; then the web that calls it. Probe: `curl -sS -D - -o /dev/null -H 'Host: sites.qorpera.com'
+   http://127.0.0.1:8080/robots.txt` still 200, and from the Mac a made-up own host's top
+   (`https://zz-check-<hex>.qorpera.com/`) answers 401 with `frame-ancestors 'self' https://app.qorpera.com` and no
+   `x-frame-options`, and `https://zz-check-<hex>.qorpera.com/__qorpera/member` answers 405. Before the migration, the new site-serve answers the door today's 404 page.
+   Way back: the previous site-serve; the frame rule and the door go with it, and a pass then opens nothing.
+
+What it leaves open: a member who leaves the company keeps a session made before they left until it ends (12 hours at
+most), as a visitor who knew the password does; a password change ends it at once.
 
 ## The invariant (D22)
 
@@ -113,6 +170,12 @@ Why each part: no `--`, so `<slug>--next` and `xn--` names are never a site; not
 the app links' host and cache rule; no `qorpera`, so no `qorpera-login.qorpera.com`; the reserved names, because an
 exact record or Envoy host beats the wildcard and would take a live site's address without a word. A repository's
 derived names drop `qorpera` and collapse runs of `-` (`qorpera_code_site_slugs`).
+
+**Reserved paths** on every site host, beside the reserved names: `/.qorpera/` (the password form and Look first's
+ticket; no site path starts with a dot) and the folder `/__qorpera/` (since 20260930774000: the members'
+`POST /__qorpera/member` on an own host, "Seen inside Qorpera" above). site-serve never serves a site's file from
+either, written plainly or escaped; a file an agent publishes there stays in its version and is never shown. A new
+platform path on a site host goes under one of the two.
 
 ## Standing rule: a new platform name under qorpera.com (D20, D21)
 
@@ -266,6 +329,9 @@ qorpera.com, Cloudflare's abuse reports, or a member.
 
 ## Rollout (release 5.1), in the lead's order
 
+Rolled with release v247 on 15 Nov 2026: steps 1 to 9 are done and hosts are on since 09:01:48Z. Step 10 (D1b) is open.
+The steps stay here as the record of what each one does and of its way back.
+
 Each operator step is a tool with a read-only pre-check, an apply, a smoke and a way back (as `front-timeout` was for
 v238). **Never** turn hosts on before E1a is live, before the relay's check (P1) is live, or before the front answers a
 site host.
@@ -323,13 +389,16 @@ primary (mode 0644; the container's user only reads it). `client.mjs` does not c
    before 5.1); the new file's sum is the merged file's; `docker compose ps app-relay` is healthy; the forged POST below
    answers **401** today (the old relay forwards it to the gate, which shows the password page).
 2. **Apply.** Copy the live file outside the mounted folder (`front/backup/relay.mjs.pre-5.1-<sha12>-<UTC>`), write the
-   new file as `front/app-relay/.relay.mjs.new` (0644), check its syntax in the relay's own image
-   (`docker compose run --rm --no-deps --entrypoint node app-relay --check /app/.relay.mjs.new`), then one rename
-   (`mv -f front/app-relay/.relay.mjs.new front/app-relay/relay.mjs`) and
-   `docker compose up -d --no-deps --force-recreate app-relay`. Node has the old code loaded, so the restart is what
-   takes the new file. Its effect: app links answer 503 for the seconds the relay takes to start; connected link
-   programs lose their connection and come back with their keys within 1 to 30 seconds; visitors keep their sessions
-   (the database holds them), so nobody types a password again. Nothing else restarts; no run is in the relay's path.
+   new file as `front/app-relay/.relay.new.mjs` (0644), check its syntax in the relay's own image
+   (`docker compose run --rm --no-deps --entrypoint node app-relay --check /app/.relay.new.mjs`), then one rename
+   (`mv -f front/app-relay/.relay.new.mjs front/app-relay/relay.mjs`) and
+   `docker compose up -d --no-deps --force-recreate app-relay`. The temporary file's name must end in `.mjs`:
+   `node --check` goes by the file's extension and refuses any other (`ERR_UNKNOWN_FILE_EXTENSION`), which stopped
+   v247's first apply with a name ending in `.new` (nothing had changed in service). Node has the old code loaded,
+   so the restart is what takes the new file. Its effect: app links answer 503 for the seconds the relay takes to
+   start; connected link programs lose their connection and come back with their keys within 1 to 30 seconds;
+   visitors keep their sessions (the database holds them), so nobody types a password again. Nothing else restarts;
+   no run is in the relay's path.
 3. **Smoke** (from the operator's Mac, through Cloudflare):
    ```
    curl -sS -o /dev/null -w '%{http_code}\n' https://qorpera-health-preview.qorpera.com/.qorpera/health   # 200
@@ -347,7 +416,8 @@ primary (mode 0644; the container's user only reads it). `client.mjs` does not c
    ```
    No probe needs a session: the check comes before the gate. The relay writes no log line for a refusal (one line each
    would let any page fill the log).
-4. **Way back.** Copy the backup to `.relay.mjs.new`, one rename, the same recreate; the forged POST answers 401 again.
+4. **Way back.** Copy the backup to `.relay.new.mjs`, check it the same way, one rename, the same recreate; the forged
+   POST answers 401 again.
    Hosts must be off first (`hosts_enabled = false`): without P1, every site is an unchecked neighbour of every app.
 
 ### Step 7: the front (R1)

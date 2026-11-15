@@ -252,14 +252,14 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 	runs.push(f.run);
 	const [saveApp] = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
 	expect(saveApp?.description).toContain(
-		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
+		"you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js)",
 	);
 	const kit = (
 		saveApp?.inputSchema as {
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", null]);
+	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", "map", null]);
 	expect(kit.description).toContain("explainer: a mechanism or a decision that a short narrated video explains.");
 	const said = appGuide("explainer");
 	// Every call the guidance names is one the engine's scene has, and every icon and colour is one it draws.
