@@ -106,16 +106,23 @@ async function played(reads: boolean) {
 	return { path, write: async (bytes: Buffer) => void (await connected).write(bytes) };
 }
 
+/** The clock's part of the guard. The rule is the budget in units and bytes, which these tests check exactly; the wall
+ * clock only tells a blown budget (seconds of work in one turn) from a kept one. It is NOT a measure of this machine:
+ * the test VM runs several suites side by side on two cores, and a turn or a timer that the kernel sets aside reads as
+ * tens of milliseconds there (85 ms seen on 14 Nov 2026 where the old bound was 50), so the bounds are wide. */
+const TURN_CLOCK_MS = 500;
+const LOOP_CLOCK_MS = 1000;
+
 /** Every turn within its budget: the units checked before each (a frame and its message may pass it by 2), the bytes (a
  * read may pass it by one read), what is held (a header and one payload being filled), and the wall time of main's work
- * for it. */
+ * for it (coarsely: TURN_CLOCK_MS). */
 function withinBudget(turns: readonly DesktopStreamTurn[]): void {
 	expect(turns.length).toBeGreaterThan(0);
 	for (const turn of turns) {
 		expect(turn.units).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_UNITS + 2);
 		expect(turn.bytes).toBeLessThanOrEqual(DESKTOP_STREAM_TURN_BYTES + DESKTOP_STREAM_READ_BYTES);
 		expect(turn.held).toBeLessThanOrEqual(DESKTOP_STREAM_MESSAGE_BYTES + 9);
-		expect(turn.ms).toBeLessThan(25);
+		expect(turn.ms).toBeLessThan(TURN_CLOCK_MS);
 	}
 }
 
@@ -354,7 +361,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 			);
 		});
 		expect(desktop.cause).toBe("a pong it was not asked for");
-		expect(result.longest).toBeLessThan(50);
+		expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 	});
 
 	for (const [mode, messages] of [
@@ -373,7 +380,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 			// What one cycle can send at most went through (CYCLE_MESSAGES, CYCLE_BYTES); the next ended it.
 			expect(sink.send).toHaveBeenCalledTimes(messages);
 			expect(desktop.cause).toBe("more for one ok than one cycle can send");
-			expect(result.longest).toBeLessThan(50);
+			expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 		}, 30_000);
 
 	it("lets a member go on main's side with what a correct instance can still have on its way, and nothing more", async () => {
@@ -516,7 +523,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		});
 		expect(sink.messages[0]!.equals(message(1, 0, DESKTOP_STREAM_MESSAGE_BYTES))).toBe(true);
 		withinBudget(turns);
-		expect(result.longest).toBeLessThan(50);
+		expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 		expect(desktop.ended).toBeNull();
 	}, 90_000);
 
@@ -556,7 +563,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 				);
 			});
 			withinBudget(turns);
-			expect(result.longest).toBeLessThan(50);
+			expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 			expect(desktop.ended).toBeNull();
 		}, 120_000);
 
@@ -578,7 +585,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 			(Math.ceil(seconds) + 1) * DESKTOP_STREAM_SECOND_UNITS,
 		);
 		withinBudget(turns);
-		expect(result.longest).toBeLessThan(50);
+		expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 		expect(desktop.ended).toBeNull();
 	}, 30_000);
 
@@ -793,7 +800,7 @@ describe("a desktop watched in a process of its own (the lead's decision after r
 		});
 		expect(desktop.ended).toBeNull();
 		expect(sink.types()).toEqual([STREAM_SIZE]);
-		expect(result.longest).toBeLessThan(50);
+		expect(result.longest).toBeLessThan(LOOP_CLOCK_MS);
 		expect(result.heapGrowth).toBeLessThan(16 * 1024 * 1024);
 		stop.abort();
 		expect(await ending).toBe("closed");

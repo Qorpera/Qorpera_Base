@@ -430,8 +430,97 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.ok(described.value.companyBytes > 0);
 		const orders = described.value.tables.find((table) => table.name === "orders");
 		assert.deepEqual(orders.columns.map((column) => column.name), ["id", "customer", "amount", "status", "placed_by", "placed_at", "note"]);
+		const [{ held }] = await asAdmin(companyDatabase(ENV_A), "select count(*)::int as held from shop.orders");
+		assert.ok(held > 0);
+		assert.deepEqual([orders.rows, orders.rowsAbout], [held, undefined], "the rows the table holds, counted");
 		const triggers = await asAdmin(companyDatabase(ENV_A), "select tgname from pg_trigger where tgrelid = 'shop.orders'::regclass and not tgisinternal order by 1");
 		assert.deepEqual(triggers.map((row) => row.tgname), ["qorpera_changed", "qorpera_emptied", "qorpera_rows_gone"]);
+	});
+
+	it("counts a table's rows when it describes it, and never gives PostgreSQL's estimate as a count", async () => {
+		put(ENV_A, {
+			"data/tally/database.toml": 'format = "qorpera.database/v1"\nname = "Tally"\nabout = "Things counted"\n',
+			"data/tally/tables/001-things.sql":
+				"create table things (id int primary key, name text not null);\n" +
+				"insert into things select n, 'thing ' || n from generate_series(1, 7) n;\n" +
+				// A table named as a catalog relation is: PostgreSQL finds the catalog's first under a name alone (the
+				// insert must say the schema), so a count that named it without its schema would count the catalog's.
+				"create table pg_tables (id int primary key);\n" +
+				"insert into tally.pg_tables values (1), (2);\n" +
+				"create view some_things as select * from things where id <= 3;\n" +
+				// 7 rows at 0.2 s each: its count runs past a question's time here (300 ms).
+				"create view slow_things as select * from things where pg_sleep(0.2) is not null;\n",
+			"data/tally/queries/count.sql": "-- How many things there are.\nselect count(*) as things from things;\n",
+		});
+		const applied = await ask(contributor, "apply", { database: "tally" });
+		assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+		const rowsOf = (answer) => Object.fromEntries(answer.value.tables.map((table) => [table.name, [table.rows, table.rowsAbout]]));
+		const nothing = [undefined, undefined];
+		// Autovacuum never analyses a table of 7 rows, so PostgreSQL has no estimate for it: the count is the truth.
+		const estimates = await asAdmin(
+			companyDatabase(ENV_A),
+			"select relname, reltuples::int as estimate from pg_class where oid in ('tally.things'::regclass, 'tally.pg_tables'::regclass) order by 1",
+		);
+		assert.deepEqual(estimates, [{ relname: "pg_tables", estimate: -1 }, { relname: "things", estimate: -1 }]);
+		const [{ catalog }] = await asAdmin(companyDatabase(ENV_A), "select count(*)::int as catalog from pg_catalog.pg_tables");
+		assert.notEqual(catalog, 2);
+		const counted = await call(viewer, "describe", { database: "tally" });
+		assert.equal(counted.status, 200, JSON.stringify(counted.value));
+		// The slow view's count was ended at a question's time and left it without rows; the view after it was counted.
+		assert.deepEqual(rowsOf(counted), { pg_tables: [2, undefined], slow_things: nothing, some_things: [3, undefined], things: [7, undefined] });
+		assert.deepEqual(Object.keys(counted.value.tables.find((table) => table.name === "things")), ["name", "rows", "columns"]);
+		await withGateway({ limits: { ...LIMITS_HERE, countMs: 0 } }, async () => {
+			// No time to count: nothing is said of a table PostgreSQL has no estimate for.
+			const none = await call(viewer, "describe", { database: "tally" });
+			assert.deepEqual(rowsOf(none), { pg_tables: nothing, slow_things: nothing, some_things: nothing, things: nothing });
+			await asAdmin(companyDatabase(ENV_A), "analyze tally.things");
+			// With an estimate it is given under its own name, never as `rows`; a view never has one.
+			const about = await call(viewer, "describe", { database: "tally" });
+			assert.deepEqual(rowsOf(about), { pg_tables: nothing, slow_things: nothing, some_things: nothing, things: [undefined, 7] });
+			assert.deepEqual(Object.keys(about.value.tables.find((table) => table.name === "things")), ["name", "rowsAbout", "columns"]);
+		});
+		// A question still answers after a count was ended.
+		assert.deepEqual((await ask(viewer, "query", { database: "tally", question: "count" })).value.rows, [[7]]);
+	});
+
+	it("does not make a describe wait for a connection its counts cannot get in their time", async () => {
+		// A database only this test's gateway reads, so that all three connections of its read role are this gateway's
+		// to hold (the role may hold three in all, whichever gateway opens them).
+		put(ENV_A, {
+			"data/queue/database.toml": 'format = "qorpera.database/v1"\nname = "Queue"\nabout = "Things that wait"\n',
+			"data/queue/tables/001-things.sql":
+				"create table things (id int primary key);\n" +
+				"insert into things select n from generate_series(1, 7) n;\n" +
+				"create view slow_things as select * from things where pg_sleep(0.2) is not null;\n",
+			"data/queue/queries/slow.sql": "-- Every thing, slowly.\nselect count(*) as things from slow_things;\n",
+		});
+		// The slow question takes 1.4 s (7 rows at 0.2 s). Three of them hold the read role's three connections; the
+		// counts of a describe have 400 ms in all.
+		await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, countMs: 400 } }, async () => {
+			const applied = await ask(contributor, "apply", { database: "queue" });
+			assert.equal(applied.value.applied, true, JSON.stringify(applied.value));
+			const things = (answer) => answer.value.tables.find((table) => table.name === "things");
+			const sevens = [[[7]], [[7]], [[7]]];
+			assert.deepEqual((await ask(viewer, "query", { database: "queue", question: "slow" })).value.rows, [[7]], "the question's text is kept");
+			const slow = [1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" }));
+			await sleep(150);
+			const began = Date.now();
+			const busy = await call(viewer, "describe", { database: "queue" });
+			const took = Date.now() - began;
+			assert.equal(busy.status, 200, JSON.stringify(busy.value));
+			// Not counted: a count that waited on for a connection would have got one when the questions ended, and counted.
+			assert.deepEqual([things(busy).rows, things(busy).rowsAbout], [undefined, undefined]);
+			assert.ok(took < 3_000, `the describe took ${took} ms: it did not wait as long as the pool lets a call wait (5 s)`);
+			assert.deepEqual((await Promise.all(slow)).map((answer) => answer.value.rows), sevens);
+			// With connections free again a describe counts.
+			assert.equal(things(await call(viewer, "describe", { database: "queue" })).rows, 7);
+			// The connection that came too late for the count was given back: three slow questions still run side by
+			// side (one after two others would take 2.8 s).
+			const again = Date.now();
+			const second = await Promise.all([1, 2, 3].map(() => call(viewer, "query", { database: "queue", question: "slow" })));
+			assert.deepEqual(second.map((answer) => answer.value.rows), sevens);
+			assert.ok(Date.now() - again < 2_500, `three slow questions took ${Date.now() - again} ms`);
+		});
 	});
 
 	// ---- questions
@@ -1005,13 +1094,27 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		const otherServer = await serve(other);
 		const mainPort = port;
 		port = otherServer.address().port;
+		let failed = false;
 		try {
 			return await work(other);
+		} catch (error) {
+			failed = true;
+			throw error;
 		} finally {
 			port = mainPort;
 			otherServer.close();
 			otherServer.closeAllConnections();
-			await other.close();
+			// A pool ends only when every connection it lent is back: a gateway that kept one would never close, and the
+			// run would wait on it for ever. Say so instead (the work's own failure, if it had one, is the one shown).
+			let timer;
+			const closed = await Promise.race([
+				other.close().then(() => true),
+				new Promise((resolve) => {
+					timer = setTimeout(resolve, 10_000, false);
+				}),
+			]);
+			clearTimeout(timer);
+			if (!closed && !failed) assert.fail("the gateway did not close within 10 s: it never gave a connection back");
 		}
 	};
 
@@ -1369,6 +1472,9 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.deepEqual(stock.steps.waiting, []);
 		assert.deepEqual(stock.steps.applied.map((step) => step.name), ["001-items"]);
 		assert.deepEqual(stock.tables.map((table) => [table.name, table.columns.map((column) => column.name)]), [["items", ["id", "name", "owner"]]]);
+		const [{ items }] = await asAdmin(companyDatabase(ENV_D), "select count(*)::int as items from stock.items");
+		assert.ok(items > 0);
+		assert.deepEqual([stock.tables[0].rows, stock.tables[0].rowsAbout], [items, undefined], "an agent sees the rows the table holds");
 		assert.ok(described.value.companyBytes > 0);
 		// A step a member wrote that destroys rows is held, with what it would destroy, and nothing changes.
 		put(ENV_D, { "data/stock/tables/002-clear.sql": "delete from items where id > 90;\n" });

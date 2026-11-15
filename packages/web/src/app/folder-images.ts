@@ -1,6 +1,6 @@
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 
-/* A picture of the company's folder for a preview on the web (an agent's wall item, a question's option): read with the
+/* A picture of the company's folder for a preview on the web (a question's option): read with the
  * member's own folder client, as Storage reads it. An SVG sketch is a picture too: drawn in an <img>, it runs no script
  * and loads nothing. */
 

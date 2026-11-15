@@ -719,6 +719,7 @@ const STAFF_TOOLS = [
 	"table_write",
 	"save_app",
 	"post_app",
+	"app_guide",
 	"make_picture",
 	"update_wall",
 	"data_describe",
@@ -774,6 +775,7 @@ const WORKER_TOOLS = [
 	"table_write",
 	"save_app",
 	"post_app",
+	"app_guide",
 	"make_picture",
 	"data_describe",
 	"data_query",
@@ -1882,16 +1884,21 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Track 3, T3-1 (14 November 2026): the Company Computer, which no company has had since 3 October 2026, left the
 // words every run reads; laws 3 and 6 say what members see and which route is next today; and the run's ids and
 // versions (the bootstrap binding) left the instructions for the run's records. All three were measured once more.
+// With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
+// received; 20260930762000, 14 November 2026), all three instructions were measured once more.
+// Both together (master merged into T3-1, 15 November 2026): the worker and the conversation pairs measured once more.
 // Track 3, T3-2 (14 November 2026): each run's instructions fit its tools (a section or sentence about a tool it lacks
 // is left out, and no "when it is offered" is left), a worker gets no role section and no bank text, and the
 // Co-Founder's founding work stays only until the vision is agreed. The pins compile for a staff run's tools and a
 // worker's; all three were measured once more.
+// Master merged up through T3-1 (15 November 2026): app_guide joins save_app in the staff and worker tools, as the
+// runtime offers it, so the apps paragraph names it; all three measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "05fbc38354942d609f7638f028fa593b9d1d1e73cae459319dced9c0a2d298cf",
+			instructions: "6c00f0fcd829dec54944f196db66904907aab63754973c4662fff2fe0c42b81e",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1899,7 +1906,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "037da95092f39f1eec79f675851d85d2f90c2c8a056725caa09d5618d3782b05",
+			instructions: "717f6ebeb862961c998694e55e09a9e1e396522535ca5e136befbb825926eafc",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1907,7 +1914,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "05fbc38354942d609f7638f028fa593b9d1d1e73cae459319dced9c0a2d298cf",
+			instructions: "6c00f0fcd829dec54944f196db66904907aab63754973c4662fff2fe0c42b81e",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
