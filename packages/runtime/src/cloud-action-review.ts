@@ -306,6 +306,11 @@ export function cloudActionEffect(
 		// company's files, as a networked shell command can. Every one is reviewed, also on a boot without the folder:
 		// whether a boot has it is decided per boot, after the review (RUNTIME-FOLDER-TEST-MACHINES.md, Q2).
 		case "machine_run":
+		// The agent's home (lanes/agent-box-20261113, slice 4): one command of Codex's own on the run's machine, and
+		// one change it makes to files there. The same work as machine_run, under names of their own, so an approval
+		// of one is never an approval of the other.
+		case "home_command":
+		case "home_change":
 			return "external";
 		// A key saved off a machine's clipboard into the vault and granted to a repository's coding sessions changes who
 		// can use what (20260930705000), as computer_browser vault_capture of a coding value does.
@@ -450,7 +455,7 @@ export function machineWorkCheck(
 	askFirst: ReadonlySet<string>,
 ): CloudActionVerdict {
 	if (call.tool.source !== "runtime") return verdict;
-	if (call.tool.name === "machine_run")
+	if (call.tool.name === "machine_run" || call.tool.name === "home_command" || call.tool.name === "home_change")
 		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_WORK_REASON, CLOUD_MACHINE_WORK_ASK_REASON);
 	if (call.tool.name === "machine_screen")
 		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_SCREEN_WORK_REASON, CLOUD_MACHINE_SCREEN_WORK_ASK_REASON);
@@ -873,6 +878,26 @@ export function describeCloudAction(
 		title = "Run a command on a company machine";
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
+	} else if (tool.name === "home_command" || tool.name === "home_change") {
+		// The agent's home (cloud-codex-home.ts): what the model itself asked of its machine, in the words of the thing
+		// it asked for. The card shows the command, the shell a typed line goes into, or the patch itself, as much of
+		// each as fits; the approval's identity covers all of it.
+		title = tool.name === "home_command" ? "Run a command on its own machine" : "Change files on its own machine";
+		target = text(args.machine) || null;
+		quote("command", args.command, 2000);
+		const into = record(args.into ?? null);
+		if (typeof into.command === "string") quote("typed into", into.command, 2000);
+		if (Array.isArray(args.changes))
+			quote(
+				"patch",
+				args.changes
+					.map((entry) => {
+						const change = record(entry);
+						const diff = typeof change.diff === "string" ? change.diff : text(record(change.diff ?? null).head);
+						return `${text(change.path ?? change.machinePath)} (${text(change.kind)})\n${diff}`;
+					})
+					.join("\n"),
+			);
 	} else if (tool.name === "machine_screen") {
 		// 20260930708000: one action on a company machine's desktop. The card says where it lands, the window the agent last
 		// saw there and what it is for; the screen's pixels never reach the card or the reviewer.
@@ -1635,6 +1660,11 @@ export interface CloudActionCall {
 	argumentsText: string;
 	argumentSha256: string;
 	callId: string;
+	/** How the agent makes this action happen once its card is approved, when repeating the tool call is not what it
+	 * would do: the agent's home, where the action is Codex's own shell or patch on the machine and there is no tool of
+	 * the model's own to call again (lanes/agent-box-20261113, slice 4). Without it a parked card says what it has
+	 * always said: call the same tool again with the card's `call`. */
+	repeat?: string;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -1754,6 +1784,7 @@ export class CloudActionReviewGate {
 				name(begin.approverName, "an owner or admin"),
 				signal,
 				begin.cardElsewhere === true,
+				call.repeat,
 			);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
 		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
@@ -1875,9 +1906,10 @@ export class CloudActionReviewGate {
 		approver: string,
 		signal: AbortSignal,
 		elsewhere = false,
+		repeat?: string,
 	): Promise<CloudActionGateResult> {
 		try {
-			return await this.#poll(reviewId, approver, signal, elsewhere);
+			return await this.#poll(reviewId, approver, signal, elsewhere, repeat);
 		} catch (error) {
 			// The hold ended early (the run stopped, or the kernel refused the wait): park the
 			// card so its answer wakes the agent.
@@ -1915,6 +1947,7 @@ export class CloudActionReviewGate {
 		approver: string,
 		signal: AbortSignal,
 		elsewhere: boolean,
+		repeat?: string,
 	): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
 		for (let parkFailures = 0; ; ) {
@@ -1959,7 +1992,10 @@ export class CloudActionReviewGate {
 						? // A worker's card, or one from a conversation that cannot hold it: the member answers it in the
 							// agent's thread, and the answer wakes the agent there to make the call.
 							`APPROVAL_PENDING: The action waits for approval from ${approver} on a card in the agent's own thread (members see it there, not here), so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again. Carry on with other work, and say in your reply or report what you could not do because this action waits for approval in the agent's thread. If it is approved, the agent makes this one call in its own thread; nothing else of this run's work is picked up again.`
-						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's \`call\` field as its arguments, value for value (not its \`arguments\` text, which is the same call escaped; use that only when the card has no \`call\`); it will then run without another review.`,
+						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. ${
+								repeat ??
+								"When you are woken because it was approved, call the same tool again with the card's `call` field as its arguments, value for value (not its `arguments` text, which is the same call escaped; use that only when the card has no `call`); it will then run without another review."
+							}`,
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");

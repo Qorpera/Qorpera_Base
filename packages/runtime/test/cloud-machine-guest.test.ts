@@ -979,8 +979,11 @@ describe("company folder on the machine", () => {
 		// The unit reads the pass only from that file: no environment of its own, and the paths are the helper's.
 		const unit = await readFile(FOLDER_UNIT, "utf8");
 		expect(unit).not.toMatch(/^(Environment|EnvironmentFile|PassEnvironment|SetCredential|LoadCredential)\w*=/m);
+		// 20260930754000: the virtual files belong to the image's own agent account, so the model's own file tools,
+		// which run as that account and not as root, can write through the mount; root writes through
+		// default_permissions either way.
 		expect(unit).toContain(
-			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --cache-dir ${MACHINE_FOLDER.cache} --allow-other yes\n`,
+			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --cache-dir ${MACHINE_FOLDER.cache} --allow-other yes --owner-uid 2000 --owner-gid 2000\n`,
 		);
 		expect(MACHINE_FOLDER.cache).toBe("/var/lib/qorpera-folder/cache/machine");
 		// The cache folder and the two above it, made before the start: root's (this process's user here), real folders
