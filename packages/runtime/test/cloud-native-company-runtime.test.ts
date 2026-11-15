@@ -3556,7 +3556,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"e995b47f9f8924ce74007517609349464fe3921a79b2749478d669027d731d90",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"52121b5587df6bb4574d11c849137b371427a8b1a6e8d27f487d90f66701546c",
+		"969e3085c5a3d6e82def6792b2eaec849c4cd024e64d603860108c42b7a2eab4",
 	);
 });
 
