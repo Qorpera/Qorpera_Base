@@ -730,7 +730,8 @@ export function judge(evidence, leaks = []) {
 	const heldAgain = heldOf(data.heldAgain);
 	check(
 		"dataHeld",
-		data.heldWrite?.receipt?.exitCode === 0 && answered(data.held) && data.held.answer.applied === false && held?.state === "held" &&
+		data.heldWrite?.receipt?.exitCode === 0 && data.heldWrite.saved?.[`data/${DATA_DB}/tables/002-drop-points.sql`] === 1 &&
+			answered(data.held) && data.held.answer.applied === false && held?.state === "held" &&
 			/^002-drop-points\.[0-9a-f]{64}\.[0-9a-f]{64}$/.test(held.allow ?? "") &&
 			(held.destroys ?? []).some((x) => x.what === "dropped table column" && /tickets\.points$/.test(x.object ?? "")) &&
 			answered(data.heldAgain) && heldAgain?.state === "held" && heldAgain.allow === held.allow &&
@@ -2246,12 +2247,15 @@ async function prove(options, evidence, cleanups, secrets) {
 	// question's rows in Bob's output take the database's read into his run; a step that would destroy data is held.
 	const data = steps.data;
 	const dataPaths = (files) => Object.keys(files).map((path) => `data/${DATA_DB}/${path}`);
+	/** Every command 8b started on p4, its `data` commands and its writes. */
+	const dataCommands = [];
 	/** One `data` command line in a machine_run of `who`'s: its exit code, the answer it printed (one line of JSON) and its
 	 * words, with the calls that reached the run door and the passes asked for meanwhile. */
 	const dataRun = async (who, key, line) => {
 		const from = { door: data.doorRequests, passes: db.calls.qorpera_machine_data_pass ?? 0 };
 		// The exit code first: a receipt keeps only so much output, and the usage words are long.
 		const ran = await machineRun(who, key, `out=$(${line} 2>&1); code=$?; echo "data-exit $code"; printf '%s\\n' "$out"`);
+		dataCommands.push(ran.commandId);
 		const done = ran.receipt ? await soft(readDone(who, ran.commandId)) : { error: ran.refusal };
 		const output = String(done.output ?? "");
 		const exit = /^data-exit (\d+)$/m.exec(output);
@@ -2273,13 +2277,19 @@ async function prove(options, evidence, cleanups, secrets) {
 	const writeFiles = (root, files) =>
 		Object.entries(files).flatMap(([path, text]) => [`cat > ${root}/data/${DATA_DB}/${path} <<'P4DATA'`, text.replace(/\n$/, ""), "P4DATA"]);
 	const savedNow = (files) => Object.fromEntries(dataPaths(files).map((path) => [path, entries(path)]));
-	/** A command that writes files under /company/data, and their saves. */
+	/** A command that writes files under /company/data, and their saves. It starts once the earlier `data` commands' ends
+	 * are recorded and their windows closed: a change made while an ended command's window is still open is credited to
+	 * that command too, and refused `command_ended` (run 3 lost 002 so). */
 	const writeData = async (key, lines, files) => {
+		const earlier = [...dataCommands];
+		const settled = await soft(until(`${key} waits for the earlier data commands' windows`,
+			() => earlier.every((id) => commandRow(id)?.endedAt && closedOn(id)), { timeoutMs: 180_000, signal }));
 		const ran = await machineRun("alice", key, ["set -e", ...lines, "echo written"].join("\n"));
+		dataCommands.push(ran.commandId);
 		const receipt = ran.receipt ? await soft(readDone("alice", ran.commandId)) : { error: ran.refusal };
 		await soft(until(`${key}'s files are saved`, () => Object.values(savedNow(files)).every((n) => n === 1), { timeoutMs: 120_000, signal }));
 		return { commandId: ran.commandId, receipt: { state: receipt.state ?? null, exitCode: receipt.exitCode ?? null, error: receipt.error ?? null },
-			saved: savedNow(files) };
+			waitedFor: earlier.length, settled: settled?.error ?? true, saved: savedNow(files) };
 	};
 	// The files go to a copy on the machine's own disk first, then into /company: the copy is what Bob's question reads
 	// its text from (below), and copying writes to /company without reading it.
