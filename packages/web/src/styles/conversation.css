@@ -1190,6 +1190,13 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .side-panel-way:hover { background: var(--hover); text-decoration: none; }
 .side-panel-way:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+/* A retired app's page (the founder, 15 Nov 2026): its cover or emblem in grey, one line, Bring back. Nothing else. */
+.side-panel-body.is-retired { background: var(--bg); }
+.side-panel-retired { display: grid; justify-items: center; gap: 14px; margin: auto; padding: 24px; text-align: center; }
+.side-panel-retired-mark { display: grid; place-items: center; width: 160px; height: 160px; filter: grayscale(1); opacity: 0.55; }
+.side-panel-retired-mark .interface-emblem { width: 96px; height: 96px; --emblem-ink: var(--text-muted); }
+.side-panel-retired-mark.is-cover img { width: 160px; height: 160px; object-fit: cover; border-radius: 22px; }
+.side-panel-retired-line { margin: 0; color: var(--text-muted); font-size: 15px; }
 @media (max-width: 760px) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
 @container thread-body (max-width: 42em) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
 /* The Concepts viewer (views/concepts.ts; Jonas, 8 November 2026): full screen, no rail and no top bar. The side panel
@@ -1315,6 +1322,9 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-card-go { display: grid; flex: none; place-items: center; color: var(--text-muted); opacity: 0.5; transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring); }
 .app-card-go .icon { width: 15px; height: 15px; }
 .app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
+/* A card of an app a member retired: muted, its emblem grey, its line "Retired". It still opens the app's page. */
+.app-card.is-retired { color: var(--text-muted); }
+.app-card.is-retired .app-card-emblem .interface-emblem { --emblem-ink: var(--text-muted); filter: grayscale(1); opacity: 0.6; }
 /* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
 .message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {

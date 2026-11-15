@@ -508,6 +508,8 @@ label > input, label > select { font-weight: 400; }
 .rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
 /* A page hidden from the rail, in Hidden: a button that opens its menu. */
 .rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+/* A retired interface in Hidden: its emblem grey, as its page shows it. */
+.rail-row-retired .rail-row-stand .interface-emblem { filter: grayscale(1); opacity: 0.55; }
 /* What's new's heading (#/c/<id>/whats-new): its spark beside the title. */
 .sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sites-page-heading > svg { flex: none; }

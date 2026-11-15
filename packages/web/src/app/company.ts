@@ -1,3 +1,4 @@
+import { bringBackApp, type RetiredApp, retireApp } from "@qorpera/cloud-client/app-retired";
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
@@ -39,6 +40,7 @@ import {
 	type RealtimeSubscription,
 	subscribeCompanyRealtime,
 } from "../cloud/realtime.ts";
+import { changeRetiredApps } from "../cloud/retired-apps.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
@@ -279,6 +281,9 @@ export interface CompanyState {
 	/** The company's groups of apps, as its apps/groups.md says (cloud/app-groups.ts); unset until read, and while the
 	 * company has none. */
 	appGroups?: readonly AppTreeNode[];
+	/** The interfaces a member retired, for the whole company (apps/retired.md; the founder, 15 Nov 2026): as last read,
+	 * with this member's own changes that no read has seen yet. Unset until the first read lands. */
+	appsRetired?: readonly RetiredApp[];
 	/** The member's own arrangement of the drawer over them (20260930728000), as last read or written. */
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
@@ -1372,6 +1377,106 @@ export class CompanyController {
 		const done = await reset;
 		if (done) void this.memberChats.refresh();
 		return done;
+	}
+
+	/** The member's own client for the company's folder, for Retire interface and Bring back; the application sets it
+	 * while the company's apps are read. */
+	appsFolder?: () => WebMemberFolder;
+	/** Reads the company's apps (and the retired interfaces) again now; the application sets it. */
+	appsReread?: () => void;
+	/** The retired interfaces as apps/retired.md said at the newest read published, and when that read began. */
+	#retiredRead: readonly RetiredApp[] = [];
+	#retiredReadAt = Number.NEGATIVE_INFINITY;
+	/** This member's retires (an app) and bring-backs (null) that no read has seen yet, by the app's name, with when each
+	 * was written (`performance.now()`; undefined while it is on its way). */
+	readonly #retiredChanges = new Map<string, { readonly app: RetiredApp | null; written?: number }>();
+
+	/** The retired interface `name`, or undefined. */
+	retiredApp(name: string): RetiredApp | undefined {
+		return this.store.get().appsRetired?.find((app) => app.name === name);
+	}
+
+	/** Whether this member may retire an interface and bring one back: a member who writes the company's folder. */
+	mayRetireApps(): boolean {
+		return Boolean(this.appsFolder && this.store.get().team?.capabilities.write && !this.#stopped);
+	}
+
+	/** The retired interfaces as a read of apps/retired.md found them; `startedAt` is when that read began. Reads may end
+	 * in another order than they began (a hint, the minute's clock and a member's own change each start one): one that
+	 * began before the newest published changes nothing (review r1 of #1844, F1). A change of this member's stands over
+	 * what a read from before it was written found. */
+	publishRetiredApps(read: readonly RetiredApp[], startedAt: number): void {
+		if (this.#stopped || startedAt < this.#retiredReadAt) return;
+		this.#retiredReadAt = startedAt;
+		this.#retiredRead = read;
+		for (const [name, change] of this.#retiredChanges)
+			if (change.written !== undefined && startedAt >= change.written) this.#retiredChanges.delete(name);
+		this.#showRetired();
+	}
+
+	#showRetired(): void {
+		const shown = new Map(this.#retiredRead.map((app) => [app.name, app]));
+		for (const [name, change] of this.#retiredChanges)
+			if (change.app) shown.set(name, change.app);
+			else shown.delete(name);
+		const next = [...shown.values()];
+		const before = this.store.get().appsRetired;
+		if (before && JSON.stringify(before) === JSON.stringify(next)) return;
+		this.store.set({ appsRetired: next });
+	}
+
+	/** Retire interface (`retired` true; the founder, 15 Nov 2026: "a "retire interface" config when rightclicking an
+	 * interface to stop maintaining it, and hide it") or Bring back (false), for the whole company: the app leaves (or
+	 * comes back to) every member's drawer at once here, and its line is written to apps/retired.md as this member, in
+	 * one commit over the version read, tried once more when another member wrote the file in between. When it is not
+	 * written, the app is put back and the rail says so. Answers whether it was written. */
+	async setAppRetired(name: string, retired: boolean): Promise<boolean> {
+		const folder = this.appsFolder;
+		// One change of an app at a time: a second press while the first is on its way does nothing.
+		const pending = this.#retiredChanges.get(name);
+		if (!folder || !this.mayRetireApps() || (pending && pending.written === undefined)) return false;
+		const title = this.store.get().apps?.find((app) => app.name === name)?.manifest?.name ?? name;
+		const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+		const change: { readonly app: RetiredApp | null; written?: number } = {
+			app: retired ? { name, by: this.#userId, at } : null,
+		};
+		this.#retiredChanges.set(name, change);
+		this.reportRailError(undefined);
+		this.#showRetired();
+		const signal = this.#abort.signal;
+		const failure = retired
+			? t("{name} could not be retired. Try again.", { name: title })
+			: t("{name} could not be brought back. Try again.", { name: title });
+		const full = t("The company has too many retired interfaces. Bring one back first.");
+		try {
+			await changeRetiredApps(
+				folder(),
+				(text) =>
+					retired ? retireApp(text, name, this.#userId, at) : text === null ? null : bringBackApp(text, name),
+				{
+					key: () => `web:apps-retired:${crypto.randomUUID()}`,
+					failure,
+					full,
+				},
+				signal,
+				() => signal.throwIfAborted(),
+			);
+		} catch (error) {
+			if (this.#stopped) return false;
+			if (this.#retiredChanges.get(name) === change) this.#retiredChanges.delete(name);
+			this.#showRetired();
+			// The folder's own refusal and a full file say why; anything else (a lost connection) says only that it failed.
+			const said =
+				error instanceof WebCompanyFolderRejectedError || (error instanceof Error && error.message === full)
+					? error.message
+					: failure;
+			this.reportRailError(said);
+			return false;
+		}
+		if (this.#stopped) return false;
+		change.written = performance.now();
+		this.appsReread?.();
+		return true;
 	}
 
 	/** Reads an app's own icons; the application sets it to the apps' reader. */

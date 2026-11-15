@@ -37,6 +37,7 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -2378,5 +2379,52 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const dialog = save.closest<HTMLElement>(".modal-backdrop, [role=dialog]") ?? document.body;
 		[...dialog.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!.click();
 		expect(await rename).toBeUndefined();
+	});
+
+	it("offers Retire interface on an agent's app, after the drawer's own items, and only to a member who writes", () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		const menu = (key: string) =>
+			element
+				.querySelector<HTMLElement>(`[data-app-key='${key}']`)!
+				.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		const rows = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((row) =>
+				row.textContent?.trim(),
+			);
+		const close = () =>
+			document
+				.querySelector<HTMLElement>(".context-menu")
+				?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// Without the member's folder client (a cloud that can't write it), nothing new.
+		menu("app:trips");
+		expect(rows()).not.toContain("Retire interface");
+		close();
+		const fake = folderFake({ seed: [] });
+		controller.appsFolder = () => fake.folder;
+		menu("app:trips");
+		expect(rows().slice(0, 3)).toEqual(["Move to", "Icon and colour", "Retire interface"]);
+		expect(rows()[3]).toMatch(/^Reset sidebar/);
+		expect(rows()).toHaveLength(4);
+		close();
+		// A platform page and a group are no app an agent keeps.
+		menu("members");
+		expect(rows()).not.toContain("Retire interface");
+		close();
+		menu("group:market");
+		expect(rows()).not.toContain("Retire interface");
+		close();
+		// Before the member's own drawer can be arranged, Retire interface still stands, alone.
+		controller.store.set({ appLayoutUnavailable: true });
+		menu("app:trips");
+		expect(rows()).toEqual(["Retire interface"]);
+		close();
+		// A member who may not write the folder gets none.
+		controller.store.set({
+			team: { ...controller.store.get().team!, capabilities: { ...team.capabilities, write: false } },
+		});
+		menu("app:trips");
+		expect(rows()).toEqual([]);
+		close();
 	});
 });

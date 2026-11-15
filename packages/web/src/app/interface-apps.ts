@@ -7,6 +7,12 @@ import {
 	parseAppIcon,
 } from "@qorpera/cloud-client/app-icons";
 import {
+	APP_RETIRED_MAX_BYTES,
+	APP_RETIRED_PATH,
+	parseRetiredApps,
+	type RetiredApp,
+} from "@qorpera/cloud-client/app-retired";
+import {
 	CLOUD_MEMBER_DATA_DATABASE,
 	CLOUD_MEMBER_DATA_QUESTION,
 	CLOUD_MEMBER_DATA_WATCHES,
@@ -202,6 +208,19 @@ export async function readAppGroups(folder: Folder, signal: AbortSignal): Promis
 	// A bigger file is read too (up to a mebibyte): the reader keeps its first 64 KiB, as the agents' tool does.
 	const text = entry ? await readText(folder, entry, signal, 16 * APP_GROUPS_MAX_BYTES) : null;
 	return text === null ? undefined : parseAppGroups(text);
+}
+
+/** The interfaces a member retired, from `apps/retired.md` (cloud-client app-retired.ts; RUNTIME-INTERFACE-APPS.md §3e):
+ * none when there is no file, or it is not text. A read that fails throws, so what was read before stands. */
+export async function readRetiredApps(folder: Folder, signal: AbortSignal): Promise<readonly RetiredApp[]> {
+	const entry = (await folder.read(APP_RETIRED_PATH, signal)).entry;
+	if (entry?.kind !== "file" || !entry.file || entry.file.bytes > APP_RETIRED_MAX_BYTES) return [];
+	const bytes = await folder.readFile(entry.file, signal, APP_RETIRED_MAX_BYTES, LIVE);
+	try {
+		return parseRetiredApps(TEXT.decode(bytes));
+	} catch {
+		return [];
+	}
 }
 
 /** The company's apps, in name order: every folder of `apps/` with its manifest read. */
@@ -1441,6 +1460,7 @@ export class CompanyApps {
 	readonly #source: CompanyAppsSource;
 	readonly #publish: (apps: readonly CompanyApp[]) => void;
 	readonly #publishGroups: ((groups: readonly AppTreeNode[] | undefined) => void) | undefined;
+	readonly #publishRetired: ((retired: readonly RetiredApp[], startedAt: number) => void) | undefined;
 	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
@@ -1461,10 +1481,14 @@ export class CompanyApps {
 		publish: (apps: readonly CompanyApp[]) => void,
 		/** The company's groups of apps, read with the apps (apps/groups.md), when they change. */
 		publishGroups?: (groups: readonly AppTreeNode[] | undefined) => void,
+		/** The interfaces members retired (apps/retired.md), read with the apps, after every read that worked, with when
+		 * the read began (`performance.now()`), so a member's own change is not undone by a read from before it. */
+		publishRetired?: (retired: readonly RetiredApp[], startedAt: number) => void,
 	) {
 		this.#source = source;
 		this.#publish = publish;
 		this.#publishGroups = publishGroups;
+		this.#publishRetired = publishRetired;
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
@@ -1548,10 +1572,14 @@ export class CompanyApps {
 		if (this.#stop.signal.aborted) return this.#last;
 		try {
 			const folder = this.#source.folder();
-			const [apps, groups] = await Promise.all([
+			const startedAt = performance.now();
+			const [apps, groups, retired] = await Promise.all([
 				readApps(folder, this.#stop.signal),
 				this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
+				this.#publishRetired ? readRetiredApps(folder, this.#stop.signal).catch(() => null) : null,
 			]);
+			// A failed read of the retired interfaces keeps what was read before too.
+			if (retired !== null && !this.#stop.signal.aborted) this.#publishRetired?.(retired, startedAt);
 			// A failed read of the groups keeps what was read before.
 			if (groups !== null) {
 				const shownGroups = JSON.stringify(groups ?? null);

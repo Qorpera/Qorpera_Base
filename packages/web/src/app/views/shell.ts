@@ -1220,8 +1220,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages. The
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
 	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
+	// An app a member retired is in no member's drawer; it keeps its place in each member's layout, so bringing it back
+	// puts it where it stood (the founder, 15 Nov 2026: "stop maintaining it, and hide it").
+	const retiredNames = new Set((state.appsRetired ?? []).map((app) => app.name));
 	const postedApps = (state.apps ?? []).filter(
-		(app) => app.manifest?.posted === true && !app.manifest.concept && !(state.whatsNew && app.name === "whats-new"),
+		(app) =>
+			app.manifest?.posted === true &&
+			!app.manifest.concept &&
+			!(state.whatsNew && app.name === "whats-new") &&
+			!retiredNames.has(app.name),
 	);
 	const concepts = companyConcepts(state.apps ?? []).length;
 	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
@@ -1518,8 +1525,16 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// And the contacts the member hid. A hidden contact can still write: how many of their messages wait stands on
 	// the fold, so nothing a person sent goes unseen.
 	const hiddenContacts = railQuery ? [] : contacts.filter((contact) => contact.hidden);
+	// And the interfaces a member retired, for every member: from here they open, and a member brings one back.
+	const retiredApps = railQuery
+		? []
+		: (state.appsRetired ?? []).flatMap((retired) => {
+				const manifest = state.apps?.find((app) => app.name === retired.name)?.manifest;
+				return manifest ? [{ name: retired.name, title: manifest.name, emblem: manifest.emblem }] : [];
+			});
+	const openApp = route.name === "company" && route.section === "app" ? route.id : undefined;
 	const hiddenUnread = hiddenContacts.reduce((sum, contact) => sum + (memberChats?.[contact.userId]?.unread ?? 0), 0);
-	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length;
+	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length + retiredApps.length;
 	const hiddenGroup = parts.hiddenGroup;
 	hiddenGroup.count.textContent = String(hiddenCount);
 	hiddenGroup.count.hidden = hiddenGroup.open;
@@ -1546,6 +1561,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
 							false,
 							hiddenPageRow,
+						),
+					),
+					...retiredApps.map((entry) =>
+						row(
+							`retired-app:${entry.name}`,
+							appHash(profileId, entry.name),
+							entry,
+							entry.name === openApp,
+							retiredAppRow,
 						),
 					),
 					...hiddenItems.flatMap((itemId) => {
@@ -2936,11 +2960,20 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
 	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
 	const memberElement = target.closest<HTMLElement>("[data-member-id]");
+	const retiredElement = target.closest<HTMLElement>("[data-retired-app]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
 	let findOpener: (() => HTMLElement | null) | undefined;
-	if (memberElement?.dataset.memberId) {
+	if (retiredElement?.dataset.retiredApp) {
+		// A retired interface, in Hidden: Bring back, for a member who may write the company's folder.
+		const name = retiredElement.dataset.retiredApp;
+		if (company.mayRetireApps())
+			items = [{ label: t("Bring back"), icon: "show", select: () => void company.setAppRetired(name, false) }];
+		label = t("{name} actions", { name: retiredElement.dataset.pageName ?? name });
+		opener = retiredElement;
+		findOpener = () => parts.list.querySelector<HTMLElement>(`[data-retired-app="${name}"]`);
+	} else if (memberElement?.dataset.memberId) {
 		const userId = memberElement.dataset.memberId;
 		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.
 		const prefix = memberElement.closest(".rail-hidden") ? ".rail-hidden " : "";
@@ -3002,7 +3035,10 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 function openDrawerMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
 	if (event.shiftKey && (event.clientX || event.clientY)) return;
 	const tile = (event.target as Element).closest<HTMLElement>("[data-app-key]");
-	if (!appsArrangeable(company) || !tile) {
+	const arrangeable = appsArrangeable(company);
+	// An agent's app may be retired from here, arranged or not (the founder, 15 Nov 2026).
+	const retire = tile ? retireItems(company, tile.dataset.appKey!) : [];
+	if ((!arrangeable && !retire.length) || !tile) {
 		const element = (event.target as Element).closest<HTMLElement>("[data-interface-page]");
 		if (element) openPageMenu(company, parts, element, event);
 		return;
@@ -3011,9 +3047,16 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	const name = tile.querySelector(".rail-app-name")?.textContent ?? key;
 	// A group takes a colour of the member's own; an app its icon and colour in one panel (12 Nov 2026), where an app in a
 	// group sets the group's colour.
-	const items: MenuEntry[] = isGroupKey(key)
-		? groupMenu(company, parts, groupIdOf(key))
-		: [moveToMenu(company, parts, key), lookMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
+	const items: MenuEntry[] = !arrangeable
+		? retire
+		: isGroupKey(key)
+			? groupMenu(company, parts, groupIdOf(key))
+			: [
+					moveToMenu(company, parts, key),
+					lookMenu(company, parts, key),
+					...pageMenuItems(company, parts, tile),
+					...retire,
+				];
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, tile);
@@ -3024,8 +3067,19 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 		y: point.y,
 		opener: tile,
 		findOpener: () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawer}"]`),
-		items: [...items, ...resetEntries(company, parts)],
+		items: arrangeable ? [...items, ...resetEntries(company, parts)] : items,
 	});
+}
+
+/** Retire interface (the founder, 15 Nov 2026: "a "retire interface" config when rightclicking an interface to stop
+ * maintaining it, and hide it"), for an agent's app in the drawer, and only for a member who may write the company's
+ * folder. The platform's pages, Concepts, Sites and What's new are no app an agent keeps: nothing for them. No question
+ * first and no danger colour: it is undone from Hidden, and the click is the ask. */
+function retireItems(company: CompanyController, key: string): MenuEntry[] {
+	if (!key.startsWith("app:") || !company.mayRetireApps()) return [];
+	const name = key.slice("app:".length);
+	if (!company.store.get().apps?.some((app) => app.name === name && app.manifest)) return [];
+	return [{ label: t("Retire interface"), icon: "hide", select: () => void company.setAppRetired(name, true) }];
 }
 
 /** Move to: loose in the drawer, or any group, the one it is in checked. */
@@ -3227,6 +3281,26 @@ function pageMenuItems(company: CompanyController, parts: RailParts, element: HT
 			},
 		},
 	];
+}
+
+/** An interface a member retired, in Hidden for every member: its emblem and name. A press opens its page, which says
+ * it is retired; a right-click offers Bring back. */
+function retiredAppRow(
+	model: { name: string; title: string; emblem: AppManifest["emblem"] },
+	href: string,
+): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-row rail-row-page rail-row-retired",
+			href,
+			draggable: "false",
+			"data-retired-app": model.name,
+			"data-page-name": model.title,
+		},
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(model.emblem, 34)),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Retired"))),
+	);
 }
 
 /** A page hidden from the rail, in Hidden: its emblem and name. A press, like a right-click, offers to show it. */
