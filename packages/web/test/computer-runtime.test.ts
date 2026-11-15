@@ -2934,6 +2934,48 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 		allEnded(p);
 	});
 
+	it("enters no large view at a later picture for an open that ended without opening (release review r2 F1 of #1852)", async () => {
+		const s = setup();
+		s.state.apps = apps;
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_OPEN_NO_FOLDER" });
+		choose(p, 0);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(p.choices.map((choice) => choice.ended)).toEqual(["answered"]);
+		await advance(START_AGAIN_MS);
+		s.state.fallback = { picture: 1 };
+		action(p)!.click();
+		await flush();
+		await advance(LOOK_EVERY_MS * 2);
+		expect(mark(p)).toBe("Live");
+		expect(s.opens).toEqual(["apps/a"]);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+
+	it("enters no large view when a click on Computer wakes a computer whose open was said to have failed (release review r2 F1 of #1852)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		s.state.wakeFails = 1;
+		const p = panel(s);
+		await flush();
+		choose(p, 1);
+		await flush();
+		expect(p.choices.map((choice) => choice.ended)).toEqual(["said"]);
+		p.ask();
+		await flush();
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(2);
+		s.state.machines = [machine(1)];
+		s.state.fallback = { picture: 1 };
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS * 2);
+		expect(mark(p)).toBe("Live");
+		expect(s.opens).toEqual([]);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+
 	it.each([1781, 1, 2, 3, 4, 5, 6, 7])(
 		"a seeded random walk over the member's moves, answers in any order: no choice lost silently, none sent twice, none standing past its limit (seed %i)",
 		async (first) => {
