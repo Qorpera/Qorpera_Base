@@ -123,11 +123,15 @@ const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
 const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
 const EDITS = ["add", "change", "remove"];
+const JSON_TYPES = new Set(["json", "jsonb"]);
 const SETTLE =
 	"with looked as (select c.txid, pg_catalog.txid_status(c.txid) as status from qorpera_data.change_log c " +
 	"where $1::bigint[] is null or c.txid = any ($1::bigint[])), " +
 	"gone as (delete from qorpera_data.change_log c using looked l where c.txid = l.txid and l.status = 'aborted' returning c.txid) " +
-	"select l.txid::text as txid, l.status from looked l where l.status is distinct from 'committed'";
+	"select l.txid::text as txid from looked l where l.status = 'in progress'";
+const UNROWED =
+	"delete from qorpera_data.change_log c where pg_catalog.txid_status(c.txid) is distinct from 'in progress' " +
+	"and not exists (select 1 from qorpera_data.row_changes r where r.txid <= c.txid)";
 const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
 	.map((table) => `coalesce(pg_catalog.pg_total_relation_size(pg_catalog.to_regclass('qorpera_data.${table}')), 0)`)
 	.join(" + ");
@@ -135,7 +139,7 @@ const OWN_SIZE = `select pg_catalog.pg_database_size(pg_catalog.current_database
 const RELATION =
 	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, " +
 	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key, " +
-	"pg_catalog.format_type(a.atttypid, null) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable " +
+	"pg_catalog.format_type(a.atttypid, -1) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable " +
 	"from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1 " +
 	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
@@ -1243,7 +1247,15 @@ export class Gateway {
 		const asked = (statement) => {
 			const params = [];
 			const param = (column, value) => {
-				params.push(value === null || typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value));
+				params.push(
+					value === null
+						? null
+						: JSON_TYPES.has(column?.base) || typeof value === "object"
+							? JSON.stringify(value)
+							: typeof value === "string"
+								? value
+								: String(value),
+				);
 				return column ? `$${params.length}::${column.base}` : `$${params.length}`;
 			};
 			const atKey = () =>
@@ -2030,18 +2042,24 @@ export class Gateway {
 			const sweep = now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs;
 			const waiting = [...(this.#unsettled.get(database) ?? [])];
 			if (!sweep && waiting.length === 0) continue;
-			const looked = await this.#pool(database, "qorpera_data_keeper")
+			const keeper = this.#pool(database, "qorpera_data_keeper");
+			const looked = await keeper
 				.query(SETTLE, [sweep ? null : waiting])
+				.then(async (answer) => {
+					if (sweep) await keeper.query(UNROWED);
+					return answer;
+				})
 				.catch(() => null);
 			if (looked === null) continue;
 			if (sweep) this.#swept.set(database, now);
-			const running = new Set(looked.rows.filter((line) => line.status === "in progress").map((line) => line.txid));
+			const running = new Set(looked.rows.map((line) => line.txid));
 			const unsettled = this.#unsettled.get(database) ?? new Set();
 			for (const txid of waiting) if (!running.has(txid)) unsettled.delete(txid);
 			for (const txid of running) unsettled.add(txid);
 			if (unsettled.size === 0) this.#unsettled.delete(database);
 			else this.#unsettled.set(database, unsettled);
 		}
+		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!databases.includes(database)) known.delete(database);
 	}
 
 	/** A member's request, begun as that member. */

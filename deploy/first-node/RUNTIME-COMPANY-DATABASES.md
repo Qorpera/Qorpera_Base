@@ -519,6 +519,16 @@ text above:
 - **How the watcher finds aborted lines.** At each look it reads the lines of the writes this gateway began and has
   not seen end; once an hour, and at its first look on a company's database, it reads every line, so a line left by a
   gateway that stopped is removed too, and one it finds running is read again at the next look.
+- **How an actor's line goes with its rows' lines.** At the same hourly look, the line of a write that has ended goes
+  once the record holds no line of its txid or an older one: the record drops its oldest lines first, so the actor's
+  lines are bounded as the record is. A write that changed no rows (a change that only selects) keeps its line until
+  then.
+- **A write's room** is what the watcher last found, as for a named change before: an edit does not read the record's
+  size on its keeper connection (the bullet "Bounded" above says it would). The watcher's look subtracts the record
+  wherever it reads a company's size, so a write's room never counts the record.
+- **A value for a `json` or `jsonb` column** is the JSON value itself, as `rows` gives it, and is written as JSON; a
+  string there is a JSON string. Every other value is text, a number, `true`, `false` or null, cast to the column's
+  type.
 
 ## 6. Agents
 

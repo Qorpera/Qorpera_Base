@@ -3086,4 +3086,86 @@ create trigger nap before update on slowed for each row execute function nap();
 		const done = await edit(contributor, { table: "slowed", op: "change", key: { id: 1 }, seen: slowed.seen, values: { v: "b" } });
 		assert.equal(done.status, 200, "a change's own 5 s holds the trigger's second");
 	});
+
+	it("writes a char, a bit and a JSON value as the column holds it, and finds a row by a char key", async () => {
+		put(ENV_E, {
+			"data/ledger/tables/004-codes.sql":
+				"create table codes (code char(3) primary key, flags bit(4), label char(5));\ninsert into codes values ('abc', B'1010', 'x');\n",
+		});
+		assert.equal((await ask(contributor, "apply", { database: "ledger" }, ENV_E)).value.applied, true);
+		const added = await edit(contributor, { table: "codes", op: "add", values: { code: "xyz", flags: "0110", label: "hi" } });
+		assert.equal(added.status, 200, JSON.stringify(added.value));
+		assert.deepEqual(added.value.row.values, ["xyz", "0110", "hi   "]);
+		const long = await edit(contributor, { table: "codes", op: "add", values: { code: "abcd" } });
+		assert.deepEqual([long.status, /value too long for type character\(3\)/.test(long.value.error)], [400, true], JSON.stringify(long.value));
+		const short = await edit(contributor, { table: "codes", op: "add", values: { code: "def", flags: "01" } });
+		assert.deepEqual([short.status, /bit string length 2 does not match type bit\(4\)/.test(short.value.error)], [400, true], JSON.stringify(short.value));
+		const abc = (await listed(contributor, { database: "ledger", table: "codes" })).value.rows.find((one) => one.values[0] === "abc");
+		const changed = await edit(contributor, { table: "codes", op: "change", key: { code: "abc" }, seen: abc.seen, values: { label: "new" } });
+		assert.deepEqual([changed.status, changed.value.row?.values], [200, ["abc", "1010", "new  "]], JSON.stringify(changed.value));
+		const removed = await edit(contributor, { table: "codes", op: "remove", key: { code: "xyz" }, seen: added.value.row.seen });
+		assert.equal(removed.status, 200, JSON.stringify(removed.value));
+		assert.deepEqual(await inE("select code, flags::text, label from ledger.codes order by code"), [{ code: "abc", flags: "1010", label: "new  " }]);
+		const json = await edit(contributor, { op: "add", values: { name: "Json", doc: "hi" } });
+		assert.equal(json.status, 200, JSON.stringify(json.value));
+		const id = json.value.row.values[0];
+		assert.equal(json.value.row.values[6], "hi");
+		assert.deepEqual(await inE("select jsonb_typeof(doc) as kind from ledger.items where id = $1", [id]), [{ kind: "string" }]);
+		const read = await itemAt(id);
+		assert.equal(read.seen, json.value.row.seen);
+		const same = await edit(contributor, { op: "change", key: { id }, seen: read.seen, values: { doc: read.values[6] } });
+		assert.deepEqual([same.status, same.value.row?.seen], [200, read.seen], "a value written back as a page gave it leaves the row as it was");
+		for (const [doc, kind] of [[5, "number"], [{ a: "b" }, "object"], ["{\"a\": 1}", "string"]]) {
+			const now = await itemAt(id);
+			assert.equal((await edit(contributor, { op: "change", key: { id }, seen: now.seen, values: { doc } })).status, 200);
+			assert.deepEqual(await inE("select jsonb_typeof(doc) as kind from ledger.items where id = $1", [id]), [{ kind }], JSON.stringify(doc));
+		}
+		const now = await itemAt(id);
+		assert.equal((await edit(contributor, { op: "change", key: { id }, seen: now.seen, values: { doc: null } })).status, 200);
+		assert.deepEqual(await inE("select doc is null as empty from ledger.items where id = $1", [id]), [{ empty: true }]);
+	});
+
+	it("lets an actor's line go with its rows' lines at the watcher's sweep, and keeps a running write's", async () => {
+		const scratch = companyDatabase("64000000-0000-4000-8000-0000000000f0");
+		await asAdmin("postgres", `create database ${scratch} template qorpera_company_template`);
+		const running = connect(scratch);
+		try {
+			await asAdmin("postgres", `grant connect on database ${scratch} to qorpera_data_keeper, qorpera_data_watch`);
+			await asAdmin(scratch, "create schema s; create table s.t (id int primary key)");
+			const line = (txid, via) => asAdmin(scratch, "insert into qorpera_data.change_log (txid, by_kind, via) values ($1::bigint, 'member', $2)", [txid, via]);
+			await running.connect();
+			await running.query("begin");
+			await line((await running.query("select txid_current()::text as txid")).rows[0].txid, "running");
+			const write = async (id) => {
+				const client = connect(scratch);
+				await client.connect();
+				try {
+					await client.query("begin");
+					const { txid } = (await client.query("select txid_current()::text as txid")).rows[0];
+					await client.query("insert into s.t values ($1)", [id]);
+					await client.query("commit");
+					await line(txid, `write ${id}`);
+					return txid;
+				} finally {
+					await client.end();
+				}
+			};
+			const first = await write(1);
+			await write(2);
+			await line((await asAdmin(scratch, "select txid_current()::text as txid"))[0].txid, "quiet");
+			await asAdmin(scratch, "delete from qorpera_data.row_changes where txid = $1::bigint", [first]);
+			const vias = async () => (await asAdmin(scratch, "select via from qorpera_data.change_log order by via")).map((one) => one.via);
+			assert.deepEqual(await vias(), ["quiet", "running", "write 1", "write 2"]);
+			await withGateway({}, async (other) => {
+				await other.watchOnce();
+				assert.deepEqual(await vias(), ["quiet", "running", "write 2"], "a line whose rows' lines are gone goes with them, a running write's stays");
+				await running.query("rollback");
+				await other.watchOnce();
+				assert.deepEqual(await vias(), ["quiet", "write 2"]);
+			});
+		} finally {
+			await running.end().catch(() => undefined);
+			await asAdmin("postgres", `drop database ${scratch} with (force)`);
+		}
+	});
 });
