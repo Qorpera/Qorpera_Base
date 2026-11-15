@@ -2030,9 +2030,11 @@ text, an account number, a single payment or the summary's items. Design: the co
     never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
   - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
     delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
-    company's yet, and made no earlier than the first order of the same mode, live or test, that the company ever gave
-    a state of its own, so a shop that starts marking on day 40 sees only orders from then on; null while the company
-    has set no state of its own in 90 days, so it never grows for a shop that ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
+    company's yet, and, for Stripe's orders, made no earlier than the first Stripe order of the same mode, live or test,
+    that the company ever gave a state of its own, so a shop that starts marking on day 40 sees only orders from then
+    on; an added order never moves that start and, paid with no state of the company's, is to pack whenever it was
+    made (20260930777000); null while the company has set no state of its own in 90 days, Stripe's orders or added
+    ones, so it never grows for a shop that ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
     `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
     currency; the rest the one asked.
   - `orders-hours` (`currency`, `test`, `from`, `to` as `site-hours` takes them; default the 48 hours to this one, at
@@ -2044,7 +2046,11 @@ text, an account number, a single payment or the summary's items. Design: the co
   - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then; `from` at most 400
     days back, since order rows go then: 22023 otherwise): `state`, `orders`,
     `amount`, one row each of `paid`, `packed`, `on_the_way`, `delivered`, `cancelled`, `failed`, in that order.
-    `packed` to `cancelled` are the company's own word (a later slice lets agents and members set them).
+    `packed` to `cancelled` are the company's own word (`order-state` below).
+  - `orders-sources` (`currency`, `test`, `from`, `to` as `orders-states`; 20260930777000): `source`, `orders`,
+    `sales`, `refunds`, one row each of `stripe` and `added` (orders added by hand, `order-add` below), in that order,
+    zeros included, for the orders made then. The days keep no source, so `orders-days` and `orders-months` count both
+    together.
   - Order rows are kept 400 days after the order; the days as long as the company. The upkeep (pg_cron, every 10
     minutes) adds changed orders to their days and retries a delivery whose order was locked when it came (while its
     body is kept, 7 days); until then the answers read the order rows, so a day is whole at any time. A day added keeps
@@ -2053,6 +2059,55 @@ text, an account number, a single payment or the summary's items. Design: the co
   (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
 - A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
   host's call (scope folder), with its own path authority.
+
+### The company's word on its orders (20260930777000_company_numbers_order_changes)
+
+What only the company knows about its orders (packed, on its way, delivered, cancelled), and the orders that never
+went through Stripe, it says with two changes on the same reserved name: an interface app's
+`qorpera.act("qorpera/order-state", ...)` (asked on the platform's bar, a later web slice), an agent's
+`data_change {database: "qorpera", change: "order-state", params}` (a later runtime slice). Design: the company-views
+lane's DESIGN-5-orders.md, "The narrow write" and §E (the founder, 15 Nov 2026: everyone in the company may see the
+sales; agents may add orders outside Stripe by hand, marked as added, at most 500 a day).
+
+- `qorpera_member_company_numbers_change(environment, change, params)` (authenticated): a member of a folder-v2
+  company (42501 "Company numbers are unavailable" for anyone else). `change` is the name after `qorpera/`, `params`
+  an object of named values. Who may read the orders (`qorpera_company_numbers_orders_readable`: everyone in the
+  company) may change them, except a viewer, a read-only member: 42501 "A viewer sees the orders but changes none".
+  Owners, admins and contributors may.
+  Answers the data gateway's change shape `{changed, columns, rows, more, asOf}`: `changed` how many orders it wrote
+  (0 when nothing changed), `columns` and `rows` what it gives back, `more` false, `asOf` the time (ISO, UTC).
+- A run changes the same with `qorpera_run_company_numbers_change(environment, actor, change, params)` through the
+  native host's call (scope folder), resolved as its read is. A run of an in-house worker with read access changes
+  nothing (42501 "A worker with read access changes no orders"), as the folder core refuses its writes.
+- The state's setter is kept as a kind (`agent` for a run, `member`), never a name.
+- `order-state` (`order`, `state`, `test` optional): `order` is Stripe's payment id (`pi_...`, from the event's
+  `payment_intent`), a Checkout Session's id (`cs_...`, only for a session with no payment, as a free one) or the ref
+  `order-add` gave (`add_...`). It is hashed with the company's id and matched, never kept. `state` is `packed`,
+  `on_the_way`, `delivered` or `cancelled`: forward only (a step may be skipped), or to `cancelled` from any state; a
+  cancelled order takes no other; the same state again answers `changed` 0. `test` true names a test-mode order, false
+  a live one; without it the order is found in either mode. Only a paid order takes a state. Stripe's facts (amount,
+  refunds, dispute) never change; cancelling an added order counts it refunded in full (no Stripe refund will); it
+  still counts as an order with its sales, and nothing deletes one. Gives
+  back `state`. P0002 "No order of this company is named so (a paid Checkout Session is named by its payment_intent,
+  pi_...)" for an order the company does not have; P0002 "The order named is not paid: only a paid order takes a
+  state" for one unpaid, failed, or a refund whose session never came; 22023 for a state it cannot take ("The order
+  is delivered already: a state only moves forward (packed, on_the_way, delivered), or to cancelled", "The order is
+  cancelled: a cancelled order takes no other state").
+- `order-add` (`at`, `amount`, `currency`, `state` optional): an order outside Stripe (MobilePay, an invoice, a sale at
+  a market), live, counted with Stripe's in every question and apart in `orders-sources` (never in `orders-now`'s
+  `stripe`, which speaks of the hook). `at`: when it was ordered, a time with its zone (`2026-11-15T14:30Z`,
+  `2026-11-15T15:30+01:00`, kept to the second) or a company day (`2026-11-15`, its first minute in the company's
+  zone), within the last 399 days (order rows go at 400) and not ahead of now (a minute's leeway). `amount`: what was paid, in the currency's major unit, a JSON number or its text (`249.95`), 0 or more, with
+  no more decimals than the questions answer for that currency (JPY whole, KWD three), at most 9 999 999 999 minor
+  units. `currency`: an ISO 4217 code, any case (funds and metals codes are refused). `state`: `paid` (the default),
+  `packed`, `on_the_way` or `delivered` (a sale already handled is added as it stands; cancel one with `order-state`).
+  Gives back `order` (the ref, `add_` and 32 hex: only its hash is kept, so the caller keeps it to name the order
+  later) and `state`. A company adds at most 500 orders in 24 hours: 54000 "A company adds at most 500 orders in 24
+  hours: add the rest later".
+- A change that is not there, and one the caller may not run: P0002 "No change qorpera/<change> that you may run" (the
+  same words). A parameter the change does not take, one it needs left out, or a value of the wrong kind or out of
+  bounds: 22023 in plain words (`The change takes no :x`, `The change takes :order`, `:amount has at most 2 decimals
+  in DKK`, ...).
 
 ### The company's reading and standing (20260930765000_company_reading)
 
