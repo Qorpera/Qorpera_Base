@@ -1,7 +1,7 @@
 /** Folder protocol v1: what a machine's folder program and its node's folder service say to each other. The
  * machine side is `crates/qorpera-folder/src/proto.rs` and `frame.rs`; keep the two in step. The `notices` role (F3
  * 4f-2b-2, below) is the one part the folder program never speaks: the office's folder helper asks it, through the
- * program's relay, so `proto.rs` carries neither Q nor q. The `data` role (below) is the machine's `data` command's.
+ * program's relay, so `proto.rs` carries neither Q nor q.
  *
  * A frame is a u32 big-endian length (of the type byte plus the payload), one type byte, then the payload. Control
  * messages carry JSON; a read reply carries the bytes as they are. */
@@ -12,8 +12,7 @@ import type { CoreReceipt, CoreRefusal } from "./core.ts";
 /** Version 2 adds writes (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md, "Protocol v2"); a machine on version
  * 1 reads only. Version 3 adds the read log (F3 4c, RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): a core view takes
  * writes only from a machine that sends it. Version 4 adds links (RUNTIME-FOLDER-LINKS.md, "Protocol 4"): a machine
- * below it never sees one. Version 5 adds the `data` role (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a): the
- * `io` and `feed` roles are at 5 what they are at 4. */
+ * below it never sees one. */
 export const PROTOCOL = 5;
 export const PROTOCOLS = [1, 2, 3, 4, 5] as const;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
@@ -22,7 +21,6 @@ export const MAX_PAYLOAD = 2 * 1024 * 1024;
 export const HELLO_MAX_PAYLOAD = 4 * 1024;
 /** After it, a machine sends only requests and acknowledgements: a path of at most 4 KiB and a few numbers. */
 export const REQUEST_MAX_PAYLOAD = 64 * 1024;
-/** A `data` connection's call, and its answer: a call's body holds the texts of a database's files (§9a). */
 export const DATA_MAX_PAYLOAD = 1024 * 1024;
 export const MAX_READ = 1024 * 1024;
 /** Entries per listing page. */
@@ -66,9 +64,8 @@ export const Kind = {
 	// Notices (protocol 4, the `notices` role only).
 	notices: 0x51, // Q: a view's notices after one
 	noticed: 0x71, // q
-	// Company databases (protocol 5, the `data` role only).
-	dataCall: 0x54, // T: one call to the company's databases
-	dataAnswer: 0x74, // t
+	dataCall: 0x54,
+	dataAnswer: 0x74,
 } as const;
 
 export const ErrorCode = {
@@ -154,8 +151,7 @@ export class FrameReader {
 }
 
 /** `notices` (protocol 4): the office's folder helper asks for the notices of a view the service holds, and nothing
- * else (F3 4f-2b-2, "Notices" below). `data` (protocol 5): a company machine's `data` command calls the company's
- * databases as the view the service serves that machine, and nothing else ("Company databases" below). */
+ * else (F3 4f-2b-2, "Notices" below). */
 export type Role = "io" | "feed" | "notices" | "data";
 
 export interface Hello {
@@ -280,7 +276,6 @@ export function parseHello(payload: Buffer): Hello {
 	// Notices join no mount: no previous view and no abandoned program.
 	if (value.role === "notices" && (protocol < 4 || value.previous !== undefined || value.abandon !== undefined))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad notices request");
-	// Nor does a data connection.
 	if (value.role === "data" && (protocol < 5 || value.previous !== undefined || value.abandon !== undefined))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad data request");
 	let previous: Hello["previous"];
@@ -777,20 +772,14 @@ export function parseNotices(payload: Buffer): NoticesRequest {
 	return { after: count(value.after, Number.MAX_SAFE_INTEGER), nonce: value.nonce };
 }
 
-// ---- Company databases (protocol 5; deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a) ------------------------------
-
 export const DATA_VERBS = ["describe", "apply", "query", "change"] as const;
 export type DataVerb = (typeof DATA_VERBS)[number];
 
-/** One call of a machine's `data` command: the data gateway's verb and the body the gateway takes for it, without a
- * pass (the service adds its own). */
 export interface DataCall {
 	readonly verb: DataVerb;
 	readonly body: Readonly<Record<string, unknown>>;
 }
 
-/** A call's answer: the data gateway's status and JSON, or the service's own refusal in the same form (`value.error`
- * says why). 200 is an answer; 4xx a refusal; 5xx, the databases could not be reached now. */
 export interface DataAnswer {
 	readonly status: number;
 	readonly value: unknown;

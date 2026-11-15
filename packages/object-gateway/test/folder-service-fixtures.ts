@@ -893,17 +893,10 @@ export class FakeCore implements FolderCore {
 			: { state: "closed", reason: "ended" };
 	}
 
-	// ---- Data passes (company databases, slice 8a: 20260930775000), in memory -----------------------------------------
-
-	/** Every pass made, in order: the view it was made as, and the database it named. */
 	readonly dataPasses: { viewId: string; database: string | null; pass: string }[] = [];
-	/** What the next passes fail with, while set: a refusal, or the database not answering. */
 	dataPassFailure: Error | undefined;
-	/** When set, a pass waits for it. */
 	dataPassGate: Promise<void> | undefined;
 
-	/** A pass for a test machine's view: each database's `database.toml` and the files directly in its `tables`,
-	 * `queries` and `actions`, as the view reads them now. A folder without a `database.toml` is no database. */
 	async machineDataPass(
 		environmentId: string,
 		actor: Extract<FolderActor, { kind: "view" }>,

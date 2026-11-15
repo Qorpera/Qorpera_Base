@@ -1,20 +1,13 @@
-/** The data gateway's run door, as the folder service calls it for a company machine's `data` command (company
- * databases, slice 8a: deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a). A provider host calls the same door for a
- * run's data tools (packages/runtime/src/cloud-data-tools.ts `httpsCompanyDataDoor`): the node's private token as the
- * bearer, the certificate checked against the store's own CA and nothing else, a data pass in the body. */
 import { request as httpsRequest } from "node:https";
 import { DATA_MAX_PAYLOAD, type DataVerb } from "./protocol.ts";
 
-/** What the door said: its status and its answer's bytes, or that the answer held more than a frame carries. */
 export type DoorAnswer = { readonly status: number; readonly body: Buffer } | "too_large";
 
 export interface DataDoor {
-	/** One call. It ends with the signal: a call ended so has no answer, whatever the gateway went on to do. */
 	call(verb: DataVerb, body: Buffer, signal: AbortSignal): Promise<DoorAnswer>;
 }
 
-/** The run door over HTTPS, on node:https (the unit runs `node --jitless`, which has no fetch): never pooled or
- * redirected, the answer read up to a frame's size. */
+// WHY: node:https, never fetch: the unit runs `node --jitless`, and fetch needs WebAssembly, which it removes.
 export function httpsDataDoor(options: { url: string; ca: string; token: string }): DataDoor {
 	const url = new URL(options.url);
 	if (
@@ -75,7 +68,6 @@ export function httpsDataDoor(options: { url: string; ca: string; token: string 
 				signal.addEventListener("abort", end, { once: true });
 				outgoing.once("close", () => {
 					signal.removeEventListener("abort", end);
-					// A connection the gateway closed inside its answer.
 					if (!settled) reject(new Error("The company data door closed the connection"));
 				});
 				outgoing.once("error", reject);

@@ -1,17 +1,9 @@
 -- @fixture 510_folder_test_machine_views.test.sql until "-- The migration's marker is in every function it patches"
--- 20260930775000, a company machine's data pass (RUNTIME-COMPANY-DATABASES.md §9a, slice 8a part 1), on 510's test
--- machine and its view: the folder service asks for a pass as the view; it keeps the files the view may read under
--- data/<name>/ and answers their versions and authorities (what the service records as the view's reads); the redeem
--- answers a machine's pass once, with its view and its machine, while the view is open and valid; a paused company
--- (also for a pass made before the pause), a closed view, another kind of view or actor and a wrong pass get none; a
--- run's pass is answered as before (1244, 1262).
--- The machine, run, view and commit helpers are 510's, 639's and 632's.
 
 create function pg_temp.mp_same(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
 	if p_got is distinct from p_want then raise exception '%: got %, want %', p_what, p_got, p_want; end if;
 end $$;
--- The gateway's redeem, as the publishable key's role calls it.
 create function pg_temp.mp_redeem(p_pass text) returns jsonb language plpgsql as $$
 declare v jsonb;
 begin
@@ -24,8 +16,6 @@ create function pg_temp.mp_pass(p_view jsonb, p_database text default 'shop') re
 	select public.qorpera_machine_data_pass('63200000-0000-4000-8000-000000000020', pg_temp.vactor(p_view), p_database)
 $$;
 
--- The company's databases, written by the platform: shop (a step, a question, a change, and a file a pass leaves out)
--- and stock.
 select pg_temp.commit('{"kind":"platform"}', 'machine-pass-seed', jsonb_build_array(
 	jsonb_build_object('op', 'mkdir', 'path', 'data'),
 	jsonb_build_object('op', 'mkdir', 'path', 'data/shop'),
@@ -45,7 +35,6 @@ select pg_temp.commit('{"kind":"platform"}', 'machine-pass-seed', jsonb_build_ar
 	jsonb_build_object('op', 'write', 'path', 'data/stock/database.toml',
 		'file', pg_temp.stage(E'format = "qorpera.database/v1"\n')))) \g /dev/null
 
--- 1. The grants, and the table's two kinds.
 do $$ begin
 	if has_function_privilege('anon', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')
 		or has_function_privilege('authenticated', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')
@@ -65,7 +54,6 @@ do $$ begin
 		extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$, 'qorpera_data_passes_kind_check');
 end $$;
 
--- 2. A machine's pass as its view, its entries, and the redeem: once, with the view and the machine.
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); a jsonb := pg_temp.place(pg_temp.machine(v, 'data'));
 	s jsonb := pg_temp.open_machine(a); made jsonb; redeemed jsonb; row public.qorpera_data_passes%rowtype; e jsonb;
@@ -79,7 +67,6 @@ begin
 		from jsonb_array_elements(made -> 'entries') with ordinality x),
 		'data/shop/database.toml data/shop/tables/001-orders.sql data/shop/queries/count.sql data/shop/actions/add.sql',
 		'2: the entries, in the listing''s order');
-	-- Each entry is what a read of the file as the view gives: the version and the authority it was read under.
 	for e in select x.value from jsonb_array_elements(made -> 'entries') x loop
 		if e -> 'version' is distinct from pg_temp.read(e ->> 'path', pg_temp.vactor(s)) #> '{entry,version}'
 			or e -> 'authority' is distinct from pg_temp.read(e ->> 'path', pg_temp.vactor(s)) #> '{entry,authority}'
@@ -103,11 +90,8 @@ begin
 	if exists (select 1 from jsonb_array_elements(redeemed -> 'files') f where f.value - array['path','sha256','bytes'] <> '{}'::jsonb
 			or f.value ->> 'sha256' !~ '^[0-9a-f]{64}$') then raise exception '2: a kept file is not path, sha256 and bytes'; end if;
 	perform pg_temp.mp_same(pg_temp.mp_redeem(made ->> 'pass')::text, null, '2: a redeemed pass');
-	-- Without a name: every database the view may read.
 	perform pg_temp.mp_same(pg_temp.mp_pass(s, null) ->> 'files', '5', '2: every database');
 
-	-- 3. No pass: a database that is not there or whose name is none, a run or the platform as the actor, a wrong
-	--    pass in the actor, a member's token.
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L, %L)', s, 'nothing'), 'P0002', 'Data pass has no such database');
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L, %L)', s, 'qorpera'), '22023', 'Database name is invalid');
 	perform pg_temp.refused(format('select public.qorpera_machine_data_pass(%L, %L, %L)', '63200000-0000-4000-8000-000000000020',
@@ -116,8 +100,6 @@ begin
 		'{"kind":"platform"}', 'shop'), '22023', 'A machine''s data pass is for a view');
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', jsonb_build_object('viewId', s ->> 'viewId', 'pass', repeat('A', 43))),
 		'42501', 'Folder view is unavailable');
-	-- Another kind of view, valid and its own run's: a run box gets no machine's pass (§9a: only a company machine's
-	-- view is taken), though the same view reads the database's files.
 	box := pg_temp.open('run_box', '{}', v);
 	if pg_temp.read('data/shop/database.toml', pg_temp.vactor(box)) ->> 'found' is distinct from 'true' then
 		raise exception '3: the run box''s view does not read the database''s file'; end if;
@@ -126,8 +108,6 @@ begin
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', s), '42501', 'Folder core authority is required');
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 
-	-- 4. A paused company: no pass, as for a run, and a pass made just before the pause redeems to nothing: a machine
-	--    that keeps running through a pause reads and writes no rows.
 	made := pg_temp.mp_pass(s);
 	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
 		'63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000001', 'A test pause'));
@@ -136,17 +116,14 @@ begin
 	perform pg_temp.fx($q$delete from public.qorpera_company_execution_pauses where profile_id = '63200000-0000-4000-8000-000000000010'$q$);
 	perform pg_temp.mp_same(pg_temp.mp_redeem(pg_temp.mp_pass(s) ->> 'pass') ->> 'kind', 'machine', '4: after the pause');
 
-	-- 5. A closed view: no new pass, and a pass made before it closed redeems to nothing.
 	made := pg_temp.mp_pass(s);
 	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', s), '42501', 'Folder view has ended');
 	perform pg_temp.mp_same(pg_temp.mp_redeem(made ->> 'pass')::text, null, '5: a pass of a closed view');
-	-- The machine's next boot has a new view, which gets one.
 	s := pg_temp.open_machine(pg_temp.reboot(a));
 	perform pg_temp.mp_same(pg_temp.mp_redeem(pg_temp.mp_pass(s) ->> 'pass') ->> 'kind', 'machine', '5: the next boot''s view');
 end $$;
 
--- 6. The markers: the functions this migration makes or re-makes carry it, and the earlier ones' markers stay.
 do $$
 begin
 	perform pg_temp.mp_same((select string_agg(proc.proname::text, ' ' order by proc.proname::text collate "C")

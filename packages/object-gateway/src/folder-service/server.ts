@@ -50,11 +50,7 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
  * read the last answer.
  *
  * A `notices` connection (F3 4f-2b-2) holds no view: after its hello it only asks for the view's notices (Q), and any
- * other frame, or any error, ends it.
- *
- * A `data` connection (company databases, slice 8a) holds no view either: after its hello it only makes calls to the
- * company's databases (T), each a frame of up to 1 MiB, answered one at a time; any other frame, or any error, ends
- * it, and its end ends the call it waits for (a paused socket with nothing unread still hears its peer go). */
+ * other frame, or any error, ends it. */
 export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
 	return createServer((socket) => serve(service, socket, log));
 }
@@ -65,7 +61,6 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	let handle: ViewHandle | undefined;
 	let notices: NoticesHandle | undefined;
 	let data: DataHandle | undefined;
-	/** Ends with the connection: a data call then waits for nothing more. */
 	const gone = new AbortController();
 	let role: Role | undefined;
 	/** The machine speaks protocol 2 (3 for a core view: it logs its reads) and its view takes writes. */
