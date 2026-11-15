@@ -138,8 +138,12 @@ function listLine(toml) {
 			table = header[1];
 			continue;
 		}
-		if (table !== "list") continue;
-		const said = /^\s*members\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(#.*)?$/.exec(line);
+		const said =
+			table === "list"
+				? /^\s*members\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(#.*)?$/.exec(line)
+				: table === ""
+					? /^\s*(?:list\s*\.\s*members\s*=|list\s*=\s*\{[^}]*\bmembers\s*=)\s*(?:"([^"]*)"|'([^']*)')/.exec(line)
+					: null;
 		if (said) return (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
 	}
 	return null;

@@ -2208,6 +2208,8 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		"data/open/queries/own.sql": OWN,
 		"data/closed/database.toml": "format = \"qorpera.database/v1\"\n\n[list]\nmembers = 'writers'\n",
 		"data/closed/tables/001-items.sql": "create table items (id int primary key);\ninsert into items select generate_series(1, 3);\n",
+		"data/inline/database.toml": 'format = "qorpera.database/v1"\nlist = { members = "writers" }\n',
+		"data/inline/tables/001-items.sql": "create table items (id int primary key);\n",
 	});
 	const E = companyDatabase(ENV_E);
 	const inE = (text, values) => asAdmin(E, text, values);
@@ -2232,7 +2234,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 	};
 
 	it("applies the list's databases", async () => {
-		for (const name of ["crm", "mine", "open", "closed"]) {
+		for (const name of ["crm", "mine", "open", "closed", "inline"]) {
 			const applied = await ask(contributor, "apply", { database: name }, ENV_E);
 			assert.equal(applied.value.applied, true, `${name}: ${JSON.stringify(applied.value)}`);
 		}
@@ -2243,7 +2245,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		assert.equal(read.status, 200, JSON.stringify(read.value));
 		assert.deepEqual(
 			read.value.databases.map((one) => [one.database, one.write, one.list]),
-			[["closed", false, false], ["crm", false, true], ["mine", false, false], ["open", false, true]],
+			[["closed", false, false], ["crm", false, true], ["inline", false, false], ["mine", false, false], ["open", false, true]],
 		);
 		const crm = read.value.databases.find((one) => one.database === "crm");
 		assert.deepEqual([crm.name, crm.about], ["CRM", "People and their scores"]);
@@ -2269,7 +2271,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		assert.ok(read.value.companyBytes > 0);
 		assert.equal(read.value.limitBytes, LIMITS_HERE.companyBytes);
 		const written = await ask(contributor, "describe", {}, ENV_E);
-		assert.deepEqual(written.value.databases.map((one) => [one.database, one.write, one.list]), ["closed", "crm", "mine", "open"].map((name) => [name, true, true]));
+		assert.deepEqual(written.value.databases.map((one) => [one.database, one.write, one.list]), ["closed", "crm", "inline", "mine", "open"].map((name) => [name, true, true]));
 		assert.ok(written.value.databases.find((one) => one.database === "mine").tables.some((one) => one.name === "notes"));
 		const narrowed = await ask(viewer, "describe", { database: "open" }, ENV_E);
 		assert.deepEqual(narrowed.value.databases.map((one) => [one.database, one.list]), [["open", true]]);
@@ -2278,7 +2280,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 	});
 
 	it("gives whole tables to a database's readers, and to its writers alone when a question shows each member their own rows: by every road", async () => {
-		const tableOf = { crm: "people", mine: "notes", open: "notes", closed: "items" };
+		const tableOf = { crm: "people", mine: "notes", open: "notes", closed: "items", inline: "items" };
 		const roads = async (bearer, name) => {
 			const rows = await ask(bearer, "rows", { database: name, table: tableOf[name] }, ENV_E);
 			const watched = await ask(bearer, "watch", { watches: [{ database: name, table: tableOf[name], etag: "old" }], wait: 0 }, ENV_E);
@@ -2289,9 +2291,10 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		const hidden = [403, 403, false];
 		assert.deepEqual(await roads(viewer, "mine"), hidden, "a :viewer question keeps its database's tables with its writers");
 		assert.deepEqual(await roads(viewer, "closed"), hidden);
+		assert.deepEqual(await roads(viewer, "inline"), hidden, "[list] as an inline table");
 		assert.deepEqual(await roads(viewer, "open"), shown, "[list] members = \"readers\" gives every reader whole tables");
 		assert.deepEqual(await roads(viewer, "crm"), shown);
-		for (const name of ["mine", "closed", "open", "crm"]) assert.deepEqual(await roads(contributor, name), shown, name);
+		for (const name of ["mine", "closed", "inline", "open", "crm"]) assert.deepEqual(await roads(contributor, name), shown, name);
 		const refused = await ask(viewer, "rows", { database: "mine", table: "notes" }, ENV_E);
 		assert.equal(refused.value.error, "The tables of mine are shown to those who may change it");
 		assert.deepEqual((await ask(viewer, "query", { database: "mine", question: "own" }, ENV_E)).value.rows, [[2, "note 2"], [4, "note 4"], [6, "note 6"]], "its questions still answer");
@@ -2303,7 +2306,13 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 				assert.deepEqual(await roads(bearer, "open"), shown);
 			}
 			const described = await ask(contributor, "describe", {}, ENV_E);
-			assert.deepEqual(described.value.databases.map((one) => [one.database, one.write, one.list]), [["closed", false, false], ["crm", false, true], ["mine", false, false], ["open", false, true]]);
+			assert.deepEqual(described.value.databases.map((one) => [one.database, one.write, one.list]), [
+				["closed", false, false],
+				["crm", false, true],
+				["inline", false, false],
+				["mine", false, false],
+				["open", false, true],
+			]);
 		} finally {
 			writeCheckMissing = false;
 		}
