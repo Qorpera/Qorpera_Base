@@ -353,6 +353,8 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 	const session = read("deploy/machine/desktop-session");
 	// VNC only on the machine's loopback, no TCP X.
 	assert.match(session, /Xvnc :1 [^\n]*-localhost yes [^\n]*-nolisten tcp/);
+	// No pointer is drawn on the agent's screen, so none shows in a member's live picture (14 Nov 2026).
+	assert.match(session, /Xvnc :1 [^\n]*\n?[^\n]*-nocursor /);
 	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
 	for (const tool of ["tigervnc-standalone-server", "xfce4-session", "xdotool", "wmctrl", "scrot", "x11-utils", "file"])
 		assert.ok(apt.includes(tool), tool);

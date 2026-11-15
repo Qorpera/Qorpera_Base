@@ -29,6 +29,13 @@ import { ENVIRONMENT, finish, pass, proveCompanyRun, repositoryRoot } from "./pr
 //   as node 2's slowest (5.1 ms a disk, 7.0 ms the pool, measured 13 Nov 19:09Z). After a restart the executor's first
 //   report reads them all well within its time; the next reads only the awake disks (the sleeping ones' reads are kept);
 //   one that just fell asleep is read again; and the kernel's room is right after each.
+// - A new machine image while a machine sleeps (20260930760000): image-box, Alice's, slept 1 day holding 5 GiB of its own;
+//   then the executor's policy moved as the render roll of 14 Nov moved node 2's (a new image fingerprint and a new
+//   provider policy hash, enrolled). Her machine_start of image-box wakes it on its OWN placement and disk (same id,
+//   nothing retired or deleted, no diskFreed), through its first provider row, and it runs; the executor's report still
+//   reads that disk. The executor's own checks (bundled from company-machine.ts, unchanged) hold for it: #plan's binding
+//   text, digest, project and provider against the new policy, and the instance check against the BINDING's image (an
+//   instance LXD made from that binding passes; checked against the new image it would be drifted).
 // Real: as the harness says, plus the runtime's machine tools (a conversation's), every kernel function they and the
 // executor call (start, status, the disk report, admission, custody, mark running, release), the executor's own LXD
 // client (LxdUnixClient's two reads) and its own reader (CompanyMachineDiskReader, which keeps sleeping disks' reads and
@@ -174,7 +181,7 @@ async function executorCode() {
 			resolveDir: repositoryRoot,
 			contents: [
 				'export {LxdUnixClient} from "./packages/runner-orchestrator/src/lxd-client.ts";',
-				'export {lxdCompanyMachineName} from "./packages/runner-orchestrator/src/company-machine.ts";',
+				'export {lxdCompanyMachineName, lxdCompanyMachineJournalPlan, assertLxdCompanyMachineInstance, parseCompanyMachinePolicy} from "./packages/runner-orchestrator/src/company-machine.ts";',
 				'export {CompanyMachineDiskReader, COMPANY_MACHINE_DISK_READ_BUDGET_MS} from "./packages/runner-orchestrator/src/company-machine-disk.ts";',
 			].join("\n"),
 		},
@@ -366,6 +373,30 @@ const CALLS = [
 		proof.lxd.used -= 100 * GIB;
 		return START("dk-notes-b", "notes-b", 1);
 	},
+	// 4: a new machine image while image-box sleeps (20260930760000): Alice's image-box ran and slept a day ago holding 5 GiB
+	// of its own (placed on paper, the report dropped meanwhile); then the executor's policy moves as a roll moves it (a new
+	// image and a new provider policy hash, its provider enrolled); she wakes image-box by name.
+	() => {
+		service(`select set_config('qorpera_test.base_binding', $dk$${JSON.stringify(proof.binding)}$dk$, true) \\g /dev/null
+			delete from public.qorpera_machine_executor_disks where owner = 'mx-dk';
+			select public.qorpera_configure_machine_executor('mx-dk', repeat('c', 64), true,
+				(select policy from public.qorpera_machine_executors where owner = 'mx-dk'), 20000::bigint * 1073741824);
+			select dk_proof.asleep('image-box', '92400000-0000-4000-8000-000000000010', '${ENVIRONMENT}', interval '1 day');
+			select public.qorpera_enroll_runtime_node_provider('${NODE}', repeat('c',64), 'machine', 'machine-dk', repeat('e',64), 8000,
+				34359738368);
+			select public.qorpera_configure_machine_executor('mx-dk', repeat('c', 64), true,
+				(select policy || jsonb_build_object('imageFingerprint', repeat('d', 64), 'providerPolicySha256', repeat('e', 64))
+					from public.qorpera_machine_executors where owner = 'mx-dk'), 120::bigint * 1073741824);`);
+		const disk = ownOf("image-box");
+		proof.imageBox = {
+			placement: proof.db.query(`select (public.qorpera_company_machine_placement(m.id)).id::text
+				from public.qorpera_company_machines m where m.name = 'image-box' and m.removed_at is null`),
+			disk,
+		};
+		proof.lxd.own.set(disk, 5 * GIB);
+		proof.lxd.used += 5 * GIB;
+		return { name: "machine_start", arguments: { operationKey: "dk-image-box", machine: "image-box" } };
+	},
 ];
 
 let executorScratch;
@@ -383,12 +414,13 @@ await finish(
 		try {
 			await proveCompanyRun({
 				name: "qorpera_prove_disk_kept",
-				prompt: "Start machines for the market data and the second job, then two for notes.",
+				prompt: "Start machines for the market data and the second job, then two for notes, then wake image-box.",
 				setup: SETUP,
 				objects: new Map(),
 				calls: CALLS,
 				moreTools(code, { db, binding, identity, operations, paths }) {
 					proof.db = db;
+					proof.binding = binding;
 					// What the sleeping disks hold: the agents' data on two of them (written before they slept: a sleeping disk
 					// cannot change), and alice-recent 1 GiB.
 					proof.lxd.own.set(ownOf("other-old"), 20 * GIB);
@@ -441,13 +473,13 @@ await finish(
 					assert(start && stop, `machine_start and machine_stop are offered: ${definitions.map((tool) => tool.name)}`);
 					assert(
 						start.description.includes(
-							"Its disk is kept while the machine sleeps. It comes back with an empty disk only if its server ran out of disk, had no room for it at the wake, is gone, or moved to a new machine image; the result then says diskFreed. Keep what matters in the company's files.",
+							"Its disk is kept while the machine sleeps. It comes back with an empty disk only if its server ran out of disk, had no room for it at the wake, or is gone or moved; the result then says diskFreed. Keep what matters in the company's files. Newer preinstalled tools come only on new machines.",
 						),
 						start.description,
 					);
 					assert(
 						stop.description.includes(
-							"Its disk is kept for a wake on the same server; only if that server runs out of disk, has no room at the wake, is gone or moves to a new machine image does it come back with an empty disk, and its status then says diskFreed.",
+							"Its disk is kept for a wake on the same server; only if that server runs out of disk, has no room at the wake, or is gone or moved does it come back with an empty disk, and its status then says diskFreed.",
 						),
 						stop.description,
 					);
@@ -455,7 +487,7 @@ await finish(
 						"the model provider sees machine_start and machine_stop say when a machine comes back with an empty disk, and that the result then says diskFreed",
 					);
 
-					const [market, second, notesA, notesB] = answers;
+					const [market, second, notesA, notesB, imageBox] = answers;
 					// 2. Full on paper, real room.
 					assert.equal(proof.paper.budget, 120 * GIB);
 					assert.equal(proof.paper.claimed, 120 * GIB, "the paper budget was full");
@@ -539,6 +571,64 @@ await finish(
 						`the executor's own LXD read and report: ${proof.passes} passes, ${proof.reports.length} reports recorded, ${proof.lxd.requests.length} LXD reads; the kernel keeps the latest (${(stored.used_bytes / GIB).toFixed(1)} of ${(stored.total_bytes / GIB).toFixed(1)} GiB used)`,
 					);
 
+					// 5b. A new machine image while image-box slept (20260930760000): it woke on its own placement and disk.
+					const GIVEN_IMAGE = "a".repeat(64);
+					assert.equal(imageBox.value.machine.name, "image-box", JSON.stringify(imageBox.value));
+					assert.equal(imageBox.value.machine.state, "running");
+					assert.equal(imageBox.value.machine.diskFreed, null);
+					const boxMachine = machine("image-box");
+					assert.equal(boxMachine.disk_freed_at, null);
+					assert(!proof.deleted.includes(boxMachine.id), "image-box's disk was not deleted");
+					assert.deepEqual(
+						placements("image-box").map((p) => [p.id, p.retired, p.removed]),
+						[[proof.imageBox.placement, false, false]],
+					);
+					const policyNow = proof.executor.parseCompanyMachinePolicy(
+						db.json(`select policy::text from public.qorpera_machine_executors where owner = 'mx-dk'`),
+					);
+					assert.equal(policyNow.imageFingerprint, "d".repeat(64));
+					assert.equal(policyNow.providerPolicySha256, "e".repeat(64));
+					const boxEntry = JSON.parse(service("select dk_proof.list()::text;")).find(
+						(e) => e.placementId === proof.imageBox.placement,
+					);
+					assert.equal(boxEntry.binding.imageFingerprint, GIVEN_IMAGE);
+					assert.equal(boxEntry.binding.providerPolicySha256, "f".repeat(64));
+					assert.equal(
+						db.query(`select policy_sha256 from public.qorpera_runtime_node_demands where allocation_id = '${proof.imageBox.placement}'`),
+						"f".repeat(64),
+						"woken through its first provider row",
+					);
+					const boxReport = [...proof.reports].reverse().find((r) => proof.imageBox.placement in r.report.placements);
+					assert.equal(boxReport?.report.placements[proof.imageBox.placement], 5 * GIB, "the executor still reads its disk");
+					// The executor's own checks, as #plan and the instance check make them (company-machine-host.ts #plan,
+					// company-machine.ts assertLxdCompanyMachineInstance), against the policy it has now.
+					const boxPlan = proof.executor.lxdCompanyMachineJournalPlan(boxEntry.binding);
+					assert.equal(boxPlan.text, boxEntry.bindingText);
+					assert.equal(boxPlan.instanceSha256, boxEntry.instanceSha256);
+					assert.equal(boxPlan.name, proof.imageBox.disk);
+					assert.equal(boxEntry.binding.project, policyNow.project);
+					assert.equal(boxEntry.binding.providerId, policyNow.providerId);
+					const card = { ...boxPlan.request.devices.network, hwaddr: "0e:51:0a:d2:01:05" };
+					const made = {
+						name: boxPlan.name,
+						type: "virtual-machine",
+						status: "Stopped",
+						statusCode: 102,
+						profiles: [],
+						devices: { ...structuredClone(boxPlan.request.devices), network: card },
+						expandedDevices: { ...structuredClone(boxPlan.request.devices), network: { ...card } },
+						config: { ...boxPlan.request.config, "volatile.base_image": GIVEN_IMAGE },
+						expandedConfig: { ...boxPlan.request.config, "volatile.base_image": GIVEN_IMAGE },
+					};
+					boxPlan.assertInstance(made);
+					assert.throws(
+						() => proof.executor.assertLxdCompanyMachineInstance(boxPlan.request, policyNow.imageFingerprint, made),
+						/COMPANY_MACHINE_DRIFTED/,
+					);
+					pass(
+						`a new machine image while image-box slept (the executor's policy moved to image ${policyNow.imageFingerprint.slice(0, 8)} and provider policy ${policyNow.providerPolicySha256.slice(0, 8)}): her machine_start woke it on its own placement and disk (${proof.imageBox.disk}, ${boxReport.report.placements[proof.imageBox.placement] / GIB} GiB of its own in the executor's next report), from image ${GIVEN_IMAGE.slice(0, 8)}, through its first provider row; nothing retired or deleted, no diskFreed; it ran in ${proof.starts[4].ms} ms. The executor's #plan holds (binding text, digest, project, provider) and its instance check passes against the binding's image (against the new image it would be drifted)`,
+					);
+
 					// 6. Many disks: 300 more machines asleep here (another company's, for 10 days), each read as slowly as node 2's
 					// slowest; then the executor restarts (nothing kept).
 					service(`select set_config('qorpera_test.base_binding', $dk$${JSON.stringify(binding)}$dk$, true) \\g /dev/null
@@ -599,7 +689,7 @@ await finish(
 					// 7. The run's work log keeps every call.
 					assert.deepEqual(
 						log.index.map((step) => step.tool),
-						["machine_start", "machine_start", "machine_start", "machine_start"],
+						["machine_start", "machine_start", "machine_start", "machine_start", "machine_start"],
 					);
 					assert(log.index.every((step) => step.finished));
 					pass(`the run's work log keeps all ${log.index.length} machine calls, each finished`);

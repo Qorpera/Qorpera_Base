@@ -11,15 +11,17 @@ import type { QuotedText } from "./quotes.ts";
  *   CompanyMail.tell), its outside words as quotes;
  * - an interface app's page, through the bar outside its frame (`qorpera.tell`, app/app-actions.ts;
  *   deploy/first-node/RUNTIME-INTERFACE-APPS.md §5), to the agent that owns the app. Its first line, the app and what
- *   it is about (`header`), is never in the composer: the draft answers it as a draft answers a wall question
- *   (`answering`), the composer shows it above the field, and the send puts it first (cloud/wall-reply.ts). Where the
- *   draft is saved and shared it is the text's first line (app/company.ts' room hooks), so a reload, another tab or
- *   another member's client has it with the words.
- * A note goes from here only into a thread with nothing drafted in it and no answer to a wall question under way, on
+ *   it is about (`header`), is never in the composer: the draft answers it (`answering`), the composer shows it
+ *   above the field, and the send puts it first (cloud/wall-reply.ts). Where the draft is saved and shared it is the
+ *   text's first line (app/company.ts' room hooks), so a reload, another tab or another member's client has it with
+ *   the words.
+ * A note goes from here only into a thread with nothing drafted in it and no line being answered there, on
  * the model account the cloud chooses for that thread, as the thread itself chooses it. Otherwise, or when the send
  * doesn't go (no model account, the cloud refused it), the note waits in that thread's composer for the member to
  * send: after what is drafted there, an app's under its line. An app's note that finds the thread's draft answering
- * something already (a wall question, another app's note) is not added at all (`held`): one message answers one line. */
+ * something already (another app's note, or a line that names no app) is not added at all (`held`): one message answers
+ * one line. Since 14 November 2026 nothing in the web sets a line that names no app: the agents' wall, whose questions
+ * were answered that way, is gone. */
 
 /** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
 export type TellAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
@@ -61,8 +63,8 @@ export async function tellAgent(
 		sessionId = await company.openStaffConversation(agent);
 	}
 	// What is drafted there decides: the member's own draft as this browser has it and, where drafts are shared, as the
-	// room has it now. Only a note into nothing drafted goes from here. An answer to a question from the agent's wall is
-	// drafted too: a send would put the question in front of the note (cloud/wall-reply.ts `withReply`).
+	// room has it now. Only a note into nothing drafted goes from here. A line being answered there is drafted too: a
+	// send would put that line in front of the note (cloud/wall-reply.ts `withReply`).
 	const room = company.roomDrafts.room(sessionId);
 	if (room) await room.refresh();
 	if (closed()) return { sent: false, href };
@@ -98,7 +100,7 @@ export async function tellAgent(
 		throw error;
 	}
 	// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
-	// merged shared draft, an attachment, a wall question picked) leaves it in the composer for the member to send.
+	// merged shared draft, an attachment, another line to answer) leaves it in the composer for the member to send.
 	const intended = conversation().draft ?? "";
 	const shareable = (header === undefined ? "" : appNoteLead(header)) + intended;
 	if (!empty || closed()) return { sent: false, href };

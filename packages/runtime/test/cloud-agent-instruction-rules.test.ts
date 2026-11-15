@@ -14,6 +14,7 @@ import { nativeCompanyContextFixture } from "./fixtures/native-company-context-f
 /** The tools of the S0 captures (t3-2/after/*.request.json, 14 November 2026). */
 const COFOUNDER_TOOLS = [
 	"add_review_rule",
+	"app_guide",
 	"ask_member",
 	"company_delete",
 	"company_edit",
@@ -73,6 +74,7 @@ const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
 	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member",
 );
 const WORKER_TOOLS = [
+	"app_guide",
 	"company_delete",
 	"company_edit",
 	"company_list",
@@ -133,6 +135,7 @@ const READ_ONLY_WORKER_TOOLS = WORKER_TOOLS.filter(
 			"save_app",
 			"post_app",
 			"make_picture",
+			"app_guide",
 			"update_memory",
 			"update_skill",
 		].includes(tool),
@@ -671,6 +674,9 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	["5", "the unknown drawn as open", "Show what is unknown as open (a slider, a gap), never as text about it.", ALL],
 	["5", "the kits", "save_app's kits draw these well, so use one nearly always", ALL],
+	// Master merged up through T3-2 (15 November 2026): app_guide holds a kit's file guide, and save_app saves the file only
+	// after the run read it (20260930762000).
+	["5", "a kit's guide before its file", "Before you write a kit's file, read the kit's guide with app_guide", ALL],
 	[
 		"5",
 		"a page by hand only for a prototype or tool",
