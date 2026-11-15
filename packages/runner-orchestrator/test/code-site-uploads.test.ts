@@ -685,6 +685,51 @@ describe("CodeSiteUploads", () => {
 		expect(odd.of("qorpera_code_site_failed")[0]?.args.p_code).toBe("SITE_UPLOAD_FAILED");
 	});
 
+	it("stops a site Qorpera took down where it is, tells nothing, and goes on with the same version once restored (review of #1774, round 3)", async () => {
+		for (const step of ["begin", "list", "put", "finish"]) {
+			const t = setup({ shop: small(3), site: small(2) });
+			let down = true;
+			t.kernel.answer = (method, args) =>
+				down &&
+				method === `qorpera_code_site_${step}` &&
+				args.p_name !== "site" &&
+				args.p_version_id !== VERSIONS.site
+					? { schema: `qorpera.code-site-${step}/v1`, state: "refused", code: "SITE_TAKEN_DOWN" }
+					: undefined;
+			// A plain stop: neither uploaded nor failed, nothing told (no try counted against the change), the next site whole.
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 1, failed: 0 });
+			expect(t.of("qorpera_code_site_failed"), step).toEqual([]);
+			expect(t.errors(), step).toEqual([]);
+			expect(
+				t.events.filter((event) => event.step === "taken-down"),
+				step,
+			).toEqual([{ event: "code-site", step: "taken-down", ...NAMED, at: step }]);
+			// Asked once, never again in the pass, and nothing after it for that site.
+			const shop = t.calls.filter((call) => call.args.p_name === "shop" || call.args.p_version_id === VERSIONS.shop);
+			expect(shop.at(-1)?.method, step).toBe(`qorpera_code_site_${step}`);
+			expect(
+				shop.filter((call) => call.method === `qorpera_code_site_${step}`),
+				step,
+			).toHaveLength(1);
+			// No retry storm: while it is down the kernel's due list leaves it out, and the pass asks nothing of it.
+			t.kernel.due = t.kernel.due.filter((entry) => (entry as { name: string }).name !== "shop");
+			const before = t.calls.length;
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 1, failed: 0 });
+			expect(
+				t.calls
+					.slice(before)
+					.filter((call) => call.args.p_name === "shop" || call.args.p_version_id === VERSIONS.shop),
+				step,
+			).toEqual([]);
+			// Restored: due again, and the same version goes on where it stopped, to ready.
+			down = false;
+			t.kernel.due = [due("shop", small(3)), ...t.kernel.due];
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 2, failed: 0 });
+			expect(t.kernel.versions.get(VERSIONS.shop as string)?.state, step).toBe("ready");
+			expect(t.of("qorpera_code_site_failed"), step).toEqual([]);
+		}
+	});
+
 	it("tells the kernel SITE_UPLOAD_FAILED for a call that did not answer, or answered what the pass cannot read", async () => {
 		const steps = ["begin", "list", "missing", "put", "finish"];
 		const failures: [string, unknown][] = [

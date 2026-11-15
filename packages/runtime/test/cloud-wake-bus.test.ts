@@ -2018,3 +2018,98 @@ describe("human task wakes (H2c)", () => {
 		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
 	});
 });
+
+describe("light ask wakes (deploy/first-node/RUNTIME-LIGHT-ASK.md)", () => {
+	/** Exactly what the pin trigger stores and qorpera_folder_read_wake passes on (migration 20260930761000). */
+	function askWake(payload: Record<string, unknown> = {}) {
+		const { authority, envelope } = fixture();
+		const askId = randomUUID();
+		const silent = policies.find((item) => item.scenario === "agent")!.policy;
+		return {
+			identity: { ...authority.identity, sessionId: null },
+			askId,
+			wake: {
+				...envelope,
+				kind: "agent",
+				actorStaffId: null,
+				actorUserId: null,
+				audience: { ...envelope.audience, sessionId: null },
+				source: { kind: "light-ask", id: askId, occurrenceKey: `light-ask:${askId}` },
+				policy: silent,
+				payload: {
+					schema: "qorpera.light-ask-wake/v1",
+					askId,
+					kind: "name-app-group",
+					input: { apps: [{ name: "Bank" }, { name: "Company finances" }], language: "en" },
+					expiresAt: "2100-01-01T00:10:00.000000Z",
+					...payload,
+				},
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("admits a light ask with no parent run, no conversation and no mouth, its kind and input as data", () => {
+		const { wake, identity, askId } = askWake();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source).toEqual({ kind: "light-ask", id: askId, occurrenceKey: `light-ask:${askId}` });
+		expect(parsed.policy).toMatchObject({ initial: "forbidden", final: "forbidden", maxPublicSends: 0 });
+		expect(parsed.parentRunId).toBeNull();
+		expect(parsed.audience.sessionId).toBeNull();
+		expect(parsed.payload).toEqual(wake.payload);
+		// A kind this bundle does not answer still parses: the run stores no answer for it.
+		const other = askWake({ kind: "sort-apps", input: {} });
+		expect(parseCloudWakeEnvelope(other.wake, other.identity).payload.kind).toBe("sort-apps");
+	});
+	it.each<[string, (wake: CloudWakeEnvelope) => CloudWakeEnvelope]>([
+		["a parent run", (wake) => ({ ...wake, parentRunId: randomUUID() })],
+		["another ask", (wake) => ({ ...wake, payload: { ...wake.payload, askId: randomUUID() } })],
+		[
+			"another ask's key",
+			(wake) => ({ ...wake, source: { ...wake.source, occurrenceKey: `light-ask:${randomUUID()}` } }),
+		],
+		["another schema", (wake) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.light-ask-wake/v2" } })],
+		["a prompt beside the input", (wake) => ({ ...wake, payload: { ...wake.payload, prompt: "Say hello" } })],
+		["no kind", (wake) => ({ ...wake, payload: { ...wake.payload, kind: null } })],
+		["a kind that is no name", (wake) => ({ ...wake, payload: { ...wake.payload, kind: "Name App Group" } })],
+		["an input that is a list", (wake) => ({ ...wake, payload: { ...wake.payload, input: [] } })],
+		["no input", (wake) => ({ ...wake, payload: { ...wake.payload, input: null } })],
+		["a time that is no time", (wake) => ({ ...wake, payload: { ...wake.payload, expiresAt: "soon" } })],
+		["a routine", (wake) => ({ ...wake, routine: { id: randomUUID(), version: 1, intent: "Name it" } })],
+		["an agent that asked", (wake) => ({ ...wake, actorStaffId: randomUUID() })],
+		[
+			"a mouth",
+			(wake) => ({ ...wake, policy: policies.find((item) => item.scenario === "agent-continuation")!.policy }),
+		],
+		[
+			"a coworker's held messages",
+			(wake) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					heldMessages: [
+						{
+							eventId: randomUUID(),
+							staffAgentId: randomUUID(),
+							text: "The numbers are in.",
+							at: "2026-11-14T10:00:00.000000Z",
+							pairSessionId: randomUUID(),
+						},
+					],
+				},
+			}),
+		],
+	])("rejects a light ask with %s", (_label, mutate) => {
+		const { wake, identity } = askWake();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it("rejects a light ask in a conversation", () => {
+		const { wake } = askWake();
+		const { authority } = fixture();
+		const sessionId = randomUUID();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...wake, audience: { ...wake.audience, sessionId } },
+				{ ...authority.identity, runId: wake.runId, sessionId },
+			),
+		).toThrow();
+	});
+});

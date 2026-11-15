@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
@@ -235,7 +235,7 @@ describe("coding sessions in the thread", () => {
 		// Nothing of it in the header: the dock stands right above the composer.
 		expect(f.view.el.querySelector(".thread-header .coding-pill, .thread-header .coding-badge")).toBeNull();
 		const dock = f.view.el.querySelector<HTMLElement>(".thread-conversation > .thread-foot > .coding-dock")!;
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
 		expect(dock.hidden).toBe(false);
 		// Only the session still going, and alone it is the pill's one line.
 		expect(dock.querySelector(".coding-pill")?.classList.contains("is-single")).toBe(true);
@@ -560,22 +560,16 @@ describe("coding sessions in the thread", () => {
 	});
 });
 
-describe("the coding pill on the wall's line", () => {
+describe("the coding pill above the composer", () => {
 	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here (checked in headless Chrome at 600, 680
 	// and 1200px for PR #1557).
 	const conversation = readFileSync(resolve("src/styles/conversation.css"), "utf8");
-	const wall = readFileSync(resolve("src/styles/agent-wall.css"), "utf8");
 
-	it("joins the wall's line only on a wide thread, narrow only while folded", () => {
-		const shared =
-			conversation.match(/@container thread-conversation \(min-width: 48\.6em\) \{([^@]*?)\n\}/)?.[1] ?? "";
-		expect(shared).toContain(".agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }");
-		// Unfolded (hover, focus or a tap) it keeps its usual width over the wall's button.
-		expect(shared).toContain(
-			'.coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }',
-		);
-		expect(shared).toContain(".agent-wall-toggle { max-width: 300px; }");
-		expect(conversation).toMatch(/\.thread-conversation \{[^}]*container: thread-conversation \/ inline-size;/);
+	it("has its own line: no wall shares it any more (Jonas, 14 Nov 2026)", () => {
+		expect(conversation).not.toContain("agent-wall");
+		expect(conversation).not.toContain("@container thread-conversation");
+		expect(readFileSync(resolve("src/styles/app.css"), "utf8")).not.toContain("agent-wall");
+		expect(existsSync(resolve("src/styles/agent-wall.css"))).toBe(false);
 	});
 
 	it("lays the thread's foot over the messages, with everything its bands hold taking the pointer", () => {
@@ -594,14 +588,5 @@ describe("the coding pill on the wall's line", () => {
 		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-shell[,)][^{]*\{[^}]*backdrop-filter/);
 		// The Answering strip is measured inside the composer's shell: no margin of its own.
 		expect(conversation).not.toMatch(/\.thread-foot[^{]*\.composer-answer/);
-	});
-
-	it("leaves a single draft its own place while coding sessions go", () => {
-		const sharing = wall
-			.split("\n")
-			.filter((line) => line.includes(".composer-drafts") && line.includes(".agent-wall"));
-		expect(sharing.length).toBeGreaterThanOrEqual(4);
-		for (const line of sharing) expect(line).toContain(".coding-dock[hidden] + .composer");
-		expect(wall).not.toMatch(/\.agent-wall[^{]*~ \.composer/);
 	});
 });

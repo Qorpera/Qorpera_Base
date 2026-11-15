@@ -300,8 +300,7 @@ which is laid out in its own units and scaled by script.
 multiplies by `uiScale()` or writes `designPx(n)` into an inline style
 (`src/ui/scale.ts`); pointer positions and measured boxes are screen pixels
 already. Rail widths, stored and shown, are design pixels. The computer
-preview's drag and resize code (`computer-drag.ts`) stays in screen pixels,
-since the preview keeps its size.
+preview stands in its thread as a row and takes the thread's width.
 
 **Not CSS zoom, not rem.** `zoom` on the root changes what
 `getBoundingClientRect`, pointer positions, `left`/`top` and viewport units mean,

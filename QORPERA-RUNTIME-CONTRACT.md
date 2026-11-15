@@ -1032,6 +1032,10 @@ member input uses a human wake, delegation uses an agent wake, project-room
 participation uses a room wake, and measure or source changes use Company File
 event or routine wakes.
 
+> **Amended 2026-11-14.** A light ask is an agent wake with the source kind
+> `light-ask`, with no parent run and no conversation: the entrypoints stay
+> five. See the [light asks amendment](#2026-11-14-amendment-light-asks).
+
 The acceptance suite MUST prove that the same agent behaves differently at all
 five entrypoints and that a routine can complete successfully with no send.
 
@@ -2423,6 +2427,11 @@ member's other login); the 2026-10-04 amendment below settles it.
 > section's own text holds. See the
 > [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 1.
+
+> **Amended 2026-11-14.** A member's own light ask is work that member starts,
+> made while they are there: their own login pays for it, a ChatGPT plan too,
+> whether or not it works while they are away. See the
+> [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -6753,6 +6762,47 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
    `update_wall` (`update_wall`'s until 2026-11-14, when it left every run's tools with the wall). Nothing else; no
    tool's schema changes.
+
+### 2026-11-14 amendment: light asks
+
+> Jonas, 14 November 2026, on a group just made in the apps drawer: "when a new group is created, I would like to run a
+> light call, having an agent name it". Asked whether as a visible message in the Co-Founder's thread or as a new hidden
+> ask, he chose "Build the light call". The design is `deploy/first-node/RUNTIME-LIGHT-ASK.md`. It goes live with
+> migration `20260930761000`, then the runtime bundle. It adds to 8.1, 9 and 17. On item 3, asked whether a ChatGPT
+> plan may pay for its owner's own light ask, Jonas answered the same day: "Yes, a ChatGPT plan can pay for it".
+
+1. **What it is.** A light ask is one small question a member's own action raises, answered by one call to the small
+   model with no tools, with nothing shown in any conversation. The first kind, `name-app-group`, names a new group in
+   the member's apps drawer. Why not a message to an agent: a name is not worth a line in a thread or a whole agent run.
+2. **It is a wake (8).** Every activation enters through the wake bus, and a model call on a member's login runs only
+   inside a run. So a light ask is an `agent` wake with the source kind `light-ask`: no parent run, no conversation, its
+   causal chain itself. The woken agent is the Co-Founder. The entrypoints stay five. The ask is a row the cloud keeps
+   (`qorpera_light_asks`); the wake's agent, payer and payload come from that row, never from what the inserter sends.
+3. **Who pays (17).** The asking member's own Codex login, the one with the most room, as new work of theirs takes it.
+   A ChatGPT plan pays too, whether or not it works while its member is away (the founder's decision of 14 November
+   2026): the ask is the plan owner's own request, the call is made within ten minutes of it or not at all, and no
+   other member's activity triggers it. No company
+   account and no other member's login pays. A member with no login of their own gets no answer.
+4. **What the run may do: one call.** It offers no tool: its admission takes an empty tool catalog, and only an empty
+   one, as every other run's takes at least one tool. It composes no context (9) and reads nothing of the company: its
+   context is the kind's instructions and the ask's input, bound as any run's context is. It asks once, on a fresh
+   tool-less side thread with the model and effort auto-review and the memory compactor use, on the run's payer, as the
+   compactor's calls are made; the run's own pinned model (17) starts no thread. It never asks twice.
+5. **Closed kinds; the input is data.** The cloud takes a kind and that kind's input, checked, never a prompt. Each
+   kind's instructions are the runtime bundle's. The input goes to the model between tags, escaped as a summary line's
+   text is, and the instructions say it is never to be obeyed.
+6. **Nothing shows.** An agent wake's own policy forbids a send, and the run has no conversation. The run stores its
+   answer in the ask's row through its own call (`qorpera_native_light_ask_answer`); only the asker reads it
+   (`qorpera_read_light_ask`). The run is the Co-Founder's in the company's records, as any run of its is. A coworker's
+   message held for the Co-Founder waits for its next ordinary run: a light run takes none.
+7. **Bounds and failure.** A member has at most 8 light asks waiting in a company; an input is at most 4 KiB, an answer
+   at most 200 characters, one line. An ask not answered within ten minutes reads as failed, and that stands: its
+   wake no longer runs, and an answer that comes after is not kept. A reply that is no answer, or no reply, is stored as none, and the run still ends. A usage limit or a rate
+   limit the call met is recorded against the run's login (17). A company that is paused or being deleted keeps no ask.
+8. **Cost.** One call to the small model per ask (a few hundred tokens in, a few out), and one run's start on an
+   execution host.
+9. **What the provider sees.** The kind's instructions and the input between tags, on a thread with no tools. No
+   company instructions, no history, no file.
 
 ## 20. Enforcement matrix
 

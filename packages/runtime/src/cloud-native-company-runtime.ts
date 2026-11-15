@@ -66,6 +66,7 @@ import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
+import { composeCloudLightAsk } from "./cloud-light-ask.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { type CloudMachineCodingValues, cloudMachineTools } from "./cloud-machine-tools.ts";
 import { cloudMemberOfferTools } from "./cloud-member-offer-tools.ts";
@@ -148,13 +149,14 @@ import {
 } from "./cloud-thread-interactions.ts";
 import {
 	type CloudWakeControl,
+	type CloudWakeEnvelope,
 	cloudCoworkerMessageTool,
 	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
-import { MemoryCompactChannel, MemoryCompactLane } from "./memory-tree/compact.ts";
+import { MemoryCompactChannel, MemoryCompactLane, MemoryCompactStop } from "./memory-tree/compact.ts";
 import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
 import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/conversation-lines.ts";
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
@@ -400,6 +402,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identity: context.identity,
 					wake,
 					observability,
+				});
+			}
+			// A light ask is its own composition too (deploy/first-node/RUNTIME-LIGHT-ASK.md §3): no tools, nothing of the
+			// company read, one call to the small model, the answer stored, nothing said.
+			if (wake.kind === "agent" && wake.source.kind === "light-ask") {
+				stage = "native-tools";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#lightAsk(identityRoot, signal, {
+					binding,
+					identity: context.identity,
+					wake,
+					observability,
+					serviceTier,
 				});
 			}
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
@@ -1321,6 +1336,145 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			await presence?.close().catch(() => undefined);
 			await observability.close();
 		}
+	}
+
+	/**
+	 * A light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md §3; migration 20260930761000). The wake carries a kind
+	 * and that kind's input. The run is admitted with an empty tool catalog (the cloud takes no other for it), binds its
+	 * one question as its context, asks the small model once on a tool-less side thread, and stores the answer. It reads
+	 * nothing of the company and sends nothing: the wake's policy forbids a send, and the run has no conversation.
+	 * - No answer is stored as none, and the run still ends: a kind or an input this bundle does not answer, an ask past
+	 *   its time, a reply that is no answer, or no reply. The run never asks twice.
+	 * - The payer's usage limit or a rate limit, met by the one call, is the login's to know (contract 17), recorded
+	 *   after the answer is stored. What stops the run itself (its lease, its authority, a stop) fails it as any run.
+	 */
+	async #lightAsk(
+		identityRoot: string,
+		signal: AbortSignal,
+		run: {
+			binding: CloudNativeToolBinding;
+			identity: CloudNativeToolIdentity;
+			wake: CloudWakeEnvelope;
+			observability: CloudRuntimeObservability;
+			serviceTier: CloudRuntimeServiceTier;
+		},
+	): Promise<{ providerSessionId: string; delivery: { messageCount: number; finalMessageId: string | null } }> {
+		const { binding, identity, wake, observability, serviceTier } = run;
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const call = composeCloudLightAsk(wake.payload.kind, wake.payload.input);
+		const expiresAt = typeof wake.payload.expiresAt === "string" ? Date.parse(wake.payload.expiresAt) : Number.NaN;
+		// The run's context is its one question, or the fact that there is none to ask.
+		const question = call ? `${call.instructions}\n${call.text}` : "A light ask this runtime does not answer.";
+		const contextSha256 = createHash("sha256").update(question).digest("hex");
+		const contextBytes = Buffer.byteLength(question);
+		let admitted: Record<string, unknown> | undefined;
+		let usageSignal: NativeProviderUsageSignal | undefined;
+		let toolRun: CloudNativeToolRun | undefined;
+		const result = await runCloudNativeRunToolSession({
+			observability,
+			binding,
+			serviceTier,
+			controlPlane: this.#control,
+			beginExecution: async (specification, requestSignal) => {
+				const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+				const answer = await this.#paths.call(
+					"qorpera_begin_native_company_execution_v3",
+					{
+						p_binding: binding,
+						p_binary_sha256: this.#sha256,
+						p_runtime_bundle_sha256: identity.runtimeBundleSha256,
+						p_reasoning_policy_sha256: identity.reasoningPolicySha256,
+						p_tool_catalog_text: toolCatalogText,
+					},
+					requestSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				);
+				const admission = {
+					runId: binding.runId,
+					jobId: binding.jobId,
+					leaseId: binding.leaseId,
+					binarySha256: this.#sha256,
+					runtimeBundleSha256: identity.runtimeBundleSha256,
+					reasoningEffort: identity.reasoningEffort,
+					reasoningPolicySha256: identity.reasoningPolicySha256,
+					toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+				};
+				confirmNativeAdmission(answer, { schema: "qorpera.native-company-execution-admission/v1", ...admission });
+				admitted = admission;
+			},
+			// No tool: a light ask acts on nothing.
+			tools: (_identity, _operations, opened) => {
+				toolRun = opened;
+				return {
+					tools: [],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				};
+			},
+			light: async (ask, lightSignal) => {
+				// The context is bound once, and the call writes the run's start: a lost answer is not asked again.
+				const admission = admitted;
+				if (!admission) throw new Error("Native execution admission was not confirmed");
+				const started = await cloudToolRequest(
+					(requestSignal) =>
+						this.#paths.call(
+							"qorpera_bind_native_company_context",
+							{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+							requestSignal,
+							CLOUD_RUN_ROW_READ_MS,
+						),
+					lightSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				);
+				confirmNativeAdmission(started, {
+					...admission,
+					schema: "qorpera.native-company-execution-start/v1",
+					contextSha256,
+					contextBytes,
+				});
+				let answer: string | null = null;
+				// Past its time nothing is asked: the member no longer waits for it.
+				if (call && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+					try {
+						answer = call.answer(await ask(call.instructions, call.text, lightSignal));
+					} catch (error) {
+						// The run was stopped, or its process is gone: that is the run's failure, not the ask's.
+						if (lightSignal.aborted) throw error;
+						if (error instanceof MemoryCompactStop) {
+							if (error.reason === "usage-limit") usageSignal = "usage_limit";
+							else if (error.reason === "rate-limit") usageSignal = "rate_limited";
+						}
+					}
+				}
+				// Stored once (the first call decides, a repeat answers what stands), so a lost answer is asked again while
+				// the run's authority holds.
+				await cloudRunRowWrite(
+					toolRun,
+					(requestSignal) =>
+						this.#paths.call(
+							"qorpera_native_light_ask_answer",
+							{ p_binding: binding, p_answer: answer },
+							requestSignal,
+						),
+					lightSignal,
+				);
+			},
+			command: this.#command,
+			binarySha256: this.#sha256,
+			identityRoot,
+			...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+			isolation: this.#isolation,
+			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+			signal,
+			timeoutMs: this.#timeoutMs,
+		});
+		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
+		this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
 	/**

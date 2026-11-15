@@ -46,7 +46,12 @@ import {
 	CloudVoiceChannel,
 	CloudVoiceUnavailable,
 } from "@qorpera/runtime/cloud-voice-channel";
-import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
+import {
+	COMPACT_EFFORT,
+	COMPACT_MODEL,
+	MemoryCompactChannel,
+	MemoryCompactStop,
+} from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -87,6 +92,8 @@ function run(
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
 		turnCorrection?: Parameters<typeof runCloudCodexToolSession>[0]["turnCorrection"];
+		light?: Parameters<typeof runCloudCodexToolSession>[0]["light"];
+		prompt?: string;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -114,7 +121,8 @@ function run(
 		binarySha256,
 		boundary,
 		model: "offline-probe",
-		...(options.opening ? {} : { prompt: "Private test input" }),
+		// A run with an opening or a light ask's run has no prompt of its own.
+		...(options.opening || options.light ? {} : { prompt: "Private test input" }),
 		...options,
 		signal,
 	});
@@ -291,6 +299,115 @@ it("cuts webhook signing secrets out of the compactor's instructions and windows
 	const recorded = JSON.parse(raw);
 	expect(recorded.compactThreads[0].developerInstructions).toBe("PRIVATE_COMPACT_SYSTEM whsec_[REDACTED]");
 	expect(recorded.compactTurns[0].input[0].text).toBe("PRIVATE_WINDOW_1 member: whsec_[REDACTED]");
+});
+
+describe("a light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md §3)", () => {
+	it("asks once on a tool-less side thread with the compactor's model and effort, and never starts the agent's thread", async () => {
+		const order: string[] = [];
+		let reply: string | undefined;
+		const { result, evidence, execute } = run("compact", {
+			tools: [],
+			beforeModelStart: async () => {
+				order.push("admitted");
+			},
+			light: async (ask, signal) => {
+				order.push("asking");
+				reply = await ask("PRIVATE_LIGHT_SYSTEM", "PRIVATE_LIGHT_TEXT", signal);
+				order.push("answered");
+			},
+		});
+		const session = await result;
+		expect(order).toEqual(["admitted", "asking", "answered"]);
+		expect(reply).toBe("LINE 1");
+		// The run's provider session is the thread it asked in.
+		expect(session.providerSessionId).toBe("thread_compact");
+		expect(session.toolCalls).toBe(0);
+		expect(execute).not.toHaveBeenCalled();
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.compactThreads).toHaveLength(1);
+		expect(recorded.compactThreads[0]).toMatchObject({
+			model: COMPACT_MODEL,
+			developerInstructions: "PRIVATE_LIGHT_SYSTEM",
+			dynamicTools: [],
+			ephemeral: true,
+			sandbox: "read-only",
+			approvalPolicy: "never",
+		});
+		expect(recorded.compactTurns).toHaveLength(1);
+		expect(recorded.compactTurns[0]).toMatchObject({
+			threadId: "thread_compact",
+			effort: COMPACT_EFFORT,
+			input: [{ type: "text", text: "PRIVATE_LIGHT_TEXT" }],
+			sandboxPolicy: { type: "readOnly", networkAccess: false },
+		});
+		// The agent's thread and turn never started.
+		expect(recorded.mainThread ?? null).toBeNull();
+		expect(recorded.mainTurn ?? null).toBeNull();
+		expect(recorded.order).toEqual(["compact-thread"]);
+	});
+
+	it("cuts a webhook signing secret out of what it sends Codex, as every other lane does", async () => {
+		const { result, evidence } = run("compact", {
+			tools: [],
+			light: async (ask, signal) => {
+				await ask(`PRIVATE_LIGHT_SYSTEM ${FAKE_WEBHOOK_SECRET}`, `<name>${FAKE_WEBHOOK_SECRET}</name>`, signal);
+			},
+		});
+		await result;
+		const raw = await readFile(evidence, "utf8");
+		expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	});
+
+	it("names the payer's usage limit to the ask, which may end the run without an answer", async () => {
+		let stop: unknown;
+		const { result } = run("compact-usage-limit", {
+			tools: [],
+			light: async (ask, signal) => {
+				stop = await ask("PRIVATE_LIGHT_SYSTEM", "PRIVATE_LIGHT_TEXT", signal).catch((error: unknown) => error);
+			},
+		});
+		const session = await result;
+		expect(stop).toBeInstanceOf(MemoryCompactStop);
+		expect((stop as MemoryCompactStop).reason).toBe("usage-limit");
+		expect(session.providerSessionId).toBe("thread_compact");
+	});
+
+	it("gives a run that asked nothing a provider session of its own", async () => {
+		const light = vi.fn(async () => undefined);
+		const { result, evidence } = run("compact", { tools: [], light });
+		expect((await result).providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		expect(light).toHaveBeenCalledOnce();
+		await expect(readFile(evidence, "utf8")).rejects.toThrow();
+	});
+
+	it("fails the run with what the light ask throws, and with an empty question", async () => {
+		const failed = run("compact", {
+			tools: [],
+			light: async () => {
+				throw new Error("The answer was not stored");
+			},
+		});
+		await expect(failed.result).rejects.toThrow("The answer was not stored");
+		const empty = run("compact", {
+			tools: [],
+			light: async (ask, signal) => {
+				await ask("PRIVATE_LIGHT_SYSTEM", "   ", signal);
+			},
+		});
+		await expect(empty.result).rejects.toThrow("Invalid native boundary input");
+	});
+
+	it.each<[string, Parameters<typeof run>[1]]>([
+		["a prompt", { prompt: "Private test input" }],
+		["instructions of its own", { runtimeInstructions: "HOST_OWNED_CONSTITUTION" }],
+		["an opening", { opening: async () => ({ prompt: "Private test input" }) }],
+	])("refuses a light ask's run with %s", async (_label, extra) => {
+		const light = vi.fn(async () => undefined);
+		await expect(run("compact", { tools: [], light, ...extra }).result).rejects.toThrow(
+			"Invalid native boundary input",
+		);
+		expect(light).not.toHaveBeenCalled();
+	});
 });
 
 it("ends the run when its composition is not one Codex can send", async () => {

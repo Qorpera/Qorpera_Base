@@ -20,9 +20,9 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites), 20260930566000 (good will),
  * 20260930618000 (the run's check around a tool call), 20260930702000 (the Co-Founder's offers of agents),
  * 20260930720000 (an agent's undo and description of a change in the company's code), 20260930736000 (an agent's
- * import of existing code into it), 20260930750000 (a run's data pass for the company data gateway) and 20260930765000
- * (the Co-Founder's senses, the facts its reading of the company is written from) and 20260930766000 (whether the run
- * has a receipt under a key) list them,
+ * import of existing code into it), 20260930750000 (a run's data pass for the company data gateway),
+ * 20260930761000 (a light ask's answer), 20260930765000 (the Co-Founder's senses, the facts its reading of the company is
+ * written from) and 20260930766000 (whether the run has a receipt under a key) list them,
  * without the two
  * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
  * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model request's
@@ -109,6 +109,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_memory_zoom", "standard"],
 	["qorpera_native_company_file_write", "standard"],
 	["qorpera_native_company_file_write_source", "standard"],
+	["qorpera_native_light_ask_answer", "standard"],
 	["qorpera_native_machine_manage", "standard"],
 	["qorpera_native_machine_start", "standard"],
 	["qorpera_native_office_capture", "standard"],
