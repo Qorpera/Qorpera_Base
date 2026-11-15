@@ -159,10 +159,15 @@ export const OPEN_STARTS: Readonly<Record<"asleep" | "starting" | "screenOff", b
 export const ASK_LASTS_MS = 60_000;
 /** How long the first picture takes to settle in over the scene. */
 const SETTLE_MS = 450;
-/** With no touch on the page for this long the window stops looking and asks whether the member still watches. */
+/** With no touch on the page for this long the window stops looking and asks whether the member still watches. A
+ * computer that is awake only because a member woke it (20260930759000) pauses sooner: after the seconds its list
+ * names (`memberSleepSeconds`, 10 minutes), which is also how long after the member's last sign it sleeps. */
 export const PAUSE_AFTER_MS = 30 * 60_000;
 /** How often a member who touches the page says again that they watch (the database keeps the desktop on 30 min). */
 const CONFIRM_EVERY_MS = 5 * 60_000;
+/** The same for a computer that is awake only for a member (20260930759000): its sleep counts from the member's last
+ * word, so the word follows their touch within a minute. */
+export const MEMBER_CONFIRM_EVERY_MS = 60_000;
 /** The waits after failed looks or reads: 2, 4, 8, then 15 s. */
 const BACKOFF_MS = [2000, 4000, 8000, 15_000];
 /** Failed reads in a row before the window says it cannot reach the computer. */
@@ -1124,7 +1129,7 @@ export class ComputerPanel {
 				await this.#wait(Number.POSITIVE_INFINITY, signal);
 				continue;
 			}
-			if (this.#paused || Date.now() - this.#lastTouch >= PAUSE_AFTER_MS) {
+			if (this.#paused || Date.now() - this.#lastTouch >= this.#pauseAfter()) {
 				this.#paused = true;
 				// The picture goes, and with it any sharing (review r3 of #1701).
 				this.#unpicture("paused");
@@ -1226,8 +1231,10 @@ export class ComputerPanel {
 			}
 			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
 			// The live picture shows the screen (20260930745000): no looks while it does; the list is read as before, and the
-			// looks come back the moment it ends.
-			if (this.#streamShows(machine.machineId)) {
+			// looks come back the moment it ends. One look still goes for a computer that is awake only for a member, when
+			// their word that they watch is due (20260930759000): the live picture writes nothing, and that word is what keeps
+			// such a computer awake under a member who watches without moving the pointer over it. Its picture is not drawn.
+			if (this.#streamShows(machine.machineId) && !(this.#confirm && machine.memberSleepSeconds !== null)) {
 				await this.#wait(this.#listedAt + MACHINES_EVERY_MS - Date.now(), signal);
 				continue;
 			}
@@ -2073,9 +2080,10 @@ export class ComputerPanel {
 	/**
 	 * Whether the desktop's live picture may go on for this hold or sharing (20260930745000): the build names a stream
 	 * address and the way has the route; the window is open, in a thread, in a visible tab, watched (no pause, a touch in
-	 * the last 30 minutes), in the large view with this computer's picture up; no run of failures or refusal waits; and the
-	 * hold or sharing is the window's own and its pointer goes (as for a move: #pointerCurrent). Checked at every change the
-	 * window draws and every STREAM_CHECK_MS: false ends the stream.
+	 * the last 30 minutes, or in the computer's own seconds when it is awake only for a member: #pauseAfter), in the
+	 * large view with this computer's picture up; no run of failures or refusal waits; and the hold or sharing is the
+	 * window's own and its pointer goes (as for a move: #pointerCurrent). Checked at every change the window draws and
+	 * every STREAM_CHECK_MS: false ends the stream.
 	 */
 	#streamWanted(sender: PageHold | SharedInput): boolean {
 		return (
@@ -2084,7 +2092,7 @@ export class ComputerPanel {
 			this.attached &&
 			document.visibilityState !== "hidden" &&
 			!this.#paused &&
-			Date.now() - this.#lastTouch < PAUSE_AFTER_MS &&
+			Date.now() - this.#lastTouch < this.#pauseAfter() &&
 			this.#view?.entered === true &&
 			this.#picturing() &&
 			!this.#pointerOff &&
@@ -2829,6 +2837,12 @@ export class ComputerPanel {
 			this.#paused = false;
 			this.#confirm = true;
 			this.#lastLook = Number.NEGATIVE_INFINITY;
+			// Keep watching is the member's ask for this computer, as a click on Computer is (ask): one that fell asleep
+			// under the paused window is woken by the first list read after it (OPEN_STARTS), not by a second press
+			// (20260930759000: a computer awake only for a member sleeps 10 minutes after the window paused).
+			this.#ask = { before: this.#listReads, at: Date.now() };
+			this.#wakeFailed = undefined;
+			this.#listStale = true;
 			this.#show("loading");
 		} else if (state === "error") {
 			this.#failures = 0;
@@ -3008,10 +3022,29 @@ export class ComputerPanel {
 		this.#unpicture(shown);
 	}
 
-	/** A touch on the page: the member is there. Every few minutes it says again that they still watch. */
+	/** A touch on the page: the member is there. Every few minutes it says again that they still watch (every minute for
+	 * a computer that is awake only for a member). */
 	#touched(): void {
-		this.#lastTouch = Date.now();
-		if (Date.now() - this.#confirmedAt >= CONFIRM_EVERY_MS) this.#confirm = true;
+		const now = Date.now();
+		this.#lastTouch = now;
+		if (this.#confirm) return;
+		const since = now - this.#confirmedAt;
+		// The computer shown is read only between the two intervals: a touch comes with every move of the pointer.
+		if (since >= CONFIRM_EVERY_MS || (since >= MEMBER_CONFIRM_EVERY_MS && this.#memberSleepMs() !== undefined))
+			this.#confirm = true;
+	}
+
+	/** For a computer that is awake only because a member woke it (20260930759000): how long after the member's last
+	 * sign it sleeps, as its list names it. Undefined for every other computer, and before a list was read. */
+	#memberSleepMs(): number | undefined {
+		const seconds = this.#pick()?.memberSleepSeconds;
+		return seconds === null || seconds === undefined ? undefined : seconds * 1000;
+	}
+
+	/** How long without a touch on the page before the window pauses: 30 minutes, or sooner for a computer that is
+	 * awake only for a member (it sleeps that long after the member's last sign, so the window asks first). */
+	#pauseAfter(): number {
+		return Math.min(PAUSE_AFTER_MS, this.#memberSleepMs() ?? PAUSE_AFTER_MS);
 	}
 
 	/** Shows another of the agent's computers, at once. NOTHING IN THE WEB CALLS THIS since the switcher was taken out of
