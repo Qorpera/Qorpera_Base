@@ -370,6 +370,8 @@ begin
 		('QorperaOS/agents/groups/Launch', true, 1), ('QorperaOS/agents/anna/Notes', true, 0), ('Sales', true, 0), ('QorperaOS/agents/Anna/', true, 1),
 		('QorperaOS/agents/anna/Agent.md', false, 1), ('QorperaOS/Agents/anna/agent.md', false, 1), ('QorperaOS/rules/.md', false, 1), ('QorperaOS/AGENTS/anna/AGENT.MD', false, 1),
 		('QorperaOS/vision/vision.md', false, 0), ('QorperaOS/agents/groups/launch-team/group.md', false, 0),
+		-- 20260930765000: the reading is a .md file named in lowercase.
+		('QorperaOS/vision/reading.md', false, 0), ('QorperaOS/vision/Reading.md', false, 1),
 		-- The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
 		('QorperaOS/agents/groups', true, 0), ('QorperaOS/Agents/Groups', true, 1), ('QorperaOS/agents/Groups', true, 1),
 		('QorperaOS/AGENTS/GROUPS', true, 1), ('QorperaOS/Agents/groups/launch', true, 1),
@@ -394,6 +396,8 @@ begin
 		('qorperaos/agents/sections.md/agent.md', null), ('qorperaos/skills/x/skill.md', null), ('qorperaos/human-tasks/fit-disk-node-2.md', 'human-task'),
 		('qorperaos/contacts/maria-jensen.md', 'contact'), ('qorperaos/human-tasks/fit-disk-node-2/note.md', null),
 		('qorperaos/human-tasks/fit-disk-node-2/proof/label.md', null), ('qorperaos/contacts/archive/old.md', null),
+		-- 20260930765000: the company's reading of itself, beside the vision.
+		('qorperaos/vision/reading.md', 'reading'), ('qorperaos/vision/notes.md', null),
 		-- 20260930534000: the old roots are ordinary.
 		('vision/vision.md', null), ('agents/a/agent.md', null)) v(key, kind)
 	loop

@@ -216,3 +216,12 @@ revoke all on function public.qorpera_close_home_session(jsonb, uuid, text)
 grant execute on function public.qorpera_company_home_available(jsonb) to service_role;
 grant execute on function public.qorpera_authorize_home_session(jsonb, jsonb, uuid) to service_role;
 grant execute on function public.qorpera_close_home_session(jsonb, uuid, text) to service_role;
+
+-- The run's host holds no service key (G2-5): its two calls go through the native host's entry point
+-- (20260928409985) with the job's lease token, which allows a call only when it is listed here. Both take the run's
+-- binding, which the entry point holds to the job's own job and run before either function sees it, and each runs
+-- there as the platform's service caller, as their role check asks. The executor's authority is not the host's: it
+-- calls qorpera_authorize_home_session with its own key, and is not listed.
+insert into public.qorpera_native_host_calls(name, scope) values
+	('qorpera_company_home_available', 'binding'),
+	('qorpera_close_home_session', 'binding');
