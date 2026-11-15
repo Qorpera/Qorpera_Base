@@ -74,7 +74,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-15",
 		title: "Workers on Claude Code",
-		text: "When a member asks for Claude Code to do work, a worker can run on it: manage_worker with harness claude-code and access write hands the work to Claude Code, which works on your own machine and in the company's files with your rights there, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. A member without a Claude sign-in gets the worker back blocked, in words that say what to do.",
+		text: "When a member asks for Claude Code to do work, a worker can run on it: manage_worker with harness claude-code and access write hands the work to Claude Code, which works on your own machine and in the company's files with your rights there, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. A member without a Claude sign-in is refused at the dispatch, in words that say what to do; if their sign-in ends before the run, the worker comes back blocked.",
 	},
 ]);
 
