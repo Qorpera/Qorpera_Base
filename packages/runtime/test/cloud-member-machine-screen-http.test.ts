@@ -29,7 +29,7 @@ const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtZW1iZXIifQ.c2lnbmF0dXJl";
 async function service(
 	look: (request: CloudMemberMachineScreenLook) => Promise<{ etag: string; png: Buffer | null }>,
 	act?: (request: CloudMemberMachineActRequest) => Promise<{ exitCode: number | null }>,
-	start?: (request: CloudMemberMachineStartRequest) => Promise<{ outcome: "started" | "running" }>,
+	start?: (request: CloudMemberMachineStartRequest) => Promise<{ outcome: "started" | "running" | "opened" }>,
 	pointer?: (request: CloudMemberMachinePointerRequest) => Promise<CloudMemberMachinePointerAnswer>,
 ) {
 	const failed = vi.fn();
@@ -546,6 +546,27 @@ describe("a member's start of the desktop through the executor's member listener
 		});
 		expect(s.looked).not.toHaveBeenCalled();
 	});
+	it("passes what to open on whole, as one path, and answers that it opened (20260930758000)", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			async () => ({ outcome: "opened" }),
+		);
+		for (const open of [
+			"apps/brooks-overblik",
+			"Møder/æble og grød ø.md",
+			"apps/a;b $(x) 'q'.txt",
+			"x".repeat(500),
+			"å".repeat(250),
+		]) {
+			const done = await post(s.url("/start"), JSON.stringify({ open }));
+			expect(await done.json()).toEqual({ schema: "qorpera.member-machine-start/v1", outcome: "opened" });
+			expect(s.started).toHaveBeenLastCalledWith(
+				{ companyId: s.companyId, machineId: s.machineId, token, open },
+				expect.any(AbortSignal),
+			);
+		}
+	});
 	it("refuses a body that is not `{}` as 400, by method and token first; without the route it is 404", async () => {
 		const s = await service(
 			async () => ({ etag, png: picture }),
@@ -553,8 +574,29 @@ describe("a member's start of the desktop through the executor's member listener
 			async () => ({ outcome: "started" }),
 		);
 		const status = async (response: Promise<Response>) => (await response).status;
-		// What to open is for a later stage: any key today is a bad request.
-		for (const body of ['{"open": "/company/apps/shop"}', "[]", "null", '"x"', "", `{"pad":"${"p".repeat(1100)}"}`])
+		// Any key but `open`, an open that is no plain path of the company folder (20260930758000), or past the bounds.
+		for (const body of [
+			'{"open": "/company/apps/shop"}',
+			'{"open": "apps/shop", "x": 1}',
+			'{"pad": 1}',
+			'{"open": 5}',
+			'{"open": null}',
+			'{"open": ""}',
+			'{"open": "apps//shop"}',
+			'{"open": "apps/../x"}',
+			'{"open": "./apps"}',
+			'{"open": "apps/"}',
+			'{"open": "apps\\\\shop"}',
+			'{"open": "a\\nb"}',
+			'{"open": "a\\u0000b"}',
+			'{"open": "a\\ud800b"}',
+			`{"open": "${"x".repeat(501)}"}`,
+			"[]",
+			"null",
+			'"x"',
+			"",
+			`{"pad":"${"p".repeat(1100)}"}`,
+		])
 			expect(await status(post(s.url("/start"), body)), body.slice(0, 40)).toBe(400);
 		expect(await status(post(s.url("/start"), "{}", { "content-type": "text/plain" }))).toBe(400);
 		expect(await status(fetch(s.url("/start"), { headers: { authorization: `Bearer ${token}` } }))).toBe(405);
@@ -585,12 +627,22 @@ describe("a member's start of the desktop through the executor's member listener
 			"DESKTOP_MACHINE_TOO_SMALL",
 			"DESKTOP_START_TOO_SOON",
 			"DESKTOP_DID_NOT_START",
+			"DESKTOP_OPEN_PATH_INVALID",
+			"DESKTOP_OPEN_NOT_FOUND",
+			"DESKTOP_MEMBER_IN_CONTROL",
+			"DESKTOP_OPEN_NO_FOLDER",
+			"DESKTOP_DID_NOT_OPEN",
 		] as const) {
 			next = new CloudMemberMachineStartRefusal(code);
 			expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code }) });
 		}
-		// Of these only a desktop that did not start is a failure, logged by its code.
-		expect(s.failed.mock.calls).toEqual([["DESKTOP_DID_NOT_START"]]);
+		// Of these only the machine's failures are logged, by their codes: a desktop that did not start, a computer without
+		// the company folder, an open that failed.
+		expect(s.failed.mock.calls).toEqual([
+			["DESKTOP_DID_NOT_START"],
+			["DESKTOP_OPEN_NO_FOLDER"],
+			["DESKTOP_DID_NOT_OPEN"],
+		]);
 		next = new CloudMemberMachineScreenSignIn();
 		expect((await ask()).status).toBe(401);
 		next = new Error("MEMBER_START_BEGIN_UNCONFIRMED");
@@ -1011,6 +1063,31 @@ describe("a member's start begun as the member (deploy/coding-worker/member-cont
 		expect(url).toBe("https://project.supabase.co/rest/v1/rpc/qorpera_member_machine_desktop_start_begin");
 		expect(init).toMatchObject({ method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}` } });
 		expect(JSON.parse(String(init?.body))).toEqual({ p_profile_id: start.companyId, p_machine_id: start.machineId });
+	});
+
+	it("calls the begin that takes a path for a start that opens one, the path whole (20260930758000)", async () => {
+		const startId = randomUUID();
+		const c = control(200, { schema, state: "ok", startId });
+		const open = "apps/a;b $(x) 'q'.txt";
+		expect(await c.control.start(token, { ...start, open }, signal)).toEqual({ startId });
+		expect(JSON.parse(String(c.fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+			p_profile_id: start.companyId,
+			p_machine_id: start.machineId,
+			p_open: open,
+		});
+		for (const reason of ["DESKTOP_OPEN_PATH_INVALID", "DESKTOP_OPEN_NOT_FOUND", "DESKTOP_MEMBER_IN_CONTROL"]) {
+			const error = await control(200, { schema, state: "refused", reason })
+				.control.start(token, { ...start, open }, signal)
+				.catch((caught: unknown) => caught);
+			expect(error).toMatchObject({ code: reason });
+		}
+		// A path that is no plain path of the folder never reaches the database.
+		const never = control(200, {});
+		for (const bad of ["", "/apps", "a//b", "a/../b", "a\nb", "x".repeat(501)])
+			await expect(never.control.start(token, { ...start, open: bad }, signal)).rejects.toThrow(
+				"MEMBER_START_BEGIN_INVALID",
+			);
+		expect(never.fetcher).not.toHaveBeenCalled();
 	});
 
 	it("turns the begin's refusals into the member's, and fails closed on anything else", async () => {

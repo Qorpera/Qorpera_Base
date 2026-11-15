@@ -1,4 +1,4 @@
-import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
+import { OWED_APPS, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { captionHash, EXPLAINER_ENGINE_JS, explainerPage } from "@qorpera/runtime/cloud-app-kit-explainer";
@@ -77,18 +77,19 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 	// is part of this one, so a longer list can push it over. The emblems are listed on the schema alone since there are
 	// 24 (12 November 2026), which put it at 4177.
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
-	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
+	// The emblems and colours are the schema's enums, which Codex sends; the description names the fields.
+	expect(tool.description).toContain("optionally about, emblem, colour, kit, entry");
 	for (const rule of [
 		// Jonas, 13 November 2026: pages that kept every rule of 10 November (a first screen that says how the area
 		// stands, about 300 words, a diagram) were still documents in boxes. A page written by hand now follows the kits.
-		"The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
-		"a title of two or three words, at most one short line under it, then the thing",
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
-		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
-		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: app_guide style says which",
-		"Draw what the company already holds from its live data instead of typing it in: app_guide reads says how.",
+		"The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
+		"a title of two or three words, at most one short line, then the thing",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
+		"Give it something to do: a control that changes what it shows, or a choice a member makes (writes).",
+		"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+		"Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+		"Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
@@ -132,7 +133,9 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 it("tells in the guide writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
-	expect(tool.description).toContain("writes: what it may ask a member to change");
+	expect(tool.description).toContain(
+		"asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them)",
+	);
 	const writes = appGuide("writes");
 	for (const rule of [
 		// The gate: the page asks, the member allows on a bar the page cannot draw, and the save is the member's own.
@@ -178,13 +181,20 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 		"board: real things as pictures",
 		"path: a way through steps with the evidence for each",
 		"object: a physical thing a member turns in the hand",
+		"curve: one value over time",
+		"stack: things that want a member's yes",
+		"shelf: the company's own things side by side",
+		"map: the company or your own area as its things",
+		"ring: a year, month or week with its dates",
+		"flow: money or people from where they come to where they go",
 		"explainer: a mechanism or a decision that a short narrated video explains.",
 	])
 		expect(properties.kit?.description).toContain(said);
 	expect(properties.reads?.description).toContain("app_guide reads says how");
 	expect(properties.writes?.description).toContain("app_guide writes says how");
+	// T3-5's contract says it on the kits' line.
 	expect(f.tool("save_app").description).toContain(
-		"app_guide says what its file holds: read the kit's guide before you write the file, since a kit's file is saved only in a run that has read it.",
+		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 	);
 });
 
@@ -197,6 +207,12 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"board",
 		"path",
 		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
 		"explainer",
 		"style",
 		"reads",
@@ -204,7 +220,11 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"icons",
 	]);
 	for (const about of APP_GUIDES) expect(tool.description, about).toContain(about);
-	refusesArguments(tool, { about: "kits" }, "about must be one of look, model, board, path, object, explainer");
+	refusesArguments(
+		tool,
+		{ about: "kits" },
+		"about must be one of look, model, board, path, object, curve, stack, shelf, map, ring, flow, explainer",
+	);
 	refusesArguments(tool, {}, "app_guide takes exactly about");
 	refusesArguments(tool, { about: "model", more: 1 }, "app_guide takes exactly about");
 	for (const about of APP_GUIDES) {
@@ -213,9 +233,11 @@ it("answers a guide's text, and nothing of the company", async () => {
 		// One result holds it whole, with room for its envelope.
 		expect(Buffer.byteLength(JSON.stringify(appGuide(about))), about).toBeLessThan(16 * 1024);
 	}
-	// A data kit's guide starts with what the four share, then its own: fields, bounds and an example.
-	for (const kit of ["model", "board", "path", "object"] as const) {
-		expect(appGuide(kit), kit).toMatch(/^For model, board, path and object you write one file among files/);
+	// A data kit's guide starts with what the data kits share, then its own: fields, bounds and an example.
+	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"] as const) {
+		expect(appGuide(kit), kit).toMatch(
+			/^For a data kit \(model, board, path, object, curve, stack, shelf, map, ring, flow\) you write one file among files/,
+		);
 		expect(appGuide(kit), kit).toContain(`\`${kit}.json\``);
 		expect(appGuide(kit), kit).toContain("```json");
 	}
@@ -237,8 +259,11 @@ it("holds every app to one look, with screens at the bar and three not to make",
 		"One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.",
 		"Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.",
 		"Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs",
+		// The views the company is owed, at their fixed folders (company views step 4, DESIGN-4.md O2a).
+		"- Some apps are views the company is owed, which members find first: apps/products (what it sells), apps/money (its money), apps/ads (its ads). Make one when asked, at exactly that folder; the platform draws the website itself.",
 	])
 		expect(look).toContain(rule);
+	for (const name of OWED_APPS) expect(look).toContain(`apps/${name} (`);
 	// Seven screens he liked and three he did not, a line each, each naming why.
 	const lines = (heading: string) => look.split(`\n\n${heading}:\n`)[1]?.split("\n\n")[0]?.split("\n") ?? [];
 	expect(lines("Screens at the bar").map((line) => line.split(":")[0])).toEqual([
@@ -255,8 +280,9 @@ it("holds every app to one look, with screens at the bar and three not to make",
 	// Short: a guide read before every first app.
 	expect(Buffer.byteLength(look)).toBeLessThan(2500);
 	// An agent meets it where it chooses: app_guide's description, and save_app's kit.
+	// T3-5's contract says it on app_guide's look line.
 	expect(f.tool("app_guide").description).toContain(
-		"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app.",
+		"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
 	);
 	const kit = (
 		f.tool("save_app").inputSchema as {
@@ -443,9 +469,9 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 const LINKS_NOTE =
 	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
-	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.";
+	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws), and keep the text in its file.";
 const UNSHOWN_NOTE =
-	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).";
+	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws).";
 const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
 
 it("reads a page quickly and names what a member would trip on", () => {
@@ -518,6 +544,70 @@ it("tells the agent what a quick read of the saved entry page found, as advice",
 	const calm = read(await f.call("save_app", save("market", "change-2", null, [{ path: "index.html", text: PAGE }])));
 	expect(calm).toMatchObject({ state: "applied", created: false });
 	expect(calm).not.toHaveProperty("look");
+});
+
+it("tells the agent an app at an owed view's folder is that view, which members find first", async () => {
+	// Company views step 4 (lanes/company-views-20261114/DESIGN-4.md, O2a): apps/products, apps/money and apps/ads.
+	expect(OWED_APPS).toEqual(["products", "money", "ads"]);
+	const f = await fixture();
+	const show = (name: string) =>
+		`Saved. Show it to the member with a link in your message: [${name}](app:${name}). post_app shows it to every member in their apps.`;
+	for (const name of OWED_APPS) {
+		const made = read(
+			await f.call("save_app", save(name, `make-${name}`, manifest("View"), [{ path: "index.html", text: PAGE }])),
+		);
+		// A line to know, not to fix: next does not ask for a fix.
+		expect(made).toMatchObject({
+			state: "applied",
+			look: [`This is the company's ${name} view: members find it first in the apps drawer.`],
+			next: show(name),
+		});
+		// Every save of it says so, a change too.
+		const changed = read(
+			await f.call("save_app", save(name, `change-${name}`, null, [{ path: "state.json", text: "{}" }])),
+		);
+		expect(changed.look).toEqual([`This is the company's ${name} view: members find it first in the apps drawer.`]);
+	}
+	// Beside what a read of the page found, last; then the notes ask for a fix.
+	const wordy = read(
+		await f.call(
+			"save_app",
+			save("products", "wordy-1", null, [{ path: "index.html", text: `<h1>Lamps</h1><p>${words(501)}</p>` }]),
+		),
+	);
+	expect(wordy.look).toEqual([
+		`502 words: ${WORDS_NOTE}`,
+		UNSHOWN_NOTE,
+		"This is the company's products view: members find it first in the apps drawer.",
+	]);
+	expect(wordy.next).toContain("First fix what look names");
+	// Any other name, a concept at an owed folder (it shows inside Concepts) and a save of icons alone get none.
+	const other = read(
+		await f.call("save_app", save("products-2", "other-1", manifest("View"), [{ path: "index.html", text: PAGE }])),
+	);
+	expect(other).not.toHaveProperty("look");
+	const g = await fixture();
+	const concept = read(
+		await g.call(
+			"save_app",
+			save("money", "make-1", manifest("Money", { concept: true, cover: "./cover.webp" }), [
+				{ path: "index.html", text: PAGE },
+			]),
+		),
+	);
+	expect(concept).toMatchObject({ state: "applied" });
+	expect(concept).not.toHaveProperty("look");
+	// A change of it keeps it a concept, so still none (the change path reads concept from the stored manifest).
+	const kept = read(await g.call("save_app", save("money", "change-1", null, [{ path: "state.json", text: "{}" }])));
+	expect(kept).toMatchObject({ state: "applied", created: false });
+	expect(kept).not.toHaveProperty("look");
+	expect(parseAppManifest(g.text("apps/money/app.toml") ?? "")).toMatchObject({ manifest: { concept: true } });
+	const drawn = read(
+		await f.call("save_app", save("ads", "icons-1", null, [{ path: "icons/megaphone.svg", text: ICON }])),
+	);
+	expect(drawn).toMatchObject({ state: "applied" });
+	expect(drawn).not.toHaveProperty("look");
+	expect(drawn.next).toContain("Tell the member in one line what you drew");
 });
 
 it("marks an app as a concept with its cover, and keeps both when a later change leaves them out", async () => {

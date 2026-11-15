@@ -189,6 +189,7 @@ export class Database {
 					epoch: this.epoch(member, machine),
 					others: [],
 					generation: null,
+					memberSleepSeconds: null,
 				};
 			}),
 		};

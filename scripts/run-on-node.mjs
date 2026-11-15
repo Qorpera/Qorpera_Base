@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, renameS
 import { constants, homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { check as checkComments, describeFindings } from "./check-comments.mjs";
 import { ALL_STARTED, describePlan, planChanged, planScript, SIDE_BY_SIDE, STOP, splitPlan, USING } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
@@ -1358,6 +1359,12 @@ async function main() {
 		plan = planChanged(changed);
 		for (const line of describePlan(plan, `${options.base} ${mergeBase.slice(0, 9)}, ${changed.length} files`)) console.log(line);
 		changedPlan = { base: options.base, mergeBase, files: changed.length, full: plan.full, steps: plan.steps.map((step) => step.name) };
+		const comments = checkComments({ base: options.base, cwd: root }).findings;
+		if (comments.length) {
+			for (const line of describeFindings(comments)) console.error(line);
+			github.post("failure", `${comments.length} new or edited comment(s) break the comment rule`);
+			return 1;
+		}
 		if (!plan.steps.length) {
 			// Documentation only is a result; no changed file at all (a commit master already contains) is not.
 			if (changed.length) github.post("success", "nothing to run: documentation only");
