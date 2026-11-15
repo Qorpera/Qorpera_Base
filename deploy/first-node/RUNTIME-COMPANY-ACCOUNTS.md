@@ -306,11 +306,17 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
    plain reads, writes nothing): the run's live tool authority in a company conversation on the company folder; the
    call's own executing receipt (envelope digest, key); a company agent's run, not a worker's, of a company neither paused
    nor being deleted. It answers, not raises, what the agent acts on: `ACCOUNTS_SWITCHED_OFF`, `MACHINE_NOT_RUNNING`,
-   `ACCOUNT_NOT_OPEN`. Accounts are the company's: as for the office's fill and `company_account open`, no requester role
+   `ACCOUNT_NOT_OPEN`, and `DESKTOP_MEMBER_IN_CONTROL` while a member holds the machine's desktop (20260930713000). Accounts are the company's: as for the office's fill and `company_account open`, no requester role
    is asked (an agent working for a contributor may open an account, so it fills it too); a requester who is no longer a
    member is refused by the run check. Otherwise where the machine runs
-   (placement, boot, executor) and the helper's target: what the box is bound to and the account's site and sign-in hosts.
-   Another node's executor gets the request once and reads SQL again.
+   (placement, boot, executor), the desktop's lease generation it saw (`desktopGeneration`), and the helper's target:
+   what the box is bound to and the account's site and sign-in hosts. Another node's executor gets the request once and
+   reads SQL again.
+   The executor then takes the desktop as an action does (one actor at a time; a member's action never interleaves),
+   waiting up to 6 s while an agent's action holds it, and refused at once while a member's does. Before the helper starts
+   it asks `qorpera_machine_desktop_picture_check` with that generation and no looker, as `save_coding_value` does
+   (CLIENT-CONTRACT.md): a member who took the desktop over since the read means `DESKTOP_MEMBER_IN_CONTROL`, and nothing
+   runs on the machine.
 3. On the machine's node the executor runs `/usr/bin/node /opt/qorpera-machine/cloud-machine-account-fill.mjs` as root
    in one LXD exec (only on the boot SQL named: exit 97; only where the image has it: exit 98,
    `MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS`), stdin and stdout open for the exchange, stdout at most 4 KiB and read as it
@@ -331,8 +337,10 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
    the associated data `{companyId, companyMachineId, placementId, bootId, receiptId, accountId, field}`
    (`cloud-company-account-fill-box.ts`; an office's box names a computer and a generation instead, so neither opens as
    the other). A refusal comes back in the database's own words (`VAULT_REFUSED`).
-6. The executor writes the box as the helper's second stdin line, or ends stdin (refused: the helper prints
-   `FILL_NO_BOX`). The helper opens it in memory for exactly its identity, on its own boot (from `/proc`), within the box's
+6. Before the box goes to the helper the executor asks the same check again: a take-over since the read ends stdin
+   instead (the helper prints `FILL_NO_BOX`) and the agent hears `DESKTOP_MEMBER_IN_CONTROL`, with nothing typed; a check
+   that fails ends stdin too and fails the call. Otherwise the executor writes the box as the helper's second stdin line,
+   or ends stdin (refused: the helper prints `FILL_NO_BOX`). The helper opens it in memory for exactly its identity, on its own boot (from `/proc`), within the box's
    90 s; checks the tab again against the hosts sealed in the box; types; prints one code; reads stdin to its end and
    exits. The plaintext buffer is zeroed when opened; the value is a JavaScript string from then on, which the process
    drops and exits with (strings cannot be zeroed).

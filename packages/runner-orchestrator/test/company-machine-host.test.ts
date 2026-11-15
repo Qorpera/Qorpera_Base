@@ -4269,6 +4269,19 @@ describe("a machine's fill helper", () => {
 		const again = await piped();
 		expect(await again.f.host.accountFill(run, again.seal, again.f.signal)).toEqual({ filled: true });
 		expect(await again.f.host.accountFill(run, again.seal, again.f.signal)).toEqual({ filled: true });
+		const checkFails = await piped();
+		checkFails.f.pictureChecks.push(new Error("fence unavailable"));
+		await expect(checkFails.f.host.accountFill(run, checkFails.seal, checkFails.f.signal)).rejects.toThrow(
+			"fence unavailable",
+		);
+		expect(checkFails.pipe).not.toHaveBeenCalled();
+		expect(await checkFails.f.host.accountFill(run, checkFails.seal, checkFails.f.signal)).toEqual({ filled: true });
+		const secondFails = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		secondFails.f.pictureChecks.push(ok, new Error("fence unavailable"));
+		await expect(secondFails.f.host.accountFill(run, secondFails.seal, secondFails.f.signal)).rejects.toThrow(
+			"fence unavailable",
+		);
+		expect(secondFails.stdin).toEqual([`${JSON.stringify(run.target)}\n`]);
 		const unfenced = await piped();
 		await expect(
 			unfenced.f.host.accountFill({ ...run, desktopGeneration: -1 }, unfenced.seal, unfenced.f.signal),

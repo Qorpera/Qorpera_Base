@@ -4153,12 +4153,10 @@ export class LxdCompanyMachineHost {
 			if (!(await this.#holdDesktopWithin(run.placementId, CODING_VALUE_WAIT_MS, signal)))
 				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_BUSY");
 		}
-		let ended = false;
+		let ended = true;
 		try {
-			if (await memberHolds()) {
-				ended = true;
-				return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
-			}
+			if (await memberHolds()) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			ended = false;
 			const outcome = await this.#runAccountFill(pipe, run, seal, memberHolds, signal);
 			ended = true;
 			return outcome;
@@ -4221,29 +4219,21 @@ export class LxdCompanyMachineHost {
 			) {
 				const publicKey = output.publicKey;
 				ready = publicKey;
-				sealing = seal(publicKey, deadline).then(
-					async (answer) => {
-						if ("box" in answer && (await memberHolds())) {
-							memberTookOver = true;
-							send(null);
-						} else if ("box" in answer)
-							send(
-								Buffer.from(
-									`${JSON.stringify(answer.box)}
-`,
-									"utf8",
-								),
-							);
-						else {
+				const sealFailed = (error: unknown) => {
+					sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
+					send(null);
+				};
+				sealing = seal(publicKey, deadline)
+					.then(async (answer) => {
+						if (!("box" in answer)) {
 							vaultRefused = answer.refused;
 							send(null);
-						}
-					},
-					(error: unknown) => {
-						sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
-						send(null);
-					},
-				);
+						} else if (await memberHolds()) {
+							memberTookOver = true;
+							send(null);
+						} else send(Buffer.from(`${JSON.stringify(answer.box)}\n`, "utf8"));
+					})
+					.catch(sealFailed);
 				return;
 			}
 			if (
