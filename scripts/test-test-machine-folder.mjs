@@ -1190,8 +1190,7 @@ async function startCompanyData({ work, db, secrets, cleanups }) {
 		if (!ready) await sleep(250);
 	}
 	assert(ready, "P4: the data store did not become ready");
-	const locale = (await inStore(["-Atc", LOCALE_QUERY])).stdout;
-	checkLocale(locale);
+	checkLocale((await inStore(["-Atc", LOCALE_QUERY])).stdout);
 	for (const [database, file, variables] of [
 		["postgres", "cluster.sql", { admin_password: logins.admin, keeper_password: logins.keeper, watch_password: logins.watch }],
 		["qorpera_company_template", "template.sql", {}],
@@ -1202,7 +1201,7 @@ async function startCompanyData({ work, db, secrets, cleanups }) {
 		);
 		if (made.status !== 0) throw new Error(`P4: the data store's ${file}: ${made.stderr}`);
 	}
-	evidence.store = { ready: true, container, image: POSTGRES_IMAGE, locale: locale.trim() };
+	evidence.store = { ready: true, container, image: POSTGRES_IMAGE };
 
 	const pki = join(work, "company-data-pki");
 	mkdirSync(pki, { mode: 0o700 });

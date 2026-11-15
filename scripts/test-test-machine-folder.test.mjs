@@ -312,7 +312,7 @@ function dataPassing() {
 	const toml = "data/p4desk/database.toml";
 	const question = "data/p4desk/queries/open.sql";
 	return {
-		store: { ready: true, container: "p4-data-store-1", locale: "i|en-US" },
+		store: { ready: true, container: "p4-data-store-1" },
 		tls: { scheme: "https:", caSha256: Array.from({ length: 32 }, () => "AB").join(":") },
 		probes: { wrongToken: { status: 401 }, unpinned: { error: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" } },
 		redeems: [
