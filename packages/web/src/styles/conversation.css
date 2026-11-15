@@ -1556,7 +1556,9 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .thread-ready-address:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .thread-ready-address svg { flex: none; width: 13px; height: 13px; }
 .thread-ready-down a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
-/* What the card says to do is never cut: the project's name gives way first. */
+/* What the card says to do is never cut: the project's name gives way first, and only when the row is full. The card
+ * has no way out in its corner (a question's Skip), so its head keeps no room for one. */
+.thread-ready-card.is-asking .interaction-call { padding-right: 0; }
 .thread-ready-card .interaction-call > strong { flex: none; }
 @media (max-width: 900px) { .thread-ready-card.is-asking { max-width: 82%; } }
 /* On a phone the three buttons fit one row inside a bubble's width. */

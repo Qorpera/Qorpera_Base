@@ -1351,11 +1351,16 @@ export function mountApplication(
 			last: () => companyReleases(controller).last,
 			options: {
 				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-				listed: (read: CodeReleases) =>
+				// Every read that answers, from What's new's page or a thread's card, is also the company's last read: a
+				// thread opened next starts from what is true now (a change put live on the page is no card), with no read
+				// of its own.
+				listed: (read: CodeReleases) => {
+					companyReleases(controller).last = read;
 					controller.store.set({
 						whatsNew: whatsNewEntry(controller, read),
 						siteVersions: liveVersions(read),
-					}),
+					});
+				},
 				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
 				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
 				// entry that names none.
