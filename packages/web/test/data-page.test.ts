@@ -502,17 +502,53 @@ describe("a new row and a toggle, while the store answers", () => {
 		const now = container.querySelector<HTMLInputElement>("#data-field-price")!;
 		expect(now.value).toBe("18");
 		expect(document.activeElement).toBe(now);
+		now.blur();
+		await settle();
+		expect(calls.edit).toHaveBeenLastCalledWith(
+			{ database: "shop", table: "repairs", op: "change", key: { id: 9 }, seen: seen(99), values: { price: "18" } },
+			expect.anything(),
+		);
 	});
 
-	it("puts a refused toggle back", async () => {
+	it("shows a JSON string with its quotes and sends it back as the string it is", async () => {
+		const described = describedWith();
+		const table = described.databases[0]!.tables![0]!;
+		(table.columns as { name: string; type: string; settable: boolean }[])[1] = {
+			name: "bike",
+			type: "jsonb",
+			settable: true,
+		};
+		const { container, calls, edits } = await open(described);
+		calls.rows.mockResolvedValueOnce(repairs([[1, "42" as never, 450, true]]));
+		button(container, "Price").click();
+		await settle();
+		button(container, '"42"450Yes1').click();
+		await settle();
+		const bike = container.querySelector<HTMLTextAreaElement>("#data-field-bike")!;
+		expect(bike.value).toBe('"42"');
+		bike.value = '"43"';
+		bike.dispatchEvent(new Event("input"));
+		bike.dispatchEvent(new Event("change"));
+		await settle();
+		expect(edits.at(-1)).toMatchObject({ op: "change", values: { bike: "43" } });
+	});
+
+	it("puts back only a refused toggle, not a field saved before it", async () => {
 		const { container, calls } = await open(describedWith());
-		calls.edit.mockRejectedValueOnce(new CloudMemberDataError("check", 400, { code: "23514" }));
 		button(container, "Gazelle Orange C7450Yes1").click();
 		await settle();
+		const first = calls.edit.getMockImplementation()!;
+		calls.edit.mockImplementationOnce(async (edit: CloudMemberDataEdit) => first(edit));
+		calls.edit.mockRejectedValueOnce(new CloudMemberDataError("check", 400, { code: "23514" }));
+		const price = container.querySelector<HTMLInputElement>("#data-field-price")!;
+		price.value = "500";
+		price.dispatchEvent(new Event("input"));
+		price.dispatchEvent(new Event("change"));
 		const ready = container.querySelector<HTMLButtonElement>("#data-field-ready")!;
 		ready.click();
 		await settle();
 		expect(ready.textContent).toBe("Yes");
+		expect(container.querySelector<HTMLInputElement>("#data-field-price")?.value).toBe("500");
 		expect(container.querySelector("[data-column='ready'] .data-field-note")?.textContent).toBe(
 			"That value isn't allowed here.",
 		);

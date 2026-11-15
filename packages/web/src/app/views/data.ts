@@ -1047,7 +1047,19 @@ class DataListView {
 				if (field.dataset.dirty !== "1")
 					field.value = open.row ? editText(this.#valueOf(open, name), kind) : (open.draft.get(name) ?? "");
 			});
+		const commit = () => {
+			if (field.dataset.dirty !== "1") return;
+			delete field.dataset.dirty;
+			const sent = sentValue(field.value, kind);
+			if (!sent.ok) {
+				open.notes.set(name, sent.note);
+				this.#syncRow();
+				return;
+			}
+			void this.#commit(open, name, sent.value, kind);
+		};
 		field.addEventListener("blur", () => {
+			commit();
 			if (kind === "date") queueMicrotask(() => this.#syncRow());
 		});
 		field.addEventListener("input", () => {
@@ -1069,16 +1081,7 @@ class DataListView {
 				field.blur();
 			}
 		});
-		field.addEventListener("change", () => {
-			delete field.dataset.dirty;
-			const sent = sentValue(field.value, kind);
-			if (!sent.ok) {
-				open.notes.set(name, sent.note);
-				this.#syncRow();
-				return;
-			}
-			void this.#commit(open, name, sent.value, kind);
-		});
+		field.addEventListener("change", commit);
 		this.#inputs.set(name, field);
 		return field;
 	}
@@ -1169,7 +1172,16 @@ class DataListView {
 				this.#retype(typing);
 			}
 			this.#flashSaved(open);
-			if (Object.keys(rest).length > 0) await this.#change(open, rest);
+			const filled = Object.keys(rest);
+			if (filled.length === 0) return;
+			for (const name of filled) open.saving.add(name);
+			this.#syncRow();
+			try {
+				await this.#change(open, rest);
+			} finally {
+				for (const name of filled) open.saving.delete(name);
+				if (this.#open === open) this.#syncRow();
+			}
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			const column = /column "([^"]+)"/.exec((error as Error)?.message ?? "")?.[1];
@@ -1232,8 +1244,12 @@ class DataListView {
 			}
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
-			if (undo && (error as { status?: unknown }).status !== 409 && open.row === row)
-				open.row = { values: undo.values, seen: row.seen };
+			if (undo && (error as { status?: unknown }).status !== 409 && open.row === row) {
+				const values = [...row.values];
+				const at = open.columns.indexOf(name);
+				values[at] = undo.values[at];
+				open.row = { values, seen: row.seen };
+			}
 			this.#refused(open, row, error, name);
 		}
 	}
