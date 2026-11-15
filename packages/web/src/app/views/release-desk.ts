@@ -280,6 +280,23 @@ export class ReleaseDesk {
 		if (!this.#lifetime.signal.aborted) this.#changed(focusKey);
 	}
 
+	/** Starts from a read the company made already (the apps drawer's): drawn at once, with no read of its own; the sites
+	 * Qorpera took down are read beside it. The next read is the window's coming back, or a write's own. */
+	seed(releases: CodeReleases): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#releases = releases;
+		this.#loading = false;
+		this.#draw();
+		void this.#readTakenDown?.(this.#lifetime.signal).then(
+			(down) => {
+				if (this.#lifetime.signal.aborted || this.#started > 0) return;
+				this.#takenDown = down;
+				this.#draw();
+			},
+			() => {},
+		);
+	}
+
 	/** Try again after a read that failed. */
 	retry(): void {
 		this.#loading = true;

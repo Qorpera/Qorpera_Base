@@ -1994,6 +1994,7 @@ export class ConversationView {
 					this.#composer.setSelectionRange(end, end);
 				},
 				shownChanged: () => this.#redrawItems(),
+				...(releases.last ? { last: releases.last } : {}),
 			});
 		this.#ready?.update();
 		const sites = this.#actions.companySites;

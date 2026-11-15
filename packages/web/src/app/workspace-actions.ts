@@ -4,6 +4,7 @@ import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts
 import type { InterfaceChange, InterfaceUndo } from "../cloud/interface-changes.ts";
 import type { WebMessageErases } from "../cloud/message-erases.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import type { CodeReleases } from "../cloud/releases.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
 import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
@@ -65,7 +66,12 @@ export interface WorkspaceActions {
 	/** What's new's calls and what the page reads beside them (own code storage): the agent's thread shows a change it
 	 * made that is ready as a card, put live, looked at first or answered Not yet there as on What's new
 	 * (views/thread-ready.ts). Only while the company has a project that makes a website. */
-	codeReleases?: { readonly client: ReleaseClient; readonly options: ReleaseDeskOptions };
+	codeReleases?: {
+		readonly client: ReleaseClient;
+		readonly options: ReleaseDeskOptions;
+		/** The company's last read of What's new, which the card starts from without a read of its own. */
+		readonly last?: () => CodeReleases | undefined;
+	};
 	/** The company's sites: a message that links one shows the site's card under its words (views/thread-sites.ts).
 	 * Only while the company has a site. `canManage`: the member may see passwords (owner or admin). */
 	companySites?: { readonly client: ThreadSitesClient; readonly canManage: () => boolean };

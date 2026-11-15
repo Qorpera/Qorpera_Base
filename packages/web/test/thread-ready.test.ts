@@ -430,6 +430,32 @@ describe("A change is ready: the card", () => {
 		expect(putLive).toHaveBeenCalledTimes(2);
 	});
 
+	it("starts from the company's last read without one of its own, and reads which sites Qorpera took down beside it", async () => {
+		const controller = company();
+		const client = calls([releasesOf([gift()], true, true)], {});
+		const takenDown = vi.fn(async () => new Set(["saml-gift-message"]) as ReadonlySet<string>);
+		const lifetime = new AbortController();
+		cleanup.push(() => lifetime.abort());
+		const ready = new ThreadReady(controller, session.sessionId, client, { takenDown }, lifetime.signal, {
+			agentId: () => bo.id,
+			focusComposer: () => {},
+			shownChanged: () => {},
+			last: () => releasesOf([gift()], true, true),
+		});
+		document.body.append(ready.el);
+		// Drawn at once, from the read the company made.
+		expect(ready.shown).toBe(true);
+		expect(labels(cardOf(ready))).toEqual(["Look first", "Put it live", "Not yet"]);
+		await settle();
+		expect(client.list).not.toHaveBeenCalled();
+		expect(takenDown).toHaveBeenCalledOnce();
+		expect(labels(cardOf(ready))).toEqual(["Not yet"]);
+		// The window coming back reads, as What's new does.
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(client.list).toHaveBeenCalledOnce();
+	});
+
 	it("has the settled look of an answered question, and What's new's picture large without a tile's frame", () => {
 		expect(conversationCss).toMatch(/\.thread-ready-card \.whats-new-change\.is-thread \{[^}]*border: 0;/);
 		expect(conversationCss).toMatch(/\.whats-new-change\.is-thread > \.choice-picture \{[^}]*aspect-ratio: 16 \/ 10/);

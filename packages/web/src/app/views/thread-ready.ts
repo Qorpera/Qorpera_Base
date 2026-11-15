@@ -1,4 +1,4 @@
-import type { CodeReleaseSite } from "../../cloud/releases.ts";
+import type { CodeReleaseSite, CodeReleases } from "../../cloud/releases.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
@@ -67,14 +67,20 @@ export class ThreadReady {
 	#agentDrawn: string | undefined;
 
 	/** `agentId`: this thread's agent, as it is now. `shownChanged`: the card came or went, so the thread draws its items
-	 * again. */
+	 * again. `last`: the company's last read, drawn at once; without one, the card reads. */
 	constructor(
 		company: CompanyController,
 		sessionId: string,
 		client: ReleaseClient,
 		options: ReleaseDeskOptions,
 		signal: AbortSignal,
-		hooks: { agentId: () => string | undefined; focusComposer: () => void; shownChanged: () => void },
+		hooks: {
+			agentId: () => string | undefined;
+			focusComposer: () => void;
+			shownChanged: () => void;
+			/** The company's last read, which the card starts from without a read of its own. */
+			last?: () => CodeReleases | undefined;
+		},
 	) {
 		this.#company = company;
 		this.#sessionId = sessionId;
@@ -85,7 +91,9 @@ export class ThreadReady {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#desk = new ReleaseDesk(company, client, this.#lifetime.signal, options, (focusKey) => this.#draw(focusKey));
 		this.#draw();
-		void this.#desk.refresh();
+		const last = hooks.last?.();
+		if (last) this.#desk.seed(last);
+		else void this.#desk.refresh();
 	}
 
 	dispose(): void {
