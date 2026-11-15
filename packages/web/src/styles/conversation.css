@@ -714,27 +714,22 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel { --computer-hover-shade: rgb(255 255 255 / 84%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
 /* The minimized preview keeps the size it had before the app was drawn larger (tokens.css --ui-scale): its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
 .computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; }
-/* Entered, the browser goes full screen and the guest screen sits in a thin bezel: a computer inside a computer. The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. The same frame stays inside the thread when the browser refuses full screen. */
+/* Entered, the frame takes up the page over the thread and the guest screen sits in a thin bezel: a computer inside a computer (the browser is never asked for full screen: Jonas, 14 Nov 2026). The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. */
 /* The thread's edge fade (app.css .scroll-quiet) is a mask, which would hold the large view under the thread's foot and fade its top: off while the computer is entered. */
 .messages:has(.computer-panel.is-entered) { -webkit-mask-image: none; mask-image: none; }
+/* The large view ends where the foot begins (computer-place.ts); what the composer opens upwards (a mention's list, the drafts) goes over the view, not under it. */
+.thread-conversation:has(.computer-panel.is-entered) > .thread-foot { z-index: 21; }
 /* The row scrolls with the thread, so the large view is fixed over the box of the thread it stands in (computer-place.ts sets it). */
-.computer-panel.is-entered { --computer-frame-bg: #121316; position: fixed; z-index: 20; top: calc(var(--computer-box-top, 0px) + var(--titlebar-height) + 8px); left: calc(var(--computer-box-left, 0px) + 8px); right: calc(var(--computer-box-right, 0px) + 8px); bottom: calc(var(--computer-box-bottom, 0px) + 8px); width: auto; height: auto; max-height: none; aspect-ratio: auto; border-radius: 8px; border-color: rgb(255 255 255 / 8%); box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); }
+.computer-panel.is-entered { --computer-frame-bg: #121316; position: fixed; z-index: 20; top: var(--computer-box-top, 0px); left: calc(var(--computer-box-left, 0px) + 8px); right: calc(var(--computer-box-right, 0px) + 8px); bottom: var(--computer-box-bottom, 0px); width: auto; height: auto; max-height: none; aspect-ratio: auto; border-radius: 8px; border-color: rgb(255 255 255 / 8%); box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: var(--computer-frame-bg); }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
 .computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px auto minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
-.computer-panel.is-entered .screen-viewer-note { color: #f0c27a; }
-/* Empty, the note stays rendered (a live region must exist before its text changes); only the heading's 6px gap is cancelled. */
-.computer-panel .screen-viewer-note:empty { margin-left: -6px; }
 /* Square icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the titlebar row and bottom padding. The vh line is the fallback where container units are unsupported. */
 .computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px - var(--computer-bar-h, 0px)) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
-.computer-panel .screen-viewer-embedded:fullscreen { --computer-frame-bg: #0b0c0e; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-frame { grid-template-rows: 48px auto minmax(0, 1fr); padding: 0 16px 16px; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-titlebar { padding: 0 4px; font-size: 13px; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-stage { width: min(100%, calc(160vh - 103px)); width: min(100%, calc((100cqh - 64px - var(--computer-bar-h, 0px)) * 1.6)); }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
@@ -802,8 +797,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-mark.is-updating::before { background: #f0c27a; }
 .computer-panel .machine-screen-mark[hidden] { display: none; }
 .computer-panel.is-entered .machine-screen-mark { left: 12px; bottom: 12px; }
-/* A member's take-over (20260930713000): under the picture, Take over; while they hold the desktop, what that means and
-   Hand back across the foot of the picture, and a green edge round it while it takes their clicks and keys. */
+/* A member's take-over (20260930713000; nothing in the web begins one since 14 Nov 2026): while they hold the desktop,
+   what that means and Done across the foot of the picture. */
 .computer-panel .machine-screen-control-slot { position: absolute; inset: auto 8px 8px; z-index: 5; display: flex; justify-content: flex-end; pointer-events: none; }
 /* In the large view nothing of ours sits on the desktop's picture (its dock and its clock; v239 real test, 13 Nov 2026):
    the controls stand in a slim row of the frame between the titlebar and the picture, and the Live mark is the title's.
@@ -825,22 +820,17 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-control-button { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #1d1d1f; background: #fff; box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .computer-panel .machine-screen-control-button:hover { background: #e9e9ec; }
 .computer-panel .machine-screen-control-button:disabled { opacity: 0.6; cursor: default; }
-/* The member holds the desktop in another window (review r14): what that means, Take over, and Hand back. */
+/* The member holds the desktop in another window (review r14): what that means, and Done. */
 .computer-panel .machine-screen-control.is-elsewhere { padding-left: 10px; }
 .computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .computer-panel .machine-screen-control-hand-back[hidden] { display: none; }
 .computer-panel .machine-screen-control-hand-back:hover { background: rgb(255 255 255 / 26%); }
-/* Shared control (20260930734000): who else uses the computer, in a quieter line; Type privately is the secondary control,
-   with a lock, as the hand-back beside it is; typing privately keeps the white Done. */
+/* Shared control (20260930734000): who else uses the computer, in a quieter line; a private hold keeps the white Done. */
 .computer-panel .machine-screen-control-who { color: rgb(255 255 255 / 72%); }
 .computer-panel .machine-screen-control-who:empty { display: none; }
 .computer-panel .machine-screen-control-button[hidden] { display: none; }
 .computer-panel .machine-screen-control-button { display: inline-flex; align-items: center; gap: 5px; }
-.computer-panel .machine-screen-control-button .icon { flex: none; width: 13px; height: 13px; }
-.computer-panel .machine-screen-control-button.is-secondary { color: #fff; background: rgb(255 255 255 / 16%); }
-.computer-panel .machine-screen-control-button.is-secondary:hover { background: rgb(255 255 255 / 26%); }
 .computer-panel .machine-screen.is-controlling .machine-screen-mark { display: none; }
-.computer-panel .machine-screen.is-controlling .screen-viewer-stage { box-shadow: inset 0 0 0 2px #34c759; }
 .computer-panel .machine-screen.is-controlling .machine-screen-canvas { cursor: default; outline: none; touch-action: none; }
 /* The preview takes the member's clicks while they hold the desktop (otherwise a press there moves the panel), and its
    Enter button moves from the middle of the picture to the top. */
@@ -848,25 +838,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-enter { top: 8px; transform: translateX(-50%); min-width: 0; min-height: 24px; padding: 2px 12px; font-size: 12px; }
 .computer-loading p.computer-loading-detail { margin-top: -6px; color: #8e9097; }
 .computer-loading p.computer-loading-detail[hidden] { display: none; }
-/* The machine switcher: on the preview top left, shown with the other hover controls; entered, beside the title. It opens the app's menu. */
-.computer-panel .computer-switcher { display: inline-flex; align-items: center; gap: 2px; max-width: calc(100% - 48px); height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
-.computer-panel .computer-switcher[hidden] { display: none; }
-.computer-panel .computer-switcher:hover, .computer-panel .computer-switcher.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
-.computer-panel .computer-switcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.computer-panel .computer-switcher .icon { flex: none; width: 14px; height: 14px; }
-.computer-panel > .computer-switcher { position: absolute; top: 6px; left: 6px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
-.computer-panel:hover > .computer-switcher, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-switcher, .computer-panel > .computer-switcher.menu-open { opacity: 1; pointer-events: auto; }
-.computer-panel.is-entered > .computer-switcher, .computer-panel:not(.is-entered) .machine-screen-switcher-slot { display: none; }
-.computer-panel.is-entered .machine-screen-switcher-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
-.computer-panel.is-entered .machine-screen .computer-switcher { max-width: 100%; }
-.computer-panel.is-entered .machine-screen .computer-switcher { color: rgb(255 255 255 / 82%); filter: none; }
-.computer-panel.is-entered .machine-screen .computer-switcher:hover, .computer-panel.is-entered .machine-screen .computer-switcher.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
-@media (hover: none) {
-	.computer-panel:not(.is-entered) > .computer-switcher { opacity: 1; pointer-events: auto; }
-}
-@media (prefers-reduced-motion: reduce) {
-	.computer-panel > .computer-switcher { transition: none; }
-}
 
 /* New conversation: a "To:" field with one short list hanging from it. */
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }

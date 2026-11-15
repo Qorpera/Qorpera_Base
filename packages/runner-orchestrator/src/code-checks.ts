@@ -3,7 +3,7 @@ import {
 	type CodeSiteCollected,
 	type CodeSiteProblem,
 	codeSiteFolderValid,
-	codeSiteNameValid,
+	codeSiteNameRefusal,
 	codeSiteTitleValid,
 } from "./code-site.ts";
 import { bytes, cut, halfCharacter, shown, unseen } from "./code-words.ts";
@@ -220,13 +220,10 @@ function siteOf(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe | nu
 					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
 				);
 		} else if (key === "name") {
-			if (codeSiteNameValid(field)) name = field;
-			else
-				refuse(
-					fieldAt,
-					"INVALID_VALUE",
-					"Must be 3 to 48 of a-z, 0-9 and '-', starting and ending with a letter or a digit, and not a name a site never gets (such as api, app or www).",
-				);
+			// The name rule (own code storage, step 5, D20) in words that say which part the name breaks.
+			const refused = codeSiteNameRefusal(field);
+			if (refused === null) name = field;
+			else refuse(fieldAt, "INVALID_VALUE", refused);
 		} else if (field.startsWith(" ") || field.endsWith(" "))
 			refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
 		else if (codeSiteTitleValid(field)) title = field;
@@ -488,17 +485,19 @@ function endOf(text: string, max: number): string {
 }
 
 /** `CODING_CHECKS_FAILED`: a check of the repository failed on the candidate, so nothing went into main. At most 3,500
- * bytes: the output's end gives up its first lines when the rest needs the room. */
+ * bytes: the output's end gives up its first lines when the rest needs the room. `opening` (an operator's drill's
+ * words and a space) comes first and takes its room from the output's end. */
 export function codeChecksFailedSummary(
 	run: Extract<CodeChecksRun, { state: "failed" }>,
 	how: "fast-forward" | "merged",
+	opening = "",
 ): string {
 	const failed = run.failed;
 	const exit = failed.exitCode === null ? "ended without an exit code" : `ended with exit code ${failed.exitCode}`;
 	const limit = failed.atLimit ? ", at its time limit" : "";
 	const killed = failed.exitCode === 137 && !failed.atLimit ? " (killed, often for lack of memory)" : "";
 	const head =
-		`Nothing went into main: the check "${shown(failed.name, 40)}" failed on this change` +
+		`${opening}Nothing went into main: the check "${shown(failed.name, 40)}" failed on this change` +
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
 	const passed = run.passed.length > 0 ? ` Checks that passed before it: ${namesOf(run.passed)}.` : "";

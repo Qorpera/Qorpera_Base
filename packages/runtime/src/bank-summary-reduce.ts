@@ -10,6 +10,11 @@ import type { EnableBankingBalance, EnableBankingTransaction } from "./cloud-con
  * Categories come from who was paid and repeating payments, not from a model: money in by who paid, money out by a
  * short list of words (salaries, rent, taxes, utilities, subscriptions, fees) and by rhythm, the rest as Other. An agent
  * or the member can refine them later; this is the floor the page always has.
+ *
+ * The same reading also gives the company's days by kind (`reduceBankDays`): money in and out each day, summed by a
+ * kind word, never by a name, for the company's numbers (`qorpera_bank_days`). "Today" is the date in the company's
+ * own time zone for both (Europe/Copenhagen when it has none or an unknown one); a booked transaction's date is its
+ * bank's own day.
  */
 
 export const BANK_SUMMARY_SCHEMA = "qorpera.bank-summary/v1";
@@ -34,6 +39,8 @@ export interface BankSummaryInput {
 	readonly bank: string;
 	/** Now, as the broker sees it. */
 	readonly now: Date;
+	/** The company's time zone (an IANA name), whose date is today; Europe/Copenhagen when absent, null or unknown. */
+	readonly timeZone?: string | null;
 	/** The day the consent ended, or null while it lasts. */
 	readonly pausedSince: string | null;
 	readonly payTo: { readonly reg: string; readonly account: string } | null;
@@ -74,6 +81,39 @@ const NAME_MAX = 80;
 const kr = (value: number) => Math.round(value * 100) / 100;
 const iso = (time: number) => new Date(time).toISOString().slice(0, 10);
 const dayTime = (value: string) => Date.parse(`${value}T00:00:00Z`);
+/** The zone of a company that has none, or one this runtime does not know (the database's rule is the same). */
+export const BANK_TIME_ZONE_FALLBACK = "Europe/Copenhagen";
+const ZONE_SHAPE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+
+function dayFormat(timeZone: string | null | undefined): Intl.DateTimeFormat {
+	const zone = timeZone && timeZone.length <= 64 && ZONE_SHAPE.test(timeZone) ? timeZone : BANK_TIME_ZONE_FALLBACK;
+	let format = dayFormats.get(zone);
+	if (!format) {
+		try {
+			format = new Intl.DateTimeFormat("en-CA", {
+				timeZone: zone,
+				year: "numeric",
+				month: "2-digit",
+				day: "2-digit",
+			});
+		} catch {
+			// A name this runtime's time zone data does not know.
+			return dayFormat(BANK_TIME_ZONE_FALLBACK);
+		}
+		// Bounded: a vault serves its companies' zones, a few hundred names at most exist.
+		if (dayFormats.size < 1000) dayFormats.set(zone, format);
+	}
+	return format;
+}
+
+/** The calendar day at a moment in the company's time zone, as YYYY-MM-DD: the company's today. The UTC date differs
+ * from it for part of every day (in Copenhagen from midnight until 01:00, 02:00 in summer). */
+export function companyDay(moment: Date, timeZone?: string | null): string {
+	const parts = dayFormat(timeZone).formatToParts(moment);
+	const part = (type: string) => parts.find((each) => each.type === type)?.value ?? "";
+	return `${part("year")}-${part("month")}-${part("day")}`;
+}
 
 /** At most `NAME_MAX` UTF-16 code units, as the web counts them, never splitting a character. */
 function clipName(value: string): string {
@@ -125,6 +165,35 @@ function outCategory(name: string, rhythm: BankRhythm, monthly: number): string 
 	// A small cost that comes every month is most likely a subscription.
 	if (rhythm === "monthly" && monthly < 5000) return "Subscriptions";
 	return "Other";
+}
+
+/** Money out's kinds as words for the company's numbers: the categories above, one word each. */
+export const BANK_KINDS_OUT = ["salaries", "taxes", "rent", "utilities", "subscriptions", "fees", "other"] as const;
+/** Money in's kinds: payment providers' payouts (sales), the tax authority's refunds (tax), the rest. Words only: who
+ * paid is never a kind. */
+export const BANK_KINDS_IN = ["sales", "tax", "other"] as const;
+export type BankKindOut = (typeof BANK_KINDS_OUT)[number];
+export type BankKindIn = (typeof BANK_KINDS_IN)[number];
+
+const OUT_KINDS: Readonly<Record<string, BankKindOut>> = {
+	Salaries: "salaries",
+	"Taxes and VAT": "taxes",
+	Rent: "rent",
+	Utilities: "utilities",
+	Subscriptions: "subscriptions",
+	"Card and app fees": "fees",
+	Other: "other",
+};
+
+const IN_RULES: readonly (readonly [BankKindIn, RegExp])[] = [
+	["sales", /\b(stripe|mobilepay|mobile pay|sumup|zettle|izettle|shopify|klarna|nets|nexi)\b/],
+	["tax", /\b(skat|skattestyrelsen|skatteforvaltningen|moms)\b/],
+];
+
+function inKind(name: string): BankKindIn {
+	const key = partyKey(name);
+	for (const [kind, rule] of IN_RULES) if (rule.test(key)) return kind;
+	return "other";
 }
 
 /** How often payments to one receiver come, from their days (oldest first), and when the next is due. */
@@ -185,27 +254,76 @@ function disponibelToday(account: BankSummaryAccount, today: string): number | n
 	return current ? current.amount : null;
 }
 
+/** An account's booked kroner transactions up to today. */
+const bookedOf = (account: BankSummaryAccount, today: number) =>
+	account.transactions.filter(
+		(transaction) =>
+			transaction.status === "BOOK" && transaction.currency === "DKK" && dayTime(transaction.date) <= today,
+	);
+
+type Party = {
+	key: string;
+	name: string;
+	days: number[];
+	amounts: number[];
+	thisMonth: number;
+	last: number;
+};
+type PartyReading = Party & { rhythm: BankRhythm; next: string | null; perMonth: number; typical: number };
+
+/** The key payments to or from one party share, and the name it is shown by. */
+function partyOf(transaction: EnableBankingTransaction): { key: string; name: string } {
+	const name = party(transaction);
+	return { key: partyKey(name) || name, name };
+}
+
+/** Payments to (or from) each party: their rhythm over the history, and what they came to this month. */
+function partiesOf(
+	booked: readonly EnableBankingTransaction[],
+	incoming: boolean,
+	today: number,
+	thisMonth: string,
+): PartyReading[] {
+	const found = new Map<string, Party>();
+	for (const transaction of booked) {
+		if (transaction.amount >= 0 !== incoming) continue;
+		const { key, name } = partyOf(transaction);
+		const entry = found.get(key) ?? { key, name, days: [], amounts: [], thisMonth: 0, last: 0 };
+		entry.days.push(dayTime(transaction.date));
+		entry.amounts.push(Math.abs(transaction.amount));
+		entry.last = Math.abs(transaction.amount);
+		if (transaction.date.slice(0, 7) === thisMonth) entry.thisMonth += Math.abs(transaction.amount);
+		found.set(key, entry);
+	}
+	return [...found.values()].map((entry) => {
+		// Payments on the same day count as one: the rhythm is read across days, the typical amount is a day's.
+		const byDay = new Map<number, number>();
+		entry.days.forEach((time, index) => {
+			byDay.set(time, (byDay.get(time) ?? 0) + (entry.amounts[index] ?? 0));
+		});
+		const days = [...byDay.keys()].sort((a, b) => a - b);
+		const rhythm = rhythmOf(days, today);
+		const sums = [...byDay.values()].sort((a, b) => a - b);
+		const typical = sums[Math.floor(sums.length / 2)] ?? 0;
+		return { ...entry, ...rhythm, typical };
+	});
+}
+
 export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
-	const now = input.now.getTime();
-	const today = dayTime(iso(now));
-	const bookedOf = (account: BankSummaryAccount) =>
-		account.transactions.filter(
-			(transaction) =>
-				transaction.status === "BOOK" && transaction.currency === "DKK" && dayTime(transaction.date) <= today,
-		);
+	const today = dayTime(companyDay(input.now, input.timeZone));
 	// Each account on its own: its saldo today, and what is disponibel (its saldo when the bank gives no available
 	// balance); then the accounts together.
 	let saldoTotal = 0;
 	let disponibelTotal = 0;
 	for (const account of input.accounts) {
-		const accountBooked = bookedOf(account);
+		const accountBooked = bookedOf(account, today);
 		const accountSaldo = saldoToday(account, accountBooked, iso(today)) ?? 0;
 		saldoTotal += accountSaldo;
 		disponibelTotal += disponibelToday(account, iso(today)) ?? accountSaldo;
 	}
 	const saldo = kr(saldoTotal);
 	const disponibel = kr(disponibelTotal);
-	const booked = input.accounts.flatMap(bookedOf);
+	const booked = input.accounts.flatMap((account) => bookedOf(account, today));
 
 	// The saldo each day, back from today's: a day's saldo is today's less what moved after it.
 	const moved = new Map<number, number>();
@@ -236,39 +354,7 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		.slice(-MONTHS)
 		.map(([month, total]) => ({ month, in: kr(total.in), out: kr(total.out) }));
 
-	// Payments to and from each party: their rhythm over the history, and what they came to this month.
-	type Party = { name: string; days: number[]; amounts: number[]; thisMonth: number; last: number };
-	const parties = (incoming: boolean) => {
-		const found = new Map<string, Party>();
-		for (const transaction of booked) {
-			if (transaction.amount >= 0 !== incoming) continue;
-			const name = party(transaction);
-			const key = partyKey(name) || name;
-			const entry = found.get(key) ?? { name, days: [], amounts: [], thisMonth: 0, last: 0 };
-			entry.days.push(dayTime(transaction.date));
-			entry.amounts.push(Math.abs(transaction.amount));
-			entry.last = Math.abs(transaction.amount);
-			if (monthOf(transaction.date) === thisMonth) entry.thisMonth += Math.abs(transaction.amount);
-			found.set(key, entry);
-		}
-		return [...found.values()].map((entry) => {
-			// Payments on the same day count as one: the rhythm is read across days, the typical amount is a day's.
-			const byDay = new Map<number, number>();
-			entry.days.forEach((time, index) => {
-				byDay.set(time, (byDay.get(time) ?? 0) + (entry.amounts[index] ?? 0));
-			});
-			const days = [...byDay.keys()].sort((a, b) => a - b);
-			const rhythm = rhythmOf(days, today);
-			const sums = [...byDay.values()].sort((a, b) => a - b);
-			const typical = sums[Math.floor(sums.length / 2)] ?? 0;
-			return { ...entry, ...rhythm, typical };
-		});
-	};
-
-	const group = (
-		list: ReturnType<typeof parties>,
-		categoryOf: (entry: ReturnType<typeof parties>[number]) => string,
-	): Category[] => {
+	const group = (list: readonly PartyReading[], categoryOf: (entry: PartyReading) => string): Category[] => {
 		const categories = new Map<string, Category>();
 		for (const entry of list) {
 			if (entry.thisMonth <= 0) continue;
@@ -302,8 +388,8 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		];
 	};
 
-	const incoming = parties(true);
-	const outgoing = parties(false);
+	const incoming = partiesOf(booked, true, today, thisMonth);
+	const outgoing = partiesOf(booked, false, today, thisMonth);
 	const moneyIn = group(incoming, (entry) => entry.name);
 	const moneyOutCategories = group(outgoing, (entry) => outCategory(entry.name, entry.rhythm, entry.typical));
 	const repeatingEntries = outgoing.filter((entry) => entry.perMonth > 0 && entry.next !== null);
@@ -375,6 +461,64 @@ export function reduceBankSummary(input: BankSummaryInput): BankSummaryFile {
 		moneyIn: { month: thisMonth, categories: moneyIn },
 		moneyOut: { month: thisMonth, repeating, categories: moneyOutCategories, later },
 	};
+}
+
+export const BANK_DAYS_SCHEMA = "qorpera.bank-days/v1";
+/** The most days one reduction gives: the kept transactions reach 13 months back (at most 397 days). */
+export const BANK_DAYS_MAX = 400;
+
+export type BankDay =
+	| { day: string; direction: "in"; kind: BankKindIn; amount: number; count: number }
+	| { day: string; direction: "out"; kind: BankKindOut; amount: number; count: number };
+
+export interface BankDays {
+	schema: typeof BANK_DAYS_SCHEMA;
+	/** The first and last day the reduction covers (the company's dates): a day inside with no row had no money moving. */
+	from: string;
+	to: string;
+	/** Each day's money in and money out by kind, in kroner (always positive) and how many payments; only kinds that
+	 * moved. No party, text, account or single payment. */
+	days: BankDay[];
+}
+
+/** The company's money in and out each day, by kind, from the same accounts and transactions as the summary: from
+ * the first booked day it has (at most `BANK_DAYS_MAX` days back) to the company's today. Money out's kind is the
+ * summary's category of its receiver (read over the whole history, so this month's days add up to the summary's
+ * categories); money in's is a word for what paid it. */
+export function reduceBankDays(input: BankSummaryInput): BankDays {
+	const to = companyDay(input.now, input.timeZone);
+	const today = dayTime(to);
+	const booked = input.accounts.flatMap((account) => bookedOf(account, today));
+	const first = booked.reduce((earliest, transaction) => Math.min(earliest, dayTime(transaction.date)), today);
+	const start = Math.max(first, today - (BANK_DAYS_MAX - 1) * DAY);
+	const outKinds = new Map(
+		partiesOf(booked, false, today, to.slice(0, 7)).map((entry): [string, BankKindOut] => [
+			entry.key,
+			OUT_KINDS[outCategory(entry.name, entry.rhythm, entry.typical)] ?? "other",
+		]),
+	);
+	const totals = new Map<string, BankDay>();
+	for (const transaction of booked) {
+		if (dayTime(transaction.date) < start) continue;
+		const day = transaction.date;
+		const row: BankDay =
+			transaction.amount >= 0
+				? { day, direction: "in", kind: inKind(party(transaction)), amount: 0, count: 0 }
+				: { day, direction: "out", kind: outKinds.get(partyOf(transaction).key) ?? "other", amount: 0, count: 0 };
+		const key = `${row.day} ${row.direction} ${row.kind}`;
+		const total = totals.get(key) ?? row;
+		total.amount += Math.abs(transaction.amount);
+		total.count += 1;
+		totals.set(key, total);
+	}
+	const order = (row: BankDay) =>
+		row.direction === "in"
+			? BANK_KINDS_IN.indexOf(row.kind)
+			: BANK_KINDS_IN.length + BANK_KINDS_OUT.indexOf(row.kind);
+	const days = [...totals.values()]
+		.map((row) => ({ ...row, amount: kr(row.amount) }))
+		.sort((a, b) => a.day.localeCompare(b.day) || order(a) - order(b));
+	return { schema: BANK_DAYS_SCHEMA, from: iso(start), to, days };
 }
 
 /** The registration and account number a Danish IBAN carries (DKkk rrrr aaaaaaaaaa), or null for any other. */

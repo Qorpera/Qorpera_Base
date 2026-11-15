@@ -1153,6 +1153,7 @@ export class ConversationView {
 			// Already here: the click still asks for the computer (a sleeping one wakes).
 			if (shown && asked) this.#panels.open(agent, { asked });
 			(shown ?? this.#showPanel(agent, asked))?.focus();
+			this.#revealComputer();
 		}
 		return true;
 	}
@@ -1590,14 +1591,49 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
-	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
 		if (this.#panel) this.#panels.open(agent, { asked: true });
 		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
-		panel?.takeOver();
+		this.#revealComputer();
+		panel?.enterWhenShown();
+	}
+
+	/** The computer opened on the member's click (the agent card's Computer, the take-over card's Open computer): the
+	 * thread goes to where its window stands, for a click whose answer is under the fold is no answer (found on the
+	 * live app, 15 Nov 2026: the window came in at the thread's end, under the composer). A window at the thread's end
+	 * keeps the thread at its end while it grows into its place (the start scene, then the picture: the size observer
+	 * pins it); one that stands further up, where the agent left it, comes into view between the thread's top and the
+	 * foot laid over its bottom. The window takes the keyboard without a scroll of the browser's own (ComputerPanel
+	 * focus): that scroll knew nothing of the foot and left the thread just short of its end, where it no longer
+	 * followed. A window that shows by itself (#computerByItself) never moves a thread the member has scrolled. */
+	#revealComputer(): void {
+		// After the redraw that puts the row in its place (#redrawComputer's microtask, queued before this one).
+		queueMicrotask(() => {
+			const row = this.#computerRow;
+			if (this.#disposed || !this.#panel || !row.isConnected) return;
+			// The large view covers the thread from the row: nothing to bring into view.
+			if (this.#panel.el.classList.contains("is-entered")) return;
+			const followed = this.#timestampRows.some(
+				({ node }) => (row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+			);
+			if (!followed) {
+				this.#stickToBottom = true;
+				this.#pinToBottom();
+				return;
+			}
+			const view = this.#messages.getBoundingClientRect();
+			const box = row.getBoundingClientRect();
+			const gap = 12 * uiScale();
+			const top = view.top + gap;
+			const bottom = view.bottom - this.#foot.offsetHeight - gap;
+			// Taller than the room, or above it: its top at the top. Below it: its bottom at the foot.
+			const by = box.top < top || box.height > bottom - top ? box.top - top : Math.max(0, box.bottom - bottom);
+			if (by !== 0) this.#messages.scrollTop += by;
+		});
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
@@ -2986,9 +3022,9 @@ export class ConversationView {
 									: {}),
 								...(takeOver
 									? {
-											takeOver: () => {
+											openComputer: () => {
 												const current = currentAgent();
-												if (current) this.#takeOver(current);
+												if (current) this.#openComputer(current);
 											},
 										}
 									: {}),
