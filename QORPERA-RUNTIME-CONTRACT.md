@@ -6849,24 +6849,28 @@ what runs and the agent is told, always-on machines are never stopped by the ker
 
 1. **The list.** The runtime bundle carries `PLATFORM_UPDATES` (`packages/runtime/src/cloud-platform-updates.ts`): each
    update an id (lowercase letters, digits and hyphens, never reused), a kind (`model`, `behaviour` or `capability`),
-   the day it went live for agents, a title of at most 60 bytes and at most 700 bytes of plain words to the Co-Founder.
+   the day its PR was written, a title of at most 60 bytes and at most 700 bytes of plain words to the Co-Founder.
    An entry reaches agents exactly when its release does; a release with no new entry asks for nothing. A PR that gives
    agents a new capability, model or behaviour they should take up adds its entry (AGENTS.md), and a test fails when a
    model agents can be given is neither one of today's nor named by a model update.
 2. **The company's record (5.6).** `QorperaOS/vision/reflections.md`, a plain file the Co-Founder keeps, one line per
    reflection, newest last: `- <id> | <YYYY-MM-DD> | <use|later|not|reviewed> | <one line>`
    (RUNTIME-COMPANY-STATE-FILES.md beside the reading).
-3. **Pending.** An update is pending for a company when it went live on or after the day the company's
+3. **Pending.** An update is pending for a company when it is dated no more than 30 days before the day the company's
    `QorperaOS/vision` folder was made (seeded at its creation, never moved or deleted), and the record has no line for
-   it, or its newest line is `later` and more than 28 days old.
+   it, or its newest line is `later` and more than 28 days old. The 30 days cover the time between a PR's day and its
+   release: a young company that reflects once on something it already had loses little, one that never hears of a
+   capability loses it. The whole record is read, up to 256 KiB; a record the run cannot read gives `updates` a
+   `problem` in place of the list, telling the Co-Founder to keep only the newest line for each update.
 4. **The hook (9.1).** No wake of its own: the Co-Founder's planning run (any routine run of the Co-Founder in the
    company, not a worker's) reads the pending updates beside `openWork` and gets them as the context key `updates`
-   (`{pending: [{id, kind, date, title, text}], more?}`, at most 6, oldest first), with one sentence group first in its
+   (`{pending: [{id, kind, date, title, text}], more?}`, at most 6, oldest first, or `{problem}`), with one sentence group first in its
    planning run that says how to reflect on each kind. No other run reads them. A failed read leaves the key out, logs
    its category, and the run goes on. A company without a planning routine reflects once it has one again.
 5. **The tool (10).** `record_reflection {operationKey, update, decision, line}`, the Co-Founder's company runs only,
    opened through `more_tools`: a capability takes `use`, `later` or `not`; a model `reviewed`; a change in behaviour
-   any of the four; the line one line of at most 160 bytes. It writes the record as the run, under the call's receipt
+   any of the four; the line one line of at most 160 bytes. A record that would pass 64 KiB is refused with the same
+   advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
 

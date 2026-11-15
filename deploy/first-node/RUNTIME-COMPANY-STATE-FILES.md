@@ -300,9 +300,12 @@ any file.
 | decision | `use` (taken up: who and how), `later` (not yet: why), `not` (not for us: why), `reviewed` (a model or behaviour update gone over: what changed) |
 | line | one line, at most 160 bytes |
 
-The reader (`parseReflections`) is tolerant: it reads the last 200 lines, skips any that do not read as a reflection,
-and the newest line for an id wins. The tool appends one line in the form above and keeps every other line as written;
-a new file starts with the heading. At most 64 KiB is read or written.
+The reader (`parseReflections`) is tolerant: it reads every line, skips any that do not read as a reflection, and the
+newest line for an id wins. The tool appends one line in the form above and keeps every other line as written; a new
+file starts with the heading. The tool writes at most 64 KiB and the planning run reads up to 256 KiB (a file a founder
+grew by hand). Past either, the advice is to keep only the newest line for each update, which keeps every decision;
+moving lines out of the file would bring their updates back. A planning run that cannot read the file gets `updates`
+with a `problem` saying so, and no list.
 
 ### `QorperaOS/agents/<handle>/agent.md`
 
@@ -1101,7 +1104,7 @@ of the body, for readers that should not reach the storage server.
 | company name | `qorpera_profiles.name` | the vision index |
 | vision | not composed | `QorperaOS/vision/vision.md` in full, every run, version recorded |
 | the company's reading | none | `QorperaOS/vision/reading.md` in full, every run, when there is one (the runtime's step of 20260930765000) |
-| the platform's updates | none | the Co-Founder's planning runs only: the updates in the runtime bundle's `PLATFORM_UPDATES` the company has not reflected on, from `QorperaOS/vision/reflections.md` and the day the `QorperaOS/vision` folder was made, as the context key `updates` (2026-11-15 amendment) |
+| the platform's updates | none | the Co-Founder's planning runs only: the updates in the runtime bundle's `PLATFORM_UPDATES` the company has not reflected on, from `QorperaOS/vision/reflections.md` and the day the `QorperaOS/vision` folder was made (an update dated up to 30 days before it counts), as the context key `updates` (2026-11-15 amendment) |
 | the company's senses | none | the Co-Founder's company runs only: `qorpera_describe_company_senses(binding)`, a host call (20260930765000; below) |
 | agent identity and instructions | staff row, charter | the agent index (settings, instructions copy) pinned to the path version, plus its folder path |
 | first task | kickoff session input | the first todo file (pending decision 2) |
