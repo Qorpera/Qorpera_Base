@@ -465,16 +465,20 @@ declare
 		else 'Pacific/Pago_Pago' end;
 	o constant uuid := '92400000-0000-4000-8000-000000000001';
 	v jsonb;
+	v_first text;
 begin
 	perform pg_temp.n_same((select time_zone from public.qorpera_profiles
 		where id = '92400000-0000-4000-8000-000000000010'), null, '924''s company has no zone');
 	perform pg_temp.n_same((pg_temp.n_zone_day(v_zone, 0) <> pg_temp.n_day(0))::text, 'true',
 		'the zone''s today is not Copenhagen''s: ' || v_zone);
 	update public.qorpera_profiles set time_zone = v_zone where id = '92400000-0000-4000-8000-000000000010';
+	-- The summary's history runs to Copenhagen's today. In a zone a day ahead that is the zone's yesterday, and the 90
+	-- days end on the zone's today; in a zone a day behind it is the zone's tomorrow, where the range ends (section 15).
+	v_first := case when pg_temp.n_zone_day(v_zone, 1) = pg_temp.n_day(0)::text then pg_temp.n_day(-89)::text
+		else pg_temp.n_zone_day(v_zone, -89) end;
 	v := pg_temp.n_member(o, 'money-balance');
-	perform pg_temp.n_same(v #>> '{rows,0,0}', pg_temp.n_zone_day(v_zone, -89), 'the 90 days to the zone''s today');
-	perform pg_temp.n_same(pg_temp.n_run('money-balance') #>> '{rows,0,0}', pg_temp.n_zone_day(v_zone, -89),
-		'a run''s 90 days, the same');
+	perform pg_temp.n_same(v #>> '{rows,0,0}', v_first, 'the 90 days to the zone''s today, or to its tomorrow: ' || v_zone);
+	perform pg_temp.n_same(pg_temp.n_run('money-balance') #>> '{rows,0,0}', v_first, 'a run''s 90 days, the same');
 	perform pg_temp.n_same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'asOf,columns,etag,more,rows',
 		'the zone is not in the answer');
 	-- The zone's month, or the summary's own (Copenhagen's here) when that is within a day of it.

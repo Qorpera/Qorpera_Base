@@ -1,8 +1,10 @@
 // The pictures of a machine's desktop (12 Nov 2026), which scripts/package-machine-guest.mjs carries as one archive
 // and deploy/machine/build-machine-image.sh unpacks at /usr/share/qorpera-desktop: the office dock's nine icon
-// drawings (deploy/lxd-company-computer-guest/design/icons) as dock/<icon>.png, and a backdrop set for every figure
-// an agent can have as backdrops/<figure>/<HH>.png, 24 frames each, with the neutral Qorpera set
-// (deploy/machine/backdrops) as backdrops/neutral. The session shows them (deploy/machine/desktop-look).
+// drawings (deploy/lxd-company-computer-guest/design/icons) as dock/<icon>.png, the six of them that carry a mark
+// drawn again for a light ground (deploy/machine/dock-light, 14 Nov 2026: the dock stands on the wallpaper) as
+// dock-light/<icon>.png, and a backdrop set for every figure an agent can have as backdrops/<figure>/<HH>.png, 24
+// frames each, with the neutral Qorpera set (deploy/machine/backdrops) as backdrops/neutral. The session shows them
+// (deploy/machine/desktop-look).
 
 /** The dock's icon states: one drawing each. */
 export const DOCK_ICONS = Object.freeze([
@@ -14,6 +16,16 @@ export const DOCK_ICONS = Object.freeze([
 	"files-idle",
 	"files-running",
 	"terminal-idle",
+	"terminal-running",
+]);
+
+/** The icon states with a mark under the tile: on a light ground the mark is dark, a drawing of its own. */
+export const DOCK_ICONS_LIGHT = Object.freeze([
+	"browser-failed",
+	"browser-launching",
+	"browser-launching-2",
+	"browser-running",
+	"files-running",
 	"terminal-running",
 ]);
 
@@ -45,6 +57,10 @@ export const MACHINE_DESKTOP_PICTURES = Object.freeze([
 	...DOCK_ICONS.map((icon) => ({
 		name: `dock/${icon}.png`,
 		source: `deploy/lxd-company-computer-guest/design/icons/${icon}.png`,
+	})),
+	...DOCK_ICONS_LIGHT.map((icon) => ({
+		name: `dock-light/${icon}.png`,
+		source: `deploy/machine/dock-light/${icon}.png`,
 	})),
 	...Object.entries(BACKDROP_FILES).flatMap(([figure, file]) =>
 		HOURS.map((hour) => ({

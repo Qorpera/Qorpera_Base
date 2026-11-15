@@ -103,8 +103,19 @@ export function parseAppWrites(
  * the kit writes `engine.js` and `index.html`, the agent `scenes.js`. `model`, `board`, `path` and `object` each draw
  * one visual form from one data file (Jonas, 13 November 2026: apps "are supposed to be objects, models, apps and
  * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
- * `<kit>.json` and the pictures it names. */
-export const APP_KITS = Object.freeze(["explainer", "model", "board", "path", "object"] as const);
+ * `<kit>.json` and the pictures it names. `curve`, `stack` and `shelf` are data kits of the same kind, each one big
+ * shape (Jonas, 14 November 2026): a value over time, things that want a member's yes, the company's things side by
+ * side. */
+export const APP_KITS = Object.freeze([
+	"explainer",
+	"model",
+	"board",
+	"path",
+	"object",
+	"curve",
+	"stack",
+	"shelf",
+] as const);
 export type AppKit = (typeof APP_KITS)[number];
 
 /** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */

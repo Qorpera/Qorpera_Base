@@ -3356,8 +3356,14 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
 	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
-	// again. The same day save_app's reads take money and site (the platform's own numbers of the company, asked as
-	// questions of the reserved database qorpera; company views step 3, slice W1, 20260930767000), so they moved again.
+	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
+	// views plan step 1), and save_app's kit says to read it first, so they moved again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
+	// Then save_app's reads took money and site (the platform's own numbers of the company, asked as questions of the
+	// reserved database qorpera; company views step 3, slice W1, 20260930767000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3376,6 +3382,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"data_describe",
 		"data_apply",
 		"data_query",
+		"data_change",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3409,10 +3416,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"86e5f39dc4320f956dfcaace7d32720ec4814b2f9c9a38e1bb463814104f91c8",
+		"b96dc3bbf117ba1a732b6b4623ce8a37a51c885f86da3c061faa892fd9a12278",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"d212b5f4eea14442700727de274e80e33dcb36dc49f4d845a8f17a5a7c932624",
+		"bef0c0661978cb6d4831df2eaa3c23e2badef8e55932c7fcc82dce379c21269f",
 	);
 });
 

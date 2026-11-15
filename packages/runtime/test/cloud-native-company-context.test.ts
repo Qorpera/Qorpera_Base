@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
 	COMPANY_STATE_COFOUNDER_HANDLE,
 	COMPANY_STATE_FIRST_TODO_PATH,
@@ -141,8 +142,8 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	);
 });
 
-// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
-// the three tools, and never a secret in a step.
+// Company databases (slice 5, 20260930750000; changes, slice 7, 20260930763000): when a database is the right home and
+// when a file is, the folder's shape, the tools, and never a secret in a step.
 it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
 	for (const said of [
 		"When data_query is offered, the company can keep data in databases of its own.",
@@ -152,9 +153,12 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"tables/NNN-<name>.sql are its steps",
 		"Never change an applied step; write a new one with a higher number.",
 		"queries/<name>.sql are its questions: one select each",
+		"actions/<name>.sql are its changes: one insert, update, delete or merge each",
+		"that say what it does in words a member can read, such as -- Mark order :id as shipped.",
 		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
-		"is held until a member says yes: tell them what it would destroy.",
-		"Never put a password, key or other secret in a step, a question or a row.",
+		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
+		"is held until a member says yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
+		"Never put a password, key or other secret in a step, a question, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
@@ -1635,14 +1639,27 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 // With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
 // three were measured once more.
+// With own code storage step 5.1's D1a (changes/index.md says, for about a minute after a change goes in, that its site is
+// being prepared; 13 November 2026), the staff instructions were measured once more on the merged tree.
+// With both on one tree (master's starter set and step 5.1's D1a; release v247's candidate, 14 November 2026) the staff
+// instructions were measured once more.
 // With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
 // received; 20260930762000, 14 November 2026), all three instructions were measured once more.
+// With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
+// and a private conversation's instructions were measured once more.
+// With a render's final frames kept in the company folder and no person built from plain shapes (the first real job
+// on the image with Blender and the starter set, 14 November 2026), all three were measured once more, and the
+// conversation's and a private conversation's again on the tree with release v247 (15 November 2026).
+// With a database's changes (actions/, data_change; company databases, slice 7, 20260930763000) in the staff's
+// "Company databases" paragraph, on release v247's tree (15 November 2026), the conversation's and a private
+// conversation's instructions moved; a worker's do not name databases.
+// With how a member is asked for a held step (data_apply's allow, 20260930764000) there, they moved again.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "90dd1a638122f51a301ca230bcfc904d26ded77cd22a2799ef6b9e370845418f",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1650,7 +1667,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "1d31664cbdb78bd48da2f14d3e4e553bf3dba87bb555423d9f21c8e42def3daa",
+			instructions: "7a1285e939be0a9e60ab1b880872d7d6b38ba34a178ee98b674902c718d84886",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1658,7 +1675,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e2785fafc3dd8a92f4f887c7de451b91c90ae13500afa8a8b03b42909138bcdd",
+			instructions: "90dd1a638122f51a301ca230bcfc904d26ded77cd22a2799ef6b9e370845418f",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1689,8 +1706,10 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
 		// Own code storage, step 6: after an operator's restore, changes/index.md names the changes it took out for 30 days.
 		"When changes/index.md says the repository was put back to an earlier copy, the changes it names are gone: make them again if they are still wanted.",
-		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
-		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live.',
+		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken; step
+		// 5.1 (D1a): changes/index.md also says, for about a minute after a change goes in, that its site is being prepared
+		// (its line "Being prepared for What's new: change N (about a minute).", written while sites have hosts of their own).
+		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live, and when a site is still being prepared, which takes about a minute after a change goes in.',
 		"An undo goes live only with the next change that passes.",
 		"When the live site is broken, ask a member at once to press Go back in What's new.",
 		// What #1643 said of a project's history and its hand-over stays.
@@ -1716,6 +1735,21 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	expect(worker).not.toContain(".qorpera/checks.json");
 	expect(worker).not.toContain('"site": {"folder": "dist"}');
 	expect(worker).not.toContain("put back to an earlier copy");
+	expect(worker).not.toContain("being prepared");
+});
+
+// Own code storage, step 5.1 (D1a): the line the agents are told to look for is the one the coding executor writes in
+// changes/index.md, "Being prepared for What's new: change N (about a minute).", while the kernel says what is being
+// prepared (only while sites have hosts of their own: migration 20260930756000's preparing).
+it("names the line the coding executor writes while a site is being prepared", () => {
+	const records = readFileSync(
+		new URL("../../runner-orchestrator/src/code-change-records.ts", import.meta.url),
+		"utf8",
+	);
+	expect(records).toMatch(/`Being prepared for What's new: change \$\{preparing\.change\} \(about a minute\)\.`/);
+	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
+		"changes/index.md says which version is live, and when a site is still being prepared, which takes about a minute after a change goes in.",
+	);
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
@@ -1817,6 +1851,34 @@ it("has a render lit and looked at like a photograph, on a machine sized for it 
 	expect(staff.indexOf("Checking how a page looks, taking pictures of it or filming it")).toBeLessThan(
 		staff.indexOf(sized),
 	);
+});
+
+// The first real job after the image with Blender and the starter set went live (a company's storyboard as real
+// photos, 14 November 2026): its worker took an 8-processor machine, the set's light and materials and a small frame
+// first, as told. Two things were still wrong. The six final frames lay on the machine's disk when the run ended
+// before it had copied them (the model account's usage limit). And the hand that reaches for the lamp was a ribbed
+// tube: the set has a room, not people. Jonas, the same day: "are they implemented in the best possible way, or are
+// we still using the wrong processes/machine sizes?", and to these two sentences: "Yes, build it".
+it("keeps a render's final frames in the folder and builds no person from plain shapes (14 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	const frames =
+		"Save each final frame into the company folder as it is finished (on a machine, under /company), not only on the machine's disk: a run can end before it has copied them.";
+	const people =
+		"A person, a hand or a face put together from plain shapes gives a render away at once: frame the shot so that no person is in it, or, where the person is the point of the shot, make that picture with make_picture when this run has it, describing the product as the render shows it.";
+	// A worker renders too, so both are in what every run reads, right after the look step they finish.
+	for (const instructions of [staff, worker]) {
+		const look = instructions.indexOf("because a render uses every processor it is given.");
+		expect(look).toBeGreaterThan(-1);
+		expect(instructions.indexOf(frames)).toBeGreaterThan(look);
+		expect(instructions.indexOf(people)).toBeGreaterThan(instructions.indexOf(frames));
+		expect(instructions.indexOf("Founders may not know which tools a part needs")).toBeGreaterThan(
+			instructions.indexOf(people),
+		);
+	}
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {

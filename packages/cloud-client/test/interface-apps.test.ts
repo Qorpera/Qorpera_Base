@@ -116,10 +116,12 @@ describe("interface apps", () => {
 		// A kit that is none of Qorpera's, and a kit with a page of its own, are problems with their lines.
 		expect(parseAppManifest('name = "X"\nkit = "slides"\n')).toEqual({
 			ok: false,
-			problems: [{ line: 2, message: "kit must be one of explainer, model, board, path, object" }],
+			problems: [
+				{ line: 2, message: "kit must be one of explainer, model, board, path, object, curve, stack, shelf" },
+			],
 		});
-		// The data kits (13 November 2026) read and write the same way.
-		for (const name of ["model", "board", "path", "object"]) {
+		// The data kits (13 and 14 November 2026) read and write the same way.
+		for (const name of ["model", "board", "path", "object", "curve", "stack", "shelf"]) {
 			const data = parseAppManifest(`name = "X"\nkit = "${name}"\n`);
 			expect(data.ok && data.manifest).toMatchObject({ kit: name, entry: "index.html" });
 			expect(parseAppManifest(data.ok ? writeAppManifest(data.manifest) : "")).toEqual(data);
