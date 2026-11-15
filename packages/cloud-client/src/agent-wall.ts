@@ -2,7 +2,8 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
 
 /* An agent's wall (Jonas, 5 November 2026: "a poster or wall of updates kept within rules, instead of many new
  * messages"): what the agent has done, with links, what it is working on, and what waits on a member, kept in place in
- * `QorperaOS/agents/<handle>/wall.md`. The agent keeps it with `update_wall`, and the web pins it above the agent's
+ * `QorperaOS/agents/<handle>/wall.md`. Agents kept it with `update_wall` until 14 November 2026, when the founder dropped
+ * the wall for agents ("it's the wrong medium for activity"); the web pins it above the agent's
  * thread. It is an ordinary file of the folder, so a member may edit it too; the write tools refuse a wall that breaks
  * the rules below. This module is the format both sides read. Browser-safe.
  *
@@ -31,10 +32,12 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
 
 export const WALL_FILE = "wall.md";
 export const WALL_MAX_BYTES = 16 * 1024;
-/** An item's headline, in characters, as `update_wall` writes it. A headline written before details existed may be as
- * long as {@link WALL_ITEM_MAX_CHARS}: it still reads. */
+/** An item's headline, in characters, as `update_wall` wrote it until 14 November 2026 (no tool writes walls now; the
+ * web reads what is there). A headline written before details existed may be as long as {@link WALL_ITEM_MAX_CHARS}:
+ * it still reads. */
 export const WALL_HEADLINE_MAX_CHARS = 80;
-/** The Now line, in characters, as `update_wall` writes it: it has to fit under a name in the sidebar. */
+/** The Now line, in characters, as `update_wall` wrote it until 14 November 2026: it had to fit under a name in the
+ * sidebar. */
 export const WALL_NOW_MAX_CHARS = 60;
 /** An item's detail, in characters. */
 export const WALL_DETAIL_MAX_CHARS = 240;
@@ -42,7 +45,7 @@ export const WALL_DETAIL_MAX_CHARS = 240;
 export const WALL_ITEM_MAX_CHARS = 240;
 export const WALL_WAITING_MAX = 6;
 export const WALL_WORKING_MAX = 6;
-/** Done items a wall keeps; the writer drops the oldest past it. */
+/** Done items a wall kept; `update_wall` dropped the oldest past it until 14 November 2026. */
 export const WALL_DONE_MAX = 40;
 /** Done items newer than this many days show on the poster; older ones fold into Earlier. */
 export const WALL_RECENT_DAYS = 7;
@@ -130,7 +133,7 @@ export function isWallDay(value: string): boolean {
 }
 
 /** An item's headline as kept: one line, runs of spaces as one, or a problem in plain words. `max` is the most it may
- * hold: what the file holds by default, a shorter headline for what `update_wall` writes. */
+ * hold: what the file holds by default, a shorter headline for what `update_wall` wrote until 14 November 2026. */
 export function wallItemProblem(text: string, max = WALL_ITEM_MAX_CHARS): string | null {
 	if (/[\0-\x1f\x7f]/.test(text)) return "an item is one line, with no tabs or control characters";
 	const trimmed = text.trim();

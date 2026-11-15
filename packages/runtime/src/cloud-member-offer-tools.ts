@@ -26,15 +26,9 @@ export const CLOUD_CREW_AND_MEMBERS_DESCRIPTION =
 	"(null: nobody), and the open asks to take agents. The member an agent works for carries the work handed to it on " +
 	"their ChatGPT. Use it before offer_agents_to_member.";
 
-export const CLOUD_OFFER_AGENTS_DESCRIPTION =
-	"Ask one member to take some agents, so the work handed to them runs on that member's ChatGPT. member is their " +
-	"name, first name or email; agents are 1 to 20 agent names; why is one short sentence the member sees (up to 280 " +
-	"characters), such as which area is theirs. Two agents with the same name are named by id. Nothing moves until the member says yes on the Members page, and an " +
-	"agent that already works for them or already waits for an answer is left as it is. With two or more founders, " +
-	"deal the team out by area so each founder carries the areas that fit what they said they want to own; offer a " +
-	"member's agents to another when one carries far more, or when someone's ChatGPT is full or needs a new sign-in " +
-	"while their agents wait. Never offer agents to a viewer or to a member with no ChatGPT connected. Tell the members " +
-	"once, briefly, what you offered whom and why.";
+export const CLOUD_OFFER_AGENTS_DESCRIPTION = [
+	"Ask one member to take some agents, so the work handed to them runs on that member's ChatGPT. Nothing moves until the member says yes on the Members page; an agent that already works for them, or already waits for an answer, is left as it is. Never offer agents to a viewer or to a member with no ChatGPT connected. Tell the members once, briefly, what you offered whom and why.",
+].join("\n");
 
 /** An agent as the Co-Founder names it: its name, or, when another agent has the same name, its name, role and id. */
 const label = (agent: Record<string, unknown>): JsonValue =>
@@ -138,14 +132,20 @@ export function cloudMemberOfferTools(
 			additionalProperties: false,
 			required: ["member", "agents"],
 			properties: {
-				member: { type: "string", minLength: 1, maxLength: 320 },
+				member: { type: "string", minLength: 1, maxLength: 320, description: "Their name, first name or email." },
 				agents: {
 					type: "array",
 					minItems: 1,
 					maxItems: 20,
 					items: { type: "string", minLength: 1, maxLength: 160 },
+					description: "1 to 20 agent names; two agents with the same name are named by id.",
 				},
-				why: { type: "string", minLength: 1, maxLength: 280 },
+				why: {
+					type: "string",
+					minLength: 1,
+					maxLength: 280,
+					description: "One short sentence the member sees, up to 280 characters, such as which area is theirs.",
+				},
 			},
 		},
 		parseArguments(value) {
