@@ -1232,9 +1232,6 @@ describe("a machine's coding value", () => {
 	});
 });
 
-// 20260930781000: fill_company_account's route on the executor's ingress: SQL's read for the call's own receipt, the fill
-// helper on the machine's node (or its peer) with the vault asked for the box sealed to the helper's key, and typed back,
-// or a refusal by its code (and the vault's own words).
 describe("a machine's account fill", () => {
 	const box = {
 		schema: "qorpera.company-account-fill-box/v1",

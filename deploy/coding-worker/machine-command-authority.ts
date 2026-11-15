@@ -495,9 +495,6 @@ export async function authorizeMemberMachineAct(
 		userId: result.userId as string, seat: result.seat, served: result.served as boolean, shared };
 }
 
-/** What SQL says about one fill_company_account (20260930781000): where the machine runs, the company the vault serves,
- * and the fill helper's target (what the box is bound to and the account's site and sign-in hosts), which goes to the
- * helper as SQL wrote it. Nothing in it is secret. */
 export interface MachineAccountFillAuthority {
 	machineId: string;
 	placementId: string;

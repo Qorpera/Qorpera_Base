@@ -529,7 +529,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				(config.desktopStreams as { socket: string }).socket, spec, ended, { version: programVersion }),
 		} : {}),
 	}) : undefined;
-	// fill_company_account (20260930781000): the same broker seals an account's value to a machine's fill helper.
 	const accountFills = config.broker && machineHost ? new BrokerMachineAccountFill({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).

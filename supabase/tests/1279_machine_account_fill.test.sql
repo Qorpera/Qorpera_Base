@@ -1,18 +1,4 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- 20260930781000: an agent signs in to a website from its company machine with a company account (fill_company_account).
--- On 924's folder-v2 company, with Alice's leased run (for the owner), the company's broker authority, accounts switched on,
--- the company's mailbox and Alice's open todo:
--- 1. the account is opened as A1 opens one (the vault's own opening, for the todo, with the tagged login), on a company
---    with no computer; then one full fill: the coding executor's read (where the machine runs, and the helper's target:
---    what the box is bound to and the account's hosts) and the broker's read (the account's facts, the envelope, the
---    receipt, the field, the machine, its placement, its boot and the helper's key), which records the use once;
--- 2. what the agent can act on is answered by the executor's read, and refused by the broker's: accounts switched off, a
---    stopped machine, a closed account; each writes nothing. A contributor's run fills (accounts are the company's, as on
---    the office); a requester who is no longer a member is refused by the run check;
--- 3. every other refusal writes nothing: the call (its tool, version, arguments, key, target), a receipt of another call
---    or tool or never begun, the downstream key, another company's machine, a machine of another name, the placement, the
---    boot, the executor and the helper's key the executor names, another company's broker, Postgres' own session;
--- 4. the grants, the call checks, the observations' list and the marker.
 
 -- The company's broker authority; another company's, with its own running machine of the same name.
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
@@ -105,8 +91,6 @@ $$;
 create function pg_temp.af_sha(p_text text) returns text language sql security definer as $$
 	select encode(extensions.digest(convert_to(p_text, 'UTF8'), 'sha256'), 'hex')
 $$;
--- Receipt n ('12790000-0000-4000-8000-0000000001' || n) begins as the runtime begins a tool call, with this key and input
--- digest; af_end completes it (one unresolved receipt per run).
 create function pg_temp.af_begin(p_n text, p_key text, p_input text) returns void language plpgsql security definer as $$
 begin
 	perform pg_temp.base_claims('service_role');

@@ -21,14 +21,6 @@ export interface MachineAccountFillSealRequest {
 	readonly fillPublicKey: string;
 }
 
-/**
- * fill_company_account's vault side (20260930781000), through the company's secret broker: `POST
- * /v1/machine-account-fills?company=<profileId>` (the shared origin routes by company) with the executor's own broker
- * token, as the coding environment's (coding-environment.ts); the runtime token every guest holds never opens it. The
- * broker asks the database, which checks the call, the machine's placement, boot and executor, and the account, then
- * seals the value to the helper's key. The answer is that box, which only the helper opens, or the database's refusal in
- * its own words. Nothing secret passes here. Every other failure is the same opaque error.
- */
 export class BrokerMachineAccountFill {
 	readonly #origin: string;
 	readonly #executorToken: string;

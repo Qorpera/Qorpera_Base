@@ -289,8 +289,6 @@ export interface LxdExecPipeRequest {
 	 * consumer bounds what it has not read yet, machine-exec-server.ts); the result's stdout is then empty. Never
 	 * recorded or logged. A handler that throws ends the call, as an over-long message does. */
 	readonly stdout?: (chunk: Buffer) => void;
-	/** Each piece of stdout as it arrives, within the bound, for a caller that answers the command on its stdin while it
-	 * runs (fill_company_account's helper, 20260930781000). Never recorded or logged here; the result keeps it too. */
 	readonly onStdout?: (chunk: Buffer) => void;
 }
 

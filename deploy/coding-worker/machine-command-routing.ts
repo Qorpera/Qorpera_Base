@@ -87,8 +87,6 @@ interface MachineCommandRouterOptions {
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
 	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
-	/** fill_company_account (20260930781000): runs the fill helper on this node's machine, asking the vault for the box;
-	 * absent when the executor carries no machines or has no broker. */
 	accountFillLocal?(
 		request: CloudMachineAccountFillHttpRequest,
 		authority: MachineAccountFillAuthority,
@@ -310,9 +308,6 @@ export class MachineCommandRouter {
 		if (!gateway.codingValue) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		return gateway.codingValue(request.scope, request.input, signal);
 	}
-	/** fill_company_account (20260930781000): SQL names the machine's executor, as for a command. This node runs the helper
-	 * and asks the vault; another node's executor is sent the request once (it reads SQL again and only runs it locally).
-	 * Its refusal reaches the agent as the same refusal (a 409 with its code, and the vault's words). */
 	async accountFill(request: CloudMachineAccountFillHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineAccountFillAnswer> {
 		const authority = await authorizeMachineAccountFill(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {

@@ -624,7 +624,6 @@ test("desktop key presses no xdotool command word, whatever its case, by the ins
 });
 
 test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
-	// 20260930781000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
 	const packager = read("scripts/package-machine-guest.mjs");
 	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
 	assert.match(

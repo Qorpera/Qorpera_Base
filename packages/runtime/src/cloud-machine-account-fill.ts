@@ -12,38 +12,6 @@ import {
 	companyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
 
-/* fill_company_account's helper on a company machine (20260930781000; Jonas, 10 November 2026: "Build machine sign-ins").
- * The agent opened the account's sign-in page with `desktop open` and clicked into the field. The coding executor runs
- * this fixed program, shipped in the machine image beside the guest helper (never anything the agent wrote), as root on
- * the boot the database named, in one exec whose stdin and stdout stay open for the exchange:
- * 1. stdin's first line is the executor's target (qorpera_authorize_machine_account_fill): what the box is bound to and
- *    the account's site and sign-in hosts. The helper checks the focused tab against them (below) before anything is
- *    asked of the vault, makes an X25519 key pair in memory, and prints one line: the public half, or why not.
- * 2. The executor asks the vault, which seals the value to that key, bound to this call's receipt and the machine's
- *    placement and boot; stdin's second line is that box (or stdin ends: the vault refused, and the executor says why).
- * 3. The helper opens the box in memory (only for exactly this identity on this boot, and within its lifetime), checks the
- *    tab again against the hosts sealed inside it, sets the value on the focused box from inside the checked document,
- *    and prints one line: FILLED or a refusal code. Then it waits for stdin to end and exits.
- * The page check, as the office's (cloud-company-computer-account-fill.ts) and A1-4c's stop: the one tab whose window has
- * the focus, its main frame on the account's site or one of its sign-in hosts over https; the focused element in that
- * document itself (not in a frame), an input box of the field's kind; and no CAPTCHA, human check, unusual activity
- * warning or block shown. Both checks and the typing are bound to the one document the tab showed at the first look
- * (reviews of #1644): any navigation of the tab from then on, to another document or within this one, refuses before
- * anything is typed (FILL_PAGE_CHANGED), and one seen once the value is in is FILL_LOST. The value is never typed at
- * the tab (CDP Input.insertText reaches whatever document the tab shows when it lands): one call on the checked box, in
- * the helper's own world of that document, checks the document, its address and the box's focus and sets the value with
- * the native setter, then fires input and change; if the document is gone the call fails and reaches no other. The value
- * counts as filled only when that same box, still with the focus, holds it exactly and a complete scan of the document,
- * every open shadow root and every frame of its own origin finds no other copy, twice, 200 ms apart. Once the value may
- * have reached the page, anything else is FILL_LOST (review round 3: no outcome says the page is clean; a page can copy
- * a value at any time): the box and every copy found are emptied, but the tab must still go.
- * It never prints, logs or writes the value: stdout carries the key's public half and codes only.
- * Buffers it holds are zeroed when done; the opened value is a string, which the process drops and exits with.
- * The agent is root on its machine: it can read the browser's memory and the page, or replace this program or the
- * browser. What the check protects against is a value typed somewhere it should not go by mistake or by a page's doing (a
- * look-alike or redirected site, a frame, a bot check), and the value reaching any tool output, chat, history or file.
- * The program itself is cloud-machine-account-fill-main.ts, which only the guest package bundles: this module is
- * imported by the runtime too (its codes), so it must never run anything when loaded. */
 
 export const MACHINE_ACCOUNT_FILL_TARGET_SCHEMA = "qorpera.machine-account-fill-target/v1";
 export const MACHINE_ACCOUNT_FILL_READY_SCHEMA = "qorpera.machine-account-fill-ready/v1";

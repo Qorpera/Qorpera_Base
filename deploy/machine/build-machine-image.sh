@@ -30,10 +30,7 @@
 # start`), `desktop start` opens chosen company files and folders on it, pages
 # get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
 # runs from root's shell are installed, since that is how agents look at pages
-# without a screen. Also fill_company_account's fill helper (20260930781000),
-# which types a company account's value, sealed by the vault to a key it made in
-# memory, into the desktop browser's focused box through the DevTools port the
-# desktop's browser gets on the machine's loopback. An agent that has a Dockerfile builds
+# without a screen. An agent that has a Dockerfile builds
 # and runs it inside its machine; images are not made from Dockerfiles.
 # Since 13 Nov 2026 also what a render that has to look real needs (README, "Renders"): Blender's official build
 # (Cycles on the processors, OpenImageDenoise), a starter set of light, materials and furniture at /opt/qorpera-assets

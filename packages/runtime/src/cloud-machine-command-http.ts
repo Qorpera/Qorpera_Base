@@ -36,11 +36,6 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 // the image's fixed clipboard helper on the machine for one executing receipt,
 // as SQL authorizes it (qorpera_authorize_machine_coding_value): its answer is
 // the box the helper sealed the key in, which only the vault opens, or why not.
-// /v1/machine-commands/account-fill (fill_company_account, 20260930781000) runs
-// the image's fixed fill helper on the machine for one executing receipt, as SQL
-// authorizes it (qorpera_authorize_machine_account_fill); the machine's executor
-// asks the vault for the value sealed to the helper's key, and the helper types
-// it. The answer says it was typed, or why not; never the value.
 // /v1/machine-commands/screen (machine_screen, 20260930708000) runs the image's
 // fixed screen helper on the machine: a look (no receipt), or one action for
 // one executing receipt, as SQL authorizes it (qorpera_authorize_machine_screen).
@@ -651,8 +646,6 @@ class PeerFramePieces {
 	}
 }
 
-/** fill_company_account's request (20260930781000): its receipt, its operation envelope (whose digest the receipt
- * holds) and its downstream key, which the vault checks against the receipt. SQL reads everything else from them. */
 export type CloudMachineAccountFillInput = { commandId: string; envelope: string; idempotencyKey: string };
 export type CloudMachineAccountFillHttpRequest = Readonly<{
 	schema: "qorpera.machine-command-http/v1";
@@ -723,8 +716,6 @@ export interface CloudMachineCommandGateway {
 		input: CloudMachineCodingValueInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
-	/** fill_company_account (20260930781000): the fill helper typed the account's value, or its refusal
-	 * (CloudMachineAccountFillRefusal). Sent once: a lost answer is the call's unconfirmed outcome. */
 	accountFill?(
 		scope: CloudMachineCommandScope,
 		input: CloudMachineAccountFillInput,
@@ -1811,8 +1802,6 @@ export interface CloudMachineCommandServiceOptions {
 		request: CloudMachineCodingValueHttpRequest,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
-	/** fill_company_account (20260930781000): authorized in SQL and run on the machine's node, or forwarded there; a
-	 * refusal is a CloudMachineAccountFillRefusal. */
 	accountFill?(
 		request: CloudMachineAccountFillHttpRequest,
 		signal: AbortSignal,

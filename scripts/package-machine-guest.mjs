@@ -16,8 +16,6 @@ import { MACHINE_DESKTOP_PICTURES, tarArchive } from "./machine-desktop-art.mjs"
 // manifest's first artifact, whose sha-256 the executor pins) stays as it was.
 // Since 20260930708000 it also carries machine_screen's screen helper, built the
 // same way and for the same reason.
-// Since 20260930781000 it also carries fill_company_account's fill helper, the
-// same way: its own file, after the guest helper.
 // Since 12 Nov 2026 it also carries every machine's compressed memory and edge
 // guard (machine-memory, its two units, the LXD agent's drop-in): files only,
 // so the guest helper stays as it was. And the desktop's look (desktop-look,
@@ -164,8 +162,6 @@ artifacts.push({
 	sha256: createHash("sha256").update(screen).digest("hex"),
 	bytes: screen.length,
 });
-// fill_company_account's fill helper (20260930781000): the executor runs it with node; it makes a key in memory, opens
-// the vault's box sealed to it, checks the desktop browser's focused page and types the value there with CDP.
 await build({
 	entryPoints: ["packages/runtime/src/cloud-machine-account-fill-main.ts"],
 	outfile: resolve(output, "cloud-machine-account-fill.mjs"),

@@ -841,7 +841,6 @@ async function fixture(
 						cancel: async () => {
 							throw new Error("No machine command in this suite");
 						},
-						// 20260930781000: a gateway that runs the machine's fill helper, for fill_company_account's offer.
 						accountFill: async () => {
 							throw new Error("No machine command in this suite");
 						},
@@ -2798,7 +2797,6 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// It waits inside the call instead.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
-	// A worker types no company account's value (20260930781000).
 	expect(offeredNames(evidence)).not.toContain("fill_company_account");
 	// Still no mouth, coworkers or delegation, in its catalog or in more_tools.
 	expect(offeredNames(evidence)).not.toContain("send_message");
@@ -2824,7 +2822,6 @@ it("gives a company conversation's run the machine tools with notify, and a star
 		maximum: 60,
 	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
-	// A host with the vault's company accounts offers the machine sign-in (20260930781000), after the machine tools.
 	const names = offeredNames(evidence);
 	expect(names).toContain("fill_company_account");
 	expect(names.indexOf("fill_company_account")).toBeGreaterThan(names.indexOf("machine_list"));

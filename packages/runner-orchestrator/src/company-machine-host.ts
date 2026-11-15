@@ -172,9 +172,6 @@ const CODING_VALUE_WAIT_MS = 6000;
  * one after another, 2 s each at most inside the machine, so 8 s) runs under it and the request's signal (round 25 P2 of
  * #1661): a request that ends cuts it off, and a cut-off clear failed, records nothing and stays owed. */
 const CODING_VALUE_CLEAR_MS = 10000;
-/** fill_company_account's fill helper (20260930781000), packaged beside the guest helper and installed by the image
- * (scripts/package-machine-guest.mjs). It runs under CODING_VALUE_ON_BOOT's rule: only on the boot SQL named (exit 97)
- * and only where the image has it (exit 98: an earlier image). */
 export const COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "/opt/qorpera-machine/cloud-machine-account-fill.mjs";
 /** Two JSON lines at most: the key's public half, then a code. */
 const ACCOUNT_FILL_OUTPUT_BYTES = 4096;
@@ -1186,8 +1183,6 @@ export type CompanyMachineMemberStartOutcome =
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
 
-/** fill_company_account's run on a machine of this node (20260930781000), as SQL authorized it
- * (qorpera_authorize_machine_account_fill): where it runs, and the helper's target, given to the helper as SQL wrote it. */
 export interface CompanyMachineAccountFill {
 	placementId: string;
 	bootId: string;
@@ -4138,15 +4133,6 @@ export class LxdCompanyMachineHost {
 		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
 	}
 
-	/**
-	 * fill_company_account (20260930781000): the image's fill helper on a machine of this node, as root, on exactly the
-	 * boot SQL named, in one exec whose stdin and stdout stay open for the exchange. SQL's target goes first on its stdin;
-	 * the helper checks the focused tab and prints its key's public half (or a code); `seal` asks the vault for the value
-	 * sealed to that key, and its box goes second on the helper's stdin (or stdin ends: the vault refused); the helper
-	 * types the value and prints a code. Its stdout is read here as it comes, within its bound, and never logged; its
-	 * stderr is dropped; LXD records no output. Nothing that passes here is a value: the key is public, the box sealed.
-	 * The whole exec ends at its deadline, which kills the helper. It runs once: a failure is the call's.
-	 */
 	async accountFill(
 		run: CompanyMachineAccountFill,
 		seal: CompanyMachineAccountFillSeal,

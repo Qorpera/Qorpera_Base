@@ -279,7 +279,6 @@ const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, 
 		"the machine restarted, and its clipboard went with it: copy or make the key again, then call again",
 	CODING_VALUE_TARGET_INVALID: "the machine could not take the vault's request; try again with a new operationKey",
 };
-/** fill_company_account (20260930781000): how an agent signs in to a website from its machine with a company account. */
 export const CLOUD_MACHINE_FILL_COMPANY_ACCOUNT_DESCRIPTION =
 	"Type a company account's login, password or authenticator code into the field that has the focus in a machine's browser. The vault types it: you never see, pass, say or write a password. " +
 	"To sign in (or sign up) from a desktop computer (machine_start with desktop true): machine_run desktop start, then desktop open with the site's sign-in or sign-up page (only a browser desktop open started can be typed into), desktop shot to see the page, desktop click into the field, then call fill_company_account with the machine, the account (its id from company_account find or open) and the field. Click into the next field and call again, then press the site's own button yourself (desktop click, or desktop key Return). " +
@@ -385,8 +384,6 @@ export function cloudMachineTools(options: {
 	/** The vault (20260930705000): with it, and a gateway that runs the machine's clipboard helper, a company agent's
 	 * own run (never a worker's) is offered save_coding_value. */
 	codingValues?: CloudMachineCodingValues;
-	/** The host has the vault's company accounts (20260930781000): with a gateway that runs the machine's fill helper, a
-	 * company agent's own run (never a worker's) is offered fill_company_account. The machine's executor asks the vault. */
 	accountFills?: boolean;
 }): readonly CloudNativeTool[] {
 	const worker = options.worker === true;
@@ -1400,13 +1397,6 @@ export function cloudMachineTools(options: {
 		},
 	};
 
-	/**
-	 * fill_company_account (20260930781000): one of a company account's values typed into the focused field of the
-	 * machine's browser. The model passes only the machine, the account, which value and the call's key; never a value,
-	 * and the answer holds none. One receipted call: the machine's executor runs the image's fill helper for this receipt,
-	 * which checks the page and makes a key in memory; the executor asks the vault, which seals the value to that key for
-	 * this call and this boot; the helper types it and says how it went.
-	 */
 	const accountFilling = !worker && options.accountFills === true && options.gateway.accountFill !== undefined;
 	const notFilled = (reason: string, message: string) => ({
 		kind: "json" as const,
