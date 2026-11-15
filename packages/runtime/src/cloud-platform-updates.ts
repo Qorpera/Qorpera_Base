@@ -71,7 +71,8 @@ export const REFLECTIONS_PATH = osPath("vision/reflections.md");
 export const REFLECTIONS_HEADING = "# What we took up from the platform";
 export const REFLECTION_LINE_MAX_BYTES = 160;
 export const REFLECTIONS_MAX_BYTES = 64 * 1024;
-export const REFLECTIONS_LINES_READ = 200;
+export const REFLECTIONS_READ_MAX_BYTES = 256 * 1024;
+export const UPDATE_MARGIN_DAYS = 30;
 export const REFLECTION_LATER_DAYS = 28;
 export const PLATFORM_UPDATES_SHOWN = 6;
 
@@ -100,7 +101,7 @@ export function decisionsFor(kind: PlatformUpdateKind): readonly ReflectionDecis
 
 export function parseReflections(text: string): Reflection[] {
 	const reflections: Reflection[] = [];
-	for (const line of text.split(/\r?\n/).slice(-REFLECTIONS_LINES_READ)) {
+	for (const line of text.split(/\r?\n/)) {
 		const match = LINE.exec(line);
 		if (!match) continue;
 		const [, id, day, decision, words] = match as unknown as [string, string, string, string, string];
@@ -139,7 +140,7 @@ export function pendingPlatformUpdates(
 	return updates
 		.map((update, index) => ({ update, index }))
 		.filter(({ update }) => {
-			if (update.date < createdDay) return false;
+			if (daysBetween(update.date, createdDay) > UPDATE_MARGIN_DAYS) return false;
 			const newest = recorded.get(update.id);
 			return !newest || (newest.decision === "later" && daysBetween(newest.day, today) > REFLECTION_LATER_DAYS);
 		})
@@ -147,8 +148,13 @@ export function pendingPlatformUpdates(
 		.map(({ update }) => update);
 }
 
+export const REFLECTIONS_SHORTEN = "keep only the newest line for each update in it";
+
+export const REFLECTIONS_PROBLEM = `${REFLECTIONS_PATH} is not a text file of at most ${REFLECTIONS_READ_MAX_BYTES / 1024} KiB, so the updates you have not reflected on cannot be shown: ${REFLECTIONS_SHORTEN}.`;
+
 export interface CloudPlatformUpdatesContext {
-	readonly pending: readonly {
+	readonly problem?: string;
+	readonly pending?: readonly {
 		readonly id: string;
 		readonly kind: PlatformUpdateKind;
 		readonly date: string;
@@ -184,12 +190,29 @@ export async function readCloudPlatformUpdates(
 	if (!vision || vision.kind !== "folder") throw new Error("The company's vision folder is not a folder");
 	const made = new Date(vision.updatedAt);
 	if (!Number.isFinite(made.getTime())) throw new Error("The company's vision folder has no time");
-	const found = await folder.readText(REFLECTIONS_PATH, REFLECTIONS_MAX_BYTES, signal);
-	const recorded = newestReflections(parseReflections(found?.text ?? ""));
-	const context = cloudPlatformUpdatesContext(pendingPlatformUpdates(updates, recorded, utcDay(made), utcDay(now)));
+	const { entry: record } = await folder.read(REFLECTIONS_PATH, signal);
+	let found: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
+	if (record?.kind === "file" && record.file.bytes <= REFLECTIONS_READ_MAX_BYTES)
+		try {
+			found = await folder.readText(REFLECTIONS_PATH, REFLECTIONS_READ_MAX_BYTES, signal);
+		} catch (error) {
+			if (!(error instanceof CloudCompanyPathNotText)) throw error;
+		}
+	const createdDay = utcDay(made);
+	const today = utcDay(now);
+	const unreadable = record !== null && found === null;
+	const context = unreadable
+		? pendingPlatformUpdates(updates, new Map(), createdDay, today).length > 0
+			? { problem: REFLECTIONS_PROBLEM }
+			: undefined
+		: cloudPlatformUpdatesContext(
+				pendingPlatformUpdates(updates, newestReflections(parseReflections(found?.text ?? "")), createdDay, today),
+			);
 	return {
 		context,
-		reads: context ? [vision, ...(found ? [found.entry] : [])].map(cloudCompanyFolderRelease) : [],
+		reads: context
+			? [vision, ...(found ? [found.entry] : record ? [record] : [])].map(cloudCompanyFolderRelease)
+			: [],
 	};
 }
 
@@ -280,11 +303,11 @@ export function cloudRecordReflectionTool(options: {
 			if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 			let found: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>>;
 			try {
-				found = await folder.readText(REFLECTIONS_PATH, REFLECTIONS_MAX_BYTES, context.signal);
+				found = await folder.readText(REFLECTIONS_PATH, REFLECTIONS_READ_MAX_BYTES, context.signal);
 			} catch (error) {
 				if (error instanceof CloudCompanyPathNotText)
 					throw new CloudToolRefusal(
-						`${REFLECTIONS_PATH} is not a text file of at most ${REFLECTIONS_MAX_BYTES / 1024} KiB: move its older lines to another file first`,
+						`${REFLECTIONS_PATH} is not a text file of at most ${REFLECTIONS_READ_MAX_BYTES / 1024} KiB: ${REFLECTIONS_SHORTEN}, then call again`,
 					);
 				return unavailable(error, "saved");
 			}
@@ -326,7 +349,7 @@ export function cloudRecordReflectionTool(options: {
 			const text = writeReflection(found?.text ?? null, reflection);
 			if (Buffer.byteLength(text) > REFLECTIONS_MAX_BYTES)
 				throw new CloudToolRefusal(
-					`${REFLECTIONS_PATH} would be larger than ${REFLECTIONS_MAX_BYTES / 1024} KiB: move its older lines to another file first`,
+					`${REFLECTIONS_PATH} would be larger than ${REFLECTIONS_MAX_BYTES / 1024} KiB: ${REFLECTIONS_SHORTEN}, then call again`,
 				);
 			const content = await operations.execute({
 				operation: {

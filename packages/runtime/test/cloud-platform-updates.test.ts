@@ -8,7 +8,7 @@ import {
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudToolsOnDemand } from "@qorpera/runtime/cloud-native-tools-on-demand";
 import {
 	CLOUD_RECORD_REFLECTION_DESCRIPTION,
@@ -26,9 +26,13 @@ import {
 	parseReflections,
 	pendingPlatformUpdates,
 	REFLECTIONS_HEADING,
+	REFLECTIONS_MAX_BYTES,
 	REFLECTIONS_PATH,
+	REFLECTIONS_PROBLEM,
+	REFLECTIONS_READ_MAX_BYTES,
 	readCloudPlatformUpdates,
 	reflectionLine,
+	UPDATE_MARGIN_DAYS,
 	writeReflection,
 } from "@qorpera/runtime/cloud-platform-updates";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "@qorpera/runtime/cloud-runtime-observability";
@@ -115,11 +119,20 @@ Our own note: Strategy reads this on Mondays.
 		expect(parseReflections("")).toEqual([]);
 	});
 
-	it("reads only the last 200 lines", () => {
-		const lines = Array.from({ length: 250 }, (_, index) => `- kit-${index} | 2026-11-17 | not | Not for us.`);
+	it("reads every line, so a record of more than 200 lines keeps its old decisions", () => {
+		const lines = [
+			REFLECTIONS_HEADING,
+			"- bank-kit | 2026-11-12 | use | Money owner draws the bank.",
+			...Array.from({ length: 250 }, (_, index) => `- kit-${index} | 2026-11-17 | not | Not for us.`),
+		];
 		const read = parseReflections(lines.join("\n"));
-		expect(read).toHaveLength(200);
-		expect(read[0]?.id).toBe("kit-50");
+		expect(read).toHaveLength(251);
+		expect(newestReflections(read).get("bank-kit")?.decision).toBe("use");
+		expect(
+			pendingPlatformUpdates(FIXTURE_UPDATES, newestReflections(read), "2026-11-01", "2026-11-20").map(
+				(update) => update.id,
+			),
+		).toEqual(["short-plans", "gpt-7"]);
 	});
 
 	it("writes one canonical line last and keeps every other line as written, and reads it back", () => {
@@ -155,7 +168,25 @@ describe("pending updates", () => {
 			"gpt-7",
 		]);
 		expect(ids(pendingPlatformUpdates(FIXTURE_UPDATES, new Map(), "2026-09-01", "2026-11-20"))[0]).toBe("old-kit");
+	});
+
+	it("count an update dated at most 30 days before the company was made, which its PR's day may be", () => {
+		const dated = (date: string): PlatformUpdate => ({
+			id: "kit",
+			kind: "capability",
+			date,
+			title: "Kit",
+			text: "Kit.",
+		});
+		const pending = (date: string) =>
+			ids(pendingPlatformUpdates([dated(date)], new Map(), "2026-12-10", "2026-12-20"));
+		expect(UPDATE_MARGIN_DAYS).toBe(30);
+		expect(pending("2026-11-11")).toEqual(["kit"]);
+		expect(pending("2026-11-10")).toEqual(["kit"]);
+		expect(pending("2026-11-09")).toEqual([]);
+		expect(pending("2026-12-10")).toEqual(["kit"]);
 		expect(ids(pendingPlatformUpdates(FIXTURE_UPDATES, new Map(), "2026-11-11", "2026-11-20"))).toEqual([
+			"bank-kit",
 			"short-plans",
 			"gpt-7",
 		]);
@@ -195,7 +226,7 @@ describe("pending updates", () => {
 			}),
 		);
 		const context = cloudPlatformUpdatesContext(pendingPlatformUpdates(many, new Map(), "2026-11-01", "2026-11-20"));
-		expect(context?.pending.map((update) => update.id)).toEqual([
+		expect(context?.pending?.map((update) => update.id)).toEqual([
 			"kit-0",
 			"kit-1",
 			"kit-2",
@@ -204,7 +235,7 @@ describe("pending updates", () => {
 			"kit-5",
 		]);
 		expect(context?.more).toBe(2);
-		expect(context?.pending[0]).toEqual({
+		expect(context?.pending?.[0]).toEqual({
 			id: "kit-0",
 			kind: "capability",
 			date: "2026-11-10",
@@ -234,7 +265,7 @@ describe("reading the updates for a run", () => {
 			new AbortController().signal,
 			FIXTURE_UPDATES,
 		);
-		expect(read.context?.pending.map((update) => update.id)).toEqual(["old-kit", "short-plans", "gpt-7"]);
+		expect(read.context?.pending?.map((update) => update.id)).toEqual(["old-kit", "short-plans", "gpt-7"]);
 		expect(read.reads.map((entry) => entry.path)).toEqual(["QorperaOS/vision", REFLECTIONS_PATH]);
 		const none = await readCloudPlatformUpdates(
 			f.folder,
@@ -243,6 +274,41 @@ describe("reading the updates for a run", () => {
 			[],
 		);
 		expect(none).toEqual({ context: undefined, reads: [] });
+	});
+
+	it("tells the Co-Founder to shorten a record too large to read, and shows no list it cannot trust", async () => {
+		const big = `${REFLECTIONS_HEADING}\n${"- an own note that a founder wrote by hand into the record\n".repeat(5000)}`;
+		const f = await folderWriterFixture({ folders: ["QorperaOS/vision"], files: { [REFLECTIONS_PATH]: big } });
+		runs.push(f.run);
+		expect(Buffer.byteLength(big)).toBeGreaterThan(REFLECTIONS_READ_MAX_BYTES);
+		const read = await readCloudPlatformUpdates(
+			f.folder,
+			new Date("2026-11-20T08:00:00Z"),
+			new AbortController().signal,
+			FIXTURE_UPDATES,
+		);
+		expect(read.context).toEqual({ problem: REFLECTIONS_PROBLEM });
+		expect(REFLECTIONS_PROBLEM).toBe(
+			"QorperaOS/vision/reflections.md is not a text file of at most 256 KiB, so the updates you have not reflected on cannot be shown: keep only the newest line for each update in it.",
+		);
+		expect(read.reads.map((entry) => entry.path)).toEqual(["QorperaOS/vision", REFLECTIONS_PATH]);
+		const none = await readCloudPlatformUpdates(
+			f.folder,
+			new Date("2026-11-20T08:00:00Z"),
+			new AbortController().signal,
+			[],
+		);
+		expect(none).toEqual({ context: undefined, reads: [] });
+		const handEdited = `${REFLECTIONS_HEADING}\n${"- a note\n".repeat(20000)}- bank-kit | 2026-11-12 | use | Money owner.\n`;
+		expect(Buffer.byteLength(handEdited)).toBeGreaterThan(REFLECTIONS_MAX_BYTES);
+		f.seed(REFLECTIONS_PATH, handEdited);
+		const kept = await readCloudPlatformUpdates(
+			f.folder,
+			new Date("2026-11-20T08:00:00Z"),
+			new AbortController().signal,
+			FIXTURE_UPDATES,
+		);
+		expect(kept.context?.pending?.map((update) => update.id)).toEqual(["old-kit", "short-plans", "gpt-7"]);
 	});
 
 	it("reads no record as none, and fails without a vision folder", async () => {
@@ -430,6 +496,28 @@ describe("record_reflection", () => {
 		}
 		expect(parse({ update: "short-plans", decision: "reviewed" }).decision).toBe("reviewed");
 		expect(parse({ line: "é".repeat(80) }).line).toHaveLength(80);
+	});
+
+	it("refuses a record that would pass 64 KiB, or cannot be read, with advice that keeps every decision", async () => {
+		const near = `${REFLECTIONS_HEADING}\n${"- a note\n".repeat(Math.floor((REFLECTIONS_MAX_BYTES - 40) / 9))}`;
+		const f = await fixture({ [REFLECTIONS_PATH]: near });
+		const refused = (value: Record<string, JsonValue>) =>
+			f.call(value).then(
+				() => null,
+				(thrown: unknown) => thrown,
+			);
+		const full = await refused({ update: "bank-kit", decision: "use", line: "Money owner draws the bank." });
+		expect(full).toBeInstanceOf(CloudToolRefusal);
+		expect((full as Error).message).toBe(
+			"QorperaOS/vision/reflections.md would be larger than 64 KiB: keep only the newest line for each update in it, then call again",
+		);
+		f.seed(REFLECTIONS_PATH, "x".repeat(REFLECTIONS_READ_MAX_BYTES + 1));
+		const unreadable = await refused({ update: "bank-kit", decision: "use", line: "Money owner draws the bank." });
+		expect(unreadable).toBeInstanceOf(CloudToolRefusal);
+		expect((unreadable as Error).message).toBe(
+			"QorperaOS/vision/reflections.md is not a text file of at most 256 KiB: keep only the newest line for each update in it, then call again",
+		);
+		expect(f.commits).toHaveLength(0);
 	});
 
 	it("answers conflict when the record changed since it was read, and writes nothing", async () => {
