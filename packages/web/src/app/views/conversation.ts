@@ -1590,14 +1590,14 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
-	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
 		if (this.#panel) this.#panels.open(agent, { asked: true });
 		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
-		panel?.takeOver();
+		panel?.enterWhenShown();
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
@@ -2986,9 +2986,9 @@ export class ConversationView {
 									: {}),
 								...(takeOver
 									? {
-											takeOver: () => {
+											openComputer: () => {
 												const current = currentAgent();
-												if (current) this.#takeOver(current);
+												if (current) this.#openComputer(current);
 											},
 										}
 									: {}),

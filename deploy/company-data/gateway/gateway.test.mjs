@@ -35,6 +35,7 @@ const LIMITS_HERE = {
 	agentMs: 4_000,
 	agentRows: 20,
 	agentBytes: 2048,
+	changeBytes: 64 * 1024,
 };
 /** The node's private token the run door takes. */
 const RUN_TOKEN = randomBytes(32).toString("base64url");
@@ -84,8 +85,9 @@ const mayRead = (env, userId, path) =>
 /** Data passes the stand-in made, by pass: what it kept, whether it was redeemed, and until when it lasts. */
 const PASSES = new Map();
 /** A run's data pass, as qorpera_run_data_pass makes it: database.toml and the files directly in tables/, queries/ and
- * actions/ of the database named (or of every database) that the run's requester may read. */
-const passFor = (env, userId, database = null, { ms = 60_000 } = {}) => {
+ * actions/ of the database named (or of every database) that the run's requester may read. `allow`: a held step a
+ * member said yes to, which only the platform puts in a pass. */
+const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined } = {}) => {
 	const files = [...FOLDERS[env]]
 		.filter(([path]) => {
 			const at = /^data\/([a-z][a-z0-9_]{0,39})\/(database\.toml|(tables|queries|actions)\/[^/]+)$/.exec(path);
@@ -103,6 +105,8 @@ const passFor = (env, userId, database = null, { ms = 60_000 } = {}) => {
 			requesterUserId: userId,
 			database,
 			files,
+			// The held step a member said yes to, as qorpera_run_data_pass_approved keeps it (20260930764000).
+			...(allow === undefined ? {} : { allow }),
 		},
 		redeemed: false,
 		until: Date.now() + ms,
@@ -251,6 +255,64 @@ create function noop() returns trigger language plpgsql as $f$ begin return null
 	"data/qorpera/database.toml": 'format = "qorpera.database/v1"\n',
 	"data/pg_things/database.toml": 'format = "qorpera.database/v1"\n',
 	"data/qorpera_more/database.toml": 'format = "qorpera.database/v1"\n',
+});
+// A database whose rows members and agents change through named changes (§8).
+put(ENV_A, {
+	"data/desk/database.toml": 'format = "qorpera.database/v1"\nname = "Desk"\n',
+	"data/desk/tables/001-tickets.sql": `create table tickets (
+	id bigint generated always as identity primary key,
+	title text not null check (title <> ''),
+	state text not null default 'open' check (state in ('open', 'done')),
+	opened_by uuid,
+	note text
+);
+insert into tickets (title) select 'Ticket ' || n from generate_series(1, 30) n;
+create table log (id bigint generated always as identity primary key, line text not null);
+insert into log (line) values ('started');
+create table scratch (id int primary key);
+create function close_all() returns bigint language sql as $f$
+	with done as (update tickets set state = 'done' where state = 'open' returning 1) select count(*) from done
+$f$;
+-- What the write login can do only through a function a step made, as that step's owner.
+create function drop_scratch() returns void language plpgsql security definer as $f$ begin drop table scratch; end $f$;
+create function empty_log() returns void language plpgsql security definer as $f$ begin truncate log; end $f$;
+create function forget_note() returns void language plpgsql security definer as $f$ begin alter table tickets drop column note; end $f$;
+-- A function that writes a row, for a delete that carries an insert.
+create function logged(what text) returns boolean language sql as $f$ insert into log (line) values (what) returning true $f$;
+`,
+	"data/desk/queries/open.sql": "-- How many tickets are open.\nselect count(*) as open from tickets where state = 'open';\n",
+	"data/desk/actions/open-ticket.sql": "-- Open a ticket called :title.\ninsert into tickets (title, opened_by) values (:title, :viewer::uuid) returning id, title;\n",
+	"data/desk/actions/close-ticket.sql": "-- Mark ticket :id as done.\nupdate tickets set state = 'done' where id = :id::bigint;\n",
+	"data/desk/actions/remove-ticket.sql": "-- Remove ticket :id for good.\ndelete from tickets where id = :id::bigint;\n",
+	"data/desk/actions/claim.sql": "-- Give ticket :id to :viewer.\nupdate tickets set opened_by = :viewer::uuid where id = :id::bigint;\n",
+	"data/desk/actions/move.sql":
+		"with moved as (delete from tickets where id = :id::bigint returning title) insert into log (line) select 'removed ' || title from moved returning line;\n",
+	"data/desk/actions/close-all.sql": "select close_all() as closed;\n",
+	"data/desk/actions/open-many.sql": "insert into tickets (title) select 'Bulk ' || n from generate_series(1, :n::int) n returning id;\n",
+	"data/desk/actions/note-all.sql": "update tickets set note = repeat('x', :size::int) returning note;\n",
+	"data/desk/actions/two.sql": "insert into log (line) values ('a'); insert into log (line) values ('b');\n",
+	"data/desk/actions/setting.sql": "set statement_timeout = 0;\n",
+	"data/desk/actions/block.sql": "do $d$ begin insert into log (line) values ('from a block'); end $d$;\n",
+	"data/desk/actions/truncate.sql": "truncate log;\n",
+	"data/desk/actions/drop.sql": "drop table scratch;\n",
+	"data/desk/actions/make.sql": "create table more (id int);\n",
+	"data/desk/actions/drop-through.sql": "select drop_scratch();\n",
+	"data/desk/actions/empty-through.sql": "select empty_log();\n",
+	"data/desk/actions/column-through.sql": "select forget_note();\n",
+	"data/desk/actions/slow.sql": "select pg_sleep(3) as waited;\n",
+	// Deletes that also write: a `with` part, a function a step made, a large object. And a merge that only deletes.
+	"data/desk/actions/sneak.sql": "with added as (insert into log (line) values ('sneaked') returning 1) delete from tickets where id = -1;\n",
+	"data/desk/actions/remove-logged.sql": "delete from tickets where id = :id::bigint returning logged('removed ' || id) as logged;\n",
+	"data/desk/actions/blob.sql": "delete from tickets where id = :id::bigint and lo_from_bytea(0, 'x'::bytea) > 0;\n",
+	"data/desk/actions/merge-remove.sql": "merge into tickets t using (select :id::bigint as id) s on t.id = s.id when matched then delete;\n",
+	// What a change could leave on its session for the next one: a setting and a session's advisory lock.
+	"data/desk/actions/stick.sql":
+		"select set_config('default_transaction_read_only', 'on', false) as read_only, set_config('search_path', 'pg_catalog', false) as path, pg_advisory_lock(42) is not null as locked;\n",
+	"data/desk/actions/reach.sql": "insert into shop.orders (customer, amount) values ('x', 1);\n",
+	"data/desk/actions/records.sql": "delete from qorpera_data.steps;\n",
+	"data/hr/actions/raise.sql": "-- Raise :name by :by a month.\nupdate salaries set monthly = monthly + :by::numeric where name = :name returning monthly;\n",
+	"data/unmade/database.toml": 'format = "qorpera.database/v1"\n',
+	"data/unmade/actions/add.sql": "insert into things (id) values (1);\n",
 });
 // Company B has a database of the same name, with the same tables.
 // Company C is made by a gateway that fails once while it makes the company's database.
@@ -986,7 +1048,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 	});
 
 	// ---- the HTTP side
-	it("answers only POST on its four calls, and refuses a body over its limit", async () => {
+	it("answers only POST on its calls, and refuses a body over its limit", async () => {
 		assert.equal((await send({ method: "GET", path: `/v1/company-data/${ENV_A}/query`, bearer: viewer })).status, 405);
 		assert.equal((await send({ path: `/v1/company-data/${ENV_A}/drop`, bearer: viewer, text: "{}" })).status, 404);
 		assert.equal((await send({ path: "/elsewhere", bearer: viewer, text: "{}" })).status, 404);
@@ -1321,6 +1383,8 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			"data/shop/queries/slow-mark.sql": `select pg_sleep(1) as waited, '${marker}-slow' as m;\n`,
 			"data/shop/queries/fast-mark.sql": `select '${marker}-fast' as m;\n`,
 			"data/shop/tables/006-try.sql": `insert into orders (customer, amount) values ('${marker}-row', -5);\n`,
+			"data/shop/actions/note.sql": "update orders set note = :v where id = :id::bigint returning note;\n",
+			"data/shop/actions/bad-row.sql": `insert into orders (customer, amount) values ('${marker}-change-row', :amount::numeric);\n`,
 		});
 		const cast = await ask(viewer, "query", { database: "shop", question: "cast", params: { v: `${marker}-cast` } });
 		assert.equal(cast.status, 400);
@@ -1349,12 +1413,326 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			await first.end().catch(() => undefined);
 			await second.end().catch(() => undefined);
 		}
+		// A change's values, what it gives back, and its error with the row that failed. (After the two logins above:
+		// the write login holds two connections, and the gateway keeps the ones a change used for a few seconds.)
+		const noted = await ask(viewer, "change", { database: "shop", change: "note", params: { v: `${marker}-change`, id: 1 } });
+		assert.deepEqual([noted.status, noted.value.rows], [200, [[`${marker}-change`]]], JSON.stringify(noted.value));
+		assert.equal((await ask(viewer, "change", { database: "shop", change: "note", params: { v: null, id: 1 } })).status, 200);
+		const badRow = await ask(viewer, "change", { database: "shop", change: "bad-row", params: { amount: -5 } });
+		assert.equal(badRow.status, 400, JSON.stringify(badRow.value));
+		assert.match(badRow.value.error, /orders_amount_check/, "the caller hears the error");
 		const logs = spawnSync("docker", ["logs", container], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 		const all = `${logs.stdout}${logs.stderr}`;
 		// The server does log: the test's own statements in another database are there. And the stubborn function's
 		// marker, which the watcher's termination would have quoted as context, is not.
 		assert.match(all, /statement: /);
 		assert.equal(all.includes(marker), false, all.split("\n").filter((line) => line.includes(marker)).slice(0, 5).join("\n"));
+	});
+
+	// ---- named changes (§8): a member's change, run as the database folder's write login
+	const desk = async (text) => (await asAdmin(companyDatabase(ENV_A), text))[0];
+	const change = (bearer, name, params = {}, more = {}) => ask(bearer, "change", { database: "desk", change: name, params, ...more });
+	/** A folder's write login holds two connections, and a gateway keeps the ones its changes used for a few seconds.
+	 * Before a second gateway runs changes here, the first has given them back. (One gateway runs on a store.) */
+	const writersGone = async () => {
+		const writers = async () =>
+			(await asAdmin("postgres", "select count(*)::int as n from pg_stat_activity where datname = $1 and usename ~ '_w[0-9]+$'", [companyDatabase(ENV_A)]))[0].n;
+		assert.equal(await until(writers, 0, 10_000), 0, "the first gateway still holds the write login's connections");
+	};
+
+	it("runs a named change as the member who asks, and gives back what its statement returns", async () => {
+		assert.equal((await ask(contributor, "apply", { database: "desk" })).value.applied, true);
+		// The gateway asks for the change's text by its hash, as for a question.
+		const first = await call(viewer, "change", { database: "desk", change: "open-ticket", params: { title: "Printer jam" } });
+		assert.deepEqual(first.value.need?.map((wanted) => wanted.path), ["data/desk/actions/open-ticket.sql"]);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, 30, "nothing ran before the text came");
+		// A member who may read the change's file may run it: the viewer.
+		const opened = await change(viewer, "open-ticket", { title: "Printer jam" });
+		assert.equal(opened.status, 200, JSON.stringify(opened.value));
+		const { asOf, ...answer } = opened.value;
+		assert.deepEqual(answer, { changed: 1, columns: ["id", "title"], rows: [[31, "Printer jam"]], more: false });
+		assert.ok(Math.abs(Date.parse(asOf) - Date.now()) < 5_000);
+		assert.deepEqual(await desk("select title, state, opened_by from desk.tickets where id = 31"), { title: "Printer jam", state: "open", opened_by: VIEWER });
+		// A statement that gives nothing back says how many rows it changed, and no rows.
+		const closed = await change(viewer, "close-ticket", { id: 1 });
+		assert.deepEqual([closed.status, closed.value.changed, closed.value.columns, closed.value.rows], [200, 1, undefined, undefined]);
+		assert.equal((await change(viewer, "close-ticket", { id: "2" })).value.changed, 1, "a value is text, a number, true, false or null");
+		assert.equal((await change(viewer, "close-ticket", { id: 9999 })).value.changed, 0);
+		// Deleting rows is the change's own defined act, and runs.
+		const removed = await change(owner, "remove-ticket", { id: 3 });
+		assert.deepEqual([removed.status, removed.value.changed], [200, 1], JSON.stringify(removed.value));
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where id = 3")).n, 0);
+		// One statement may hold several writes as `with` parts.
+		const moved = await change(owner, "move", { id: 4 });
+		assert.deepEqual([moved.value.changed, moved.value.rows], [1, [["removed Ticket 4"]]], JSON.stringify(moved.value));
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where id = 4")).n, 0);
+		// A change is committed, so a record of the rows it deleted would be kept for good: there is none. (A step's
+		// deletes are recorded, which is how it is held; its record is rolled back with it.)
+		assert.equal((await desk("select count(*)::int as n from qorpera_data.step_effects")).n, 0);
+		assert.equal((await desk("select count(*)::int as n from qorpera_data.sealed")).n, (await desk("select count(*)::int as n from qorpera_data.steps")).n, "a seal for each applied step, none for a change");
+		// A select that calls a function a step made: it says what the function gave, and no count of its own.
+		const open = (await desk("select count(*)::int as n from desk.tickets where state = 'open'")).n;
+		const all = await change(owner, "close-all");
+		assert.deepEqual([all.status, all.value.changed, all.value.rows], [200, undefined, [[open]]], JSON.stringify(all.value));
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where state = 'open'")).n, 0);
+	});
+
+	it("fills :viewer itself in a change, and takes exactly the values the change names", async () => {
+		const pretend = await change(owner, "open-ticket", { title: "x", viewer: VIEWER });
+		assert.equal(pretend.status, 400);
+		assert.match(pretend.value.error, /:viewer is filled by Qorpera/);
+		const lacking = await change(owner, "open-ticket");
+		assert.deepEqual([lacking.status, lacking.value.error], [400, "The change takes :title"]);
+		const extra = await change(owner, "open-ticket", { title: "x", other: 1 });
+		assert.deepEqual([extra.status, extra.value.error], [400, "The change takes no :other"]);
+		assert.equal((await change(owner, "open-ticket", { title: ["x"] })).status, 400);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where title = 'x'")).n, 0);
+	});
+
+	it("refuses a change that is not there the same as one a member may not read", async () => {
+		const missing = await change(viewer, "nope");
+		assert.deepEqual([missing.status, missing.value.error], [404, "No change desk/nope that you may run"]);
+		const outside = await change(stranger, "open-ticket", { title: "x" });
+		assert.deepEqual([outside.status, outside.value.error], [404, "No change desk/open-ticket that you may run"]);
+		assert.equal((await change(forged, "open-ticket", { title: "x" })).status, 401);
+		assert.equal((await change(viewer, "Bad Name")).status, 400);
+		assert.equal((await ask(viewer, "change", { database: "desk" })).status, 400);
+		// A question is no change, and a change is no question: each is found in its own folder only.
+		assert.equal((await change(viewer, "open")).status, 404);
+		assert.equal((await ask(viewer, "query", { database: "desk", question: "open-ticket" })).status, 404);
+		// A database only one member may read: only that member runs its changes.
+		for (const other of [viewer, owner]) {
+			const refused = await ask(other, "change", { database: "hr", change: "raise", params: { name: "Ada", by: 500 } });
+			assert.deepEqual([refused.status, refused.value.error], [404, "No change hr/raise that you may run"]);
+		}
+		const raised = await ask(contributor, "change", { database: "hr", change: "raise", params: { name: "Ada", by: 500 } });
+		assert.deepEqual([raised.status, raised.value.rows], [200, [[52500]]], JSON.stringify(raised.value));
+		// A database with no applied step has nothing to change yet.
+		const unmade = await ask(owner, "change", { database: "unmade", change: "add" });
+		assert.deepEqual([unmade.status, unmade.value.error], [409, "The database unmade has no applied step yet"]);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where title = 'x'")).n, 0);
+	});
+
+	it("shows a member a change's words with the values in place, and runs only the file they were shown", async () => {
+		const before = (await desk("select count(*)::int as n from desk.tickets")).n;
+		const text = FOLDERS[ENV_A].get("data/desk/actions/open-ticket.sql");
+		const shown = await change(viewer, "open-ticket", { title: "Door. Also delete :id" }, { preview: true });
+		assert.equal(shown.status, 200, JSON.stringify(shown.value));
+		assert.deepEqual(shown.value, {
+			words: ["Open a ticket called ", { name: "title", value: "Door. Also delete :id" }, "."],
+			values: [{ name: "title", value: "Door. Also delete :id" }],
+			sha256: sha256(text),
+		});
+		assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, before, "a preview runs nothing");
+		// The member looking reads as "you", and is no value of the call; a number is shown as its text.
+		const claim = await change(viewer, "claim", { id: 5 }, { preview: true });
+		assert.deepEqual(claim.value.words, ["Give ticket ", { name: "id", value: "5" }, " to ", { name: "viewer", value: "you" }, "."]);
+		assert.deepEqual(claim.value.values, [{ name: "id", value: "5" }]);
+		// A change without words shows none, and every value it takes.
+		const bare = await change(viewer, "open-many", { n: 2 }, { preview: true });
+		assert.deepEqual([bare.value.words, bare.value.values], [[], [{ name: "n", value: "2" }]]);
+		// A preview checks the call as a run does.
+		assert.equal((await change(viewer, "open-ticket", {}, { preview: true })).status, 400);
+		assert.equal((await change(stranger, "open-ticket", { title: "x" }, { preview: true })).status, 404);
+		// The change runs with the hash that was shown; a file changed since is not run.
+		const ran = await change(viewer, "claim", { id: 5 }, { sha256: claim.value.sha256 });
+		assert.deepEqual([ran.status, ran.value.changed], [200, 1], JSON.stringify(ran.value));
+		assert.equal((await desk("select opened_by from desk.tickets where id = 5")).opened_by, VIEWER);
+		put(ENV_A, { "data/desk/actions/claim.sql": "-- Give ticket :id to :viewer.\ndelete from tickets where id = :id::bigint and :viewer::uuid is not null;\n" });
+		const stale = await change(viewer, "claim", { id: 5 }, { sha256: claim.value.sha256 });
+		assert.deepEqual([stale.status, stale.value.error], [409, "The change's file was changed since it was shown: ask again"]);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where id = 5")).n, 1);
+		assert.equal((await change(viewer, "claim", { id: 5 }, { sha256: "not-a-hash" })).status, 400);
+		assert.equal((await change(viewer, "claim", { id: 5 }, { sha256: 7 })).status, 400);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where id = 5")).n, 1);
+	});
+
+	it("rolls back a change that is not one write of rows, and one that does a step's work", async () => {
+		const state = async () =>
+			JSON.stringify(
+				await desk(`select (select count(*) from desk.tickets) as tickets, (select count(*) from desk.log) as log,
+					to_regclass('desk.scratch') is not null as scratch, to_regclass('desk.more') is not null as more,
+					exists (select 1 from information_schema.columns where table_schema = 'desk' and table_name = 'tickets' and column_name = 'note') as note,
+					(select count(*) from qorpera_data.steps) as steps, (select count(*) from shop.orders) as orders`),
+			);
+		const before = await state();
+		for (const [name, status, words] of [
+			["two", 400, /more than one statement/],
+			["setting", 400, /A change is one insert, update, delete or merge/],
+			["block", 400, /A change is one insert, update, delete or merge/],
+			// What the write login may not do, in PostgreSQL's words.
+			["truncate", 400, /permission denied for table log/],
+			["drop", 400, /must be owner of table scratch/],
+			["make", 400, /permission denied for schema desk/],
+			["reach", 400, /permission denied for schema shop/],
+			["records", 400, /permission denied for table steps/],
+			// What it can do only through a function a step made: a step's work, which waits for a member.
+			["drop-through", 400, /This one also dropped table desk\.scratch, which is a step's work: nothing was changed/],
+			["empty-through", 400, /This one also emptied table desk\.log, which is a step's work: nothing was changed/],
+			["column-through", 400, /This one also dropped table column desk\.tickets\.note, which is a step's work: nothing was changed/],
+		]) {
+			const tried = await change(owner, name);
+			assert.equal(tried.status, status, `${name}: ${JSON.stringify(tried.value)}`);
+			assert.match(tried.value.error, words, name);
+			assert.equal(await state(), before, `${name} changed something`);
+		}
+		// The write login's two connections are whole after every refusal: the next changes run on them.
+		for (let round = 0; round < 3; round++) assert.equal((await change(owner, "close-ticket", { id: 6 })).status, 200);
+	});
+
+	it("stops a change at its time, and one that sends back more than a change may, with nothing changed", async () => {
+		await writersGone();
+		await withGateway({ limits: { ...LIMITS_HERE, changeMs: 500 } }, async () => {
+			const began = Date.now();
+			const slow = await change(owner, "slow");
+			assert.deepEqual([slow.status, slow.value.error], [408, "The statement ran past its time limit"]);
+			assert.ok(Date.now() - began < 2_500, `${Date.now() - began} ms`);
+		});
+		// 5,000 bytes a row over every ticket is past the 64 KiB a change may send back here: it is stopped under the
+		// statement, which was never committed.
+		const tickets = (await desk("select count(*)::int as n from desk.tickets")).n;
+		assert.ok(tickets * 5_000 > LIMITS_HERE.changeBytes);
+		const flood = await change(owner, "note-all", { size: 5_000 });
+		assert.equal(flood.status, 400, JSON.stringify(flood.value).slice(0, 300));
+		assert.equal(flood.value.error, "The change gives back more than 65536 bytes, so it was stopped and nothing was changed: give back less, such as only an id");
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where note is not null")).n, 0);
+		// The connection that was closed is not used again, and the next change runs.
+		assert.equal((await change(owner, "close-ticket", { id: 7 })).status, 200);
+		// What fits is run whole, and the rows it gives back are cut at an answer's rows and bytes, with more: true.
+		const many = await change(owner, "open-many", { n: LIMITS_HERE.questionRows + 10 });
+		assert.deepEqual([many.status, many.value.changed, many.value.rows.length, many.value.more], [200, LIMITS_HERE.questionRows + 10, LIMITS_HERE.questionRows, true]);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, tickets + LIMITS_HERE.questionRows + 10);
+		const wide = await change(owner, "note-all", { size: 300 });
+		assert.equal(wide.status, 200, JSON.stringify(wide.value).slice(0, 300));
+		assert.equal(wide.value.changed, tickets + LIMITS_HERE.questionRows + 10);
+		assert.ok(JSON.stringify(wide.value.rows).length <= LIMITS_HERE.questionBytes, `${JSON.stringify(wide.value.rows).length}`);
+		assert.ok(wide.value.rows.length > 0);
+		assert.equal(wide.value.more, true);
+		assert.equal((await desk("select count(*)::int as n from desk.tickets where note = repeat('x', 300)")).n, tickets + LIMITS_HERE.questionRows + 10);
+	});
+
+	it("keeps nothing of a change on its connection for the next one", async () => {
+		// Two at once, so each of the write login's two connections runs one: each sets its session read only, moves
+		// its search path and takes a session's advisory lock, and is committed.
+		const stuck = await Promise.all([change(owner, "stick"), change(owner, "stick")]);
+		assert.deepEqual(stuck.map((answer) => [answer.status, answer.value.rows]), [
+			[200, [["on", "pg_catalog", true]]],
+			[200, [["on", "pg_catalog", true]]],
+		]);
+		// The next changes write, find their tables, and take the same lock, on both connections.
+		const next = await Promise.all([
+			change(owner, "close-ticket", { id: 10 }),
+			change(owner, "close-ticket", { id: 11 }),
+			change(owner, "stick"),
+			change(owner, "open-ticket", { title: "After" }),
+		]);
+		assert.deepEqual(next.map((answer) => answer.status), [200, 200, 200, 200], JSON.stringify(next.map((answer) => answer.value)));
+		const locks = await asAdmin(companyDatabase(ENV_A), "select count(*)::int as n from pg_locks where locktype = 'advisory'");
+		assert.equal(locks[0].n, 0);
+	});
+
+	it("brings a store made before named changes to the template's delete record, with store/update.sql", async () => {
+		const database = companyDatabase(ENV_A);
+		const source = async (where) => (await asAdmin(where, "select prosrc from pg_proc where oid = 'qorpera_data.rows_gone()'::regprocedure"))[0].prosrc;
+		const made = await source("qorpera_company_template");
+		assert.equal(await source(database), made);
+		// The function as stores made before 14 November 2026 have it: every session's deleted rows are recorded.
+		await asAdmin(
+			database,
+			`create or replace function qorpera_data.rows_gone() returns trigger language plpgsql security definer set search_path = '' as $f$
+			declare v_rows bigint;
+			begin
+				if tg_op = 'TRUNCATE' then
+					if exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+						raise exception 'A step may not destroy data after it was checked: % was emptied', tg_table_schema || '.' || tg_table_name;
+					end if;
+					insert into qorpera_data.step_effects (kind, object) values ('emptied table', tg_table_schema || '.' || tg_table_name);
+				else
+					select count(*) into v_rows from gone;
+					if v_rows > 0 and exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
+						raise exception 'A step may not destroy data after it was checked: rows of % were deleted', tg_table_schema || '.' || tg_table_name;
+					end if;
+					if v_rows > 0 then
+						insert into qorpera_data.step_effects (kind, object, rows)
+						values ('deleted rows', tg_table_schema || '.' || tg_table_name, v_rows);
+					end if;
+				end if;
+				return null;
+			end $f$`,
+		);
+		assert.notEqual(await source(database), made);
+		const records = async () => (await desk("select count(*)::int as n from qorpera_data.step_effects")).n;
+		assert.equal((await change(owner, "remove-ticket", { id: 12 })).value.changed, 1);
+		assert.equal(await records(), 1, "the earlier store kept a record of a change's deleted rows");
+		// The update, twice: the function is the template's, and what was kept so far is gone.
+		psql(database, "update.sql");
+		psql(database, "update.sql");
+		psql("qorpera_company_template", "update.sql");
+		assert.equal(await source(database), made);
+		assert.equal(await source("qorpera_company_template"), made);
+		assert.equal(await records(), 0);
+		assert.equal((await change(owner, "remove-ticket", { id: 13 })).value.changed, 1);
+		assert.equal(await records(), 0);
+		// A step that deletes rows is still held, with their count.
+		put(ENV_A, { "data/desk/tables/002-trim.sql": "delete from log where id = 1;\n" });
+		const held = await ask(owner, "apply", { database: "desk" });
+		assert.deepEqual(states(held), ["001-tickets already", "002-trim held"], JSON.stringify(held.value));
+		assert.deepEqual(held.value.results.at(-1).destroys, [{ what: "deleted rows", object: "desk.log", rows: 1 }]);
+		remove(ENV_A, "data/desk/tables/002-trim.sql");
+		assert.equal(await records(), 0);
+	});
+
+	it("tells an open page when a change ran", async () => {
+		await asAdmin(companyDatabase(ENV_A), "update desk.tickets set state = 'open' where id = 8");
+		const current = (await ask(viewer, "query", { database: "desk", question: "open" })).value;
+		const waiting = call(viewer, "watch", { watches: [{ database: "desk", question: "open", etag: current.etag }], wait: 3 });
+		assert.equal(await until(listening, 1), 1);
+		const opened = await change(owner, "open-ticket", { title: "Live" });
+		assert.equal(opened.status, 200, JSON.stringify(opened.value));
+		const answer = await waiting;
+		assert.equal(answer.value.changed?.[0]?.answer.rows[0][0], current.rows[0][0] + 1, JSON.stringify(answer.value));
+		assert.equal(await until(listening, 0), 0);
+	});
+
+	it("runs only a change that deletes rows while a company's database is at its size limit", async () => {
+		await writersGone();
+		await withGateway({ limits: { ...LIMITS_HERE, companyBytes: 1024 ** 2 } }, async (other) => {
+			assert.equal((await change(owner, "open-ticket", { title: "Before the watcher looked" })).status, 200);
+			assert.ok((await other.watchOnce()).full.includes(companyDatabase(ENV_A)));
+			const tickets = (await desk("select count(*)::int as n from desk.tickets")).n;
+			const state = async () =>
+				JSON.stringify(
+					await desk(`select (select count(*) from desk.tickets) as tickets, (select count(*) from desk.log) as log,
+						(select count(*) from pg_largeobject_metadata) as blobs`),
+				);
+			const before = await state();
+			const full = "This company's database is at its size limit of 1 MiB: only a change that deletes rows and writes none runs until there is room";
+			const refused = await change(owner, "open-ticket", { title: "No room" });
+			assert.deepEqual([refused.status, refused.value.error], [507, full]);
+			// It is what the transaction wrote that counts, not the statement's word: an update, an insert that carries a
+			// delete, and a delete that carries an insert in a `with` part, in a function a step made, or in a large object.
+			for (const [name, params] of [
+				["close-ticket", { id: 9 }],
+				["move", { id: 9 }],
+				["sneak", {}],
+				["remove-logged", { id: 9 }],
+				["blob", { id: 9 }],
+			]) {
+				const tried = await change(owner, name, params);
+				assert.deepEqual([tried.status, tried.value.error], [507, full], `${name}: ${JSON.stringify(tried.value)}`);
+				assert.equal(await state(), before, `${name} wrote something`);
+			}
+			// What only deletes runs, whatever its word: a delete, and a merge that deletes.
+			const removed = await change(owner, "remove-ticket", { id: 9 });
+			assert.deepEqual([removed.status, removed.value.changed], [200, 1], JSON.stringify(removed.value));
+			const merged = await change(owner, "merge-remove", { id: 14 });
+			assert.deepEqual([merged.status, merged.value.changed], [200, 1], JSON.stringify(merged.value));
+			assert.equal((await desk("select count(*)::int as n from desk.tickets")).n, tickets - 2);
+		});
+		// With room (the first gateway's limit is its own), a delete that carries an insert runs: both land.
+		const logged = await change(owner, "remove-logged", { id: 15 });
+		assert.deepEqual([logged.status, logged.value.changed, logged.value.rows], [200, 1, [[true]]], JSON.stringify(logged.value));
+		assert.deepEqual(await desk("select count(*)::int as n from desk.log where line = 'removed 15'"), { n: 1 });
 	});
 
 	// ---- the run door (SLICE5): an agent's run, through the node's private token and a data pass
@@ -1447,6 +1825,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 						{ name: "mine", words: "The items a member owns.", parameters: ["viewer"] },
 						{ name: "named", words: "One item by its id.", parameters: ["id"] },
 					],
+					changes: [],
 				},
 			],
 			companyBytes: 0,
@@ -1581,5 +1960,178 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			assert.equal(second.value.more, undefined);
 			assert.equal(second.value.applied, true);
 		});
+	});
+
+	it("runs a run's named change with the pass's files, an agent's rows and bytes, and describes the changes a database has", async () => {
+		put(ENV_D, {
+			"data/stock/actions/add-item.sql": "-- Add item :id called :name.\ninsert into items (id, name, owner) values (:id::int, :name, :viewer::uuid) returning id, owner;\n",
+			"data/stock/actions/shout.sql": "update items set name = upper(name) returning id, name;\n",
+			"data/stock/actions/broken.sql": "update items set name = 'a'; update items set name = 'b';\n",
+			"data/diary/actions/add-day.sql": "insert into days values (:day::date);\n",
+		});
+		// The pass kept the change's file: the gateway asks for its text by that hash.
+		const first = await runSend("change", { database: "stock", change: "add-item", params: { id: 500, name: "Lamp" }, pass: passFor(ENV_D, OWNER, "stock") });
+		assert.deepEqual(first.value.need?.map((wanted) => wanted.path), ["data/stock/actions/add-item.sql"]);
+		// A describe asks for the texts of a database's changes with its questions', and lists them with their words.
+		const asked = await runSend("describe", { database: "stock", pass: passFor(ENV_D, OWNER, "stock") });
+		assert.deepEqual(asked.value.need?.map((wanted) => wanted.path).sort(), [
+			"data/stock/actions/add-item.sql",
+			"data/stock/actions/broken.sql",
+			"data/stock/actions/shout.sql",
+		]);
+		const described = await runAsk("describe", { database: "stock" });
+		assert.equal(described.status, 200, JSON.stringify(described.value));
+		assert.deepEqual(described.value.databases[0].changes, [
+			{ name: "add-item", words: "Add item :id called :name.", parameters: ["id", "name", "viewer"] },
+			{ name: "broken", words: "", parameters: null, problem: "The file holds more than one statement: write one" },
+			{ name: "shout", words: "", parameters: [] },
+		]);
+		assert.ok(described.value.databases[0].questions.some((question) => question.name === "count"));
+		const added = await runAsk("change", { database: "stock", change: "add-item", params: { id: 500, name: "Lamp" } });
+		assert.equal(added.status, 200, JSON.stringify(added.value));
+		// :viewer is the member who asked the run, unless the run names one.
+		assert.deepEqual([added.value.changed, added.value.rows], [1, [[500, OWNER]]]);
+		const forOther = await runAsk("change", { database: "stock", change: "add-item", params: { id: 501, name: "Desk", viewer: VIEWER } });
+		assert.deepEqual(forOther.value.rows, [[501, VIEWER]], JSON.stringify(forOther.value));
+		assert.equal((await runAsk("change", { database: "stock", change: "add-item", params: { id: 502, name: "x", viewer: "nobody" } })).status, 400);
+		assert.equal((await runAsk("change", { database: "stock", change: "add-item", params: { id: 500, name: "Twice" } })).status, 400, "PostgreSQL's own refusal: the id is taken");
+		// What it gives back is cut at an agent's rows; the change ran whole.
+		const items = (await asAdmin(companyDatabase(ENV_D), "select count(*)::int as n from stock.items"))[0].n;
+		const shouted = await runAsk("change", { database: "stock", change: "shout" });
+		assert.deepEqual([shouted.status, shouted.value.changed, shouted.value.rows.length, shouted.value.more], [200, items, LIMITS_HERE.agentRows, true], JSON.stringify(shouted.value).slice(0, 300));
+		assert.equal((await asAdmin(companyDatabase(ENV_D), "select count(*)::int as n from stock.items where name = upper(name)"))[0].n, items);
+		// A pass opens only what it kept: another database's change, one that is not there, another company's.
+		assert.equal((await runSend("change", { database: "diary", change: "add-day", params: { day: "2026-11-14" }, pass: passFor(ENV_D, OWNER, "stock") })).status, 404);
+		assert.equal((await runAsk("change", { database: "diary", change: "add-day", params: { day: "2026-11-14" } })).status, 404, "the diary is another member's");
+		assert.equal((await runAsk("change", { database: "stock", change: "nope" })).status, 404);
+		assert.equal((await runAsk("change", { database: "stock", change: "broken" })).status, 400);
+		assert.equal((await runSend("change", { database: "desk", change: "open-ticket", params: { title: "x" }, pass: passFor(ENV_D, OWNER) })).status, 404);
+		assert.deepEqual(await runSend("change", { database: "stock", change: "shout" }), { status: 401, value: { error: "Not allowed" } }, "no pass");
+		// The viewer, whose database the diary is, runs its change.
+		const day = await runAsk("change", { database: "diary", change: "add-day", params: { day: "2026-11-14" } }, { user: VIEWER });
+		assert.equal(day.status, 409, "the diary has no applied step yet");
+		assert.equal((await runAsk("apply", { database: "diary" }, { user: VIEWER })).value.applied, true);
+		const made = await runAsk("change", { database: "diary", change: "add-day", params: { day: "2026-11-14" } }, { user: VIEWER });
+		assert.deepEqual([made.status, made.value.changed], [200, 1], JSON.stringify(made.value));
+	});
+
+	it("applies a held step only for a run whose pass carries a member's yes to that step, its text and what it destroys", async () => {
+		const stock = async (text) => (await asAdmin(companyDatabase(ENV_D), text))[0];
+		const state = async () =>
+			JSON.stringify(
+				await stock(`select (select count(*) from stock.items) as items,
+					exists (select 1 from information_schema.columns where table_schema = 'stock' and table_name = 'items' and column_name = 'owner') as owner`),
+			);
+		const text = "delete from items where id > 90;\nalter table items drop column owner;\n";
+		put(ENV_D, { "data/stock/tables/002-clear.sql": text });
+		const gone = (await stock("select count(*)::int as n from stock.items where id > 90")).n;
+		assert.ok(gone > 0);
+		const before = await state();
+		const destroys = [
+			{ what: "deleted rows", object: "stock.items", rows: gone },
+			{ what: "dropped table column", object: "stock.items.owner" },
+		];
+		// Held, with what it would destroy and what a yes is for: the step, its text's hash, the hash of what it destroys.
+		const held = await runAsk("apply", { database: "stock" });
+		assert.deepEqual(states(held), ["001-items already", "002-clear held"]);
+		const { allow, ...rest } = held.value.results.at(-1);
+		assert.deepEqual(rest, { name: "002-clear", state: "held", detail: "It would destroy data, which waits for a member", destroys });
+		assert.match(allow, new RegExp(`^002-clear\\.${sha256(text)}\\.[0-9a-f]{64}$`));
+		const otherDestroys = allow.replace(/[0-9a-f]{64}$/, "0".repeat(64));
+		const otherText = `002-clear.${"0".repeat(64)}.${allow.slice(-64)}`;
+		// A check runs the step, keeps nothing, and says what the card shows.
+		const checked = await runAsk("apply", { database: "stock", check: allow });
+		assert.deepEqual([checked.status, checked.value], [200, { step: "002-clear", destroys }], JSON.stringify(checked.value));
+		assert.equal(await state(), before, "a check keeps nothing");
+		for (const [check, status, words] of [
+			["002-clear", 400, /check is a held step's allow/],
+			[7, 400, /check is a held step's allow/],
+			[`003-nope.${sha256(text)}.${"0".repeat(64)}`, 404, /No step 003-nope/],
+			[`001-items.${sha256(STOCK)}.${"0".repeat(64)}`, 409, /Step 001-items is applied already/],
+			[otherText, 409, /Step 002-clear was changed since it was held/],
+			[otherDestroys, 409, /What step 002-clear would destroy changed since it was held/],
+		]) {
+			const refused = await runAsk("apply", { database: "stock", check });
+			assert.equal(refused.status, status, `${check}: ${JSON.stringify(refused.value)}`);
+			assert.match(refused.value.error, words);
+		}
+		// No yes: a run's own word for it, a member's own apply, a pass that carries a yes to something else.
+		const pass = (allowed) => passFor(ENV_D, OWNER, "stock", { allow: allowed });
+		for (const [who, answer] of [
+			["a run that names the allow itself", await runAsk("apply", { database: "stock", allow })],
+			["a member on the members' door", await ask(owner, "apply", { database: "stock", allow }, ENV_D)],
+			["a yes to other rows", await runSend("apply", { database: "stock", pass: pass(otherDestroys) })],
+			["a yes to another text", await runSend("apply", { database: "stock", pass: pass(otherText) })],
+			["a yes to another step", await runSend("apply", { database: "stock", pass: pass(`003-clear.${allow.slice(10)}`) })],
+		]) {
+			assert.deepEqual(states(answer), ["001-items already", "002-clear held"], `${who}: ${JSON.stringify(answer.value)}`);
+			assert.equal(answer.value.results.at(-1).allow, allow, who);
+			assert.equal(await state(), before, who);
+		}
+		assert.equal(
+			(await runSend("apply", { database: "stock", pass: pass(otherDestroys) })).value.results.at(-1).detail,
+			"It would destroy data, and not what a member said yes to: it waits for a new yes",
+		);
+		// A row more to delete than the member was shown: the yes is not for that.
+		await asAdmin(companyDatabase(ENV_D), "insert into stock.items (id, name) values (600, 'late')");
+		const moved = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.deepEqual(states(moved), ["001-items already", "002-clear held"]);
+		assert.notEqual(moved.value.results.at(-1).allow, allow);
+		assert.equal(moved.value.results.at(-1).destroys[0].rows, gone + 1);
+		assert.equal((await runAsk("apply", { database: "stock", check: allow })).status, 409);
+		await asAdmin(companyDatabase(ENV_D), "delete from stock.items where id = 600");
+		assert.equal(await state(), before);
+		// A pass that is not a pass: its allow is no held step's.
+		assert.equal((await runSend("apply", { database: "stock", pass: pass("yes") })).status, 503);
+		// The yes: the step is applied, and says what it destroyed.
+		const applied = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.equal(applied.status, 200, JSON.stringify(applied.value));
+		assert.deepEqual(states(applied), ["001-items already", "002-clear applied"]);
+		assert.deepEqual(applied.value.results.at(-1), { name: "002-clear", state: "applied", destroyed: destroys });
+		assert.equal(applied.value.applied, true);
+		assert.deepEqual(await stock("select count(*)::int as n from stock.items where id > 90"), { n: 0 });
+		assert.equal(JSON.parse(await state()).owner, false);
+		const described = await runAsk("describe", { database: "stock" });
+		assert.deepEqual(described.value.databases[0].steps.applied.map((step) => step.name), ["001-items", "002-clear"]);
+		// The same yes again finds the step applied: nothing more is destroyed.
+		const again = await runSend("apply", { database: "stock", pass: pass(allow) });
+		assert.deepEqual(states(again), ["001-items already", "002-clear already"]);
+		assert.equal((await runAsk("apply", { database: "stock", check: allow })).status, 409);
+	});
+
+	it("checks only the held step that is next to apply, and says when it fails or destroys nothing", async () => {
+		const drop = "drop table b;\n";
+		put(ENV_D, {
+			"data/yard/database.toml": 'format = "qorpera.database/v1"\n',
+			"data/yard/tables/001-make.sql": "create table a (id int primary key);\ninsert into a values (1), (2), (3);\ncreate table b (id int);\n",
+			"data/yard/tables/002-more.sql": "insert into a values (4);\n",
+			"data/yard/tables/003-drop.sql": drop,
+		});
+		const first = await runAsk("apply", { database: "yard" });
+		assert.deepEqual(states(first), ["001-make applied", "002-more applied", "003-drop held"]);
+		const allow = first.value.results.at(-1).allow;
+		assert.deepEqual(first.value.results.at(-1).destroys, [{ what: "dropped table", object: "yard.b" }]);
+		// A step after the held one waits behind it, whatever it does: its check is refused, and so is its apply.
+		const later = "insert into a values (5);\n";
+		put(ENV_D, { "data/yard/tables/004-later.sql": later });
+		const behind = await runAsk("apply", { database: "yard", check: `004-later.${sha256(later)}.${"0".repeat(64)}` });
+		assert.deepEqual([behind.status, behind.value.error], [409, "Step 003-drop waits before 004-later: apply the steps before it first"]);
+		assert.deepEqual(states(await runAsk("apply", { database: "yard" })), ["001-make already", "002-more already", "003-drop held"]);
+		// The held step's file changed to one that fails, and to one that destroys nothing.
+		put(ENV_D, { "data/yard/tables/003-drop.sql": "drop table nope;\n" });
+		const fails = await runAsk("apply", { database: "yard", check: `003-drop.${sha256("drop table nope;\n")}.${"0".repeat(64)}` });
+		assert.equal(fails.status, 400, JSON.stringify(fails.value));
+		assert.match(fails.value.error, /^Step 003-drop fails: table "nope" does not exist/);
+		put(ENV_D, { "data/yard/tables/003-drop.sql": "insert into a values (6);\n" });
+		const harmless = await runAsk("apply", { database: "yard", check: `003-drop.${sha256("insert into a values (6);\n")}.${"0".repeat(64)}` });
+		assert.deepEqual([harmless.status, harmless.value.error], [409, "Step 003-drop destroys nothing now: apply it without allow"]);
+		assert.deepEqual((await asAdmin(companyDatabase(ENV_D), "select count(*)::int as n from yard.a"))[0], { n: 4 }, "a check keeps nothing");
+		// The yes that was given is for the text that dropped the table: the step as it is now needs none, and applies.
+		put(ENV_D, { "data/yard/tables/003-drop.sql": drop });
+		const yes = await runSend("apply", { database: "yard", pass: passFor(ENV_D, OWNER, "yard", { allow }) });
+		assert.deepEqual(states(yes), ["001-make already", "002-more already", "003-drop applied", "004-later applied"], JSON.stringify(yes.value));
+		assert.deepEqual(yes.value.results[2].destroyed, [{ what: "dropped table", object: "yard.b" }]);
+		assert.equal(yes.value.results[3].destroyed, undefined);
+		assert.deepEqual((await asAdmin(companyDatabase(ENV_D), "select to_regclass('yard.b') is null as gone, (select count(*)::int from yard.a) as a"))[0], { gone: true, a: 5 });
 	});
 });
