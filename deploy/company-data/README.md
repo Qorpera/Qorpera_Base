@@ -82,8 +82,9 @@ others: at each look the lines of the writes this gateway began that it has not 
 removed too. A line whose write is still running is kept. A dry run of a held step (`check`) writes no line. The same
 hourly look lets a line go with its rows' lines: once no line of the record has its txid or an older one, the actor's
 line of a write that has ended (its transaction is seen as over by the look itself) goes too. So the actor's lines
-kept are those no older than the record's oldest line; the record drops its oldest lines past its 100 MiB, and until a
-company's record is that large, every line stays, also one of a write that changed no rows.
+kept are those no older than the record's oldest line: a write older than the record's first line, or any ended write
+while the record is empty, loses its line at that look, and a write that changed no rows keeps its line only while an
+older line of the record is kept.
 
 ## The gateway
 
