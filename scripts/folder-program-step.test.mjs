@@ -173,7 +173,6 @@ test("the tests run beside the release build, its check and the program against 
 	assert.equal(call(ran.calls, "check").at(-1), "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder");
 	const e2e = call(ran.calls, "e2e");
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
-	// The mount and git runs, and the `data` command against the service (company databases 8a).
 	assert.equal(
 		e2e.at(-1),
 		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts",

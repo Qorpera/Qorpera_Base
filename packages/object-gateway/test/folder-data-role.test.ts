@@ -39,10 +39,6 @@ import {
 	v,
 } from "./folder-service-fixtures.ts";
 
-/** The `data` role (company databases, slice 8a: deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a): a company
- * machine's `data` command calls the company's databases through the folder service, as the view the service serves
- * that machine. The service asks the core for a data pass as the view, sends the call with it to the data gateway's
- * run door, and records the files the answer can show as reads served under the view, before the answer leaves. */
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -61,7 +57,6 @@ const receiptOf = (path: string): CoreReceipt => ({
 	grantRevision: null,
 });
 
-/** A run door in memory: every call it got, answered by `answer` (200 and `{ok: true}` unless set). */
 class FakeDoor implements DataDoor {
 	readonly calls: { verb: DataVerb; body: Record<string, unknown>; signal: AbortSignal }[] = [];
 	answer: (verb: DataVerb, body: Record<string, unknown>, signal: AbortSignal) => Promise<DoorAnswer> | DoorAnswer =
@@ -78,7 +73,6 @@ function json(status: number, value: unknown): DoorAnswer {
 	return { status, body: Buffer.from(JSON.stringify(value)) };
 }
 
-/** A call the door holds until `release`, or until its signal ends it. */
 function held(): { answer: FakeDoor["answer"]; release: () => void; reached: Promise<void> } {
 	let release!: () => void;
 	let reach!: () => void;
@@ -101,9 +95,6 @@ function held(): { answer: FakeDoor["answer"]; release: () => void; reached: Pro
 	};
 }
 
-/** A company with two databases (shop: a step, a question, a change, and files a pass leaves out; stock: only its
- * database.toml), a test machine's view, and the node's service with the run door. `mounted`: the machine's folder
- * program holds the view, as on a machine that has `/company`. */
 async function company(options: { now?: () => number; door?: boolean; mounted?: boolean; callMs?: number } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-data-role-"));
 	const core = new FakeCore();
@@ -157,7 +148,6 @@ async function company(options: { now?: () => number; door?: boolean; mounted?: 
 	const view = options.mounted === false ? undefined : await mount();
 	const ask = (handle: DataHandle, verb: DataVerb, body: Record<string, unknown> = {}, signal = never) =>
 		handle.call({ verb, body }, signal);
-	/** The reads the view has released to the core so far, by path, after a boundary of its machine. */
 	const released = async (): Promise<Record<string, { version: string | null; authority: CoreReceipt }>> => {
 		expect(await service.boundary(PLACEMENT)).toMatchObject({ reads: "released" });
 		return Object.fromEntries(
@@ -180,7 +170,6 @@ describe("the data role's protocol", () => {
 		expect(() => hello({ protocol: 4 })).toThrow(/Bad data request/);
 		expect(() => hello({ abandon: true })).toThrow(/Bad data request/);
 		expect(() => hello({ previous: { viewId: v(1), pass: OTHER_PASS } })).toThrow(/Bad data request/);
-		// The mount's roles are at 5 what they are at 4.
 		expect(hello({ role: "io" })).toMatchObject({ protocol: 5, role: "io" });
 		const call = (value: unknown) => parseDataCall(Buffer.from(JSON.stringify(value)));
 		expect(call({ verb: "query", body: { database: "shop", question: "count" } })).toEqual({
@@ -229,8 +218,6 @@ describe("the data role", () => {
 		const { core, service, mount } = await company({ mounted: false });
 		const at = (machine: BridgeInfo["machine"], cid: number): BridgeInfo => ({ cid, lookup: "found", machine });
 		const otherMachine = at({ ...TEST_MACHINE, name: `qorpera-machine-${"f".repeat(32)}` }, 97);
-		// A view no machine has joined is none to act as: not one the service does not hold, and not one it listed for
-		// a machine it then refused.
 		expect(() => service.data(HELLO, AT_TEST)).toThrow(/did not match/);
 		await expect(service.open({ ...HELLO, protocol: 4, role: "io" }, otherMachine)).rejects.toMatchObject({
 			code: "VIEW_REFUSED",
@@ -244,9 +231,7 @@ describe("the data role", () => {
 		expect(() => service.data({ ...HELLO, pass: "no-pass" }, AT_TEST)).toThrow(/did not match/);
 		expect(() => service.data({ ...HELLO, environmentId: v(9) }, AT_TEST)).toThrow(/did not match/);
 		expect(() => service.data({ ...HELLO, viewId: v(8) }, AT_TEST)).toThrow(/did not match/);
-		// LXD could not say which machine called: asked again, never taken for the view's end.
 		expect(() => service.data(HELLO, { cid: 95, lookup: "unavailable" })).toThrow(/could not tell which machine/);
-		// A view the core closed is none; a hello checked before is refused at its next call.
 		const data = service.data(HELLO, AT_TEST);
 		core.views.get(TEST_VIEW)!.state = "closed";
 		await service.renewLeases();
@@ -278,7 +263,6 @@ describe("the data role", () => {
 
 		const without = await company({ door: false });
 		expect(() => without.service.data(HELLO, AT_TEST)).toThrow(/does not reach the company's databases/);
-		// The view's own refusal comes first: a caller that is not the view's machine learns nothing of the node.
 		expect(() => without.service.data({ ...HELLO, pass: OTHER_PASS }, AT_TEST)).toThrow(/did not match/);
 	});
 
@@ -298,14 +282,11 @@ describe("the data role", () => {
 			verb: "query",
 			body: { database: "shop", question: "count", params: { since: "2026" }, pass: core.dataPasses[0]!.pass },
 		});
-		// A describe of every database: a pass that names none. The machine's own `pass` never reaches the door, and
-		// its texts do, as they are.
 		expect(await ask(data, "describe", { pass: "the-machine's-own", texts: { abc: "select 1" } })).toMatchObject({
 			status: 200,
 		});
 		expect(core.dataPasses[1]).toMatchObject({ database: null });
 		expect(door.calls[1]!.body).toEqual({ pass: core.dataPasses[1]!.pass, texts: { abc: "select 1" } });
-		// The gateway's refusal is the answer too, with its words.
 		door.answer = () => json(404, { error: "No question shop/nope that you may read" });
 		expect(await ask(data, "query", { database: "shop", question: "nope" })).toEqual({
 			status: 404,
@@ -316,21 +297,17 @@ describe("the data role", () => {
 	it("records the files an answer can show as the view's reads, released at the machine's next boundary", async () => {
 		const { core, service, ask, released } = await company();
 		const data = service.data(HELLO, AT_TEST);
-		// A question by name: its database's database.toml and the question's file, as the core read them for the pass.
 		await ask(data, "query", { database: "shop", question: "count" });
-		// In memory until a boundary: nothing is released by the call itself.
 		expect(core.releases).toEqual([]);
 		expect(await released()).toEqual({
 			[SHOP_TOML]: readOf(SHOP_TOML, 2),
 			"data/shop/queries/count.sql": readOf("data/shop/queries/count.sql", 4),
 		});
-		// The same call again records nothing new.
 		const before = core.releases.length;
 		await ask(data, "query", { database: "shop", question: "count" });
 		await released();
 		expect(core.releases).toHaveLength(before);
 
-		// A read of the machine's own: the database alone. A change: its file. An apply: every step's file.
 		await ask(data, "query", { database: "stock", sql: "select 1" });
 		expect(Object.keys(await released()).sort()).toEqual([
 			SHOP_TOML,
@@ -343,8 +320,6 @@ describe("the data role", () => {
 		expect(await released()).toMatchObject({
 			"data/shop/tables/001-orders.sql": readOf("data/shop/tables/001-orders.sql", 3),
 		});
-		// A describe: each database's database.toml and its questions' and changes' files, whose words it lists; never
-		// a file a pass leaves out.
 		await ask(data, "describe");
 		expect(Object.keys(await released()).sort()).toEqual([
 			"data/shop/actions/add.sql",
@@ -359,7 +334,6 @@ describe("the data role", () => {
 	it("records a refusal's reads too, and none for a call the gateway never answered", async () => {
 		const { door, service, ask, released } = await company();
 		const data = service.data(HELLO, AT_TEST);
-		// PostgreSQL's words can show a row: a refused change has read what an answered one has.
 		door.answer = () => json(400, { error: 'duplicate key value violates unique constraint "orders_pkey"' });
 		expect(await ask(data, "change", { database: "shop", change: "add" })).toMatchObject({ status: 400 });
 		expect(Object.keys(await released()).sort()).toEqual(["data/shop/actions/add.sql", SHOP_TOML]);
@@ -377,7 +351,6 @@ describe("the data role", () => {
 			expect(await ask(data, "query", body)).toEqual({ status: 400, value: { error: "Name a database" } });
 		expect(await ask(data, "describe", { database: "qorpera_data" })).toMatchObject({ status: 400 });
 		expect(core.dataPasses).toEqual([]);
-		// No such database, and a folder without a database.toml: the same words.
 		for (const database of ["nothing", "empty"])
 			expect(await ask(data, "apply", { database })).toEqual({
 				status: 404,
@@ -414,7 +387,6 @@ describe("the data role", () => {
 			status: 503,
 			value: { error: "The company's databases cannot be reached now: try again" },
 		});
-		// None of them reached the door.
 		expect(door.calls).toEqual([]);
 	});
 
@@ -433,7 +405,6 @@ describe("the data role", () => {
 			status: 504,
 			value: { error: expect.stringMatching(/may still be applying/) },
 		});
-		// A call that only looks wrote nothing.
 		for (const [verb, body] of [
 			["change", { database: "shop", change: "add", preview: true }],
 			["apply", { database: "shop", check: `001-orders.${"a".repeat(64)}.${"b".repeat(64)}` }],
@@ -441,7 +412,6 @@ describe("the data role", () => {
 			["describe", {}],
 		] as const)
 			expect(await ask(data, verb, body)).toMatchObject({ status: 503 });
-		// The gateway's own 5xx is unknown for a write too, but for a full store (507), which wrote nothing.
 		door.answer = () => json(503, { error: "The data store is not answering" });
 		expect(await ask(data, "change", { database: "shop", change: "add" })).toMatchObject({ status: 504 });
 		expect(await ask(data, "query", { database: "shop", question: "count" })).toEqual({
@@ -453,13 +423,11 @@ describe("the data role", () => {
 			status: 507,
 			value: { error: "The company's data is at its limit" },
 		});
-		// The door took neither the node's token nor the pass: nothing of the gateway's 401 goes to the machine.
 		door.answer = () => json(401, { error: "Not allowed" });
 		expect(await ask(data, "query", { database: "shop", question: "count" })).toEqual({
 			status: 503,
 			value: { error: "The company's databases cannot be reached now: try again" },
 		});
-		// Nor an answer that is none: a status no HTTP answer has, or words that are not JSON.
 		door.answer = () => json(0, { rows: [[1]] });
 		expect(await ask(data, "query", { database: "shop", question: "count" })).toEqual({
 			status: 503,
@@ -481,7 +449,6 @@ describe("the data role", () => {
 			ask(i % 2 ? other : data, "query", { database: "shop", sql: "select 1" }),
 		);
 		await slow.reached;
-		// The fifth, on either connection: refused at once, with nothing asked.
 		expect(await ask(other, "describe")).toEqual({
 			status: 429,
 			value: { error: expect.stringMatching(/4 calls to the company's databases running/) },
@@ -490,13 +457,11 @@ describe("the data role", () => {
 		slow.release();
 		for (const answer of await Promise.all(running)) expect(answer).toMatchObject({ status: 200 });
 		door.answer = () => json(200, { ok: true });
-		// 120 in a minute, the four among them; the one refused was no call made.
 		for (let i = 0; i < 116; i++) expect(await ask(data, "describe")).toMatchObject({ status: 200 });
 		expect(await ask(data, "describe")).toEqual({
 			status: 429,
 			value: { error: expect.stringMatching(/120 calls to the company's databases in the last minute/) },
 		});
-		// Until the minute has passed.
 		now += 59_000;
 		expect(await ask(data, "describe")).toMatchObject({ status: 429 });
 		now += 2_000;
@@ -516,7 +481,6 @@ describe("the data role", () => {
 			status: 413,
 			value: { error: "The answer is larger than 1 MiB: name one database" },
 		});
-		// An answer that fits a frame only without the service's own words around it.
 		door.answer = () => json(200, { words: "x".repeat(1024 * 1024 - 14) });
 		expect(await ask(data, "describe")).toMatchObject({ status: 413 });
 		door.answer = () => json(200, { words: "x".repeat(1024 * 1024 - 64) });
@@ -528,7 +492,6 @@ describe("the data role", () => {
 		const data = service.data(HELLO, AT_TEST);
 		const slow = held();
 		door.answer = slow.answer;
-		// An apply has twice as long here (120 s against 30 s on a node): it still waits when the read has ended.
 		const gone = new AbortController();
 		const applying = ask(data, "apply", { database: "shop" }, gone.signal);
 		expect(await ask(data, "query", { database: "shop", sql: "select 1" })).toMatchObject({ status: 503 });
@@ -550,8 +513,6 @@ describe("the data role", () => {
 		expect(await ask(data, "describe")).toMatchObject({ status: 200 });
 		await released();
 		const before = core.releases.length;
-		// The core closes the view while the call is at the door: the answer shows rows no read was recorded for, so
-		// it is not given.
 		const slow = held();
 		door.answer = slow.answer;
 		const asked = ask(data, "query", { database: "stock", sql: "select 1" });
@@ -576,14 +537,12 @@ describe("the data role", () => {
 		expect(await reading).toMatchObject({ status: 503 });
 		expect(await writing).toMatchObject({ status: 504, value: { error: expect.stringMatching(/may or may not/) } });
 		await stopped;
-		// No read was recorded after the stop began: none is left unreleased, and none was released.
 		expect(core.releases).toEqual([]);
 		expect(() => service.data(HELLO, AT_TEST)).toThrow(/stopping/);
 		await expect(ask(data, "describe")).rejects.toMatchObject({ code: "UNAVAILABLE" });
 	});
 });
 
-/** A machine's side of one connection, as the bridge hands it to the service. */
 class Client {
 	readonly #socket: Socket;
 	readonly #reader = new FrameReader();
@@ -626,7 +585,6 @@ class Client {
 		this.#socket.destroy();
 	}
 
-	/** The next frame's kind and JSON; undefined once the service ended the connection. */
 	async next(timeoutMs = 3_000): Promise<{ kind: number; body: Record<string, unknown> } | undefined> {
 		const frame =
 			this.#frames.shift() ??
@@ -673,12 +631,10 @@ describe("the data role on the folder socket", () => {
 			kind: Kind.dataAnswer,
 			body: { status: 200, value: { columns: ["n"], rows: [[1]], more: false } },
 		});
-		// A call that carries a file's text: far past another role's 64 KiB.
 		const text = "-- words\n".repeat(60_000);
 		client.send(Kind.dataCall, { verb: "describe", body: { texts: { abc: text } } });
 		expect(await client.next()).toMatchObject({ kind: Kind.dataAnswer, body: { status: 200 } });
 		expect(door.calls[1]!.body).toEqual({ pass: core.dataPasses[1]!.pass, texts: { abc: text } });
-		// The service's own refusal is an answer too, and the connection goes on.
 		client.send(Kind.dataCall, { verb: "query", body: {} });
 		expect(await client.next()).toEqual({
 			kind: Kind.dataAnswer,
@@ -715,7 +671,6 @@ describe("the data role on the folder socket", () => {
 			expect(await client.next()).toMatchObject({ kind: Kind.error, body: { code: "BAD_REQUEST" } });
 			expect(await client.next()).toBeUndefined();
 		}
-		// A refusal says nothing of the pass in the service's log.
 		expect(lines.join("\n")).not.toContain(PASS);
 	});
 
@@ -810,7 +765,6 @@ describe("the run door over HTTPS, as the folder service calls it", () => {
 			body: JSON.stringify({ database: "shop", pass: "p" }),
 		});
 		expect(await door.call("describe", body({ refuse: true }), never)).toMatchObject({ status: 404 });
-		// More than a frame carries: said so, never buffered whole.
 		expect(await door.call("describe", body({ huge: true }), never)).toBe("too_large");
 		await expect(door.call("change", body({ cut: true }), never)).rejects.toThrow();
 	});

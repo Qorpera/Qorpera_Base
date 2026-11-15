@@ -383,10 +383,8 @@ fn command(args: &[String]) -> Result<ExitCode, Usage> {
 	Ok(ExitCode::from(command::run(&command_request(args)?)))
 }
 
-/// The machine's folder view, as its mount's unit reads it (deploy/machine/qorpera-machine-folder.service).
 const MACHINE_VIEW_FILE: &str = "/run/qorpera-folder/view.json";
 
-/// `data`'s options, then what to do: the options end at the first word that is not one.
 fn data(args: &[String]) -> Result<ExitCode, Usage> {
 	let mut split = 0;
 	while args.get(split).is_some_and(|a| a.starts_with("--")) {
@@ -400,7 +398,6 @@ fn data(args: &[String]) -> Result<ExitCode, Usage> {
 	let view = match viewfile::read(std::path::Path::new(view_file)) {
 		Ok(view) => view,
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-			// A boot whose starter's agent or member does not read the company folder has no view, and no /company.
 			eprintln!("data: this machine has no company folder ({}), so it reaches no databases", root.display());
 			return Ok(ExitCode::from(data::EXIT_UNREACHABLE));
 		}

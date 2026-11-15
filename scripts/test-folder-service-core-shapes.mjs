@@ -17,8 +17,7 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
  * history (supabase/tests/636_folder_core_feed.test.sql, its own fixture up to the history's end), then list and
  * feed pages as JSON, parsed exactly as the service parses them. The tree built from a listing and caught up from the
  * feed must equal a fresh listing, so the service's handling of every operation (write, mkdir, move_out, move_in,
- * delete) is checked against the core's own output. A company machine's data pass (company databases, slice 8a) is
- * read the same way: the real function's answer, on its own test's company (1273 on 510), through the service's parser. */
+ * delete) is checked against the core's own output. */
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ENV = "63000000-0000-4000-8000-000000000020";
@@ -81,8 +80,6 @@ function boxSql() {
 	);
 }
 
-/** A company machine's data pass (slice 8a): the pass test's company and databases (1273 on 510, up to its first
- * check), a test machine's open view, and the pass the folder service asks as that view, for one database and for all. */
 function machineSql() {
 	const read = (name) => readFileSync(join(root, "supabase/tests", name), "utf8");
 	const fixture = expandTestFixture("1273_machine_data_pass.test.sql", read);
@@ -196,7 +193,6 @@ async function main() {
 		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
 		assert.equal(boxed.get("box-after-close"), "refused");
 
-		// A company machine's data pass, as the folder service's `data` role reads it.
 		const machine = answers(database.cluster.psql(databaseName, machineSql()));
 		const pass = parseMachineDataPass(machine.get("machine-pass"));
 		assert.match(pass.pass, /^[A-Za-z0-9_-]{43}$/);
@@ -204,7 +200,6 @@ async function main() {
 			pass.entries.map((entry) => entry.path),
 			["data/shop/database.toml", "data/shop/tables/001-orders.sql", "data/shop/queries/count.sql", "data/shop/actions/add.sql"],
 		);
-		// Each entry is a read the service can record as it is: a version, and the receipt it was read under.
 		for (const entry of pass.entries) {
 			assert.match(entry.version, /^[0-9a-f-]{36}$/, `${entry.path} has a uuid version`);
 			assert.match(entry.authority?.resourceId ?? "", /^[0-9a-f-]{36}$/, `${entry.path} has a receipt`);
