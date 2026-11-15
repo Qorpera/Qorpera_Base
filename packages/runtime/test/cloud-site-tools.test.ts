@@ -361,8 +361,11 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.md"]);
-		// Sites left Settings for the apps drawer (9 November 2026).
-		expect(result.text).toContain("the password is on the Sites page in the apps drawer");
+		// Sites left Settings for the apps drawer (9 November 2026). Since site hosts (v247) a message that links the site
+		// shows its row, with the password's copy key for owners and admins (web #1848): the agent links the address.
+		expect(result.answer.next).toBe(
+			"Put url in your message to the member as a link: the site's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password. Visitors open the address and enter the password.",
+		);
 		expect(result.text).not.toContain("Settings");
 		expect(result.text).not.toMatch(/password":\s*"[a-z0-9]{4}-/);
 	});
@@ -810,7 +813,9 @@ describe("share_app", () => {
 			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password: expect.stringContaining("new password"),
 		});
-		expect(result.answer.next).toContain("the password is on the Sites page in the apps drawer");
+		expect(result.answer.next).toContain(
+			"Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.",
+		);
 		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
@@ -1097,13 +1102,39 @@ describe("share_app", () => {
 		expect(share.description).toContain("The platform starts the link program");
 		expect(share.description).toContain("only that program can use it again");
 		expect(share.description).not.toContain("timeoutMs");
-		expect(share.description).toContain("the password is on the Sites page in the apps drawer");
+		expect(share.description).toContain("put the address in your message as a link");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
-		// Sites left Settings for the apps drawer (9 November 2026).
+		// Sites left Settings for the apps drawer (9 November 2026); since site hosts (v247) the row under a message that
+		// links a site copies its password too (web #1848).
 		const publish = tools.find((tool) => tool.name === "publish_site")!;
-		expect(publish.description).toContain(
-			"the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it.",
-		);
+		const password =
+			"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
+		expect(publish.description).toContain(password);
+		expect(share.description).toContain(password);
 		for (const tool of tools) expect(tool.description).not.toContain("Settings");
+	});
+
+	it("says what a site host serves since v247: its own address, links from / and its own origin (SITE-HOSTS.md)", async () => {
+		const { tools } = await fixture({});
+		const publish = tools.find((tool) => tool.name === "publish_site")!;
+		// site-serve serves a site at the top of https://<slug>.qorpera.com/ (the old link answers 308 to it).
+		expect(publish.description).toContain(
+			"Publish a static website from the company folder to a private address of its own, https://<slug>.qorpera.com/,",
+		);
+		expect(publish.description).toContain(
+			"Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work.",
+		);
+		// A site host's file: no sandbox, frame-ancestors 'self', CORP same-origin and Fetch Metadata, no service worker.
+		expect(publish.description).toContain(
+			"Each site is its own origin: browser storage, cookies (never one with Domain=qorpera.com) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
+		);
+		for (const gone of ["sites.qorpera.com", "never links starting with /", "sandbox", "may only download"])
+			for (const tool of tools) expect(tool.description, `${tool.name}: ${gone}`).not.toContain(gone);
+		// The slug's pattern never reaches the model (Codex drops it): the field says the address and the kernel's rule.
+		const slug = (name: string) =>
+			(tools.find((tool) => tool.name === name)!.inputSchema as { properties: { slug: { description: string } } })
+				.properties.slug.description;
+		expect(slug("publish_site")).toBe(`The name in its address, https://<slug>.qorpera.com/. ${SITE_NAME_RULE}`);
+		expect(slug("share_app")).toBe(`The name in its address, https://<slug>-preview.qorpera.com/. ${SITE_NAME_RULE}`);
 	});
 });
