@@ -579,7 +579,13 @@ system font; no scenes, skies or themed backdrops), the company's real things (p
 a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
 text cards or labelled diagram lines, and **copy the quality, not the layout**. A kit keeps its own form (the model
 kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
-hand, the page too. It tells seven screens he liked and
+hand, the page too. It says which apps are **views the company is owed** (company views step 4,
+lanes/company-views-20261114/DESIGN-4.md, 15 November 2026): `apps/products` (what it sells), `apps/money` (its
+money) and `apps/ads` (its ads), which members find first in the apps drawer; an agent makes one when asked, at exactly
+that folder, and never a website view, which the platform draws. The three names are one list, `OWED_APPS`
+(cloud-client `interface-apps.ts`); a save of one of them (not a concept, not icons alone) adds to its answer's `look`
+"This is the company's <name> view: members find it first in the apps drawer.", a line to know, not to fix, so `next`
+asks for a fix only when another note stands. It tells seven screens he liked and
 three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
 app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
 company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine
