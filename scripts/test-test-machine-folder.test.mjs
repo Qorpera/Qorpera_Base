@@ -302,8 +302,6 @@ const vsockListenersSeen = () => [
 	listener("*", 5250, "qorpera-folder", BRIDGE_PID, "/tmp/qorpera-p4.OI0AYHO5/qorpera-folder"),
 ];
 
-/** Step 8b's evidence that passes: the answers as the gateway gives them, the reads, the held step, the other machine and
- * the disk. */
 function dataPassing() {
 	const ticket = `002-drop-points.${"a".repeat(64)}.${"b".repeat(64)}`;
 	const rows = { columns: ["id", "title", "points"], rows: [[1, "First", 1], [2, "Second", 3]], more: false };
@@ -553,14 +551,12 @@ const failing = {
 		e.steps.narrowed.carol.read = { receipt: { state: "running", companyFolder: mounted() } };
 	},
 	dataStoreAndDoor: (e) => {
-		// The gateway's platform client sent a bearer with the key: not the publishable key's call.
 		e.steps.data.redeems[0].bearer = true;
 	},
 	dataCommand: (e) => {
 		e.steps.data.apply = { ...e.steps.data.apply, exitCode: 3, answer: null };
 	},
 	dataReadTakenIn: (e) => {
-		// The question's file was read before Bob's command asked it: its read proves nothing of the data role.
 		e.steps.data.reads.viewBefore.push("data/p4desk/queries/open.sql");
 	},
 	dataHeld: (e) => {
@@ -1080,4 +1076,11 @@ test("a change credited for the whole commit counts when its unit carries none",
 	assert.equal(judge(evidence).overlapCredited.ok, true);
 	evidence.steps.overlap.commits[1].credits = [ids.b];
 	assert.equal(judge(evidence).overlapCredited.ok, false);
+});
+
+test("a pass the gateway redeemed as another role than anon fails the store and door check", () => {
+	failsOnly("dataStoreAndDoor", {
+		"a redeem ran as the service role": (e) => Object.assign(e.steps.data.redeems[1], { as: "service_role" }),
+		"a redeem reached no database": (e) => Object.assign(e.steps.data.redeems[0], { as: null }),
+	});
 });
