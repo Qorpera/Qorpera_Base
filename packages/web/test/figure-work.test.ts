@@ -3,6 +3,7 @@ import {
 	beatAt,
 	FIGURE_EFFECTS,
 	loopLength,
+	paintLayers,
 	type Shape,
 	THREAD_SLOT,
 	threadPath,
@@ -126,15 +127,58 @@ describe("the working loop", () => {
 		expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0.25);
 		expect(Math.min(...eyes.map((eye) => eye.height))).toBeLessThan(0.3);
 	});
-	it("draws something in the air during every effect and during a pass", () => {
+	it("draws during every effect of every figure that has one, and during a pass", () => {
 		const shape = disc();
 		for (const figure of FIGURES) {
-			let drawn = 0;
-			for (const t of samples(0, loopLength(figure), 0.1)) {
-				const frame = workFrame(t, figure, shape, "#a145f7", 0);
-				drawn += frame.behind.length + frame.front.length;
+			const drawnIn = new Map<string, number>();
+			for (const t of samples(0, loopLength(figure), 0.05)) {
+				const beat = beatAt(figure, t),
+					frame = workFrame(t, figure, shape, "#a145f7", 0, true),
+					{ ctx, draws } = recorder();
+				for (const layers of [frame.behind, frame.front, frame.over]) paintLayers(ctx, layers, 3);
+				const key = `${beat.kind}:${beat.index}`;
+				drawnIn.set(key, (drawnIn.get(key) ?? 0) + draws());
 			}
-			expect(drawn).toBeGreaterThan(0);
+			const effects = FIGURE_EFFECTS[figure] ?? [];
+			effects.forEach((_, index) => {
+				expect(drawnIn.get(`effect:${2 * index + 1}`)).toBeGreaterThan(0);
+			});
+			expect(drawnIn.get("thread:0")).toBeGreaterThan(0);
+		}
+	});
+	it("ends a whole loop at rest, drawing nothing, so a spell can end there", () => {
+		const shape = disc();
+		for (const figure of FIGURES) {
+			const L = loopLength(figure);
+			for (const t of [...samples(L - 0.6, L, 0.05), ...samples(2 * L - 0.6, 2 * L, 0.05), 0, L, 2 * L]) {
+				const frame = workFrame(t, figure, shape, "#0fbd59", 5, true),
+					{ ctx, draws } = recorder();
+				for (const layers of [frame.behind, frame.front, frame.over]) paintLayers(ctx, layers, 3);
+				for (const value of [frame.body.x, frame.body.y, frame.body.turn])
+					expect(Math.abs(value)).toBeLessThan(1e-9);
+				expect([frame.body.scaleX, frame.body.scaleY]).toEqual([1, 1]);
+				expect(draws()).toBe(0);
+			}
 		}
 	});
 });
+
+function recorder(): { ctx: CanvasRenderingContext2D; draws: () => number } {
+	let count = 0;
+	const state: Record<string, unknown> = {};
+	const gradient = () => ({ addColorStop() {} });
+	const ctx = new Proxy(state, {
+		get(target, key: string) {
+			if (key in target) return target[key];
+			if (key === "createLinearGradient" || key === "createRadialGradient") return gradient;
+			return () => {
+				if (key === "stroke" || key === "fill" || key === "fillRect") count++;
+			};
+		},
+		set(target, key: string, value) {
+			target[key] = value;
+			return true;
+		},
+	});
+	return { ctx: ctx as unknown as CanvasRenderingContext2D, draws: () => count };
+}

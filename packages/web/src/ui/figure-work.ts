@@ -67,7 +67,10 @@ const ease = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2
 const easeOut = (x: number) => 1 - (1 - x) ** 3;
 const easeIn = (x: number) => x * x * x;
 const back = (x: number) => 1 + 2.5 * (x - 1) ** 3 + 1.5 * (x - 1) ** 2;
-const bump = (u: number, a: number, b: number) => Math.sin(Math.PI * seg(u, a, b));
+const bump = (u: number, a: number, b: number) => {
+	const x = seg(u, a, b);
+	return x <= 0 || x >= 1 ? 0 : Math.sin(Math.PI * x);
+};
 const lerp = (a: number, b: number, f: number) => a + (b - a) * f;
 const ramped = (u: number, a: number, b: number, ramp = 0.35) =>
 	u < a || u > b ? 0 : clamp(Math.min((u - a) / ramp, (b - u) / ramp));
@@ -1103,11 +1106,18 @@ export function beatAt(figure: string, t: number): Beat {
 	return { kind: slots[i]!.fx ? "effect" : "thread", index: i, at: u - start, round: n * slots.length + i };
 }
 
-export function workFrame(t: number, figure: string, shape: Shape, color: string, seed = 0): WorkFrame {
+export function workFrame(
+	t: number,
+	figure: string,
+	shape: Shape,
+	color: string,
+	seed = 0,
+	aligned = false,
+): WorkFrame {
 	tint = tintOf(color);
 	const slots = slotsOf(figure),
 		L = loopLength(figure),
-		shifted = t + hash(seed % 9973) * L,
+		shifted = aligned ? t : t + hash(seed % 9973) * L,
 		beat = beatAt(figure, shifted),
 		round = Math.floor(shifted / L) + (seed % 89);
 	const glance = glances(shifted + (seed % 31));

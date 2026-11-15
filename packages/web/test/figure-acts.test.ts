@@ -151,6 +151,22 @@ describe("a working figure", () => {
 		const effects = new Set(whole.map((cue) => cue.effect));
 		expect(effects).toEqual(new Set(["pop", "dust"]));
 	});
+	it("asks at the end of each spell it is given, at the pace it is given, and its cues keep to that pace", () => {
+		const spell = 13,
+			pace = 0.5;
+		const symbolAt = (t: number) => working(t, "question", spell, pace).symbol;
+		expect(working(spell - 0.01, "question", spell, pace).work).toBeCloseTo(spell - 0.01, 6);
+		expect(symbolAt(spell + 0.2)).toBeUndefined();
+		const asking = samples(spell, spell + 12, 0.01).filter((t) => symbolAt(t));
+		const fast = samples(10, 22, 0.01).filter((t) => working(t, "question").symbol);
+		expect(asking.length).toBeGreaterThan(1.8 * fast.length);
+		const slow = workingCues(0, 60, "bang", spell, pace).filter((cue) => cue.at < spell + 10);
+		const quick = workingCues(0, 60, "bang", spell, 1).filter((cue) => cue.at < spell + 10);
+		expect(slow.map((cue) => cue.effect)).toEqual(quick.map((cue) => cue.effect));
+		slow.forEach((cue, index) => {
+			expect(cue.at - spell).toBeCloseTo((quick[index]!.at - spell) / pace, 6);
+		});
+	});
 	it("rests with its eyes open for a member who wants no motion", () => {
 		const still = workingStill();
 		expect(still.body).toBe(REST);

@@ -29,7 +29,16 @@ import {
 } from "./figure-acts.ts";
 import { alignRegion, boxCanvas, bucketOf, level, type Region } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
-import { AIR_MARGIN, applyBody, paintLayers, type Shape, shapeOf, type WorkFrame, workFrame } from "./figure-work.ts";
+import {
+	AIR_MARGIN,
+	applyBody,
+	loopLength,
+	paintLayers,
+	type Shape,
+	shapeOf,
+	type WorkFrame,
+	workFrame,
+} from "./figure-work.ts";
 
 export type { Ask, Moment };
 /** The studio's activities, and "AtComputer": the agent uses its desktop computer (20260930742000). */
@@ -349,6 +358,7 @@ const signature = (poses: EyePose[]) =>
 const round = (value: number, places = 2) => Number(value.toFixed(places));
 /** The longest stretch of an activity's clock whose effects a figure still shows: past it, it missed them. */
 const EFFECTS_GAP = 0.5;
+// WHY: Jonas, 13 Nov 2026, found the asks "slightly too fast"; the working loop keeps the pace he approved on 15 Nov.
 const PACE = 0.85;
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
@@ -375,12 +385,13 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		act = asking(elapsed * PACE, entry.ask ?? "bang", clock.seed);
 		for (const cue of askingCues(since * PACE, elapsed * PACE, clock.seed)) effects.push(cue.effect);
 	} else if (activity === "Working") {
-		act = working(elapsed, entry.ask);
+		const spell = loopLength(entry.id);
+		act = working(elapsed, entry.ask, spell, PACE);
 		if (act.work !== undefined) {
-			entry.work = workFrame(act.work, entry.id, shapeFor(entry), entry.shown, clock.seed);
+			entry.work = workFrame(act.work, entry.id, shapeFor(entry), entry.shown, clock.seed, Boolean(entry.ask));
 			act = { body: entry.work.body, eyes: entry.work.eyes };
 		}
-		for (const cue of workingCues(since, elapsed, entry.ask)) effects.push(cue.effect);
+		for (const cue of workingCues(since, elapsed, entry.ask, spell, PACE)) effects.push(cue.effect);
 	} else if (activity === "Thinking" && entry.ask) {
 		// The dots write on; every few seconds they become what waits on the member, at the pace of one that asks.
 		act = writingAsk(elapsed * PACE, entry.ask);
@@ -565,8 +576,8 @@ function drawSymbol(ctx: CanvasRenderingContext2D, symbol: Ask, color: string): 
 }
 
 /* The effects: a few small shapes that fly and fade (styles/app.css `.figure-bit`), each gone when its
- * animation ends. A cheer's stars and the stars a working figure juggles take the vivid colours above; the stars
- * of a change into a symbol are in the figure's own colour. */
+ * animation ends. A cheer's stars take the vivid colours above; the stars of a change into a symbol are in the
+ * figure's own colour. */
 /** The stars' colours: the vivid ones of the agents' own colour row (avatar-appearance.js: Gold, Pink, Sky,
  * Green, Purple, Orange), so they stand out on the rail and on a figure of any colour (Jonas, 13 Nov 2026: "more
  * vibrant"; the studio's Done accents were pastels). */

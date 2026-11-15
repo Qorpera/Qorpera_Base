@@ -1,6 +1,6 @@
 /* How a figure acts: what its body does (hops, leans, squash and stretch), where its drawn eyes look
  * and how they look (wide, shut in a smile), which symbol it becomes when it needs the member (a "?"
- * or a "!"), the stars it juggles while it works, and which small effects go off in the air around it.
+ * or a "!"), and which small effects go off in the air around it.
  * Pure arithmetic over time, so two views of one agent act alike and a test can read a pose at any second;
  * figure-motion.ts puts the result on the page. Nothing here is recorded: every eye and every symbol
  * is drawn, so it is sharp at any size.
@@ -264,33 +264,35 @@ export function askingCues(from: number, to: number, seed = 0): Cue[] {
 }
 
 const WORK_SPELL = 10;
-const WORK_ASK_HOLD = 2.6;
-const WORK_PERIOD = WORK_SPELL + BECOME + WORK_ASK_HOLD + RETURN;
+const WORK_ASK = BECOME + 2.6 + RETURN;
 
-export function working(t: number, ask?: Ask): Act {
+export function working(t: number, ask?: Ask, spell = WORK_SPELL, pace = 1): Act {
 	const at = Math.max(0, t);
 	if (!ask) return { body: REST, work: at };
-	const round = Math.floor(at / WORK_PERIOD),
-		s = at - round * WORK_PERIOD;
-	if (s < WORK_SPELL) return { body: REST, work: round * WORK_SPELL + s };
-	const asked = s - WORK_SPELL;
+	const period = spell + WORK_ASK / pace;
+	const round = Math.floor(at / period),
+		s = at - round * period;
+	if (s < spell) return { body: REST, work: round * spell + s };
+	const asked = (s - spell) * pace;
 	if (asked < BECOME) return become(ask, asked, WIDE);
-	if (asked < BECOME + WORK_ASK_HOLD) return { body: askingSymbol(ask, asked - BECOME, 0), symbol: ask };
-	return comeBack(ask, asked - BECOME - WORK_ASK_HOLD, {});
+	if (asked < WORK_ASK - RETURN) return { body: askingSymbol(ask, asked - BECOME, 0), symbol: ask };
+	return comeBack(ask, asked - (WORK_ASK - RETURN), {});
 }
 export function workingStill(): Act {
 	return { body: REST, eyes: openEyes() };
 }
-export function workingCues(from: number, to: number, ask?: Ask): Cue[] {
+export function workingCues(from: number, to: number, ask?: Ask, spell = WORK_SPELL, pace = 1): Cue[] {
 	if (!ask) return [];
+	const period = spell + WORK_ASK / pace;
+	const asking = [
+		...changeCues(0, BECOME, true),
+		...changeCues(WORK_ASK - RETURN, RETURN, false),
+		...landings(ASK_HOPS, BECOME + ASK_BEAT_FIRST),
+	];
 	const cues: Cue[] = [];
-	for (let round = Math.floor(Math.max(0, from) / WORK_PERIOD); round * WORK_PERIOD < to; round++) {
-		const asks = round * WORK_PERIOD + WORK_SPELL;
-		cues.push(
-			...changeCues(asks, BECOME, true),
-			...changeCues(asks + BECOME + WORK_ASK_HOLD, RETURN, false),
-			...landings(ASK_HOPS, asks + BECOME + ASK_BEAT_FIRST),
-		);
+	for (let round = Math.floor(Math.max(0, from) / period); round * period < to; round++) {
+		const asks = round * period + spell;
+		for (const cue of asking) cues.push({ ...cue, at: asks + cue.at / pace });
 	}
 	return within(cues, from, to);
 }
