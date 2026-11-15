@@ -2084,6 +2084,51 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(p.el.classList.contains("is-entered")).toBe(true);
 	});
 
+	it("stays on the computer something opened on when the answer comes after the choice's own time limit (review r8 F1 of #1781)", async () => {
+		// A wake that takes nearly all of the choice's time: the request goes out just before the limit and is answered
+		// just after it, the picture later still. The agent drives its other computer all the while.
+		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2, { state: "stopped" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		s.state.machines = [machine(1, { state: "starting" }), machine(2, { state: "stopped" })];
+		choose(p, 0);
+		await flush();
+		s.state.machines = [machine(2), machine(1, { state: "starting" })];
+		s.hint("machines");
+		await advance(WANT_ON_MS - LOOK_EVERY_MS * 4);
+		expect(p.machineId).toBe(machine(1).machineId);
+		expect(p.choices.at(-1)?.ended).toBeUndefined();
+		expect(s.opens).toEqual([]);
+		// It runs at last, its screen off: the start that turns it on carries the open, and waits for its answer.
+		let open = () => {};
+		s.state.startGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		s.state.machines = [machine(2), machine(1)];
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS * 2);
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		// The limit passes with the request out; then the answer comes.
+		await advance(LOOK_EVERY_MS * 4);
+		expect(p.choices.at(-1)?.ended).toBeUndefined();
+		s.state.startGate = undefined;
+		open();
+		await flush();
+		expect(p.choices.at(-1)?.ended).toBe("answered");
+		// No picture yet: the window is still on the computer it opened on, not on the list's first.
+		await advance(LOOK_EVERY_MS * 3);
+		expect(p.machineId).toBe(machine(1).machineId);
+		expect(s.looks.filter((look) => look.url.includes(machine(2).machineId))).toHaveLength(0);
+		// The screen comes on some seconds later (the looks had slowed while nothing showed).
+		s.state.fallback = { picture: 1 };
+		await advance(10_000);
+		expect(mark(p)).toBe("Live");
+		expect(p.machineId).toBe(machine(1).machineId);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+	});
+
 	it("ends a choice whose computer is no longer the agent's, and enters no large view on the next one (review r7 F1 of #1781)", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2)] });
 		s.state.apps = apps;

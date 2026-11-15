@@ -195,6 +195,9 @@ interface OpenChoice {
 }
 /** How long the window's loop waits at most while a choice stands unsent: it turns, and pumps, at least this often. */
 const CHOICE_TURN_MS = 1000;
+/** How long, at least, the window stays on the computer a choice was answered on while the first picture of it is on
+ * its way (review r8 of #1781): a request sent just before the choice's own limit is answered just after it. */
+const OPEN_SHOWS_MS = 30_000;
 
 /** One of the company's apps as Open offers it (20260930758000): its name, and the path of the company folder that opens
  * it on the desktop. */
@@ -561,9 +564,10 @@ export class ComputerPanel {
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
 	#enterOnOpen = false;
-	/** The computer something just opened on, until its first picture shows (then the large view the open asked for
-	 * keeps the window there) or the choice's own time limit: the window stays on it meanwhile (#pick; review r7 F1 of
-	 * #1781). */
+	/** The computer a choice was just answered on, until its first picture shows (then the large view the open asked
+	 * for keeps the window there) or its time runs out (the choice's own limit, and OPEN_SHOWS_MS from the answer at
+	 * least): the window stays on it meanwhile (#pick; review r7 F1, r8 F1 of #1781). Answered is what opened, and also
+	 * a refusal the window says in words (#openAnswered): there the window stays where its words stand. */
 	#openedOn: { readonly machineId: string; readonly until: number } | undefined;
 	#openNote: { readonly machineId: string; readonly words: string } | undefined;
 	#openRetry: { readonly machineId: string; readonly path: string; readonly words: string } | undefined;
@@ -3151,7 +3155,10 @@ export class ComputerPanel {
 			if (words !== undefined) entry.said = words;
 		}
 		// It opened: the window stays on that computer until the member sees it there.
-		this.#openedOn = how === "answered" ? { machineId: choice.machineId, until: choice.until } : undefined;
+		this.#openedOn =
+			how === "answered"
+				? { machineId: choice.machineId, until: Math.max(choice.until, Date.now() + OPEN_SHOWS_MS) }
+				: undefined;
 		if (words !== undefined && shown) this.#sayOpen(choice, words, retry);
 	}
 
