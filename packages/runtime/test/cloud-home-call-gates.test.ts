@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseCloudCompanyHome } from "@qorpera/runtime/cloud-codex-home";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudControlRpcEnded, cloudControlEnded, cloudControlRetryable } from "@qorpera/runtime/cloud-control-errors";
 import {
 	NATIVE_HOST_CALLS,
 	NATIVE_HOST_IDENTITY_CALLS,
@@ -129,6 +130,28 @@ describe("the home's two calls from the run's host", () => {
 		expect(host.sent).toEqual([]);
 	});
 
+	it("keeps the SQLSTATE of an answer whose statement ended, where only the home's ask reads it", async () => {
+		const answers: Record<string, Response> = {
+			XX000: Response.json({ code: "XX000", message: "internal", details: null, hint: null }, { status: 500 }),
+			"42883": Response.json({ code: "42883", message: "missing", details: null, hint: null }, { status: 404 }),
+			"57014": Response.json({ code: "57014", message: "timeout", details: null, hint: null }, { status: 500 }),
+		};
+		for (const [code, response] of Object.entries(answers)) {
+			const host = hostOf(() => response);
+			const error = await host.paths
+				.call("qorpera_company_home_available", { p_binding: host.binding }, AbortSignal.timeout(5_000))
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudControlRpcEnded);
+			expect((error as CloudControlRpcEnded).sqlstate).toBe(code);
+			// What every other caller asks again by is unchanged: an ended answer is still lost, late and ended, and
+			// carries no `code`.
+			expect(cloudControlRetryable(error)).toBe(true);
+			expect(cloudControlEnded(error)).toBe(true);
+			expect((error as { code?: unknown }).code).toBeUndefined();
+		}
+		expect(new CloudControlRpcEnded().sqlstate).toBeUndefined();
+	});
+
 	it("lets the executor's control ask SQL for a home session, as the ingress asks it", async () => {
 		const { binding } = nativeToolAuthorityFixture();
 		const sessionId = randomUUID();
@@ -189,6 +212,22 @@ function namesCalled(files: readonly string[], receiver: RegExp): Set<string> {
 }
 
 /**
+ * Names the path control lists that no runtime source sends, so no entry point of the native host's names them. Each
+ * must stay unsent and unlisted in NATIVE_HOST_CALLS: the guard fails the day one is sent or listed (take it out here).
+ * The three wake checks are in the list because the runtime hands its path control to the wake bus as its control
+ * (`wakeControl` in cloud-native-company-runtime.ts), so CloudWakeRpc's names must be ones the path control takes; the
+ * bus itself sends only `qorpera_read_native_wake`, `qorpera_send_coworker_message` and
+ * `qorpera_assert_company_path_reads`, and SQL asks the three itself (the folder's reads ask
+ * `qorpera_assert_wake_work_allowed`, a governed completion asks `qorpera_assert_wake_completion`, both over
+ * `qorpera_runtime_wake_policy`'s rules; RUNTIME-STEP-3-WAKE-BUS.md). Listed since 29d29554d (9 Sep 2026).
+ */
+const UNSENT_BY_THE_RUNTIME: readonly string[] = [
+	"qorpera_assert_wake_completion",
+	"qorpera_assert_wake_work_allowed",
+	"qorpera_runtime_wake_policy",
+];
+
+/**
  * Gaps the guard knows of, each named and dated with its reason. Each must still be a gap: the guard fails the day one
  * is closed (take it out here) and the day another joins.
  * - qorpera_native_light_ask_answer (14 Nov 2026): master's light ask (20260930761000) calls it through the run's path
@@ -196,15 +235,18 @@ function namesCalled(files: readonly string[], receiver: RegExp): Set<string> {
  */
 const KNOWN_GAPS: readonly string[] = ["qorpera_native_light_ask_answer: not in the path control's list"];
 
-describe("every call the runtime makes to its path control reaches SQL on a real host", () => {
-	it("is in the path control's list, and the native host has an entry point for each it sends", async () => {
+describe("every name the runtime's path control takes reaches SQL on a real host", () => {
+	it("is in the path control's list when a source sends it, and every name the list takes has an entry point", async () => {
 		const files = sourcesOf(runtimeSource);
-		// `this.#paths.call("…"` and `paths.call("…"`: the run's own calls, as the runtime's sources make them.
+		// `this.#paths.call("…"` and `paths.call("…"`: the run's own calls, as the runtime's sources make them. Calls through
+		// the same control under other names (`control.call(`, `this.#control.call(`, the wake bus) and names built at run
+		// time are covered below, by every name the type allows.
 		const called = namesCalled(files, /(?:#|\b)paths\.call\(\s*"(qorpera_[a-z0-9_]+)"/g);
 		expect(called).toContain("qorpera_company_home_available");
 		expect(called).toContain("qorpera_close_home_session");
 		expect(called).toContain("qorpera_describe_company_run_context");
-		// Every name a path control call may take (TypeScript holds every caller of the interface to it).
+		// Every name a path control call may take (TypeScript holds every caller of the interface, and the path control's
+		// own list, to it).
 		const gateway = readFileSync(join(runtimeSource, "cloud-company-path-gateway.ts"), "utf8");
 		const union = gateway.slice(gateway.indexOf("export type CloudCompanyPathRpc ="));
 		const typed = new Set(
@@ -212,9 +254,11 @@ describe("every call the runtime makes to its path control reaches SQL on a real
 		);
 		expect(typed.size).toBeGreaterThan(80);
 		for (const name of called) expect(typed, name).toContain(name);
+		// Any call of any receiver in the runtime's sources, for the names no source may send.
+		const sentAnyhow = namesCalled(files, /\.call\(\s*"(qorpera_[a-z0-9_]+)"/g);
 
 		const gaps: string[] = [];
-		for (const name of [...new Set([...typed, ...called])].sort()) {
+		for (const name of [...typed].sort()) {
 			// The path control itself: does it send the name at all?
 			const host = hostOf();
 			// The path control refuses a name it does not list before it returns a promise.
@@ -230,9 +274,13 @@ describe("every call the runtime makes to its path control reaches SQL on a real
 				gaps.push(`${name}: not in the path control's list`);
 				continue;
 			}
-			// What the run calls itself must reach SQL through an entry point of the native host's.
-			if (!called.has(name)) continue;
 			const listed = NATIVE_HOST_CALLS.has(name) || NATIVE_HOST_IDENTITY_CALLS.has(name);
+			if (UNSENT_BY_THE_RUNTIME.includes(name)) {
+				if (sentAnyhow.has(name)) gaps.push(`${name}: sent by a runtime source, so it needs an entry point`);
+				if (listed) gaps.push(`${name}: has an entry point now, so it is no longer an exception`);
+				continue;
+			}
+			// Every other name the list takes reaches SQL through an entry point of the native host's.
 			const reached = host.sent.some(
 				({ url, body }) =>
 					body.p_name === name &&

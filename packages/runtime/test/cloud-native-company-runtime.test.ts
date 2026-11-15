@@ -2797,6 +2797,24 @@ describe("the run's ask for its home", () => {
 			true,
 			() => Response.json({ schema: "qorpera.company-home/v1", machineId: randomUUID() }),
 		],
+		[
+			"SQL fails it with an internal error (500, XX000)",
+			true,
+			() =>
+				Response.json(
+					{ code: "XX000", message: "Folder run is unavailable", details: null, hint: null },
+					{ status: 500 },
+				),
+		],
+		[
+			"a function it needs is missing (404, 42883)",
+			true,
+			() =>
+				Response.json(
+					{ code: "42883", message: "function public.qorpera_x(uuid) does not exist", details: null, hint: null },
+					{ status: 404 },
+				),
+		],
 		["the path control does not know the call", false, undefined],
 	] as const)("fails the run in the home's own stage, before Codex starts, when %s", async (_, dispatch, answer) => {
 		const f = await homeFixture(dispatch);
@@ -2812,17 +2830,41 @@ describe("the run's ask for its home", () => {
 		);
 	});
 
-	it("leaves an attempt whose ask lost its answer without a home, and says so in the host's journal", async () => {
-		const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
-		const f = await homeFixture(true);
-		f.entryAnswer((name) =>
-			name === "qorpera_company_home_available" ? new Response("upstream unavailable", { status: 503 }) : undefined,
-		);
-		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-		expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
-		expect(homeAsked(f)).toHaveLength(1);
-		expect(journal).toHaveBeenCalledWith("The agent's home was not asked (transport_unavailable)");
-	});
+	it.each([
+		["a 5xx that is not PostgREST's", () => new Response("upstream unavailable", { status: 503 })],
+		[
+			"PostgREST's word that the statement ran out of time (500, 57014)",
+			() =>
+				Response.json(
+					{ code: "57014", message: "canceling statement due to statement timeout", details: null, hint: null },
+					{ status: 500 },
+				),
+		],
+		[
+			"PostgREST's pool wait (504, PGRST003)",
+			() =>
+				Response.json(
+					{
+						code: "PGRST003",
+						message: "Timed out acquiring connection from connection pool.",
+						details: null,
+						hint: null,
+					},
+					{ status: 504 },
+				),
+		],
+	] as const)(
+		"leaves an attempt whose ask lost its answer (%s) without a home, and says so in the host's journal",
+		async (_, answer) => {
+			const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			const f = await homeFixture(true);
+			f.entryAnswer((name) => (name === "qorpera_company_home_available" ? answer() : undefined));
+			const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+			expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+			expect(homeAsked(f)).toHaveLength(1);
+			expect(journal).toHaveBeenCalledWith("The agent's home was not asked (transport_unavailable)");
+		},
+	);
 });
 
 it("starts the run without the open-work count when the kernel cannot give it", async () => {

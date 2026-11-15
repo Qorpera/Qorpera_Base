@@ -379,7 +379,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					// A lost answer PostgREST gave whose statement ended (a lock or statement timeout) or never began (its pool
 					// wait): a read of the run's row may be asked again without waiting out the copy (R1, 28 Oct 2026).
 					if (category === "transport_unavailable" && refused && cloudControlEndedCode(refused.code))
-						throw new CloudControlRpcEnded("Company File authority unavailable");
+						throw new CloudControlRpcEnded("Company File authority unavailable", refused.code);
 					throw new CloudRuntimeDiagnosticError(category, "Company File authority unavailable");
 				}
 				return value;
