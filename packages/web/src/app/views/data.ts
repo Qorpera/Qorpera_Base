@@ -60,6 +60,7 @@ interface OpenRow {
 	readonly notes: Map<string, string>;
 	readonly saved: Set<string>;
 	readonly saving: Set<string>;
+	readonly pending: Map<string, unknown>;
 	gone: boolean;
 	queue: Promise<void>;
 	asking: boolean;
@@ -896,6 +897,7 @@ class DataListView {
 			notes: new Map(),
 			saved: new Set(),
 			saving: new Set(),
+			pending: new Map(),
 			gone: false,
 			queue: Promise.resolve(),
 			asking: false,
@@ -919,6 +921,7 @@ class DataListView {
 			notes: new Map(),
 			saved: new Set(),
 			saving: new Set(),
+			pending: new Map(),
 			gone: false,
 			queue: Promise.resolve(),
 			asking: false,
@@ -1092,6 +1095,7 @@ class DataListView {
 			if (typed === undefined || typed === "") return null;
 			return this.#kindOf(name) === "boolean" ? typed === "true" : typed;
 		}
+		if (open.pending.has(name)) return open.pending.get(name);
 		return open.row.values[open.columns.indexOf(name)] ?? null;
 	}
 
@@ -1106,17 +1110,11 @@ class DataListView {
 			this.#syncRow();
 			return Promise.resolve();
 		}
-		const before = open.row;
-		if (kind === "boolean") {
-			const values = [...before.values];
-			values[open.columns.indexOf(name)] = value;
-			open.row = { values, seen: before.seen };
-		}
+		if (kind === "boolean") open.pending.set(name, value);
 		open.saving.add(name);
 		this.#syncRow();
-		return this.#queue(open, () =>
-			this.#change(open, { [name]: value }, kind === "boolean" ? before : undefined),
-		).finally(() => {
+		return this.#queue(open, () => this.#change(open, { [name]: value })).finally(() => {
+			if (open.pending.get(name) === value) open.pending.delete(name);
 			open.saving.delete(name);
 			if (this.#open === open) this.#syncRow();
 		});
@@ -1146,6 +1144,7 @@ class DataListView {
 		if (open.row || this.#open !== open) return;
 		const sent = new Map(open.draft);
 		const values = this.#draftValues(open);
+		if (Object.keys(values).length === 0 && this.#table()?.columns.some((column) => column.settable)) return;
 		try {
 			const added = await this.#calls().edit(
 				{ database: open.database, table: open.table, op: "add", values },
@@ -1158,6 +1157,8 @@ class DataListView {
 			open.notice = undefined;
 			for (const name of Object.keys(values)) open.saved.add(name);
 			const typing = this.#typing();
+			const focused = document.activeElement;
+			if (typing && focused instanceof HTMLElement) delete focused.dataset.dirty;
 			const later = new Map(
 				[...open.draft].filter(([name, text]) => sent.get(name) !== text && name !== typing?.name),
 			);
@@ -1212,7 +1213,7 @@ class DataListView {
 		if (typing.start !== null) input.setSelectionRange(typing.start, typing.end ?? typing.start);
 	}
 
-	async #change(open: OpenRow, values: Record<string, unknown>, undo?: Row): Promise<void> {
+	async #change(open: OpenRow, values: Record<string, unknown>): Promise<void> {
 		const row = open.row;
 		const names = Object.keys(values);
 		const name = names[0] ?? null;
@@ -1244,12 +1245,6 @@ class DataListView {
 			}
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
-			if (undo && (error as { status?: unknown }).status !== 409 && open.row === row) {
-				const values = [...row.values];
-				const at = open.columns.indexOf(name);
-				values[at] = undo.values[at];
-				open.row = { values, seen: row.seen };
-			}
 			this.#refused(open, row, error, name);
 		}
 	}

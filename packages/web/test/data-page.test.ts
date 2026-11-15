@@ -533,6 +533,44 @@ describe("a new row and a toggle, while the store answers", () => {
 		expect(edits.at(-1)).toMatchObject({ op: "change", values: { bike: "43" } });
 	});
 
+	it("adds nothing for a field emptied again before the member leaves it", async () => {
+		const { container, edits } = await open(describedWith());
+		button(container, "New row").click();
+		const bike = container.querySelector<HTMLInputElement>("#data-field-bike")!;
+		bike.focus();
+		bike.value = "";
+		bike.dispatchEvent(new Event("input"));
+		bike.blur();
+		await settle();
+		expect(edits).toEqual([]);
+	});
+
+	it("keeps a toggle as the member set it while an earlier change lands", async () => {
+		const { container, calls, edits } = await open(describedWith());
+		button(container, "Gazelle Orange C7450Yes1").click();
+		await settle();
+		let land: () => void = () => {};
+		const first = calls.edit.getMockImplementation()!;
+		calls.edit.mockImplementationOnce(
+			(edit: CloudMemberDataEdit) =>
+				new Promise((resolve) => {
+					land = () => resolve(first(edit));
+				}),
+		);
+		const price = container.querySelector<HTMLInputElement>("#data-field-price")!;
+		price.value = "500";
+		price.dispatchEvent(new Event("input"));
+		price.dispatchEvent(new Event("change"));
+		const ready = container.querySelector<HTMLButtonElement>("#data-field-ready")!;
+		ready.click();
+		expect(ready.textContent).toBe("No");
+		await settle();
+		land();
+		await settle();
+		expect(ready.textContent).toBe("No");
+		expect(edits.at(-1)).toMatchObject({ op: "change", values: { ready: false } });
+	});
+
 	it("puts back only a refused toggle, not a field saved before it", async () => {
 		const { container, calls } = await open(describedWith());
 		button(container, "Gazelle Orange C7450Yes1").click();
