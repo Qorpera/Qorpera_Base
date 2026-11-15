@@ -199,8 +199,10 @@ first; deleting or moving the file (seeded).
 
 The company's reading of itself (Jonas, 14 November 2026: "It should feel like the company is
 conscious almost"; migration 20260930765000). The Co-Founder writes it, in the company's voice ("we"),
-and rewrites it whole; every agent gets it at every run, and members see it as a picture on the company
-page. It is not seeded and not undeletable: until the Co-Founder writes the first one there is none, and
+and rewrites it whole; every agent gets it at every run, and members see it as the first layer of the
+company's map, an interface the Co-Founder keeps with the map kit (Jonas, 15 November 2026: "it should not
+be the platform that draws it, rather an agent should maintain it"; RUNTIME-INTERFACE-APPS.md). It is not
+seeded and not undeletable: until the Co-Founder writes the first one there is none, and
 a member may delete it. At most 4,096 bytes (`READING_FILE_MAX_BYTES`), so it stays a reading.
 
 ```

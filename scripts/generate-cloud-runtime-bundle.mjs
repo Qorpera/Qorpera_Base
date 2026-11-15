@@ -7,38 +7,65 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024799_runtime_bundle_activation_v247.sql";
-const activationVersion = 247;
-const previousActivationVersion = 246;
-const previousActivationSha256 = "4addaeac561c3bed448a80a9be7772a3c47c949fb731ea9618c15c9d869b22b6";
-// This release's own migrations, which its activation requires before it registers the bundle (v247): one entry per
+const activation = "supabase/migrations/20260929024899_runtime_bundle_activation_v248.sql";
+const activationVersion = 248;
+const previousActivationVersion = 247;
+const previousActivationSha256 = "e92d0a54a98a4f08d78b386d63f0f91f3678141c5e940288c25b7673e0640762";
+// This release's own migrations, which its activation requires before it registers the bundle (v248): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v248 replaces these entries with the migrations v248 brings (or an empty list).
-// v248's activation already requires v247 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v247's release (site hosts, #1774, with the agent-box riders, light asks and app_guide) runs its
-// four migrations, in number order, BEFORE the executors and this switch. An entry sorting before the activation file is
+// version lines, when it sets them: v249 replaces these entries with the migrations v249 brings (or an empty list).
+// v249's activation already requires v248 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v248's release (a member opens an app or a file on an agent's computer, a member-woken machine's
+// sleep, and master's company databases, reading, numbers and bank days) runs its migrations, in number order, BEFORE the
+// executors and this switch. 758000 and 759000 sort before 760000-762000, which v247 recorded: the roll's migrate reads
+// production's record and runs each one only when it is not recorded. An entry sorting before the activation file is
 // checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
 // order reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930756000_site_hosts",
-		"every website gets an address of its own (#1774): this bundle's instructions speak of a website's own address, and the executor this release moves reads the site hosts' SQL; it rides in this release's migrate, before this switch",
-		"to_regprocedure('public.qorpera_site_reserved_names()') is not null and to_regprocedure('public.qorpera_site_hosts_on()') is not null",
+		"20260930758000_machine_member_open",
+		"a member opens an app, a file or a folder on an agent's computer (#1781, #1808): the executor this release moves asks the open's start authority and open check, which this migration makes",
+		"to_regprocedure('public.qorpera_member_machine_desktop_start_begin(uuid,uuid,text)') is not null",
 	],
 	[
-		"20260930760000_machine_disk_kept_across_image",
-		"a sleeping machine keeps its disk when the machine image changes (#1788): this bundle's machine tool words say so, which the admission keeps from this migration on",
-		"to_regprocedure('public.qorpera_company_machine_helper_refused(uuid,text,text)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_admit_company_machine(uuid,text)') and strpos(prosrc, '20260930760000') > 0)",
+		"20260930759000_machine_member_sleep",
+		"a machine awake only for a member sleeps 10 minutes after the member is gone (#1782): the executor's machine list says it is due from this migration on",
+		"to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') is not null",
 	],
 	[
-		"20260930761000_light_asks",
-		"light asks (#1796): this bundle answers a light ask's run through qorpera_native_light_ask_answer, which this migration adds",
-		"to_regclass('public.qorpera_light_asks') is not null and to_regprocedure('public.qorpera_native_light_ask_answer(jsonb,text)') is not null",
+		"20260930763000_data_change_tool",
+		"data_change (#1806): a run's observation naming the tool is refused until the closed list of tool operations carries it",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930763000') > 0)",
 	],
 	[
-		"20260930762000_app_guide_tool",
-		"app_guide (#1804): a run's observation naming the tool is refused until the closed list of tool operations carries it",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930762000') > 0)",
+		"20260930764000_data_step_approval",
+		"a member's yes for a step that destroys data (#1809): this bundle's host dispatch lists qorpera_run_data_pass_approved, which this migration adds",
+		"to_regprocedure('public.qorpera_run_data_pass_approved(uuid,jsonb,text,uuid)') is not null",
+	],
+	[
+		"20260930765000_company_reading",
+		"the company's reading of itself (#1815): the kind reading, the Co-Founder's senses and the company's standing (no code in this bundle calls them yet: the runtime step is #1819, after v248)",
+		"to_regprocedure('public.qorpera_describe_company_senses(jsonb)') is not null",
+	],
+	[
+		"20260930767000_company_numbers_money",
+		"the company's money as questions under qorpera/ (#1828): the dispatcher 768000 patches",
+		"to_regprocedure('public.qorpera_run_company_numbers(uuid,jsonb,text,jsonb)') is not null",
+	],
+	[
+		"20260930768000_company_numbers_site",
+		"a site's views counted privately (#1834): the site questions answer from this migration on",
+		"to_regclass('public.qorpera_site_counts') is not null and to_regprocedure('public.qorpera_site_count_view(text,text,text)') is not null",
+	],
+	[
+		"20260930769000_bank_days",
+		"the bank sync counts money by day and kind (#1830): the vault records the days through qorpera_record_bank_days, which this migration adds",
+		"to_regprocedure('public.qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)') is not null",
+	],
+	[
+		"20260930774000_site_member_pass",
+		"members see the company's own site inside Qorpera (#1838): the member's one-use pass and its redeem, which site-serve calls (inert until a site-serve from #1838 is deployed)",
+		"to_regprocedure('public.qorpera_site_member_pass(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

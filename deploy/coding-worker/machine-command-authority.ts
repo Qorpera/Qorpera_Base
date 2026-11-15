@@ -8,6 +8,7 @@ import {
 	CloudMemberMachineScreenRefusal, CloudMemberMachineStartRefusal, cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
+import { cloudMemberMachineOpenPathValid } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
 import { CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
@@ -388,6 +389,8 @@ export interface MemberMachineStartAuthority {
 	providerId: string;
 	userId: string;
 	served: boolean;
+	/** What the start opens once the desktop runs (20260930758000): a path of the company folder, as SQL kept it. */
+	open?: string;
 }
 
 /** A start's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_start_authority,
@@ -406,10 +409,15 @@ export async function authorizeMemberMachineStart(
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.member-machine-desktop-start-authority/v1") throw new Error("MEMBER_START_AUTHORITY_INVALID");
 	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW" ||
-		result.reason === "DESKTOP_MACHINE_TOO_SMALL"))
+		result.reason === "DESKTOP_MACHINE_TOO_SMALL" || result.reason === "DESKTOP_OPEN_NOT_FOUND" ||
+		result.reason === "DESKTOP_MEMBER_IN_CONTROL"))
 		throw new CloudMemberMachineStartRefusal(result.reason);
+	// A start that opens something carries `open` (20260930758000); a plain start's answer is as before.
+	const opens = "open" in result;
 	if (result.state !== "authorized" ||
-		Object.keys(result).sort().join() !== "bootId,executorOwner,machineId,placementId,providerId,schema,served,startId,state,userId" ||
+		Object.keys(result).sort().join() !== (opens ? "bootId,executorOwner,machineId,open,placementId,providerId,schema,served,startId,state,userId"
+			: "bootId,executorOwner,machineId,placementId,providerId,schema,served,startId,state,userId") ||
+		(opens && !cloudMemberMachineOpenPathValid(result.open)) ||
 		result.startId !== request.startId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
@@ -420,7 +428,7 @@ export async function authorizeMemberMachineStart(
 	signal.throwIfAborted();
 	return { startId: result.startId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, served: result.served as boolean };
+		userId: result.userId as string, served: result.served as boolean, ...(opens ? { open: result.open as string } : {}) };
 }
 
 /** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this

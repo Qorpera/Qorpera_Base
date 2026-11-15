@@ -89,6 +89,10 @@ export interface MemberAgentMachine {
 	 * hand-back that ends a lease. Each shared action carries the one its input was made under, and SQL refuses it once
 	 * that moved. Null for a viewer, and from a database before it. */
 	generation: number | null;
+	/** Awake only because a member woke it (migration 20260930759000): how many seconds after that member's last sign
+	 * it sleeps, so its window pauses after as long without a touch. Null for every other machine (one an agent has
+	 * used since, an always-on one, one asleep), and from a database before it. */
+	memberSleepSeconds: number | null;
 }
 export interface MemberAgentMachineControl {
 	mine: boolean;
@@ -133,6 +137,10 @@ const HOLD_REFUSALS = [
 /** A hand-back epoch as the database answers it. */
 function epochOf(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+/** A node's member_sleep_after_seconds as SQL keeps it (20260930759000): whole seconds, a minute to a week. */
+function memberSleepOf(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604_800;
 }
 export interface MemberAgentMachines {
 	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
@@ -416,7 +424,11 @@ export class CloudMemberCompanyComputerClient {
 				(row.others !== undefined &&
 					(!Array.isArray(row.others) || !row.others.slice(0, OTHERS_SHOWN).every((name) => text(name, 256)))) ||
 				// The desktop's lease generation (20260930738000); absent (or null) for a viewer and before it.
-				(row.generation !== undefined && row.generation !== null && !epochOf(row.generation))
+				(row.generation !== undefined && row.generation !== null && !epochOf(row.generation)) ||
+				// Awake only for a member (20260930759000); absent (or null) for every other machine and before it.
+				(row.memberSleepSeconds !== undefined &&
+					row.memberSleepSeconds !== null &&
+					!memberSleepOf(row.memberSleepSeconds))
 			)
 				throw new Error(invalid);
 			// Who holds the desktop (20260930713000); absent before the take-over migration.
@@ -458,6 +470,7 @@ export class CloudMemberCompanyComputerClient {
 				epoch: epochOf(row.epoch) ? row.epoch : 0,
 				others: Array.isArray(row.others) ? (row.others.slice(0, OTHERS_SHOWN) as string[]) : [],
 				generation: epochOf(row.generation) ? row.generation : null,
+				memberSleepSeconds: memberSleepOf(row.memberSleepSeconds) ? row.memberSleepSeconds : null,
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);

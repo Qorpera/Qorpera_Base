@@ -105,11 +105,11 @@ describe("interface apps", () => {
 		expect(parseAppManifest('name = "X"\nkit = "slides"\n')).toEqual({
 			ok: false,
 			problems: [
-				{ line: 2, message: "kit must be one of explainer, model, board, path, object, curve, stack, shelf" },
+				{ line: 2, message: "kit must be one of explainer, model, board, path, object, curve, stack, shelf, map" },
 			],
 		});
-		// The data kits (13 and 14 November 2026) read and write the same way.
-		for (const name of ["model", "board", "path", "object", "curve", "stack", "shelf"]) {
+		// The data kits (13, 14 and 15 November 2026) read and write the same way.
+		for (const name of ["model", "board", "path", "object", "curve", "stack", "shelf", "map"]) {
 			const data = parseAppManifest(`name = "X"\nkit = "${name}"\n`);
 			expect(data.ok && data.manifest).toMatchObject({ kit: name, entry: "index.html" });
 			expect(parseAppManifest(data.ok ? writeAppManifest(data.manifest) : "")).toEqual(data);
@@ -154,6 +154,12 @@ describe("interface apps", () => {
 		expect(parseAppWrites([1])).toHaveProperty("problem");
 		expect(appWriteTable("table:orders")).toBe("orders");
 		expect(appWriteTable("answers")).toBeNull();
+	});
+
+	it("reads reading, the company's reading of itself, as a read of its own", () => {
+		const parsed = parseAppManifest('name = "Map"\nreads = ["reading", "agents", "reading"]\n');
+		expect(parsed.ok && parsed.manifest.reads).toEqual(["reading", "agents"]);
+		if (parsed.ok) expect(parseAppManifest(writeAppManifest(parsed.manifest))).toEqual(parsed);
 	});
 
 	it("reads concept and cover, and refuses a cover that is no picture of the app", () => {

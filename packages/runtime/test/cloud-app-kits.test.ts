@@ -95,7 +95,7 @@ const BOARD = {
 
 it("names the data kits as the kits an app can be made from", () => {
 	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
-	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object", "curve", "stack", "shelf"]);
+	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object", "curve", "stack", "shelf", "map"]);
 	expect(DATA_KITS.map(kitDataFile)).toEqual([
 		"model.json",
 		"board.json",
@@ -104,6 +104,7 @@ it("names the data kits as the kits an app can be made from", () => {
 		"curve.json",
 		"stack.json",
 		"shelf.json",
+		"map.json",
 	]);
 });
 
@@ -138,13 +139,13 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 	for (const said of [
 		"lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch)",
-		"It is never a document or a report: text to read stays a file in the folder.",
-		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
-		"Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine",
-		"kit says what each kit draws; app_guide says what its file holds: read the kit's guide before you write the file",
+		"Text to read stays a file.",
+		"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit.",
+		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 		// A page written by hand follows the kits.
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
 	])
 		expect(tool.description).toContain(said);
 	const kit = (
@@ -152,7 +153,7 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", null]);
+	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", "map", null]);
 	for (const said of [
 		"model: how something works in numbers, such as a business model, a price, costs or capacity.",
 		"board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references.",
@@ -161,6 +162,7 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 		"curve: one value over time, such as money in the bank or orders a day, the past and what is expected.",
 		"stack: things that want a member's yes, one card each, such as bills to pay or ads to run.",
 		"shelf: the company's own things side by side, each with one level, such as products and their stock.",
+		"map: the company or your own area as its things, which fill as they are built, with the agents at them and layers to open, such as the company's map or a product's parts.",
 	])
 		expect(kit.description).toContain(said);
 	// What the data kits share stands at the head of each one's guide, which app_guide answers with: on the
@@ -1431,4 +1433,148 @@ it("gives a stack's app the open questions and their answers, which its buttons 
 	);
 	expect(shelf.state).toBe("applied");
 	expect(manifestOf(f, "stock")).toMatchObject({ reads: [], writes: [] });
+});
+
+/* The map kit (Jonas, 15 November 2026, on the company's page: "it should not be the platform that draws it, rather an
+ * agent should maintain it", and asked how: "Use a map kit"): the company, or an owner's area, as its things with
+ * layers to dive into; the company's own map takes its first layer live from the company's reading. Its engine runs in
+ * a browser (packages/web/test/app-kit-engines.test.ts); here are its data, its page and save_app. */
+
+const part = (id: string, more: Record<string, JsonValue> = {}) => ({ id, name: id, shape: "box", full: 50, ...more });
+const OWN_MAP = {
+	lang: "en",
+	top: {
+		title: "The repair tracker",
+		attention: "app",
+		things: [part("app"), part("price", { waits: true }), part("costs", { opens: "app:business-model" })],
+	},
+	layers: { app: { things: [part("jobs"), part("login", { state: "unknown" })] } },
+};
+
+it("reads a map's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("map", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(OWN_MAP)).toBeNull();
+	expect(problem({ top: "reading" })).toBeNull();
+	expect(problem({ top: "reading", layers: { tracker: { things: [part("jobs")] } } })).toBeNull();
+	expect(problem({})).toBe("map.json has no top: the map kit draws nothing without");
+	expect(problem({ top: "company" })).toBe(
+		'map.json needs top: "reading" for the company\'s reading, or an object with its things',
+	);
+	expect(problem({ top: { things: [part("a"), part("b")] } })).toBe(
+		"map.json needs 3 to 7 things in top: the map kit draws one picture of them",
+	);
+	expect(problem({ ...OWN_MAP, layers: [] })).toBe(
+		"map.json has layers that are no object: each key is a thing's id, its value what is inside it",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [] } } })).toBe(
+		"map.json has a layer app without 1 to 12 things",
+	);
+	// Every thing is one the page draws: an object with an id and a name, its id once in its list; a layer's key is an
+	// id (review r1 of #1847, F2).
+	const top = (things: unknown[]) => ({ ...OWN_MAP, top: { ...OWN_MAP.top, things } });
+	expect(problem(top([part("a"), part("b"), "c"]))).toBe("map.json has a thing in top that is no object (number 3)");
+	expect(problem(top([part("a"), part("b"), part("repair_app")]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { shape: "box", name: "No id" }]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { id: "c", name: " " }]))).toBe(
+		"map.json has a thing c in top with no name",
+	);
+	expect(problem(top([part("a"), part("b"), part("a")]))).toBe("map.json has the id a twice in top");
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [part("x"), part("x")] } } })).toBe(
+		"map.json has the id x twice in the layer app",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [{ id: "x" }] } } })).toBe(
+		"map.json has a thing x in the layer app with no name",
+	);
+	expect(problem({ ...OWN_MAP, layers: { repair_app: { things: [part("x")] } } })).toBe(
+		"map.json has a layer repair_app whose key is not a thing's id (letters, digits and -)",
+	);
+	// Four layers deep at most: the first and three under it.
+	const chain = (depth: number) =>
+		Object.fromEntries(
+			Array.from({ length: depth }, (_, k) => [k ? `l${k}` : "app", { things: [part(`l${k + 1}`)] }]),
+		);
+	expect(problem({ ...OWN_MAP, layers: chain(3) })).toBeNull();
+	expect(problem({ ...OWN_MAP, layers: chain(4) })).toBe("map.json goes 5 layers deep: the map kit opens 4 at most");
+	expect(problem({ top: "reading", layers: chain(4) })).toBe(
+		"map.json goes 5 layers deep: the map kit opens 4 at most",
+	);
+	// 80 things in all.
+	const many = Object.fromEntries(
+		Array.from({ length: 7 }, (_, k) => [
+			`g${k}`,
+			{ things: Array.from({ length: 12 }, (_, j) => part(`g${k}-${j}`)) },
+		]),
+	);
+	expect(problem({ ...OWN_MAP, layers: many })).toBe("map.json holds 87 things: the map kit draws 80 at most");
+});
+
+it("carries every agent's figure in a map's page, since who stands where is found as it opens", () => {
+	const page = kitPage("map", "map", "Map", OWN_MAP, () => true);
+	for (const [id, url] of Object.entries(KIT_FIGURES))
+		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
+	expect(kitFigures(OWN_MAP)).toEqual([]);
+	expect(KIT_ENGINE_JS.map).toBe(kitFile("map", "engine.js"));
+});
+
+it("gives a map's app the company's reading where it draws the reading or an agent's figure", async () => {
+	const LOOK =
+		"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	const company = read(
+		await f.call(
+			"save_app",
+			save("company", "make-1", { title: "Company", kit: "map", reads: ["agents"] }, [
+				{ path: "map.json", text: JSON.stringify({ top: "reading" }) },
+			]),
+		),
+	);
+	expect(company.state).toBe("applied");
+	expect(manifestOf(f, "company")?.reads).toEqual(["agents", "reading"]);
+	expect(company.look).toContain(LOOK);
+	expect(f.text("apps/company/engine.js")).toBe(KIT_ENGINE_JS.map);
+	// An owner's map that names an agent in a layer reads it too; one that names none asks for nothing.
+	const named = { ...OWN_MAP, layers: { app: { things: [part("jobs", { agents: ["Product"] })] } } };
+	const own = read(
+		await f.call(
+			"save_app",
+			save("tracker", "make-2", { title: "Tracker", kit: "map" }, [
+				{ path: "map.json", text: JSON.stringify(named) },
+			]),
+		),
+	);
+	expect(manifestOf(f, "tracker")?.reads).toEqual(["reading"]);
+	expect(own.look).toContain(LOOK);
+	const plain = read(
+		await f.call(
+			"save_app",
+			save("plain", "make-3", { title: "Plain", kit: "map" }, [{ path: "map.json", text: JSON.stringify(OWN_MAP) }]),
+		),
+	);
+	expect(manifestOf(f, "plain")?.reads).toEqual([]);
+	expect(plain.look ?? []).not.toContain(LOOK);
+	// Saved again with the reading, nothing more is added and the manifest is not written.
+	const again = read(
+		await f.call(
+			"save_app",
+			save("company", "change-1", null, [
+				{
+					path: "map.json",
+					text: JSON.stringify({ top: "reading", layers: { tracker: { things: [part("jobs")] } } }),
+				},
+			]),
+		),
+	);
+	expect(again.files.map((file: { path: string }) => file.path)).not.toContain("apps/company/app.toml");
+	expect(again.look ?? []).not.toContain(LOOK);
 });
