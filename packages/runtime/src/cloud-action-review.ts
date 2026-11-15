@@ -246,6 +246,8 @@ export function cloudActionEffect(
 		// Company databases (slice 5): what they hold, and a question or a read, as the database folder's read login.
 		case "data_describe":
 		case "data_query":
+		// How one part of an interface app is made: the runtime's own text, the same for every company.
+		case "app_guide":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).

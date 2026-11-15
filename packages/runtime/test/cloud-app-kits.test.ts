@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import { APP_KITS, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
+import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -38,7 +39,9 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
+/** A run's app tools over a folder. The run has read every guide, as a run does before it writes a kit's file,
+ * unless `unread`. */
+async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}, unread = false) {
 	const f = await folderWriterFixture(seed);
 	runs.push(f.run);
 	const tools = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
@@ -48,6 +51,7 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
 		const prepared = (await tool(name).prepare?.(parsed, f.context)) ?? parsed;
 		return tool(name).execute(prepared, f.context);
 	};
+	if (!unread) for (const about of APP_GUIDES) await call("app_guide", { about });
 	return { ...f, tool, call };
 }
 const read = (content: CloudToolContent) => JSON.parse(String(content.value));
@@ -116,7 +120,7 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 	}
 });
 
-it("tells an agent on kit what each kit draws and what its one file holds", async () => {
+it("tells an agent on kit what each kit draws, and in the kit's guide what its one file holds", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
@@ -125,7 +129,7 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 		"It is never a document or a report: text to read stays a file in the folder.",
 		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
 		"Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine",
-		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+		"kit says what each kit draws; app_guide says what its file holds: read the kit's guide before you write the file",
 		// A page written by hand follows the kits.
 		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
 		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
@@ -142,18 +146,25 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 		"board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references.",
 		"path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route.",
 		"object: a physical thing a member turns in the hand.",
+	])
+		expect(kit.description).toContain(said);
+	// What the four data kits share stands at the head of each one's guide, which app_guide answers with: on the
+	// schema, where it stood until 14 November 2026, no model received it.
+	for (const said of [
 		"save_app writes engine.js and index.html: never write or edit those two",
+		"A picture or video the data names shows only when it is in the app's folder as you save: write it there first",
 		"what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it",
 		// A note to the app's owner (qorpera.tell), said once for the four kits.
 		'Every kit\'s words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went;',
 		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters).",
 		"Such a note reaches you as the member's message, under a first line that names the app and the thing.",
 	])
-		expect(kit.description).toContain(said);
+		for (const each of DATA_KITS) expect(appGuide(each), each).toContain(said);
 	// Each kit's own guide is there whole, as its file has it.
-	for (const each of DATA_KITS) expect(kit.description, each).toContain(KIT_GUIDE[each].trim());
-	// A tool's schema holds 64 KiB: the kits' guides leave most of it.
-	expect(Buffer.byteLength(JSON.stringify(tool.inputSchema))).toBeLessThan(48 * 1024);
+	for (const each of DATA_KITS) expect(appGuide(each), each).toContain(KIT_GUIDE[each].trim());
+	// The schema is small enough that its descriptions reach the model (under 5,000 bytes as the patched Codex
+	// sends it).
+	expect(Buffer.byteLength(JSON.stringify(tool.inputSchema))).toBeLessThan(4600);
 });
 
 it("finds the pictures and videos a kit's data names in the app's own folder", () => {
@@ -1021,6 +1032,37 @@ it("refuses a data kit's app with no data, or with data its engine cannot read",
 		"APP_DATA_INVALID: board.json is not JSON",
 	);
 	expect(f.folders.has("apps/marked")).toBe(false);
+});
+
+it("refuses a model whose groups hold no input, and saves one where any group has one", async () => {
+	const f = await fixture();
+	const model = (key: string, data: JsonValue) =>
+		f.call(
+			"save_app",
+			save("economy", key, { title: "Economy", kit: "model" }, [{ path: "model.json", text: JSON.stringify(data) }]),
+		);
+	// What an agent saved on production on 13 November 2026, never having been given the kit's guide: its answer to
+	// "model.json has no groups". The engine draws one line for it, that there is nothing to show.
+	const empty: JsonValue[] = [
+		{ groups: [] },
+		{ groups: [{ label: "Costs", inputs: [] }] },
+		{ groups: [{ label: "Costs" }, "inputs"] },
+		{ groups: { inputs: [{ id: "price" }] } },
+	];
+	for (const [n, data] of empty.entries())
+		await refuses(
+			model(`empty-${n}`, data),
+			"APP_DATA_INVALID: model.json has no input in its groups: the model kit draws nothing without one",
+		);
+	expect(parseKitData("model", '{"groups":[]}')).toEqual({
+		problem: "model.json has no input in its groups: the model kit draws nothing without one",
+	});
+	expect(f.folders.has("apps/economy")).toBe(false);
+	// One group with an input is a model, whatever the others hold.
+	expect(read(await model("make-1", { groups: [{ label: "Later", inputs: [] }, ...MODEL.groups] }))).toMatchObject({
+		state: "applied",
+		created: true,
+	});
 });
 
 it("names in the page the pictures the folder holds, and says which it lacks", async () => {

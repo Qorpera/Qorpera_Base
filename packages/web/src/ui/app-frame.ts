@@ -13,7 +13,9 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
  *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`).
  * - A page changes nothing through its port: a call that asks for a change is answered only after the member allowed it
- *   on a bar the app draws outside this frame (app/views/app-ask-bar.ts), which may take as long as the member takes. */
+ *   on a bar the app draws outside this frame (app/views/app-ask-bar.ts), which may take as long as the member takes.
+ * - A question of the company's databases the page watches gets its later answers over the port too
+ *   (`qorpera-app-data`, with the watch's id), until the page stops it or the frame ends. */
 
 /** One call from the page, as the host takes it. */
 export interface AppCall {
@@ -77,6 +79,16 @@ export class AppFrame {
 	/** Tells the page that something it reads changed. */
 	changed(): void {
 		this.#port?.postMessage({ type: "qorpera-app-change" });
+	}
+
+	/** Hands the page a watch's new answer (app/interface-apps.ts `CompanyData`). */
+	data(watch: number, value: unknown): void {
+		this.#port?.postMessage({ type: "qorpera-app-data", watch, value });
+	}
+
+	/** Ends when the frame does: disposed, or left by its page. What the page watches ends with it. */
+	get signal(): AbortSignal {
+		return this.#lifetime.signal;
 	}
 
 	dispose(): void {

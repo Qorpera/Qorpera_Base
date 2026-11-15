@@ -666,7 +666,7 @@ describe("conversation lifecycle regressions", () => {
 			expect(() => controller.setExecutionSponsor(session.sessionId, observed, id(80))).toThrow("unavailable");
 		},
 	);
-	it("opens a message that answers the wall's question with it, the same on a retry, and only that message", async () => {
+	it("opens a message with the line its draft answers, the same on a retry, and only that message", async () => {
 		const { controller, write } = company();
 		write.mockRejectedValueOnce(new Error("Lost response"));
 		const state = controller.conversation(session.sessionId, false);
