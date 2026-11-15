@@ -690,9 +690,13 @@ export class ReleaseDesk {
 		// Look first, before Put it live: a project with a site, while the read offers it.
 		let first: HTMLButtonElement | null = null;
 		if (look && site.site && !down) {
-			first = button(working === "look" && !short ? t("Opening…") : t("Look first"), () => void this.lookFirst(site), {
-				disabled: busy,
-			});
+			first = button(
+				working === "look" && !short ? t("Opening…") : t("Look first"),
+				() => void this.lookFirst(site),
+				{
+					disabled: busy,
+				},
+			);
 			first.dataset.focusKey = `look:${key}`;
 			if (short && working === "look") first.setAttribute("aria-busy", "true");
 		}
