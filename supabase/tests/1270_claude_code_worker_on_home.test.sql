@@ -114,9 +114,10 @@ declare v jsonb; v_run uuid := pg_temp.c4c_run('claude');
 begin
 	v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
 	perform pg_temp.base_assert(v = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1', 'member', pg_temp.c4_name(),
-		'outputs', '[]'::jsonb), '1b: the member''s name and no outputs yet: ' || v::text);
+		'outputs', '[]'::jsonb, 'earlier', null), '1b: the member''s name, no outputs yet, no earlier report on a first run: ' || v::text);
 	begin
 		set local session_replication_role = replica;
+		-- (The run's home session closed in section 1: a commit of the view's last boundary after that is credited all the same.)
 		-- Two commits of the machine's folder view as the run (the home's window credited them), and a commit of the run's
 		-- own through its run box (its report): only the view's files are outputs, newest first; a folder, a delete are not.
 		insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id,
@@ -131,10 +132,11 @@ begin
 				'92400000-0000-4000-8000-000000000030', 'in_house', v_run, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run_box', '[]'::jsonb,
 				clock_timestamp());
 		insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no,
-			created_at)
+			created_at, structured)
 		select extensions.gen_random_uuid(), '92400000-0000-4000-8000-000000000020', x.path,
 			extensions.digest(public.qorpera_folder_key(x.path), 'sha256'), x.op, x.kind, x.commit_id::uuid, x.n,
-			clock_timestamp() - make_interval(secs => x.ago)
+			clock_timestamp() - make_interval(secs => x.ago),
+			case when x.path like '%/results.md' then '{"kind":"worker-results","parserVersion":1,"parse":{"summary":"A report of its own."}}'::jsonb end
 		from (values ('onboarding/a.pdf', 'write', 'file', '12700000-0000-4000-8000-0000000000e1', 1, 60),
 			('onboarding/old.pdf', 'delete', 'file', '12700000-0000-4000-8000-0000000000e1', 2, 60),
 			('onboarding/new-folder', 'mkdir', 'folder', '12700000-0000-4000-8000-0000000000e1', 3, 60),
@@ -144,6 +146,7 @@ begin
 			as x(path, op, kind, commit_id, n, ago);
 		set local session_replication_role = origin;
 		v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
+		perform pg_temp.base_assert(v -> 'earlier' = 'null'::jsonb, '1b: a first run has no earlier report, also beside a report of its own: ' || v::text);
 		perform pg_temp.base_assert(v -> 'outputs' = '["onboarding/a.pdf", "onboarding/b.md"]'::jsonb,
 			'1b: what its home wrote, newest first, without deletes, folders or its report: ' || v::text);
 		raise exception 'Undo' using errcode = 'QTF80';
@@ -246,11 +249,15 @@ end $$;
 -- 4. A follow-up of a Claude Code worker that is not write ----------------------------------------------------------------
 do $$
 declare v_alice jsonb := pg_temp.c4_alice(); v_result jsonb; w public.qorpera_runtime_workers%rowtype;
-	v_folder text := 'QorperaOS/agents/alice/todos/onboarding/pdf';
+	v_folder text := 'QorperaOS/agents/alice/todos/onboarding/pdf'; v_binding jsonb; v_facts jsonb;
 begin
-	-- The Claude Code worker's run ends without a report; its wake ends and the drain finishes it.
-	perform pg_temp.c4_end_job(pg_temp.c4c_run('claude'), 'failed');
-	update public.qorpera_wake_occurrences set status = 'failed', finished_at = coalesce(finished_at, clock_timestamp())
+	-- The Claude Code worker's run reports, and ends; its wake ends and the drain finishes it.
+	v_result := pg_temp.c4_results(pg_temp.c4c_binding('claude'), 'c4c-report-1', v_folder);
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4: the first run reports: ' || v_result::text);
+	set local session_replication_role = replica;
+	perform pg_temp.c4_end_job(pg_temp.c4c_run('claude'), 'completed');
+	set local session_replication_role = origin;
+	update public.qorpera_wake_occurrences set status = 'completed', finished_at = coalesce(finished_at, clock_timestamp())
 	where id = (pg_temp.c4_worker('12700000-0000-4000-8000-0000000000b1')).occurrence_id and status = 'materialized';
 	perform pg_temp.c4_drain();
 	w := pg_temp.c4_worker('12700000-0000-4000-8000-0000000000b1');
@@ -267,6 +274,14 @@ begin
 	end;
 	v_result := pg_temp.c4_followup(v_alice, 'c4c-followup-write', v_folder, 'Use the new logo.');
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4: a write one is: ' || v_result::text);
+	-- Its next run: the follow-up removed the results file, and the run's facts carry the earlier report's summary.
+	perform pg_temp.base_assert(pg_temp.base_version(v_folder || '/results.md') is null, '4: the follow-up removed the report');
+	perform pg_temp.c4_drain();
+	perform pg_temp.base_materialize();
+	v_binding := pg_temp.base_start((select run_id from public.qorpera_wake_occurrences
+		where id = (pg_temp.c4_worker('12700000-0000-4000-8000-0000000000b1')).occurrence_id));
+	v_facts := public.qorpera_claude_worker_run_facts(v_binding);
+	perform pg_temp.base_assert(v_facts ->> 'earlier' = 'Done.', '4: the follow-up''s run has its earlier report: ' || v_facts::text);
 end $$;
 
 -- 5. Never a coding session; whose these are --------------------------------------------------------------------------

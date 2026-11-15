@@ -19,6 +19,7 @@ import {
 	claudeWorkerPrompt,
 	claudeWorkerReportText,
 	claudeWorkerSessionId,
+	claudeWorkerSettledOutputs,
 	runClaudeWorker,
 } from "@qorpera/runtime/cloud-claude-worker";
 import { CLOUD_HOME_OUTDATED } from "@qorpera/runtime/cloud-codex-home";
@@ -73,8 +74,20 @@ describe("what Claude Code is told", () => {
 				"Your last message is your report: what you did, what is left, and which files you changed.\n",
 			].join("\n\n"),
 		);
-		const followed = claudeWorkerPrompt({ ...brief, context: null, sources: [], followUp: "Use the new logo." });
+		const followed = claudeWorkerPrompt({
+			...brief,
+			context: null,
+			sources: [],
+			followUp: "Use the new logo.",
+			earlier: "Made onboarding.pdf with the old logo.",
+		});
+		// A follow-up is a fresh Claude Code session: it is told where its earlier work is and what it reported.
+		expect(followed).toContain(
+			"This follows up your earlier work on this, which is in /company/QorperaOS/agents/alice/todos/onboarding/pdf; your earlier report there (results.md) was replaced by this follow-up.",
+		);
+		expect(followed).toContain("Your earlier report said: Made onboarding.pdf with the old logo.");
 		expect(followed).toContain("The agent's follow-up on your earlier report: Use the new logo.");
+		expect(claudeWorkerPrompt({ ...brief, followUp: "x", earlier: "y".repeat(5000) }).length).toBeLessThan(3000);
 		expect(followed).not.toContain("Context:");
 		expect(followed).not.toContain("Sources");
 	});
@@ -635,5 +648,199 @@ describe("a Claude Code worker's run", () => {
 				standInBox([init(), result("I could not read the notes.", "error_during_execution", true)]).launch,
 			),
 		).toMatchObject({ needs: `Claude Code could not finish the work. It said: "I could not read the notes.".` });
+	});
+});
+
+// Review round 1 of #1835 ------------------------------------------------------------------------------------------------
+
+// What Claude Code 2.1.325 wrote when the stub answered 429 and 401 (run probe-1, 15 Nov 2026), its lines shortened.
+const LIMIT_LINES = [
+	init(),
+	JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "rejected" } }),
+	JSON.stringify({
+		type: "assistant",
+		error: "rate_limit",
+		api_error_status: 429,
+		message: {
+			model: "<synthetic>",
+			content: [{ type: "text", text: "You've hit your 5-hour limit · resets 9:42am (UTC)" }],
+		},
+	}),
+	JSON.stringify({
+		type: "result",
+		subtype: "success",
+		is_error: true,
+		api_error_status: 429,
+		result: "You've hit your 5-hour limit · resets 9:42am (UTC)",
+		num_turns: 1,
+	}),
+];
+const SIGNED_OUT_LINES = [
+	init(),
+	JSON.stringify({ type: "system", subtype: "api_retry", error: "authentication_failed" }),
+	JSON.stringify({
+		type: "assistant",
+		error: "authentication_failed",
+		message: {
+			model: "<synthetic>",
+			content: [{ type: "text", text: "Failed to authenticate: OAuth session expired and could not be refreshed" }],
+		},
+	}),
+	JSON.stringify({
+		type: "result",
+		subtype: "success",
+		is_error: true,
+		api_error_status: null,
+		result: "Failed to authenticate: OAuth session expired and could not be refreshed",
+		num_turns: 1,
+	}),
+];
+
+async function runWith(lines: string[], logins: ClaudeWorkerLogins = vault().logins) {
+	const runRoot = await root();
+	try {
+		return await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins,
+			launch: standInBox(lines).launch,
+			root: runRoot,
+			signal: new AbortController().signal,
+		});
+	} finally {
+		await rm(runRoot, { recursive: true, force: true });
+	}
+}
+
+describe("review round 1 of #1835", () => {
+	it("F1: a successful run whose words speak of rate limits, resets and logins is succeeded, with its own report", async () => {
+		const report =
+			"Added a rate limit to /upload (it resets in 60 s once the limit is reached); fixed 'not logged in' on /login.";
+		const outcome = await runWith([
+			init(),
+			said("Now I'll add the rate limiter. You've hit your limit check comes next; not logged in users get 401."),
+			use("t1", "Edit", { file_path: "/company/api.ts" }),
+			answer("t1"),
+			said("Usage limit reached handling is in place."),
+			result(report),
+		]);
+		expect(outcome).toMatchObject({ outcome: "succeeded", summary: report });
+	});
+
+	it("F1: Claude Code's own marks for a plan's limit and an ended sign-in, as 2.1.325 writes them, give their words", async () => {
+		expect(await runWith(LIMIT_LINES)).toMatchObject({
+			outcome: "blocked",
+			needs: `Ada's Claude plan has reached its limit. Claude Code said: "You've hit your 5-hour limit · resets 9:42am (UTC)". Nothing was changed after that point.`,
+		});
+		expect(await runWith(SIGNED_OUT_LINES)).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.signedOut("Ada"),
+		});
+		// Text alone on an assistant message is never a mark; on an error result it is.
+		const stream = new ClaudeWorkerStream();
+		stream.push(said("You've hit your limit · resets 9pm"));
+		stream.push(said("OAuth token has expired. Please run /login"));
+		expect(stream.limit).toBeNull();
+		expect(stream.signedOut).toBe(false);
+		stream.push(result("Claude AI usage limit reached|1794600000", "success", true));
+		expect(stream.limit?.words).toBe("Claude AI usage limit reached; it resets at 2026-11-13 20:00 UTC");
+	});
+
+	it("F3: a vault that cannot be asked, an answer out of shape or folders that cannot be made end blocked in words; a stop throws", async () => {
+		const down: ClaudeWorkerLogins = {
+			open: async () => {
+				throw new Error("Cloud secret broker refused the Claude login");
+			},
+			seal: async () => ({ state: "unchanged" }),
+		};
+		const launch = vi.fn();
+		const runRoot = await root();
+		expect(
+			await runClaudeWorker({
+				brief,
+				member: "Ada",
+				logins: down,
+				launch,
+				root: runRoot,
+				signal: new AbortController().signal,
+			}),
+		).toEqual({
+			outcome: "blocked",
+			summary: CLAUDE_WORKER_WORDS.openFailed("Ada"),
+			needs: CLAUDE_WORKER_WORDS.openFailed("Ada"),
+			steps: 0,
+		});
+		expect(CLAUDE_WORKER_WORDS.openFailed("Ada")).toBe(
+			"Claude Code could not open Ada's sign-in on Qorpera's side now; nothing ran on the agent's machine. Try again later.",
+		);
+		// A root that is not there: the login folder cannot be made; the opened files are zeroed all the same.
+		const v = vault();
+		expect(
+			await runClaudeWorker({
+				brief,
+				member: "Ada",
+				logins: v.logins,
+				launch,
+				root: join(runRoot, "missing", "deeper"),
+				signal: new AbortController().signal,
+			}),
+		).toMatchObject({ outcome: "blocked", needs: CLAUDE_WORKER_WORDS.openFailed("Ada") });
+		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
+		expect(launch).not.toHaveBeenCalled();
+		const stopped = new AbortController();
+		stopped.abort();
+		const stopping: ClaudeWorkerLogins = {
+			open: async (signal) => {
+				signal.throwIfAborted();
+				return { refused: "NOT_OPEN" };
+			},
+			seal: async () => ({ state: "unchanged" }),
+		};
+		await expect(
+			runClaudeWorker({ brief, member: "Ada", logins: stopping, launch, root: runRoot, signal: stopped.signal }),
+		).rejects.toThrow();
+		await rm(runRoot, { recursive: true, force: true });
+	});
+
+	it("F5: a tool use before the init line stops the box as one that did not start as Qorpera runs it", async () => {
+		expect(
+			await runWith([use("t1", "WebFetch", { url: "https://example.com" }), answer("t1"), init(), result("x")]),
+		).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.toolsWrong,
+			steps: 0,
+		});
+	});
+
+	it("F2: the file list is read after a wait and again until it stands still, within a bound", async () => {
+		const sleeps: number[] = [];
+		const sleep = async (ms: number) => {
+			sleeps.push(ms);
+		};
+		// The view's last boundary lands between the first and the second read.
+		const answers = [["a.md"], ["a.md", "last.pdf"], ["a.md", "last.pdf"]];
+		let reads = 0;
+		expect(
+			await claudeWorkerSettledOutputs(
+				async () => answers[Math.min(reads++, answers.length - 1)] as string[],
+				new AbortController().signal,
+				{ sleep },
+			),
+		).toEqual(["a.md", "last.pdf"]);
+		expect(reads).toBe(3);
+		expect(sleeps).toEqual([2000, 2000, 2000]);
+		// A read that fails keeps the list before it; a list that never stands still ends at the bound.
+		reads = 0;
+		const failing = async () => {
+			reads++;
+			if (reads === 2) throw new Error("database busy");
+			return [`f${reads}`];
+		};
+		expect(await claudeWorkerSettledOutputs(failing, new AbortController().signal, { sleep, untilMs: 6000 })).toEqual(
+			["f4"],
+		);
+		const stopped = new AbortController();
+		stopped.abort();
+		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();
 	});
 });

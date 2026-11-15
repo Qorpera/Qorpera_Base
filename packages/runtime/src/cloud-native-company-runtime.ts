@@ -29,6 +29,7 @@ import {
 	claudeWorkerLogins,
 	claudeWorkerPrompt,
 	claudeWorkerSessionId,
+	claudeWorkerSettledOutputs,
 	runClaudeWorker,
 } from "./cloud-claude-worker.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
@@ -1663,19 +1664,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				lines: { call: new MemoryCompactChannel().call, lane: new MemoryCompactLane() },
 			});
 			const log = opened?.log ?? undefined;
-			const facts = (await this.#paths.call(
-				"qorpera_claude_worker_run_facts",
-				{ p_binding: binding },
-				runSignal,
-			)) as { member?: unknown; outputs?: unknown };
+			// The member's name for the words, and on a follow-up the worker's earlier report. A read that fails is no reason to
+			// end the worker: it says "the member who asked" and goes on without the earlier report.
+			const facts = (await this.#paths
+				.call("qorpera_claude_worker_run_facts", { p_binding: binding }, runSignal)
+				.catch(() => {
+					runSignal.throwIfAborted();
+					return null;
+				})) as { member?: unknown; earlier?: unknown } | null;
 			const member = typeof facts?.member === "string" && facts.member ? facts.member : "the member who asked";
+			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
 			const home = await input.home;
 			const sessionId = randomUUID();
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
 				outcome = await runClaudeWorker({
-					brief,
+					brief: { ...brief, earlier },
 					member,
 					logins: claudeWorkerLogins(host.logins, {
 						leaseId: binding.leaseId,
@@ -1737,24 +1742,27 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				});
 			runSignal.throwIfAborted();
 			await log?.close(AbortSignal.timeout(10_000)).catch(() => undefined);
-			// What the run changed on the machine's folder, as its home's window credited it (at most four in the report).
-			const after = (await this.#paths.call(
-				"qorpera_claude_worker_run_facts",
-				{ p_binding: binding },
-				runSignal,
-			)) as {
-				outputs?: unknown;
-			};
-			const outputs = (Array.isArray(after?.outputs) ? after.outputs : [])
-				.filter(
-					(path): path is string =>
-						typeof path === "string" &&
-						path === path.trim() &&
-						!/[\r\n]/.test(path) &&
-						Buffer.byteLength(path) <= 256 &&
-						path !== `${input.outputFolder}/results.md`,
-				)
-				.slice(0, 4);
+			// What the run changed on the machine's folder, as its home's window credited it (at most four in the report), once
+			// the view's last boundary is in: read after a short wait and again until it stands still (bounded).
+			const outputs = home
+				? (
+						await claudeWorkerSettledOutputs(async (readSignal) => {
+							const after = (await this.#paths.call(
+								"qorpera_claude_worker_run_facts",
+								{ p_binding: binding },
+								readSignal,
+							)) as { outputs?: unknown };
+							return (Array.isArray(after?.outputs) ? after.outputs : []).filter(
+								(path): path is string =>
+									typeof path === "string" &&
+									path === path.trim() &&
+									!/[\r\n]/.test(path) &&
+									Buffer.byteLength(path) <= 256 &&
+									path !== `${input.outputFolder}/results.md`,
+							);
+						}, runSignal)
+					).slice(0, 4)
+				: [];
 			const workers = new CloudFolderWorkers({
 				folder,
 				operations,

@@ -54,6 +54,8 @@ export interface ClaudeWorkerBrief {
 	readonly outputFolder: string;
 	/** The agent's follow-up, on a worker's later run. */
 	readonly followUp: string | null;
+	/** On a follow-up: the summary of the worker's last report (the follow-up removed its results file). */
+	readonly earlier?: string | null;
 }
 
 /** The brief of a Claude Code worker's wake (the wake bus checked its shape already). */
@@ -74,6 +76,9 @@ export function claudeWorkerBrief(payload: Readonly<Record<string, unknown>>): C
 	};
 }
 
+/** How much of a follow-up's earlier report its prompt carries. */
+const EARLIER_CHARS = 2000;
+
 /** A company path as the machine shows it: under /company. */
 function machinePath(path: string): string {
 	return `/company/${path.replace(/^\/+/, "").replace(/^company\//, "")}`;
@@ -84,7 +89,14 @@ function machinePath(path: string): string {
 export function claudeWorkerPrompt(brief: ClaudeWorkerBrief): string {
 	const parts = [`# ${brief.title || "A piece of work"}`, `Goal: ${brief.goal}`, `Done when: ${brief.doneWhen}`];
 	if (brief.context) parts.push(`Context: ${brief.context}`);
-	if (brief.followUp) parts.push(`The agent's follow-up on your earlier report: ${brief.followUp}`);
+	if (brief.followUp) {
+		// A follow-up is a new Claude Code session: it is told where its earlier work is and what it reported then.
+		parts.push(
+			`This follows up your earlier work on this, which is in ${machinePath(brief.outputFolder)}; your earlier report there (results.md) was replaced by this follow-up.`,
+		);
+		if (brief.earlier) parts.push(`Your earlier report said: ${oneLine(brief.earlier, EARLIER_CHARS)}`);
+		parts.push(`The agent's follow-up on your earlier report: ${brief.followUp}`);
+	}
 	if (brief.sources.length)
 		parts.push(
 			`Sources, in the company's folder:\n${brief.sources.map((source) => `- ${machinePath(source)}`).join("\n")}`,
@@ -152,7 +164,7 @@ function limitWords(text: string): string {
 
 const LIMIT = /usage limit|hit your limit|limit reached|limit will reset|resets? (at|in)\b|rate[ _-]?limit/i;
 const SIGNED_OUT =
-	/oauth token (has )?expired|invalid api key|authentication[_ ](error|failed)|please run \/login|not logged in|credentials? (are|is) invalid|token (was )?revoked/i;
+	/oauth (token|session) (has )?expired|failed to authenticate|invalid api key|authentication[_ ](error|failed)|please run \/login|not logged in|credentials? (are|is) invalid|token (was )?revoked/i;
 
 /** The final `result` line. */
 export interface ClaudeWorkerResult {
@@ -179,6 +191,8 @@ export class ClaudeWorkerStream {
 	limit: { readonly words: string; toolsAfter: number } | null = null;
 	/** Claude Code said its sign-in failed. */
 	signedOut = false;
+	/** A tool use or result came before the init line: the tools were never shown to be the eight. */
+	beforeInit = false;
 
 	constructor(now: () => number = () => performance.now()) {
 		this.#now = now;
@@ -211,11 +225,16 @@ export class ClaudeWorkerStream {
 				.filter((block) => block?.type === "text" && typeof block.text === "string")
 				.map((block) => block.text as string)
 				.join(" ");
-			if (event.error === "rate_limit" || (said && LIMIT.test(said) && content.every((b) => b?.type !== "tool_use")))
+			// Only Claude Code's own error mark says so (2.1.325, against a stub answering 429 and 401: its synthetic message
+			// has `error: "rate_limit"` with "You've hit your 5-hour limit · resets …", or `error: "authentication_failed"`
+			// with "Failed to authenticate: …"). What it writes in its work, "rate limit" or "not logged in" among it, is
+			// never read as either.
+			if (event.error === "rate_limit")
 				this.limit ??= { words: limitWords(said || "Claude Code's plan limit is reached"), toolsAfter: 0 };
-			if (event.error === "authentication_failed" || (said && SIGNED_OUT.test(said))) this.signedOut = true;
+			if (event.error === "authentication_failed") this.signedOut = true;
 			for (const block of content) {
 				if (block?.type !== "tool_use" || typeof block.id !== "string") continue;
+				if (this.init === null) this.beforeInit = true;
 				const tool = typeof block.name === "string" ? block.name : "unknown";
 				this.#open.set(block.id, { tool, what: stepWhat(tool, block.input), at: this.#now() });
 				if (this.limit) this.limit.toolsAfter++;
@@ -226,6 +245,7 @@ export class ClaudeWorkerStream {
 			const done: ClaudeWorkerStep[] = [];
 			for (const block of content) {
 				if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+				if (this.init === null) this.beforeInit = true;
 				const open = this.#open.get(block.tool_use_id);
 				if (!open) continue;
 				this.#open.delete(block.tool_use_id);
@@ -251,8 +271,11 @@ export class ClaudeWorkerStream {
 				text,
 				turns: typeof event.num_turns === "number" ? event.num_turns : null,
 			};
-			if (this.result.isError && text && LIMIT.test(text)) this.limit ??= { words: limitWords(text), toolsAfter: 0 };
-			if (this.result.isError && text && SIGNED_OUT.test(text)) this.signedOut = true;
+			// An error result's own status (Claude Code's `api_error_status`), and only then its words.
+			if (this.result.isError && (event.api_error_status === 429 || (text && LIMIT.test(text))))
+				this.limit ??= { words: limitWords(text || "Claude Code's plan limit is reached"), toolsAfter: 0 };
+			if (this.result.isError && (event.api_error_status === 401 || (text && SIGNED_OUT.test(text))))
+				this.signedOut = true;
 		}
 		return [];
 	}
@@ -278,6 +301,8 @@ export const CLAUDE_WORKER_WORDS = Object.freeze({
 	limit: (member: string, words: string, nothingAfter: boolean) =>
 		`${member}'s Claude plan has reached its limit. Claude Code said: "${words}".${nothingAfter ? " Nothing was changed after that point." : ""}`,
 	boxFailed: "Claude Code could not start on Qorpera's side; nothing ran on the agent's machine. Try again later.",
+	openFailed: (member: string) =>
+		`Claude Code could not open ${member}'s sign-in on Qorpera's side now; nothing ran on the agent's machine. Try again later.`,
 	toolsWrong:
 		"Claude Code did not start the way Qorpera runs it, so it was stopped before it did anything. Try again later.",
 	cut: (worked: boolean) =>
@@ -545,7 +570,14 @@ function blocked(words: string, extra: Partial<ClaudeWorkerOutcome> & { steps?: 
 export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<ClaudeWorkerOutcome> {
 	const { signal, member } = options;
 	signal.throwIfAborted();
-	const opened = await options.logins.open(signal);
+	let opened: Awaited<ReturnType<ClaudeWorkerLogins["open"]>>;
+	try {
+		opened = await options.logins.open(signal);
+	} catch {
+		// The vault unreachable, or an answer out of shape: nothing of Claude Code ran. Only a stop throws.
+		signal.throwIfAborted();
+		return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
+	}
 	if ("refused" in opened)
 		return blocked(
 			opened.refused === "SIGNED_OUT" ? CLAUDE_WORKER_WORDS.signedOut(member) : CLAUDE_WORKER_WORDS.notOpen(member),
@@ -563,6 +595,10 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				await mkdir(scratchRoot, { mode: 0o700 });
 				for (const [name, bytes] of opened.files)
 					await writeFile(join(folder, name), bytes, { mode: 0o600, flag: "wx" });
+			} catch {
+				// The run's folders could not be made: nothing of Claude Code ran (what was written goes in `finally`).
+				signal.throwIfAborted();
+				return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
 			} finally {
 				for (const bytes of opened.files.values()) bytes.fill(0);
 			}
@@ -610,6 +646,10 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				for await (const line of box.lines) {
 					const hadInit = stream.init !== null;
 					for (const step of stream.push(line)) options.step?.(step);
+					if (stream.beforeInit) {
+						toolsWrong = true;
+						break;
+					}
 					if (!hadInit && stream.init) {
 						if (!stream.toolsAsAllowed()) {
 							toolsWrong = true;
@@ -630,22 +670,22 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				...(stream.init ? { model: stream.init.model, sessionId: stream.init.sessionId } : {}),
 			};
 			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, facts);
+			// A successful result is the report, whatever an earlier message said.
+			if (stream.result && !stream.result.isError)
+				return {
+					outcome: "succeeded",
+					summary: claudeWorkerReportText(
+						stream.result.text || "Claude Code finished and said nothing more.",
+						SUMMARY_BYTES,
+					),
+					...facts,
+				};
 			if (stream.limit)
 				return blocked(CLAUDE_WORKER_WORDS.limit(member, stream.limit.words, stream.limit.toolsAfter === 0), facts);
-			if (stream.signedOut && (!stream.result || stream.result.isError))
-				return blocked(CLAUDE_WORKER_WORDS.signedOut(member), facts);
+			if (stream.signedOut) return blocked(CLAUDE_WORKER_WORDS.signedOut(member), facts);
 			const result = stream.result;
 			if (!result) return blocked(CLAUDE_WORKER_WORDS.cut(facts.steps > 0), facts);
-			if (result.isError)
-				return blocked(CLAUDE_WORKER_WORDS.failed(oneLine(result.text || result.subtype, WORDS_CHARS)), facts);
-			return {
-				outcome: "succeeded",
-				summary: claudeWorkerReportText(
-					result.text || "Claude Code finished and said nothing more.",
-					SUMMARY_BYTES,
-				),
-				...facts,
-			};
+			return blocked(CLAUDE_WORKER_WORDS.failed(oneLine(result.text || result.subtype, WORDS_CHARS)), facts);
 		})();
 	} finally {
 		await box?.close().catch(() => undefined);
@@ -700,4 +740,41 @@ export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelL
 			return { state: "stale", version: answer.version };
 		},
 	};
+}
+
+/**
+ * The files the run's machine view wrote, once they stand still. The home's window closes when its channel ends, and the
+ * view's last boundary (what its quiet period still held) commits after that, credited to the run for two minutes
+ * (20260930754000); the run does not hear when. So the list is read after a short wait and again until two reads agree,
+ * within a bound. A read that fails keeps the list read before it. A stop throws.
+ */
+export async function claudeWorkerSettledOutputs(
+	read: (signal: AbortSignal) => Promise<readonly string[]>,
+	signal: AbortSignal,
+	options: { firstMs?: number; stepMs?: number; untilMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<readonly string[]> {
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
+	const step = options.stepMs ?? 2_000;
+	const until = options.untilMs ?? 12_000;
+	// A read that fails answers nothing: it neither agrees with the read before it nor replaces it.
+	const attempt = async (): Promise<readonly string[] | undefined> => {
+		try {
+			return await read(signal);
+		} catch {
+			signal.throwIfAborted();
+			return undefined;
+		}
+	};
+	await sleep(options.firstMs ?? 2_000);
+	signal.throwIfAborted();
+	let last = await attempt();
+	for (let waited = 0; waited < until; waited += step) {
+		await sleep(step);
+		signal.throwIfAborted();
+		const next = await attempt();
+		if (next === undefined) continue;
+		if (last && next.join("\n") === last.join("\n")) return next;
+		last = next;
+	}
+	return last ?? [];
 }

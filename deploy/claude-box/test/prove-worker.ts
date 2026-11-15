@@ -254,6 +254,23 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		say(`company made; Alice's run ${alice.runId?.slice(0, 8)}; home-a ${made.machine.id?.slice(0, 8)} on boot ${boot.slice(0, 8)}`);
 		const session = (sql: string) => db.query(`${prelude(alice)}${sql}\ncommit;`);
 		const sessionJson = <T>(sql: string): T => JSON.parse(session(sql).split("\n").filter(Boolean).at(-1) || "null") as T;
+		/** A run's authority held for the whole proof (its job, run deadline, native lease, assignment and runner session):
+		 * a stand-in for its host's renewals (924's fixture grants two minutes). */
+		const hold = (binding: Record<string, string>, tokenSha?: string) =>
+			session(`set local session_replication_role = replica;
+				update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() + interval '2 hours'
+					${tokenSha ? `, lease_token_sha256 = '${tokenSha}'` : ""} where id = '${binding.jobId}';
+				update public.qorpera_execution_runs set deadline_at = greatest(deadline_at, clock_timestamp() + interval '2 hours')
+					where id = '${binding.runId}';
+				update public.qorpera_native_provider_connection_leases set expires_at = clock_timestamp() + interval '2 hours'
+					where id = '${binding.leaseId}';
+				update public.qorpera_runner_assignments set expires_at = clock_timestamp() + interval '2 hours'
+					where id = '${binding.assignmentId}';
+				update public.qorpera_runners set session_expires_at = clock_timestamp() + interval '2 hours'
+					where id = '${binding.runnerId}';
+				set local session_replication_role = origin;`);
+		// Alice's own run is the dispatching one for the whole proof.
+		hold(alice);
 		const owner = sessionJson<string>("select to_jsonb(pg_temp.c4_owner_id())::text;");
 		const member = sessionJson<string>("select to_jsonb(pg_temp.c4_name())::text;");
 
@@ -595,12 +612,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		 * the native lease's time as long as a run here takes: stand-ins for the host's own lease and its renewal. */
 		const leased = (binding: Record<string, string>) => {
 			const token = randomBytes(32).toString("base64url");
-			session(`set local session_replication_role = replica;
-				update public.qorpera_runner_jobs set lease_token_sha256 = '${sha256(token)}',
-					lease_expires_at = clock_timestamp() + interval '30 minutes' where id = '${binding.jobId}';
-				update public.qorpera_native_provider_connection_leases set expires_at = clock_timestamp() + interval '30 minutes'
-					where id = '${binding.leaseId}';
-				set local session_replication_role = origin;`);
+			hold(binding, sha256(token));
 			return { ...binding, leaseToken: token };
 		};
 		const complete = (binding: Record<string, string>, providerSessionId: string) =>
@@ -788,7 +800,31 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			],
 			"I made onboarding.md and notes.txt in my folder. Nothing is left. Changed: onboarding.md, notes.txt.",
 		);
+		// The folder service's last boundary, stood in by SQL (the nested home's /company is a plain folder): one second after
+		// the run's home session closed, a commit of the machine's view lands as the run, as the view's last boundary commits
+		// what its quiet period still held. The report's file list must hold it.
+		const lastBoundary = (async () => {
+			for (let i = 0; i < 1200; i++) {
+				const closed = sessionJson<boolean>(`select to_jsonb(exists (select 1 from public.qorpera_company_home_sessions
+					where run_id = '${b1.runId}' and closed_at is not null))::text;`);
+				if (closed) break;
+				await sleep(150);
+			}
+			await sleep(1000);
+			session(`set local session_replication_role = replica;
+				insert into public.qorpera_folder_commits(id, environment_id, operation_key, actor_kind, actor_id, session_kind, run_id,
+					view_id, view_kind, units)
+				values ('c4c00000-0000-4000-8000-0000000000f1', '${ENVIRONMENT}', 'c4c-last-boundary', 'staff_agent', '${ALICE}', 'in_house',
+					'${b1.runId}', extensions.gen_random_uuid(), 'test_machine', '[]'::jsonb);
+				insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no)
+				values (extensions.gen_random_uuid(), '${ENVIRONMENT}', 'QorperaOS/agents/alice/todos/onboarding/pdf/onboarding.md',
+					extensions.digest(public.qorpera_folder_key('QorperaOS/agents/alice/todos/onboarding/pdf/onboarding.md'), 'sha256'),
+					'write', 'file', 'c4c00000-0000-4000-8000-0000000000f1', 1);
+				set local session_replication_role = origin;`);
+			return Date.now();
+		})();
 		const r1 = await runWorker(b1, work);
+		const boundaryAt = await lastBoundary;
 		// A seal-back AFTER the worker's report, through the vault's own route and the real SQL, while the run's job and the
 		// member's lease are still this run's (the run host does it so when a renewal comes late): the run's composition
 		// wrote results.md above; the job is completed only after this.
@@ -818,6 +854,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		const results1 = resultsText("pdf");
 		check("run-1", r1.ok && /^claude-code\/2\.1\.325\/[^/]+\/[^/]+$/.test(r1.providerSessionId ?? ""), `the run: ${r1.providerSessionId ?? r1.error}`);
 		check("results-1", results1?.includes("outcome: succeeded") === true && results1.includes("I made onboarding.md"), `results.md: ${results1?.replaceAll("\n", " | ")}`);
+		check("files-1", (results("pdf")?.parse as { files?: unknown } | null)?.files !== undefined
+			&& JSON.stringify((results("pdf")?.parse as { files?: unknown }).files) === JSON.stringify(["QorperaOS/agents/alice/todos/onboarding/pdf/onboarding.md"]),
+			`the report's file list holds what the view's last boundary committed ${boundaryAt ? "after the session closed" : ""}: ${JSON.stringify((results("pdf")?.parse as { files?: unknown } | null)?.files)}`);
 		const l1 = login();
 		check("sealed-early", (l1?.version ?? 0) >= 2, `Claude Code renewed the expired sign-in at its start and the run sealed it back: ${JSON.stringify(l1)}`);
 		check("tools-ran", (r1.stub?.results ?? []).length === 5 && (r1.stub?.results ?? []).filter((r) => r.isError).map((r) => r.name).join() === "read-missing",
@@ -849,6 +888,68 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("run-2", r2.ok && resultsText("slides")?.includes("Second run done.") === true, `run 2: ${r2.providerSessionId ?? r2.error}`);
 		check("opened-v2", (r2.stub?.authTags ?? []).includes("RFR") && !(r2.stub?.authTags ?? []).includes("FILE") && (login()?.version ?? 0) > before2,
 			`run 2 spoke with the renewed token, not the first: ${JSON.stringify(r2.stub?.authTags)}; version ${before2} -> ${login()?.version}`);
+
+		// 4b. A follow-up of the first worker: a fresh Claude Code session told where its earlier work is and what it reported.
+		drain();
+		const fu = sessionJson<Record<string, unknown>>(`select pg_temp.c4_followup(pg_temp.c4_alice(), 'c4c-e2e-followup',
+			'QorperaOS/agents/alice/todos/onboarding/pdf', 'Use the new logo.')::text;`);
+		check("followup-saved", JSON.stringify(fu).includes('"outcome": "saved"') || JSON.stringify(fu).includes('"outcome":"saved"'), `follow-up: ${JSON.stringify(fu).slice(0, 200)}`);
+		drain();
+		const bf = leased(start(w1));
+		const rf = await runWorker(bf, scenario("followup", [Bash("echo following up", "shell")], "Used the new logo."));
+		if (rf.ok && rf.providerSessionId) complete(bf, rf.providerSessionId);
+		const asked = (() => {
+			try {
+				return readFileSync(join(B, `stub-run${runCount}.jsonl`), "utf8").split("\n").filter(Boolean)
+					.map((line) => JSON.parse(line) as { kind: string; text?: string }).find((line) => line.kind === "prompt")?.text ?? "";
+			} catch {
+				return "";
+			}
+		})();
+		check("followup-prompt", rf.ok && asked.includes("This follows up your earlier work on this, which is in /company/QorperaOS/agents/alice/todos/onboarding/pdf")
+			&& asked.includes("Your earlier report said: I made onboarding.md and notes.txt in my folder.")
+			&& asked.includes("The agent's follow-up on your earlier report: Use the new logo."),
+			`Claude Code was asked: ${asked.replaceAll("\n", " | ").slice(0, 900)}`);
+
+		// 4c. The plan's limit and an ended sign-in, as Anthropic answers them (429 with its unified limit headers; 401), in
+		// Claude Code's own words on its own stream.
+		const failRun = async (key: string, workerId: string, fail: Record<string, unknown>, steps: unknown[]) => {
+			drain();
+			dispatch(key, workerId, key);
+			drain();
+			const binding = leased(start(workerId));
+			const path = join(P, `scen-c4c-${key}.json`);
+			writeFileSync(path, JSON.stringify({ label: key, nonce: randomBytes(4).toString("hex"), steps, final: "never", expiresIn: 1, fail }), { mode: 0o444 });
+			const run = await runWorker(binding, path);
+			if (run.ok && run.providerSessionId) complete(binding, run.providerSessionId);
+			return { run, text: resultsText(key) ?? "" };
+		};
+		const limited = await failRun("limit", "c4c00000-0000-4000-8000-0000000000b6", {
+			status: 429,
+			after: 1,
+			headers: {
+				"anthropic-ratelimit-unified-status": "rejected",
+				"anthropic-ratelimit-unified-reset": "{reset}",
+				"anthropic-ratelimit-unified-representative-claim": "five_hour",
+				"retry-after": "3600",
+			},
+			body: { type: "error", error: { type: "rate_limit_error", message: "This request would exceed your account's rate limit. Please try again later." } },
+		}, [Bash("echo before the limit", "shell")]);
+		check("limit-429", limited.run.ok && limited.text.includes("outcome: blocked")
+			&& /Member's Claude plan has reached its limit\. Claude Code said: "You've hit your [^"]*limit[^"]*resets [^"]+"\. Nothing was changed after that point\./.test(limited.text),
+			`results.md: ${limited.text.replaceAll("\n", " | ").slice(0, 600)}`);
+		const ended = await failRun("signedout", "c4c00000-0000-4000-8000-0000000000b7", {
+			status: 401,
+			after: 0,
+			body: { type: "error", error: { type: "authentication_error", message: "OAuth token has expired. Please obtain a new token or refresh your existing token." } },
+		}, []);
+		check("signed-out-401", ended.run.ok && ended.text.includes("outcome: blocked")
+			&& ended.text.includes("Claude Code could not sign in as Member: their Claude sign-in has ended. Ask them to sign in again."),
+			`results.md: ${ended.text.replaceAll("\n", " | ").slice(0, 600)}`);
+		for (const label of [`run${runCount - 1}`, `run${runCount}`]) {
+			const lines = readFileSync(join(B, `stub-${label}.jsonl`), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { kind: string; status?: number });
+			say(`${label} stub: ${lines.filter((l) => l.kind === "failed").map((l) => l.status).join(",")} failed answers, ${lines.filter((l) => l.kind === "refresh").length} renewals`);
+		}
 
 		// 5. A run stopped in the middle, after its early seal: Claude Code renewed the expired sign-in at its start, the run
 		// sealed it back at once, then the member's stop cancels the job (from then on the vault seals nothing of this run)
@@ -906,7 +1007,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			update public.qorpera_wake_occurrences set status = 'completed', finished_at = clock_timestamp()
 			where run_id = '${alice.runId}' and status not in ('completed', 'failed', 'cancelled');`);
 		drain();
-		const delivered = [w1, w2].map((id) => worker(id));
+		const delivered = [w1, w2, "c4c00000-0000-4000-8000-0000000000b6"].map((id) => worker(id));
 		check("completion-wake", delivered.every((row) => row?.completion_state === "delivered" && row?.completion_occurrence_id),
 			`completion: ${delivered.map((row) => `${row?.state}/${row?.completion_state}/${String(row?.completion_occurrence_id).slice(0, 8)}`).join(", ")}`);
 

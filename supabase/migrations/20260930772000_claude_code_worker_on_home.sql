@@ -119,8 +119,9 @@ select pg_temp.c4c_replace('public.qorpera_company_state_worker_rules(uuid,uuid,
 -- machine's folder view, newest first: the commits a machine's view (`test_machine`, the home's company-wide view) made
 -- as this run, which are the ones the home's folder window credited to it (Claude Code has no other way to write; the
 -- run's own report and work log are not a machine's).
--- Each is a file this run wrote, as the report's rule takes a listed file (20260928469130). At most 64 paths. Another
--- run is refused (42501).
+-- Each is a file this run wrote, as the report's rule takes a listed file (20260928469130); a commit the view's last
+-- boundary makes after the run's session closed is one too (754000 credits it to the run for two minutes). At most 64
+-- paths. And on a follow-up's run, the summary of the worker's earlier report (`earlier`). Another run is refused (42501).
 create function public.qorpera_claude_worker_run_facts(p_binding jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_worker public.qorpera_runtime_workers%rowtype; v_paths jsonb;
@@ -141,7 +142,15 @@ begin
 		group by v.path order by max(v.created_at) desc, v.path limit 64) changed;
 	return jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1',
 		'member', public.qorpera_claude_worker_member_name(v_run.profile_id, v_worker.requested_by_user_id),
-		'outputs', v_paths);
+		'outputs', v_paths,
+		-- A follow-up's run: the summary of the worker's last report. The follow-up removed the results file (the worker
+		-- reports again), and this run has not reported yet, so its last written version is that report; a first run has none.
+		'earlier', case when v_worker.sequence > 1 then (select left(v.structured -> 'parse' ->> 'summary', 2000)
+			from public.qorpera_folder_path_versions v
+			where v.environment_id = v_run.environment_id
+				and v.key_sha256 = extensions.digest(public.qorpera_folder_key(v_worker.folder_path || '/results.md'), 'sha256')
+				and v.op = 'write'
+			order by v.created_at desc, v.version desc limit 1) end);
 end $$;
 revoke all on function public.qorpera_claude_worker_run_facts(jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;

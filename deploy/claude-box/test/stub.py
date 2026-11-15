@@ -123,6 +123,10 @@ class H(BaseHTTPRequestHandler):
         if main and not first_tools:
             first_tools.extend(tools)
             base["tools"] = tools
+            # What Claude Code was asked (its first user message), for a proof that checks the prompt; no tags are kept.
+            msgs = req.get("messages") or []
+            if msgs:
+                log({"kind": "prompt", "text": content_text(msgs[0].get("content"))[:6000]})
         log(base)
         done = {}
         for m in req.get("messages", []):
@@ -135,6 +139,19 @@ class H(BaseHTTPRequestHandler):
         for i, b in sorted(done.items()):
             self.note_result(i, content_text(b.get("content")), b.get("is_error", False))
         nxt = (max(done) + 1) if done else 0
+        fail = sc.get("fail")
+        if main and fail and nxt >= int(fail.get("after", 0)):
+            # A plan's limit (429) or an ended sign-in (401), as Anthropic answers them: status, headers and error body.
+            log({"kind": "failed", "status": int(fail["status"]), "step": nxt})
+            b = json.dumps(fail.get("body") or {}).encode()
+            self.send_response(int(fail["status"]))
+            for k, v in (fail.get("headers") or {}).items():
+                self.send_header(k, str(v).replace("{reset}", str(int(time.time()) + 3600)))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if not main or nxt >= len(steps):
             blocks = [("text", {"type": "text", "text": ""}, {"type": "text_delta", "text": "ok" if not main else sc.get("final", "C2 done.")})]
             stop = "end_turn"
@@ -213,8 +230,9 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(CERT, KEY)
-    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    if CERT != "-":  # "-": plain HTTP, for a probe that names the stub as its base URL
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT, KEY)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     log({"kind": "start", "port": PORT, "scenario": sc.get("label"), "steps": len(steps)})
     srv.serve_forever()
