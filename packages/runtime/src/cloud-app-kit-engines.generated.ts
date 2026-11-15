@@ -9468,6 +9468,9 @@ export const MAP_ENGINE_JS = `// The map kit's engine: "What are we making, and 
 		signInOf: "{member}'s ChatGPT needs a new sign-in, so none of us can work.",
 		noLogin: "You have not connected ChatGPT, so none of us can work.",
 		noLoginOf: "{member} has no ChatGPT yet, so none of us can work.",
+		fullAny: "A ChatGPT login is full, so none of us can work.",
+		signInAny: "A ChatGPT login needs a new sign-in, so none of us can work.",
+		noLoginAny: "A member has not connected ChatGPT, so none of us can work.",
 		notRight: "Not right?",
 		draft: "Not right: {changes}.",
 		changed: "What changed",
@@ -9498,6 +9501,9 @@ export const MAP_ENGINE_JS = `// The map kit's engine: "What are we making, and 
 		signInOf: "{member}s ChatGPT skal logges ind igen, så ingen af os kan arbejde.",
 		noLogin: "Du har ikke forbundet ChatGPT, så ingen af os kan arbejde.",
 		noLoginOf: "{member} har ingen ChatGPT endnu, så ingen af os kan arbejde.",
+		fullAny: "Et ChatGPT-login er fuldt, så ingen af os kan arbejde.",
+		signInAny: "Et ChatGPT-login skal logges ind igen, så ingen af os kan arbejde.",
+		noLoginAny: "Et medlem har ikke forbundet ChatGPT, så ingen af os kan arbejde.",
 		notRight: "Ikke rigtigt?",
 		draft: "Ikke rigtigt: {changes}.",
 		changed: "Hvad der er ændret",
@@ -10030,7 +10036,9 @@ body{margin:0}
 		if (standing && standing.stopped && ui.model.top === "reading" && view.depth === 0) {
 			title = standing.since ? fill(w.stood, { time: when(standing.since, lang) }) : w.stoodNow;
 			const member = typeof standing.member === "string" && standing.member ? standing.member.split(/\\s+/)[0] : "";
-			const of = (own, other) => (member ? fill(other, { member }) : own);
+			// "Your" only when the reading says the login is the member looking's; another member by name; else no one
+			const you = standing.you === true;
+			const of = (own, other, any) => (you ? own : member ? fill(other, { member }) : any);
 			if (standing.why === "login_full") {
 				const reset = typeof standing.resetsAt === "string" ? Date.parse(standing.resetsAt) : NaN;
 				const opens = Number.isFinite(reset)
@@ -10038,9 +10046,9 @@ body{margin:0}
 						? fill(w.opensAt, { time: when(standing.resetsAt, lang) })
 						: fill(w.opensOn, { date: when(standing.resetsAt, lang, true) })
 					: "";
-				line = [of(w.full, w.fullOf), opens].filter(Boolean).join(" ");
-			} else if (standing.why === "sign_in") line = of(w.signIn, w.signInOf);
-			else if (standing.why === "no_login") line = of(w.noLogin, w.noLoginOf);
+				line = [of(w.full, w.fullOf, w.fullAny), opens].filter(Boolean).join(" ");
+			} else if (standing.why === "sign_in") line = of(w.signIn, w.signInOf, w.signInAny);
+			else if (standing.why === "no_login") line = of(w.noLogin, w.noLoginOf, w.noLoginAny);
 			else line = "";
 		}
 		p.title.textContent = title;

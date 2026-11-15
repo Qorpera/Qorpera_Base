@@ -1722,6 +1722,28 @@ describe("the map kit's engine", () => {
 		);
 	});
 
+	it("says whose login holds the company only when the reading says so, and no one's when nobody can be named", async () => {
+		// review r1 of #1847, F3: a null member is not "you"
+		const line = async (standing: Record<string, unknown>) => {
+			await openMap(
+				company(),
+				reading({
+					standing: { stopped: true, since: null, why: "sign_in", resetsAt: null, ...standing },
+				}),
+			);
+			const said = document.querySelector(".mp-line")?.textContent;
+			document.body.replaceChildren();
+			return said;
+		};
+		expect(await line({ you: true, member: null })).toBe("Your ChatGPT needs a new sign-in, so none of us can work.");
+		expect(await line({ you: false, member: "Sofie Lund" })).toBe(
+			"Sofie's ChatGPT needs a new sign-in, so none of us can work.",
+		);
+		expect(await line({ you: false, member: null })).toBe(
+			"A ChatGPT login needs a new sign-in, so none of us can work.",
+		);
+	});
+
 	it("turns grey and still while the company stands still, and says since when and why", async () => {
 		await openMap(
 			company(),

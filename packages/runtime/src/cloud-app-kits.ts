@@ -300,8 +300,30 @@ export function parseKitData(
 /** The map kit's bounds: things in a layer, layers deep and things in all (packages/runtime/kits/map/KIT.md). */
 export const MAP_BOUNDS = Object.freeze({ top: [3, 7], layer: [1, 12], depth: 4, things: 80 });
 
+/** A map thing's id and a layer's key, as the engine takes them. */
+const MAP_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+/** What is wrong with a list of a map's things for its engine, which draws no thing it cannot name or tell apart (review
+ * r1 of #1847, F2): one that is no object, has no id of letters, digits and `-` (64 at most) or no name, or repeats an
+ * id of the same list. */
+function mapThingsProblem(list: readonly unknown[], where: string): string | null {
+	const seen = new Set<string>();
+	for (const [index, thing] of list.entries()) {
+		if (typeof thing !== "object" || thing === null || Array.isArray(thing))
+			return `has a thing in ${where} that is no object (number ${index + 1})`;
+		const { id, name } = thing as { id?: unknown; name?: unknown };
+		if (typeof id !== "string" || !MAP_ID.test(id))
+			return `has a thing in ${where} whose id is not letters, digits and - (number ${index + 1}): the page cannot draw it`;
+		if (typeof name !== "string" || name.trim() === "") return `has a thing ${id} in ${where} with no name`;
+		if (seen.has(id)) return `has the id ${id} twice in ${where}`;
+		seen.add(id);
+	}
+	return null;
+}
+
 /** What is wrong with a map's data for its engine, or null: a first layer that is the company's reading or 3 to 7
- * things, layers of 1 to 12 things by a thing's id, at most four layers deep and 80 things in all. */
+ * things, layers of 1 to 12 things by a thing's id, at most four layers deep and 80 things in all; every thing
+ * drawable (`mapThingsProblem`), so what save_app takes is what the page draws. */
 function mapProblem(data: Readonly<Record<string, unknown>>): string | null {
 	const things = (value: unknown): unknown[] | null => (Array.isArray(value) ? value : null);
 	const top = data.top;
@@ -314,14 +336,19 @@ function mapProblem(data: Readonly<Record<string, unknown>>): string | null {
 	if (first === undefined) return 'needs top: "reading" for the company\'s reading, or an object with its things';
 	if (first !== null && (first.length < MAP_BOUNDS.top[0] || first.length > MAP_BOUNDS.top[1]))
 		return `needs ${MAP_BOUNDS.top[0]} to ${MAP_BOUNDS.top[1]} things in top: the map kit draws one picture of them`;
+	const firstProblem = first === null ? null : mapThingsProblem(first, "top");
+	if (firstProblem) return firstProblem;
 	const layers = data.layers ?? {};
 	if (typeof layers !== "object" || layers === null || Array.isArray(layers))
 		return "has layers that are no object: each key is a thing's id, its value what is inside it";
 	const inside = new Map<string, unknown[]>();
 	for (const [id, layer] of Object.entries(layers)) {
+		if (!MAP_ID.test(id)) return `has a layer ${id} whose key is not a thing's id (letters, digits and -)`;
 		const list = typeof layer === "object" && layer !== null ? things((layer as { things?: unknown }).things) : null;
 		if (!list || list.length < MAP_BOUNDS.layer[0] || list.length > MAP_BOUNDS.layer[1])
 			return `has a layer ${id} without ${MAP_BOUNDS.layer[0]} to ${MAP_BOUNDS.layer[1]} things`;
+		const listProblem = mapThingsProblem(list, `the layer ${id}`);
+		if (listProblem) return listProblem;
 		inside.set(id, list);
 	}
 	// From the first layer down, how deep the layers go; under the company's reading (whose things are live) each

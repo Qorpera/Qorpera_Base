@@ -1472,6 +1472,29 @@ it("reads a map's data, or says in words why it does not read", () => {
 	expect(problem({ ...OWN_MAP, layers: { app: { things: [] } } })).toBe(
 		"map.json has a layer app without 1 to 12 things",
 	);
+	// Every thing is one the page draws: an object with an id and a name, its id once in its list; a layer's key is an
+	// id (review r1 of #1847, F2).
+	const top = (things: unknown[]) => ({ ...OWN_MAP, top: { ...OWN_MAP.top, things } });
+	expect(problem(top([part("a"), part("b"), "c"]))).toBe("map.json has a thing in top that is no object (number 3)");
+	expect(problem(top([part("a"), part("b"), part("repair_app")]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { shape: "box", name: "No id" }]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { id: "c", name: " " }]))).toBe(
+		"map.json has a thing c in top with no name",
+	);
+	expect(problem(top([part("a"), part("b"), part("a")]))).toBe("map.json has the id a twice in top");
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [part("x"), part("x")] } } })).toBe(
+		"map.json has the id x twice in the layer app",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [{ id: "x" }] } } })).toBe(
+		"map.json has a thing x in the layer app with no name",
+	);
+	expect(problem({ ...OWN_MAP, layers: { repair_app: { things: [part("x")] } } })).toBe(
+		"map.json has a layer repair_app whose key is not a thing's id (letters, digits and -)",
+	);
 	// Four layers deep at most: the first and three under it.
 	const chain = (depth: number) =>
 		Object.fromEntries(
