@@ -626,7 +626,17 @@ describe("the agent's thread", () => {
 		});
 		// The row holds 120 of the thread's height, from 500 on; 300 of the thread shows, the foot over its last 60.
 		const rect = (top: number, height: number) =>
-			({ top, bottom: top + height, height, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+			({
+				top,
+				bottom: top + height,
+				height,
+				left: 0,
+				right: 0,
+				width: 0,
+				x: 0,
+				y: top,
+				toJSON: () => ({}),
+			}) as DOMRect;
 		vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
 			if (this === scroller) return rect(0, 300);
 			if (this === row) return rect(500 - scroller.scrollTop, 120);
