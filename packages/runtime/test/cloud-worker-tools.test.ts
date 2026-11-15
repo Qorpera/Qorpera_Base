@@ -639,8 +639,6 @@ describe("agent todo and worker tools", () => {
 			});
 			expect(body(repository).status).toBe("denied");
 			expect(f.writerCalls()).toBe(calls);
-			// When to use it is the harness field's one line: the tool's description is at its 4,096 bytes, and Codex sends a
-			// schema's field descriptions only while the schema is under 5,000 bytes.
 			const tool = (
 				f.boundary.specification as unknown as {
 					tools: { name: string; inputSchema: { properties: { harness: { description: string } } } }[];
