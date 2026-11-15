@@ -15,6 +15,11 @@
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
+ * - `app_guide` answers how one part of an app is made (cloud-app-guides.ts): what a kit's one file holds, how a page
+ *   written by hand is styled, reads the company's live data and lets a member act, and how an app's own icons are
+ *   drawn. It reads nothing of the company and changes nothing. `save_app` saves a kit's file only in a run that has
+ *   read the kit's guide: until 14 November 2026 the guides were the descriptions of save_app's fields, which no
+ *   model ever received (cloud-app-guides.ts says why), so nothing is left to a description being read.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
  * (cloud-folder-file-tools.ts, `appManifestCheck`).
  */
@@ -52,6 +57,7 @@ import {
 } from "@qorpera/cloud-client/interface-apps";
 import { INTERFACE_EMBLEMS, isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
+import { APP_GUIDES, APP_KIT_CHOICE, type AppGuide, appGuide, isAppGuide } from "./cloud-app-guides.ts";
 import {
 	EXPLAINER_CLIPS,
 	EXPLAINER_CLIPS_MAX_BYTES,
@@ -64,13 +70,11 @@ import {
 	parseExplainerClips,
 } from "./cloud-app-kit-explainer.ts";
 import {
-	DATA_KITS,
 	type DataKit,
 	isDataKit,
 	KIT_DATA_MAX_BYTES,
 	KIT_ENGINE,
 	KIT_ENGINE_JS,
-	KIT_GUIDE,
 	KIT_PAGE,
 	kitBindings,
 	kitDataFile,
@@ -125,66 +129,21 @@ export function appFileSizes(entries: readonly CloudCompanyFolderEntry[], root: 
 	return sizes;
 }
 
-/**
- * What save_app's schema says of `reads`: how a page reads the company's live data (the bridge of
- * RUNTIME-INTERFACE-APPS.md §5, which no agent-made app had used by 10 November 2026: every page was typed in by hand
- * and went stale when its area moved on). It sits on the field because a tool's own description holds 4096 bytes. The
- * pace it sets keeps a page inside the bridge's budget (120 a minute, todos as ten; change notices up to once a
- * second): six draws a minute of todos, agents and a few files stay under it, and a page that redrew on every notice
- * would spend it in seconds and then show an error until the next change.
- */
-const SAVE_APP_READS =
-	"The live sources the page may read. The page's script reads the company through the qorpera object, and every call returns a promise. qorpera.read(path) gives a file's text and qorpera.list(folder) a folder's entries (name, path, kind, bytes, updatedAt), both by company path, such as apps/<name>/state.json: the app's own folder always, any other company path only with files in reads. qorpera.table(name) gives {name, columns, rows}, each row an object by column name (tables in reads). qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}, with status open, blocked, done or cancelled (todos in reads). qorpera.agents() gives each agent's name, role and working, true while it works (agents in reads). qorpera.questions() gives your and the other agents' open questions to this member that point at this app (questions in reads; writes says how a page answers one). qorpera.onChange(fn) calls fn when the company folder changed, which in a busy company is every few seconds. Read and draw when the page opens; after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive, and do not poll on a timer. An app may make 120 calls a minute in a member's tab and 8 at a time, and todos counts as ten calls, so call each source once per draw. Keep the facts a page shows (decisions, numbers, open questions) in one data file in the app's folder and draw the page from it, so a change of state is a change to that one file; show who works on what and what is blocked from todos and agents instead of typing it in. When a read fails, keep what the page last showed and read again ten seconds later, until a read works; with nothing to show yet, show a plain line, never an empty page. Reading changes nothing: writes says what a page may ask a member to change.";
-
-/**
- * What save_app's schema says of `writes`: how a page lets a member act on the company (RUNTIME-INTERFACE-APPS.md §5;
- * Jonas, 10 November 2026: "interfaces let's you interact with your company directly"). The page only asks: the web
- * draws a bar outside the app's frame that shows what will be saved, and the save is the member's own. It sits on the
- * field for the same reason as `reads`.
- */
-const SAVE_APP_WRITES =
-	"What the page may ask a member to change, of answers and table:<name>. A page changes nothing by itself: its script asks, Qorpera shows the member a bar above the page with exactly what will be saved, and it is saved only when the member allows it there, as the member's own change. Each call returns a promise: it resolves once the change is saved, and rejects with the reason when the member says not now, when another request still waits, or when the save is refused. Show that reason on the page and leave the button, so the member can try again. Ask only from a click on a button of the page that says what it does, one request per click, never when the page opens or on a timer: after three not now in a row the page may not ask again until the member reloads it. A <form> does not submit inside an app: handle the button's click (and Enter in a field), not a form's submit. answers: a member answers an open question on the page. Ask the question with ask_member and point it at the app, with a link [title](app:<name>) in its body or app:<name> as an option's preview. qorpera.questions() (questions in reads) then lists the open questions that point at this app, each {id, agent, title, body, options: [{label, value, description}], multiSelect, askedAt}. Draw them as part of the page: a choice between two concepts as a button on each concept, an approval as a button beside what is approved. On a click call qorpera.answer(id, value) with one option's value, or a list of values for a multiSelect question. Your run goes on with the answer, as when the member answers in the chat; a typed answer is given in the chat. table:<name>: a member changes a row of the company table QorperaOS/tables/<name>/, such as a status, a date, a number or a note. qorpera.setRow(table, key, cells) changes cells of the row with that key: key is the value of the table's key column (an object of column to value when the key is several columns), and cells is an object of column to new value: text, a number, true or false, or null to empty an optional cell. qorpera.addRow(table, cells) adds a row. One row per request, at most 12 cells of it, a cell's text at most 500 characters; the bar shows each value before and after. A page cannot change a key cell or a column that names a member or an agent, and cannot remove a row; the table's own [write] rule and column types still decide, and the table areas is never written from an app. Read the rows with qorpera.table(name) (tables in reads) and draw again after a change. To act when a member changes a row, set a routine that wakes you: manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv; without one you see the change the next time you read the table. Keep what members change in a table, and what only you change in a data file of the app.";
-
-/**
- * What save_app's schema says of `files`: the base style every app's page starts from (RUNTIME-INTERFACE-APPS.md §2;
- * the web puts it into the page, packages/web/src/app/interface-app-style.ts), its variables, where the company's
- * colours come from, and how a page follows light and dark. On the field for the same reason as `reads`.
- */
-const SAVE_APP_FILES =
-	"The files to write, by their path in the app's folder. Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it: the system font, the text in a centred column at most 800 px wide (set body's margin yourself to use the whole width), and plain headings, links, tables and code. Its colours are CSS variables, and you use them in place of fixed colours: --q-bg the page, --q-text the text, --q-muted quiet text, --q-line rules and borders, --q-surface cards and panels, --q-accent the company's colour for links, marks and key figures, --q-on-accent text on the accent, --q-accent-soft a tint of it, and --q-good, --q-warn and --q-bad for states; --q-font and --q-mono are the type and --q-radius the corner. They hold the company's colours once QorperaOS/brand/brand.toml gives them, which the agent that owns the brand writes with company_write: accent, background and text, each as \"#rrggbb\", at the top for a light page and again under [dark] for a dark one. Text must read on its background (4.5 to 1) and the accent must show on it (3 to 1), or Qorpera's own colour is used instead. A page is shown light unless its head says it works in both, with <meta name=\"color-scheme\" content=\"light dark\">: then it follows the member's light or dark, so give it no fixed colours at all. The company's logo and other pictures are still copied into the app's folder, because a page cannot read QorperaOS/. A concept gets no base style.";
-
-/**
- * What save_app's schema says of `files` after the base style: an app's own icons (Jonas, 12 November 2026: "change the
- * icons of the interfaces and have a generate icon button too for them to create a new custom one based on it's name or
- * contents"). A member's Generate icon in the apps drawer asks the app's maker in the chat for 3; the format is the one
- * `parseAppIcon` reads (@qorpera/cloud-client/app-icons), to which save_app holds each icon of a call. company_read
- * shows an SVG as text, so the agent sees one only in a machine's screenshot. On the field for the same reason as
- * `reads`.
- */
-const SAVE_APP_ICONS = `An app's own icons are files ${APP_ICONS_FOLDER}/<id>.svg, the id one or two words for what it shows, such as compass or trail-sign: any member may pick one for the app under Icon and colour in its menu in the apps drawer. When a member asks you for new icons for an app, draw 3 clearly different ones from its name and what its page shows, and save them in one call with manifest null and only the icons in files: an ask for icons never changes manifest.emblem. Draw each as Qorpera's own emblems are drawn: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"> holding one bold, solid shape filled black (#000), which takes the app's colour, with its details cut out in white (#fff): white shapes, or white lines of stroke-width 2.6 to 3.4 with stroke-linecap round. Use only path, circle, rect, ellipse, line, polyline and polygon, with fill and stroke black, white or none, and nothing else: no transform, style, class, text, group or gradient. Keep to a few large parts, so it still reads at 34 px. An app keeps at most ${APP_ICONS_MAX}: to draw more, give a new one the id of an old one it replaces. company_read shows an .svg as its text, not as a picture: when machine_run is offered, look at them in a browser on a machine, small and large, as you look at a page, and draw again one that does not read. Then tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer.`;
-
-/** What save_app's schema says of `manifest.emblem`, which the description no longer lists (24 names since 12 November
- * 2026 would put it past its 4096 bytes): the schema's enum lists them. */
+/** What save_app says of `manifest.emblem`: the schema's enum lists the pictures (24 since 12 November 2026). */
 const SAVE_APP_EMBLEM =
-	"The app's own picture in the apps drawer, drawn in its colour; page when the app has none. Members may pick another for their own drawer, or one of the app's own icons (files says how to draw those).";
+	"The app's own picture in the apps drawer, drawn in its colour; page when the app has none. Members may pick another for their own drawer, or one of the app's own icons (app_guide icons says how to draw those).";
 
 /**
- * What save_app's schema says of the explainer kit: how to make a short narrated video in place of a page
- * (RUNTIME-INTERFACE-APPS.md §3a; Jonas, 10 November 2026). It is the whole of what an agent knows of the engine
- * (packages/runtime/kits/explainer/engine.js), so a name here that the engine lacks draws nothing: the kit's test holds
- * the two together.
+ * What app_guide tells the agent, as a contract (track 3, T3-5): what it answers, when to call it, and what it changes.
+ * The guides stood on save_app's fields until 14 November 2026 (#1804, cloud-app-guides.ts says why no model read them).
  */
-const SAVE_APP_KIT_EXPLAINER =
-	'explainer makes the app a short narrated video in place of a page: 90 to 120 seconds that explain one mechanism, decision or idea with pictures that move, as a maths explainer does. Use it where motion explains better than a page: how money or data flows, why a number is what it is, what a choice costs. Not for a thing a member should handle (that is another kit) and not as a mock-up of a screen. You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two. scenes.js adds chapters and scenes to the video V, which the page makes and starts: V.part("The idea"); V.scene((s) => { const a = s.box({x: 400, y: 450, w: 260, h: 100, label: "Shop", sub: "pays 149", color: C.blue}); const b = s.icon({name: "person", x: 1100, y: 450, color: C.yellow, label: "Ada"}); const ab = s.arrow(a, b, {color: C.yellow}); s.say("The shop pays Ada.", s.create(a), s.create(b), s.create(ab), s.flow(ab, 1.2, {count: 3})); }); A part is a chapter (4 to 6 in a video); a scene is one picture, and the stage clears between scenes. The stage is 1600 by 900: x and y are a thing\'s centre, y grows downwards. Things: s.box({x, y, w, h, label, sub, color, dash}); s.text({x, y, str, size, color, font: "sans" or "serif"}); s.number({x, y, from, size, fmt}), which s.value(n, to) counts; s.bar({x, y, w, h, dir: "up" or "right", scale}), which s.value(bar, to) grows; s.icon({name, x, y, label}) with name of person, bot, house, bus, card, coin, server, db, cloud, lock, doc, clock, shield, globe, mail, bolt; s.arrow(from, to, {color, bend, label}) between two things or points; s.line({d, head: false}) for any path. show: true on a thing makes it visible from the start: for the title frame only. s.say(caption, ...animations) is one caption and what moves under it, one after another: s.create(m) draws it, s.write(text), s.fadeIn(m), s.fadeOut(m), s.dim(m, 0.3), s.move(m, x, y), s.scale(m, k), s.indicate(m) glows, s.value(m, to), s.flow(arrow, seconds, {count}) sends dots along an arrow, s.camera(x, y, zoom). Each takes its seconds last; s.all(s.create, [a, b], 1) runs several together and {w: true} plays one with the one before it. Animate every thing: what you never animate just fades in. Colours come from C, one meaning each: yellow money, green what is kept or good, red loss, blue and teal things, purple partners, grey what is unknown. The captions are the narration: shown under the stage, and spoken word for word when the video has a voice. Write them for the ear: one idea and about 15 words a caption, short plain sentences, amounts as they are said (149 kroner, not NOK 149.00), no brackets and no symbols. 2 to 7 captions a scene, 25 to 35 in all. The stage shows and the caption tells: at most 12 words on the stage at once, and never a sentence in a box. A mechanism is motion: money flows along arrows, a total counts up or down, a part slides out of a whole, a bar grows past zero; never only boxes that appear. Keep 60 units free at every edge. Text sizes: 24 at least, 28 to 34 for labels, 44 to 60 for statements, 76 to 96 for the one number that matters. The first scene is the title frame: a small grey line, the title in two lines at size 70 to 80 and one small picture, all show: true, with the band around y 560 left free for the Play button. The last scene stays on screen at the end: make it a summary worth stopping on. Every number, name and claim comes from the company\'s files: never round a figure into a new one, and say assumed or example where the source does. Look before you show it, as for any app, and at more than the first frame: index.html?t=SECONDS opens the video paused at that second. Look at the end of each caption, at t=0 and at the last frame, at 1280 and at 390 px wide, and fix what overlaps, is cut off, stands empty or is too small to read. The answer\'s look names what a read of scenes.js found.';
-
-/**
- * What save_app's schema says of `kit` (RUNTIME-INTERFACE-APPS.md §3a and §3b): which kit draws which thing, what the
- * four data kits have in common (one data file, the pictures in the folder before the save, labels and not sentences,
- * unknown drawn and never written about), then each data kit's own guide (packages/runtime/kits/<kit>/KIT.md, which
- * reaches a run in the same bundle as its engine) and the explainer's. It is the whole of what an agent knows of the
- * kits. On the field because a tool's own description holds 4096 bytes; a schema holds 64 KiB.
- */
-const SAVE_APP_KIT = `The form Qorpera draws for you, or null for a page you write by hand (the product's own prototype, or a working tool no kit draws). Choose by what the thing is. model: how something works in numbers, such as a business model, a price, costs or capacity. board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references. path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route. object: a physical thing a member turns in the hand. explainer: a mechanism or a decision that a short narrated video explains. For model, board, path and object you write one file among files, the kit's data (model.json, board.json, path.json or object.json), and save_app writes engine.js and index.html: never write or edit those two. A picture or video the data names shows only when it is in the app's folder as you save: write it there first (on a machine, under /company/apps/<name>/), or save the data again after. Change the data with save_app, not with company_write, so the page is written again with it. The page speaks your data's language: give lang, and the kit's words in that language. Every kit's words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went; a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters). Such a note reaches you as the member's message, under a first line that names the app and the thing. Every text in the data is a label or a note of one line, and the page cuts what is longer. Every fact comes from the company's files; what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it. Look at the app on a machine before you show it, as for any app: its index.html opens there with the data you saved. The answer's look names the pictures the folder lacks and the texts the page cuts.\n\n${DATA_KITS.map((kit) => KIT_GUIDE[kit].trim()).join("\n\n")}\n\n# Explainer kit: why is it so?\n\n${SAVE_APP_KIT_EXPLAINER}`;
+const APP_GUIDE_DESCRIPTION = [
+	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
+	"- about a kit (model, board, path, object, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
+	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
+	"- icons: how an app's own icons are drawn.",
+	"The answer is the guide's text: read it again when you no longer have it.",
+].join("\n");
 
 const sha256hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -596,7 +555,9 @@ function savedText(
 	});
 }
 
-/** The two interface app tools of a folder-v2 run. `operations` takes the receipts of their changes. */
+/** The interface app tools of a folder-v2 run. `operations` takes the receipts of their changes. They are made once
+ * for a run's attempt and hold which guides it has read: a run that goes on in a new attempt reads a kit's guide again
+ * before it writes the kit's file, as it does when its context no longer holds the guide. */
 export function cloudAppTools(options: {
 	folder: CloudCompanyFolderClient;
 	operations: CloudNativeToolOperations;
@@ -618,6 +579,21 @@ export function cloudAppTools(options: {
 			if (error instanceof CloudCompanyPathNotText) return "unreadable" as const;
 			return unavailable(error, "saved");
 		}
+	};
+	// The guides this run has read (app_guide).
+	const guided = new Set<AppGuide>();
+	// A kit's own file is saved only in a run that has read the kit's guide: its fields, their bounds and its example
+	// are nowhere else, and a file written without them passes the few checks a save can make and draws an empty or
+	// broken page (14 November 2026). Thrown before the call began anything, and it speaks of this call alone: a call
+	// an earlier attempt of the run completed is refused here too, in an attempt that has not read the guide, and made
+	// again after the read it replays its receipt, as any repeated call does.
+	const refuseUnread = (kit: AppManifest["kit"], files: readonly AppFile[]): void => {
+		if (kit === null || guided.has(kit)) return;
+		const own = kitOwnFile(kit);
+		if (files.some((file) => file.path.toLowerCase() === own))
+			throw new CloudToolRefusal(
+				`APP_GUIDE_UNREAD: this call saved nothing. Read the ${kit} kit's guide first: it says what ${own} holds and gives an example. Call app_guide with about ${kit}, check ${own} against it, then make this call again.`,
+			);
 	};
 	// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 	const writable = () => {
@@ -681,15 +657,15 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		// Its schema is over the 5,000 bytes past which Codex sends no field description (T3-5's probe), so everything the
-		// model needs to make an app stands here, not in the fields' guides.
+		// Its fields say a line each since #1804 (the guides are app_guide's answers), so its schema stays under the 5,000
+		// bytes past which Codex sends no field description (T3-5's probe); what a call needs stands here.
 		description: [
 			"Make or change an interface app: a small web page in apps/<name>/ that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. Text to read stays a file. It applies at once.",
 			`- name: the app's folder (lowercase letters, digits and hyphens). manifest: title, and optionally about, emblem, colour, kit, entry (the page that opens, ${APP_DEFAULT_ENTRY} by default), reads, writes, concept and cover; null keeps the manifest. A new app needs a manifest and its entry, which a kit writes. group: a group of the apps drawer (organize_apps list) to put a new app in, last; a concept goes in none.`,
 			`- files: at most ${FILES_PER_CALL} a call (.html, .css, .js, .json, .svg, .md, .csv, .txt), each at most ${APP_FILE_MAX_BYTES / 1024} KiB; pages and code ${APP_MAX_BYTES / 1024 / 1024} MiB in all. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) written into the app's folder from a company machine may be ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each, ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all.`,
-			"Kits draw nearly every app: you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
-			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It gets its pictures and videos only where it names them as it opens (<img src>, <video src>, a poster, url() in its styles): a script cannot load one later, so put every picture it may show in the page, hidden ones too. Its other files it uses by relative paths, and a script reads text files with qorpera.read(path). No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own.",
-			"Live data: a page's script reads the company through the qorpera object (qorpera.read, list, table, todos, agents, questions; reads names its sources) and asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them). Qorpera shows the member what will be saved, and only their yes saves it.",
+			"Kits draw nearly every app: you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It gets its pictures and videos only where it names them as it opens (<img src>, <video src>, a poster, url() in its styles): a script cannot load one later, so put every picture it may show in the page, hidden ones too. Its other files it uses by relative paths, and a script reads text files with qorpera.read(path). No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+			"Live data: a page's script reads the company through the qorpera object (qorpera.read, list, table, todos, agents, questions; reads names its sources) and asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them). Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 			"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
 			"A concept (concept true, cover a picture of it) shows in the Concepts viewer, full screen beside Qorpera's own panel, which names it and says who made it: its page is the visual, edge to edge, with no title, strapline, caption, frame or band, only the few controls it needs, small and at the visual, and no base style.",
 			"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app. One operationKey for one change; a new change takes a new one.",
@@ -718,24 +694,26 @@ export function cloudAppTools(options: {
 						reads: {
 							type: ["array", "null"],
 							items: { type: "string", enum: [...APP_READS] },
-							description: SAVE_APP_READS,
+							description:
+								"The live sources a page written by hand may read through the qorpera object: app_guide reads says how. A kit's page reads its own data by itself.",
 						},
 						writes: {
 							type: ["array", "null"],
 							maxItems: APP_WRITES_MAX,
 							items: { type: "string", maxLength: 80 },
-							description: SAVE_APP_WRITES,
+							description:
+								"What a page written by hand may ask a member to change, of answers and table:<name>, saved only on the member's yes: app_guide writes says how.",
 						},
 						concept: { type: ["boolean", "null"] },
 						cover: { type: ["string", "null"], maxLength: 1024 },
-						kit: { type: ["string", "null"], enum: [...APP_KITS, null], description: SAVE_APP_KIT },
+						kit: { type: ["string", "null"], enum: [...APP_KITS, null], description: APP_KIT_CHOICE },
 					},
 				},
 				group: { type: "string", maxLength: 46, description: SAVE_APP_GROUP },
 				files: {
 					type: "array",
 					maxItems: FILES_PER_CALL,
-					description: `${SAVE_APP_FILES} ${SAVE_APP_ICONS}`,
+					description: `The files to write, by their path in the app's folder: a kit's one file, or a page written by hand with its styles, scripts and data (app_guide style says what every such page starts from). An app's own icons are ${APP_ICONS_FOLDER}/<id>.svg: app_guide icons says how to draw them.`,
 					items: {
 						type: "object",
 						additionalProperties: false,
@@ -825,6 +803,7 @@ export function cloudAppTools(options: {
 					cover: request.manifest.cover,
 					kit: request.manifest.kit,
 				};
+				refuseUnread(manifest.kit, request.files);
 				// A kit's own files go in with the agent's: for an explainer the engine and the page, around its scenes.
 				let files = request.files;
 				if (manifest.kit === "explainer") {
@@ -970,6 +949,7 @@ export function cloudAppTools(options: {
 				throw new CloudToolRefusal(
 					`APP_MANIFEST_INVALID: ${manifestPath} is missing or has problems; give a manifest to write it again`,
 				);
+			refuseUnread(kit, request.files);
 			// The app's totals, with this call's files in place of the ones they replace.
 			const listed = await folder
 				.list(root, { recursive: true, limit: APP_LIST_LIMIT }, context.signal)
@@ -1246,5 +1226,29 @@ export function cloudAppTools(options: {
 		},
 	};
 
-	return [saveApp, postApp];
+	const appGuideTool: CloudNativeTool = {
+		name: "app_guide" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: APP_GUIDE_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["about"],
+			properties: { about: { type: "string", enum: [...APP_GUIDES] } },
+		},
+		parseArguments(value) {
+			const about = args(value, "app_guide", ["about"]).about;
+			if (!isAppGuide(about)) throw new CloudToolArgumentRefusal(`about must be one of ${APP_GUIDES.join(", ")}`);
+			return { about };
+		},
+		async execute(value, context) {
+			const about = (value as { about: AppGuide }).about;
+			// Read once the answer is on its way: a guide that could not be shown was not read.
+			const shown = await released(folder, identity.runId, context, appGuide(about), []);
+			guided.add(about);
+			return shown;
+		},
+	};
+
+	return [saveApp, postApp, appGuideTool];
 }

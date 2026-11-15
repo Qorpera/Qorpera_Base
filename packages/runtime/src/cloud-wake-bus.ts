@@ -62,6 +62,8 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 	"cancelled",
 ]);
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+/** A light ask's wake payload (deploy/first-node/RUNTIME-LIGHT-ASK.md; migration 20260930761000). */
+export const CLOUD_LIGHT_ASK_WAKE_SCHEMA = "qorpera.light-ask-wake/v1";
 /** A todo's or a worker's key, as manage_worker takes it. */
 const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -238,7 +240,8 @@ export interface CloudWakeEnvelope {
 			| "machine-event"
 			| "machine-checkin"
 			| "event"
-			| "human-task";
+			| "human-task"
+			| "light-ask";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -771,6 +774,32 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				if (machine || narrow) uuid(program.commandId);
 			}
 		}
+	} else if (wake.kind === "agent" && source.kind === "light-ask") {
+		// A light ask (deploy/first-node/RUNTIME-LIGHT-ASK.md): one small question a member's own action raised. No
+		// parent run, no conversation and no mouth; its payload is a kind and that kind's input, which the run's one
+		// tool-less model call takes as data (cloud-light-ask.ts checks the input of the kinds this bundle answers).
+		const ask = closed(payloadBody, ["schema", "askId", "kind", "input", "expiresAt"]);
+		if (
+			ask.schema !== CLOUD_LIGHT_ASK_WAKE_SCHEMA ||
+			uuidKey(ask.askId) !== uuidKey(source.id) ||
+			source.occurrenceKey.toLowerCase() !== `light-ask:${uuidKey(source.id)}` ||
+			typeof ask.kind !== "string" ||
+			!/^[a-z][a-z0-9-]{0,63}$/.test(ask.kind) ||
+			ask.input === null ||
+			typeof ask.input !== "object" ||
+			Array.isArray(ask.input) ||
+			typeof ask.expiresAt !== "string" ||
+			!WAKE_TIME.test(ask.expiresAt) ||
+			!Number.isFinite(Date.parse(ask.expiresAt)) ||
+			heldMessages !== undefined ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			actorStaffId !== null ||
+			audience.sessionId !== null ||
+			policy.initial !== "forbidden" ||
+			policy.final !== "forbidden"
+		)
+			throw new Error("Invalid light ask wake");
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.

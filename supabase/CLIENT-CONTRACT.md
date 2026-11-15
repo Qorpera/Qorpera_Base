@@ -328,6 +328,28 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
   each colour and each icon as one.
+- Light asks (`20260930761000`, deploy/first-node/RUNTIME-LIGHT-ASK.md): one small
+  question a member's own action raises, answered by one call to the small model
+  with no tools, with nothing shown in a conversation.
+  `qorpera_request_light_ask(p_profile_id, p_client_ask_id, p_kind, p_input)` →
+  `qorpera.light-ask/v1` `{id, kind, state, answer, problem}`; owner, admin or
+  contributor of a folder-v2 company. `p_kind` is a closed list, today
+  `name-app-group`, whose `p_input` is `{apps: [{name, about?}], language}`: 2 to
+  12 apps, a name of 1 to 80 characters, `about` at most 200, `language` like `en`,
+  `da` or `en-GB`; never a prompt (22023 for anything else). `state` is `waiting`,
+  `answered` (with `answer`, one line of at most 200 characters) or `failed` (with
+  `problem`: `no_payer` when no Codex login of the member's own can pay,
+  `unavailable` for a company with no Co-Founder or one that is paused,
+  `too_many` at 8 waiting asks, `no_answer`, or `expired` after ten minutes).
+  A failed ask is never raised as an error, and `failed` is final: an answer that
+  comes after the ten minutes is not kept. In a company that is paused or being
+  deleted no ask is kept: the answer is `failed` (`unavailable`) under an id that
+  names no row, which reads as null. The same `p_client_ask_id` with the
+  same kind and input answers the ask already made (23505 with other content).
+  `qorpera_read_light_ask(p_profile_id, p_ask_id)` → the same shape, or null when
+  the caller has no ask of that id. The member's own login pays, a ChatGPT plan
+  too; no company account does. A cloud before `20260930761000` has neither
+  function, and the web then asks nothing.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
@@ -1698,11 +1720,66 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
 
+#### An address of its own (20260930756000_site_hosts)
+
+Every files site gets a host of its own, `https://<slug>.qorpera.com/`, served at the top (links from `/` are the
+site's own), and a repository's site a next host, `https://<slug>--next.qorpera.com/`, where owners and admins look
+at a version before it is live (Look first, "What's new" below). Built switched off: the operator sets
+`qorpera_site_settings.hosts_domain` first and `hosts_enabled` last (the column takes `qorpera.com` and no other value,
+23514: site-serve, the web and the executor have that domain written in, so the one host rule is one domain everywhere),
+only once the web that parses the
+host form, the app relay's cross-origin refusal and the front's `site-hosts` route are live (STEP5-BUILD's order);
+`hosts_enabled = false` is the way back.
+
+- The link form. While hosts are on, `url` in `qorpera.company-site/v1` (and every other site link: the agent's
+  publish answers, What's new) is a files site's own host, `https://<slug>.qorpera.com/`, with the path `/`; while
+  they are off it is `https://sites.qorpera.com/<slug>/` as before. An app link's is `https://<slug>-preview.qorpera.com/`
+  either way. The row's keys do not change, only the form of `url`: a deliberate exception to "breaking changes ship a
+  `_v2`" (section 8), made safe by its order: a client must accept both forms (any https host with the path `/`, or
+  the path `/<slug>/`) before the operator turns hosts on.
+- A site's name (D20, `qorpera_site_slug_valid`, also the coding executor's): `a-z`, `0-9` and `-`, 3 to 48, a letter
+  or digit at both ends, never two hyphens in a row, not ending `-preview`, never holding `qorpera`, and none of the
+  reserved names (one text, `qorpera_site_reserved_names()`: every name the platform has or plans under qorpera.com).
+  A new platform name under qorpera.com is reserved by a migration first, after production is read for a site of that
+  name, and only then gets its DNS record, tunnel hostname or envoy host.
+- A host is a site host when, lower-cased, it ends `.qorpera.com` and the one label before it is a slug that passes
+  the rule (an own host), or such a slug followed by `--next` (its next host). As one regex:
+  `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the slug in group 1, its length (3 to 48) and the rule
+  checked apart.
+- `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
+  title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
+  otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
+  operators took down (Sites says why: "Qorpera took this site down: <reason>"), else null. Every site of the company,
+  by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: Sites draws the
+  row of such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
+  keys (public sites, own addresses).
+- A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
+  new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
+  sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this
+  site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your
+  menu.", nothing written; Sites offers no menu for its row), `qorpera_delete_hosted_profile` refuses while any site
+  of the company is down (55000 "Qorpera took one of this company's sites down, so the company can't be deleted until
+  Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu."), a deletion asked before
+  waits, and its name is never free to another company. Only the operator takes a site down or restores it.
+- What an agent reads (the platform's calls, not a client's): every refusal of a site's name (`SITE_NAME_INVALID`,
+  22023, by `publish_site`, `share_app` and `unpublish_site`) says the rule in one sentence
+  (`qorpera_site_name_words()`, which the coding executor and the runtime say byte for byte). A site of the company
+  taken down takes nothing from an agent: `publish_site`'s, `share_app`'s and `unpublish_site`'s calls refuse it with `SITE_TAKEN_DOWN: This
+  site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
+  company.` (55000, no address, nothing written); a repository's site takes no upload while it is down, and its list
+  file's `index` then has `live` null, no `preparing` and `takenDown: {reason}`.
+- **The cookie invariant (D22).** Sites are sibling hosts of the app and the API under qorpera.com, so no Qorpera
+  program takes a cookie, HTTP auth, a client certificate or anything else a browser sends by itself as proof of who is
+  calling, on any qorpera.com host, except the sites' and the app links' own `__Host-` gate cookies
+  (`__Host-qorpera_site`, `__Host-qorpera_app`). Auth's redirect list stays exact, never a wildcard. A future platform
+  cookie is `__Host-` (no `Domain`), and a request that changes something also needs an Origin or Fetch Metadata check.
+  Reviews hold every change to this rule.
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
-website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, behind
-its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
+`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
@@ -1740,7 +1817,19 @@ the What's new page. Nothing goes live by itself.
   the next version. The site serves the new version from the visitor's next request.
 - `qorpera_code_release_back(profile, owner, name, shown)`: owners and admins. `shown` is exactly `{live:
   <live.version>, to: <back.version>}`. Answers as above; the changes of the version it took off are ready again.
-- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed).
+- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed). Since 20260930756000 both may
+  also answer `{schema, state: "refused", code: "SITE_TAKEN_DOWN"}`: Qorpera took the site down, and nothing changed.
+- Since 20260930756000 (site hosts): while hosts are on, `qorpera_list_code_releases` has a top-level `preview`, true
+  for owners and admins (absent while hosts are off: read it as false), and `site.url` and the writes' `url` name the
+  site's own host.
+- `qorpera_open_site_preview(profile, owner, name, change)` (Look first): owners and admins (42501 "Releases
+  unavailable" otherwise); `change` is the page's `ready.change` (22023 "Look first request is invalid" when it is no
+  positive number); P0002 "No such repository". Answers `{schema: "qorpera.site-preview/v1", state}`: `off` while hosts
+  are off (hide the button); `moved` when that change is no longer a ready point with a version (say "Something
+  changed while you looked" and read the page again); `gone` when Qorpera took the site down; or `open` with `url`,
+  `https://<slug>--next.qorpera.com/.qorpera/enter?t=<43 characters>`: a one-time ticket of 2 minutes. Open a blank tab
+  within the click, set its `opener` to null, then send it to `url` (close it on any other answer). The next host shows
+  exactly the version Put it live would put live, for 12 hours, under a "Not live yet" bar, to the member who opened it.
 - The tables are closed to every API role; the executor's calls are not a member's.
 
 ### Downloading the company's code (20260930720000_code_change_record)
@@ -2002,6 +2091,16 @@ machine.
   password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
   static files under the visitor's session (`/<slug>/~<token>/<path>`), each
   file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.
+  Since 20260930756000, while hosts are on (`qorpera_site_settings.hosts_enabled`), it also answers a site's own host
+  `https://<slug>.qorpera.com/` and its next host `https://<slug>--next.qorpera.com/` (the front's `site-hosts`
+  route), and the old host's links move to the own host (308, or 303 for its unlock). On those hosts nothing is
+  sandboxed and every path is the site's: the visitor's session is the host-only cookie `__Host-qorpera_site` (no
+  `Domain`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`), the password posts to `/.qorpera/unlock` (Origin
+  `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
+  `404.html` with 404, a site taken down answers 410, and private and next answers carry
+  `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
+  `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
+  host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),

@@ -263,11 +263,16 @@ function sitePath(relative: string): { path: string } | { skip: true } | { bad: 
 	return { path: relative };
 }
 
+/** The name rule in one sentence, as every refusal of a site's name says it: the kernel's SITE_NAME_INVALID of
+ * publish_site, share_app and unpublish_site (`qorpera_site_name_words()`, migration 20260930756000) and the coding
+ * executor's for a checks file's `site.name`, byte for byte (cloud-site-tools.test.ts reads the migration's text). */
+export const SITE_NAME_RULE =
+	"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).";
+
 function parseSlug(value: unknown): string {
+	// A slug of the wrong shape, refused here; one the kernel's rule refuses gets these same words from the kernel.
 	if (typeof value !== "string" || !SLUG.test(value))
-		throw new CloudToolArgumentRefusal(
-			"slug must be 3 to 48 lowercase letters, digits and hyphens, starting and ending with a letter or digit, such as wristband-shop",
-		);
+		throw new CloudToolArgumentRefusal(`SITE_NAME_INVALID: ${SITE_NAME_RULE}`);
 	return value;
 }
 
@@ -644,6 +649,9 @@ export function cloudSiteTools(options: {
 					// told as it is, never as a call that changed nothing.
 					if (!(error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal))
 						throw error;
+					// Qorpera took the site down meanwhile (step 5.1): its own words, which the agent passes on, and never
+					// the site's link.
+					if (error.detail.startsWith("SITE_TAKEN_DOWN: ") && PLAIN.test(error.detail)) refuse(error.detail);
 					return {
 						kind: "text",
 						value: cloudToolJsonText({

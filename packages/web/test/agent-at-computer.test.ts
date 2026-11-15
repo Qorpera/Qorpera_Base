@@ -4,11 +4,12 @@ import { AtComputerWatch, HINT_SETTLE_MS, READ_PAST_END_MS, RETRY_MS } from "../
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ComputerPanels } from "../src/app/views/computer.ts";
-import { AUTO_CLOSE_MS, ComputerByItself } from "../src/app/views/computer-by-itself.ts";
+import { ComputerByItself } from "../src/app/views/computer-by-itself.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseScreensInUse, type ScreensInUse } from "../src/cloud/screens-in-use.ts";
+import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { atComputerFrame, atComputerSeed } from "../src/ui/at-computer-motion.ts";
 import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
@@ -334,152 +335,46 @@ describe("the figure's motion", () => {
 });
 
 describe("the window's rules", () => {
-	/** A company's windows as the rule sees them: the agent's current window, and whether it is the member's. */
-	function windows() {
-		const shown = new Map<string, { el: HTMLElement; theirs: boolean }>();
-		const close = vi.fn((agentId: string) => {
-			shown.delete(agentId);
-			rules.released(agentId);
-		});
-		const rules = new ComputerByItself({ current: (agentId) => shown.get(agentId), close });
-		cleanup.push(() => rules.dispose());
-		/** The member's own click opens the agent's window (a new one). */
-		const open = (agentId: string) => {
-			const el = document.createElement("div");
-			shown.set(agentId, { el, theirs: false });
-			return el;
-		};
-		/** The rule opens it. */
-		const auto = (agentId: string, since: string) => {
-			const el = open(agentId);
-			rules.opened(agentId, since, el);
-			return el;
-		};
-		/** The member closes it by hand. */
-		const shut = (agentId: string, since: string | undefined) => {
-			shown.delete(agentId);
-			rules.closed(agentId, since);
-		};
-		return { rules, close, shown, open, auto, shut };
-	}
-
 	it("shows once per stretch, never while open or busy, and a closed one stays closed through its stretch", () => {
-		const w = windows();
-		expect(w.rules.wanted(staff.id, undefined, false, false)).toBe(false);
-		expect(w.rules.wanted(staff.id, "s1", true, false)).toBe(false);
-		expect(w.rules.wanted(staff.id, "s1", false, true)).toBe(false);
-		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(true);
-		w.auto(staff.id, "s1");
-		w.shut(staff.id, "s1");
-		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
-		// A pause (writing, between runs) in the same stretch: still closed.
-		w.rules.seen(staff.id, undefined);
-		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
+		const rules = new ComputerByItself();
+		cleanup.push(() => rules.dispose());
+		expect(rules.wanted(staff.id, undefined, false, false)).toBe(false);
+		expect(rules.wanted(staff.id, "s1", true, false)).toBe(false);
+		expect(rules.wanted(staff.id, "s1", false, true)).toBe(false);
+		expect(rules.wanted(staff.id, "s1", false, false)).toBe(true);
+		rules.opened(staff.id, "s1");
+		// Shown once in the stretch: it does not come by itself again in it.
+		expect(rules.wanted(staff.id, "s1", false, false)).toBe(false);
+		rules.closed(staff.id, "s1");
+		expect(rules.wanted(staff.id, "s1", false, false)).toBe(false);
 		// The agent stopped and began again.
-		expect(w.rules.wanted(staff.id, "s2", false, false)).toBe(true);
+		expect(rules.wanted(staff.id, "s2", false, false)).toBe(true);
+		// A close while the agent was not at its computer declines nothing.
+		rules.closed(other.id, undefined);
+		expect(rules.wanted(other.id, "t1", false, false)).toBe(true);
 	});
 
-	it("takes a window that came by itself away a minute after the agent stopped, unless touched or begun again", () => {
-		vi.useFakeTimers();
-		const w = windows();
-		w.auto(staff.id, "s1");
-		w.rules.seen(staff.id, undefined);
-		vi.advanceTimersByTime(AUTO_CLOSE_MS - 1);
-		// Began again before the minute: it stays.
-		w.rules.seen(staff.id, "s1");
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).not.toHaveBeenCalled();
-		w.rules.seen(staff.id, undefined);
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).toHaveBeenCalledWith(staff.id);
-		// It does not come back in that stretch.
-		expect(w.rules.wanted(staff.id, "s1", false, false)).toBe(false);
-		// Touched: it is the member's.
-		const touched = w.auto(other.id, "t1");
-		touched.dispatchEvent(new Event("pointerdown"));
-		w.rules.seen(other.id, undefined);
-		vi.advanceTimersByTime(10 * AUTO_CLOSE_MS);
-		expect(w.close).toHaveBeenCalledTimes(1);
-		expect(w.rules.owns(other.id)).toBe(false);
-	});
-
-	it("never closes a window the member opened after it closed one by itself, used or not (review r1 F1)", () => {
-		vi.useFakeTimers();
-		const w = windows();
-		w.auto(staff.id, "s1");
-		w.rules.seen(staff.id, undefined);
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).toHaveBeenCalledTimes(1);
-		// The member opens it by hand, and uses it; the agent is still not at its computer.
-		const theirs = w.open(staff.id);
-		theirs.dispatchEvent(new Event("pointerdown"));
-		for (let i = 0; i < 5; i++) {
-			w.rules.seen(staff.id, undefined);
-			vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		}
-		expect(w.close).toHaveBeenCalledTimes(1);
-		expect(w.shown.get(staff.id)?.el).toBe(theirs);
-		// Opened by hand while the rule's timer ran (the rule's window closed some other way): the timer closes nothing.
-		w.auto(other.id, "t1");
-		w.rules.seen(other.id, undefined);
-		w.shown.delete(other.id);
-		w.open(other.id);
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).toHaveBeenCalledTimes(1);
-	});
-
-	it("never closes a window through which the member holds a desktop or has its large view open", () => {
-		vi.useFakeTimers();
-		const w = windows();
-		w.auto(staff.id, "s1");
-		w.rules.seen(staff.id, undefined);
-		// A take-over from the agent's card: no touch on the window, but the member holds its desktop.
-		w.shown.get(staff.id)!.theirs = true;
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).not.toHaveBeenCalled();
-		// Given back: the rule let go of it for good.
-		w.shown.get(staff.id)!.theirs = false;
-		w.rules.seen(staff.id, undefined);
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).not.toHaveBeenCalled();
-		expect(w.rules.owns(staff.id)).toBe(false);
-	});
-
-	it("follows the company's word for every window it owns, whatever thread shows (review r1 F3)", () => {
-		vi.useFakeTimers();
-		const w = windows();
-		w.auto(staff.id, "s1");
-		w.auto(other.id, "t1");
-		const using = new Map<string, string | undefined>([
-			[staff.id, "s1"],
-			[other.id, "t1"],
-		]);
-		const feed = () => w.rules.refresh((agentId) => using.get(agentId));
-		// Both stop while no thread of theirs is shown; one begins again within the minute.
-		using.set(staff.id, undefined);
-		using.set(other.id, undefined);
-		feed();
-		vi.advanceTimersByTime(AUTO_CLOSE_MS / 2);
-		using.set(other.id, "t1");
-		feed();
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close.mock.calls).toEqual([[staff.id]]);
-		expect(w.rules.owns(other.id)).toBe(true);
-	});
-
-	it("owns nothing once the company is left", () => {
-		vi.useFakeTimers();
-		const w = windows();
-		w.auto(staff.id, "s1");
-		w.rules.seen(staff.id, undefined);
-		w.rules.dispose();
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		expect(w.close).not.toHaveBeenCalled();
-		expect(w.rules.wanted(staff.id, "s2", false, false)).toBe(false);
+	it("shows nothing once the company is left", () => {
+		const rules = new ComputerByItself();
+		rules.dispose();
+		expect(rules.wanted(staff.id, "s2", false, false)).toBe(false);
 	});
 });
 
 describe("the agent's thread", () => {
+	/** The agent's message `n`, written `minutes` after the first. */
+	const said = (n: number, minutes: number): TranscriptMessage => ({
+		kind: "agent",
+		id: id(180 + n),
+		sequence: n,
+		text: `Message ${n}`,
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: new Date(Date.parse("2026-11-14T08:00:00Z") + minutes * 60_000).toISOString(),
+		authorUserId: userA.id,
+	});
+	const items = (...list: TranscriptMessage[]) =>
+		({ loading: false, projection: { items: list, hiddenCount: 0, lastSequence: list.length } }) as const;
 	function thread(actions: { computerPanels?: ComputerPanels } = {}) {
 		const f = company([staff, other]);
 		const panels = actions.computerPanels ?? new ComputerPanels(undefined, f.controller.signal);
@@ -500,6 +395,96 @@ describe("the agent's thread", () => {
 		expect(f.panel()).not.toBeNull();
 		expect(f.panel()?.classList.contains("is-entered")).toBe(false);
 		expect(document.activeElement).toBe(f.composer);
+	});
+
+	/** The log's rows, without its day lines. */
+	const rows = (f: ReturnType<typeof thread>) =>
+		[...f.view.el.querySelectorAll(".messages-log > :not(time)")].map((row) =>
+			row.classList.contains("thread-computer") ? "computer" : (row.textContent ?? "").trim(),
+		);
+
+	it("stands as a row beside the working figure at the thread's end while the agent uses it (Jonas, 14 Nov 2026)", async () => {
+		const f = thread();
+		// The thread's own first read lands first; then the transcript it shows.
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		const row = f.panel()?.closest<HTMLElement>(".thread-computer");
+		expect(row?.parentElement?.classList.contains("messages-log")).toBe(true);
+		expect(rows(f)).toEqual(["Message 1", "computer"]);
+		// In the working figure's place, the figure beside the window, and the line under it says what it does.
+		expect(f.view.el.querySelector(".thread-activity")).toBeNull();
+		expect(row?.querySelector(".thread-computer-figure .figure")).not.toBeNull();
+		expect(row?.querySelector(".thread-computer-caption")?.textContent).toBe("Fixture agent is using its computer");
+		// A message while it works comes in above it: the row stays the live end.
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 3)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
+	});
+
+	it("stays where it stood once the agent stops using it, and what comes after goes under it", async () => {
+		const f = thread();
+		// The thread's own first read lands first; then the transcript it shows.
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at() } });
+		await settle();
+		const panel = f.panel();
+		f.controller.store.set({ activity: [], atComputers: {} });
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 5)));
+		await settle();
+		expect(f.panel()).toBe(panel);
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+		expect(f.view.el.querySelector<HTMLElement>(".thread-computer-caption")?.hidden).toBe(true);
+		// Opened again by the member's click it stays where it is; used again, it is the live end once more.
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "computer", "Message 2"]);
+		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s2") } });
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
+	});
+
+	it("waits at the end while the thread reads, and takes its place from what the read brought (review r1 F1 of #1787)", async () => {
+		const f = thread();
+		await settle();
+		// The member opens the computer of an agent not at it while the thread is still reading.
+		f.controller.conversation(session.sessionId).set({
+			loading: true,
+			projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+		});
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		expect(f.panel()?.closest(".messages-log")).not.toBeNull();
+		await settle();
+		// The read fails first (review r2 F1): nothing is fixed by it.
+		f.controller.conversation(session.sessionId).set({ loading: false, error: "Could not load" });
+		await settle();
+		f.controller.conversation(session.sessionId).set({ ...items(said(1, 0), said(2, 2)), error: undefined });
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer"]);
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2), said(3, 4)));
+		await settle();
+		expect(rows(f)).toEqual(["Message 1", "Message 2", "computer", "Message 3"]);
+	});
+
+	it("covers what the thread draws while its large view is open, and what stood there when it comes back entered (review r2 F2)", async () => {
+		const panels = new ComputerPanels(undefined, company().controller.signal);
+		const f = thread({ computerPanels: panels });
+		await settle();
+		f.controller.conversation(session.sessionId).set(items(said(1, 0)));
+		await settle();
+		// A window left entered in another thread comes into this one: what stands in the thread is covered at once.
+		panels.open(staff)!.el.classList.add("is-entered");
+		expect(f.view.show(staff.id, "computer")).toBe(true);
+		const first = f.view.el.querySelector<HTMLElement>(".messages-log > .message")!;
+		expect(first.inert).toBe(true);
+		// A message drawn while it is open is covered too.
+		f.controller.conversation(session.sessionId).set(items(said(1, 0), said(2, 2)));
+		await settle();
+		const messages = [...f.view.el.querySelectorAll<HTMLElement>(".messages-log > .message")];
+		expect(messages.map((message) => message.inert)).toEqual([true, true]);
+		expect(f.panel()?.closest<HTMLElement>(".thread-computer")?.inert).not.toBe(true);
 	});
 
 	it("does not show it for another agent, for an agent that does not work, or while the member is busy", async () => {
@@ -535,48 +520,18 @@ describe("the agent's thread", () => {
 		expect(f.panel()).not.toBeNull();
 	});
 
-	it("takes an untouched window away a minute after the agent stopped, and leaves a touched one", async () => {
+	it('keeps a window that came by itself after the agent stopped, touched or not (Jonas, 14 Nov 2026: "Yes, keep it")', async () => {
 		vi.useFakeTimers();
 		const f = thread();
 		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s1") } });
 		await settle();
-		expect(f.panel()).not.toBeNull();
-		f.controller.store.set({ activity: [] });
+		const panel = f.panel();
+		expect(panel).not.toBeNull();
+		f.controller.store.set({ activity: [], atComputers: {} });
 		await settle();
-		vi.advanceTimersByTime(AUTO_CLOSE_MS);
-		// The window leaves with its closing motion.
-		vi.advanceTimersByTime(1_000);
+		vi.advanceTimersByTime(10 * 60_000);
 		await settle();
-		expect(f.panel()).toBeNull();
-		// The next stretch: touched, it stays.
-		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s2") } });
-		await settle();
-		f.panel()!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-		f.controller.store.set({ activity: [] });
-		await settle();
-		vi.advanceTimersByTime(5 * AUTO_CLOSE_MS);
-		expect(f.panel()).not.toBeNull();
-	});
-
-	it("leaves a window the member reopened by hand after one went by itself (review r1 F1)", async () => {
-		vi.useFakeTimers();
-		const f = thread();
-		f.controller.store.set({ activity: [run()], atComputers: { [staff.id]: at("s1") } });
-		await settle();
-		f.controller.store.set({ activity: [] });
-		await settle();
-		vi.advanceTimersByTime(AUTO_CLOSE_MS + 1_000);
-		await settle();
-		expect(f.panel()).toBeNull();
-		// The member opens it from the agent's card, and uses it.
-		expect(f.view.show(staff.id, "computer")).toBe(true);
-		f.panel()!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-		for (let i = 0; i < 3; i++) {
-			f.controller.store.set({ activity: [], atComputers: {} });
-			await settle();
-			vi.advanceTimersByTime(AUTO_CLOSE_MS + 1_000);
-			await settle();
-		}
-		expect(f.panel()).not.toBeNull();
+		expect(f.panel()).toBe(panel);
+		expect(panel?.closest(".thread-computer")?.parentElement?.classList.contains("messages-log")).toBe(true);
 	});
 });

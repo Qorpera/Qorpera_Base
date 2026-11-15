@@ -839,8 +839,8 @@ describe("answering in a thread", () => {
 		expect(controller.conversation(session.sessionId).get().draft).toContain("Answer kindly.");
 	});
 
-	it("leaves a note waiting in the agent's thread while the member answers a question on its wall there", async () => {
-		// The note goes the way an app's note goes (app/tell-agent.ts): a send would put the wall's question in front of it.
+	it("leaves a note waiting in the agent's thread while its draft answers a line there", async () => {
+		// The note goes the way an app's note goes (app/tell-agent.ts): a send would put the line in front of it.
 		const { main, controller } = await mailbox((mail) => {
 			mail.threads = [summary(1, { state: "handled" })];
 		});

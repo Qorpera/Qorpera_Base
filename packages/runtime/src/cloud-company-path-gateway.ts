@@ -20,6 +20,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_describe_agent_open_work"
 	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
+	// A light ask's run stores its answer (20260930761000).
+	| "qorpera_native_light_ask_answer"
 	| "qorpera_begin_native_company_execution_v2"
 	// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
 	| "qorpera_begin_native_company_execution_v3"

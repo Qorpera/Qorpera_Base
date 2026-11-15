@@ -15,7 +15,7 @@
 -- 5. What the agent sees: the view (status and list through machine_manage, and the start's answer) says diskFreed while
 --    the machine has no disk and on its first new disk until it sleeps; the take-again prefers a machine that holds its
 --    disk over the asked name, and `reused` says when the one given starts empty.
--- 6. A wake that moves a machine to a new disk after it slept on the old one (a new machine policy) says so too.
+-- 6. A wake that moves a machine to a new disk after it slept on the old one (its executor in another project) says so too.
 -- 7. The report is refused whole when malformed (22023) or not the executor's (42501); what is internal stays internal;
 --    every new or patched body names the migration.
 
@@ -515,8 +515,10 @@ begin
 	perform pg_temp.d_run('n1');
 	perform pg_temp.d_sleep('n1', interval '1 hour');
 	v_old := (pg_temp.d_current('n1')).id;
-	-- A new machine policy (a new image): a machine asleep on the old one wakes on a new disk.
-	perform pg_temp.d_budget(120, repeat('d', 64));
+	-- Its executor in another project (a new image alone keeps the disk since 20260930760000, test 1257): a machine asleep
+	-- in the old one wakes on a new disk.
+	perform public.qorpera_configure_machine_executor('mx-1253', repeat('c',64), true, pg_temp.d_policy() || '{"project":"machines-b"}',
+		pg_temp.g(120));
 	perform pg_temp.d_report(1000, 400, '{"a-new":1,"n1":0,"n2":0,"n3":0,"a-old":0}');
 	update public.qorpera_company_machines set desired_state = 'running', desired_by = 'member', wanted_at = clock_timestamp()
 	where name = 'n1' and removed_at is null;

@@ -12,10 +12,6 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-/** Each view's canvas, for the tests that read it after the view was handed around. */
-const canvases = new WeakMap<MachineScreenView, HTMLCanvasElement>();
-const canvasOf = (screen: MachineScreenView) => canvases.get(screen) as HTMLCanvasElement;
-
 function view() {
 	const drawn: [string, number, number][] = [];
 	/** Which canvas each picture went on: the view has two and neither ever writes where the other draws (r6 of #1746). */
@@ -55,7 +51,6 @@ function view() {
 		HTMLCanvasElement,
 		HTMLCanvasElement,
 	];
-	canvases.set(screen, canvas);
 	/** The names of what was drawn on one of the two canvases, in order. */
 	const on = (which: HTMLCanvasElement) => strokes.filter((stroke) => stroke.on === which).map((one) => one.name);
 	/** A picture of the window's own looks, with its own gate (for the ordering tests). */
@@ -138,13 +133,6 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		release();
 		expect(await late).toBe("dropped");
 		expect(drawn).toEqual([]);
-		// A pointer shape still being read when it ended paints nothing either.
-		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
-		screen.capture({ act: vi.fn() });
-		const shape = screen.stream({ kind: "cursor", hotX: 1, hotY: 1, width: 16, height: 16, png });
-		screen.streamEnded();
-		expect(await shape).toBe("dropped");
-		expect(canvasOf(screen).style.cursor).toBe("");
 	});
 
 	it("a draw discarded at a renewal is not a failure: the window keeps the stream that replaced it (review r2 F4 of #1746)", async () => {
@@ -356,27 +344,22 @@ describe("the live picture in the screen view (20260930745000)", () => {
 
 	it("applies everything of one stream in the order it came, so a resize behind a stalled area is never dropped (review r6 F1 of #1746)", async () => {
 		const { screen, area, drawn, live } = view();
-		// The picture takes input, so the desktop's own pointer shape shows on it.
-		screen.capture({ act: vi.fn() });
 		expect(await screen.stream({ kind: "size", width: 100, height: 100 })).toBe("drawn");
 		let release: () => void = () => {};
 		const stalled = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		const slow = screen.stream({ kind: "rects", rects: [area("stalled", 0, 0, 100, 100, stalled)] });
-		// Behind that stalled area: the screen resizes, a pointer shape comes, and the first pixels of the new size.
+		// Behind that stalled area: the screen resizes, and the first pixels of the new size.
 		const resized = screen.stream({ kind: "size", width: 50, height: 50 });
-		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
-		const shape = screen.stream({ kind: "cursor", hotX: 1, hotY: 2, width: 16, height: 16, png });
 		const small = screen.stream({ kind: "rects", rects: [area("small", 0, 0, 50, 50)] });
 		await Promise.resolve();
 		// Nothing of this stream moves past the message before it, however long that one decodes.
 		expect(drawn).toEqual([]);
 		expect([live.width, live.height]).toEqual([100, 100]);
-		expect(live.style.cursor).toBe("");
 		release();
-		// All four land, in the order they came, and none is dropped for the sake of the order.
-		expect(await Promise.all([slow, resized, shape, small])).toEqual(["drawn", "drawn", "drawn", "drawn"]);
+		// All three land, in the order they came, and none is dropped for the sake of the order.
+		expect(await Promise.all([slow, resized, small])).toEqual(["drawn", "drawn", "drawn"]);
 		expect(drawn).toEqual([
 			["stalled", 0, 0],
 			["small", 0, 0],
@@ -384,8 +367,6 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		// The resize stands, and the pixels of the new size are on a canvas of that size: no stale pixels, and the
 		// member's clicks are counted on what they see.
 		expect([live.width, live.height]).toEqual([50, 50]);
-		// The cursor message queued behind the stalled area went the same way, in its place.
-		expect(live.style.cursor).toMatch(/^url\("data:image\/png;base64,iVBORw=="\) 1 2, default$/);
 	});
 
 	it("a picture of the window's own never clears the live picture's size, whichever lands first (review r6 F2 and r5 F2 of #1746)", async () => {
@@ -596,17 +577,21 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(await screen.stream({ kind: "rects", rects: [area("outside", 45, 0, 10, 10)] })).toBe("failed");
 	});
 
-	it("shows the desktop's pointer shape over the picture only while the picture takes input, and drops it when the stream ends", async () => {
-		const { screen, canvas } = view();
+	it("never shows the agent's pointer over the picture: the member keeps their own (Jonas, 14 Nov 2026)", async () => {
+		const { screen, canvas, live, drawn } = view();
 		const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
-		expect(await screen.stream({ kind: "cursor", hotX: 3, hotY: 4, width: 16, height: 16, png })).toBe("drawn");
-		expect(canvas.style.cursor).toBe("");
-		screen.capture({ act: vi.fn() });
-		expect(canvas.style.cursor).toMatch(/^url\("data:image\/png;base64,iVBORw=="\) 3 4, default$/);
-		screen.capture(null);
-		expect(canvas.style.cursor).toBe("");
-		screen.capture({ act: vi.fn() });
-		screen.streamEnded();
-		expect(canvas.style.cursor).toBe("");
+		const decode = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		await screen.stream({ kind: "size", width: 100, height: 100 });
+		// Taking over or not, a pointer shape from the desktop is answered and leaves both pictures as they were.
+		for (const input of [null, { act: vi.fn() }]) {
+			screen.capture(input);
+			expect(await screen.stream({ kind: "cursor", hotX: 3, hotY: 4, width: 16, height: 16, png })).toBe("drawn");
+			expect([canvas.style.cursor, live.style.cursor]).toEqual(["", ""]);
+		}
+		// Nothing of it is read, and it does not wait behind the stream's areas or hold their turn.
+		expect(decode).not.toHaveBeenCalled();
+		expect(drawn).toEqual([]);
+		expect(await screen.stream({ kind: "cursor", hotX: 0, hotY: 0, width: 0, height: 0, png: null })).toBe("drawn");
+		decode.mockRestore();
 	});
 });
