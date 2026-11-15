@@ -161,7 +161,9 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   When the call wrote the entry page, its answer carries `look`: what a quick read of that page found (links that
   open nothing, §4, the first three named; three or more `<details>`; more than 500 words; more than 150 words with
   no picture, chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the
-  page. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
+  page. A save of an owed view (`apps/products`, `apps/money`, `apps/ads`; §3d) also carries, last in `look` and on
+  any save of it, the line that says it is that view: a line to know that asks for no fix, so `next` says "First fix
+  what look names" only when another note stands. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
   instead of write, which links open, the base style and phone width. How a page reads live data (§5), how it lets a
   member act (§5 "Changes") and the base style's variables and the company's colours (§2) are guides of `app_guide`
   (§3d: `reads`, `writes`, `style`), because a tool's own description holds 4096 bytes and its schema, as the model

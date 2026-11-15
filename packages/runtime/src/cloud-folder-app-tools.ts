@@ -6,7 +6,9 @@
  *   change set under the call's receipt. It applies at once (review class internal): the files are the agent's own work.
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
- *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
+ *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice. A save of
+ *   an owed view (`OWED_APPS`, not a concept, not icons alone) adds to it, last, the line that says so (`owedAppNote`):
+ *   a line to know, which asks for no fix, so `next` asks for a fix only when another note stands.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
  *   for a data kit (model, board, path, object, curve, stack, shelf) the kit's engine and a page that names the
@@ -48,11 +50,11 @@ import {
 	APP_WRITE_ANSWERS,
 	APP_WRITES_MAX,
 	type AppManifest,
-	OWED_APPS,
 	appFileKind,
 	appFolder,
 	appLinkName,
 	appRelativePath,
+	OWED_APPS,
 	parseAppManifest,
 	parseAppWrites,
 	setAppPosted,

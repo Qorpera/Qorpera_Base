@@ -586,6 +586,11 @@ it("tells the agent an app at an owed view's folder is that view, which members 
 	);
 	expect(concept).toMatchObject({ state: "applied" });
 	expect(concept).not.toHaveProperty("look");
+	// A change of it keeps it a concept, so still none (the change path reads concept from the stored manifest).
+	const kept = read(await g.call("save_app", save("money", "change-1", null, [{ path: "state.json", text: "{}" }])));
+	expect(kept).toMatchObject({ state: "applied", created: false });
+	expect(kept).not.toHaveProperty("look");
+	expect(parseAppManifest(g.text("apps/money/app.toml") ?? "")).toMatchObject({ manifest: { concept: true } });
 	const drawn = read(
 		await f.call("save_app", save("ads", "icons-1", null, [{ path: "icons/megaphone.svg", text: ICON }])),
 	);
