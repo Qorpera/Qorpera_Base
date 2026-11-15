@@ -3360,7 +3360,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// views plan step 1), and save_app's kit says to read it first, so they moved again.
 	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
 	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
-	// 20260930763000), measured on release v247's tree, so they moved again.
 	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
 	// (20260930764000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
