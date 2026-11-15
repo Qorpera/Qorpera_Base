@@ -1443,6 +1443,7 @@ export class CompanyController {
 		const failure = retired
 			? t("{name} could not be retired. Try again.", { name: title })
 			: t("{name} could not be brought back. Try again.", { name: title });
+		const full = t("The company has too many retired interfaces. Bring one back first.");
 		try {
 			await changeRetiredApps(
 				folder(),
@@ -1451,7 +1452,7 @@ export class CompanyController {
 				{
 					key: () => `web:apps-retired:${crypto.randomUUID()}`,
 					failure,
-					full: t("The company has too many retired interfaces. Bring one back first."),
+					full,
 				},
 				signal,
 				() => signal.throwIfAborted(),
@@ -1460,7 +1461,12 @@ export class CompanyController {
 			if (this.#stopped) return false;
 			if (this.#retiredChanges.get(name) === change) this.#retiredChanges.delete(name);
 			this.#showRetired();
-			this.reportRailError(error instanceof Error && error.message ? error.message : failure);
+			// The folder's own refusal and a full file say why; anything else (a lost connection) says only that it failed.
+			const said =
+				error instanceof WebCompanyFolderRejectedError || (error instanceof Error && error.message === full)
+					? error.message
+					: failure;
+			this.reportRailError(said);
 			return false;
 		}
 		if (this.#stopped) return false;
