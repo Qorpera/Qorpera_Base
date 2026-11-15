@@ -154,7 +154,8 @@ export async function catalogs() {
 		}),
 	];
 	const employee = staff.filter(
-		(tool) => !["crew_and_members", "offer_agents_to_member", "record_reflection", "update_reading"].includes(tool.name),
+		(tool) =>
+			!["crew_and_members", "offer_agents_to_member", "record_reflection", "update_reading"].includes(tool.name),
 	);
 	return { staff, employee, worker, all: [...staff, ...worker] };
 }

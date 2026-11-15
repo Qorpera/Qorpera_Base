@@ -31,6 +31,11 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	type CloudPlatformUpdatesContext,
+	cloudPlatformUpdatesContext,
+	PLATFORM_UPDATES,
+} from "@qorpera/runtime/cloud-platform-updates";
 import { cloudCoFounderPlanningRun, cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
@@ -3195,7 +3200,7 @@ it("puts the senses next to open work when the run has them, null when their rea
 		agents: [{ handle: "co-founder", todos: { open: 3, blocked: 1, doneLast7d: 0 } }],
 		questions: { count: 1, oldest: [] },
 	};
-	const prompt = (value?: JsonValue | null) =>
+	const prompt = (value?: JsonValue | null, updates?: CloudPlatformUpdatesContext) =>
 		JSON.parse(
 			composeCloudNativeCompanyPrompt(
 				context,
@@ -3208,11 +3213,18 @@ it("puts the senses next to open work when the run has them, null when their rea
 				undefined,
 				undefined,
 				[],
+				updates,
 				value,
 			),
 		);
 	const keys = Object.keys(prompt(senses));
 	expect(keys.indexOf("senses")).toBe(keys.indexOf("openWork") + 1);
+	const both = Object.keys(prompt(senses, cloudPlatformUpdatesContext(PLATFORM_UPDATES)));
+	expect(both.slice(both.indexOf("openWork"), both.indexOf("openWork") + 3)).toEqual([
+		"openWork",
+		"updates",
+		"senses",
+	]);
 	expect(prompt(senses).senses).toEqual(senses);
 	expect(prompt(null)).toHaveProperty("senses", null);
 	expect(prompt()).not.toHaveProperty("senses");
