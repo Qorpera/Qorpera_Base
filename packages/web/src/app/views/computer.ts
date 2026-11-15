@@ -1062,8 +1062,10 @@ export class ComputerPanel {
 		this.#syncControls();
 	}
 
+	/** The window takes the keyboard. Where the thread scrolls for it is the thread's to say (conversation.ts
+	 * #revealComputer): the browser's own scroll to a focused element knows nothing of the foot laid over the thread. */
 	focus(): void {
-		this.el.focus();
+		this.el.focus({ preventScroll: true });
 	}
 
 	dispose(): void {
