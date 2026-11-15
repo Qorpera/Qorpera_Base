@@ -1819,8 +1819,6 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
 	});
 
-	// The founder dropped the wall for agents (14 November 2026): no run names it or its tool. The board kit's mode that
-	// lays pictures out as a wall of references is save_app's own word, not the agent's wall.
 	it("names only kits save_app takes", () => {
 		const named = new Set<string>();
 		const NOT_A_KIT = new Set(["a", "the", "no", "each", "one", "any", "its", "that", "this", "another", "which"]);
@@ -1839,6 +1837,8 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		for (const kit of named) expect(APP_KITS as readonly string[], kit).toContain(kit);
 	});
 
+	// The founder dropped the wall for agents (14 November 2026): no run names it or its tool. The board kit's mode that
+	// lays pictures out as a wall of references is save_app's own word, not the agent's wall.
 	it("names no wall and no update_wall in any run", () => {
 		for (const [run, text] of compiled) {
 			expect(text, run).not.toContain("update_wall");
