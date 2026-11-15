@@ -1,6 +1,12 @@
 import { CloudRpcError } from "../../cloud/client.ts";
-import type { CompanySite, CompanySitePassword, WebSites } from "../../cloud/sites.ts";
-import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import type {
+	CompanySite,
+	CompanySiteNamed,
+	CompanySitePassword,
+	CompanySiteTakedown,
+	WebSites,
+} from "../../cloud/sites.ts";
+import { type MenuEntry, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { leave } from "../../ui/motion.ts";
@@ -23,6 +29,13 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  * Qorpera (own code storage step 4) is listed once a member put it live in What's new; its source is the project's place
  * under code/, which no agent may publish from, and its row names the version What's new has live.
  *
+ * A site Qorpera took down (step 5.1; the access read, `qorpera_company_site_access`) says so in its row in one plain
+ * sentence with the operator's reason, in place of its link and password: every address of it shows a "gone" page, so
+ * the row offers no link to one, and no "⋯": until Qorpera restores it the kernel refuses taking it offline, and its
+ * password opens nothing. A project's site taken down before it ever went live is in no list: its row is drawn from
+ * the access read, which names it (the review of #1774, F4), the same row. A kernel without the read draws the page as
+ * before.
+ *
  * Every answer that comes back late (a password read, a copy, a change, a take-offline, a read of the list, the version
  * What's new read) acts only on the page it was asked from, by one rule in three parts: it carries the moment it left
  * (`#moment`: its site, and the generation of what the page knew of that site's password) and acts only while `#still`
@@ -32,7 +45,9 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  * nothing, and no question, confirmation or menu open over it).
  */
 
-type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
+/** `access` (step 5.1) may be missing: the page is then drawn as before it. */
+type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish"> &
+	Partial<Pick<WebSites, "access">>;
 
 export interface SitesAccess {
 	/** Whether the signed-in member may see passwords, change them and take sites offline (owner or admin; the
@@ -67,6 +82,29 @@ const DOTS = "••••••••••••";
 /** A site as members call it: its title, else its name in the link. */
 function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
+}
+
+/** The row of a site Qorpera took down that the list leaves out (a project's site that never went live), from what the
+ * access read names: the row shows its name, that it was taken down and why, and nothing else (no link, password or
+ * menu). */
+function unlisted(id: string, named: CompanySiteNamed, down: CompanySiteTakedown): CompanySite {
+	return {
+		id,
+		slug: named.slug,
+		title: named.title,
+		kind: named.kind,
+		url: "",
+		state: named.kind === "app" ? "off" : "publishing",
+		source: named.source,
+		files: 0,
+		bytes: 0,
+		publishedAt: null,
+		publishedBy: null,
+		createdAt: down.at,
+		passwordChangedAt: down.at,
+		machine: null,
+		port: null,
+	};
 }
 
 /** A project's site made from its code: only What's new puts a version of it live (the row is the plain one, with the
@@ -145,8 +183,9 @@ interface Moment {
 	readonly era: number;
 }
 
-/** The site's state as a dot and a word; when and by whom it was published as its tip. */
-function stateOf(site: CompanySite): HTMLElement {
+/** The site's state as a dot and a word; when and by whom it was published as its tip. A site Qorpera took down is that,
+ * whatever the list says of it. */
+function stateOf(site: CompanySite, down: boolean): HTMLElement {
 	const published = site.publishedAt
 		? site.publishedBy
 			? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
@@ -154,9 +193,24 @@ function stateOf(site: CompanySite): HTMLElement {
 		: undefined;
 	return h(
 		"span",
-		{ class: `site-state is-${site.state}`, ...(published ? { title: published } : {}) },
+		{ class: `site-state is-${down ? "down" : site.state}`, ...(published ? { title: published } : {}) },
 		h("span", { class: "site-dot", "aria-hidden": "true" }),
-		site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
+		down ? t("Taken down") : site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
+	);
+}
+
+/** Why Qorpera took a site down, in one plain sentence: the operator's reason, without a full stop of its own, and how
+ * to tell Qorpera it is wrong, through the product's own channel: Feedback in the member's menu, by that item's own
+ * label (the lead's call, 13 Nov 2026: no address that is not known to reach anyone). */
+function downLine(down: CompanySiteTakedown): HTMLElement {
+	const reason = down.reason.replace(/[\s.]+$/, "") || down.reason;
+	return h(
+		"p",
+		{ class: "site-down" },
+		t("Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.", {
+			reason,
+			feedback: t("Feedback"),
+		}),
 	);
 }
 
@@ -176,6 +230,10 @@ export class SitesView {
 	/** What the last draw drew from outside the page: the member's authority and the code sites' versions. */
 	#drawn: { manage: boolean; versions: string } | undefined;
 	#sites: CompanySite[] | undefined;
+	/** The sites Qorpera took down, by id, as the last access read that answered said (none before one did). */
+	#takenDown: ReadonlyMap<string, CompanySiteTakedown> = new Map();
+	/** Their names, as that read gave them: a row for one the list leaves out. */
+	#named: ReadonlyMap<string, CompanySiteNamed> = new Map();
 	#loading = true;
 	#error: string | undefined;
 	/** The site changing, and how, while it does: the password pills and the menus are off meanwhile. */
@@ -306,10 +364,27 @@ export class SitesView {
 
 	async #read(focusKey?: string): Promise<void> {
 		try {
+			// Which sites Qorpera took down, read beside the list and drawn with it (no row shows a dead link first). A read
+			// that fails (a kernel without it, or no answer) keeps what the last one said.
+			const access = this.#client.access?.(this.#lifetime.signal).catch(() => undefined);
 			const sites = await this.#client.list(this.#lifetime.signal);
+			const read = await access;
 			if (this.#lifetime.signal.aborted) return;
-			this.#sites = sites;
-			this.#listed(sites);
+			if (read) {
+				this.#takenDown = read.takenDown;
+				this.#named = read.named;
+				// A site taken down shows no password: one on screen goes, and stays hidden if the site comes back.
+				for (const id of read.takenDown.keys()) if (this.#passwords.has(id)) this.#forget(id);
+			}
+			// A site Qorpera took down that the list leaves out (a project's site that never went live): a row of its own,
+			// after the listed ones.
+			const listed = new Set(sites.map((site) => site.id));
+			const missing = [...this.#takenDown].flatMap(([id, down]) => {
+				const named = this.#named.get(id);
+				return named && !listed.has(id) ? [unlisted(id, named, down)] : [];
+			});
+			this.#sites = missing.length ? [...sites, ...missing] : sites;
+			this.#listed(this.#sites);
 			this.#error = undefined;
 			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind, and a password changed
 			// since it was shown (elsewhere) leaves the screen.
@@ -461,10 +536,17 @@ export class SitesView {
 		this.#draw(`site-eye:${site.id}`);
 	}
 
-	/** The row's menu: what is done rarely. A press on "⋯" while its menu is open only shuts it. */
+	/** The row's menu: what is done rarely. A press on "⋯" while its menu is open only shuts it. A site Qorpera took down
+	 * has none (`#row`); one open as the read says so does nothing (`#unpublish`). */
 	#openMenu(site: CompanySite, opener: HTMLElement): void {
 		const findOpener = () => this.#control(`site-more:${site.id}`) ?? null;
 		const box = opener.getBoundingClientRect();
+		const offline: MenuEntry = {
+			label: t("Take offline"),
+			icon: "power",
+			danger: true,
+			select: () => void this.#unpublish(site),
+		};
 		const menu = openContextMenu({
 			label: nameOf(site),
 			x: box.left,
@@ -478,7 +560,7 @@ export class SitesView {
 			items: [
 				{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
 				{ kind: "separator" },
-				{ label: t("Take offline"), icon: "power", danger: true, select: () => void this.#unpublish(site) },
+				offline,
 			],
 		});
 		// The menu hangs from the button's right edge, as the button stands at the row's end.
@@ -630,7 +712,8 @@ export class SitesView {
 	}
 
 	async #unpublish(site: CompanySite): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
+		// A site Qorpera took down stays until Qorpera restores it: a menu still open as the read said so does nothing.
+		if (this.#working || this.#lifetime.signal.aborted || this.#takenDown.has(site.id)) return;
 		const name = nameOf(site);
 		const more = `site-more:${site.id}`;
 		const moment = this.#moment(site.id);
@@ -658,9 +741,16 @@ export class SitesView {
 			this.#lifetime.signal,
 		);
 		if (this.#asking === asking) this.#asking = undefined;
-		// No; or while the question was open the site went (taken offline elsewhere), the member's authority went, or the
-		// page was left.
-		if (!yes || this.#working || !this.#still(moment, false) || !this.#access.canManage()) return;
+		// No; or while the question was open the site went (taken offline elsewhere), Qorpera took it down (the kernel
+		// refuses it then), the member's authority went, or the page was left.
+		if (
+			!yes ||
+			this.#working ||
+			!this.#still(moment, false) ||
+			!this.#access.canManage() ||
+			this.#takenDown.has(site.id)
+		)
+			return;
 		const working = { site: site.id, action: "unpublish" } as const;
 		this.#working = working;
 		this.#draw(more);
@@ -684,8 +774,8 @@ export class SitesView {
 		}
 		this.#forget(site.id);
 		if (this.#byHand?.key === `link:${site.id}`) this.#byHand = undefined;
-		// The focus goes to the next site's menu, else the one before, as the row leaves.
-		const list = this.#sites ?? [];
+		// The focus goes to the next site's menu, else the one before, as the row leaves (a site Qorpera took down has none).
+		const list = (this.#sites ?? []).filter((item) => item.id === site.id || !this.#takenDown.has(item.id));
 		const at = list.findIndex((item) => item.id === site.id);
 		const neighbour = list[at + 1] ?? list[at - 1];
 		const focusKey = neighbour ? `site-more:${neighbour.id}` : undefined;
@@ -720,9 +810,8 @@ export class SitesView {
 		return field;
 	}
 
-	#row(site: CompanySite, manage: boolean, index: number): HTMLElement {
-		const busy = Boolean(this.#working);
-		const name = nameOf(site);
+	/** A site's link and, for an owner or admin, its password, each a pill. */
+	#share(site: CompanySite, manage: boolean, busy: boolean): HTMLElement {
 		const lead = (kind: string) => h("span", { class: "site-pill-lead" }, icon(kind), icon("copy"), icon("check"));
 		// The link: a press on it copies it, the arrow opens the site.
 		const byHandLink = this.#byHand?.key === `link:${site.id}` ? this.#byHand.text : undefined;
@@ -759,7 +848,6 @@ export class SitesView {
 			),
 		);
 		let secret: HTMLElement | null = null;
-		let more: HTMLElement | null = null;
 		if (manage) {
 			const shown = this.#passwords.get(site.id);
 			const reading = this.#working?.site === site.id && this.#working.action !== "unpublish";
@@ -808,6 +896,18 @@ export class SitesView {
 					: this.#byHandField(byHandPassword, t("The password"), `site-by-hand:password:${site.id}`),
 				eye,
 			);
+		}
+		return h("div", { class: "site-share" }, link, secret);
+	}
+
+	#row(site: CompanySite, manage: boolean, index: number): HTMLElement {
+		const busy = Boolean(this.#working);
+		const name = nameOf(site);
+		// Taken down by Qorpera: one sentence in place of the link and the password, and no menu (nothing in it would be
+		// done until Qorpera restores the site).
+		const down = this.#takenDown.get(site.id);
+		let more: HTMLElement | null = null;
+		if (manage && !down) {
 			const menu = h(
 				"button",
 				{
@@ -854,16 +954,27 @@ export class SitesView {
 		const row = h(
 			"article",
 			{
-				class: ["site-row", `is-${site.state}`, first && "is-new", this.#leaving === site.id && "is-leaving"]
+				class: [
+					"site-row",
+					`is-${down ? "down" : site.state}`,
+					first && "is-new",
+					this.#leaving === site.id && "is-leaving",
+				]
 					.filter(Boolean)
 					.join(" "),
 				dataset: { site: site.id },
 				"aria-label": name,
 			},
 			siteEmblem(),
-			h("div", { class: "site-head" }, h("strong", { class: "site-name" }, name), stateOf(site), from),
+			h(
+				"div",
+				{ class: "site-head" },
+				h("strong", { class: "site-name" }, name),
+				stateOf(site, Boolean(down)),
+				from,
+			),
 			more,
-			h("div", { class: "site-share" }, link, secret),
+			down ? downLine(down) : this.#share(site, manage, busy),
 		);
 		if (first) row.style.setProperty("--i", String(index));
 		return row;

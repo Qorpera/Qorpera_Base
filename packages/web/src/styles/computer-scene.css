@@ -91,7 +91,7 @@
 	.computer-scene * { transition: none !important; }
 	.computer-panel .machine-screen.is-arriving { animation: none; }
 }
-/* On the dark screen the window's own ✕ and switcher take the dark surface's ink (dark.css), not a glow meant for a
+/* On the dark screen the window's own ✕ takes the dark surface's ink (dark.css), not a glow meant for a
    light picture (review r1 on the real component). The same where the window says something in plain words and
    shows neither a picture nor the scene (the screen off, a start that failed): its body is dark there in the light
    theme too, and the picture's dark ink with its white halo was hard to read on it (seen on screenshots, 14 Nov

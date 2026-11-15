@@ -99,9 +99,9 @@ describe("interaction cards", () => {
 		expect(card.querySelector("button")).toBeNull();
 	});
 
-	it("shows a takeover with Take over, I'm done and Skip, and hands back or dismisses", () => {
-		const takeOver = vi.fn();
-		const ctx = context({ takeOver });
+	it("shows a takeover with Open computer, I'm done and Skip, no Take over (Jonas, 14 Nov 2026), and opens, hands back or dismisses", () => {
+		const openComputer = vi.fn();
+		const ctx = context({ openComputer });
 		const card = renderInteractionCard(
 			item({
 				surface: "takeover",
@@ -111,9 +111,9 @@ describe("interaction cards", () => {
 			ctx,
 		);
 		const labels = [...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
-		expect(labels.map((pill) => pill.textContent)).toEqual(["Take over", "I'm done", "Skip"]);
+		expect(labels.map((pill) => pill.textContent)).toEqual(["Open computer", "I'm done", "Skip"]);
 		labels[0]?.click();
-		expect(takeOver).toHaveBeenCalledTimes(1);
+		expect(openComputer).toHaveBeenCalledTimes(1);
 		expect(ctx.answer).not.toHaveBeenCalled();
 		labels[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("handed_back", {});
