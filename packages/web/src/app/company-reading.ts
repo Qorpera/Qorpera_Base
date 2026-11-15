@@ -1,5 +1,8 @@
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import {
+	COMPANY_STATE_NAME_MAX_CHARS,
+	companyStateName,
+	isCompanyStateName,
 	parseCompanyStateFile,
 	READING_FILE_MAX_BYTES,
 	READING_FOUNDERS,
@@ -61,12 +64,13 @@ export interface AppReadingAnswer {
 	} | null;
 	/** The company's agents at work, the Co-Founder first, then by when they were hired. */
 	readonly team: readonly (AppReadingAgent & { readonly cofounder: boolean })[];
-	/** Null where the backend has no standing read. `member` names the member whose login holds the company, null when it
-	 * is the member looking or nobody. */
+	/** Null where the backend has no standing read. `you`: the login that holds the company is the member looking's;
+	 * `member` names another member whose login it is, null when it is the member looking's or nobody can be named. */
 	readonly standing: {
 		readonly stopped: boolean;
 		readonly since: string | null;
 		readonly why: StandingWhy | null;
+		readonly you: boolean;
 		readonly member: string | null;
 		readonly resetsAt: string | null;
 	} | null;
@@ -83,19 +87,24 @@ export interface ReadingPeople {
 	readonly viewer: string;
 }
 
-/** An agent's folder name is the slug of its name when it was hired: how a change line of an ended agent finds it. */
-function slug(name: string): string {
-	return name
-		.toLowerCase()
-		.normalize("NFKD")
-		.replace(/[̀-ͯ]/g, "")
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "");
+/** Whether `handle` is a folder name the platform could have given an agent called `display` when it was hired: its
+ * name by the platform's rule (`companyStateName`, "agent" when nothing is left), or that name numbered -2, -3 and so
+ * on (`freeCompanyStateName`). Only a guess for an agent whose own file could not be read: a renamed agent is not
+ * found by it. */
+function couldBeFolderOf(display: string, handle: string): boolean {
+	const base = companyStateName(display) || "agent";
+	if (handle === base) return true;
+	const numbered = /^(.+)(-(?:[2-9]|[1-9][0-9]+))$/.exec(handle);
+	return (
+		numbered !== null &&
+		numbered[1] === base.slice(0, COMPANY_STATE_NAME_MAX_CHARS - (numbered[2] ?? "").length).replace(/-$/, "")
+	);
 }
 
 const memberName = (member: HostedProfileMember) => member.displayName || member.email.split("@")[0] || "";
 
-/** The answer for `file` (null: no reading), its agents found by their folder names (`handles`: handle to agent id). */
+/** The answer for `file` (null: no reading), its agents found by their folder names (`handles`: handle to agent id,
+ * the live agents' from their state folders and an ended agent's from its own `agent.md`). */
 export function appReading(
 	file: ReadingFile | null,
 	handles: ReadonlyMap<string, string>,
@@ -151,8 +160,15 @@ export function appReading(
 			}),
 		})),
 		changes: file.changes.map((change) => {
+			// The agent its folder names (ended agents too); else, one ended agent alone whose name gives that folder.
+			const id = handles.get(change.agent)?.toLowerCase();
+			const guessed = people.staff.filter(
+				(candidate) =>
+					candidate.employmentStatus !== "active" && couldBeFolderOf(candidate.displayName, change.agent),
+			);
 			const found =
-				living(change.agent) ?? people.staff.find((candidate) => slug(candidate.displayName) === change.agent);
+				(id ? people.staff.find((candidate) => candidate.id.toLowerCase() === id) : undefined) ??
+				(guessed.length === 1 ? guessed[0] : undefined);
 			return {
 				agent: found ? { name: found.displayName, figure: figureFor(found) } : null,
 				what: change.what,
@@ -168,6 +184,7 @@ export function appReading(
 			stopped: standing.stopped,
 			since: standing.since,
 			why: standing.why,
+			you: standing.member !== null && standing.member.toLowerCase() === viewer,
 			member:
 				standing.member === null || standing.member.toLowerCase() === viewer
 					? null
@@ -189,6 +206,8 @@ export interface CompanyReadingHost {
 /** How often the standing is read again while a page that reads the reading is open and the tab is shown. */
 export const STANDING_EVERY_MS = 30_000;
 const TEXT = new TextDecoder("utf-8", { fatal: true });
+/** An agent's file is read up to this size when a change line names an ended agent. */
+const AGENT_FILE_MAX_BYTES = 64 * 1024;
 
 /**
  * The open company's reading for its app pages: one per open company, shared by every page that reads `reading`.
@@ -300,12 +319,40 @@ export class CompanyReading {
 				}),
 			);
 			handlesFor = live;
+			// A change line may name an agent whose role ended, which the state folders no longer list: its own file says
+			// which agent it was, renamed or numbered alike.
+			for (const change of file.changes) {
+				if (handles.has(change.agent) || !isCompanyStateName(change.agent)) continue;
+				const id = await this.#endedAgent(folder, change.agent, signal);
+				if (id) handles.set(change.agent, id);
+			}
 		}
 		signal.throwIfAborted();
 		this.#file = file;
 		this.#version = version;
 		this.#handles = handles;
 		this.#handlesFor = handlesFor;
+	}
+
+	/** The id in an agent folder's `agent.md`, or null when it is not there or does not read. */
+	async #endedAgent(
+		folder: Pick<CloudMemberFolderClient, "read" | "readFile">,
+		handle: string,
+		signal: AbortSignal,
+	): Promise<string | null> {
+		try {
+			const path = `QorperaOS/agents/${handle}/agent.md`;
+			const { entry } = await folder.read(path, signal);
+			if (!entry?.file || entry.kind !== "file" || entry.file.bytes > AGENT_FILE_MAX_BYTES) return null;
+			const parsed = parseCompanyStateFile(
+				path,
+				TEXT.decode(await folder.readFile(entry.file, signal, AGENT_FILE_MAX_BYTES, { cached: true })),
+			);
+			return parsed?.ok && parsed.file.kind === "agent" ? parsed.file.id.toLowerCase() : null;
+		} catch {
+			signal.throwIfAborted();
+			return null;
+		}
 	}
 
 	/** Reads the standing; one read at a time, which a call meanwhile joins. */

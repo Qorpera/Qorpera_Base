@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { READING_PATH, type ReadingFile, writeReadingFile } from "@qorpera/cloud-client/company-state-files";
+import {
+	READING_PATH,
+	type ReadingFile,
+	writeAgentFile,
+	writeReadingFile,
+} from "@qorpera/cloud-client/company-state-files";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appReading, CompanyReading, type ReadingPeople } from "../src/app/company-reading.ts";
@@ -90,34 +95,34 @@ const STOPPED: CompanyStanding = {
 	waiting: 3,
 };
 
-/** The member's folder with the reading (or none), its versions, and the agents' folders. */
-function folder(text: () => string | null) {
+/** The member's folder with the reading (or none), its versions, the agents' folders and other files (`more`). */
+function folder(text: () => string | null, more: Readonly<Record<string, string>> = {}) {
 	const reads = { entries: 0, bytes: 0, folders: 0 };
-	const bytes = () => new TextEncoder().encode(text() ?? "");
+	const textOf = (path: string) => (path === READING_PATH ? text() : (more[path] ?? null));
 	return {
 		reads,
 		read: async (path: string) => {
 			reads.entries++;
-			const now = text();
+			const now = textOf(path);
 			return {
 				asOfSeq: 1,
 				entry:
-					path === READING_PATH && now !== null
+					now !== null
 						? {
 								path,
 								kind: "file",
 								version: `v${now.length}`,
 								seq: 1,
 								updatedAt: "2026-11-15T09:00:00Z",
-								file: { bytes: bytes().byteLength },
+								file: { bytes: new TextEncoder().encode(now).byteLength, path },
 								target: null,
 							}
 						: null,
 			};
 		},
-		readFile: async () => {
-			reads.bytes++;
-			return bytes();
+		readFile: async (file: { path: string }) => {
+			if (file.path === READING_PATH) reads.bytes++;
+			return new TextEncoder().encode(textOf(file.path) ?? "");
 		},
 		stateFolders: async () => {
 			reads.folders++;
@@ -186,14 +191,61 @@ describe("the company's reading for an app's page", () => {
 			stopped: true,
 			since: STOPPED.since,
 			why: "login_full",
+			you: false,
 			member: "Sofie",
 			resetsAt: STOPPED.resetsAt,
 		});
-		expect(appReading(null, HANDLES, people(), { ...STOPPED, member: VIEWER }).standing?.member).toBeNull();
+		// The member looking's own login is "you"; one nobody can be named for is neither (review r1 of #1847, F3).
+		expect(appReading(null, HANDLES, people(), { ...STOPPED, member: VIEWER }).standing).toMatchObject({
+			you: true,
+			member: null,
+		});
+		expect(appReading(null, HANDLES, people(), { ...STOPPED, member: id(99) }).standing).toMatchObject({
+			you: false,
+			member: null,
+		});
 		// No path, handle, user id or agent id reaches the page.
 		const said = JSON.stringify(answer);
 		for (const hidden of ["QorperaOS", "ceo-x", "cust-res", "prod-x", "mkt-q", "22222222-", "example.invalid"])
 			expect(said, hidden).not.toContain(hidden);
+	});
+
+	it("finds an ended agent of a change line by its own file, else by the platform's folder name for it", async () => {
+		// Review r1 of #1847, F1: folders are named by companyStateName (æ, ø and å as ae, oe and aa) and numbered -2.
+		const soren = agent(70, "Søren", "moon", { employmentStatus: "archived" });
+		const ase = agent(71, "Åse", "star", { employmentStatus: "archived" });
+		const renamed = agent(72, "Mikkel", "bolt", { employmentStatus: "archived" });
+		const ended: ReadingPeople = { ...people(), staff: [...people().staff, soren, ase, renamed] };
+		const changes: ReadingFile["changes"] = [
+			{ agent: "soeren", what: "ended", line: "Søren's role ended" },
+			{ agent: "aase-2", what: "ended", line: "Åse's role ended" },
+			{ agent: "mads", what: "ended", line: "Mads ended" },
+		];
+		const file = { ...FILE, changes };
+		// Without their files: Søren and Åse by their folder names; the renamed one is not found.
+		expect(
+			appReading({ kind: "reading", ...file }, HANDLES, ended, null).reading?.changes.map((c) => c.agent),
+		).toEqual([{ name: "Søren", figure: "moon" }, { name: "Åse", figure: "star" }, null]);
+		// With its own agent.md the renamed one is found by its id.
+		const agentMd = writeAgentFile({
+			id: renamed.id,
+			name: "Mads",
+			role: "Sales",
+			agentKind: "agent",
+			status: "archived",
+			colour: null,
+			figure: null,
+			model: null,
+			effort: null,
+			instructions: "Sells to workshops.",
+		});
+		const files = folder(() => writeReadingFile(file), { "QorperaOS/agents/mads/agent.md": agentMd });
+		const source = new CompanyReading(
+			{ folder: () => files as never, people: () => ended, standing: async () => STOPPED },
+			new AbortController().signal,
+		);
+		const answer = await source.read(new AbortController().signal);
+		expect(answer.reading?.changes.map((c) => c.agent?.name ?? null)).toEqual(["Søren", "Åse", "Mikkel"]);
 	});
 
 	it("answers no reading, the team and no standing for a company without them", () => {
@@ -209,7 +261,8 @@ describe("the company's reading for an app's page", () => {
 		const signal = new AbortController().signal;
 		expect((await source.read(signal)).reading?.sentence).toBe(FILE.sentence);
 		await source.read(signal);
-		expect(files.reads).toMatchObject({ entries: 2, bytes: 1, folders: 1 });
+		// the reading twice; the files of the two agents its changes name that the state folders do not list, once
+		expect(files.reads).toMatchObject({ entries: 4, bytes: 1, folders: 1 });
 		// A file that does not read keeps the reading before it.
 		text = `${TEXT}\n## Broken\nkey: Not A Key\n`;
 		expect((await source.read(signal)).reading?.sentence).toBe(FILE.sentence);
