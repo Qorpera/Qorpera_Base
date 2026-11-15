@@ -2056,18 +2056,13 @@ describe("the ring kit's engine", () => {
 		}));
 		expect(dots).toHaveLength(3);
 		// apart by more than two marks' width, room for a picked one drawn half as large again
-		for (const [a, b] of [
-			[0, 1],
-			[1, 2],
-			[0, 2],
-		])
-			expect(Math.hypot(dots[a].x - dots[b].x, dots[a].y - dots[b].y)).toBeGreaterThan(dots[a].r * 2.9);
+		for (const [at, dot] of dots.entries())
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2.9);
 		// the pointer finds each where it lies
-		for (const [index, name] of ["Annual report", "VAT return", "Payday"].entries()) {
-			stage()?.dispatchEvent(
-				new MouseEvent("pointermove", { clientX: dots[index].x, clientY: dots[index].y, bubbles: true }),
-			);
-			expect(what()).toBe(name);
+		for (const [at, dot] of dots.entries()) {
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(["Annual report", "VAT return", "Payday"][at]);
 		}
 	});
 
@@ -2095,7 +2090,7 @@ describe("the ring kit's engine", () => {
 		}
 		// the crowd stays round its day, as many drawn before it as after
 		const angle = (dot: { x: number; y: number }) => Math.atan2(dot.x - c, c - dot.y);
-		const day = angle(dots[0]);
+		const day = angle(dots[0] ?? { x: c, y: 0 });
 		expect(dots.filter((dot) => angle(dot) < day - 1e-6).length).toBeGreaterThan(0);
 		expect(dots.filter((dot) => angle(dot) > day + 1e-6).length).toBeGreaterThan(0);
 	});
@@ -2172,7 +2167,7 @@ describe("the flow kit's engine", () => {
 		const d = document.querySelectorAll(".fk-band")[index]?.getAttribute("d") ?? "";
 		const numbers = (d.match(/-?[\d.]+/g) ?? []).map(Number);
 		// M x y0 C … x1 y1 L x1 y2 C … x y3 Z: the end's edges are y0 and the last y
-		return Math.abs(numbers[numbers.length - 1] - numbers[1]);
+		return Math.abs((numbers[numbers.length - 1] ?? 0) - (numbers[1] ?? 0));
 	};
 
 	it("draws a band for each end through the middle, each as wide as its amount, and all that came in big", async () => {
