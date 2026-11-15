@@ -1279,6 +1279,7 @@ describe("a machine's account fill", () => {
 			providerId: "machine-node",
 			receiptId: commandId,
 			companyId,
+			desktopGeneration: 4,
 			target,
 		};
 		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
@@ -1349,6 +1350,7 @@ describe("a machine's account fill", () => {
 				placementId: f.answer.placementId,
 				bootId: f.answer.bootId,
 				receiptId: f.request.input.commandId,
+				desktopGeneration: 4,
 				target: f.target,
 			},
 			expect.any(Function),
@@ -1372,7 +1374,7 @@ describe("a machine's account fill", () => {
 
 	it("turns SQL's answers, the helper's codes and the vault's refusal into the agent's refusals, anything else a failure", async () => {
 		const f = fixture();
-		for (const reason of ["MACHINE_NOT_RUNNING", "ACCOUNTS_SWITCHED_OFF", "ACCOUNT_NOT_OPEN"]) {
+		for (const reason of ["MACHINE_NOT_RUNNING", "ACCOUNTS_SWITCHED_OFF", "ACCOUNT_NOT_OPEN", "DESKTOP_MEMBER_IN_CONTROL"]) {
 			f.call.mockResolvedValueOnce({
 				schema: "qorpera.machine-account-fill-authority/v1",
 				state: "refused",

@@ -4242,7 +4242,11 @@ describe("a machine's fill helper", () => {
 
 	it("takes the desktop and types nothing while a member holds it, before the helper or before its box", async () => {
 		const ok = { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
-		const held = { schema: "qorpera.machine-desktop-picture/v1", state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL" };
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
 		const before = await piped();
 		before.f.pictureChecks.push(held);
 		expect(await before.f.host.accountFill(run, before.seal, before.f.signal)).toEqual({
@@ -4250,9 +4254,11 @@ describe("a machine's fill helper", () => {
 		});
 		expect(before.pipe).not.toHaveBeenCalled();
 		expect(before.seal).not.toHaveBeenCalled();
-		expect(
-			before.f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args,
-		).toEqual({ p_placement_id: id(6), p_generation: 3, p_user_id: null });
+		expect(before.f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 3,
+			p_user_id: null,
+		});
 		const during = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
 		during.f.pictureChecks.push(ok, held);
 		expect(await during.f.host.accountFill(run, during.seal, during.f.signal)).toEqual({

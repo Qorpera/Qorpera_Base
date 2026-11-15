@@ -18,6 +18,7 @@ set local lock_timeout = '3s';
 create function public.qorpera_valid_machine_account_fill_call(p_args jsonb)
 returns boolean language plpgsql immutable set search_path = '' as $$
 begin
+	-- WHY: marker 20260930781000, read in pg_proc.prosrc by this migration's deploy guard.
 	if jsonb_typeof(p_args) is distinct from 'object'
 		or p_args - array['operationKey', 'machine', 'account', 'field'] <> '{}'::jsonb
 		or not (p_args ?& array['operationKey', 'machine', 'account', 'field']) then
@@ -41,6 +42,7 @@ declare
 	v_envelope jsonb;
 	v_operation jsonb;
 begin
+	-- WHY: marker 20260930781000, read in pg_proc.prosrc by this migration's deploy guard.
 	if p_envelope is null or octet_length(p_envelope) > 65536 then return null; end if;
 	begin
 		v_envelope := p_envelope::jsonb;
@@ -90,6 +92,7 @@ declare
 	v_schema constant text := 'qorpera.machine-account-fill-authority/v1';
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
+	-- WHY: marker 20260930781000, read in pg_proc.prosrc by this migration's deploy guard.
 	if auth.role() is distinct from 'service_role' or jsonb_typeof(p_scope) is distinct from 'object'
 		or p_scope - 'machineId' <> '{}'::jsonb or coalesce(p_scope ->> 'machineId' !~ v_uuid, true) or p_receipt_id is null then
 		raise exception 'Machine account fill request is malformed' using errcode = '22023'; end if;
@@ -206,6 +209,7 @@ declare
 	v_version public.qorpera_cloud_secret_versions%rowtype;
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
+	-- WHY: marker 20260930781000, read in pg_proc.prosrc by this migration's deploy guard.
 	if session_user <> 'qorpera_secret_broker' then
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
 	end if;

@@ -2567,7 +2567,7 @@ test("a press on the dock can steer nothing but which of three programs starts (
 	);
 	assert.match(
 		code,
-		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 --start-maximized --no-first-run\n\t\t--no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
 	);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
