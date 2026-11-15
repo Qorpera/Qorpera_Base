@@ -543,7 +543,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
-	"Choose a computer": "Vælg en computer",
 	// A member shares the desktop with the agent (20260930734000); typing privately is the take-over (20260930713000).
 	"You and {name} share this computer: you can both click and type.":
 		"Du og {name} deler denne computer: I kan begge klikke og skrive.",

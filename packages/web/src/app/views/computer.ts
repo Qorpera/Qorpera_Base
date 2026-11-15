@@ -18,8 +18,7 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
 import { attachComputerPlace } from "../../ui/computer-place.ts";
 import { ComputerScene, type ScenePhase } from "../../ui/computer-scene.ts";
-import { openContextMenu } from "../../ui/context-menu.ts";
-import { h, icon, replace } from "../../ui/dom.ts";
+import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import {
 	type InputSpan,
@@ -246,13 +245,13 @@ interface SharedInput {
 	readonly stop: AbortController;
 	sending: boolean;
 	/** It ended without the member's doing (the predicate turned false: review r5 F2 of #1701), and whether they were told
-	 * that input of it was dropped (once, from its queue or from the picture's buffer); an end they made (a switch, Back,
-	 * private typing beginning, a close) says nothing. */
+	 * that input of it was dropped (once, from its queue or from the picture's buffer); an end they made (Back, private
+	 * typing beginning, a close) says nothing. */
 	endedLost: boolean;
 	told: boolean;
 	/** Where the picture gives the input it gathers while this computer is shared: to this computer alone, while this
-	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
-	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
+	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the window moves to another
+	 * computer or the member leaves, starts typing privately or closes goes nowhere, never to another computer and never out as private). */
 	readonly input: MachineScreenInput;
 	/** The member's pointer while this computer is shared (20260930744000): on a shared pass of this sharing's generation. */
 	readonly pointer: PointerLane;
@@ -347,8 +346,12 @@ interface TakeAttempt {
 
 /**
  * An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
- * the screen of the desktop computer the agent uses, as a picture that refreshes about once a second, with a switcher
- * in its corner when the agent has more than one. Every member who reads the company may watch; owners, admins and
+ * the screen of the desktop computer the agent uses, as a picture that refreshes about once a second. An agent with
+ * more than one computer has ONE window all the same, and the window chooses: the first of the list, which names a
+ * running one before the others and the one whose screen the agent used last before the rest, so it follows the agent
+ * (Jonas, 14 Nov 2026, on the switcher that let a member pick among an agent's machines: "don't get why I can pick
+ * between machines - not even agents.. and they mostly dont have a computer open. remove I say"). Every member who
+ * reads the company may watch; owners, admins and
  * contributors may wake a sleeping machine. It looks only while a thread shows it and its tab is visible, slows down
  * while nothing changes, and stops after 30 minutes without a touch on the page until the member says they still watch.
  *
@@ -413,9 +416,6 @@ export class ComputerPanel {
 		"aria-label": t("Close computer"),
 		title: t("Close"),
 	});
-	/** The machine switcher on the preview, top left; the entered frame shows its own beside the title. */
-	readonly #switcher: HTMLButtonElement;
-	readonly #frameSwitcher: HTMLButtonElement;
 	readonly #fitPreview: () => void;
 	readonly #setExpanded: (expanded: boolean) => void;
 	/** What the large view covers in its thread, and whether each was inert before. */
@@ -449,6 +449,10 @@ export class ComputerPanel {
 	#heldSince: number | undefined;
 	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
 	#chosen: string | undefined;
+	/** The computer the member made with Start one (#startComputer): the window is on it while its start is on its way
+	 * (the wish for it stands), whatever the list names first meanwhile; after that the list decides, as for any (review
+	 * r1 F1 of #1826: held for good, the window would have stayed on it asleep while the agent worked at another). */
+	#started: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
 	/** The machine whose picture is up. */
@@ -569,8 +573,6 @@ export class ComputerPanel {
 		this.#parentGone = () => parentSignal?.aborted === true;
 		this.#ledger = options.ledger ?? new DesktopHoldLedger(computer, parentSignal);
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
-		this.#switcher = this.#switcherButton(signal);
-		this.#frameSwitcher = this.#switcherButton(signal);
 		this.el = h(
 			"aside",
 			{
@@ -579,7 +581,6 @@ export class ComputerPanel {
 				tabindex: "0",
 			},
 			this.#body,
-			this.#switcher,
 			this.#closeButton,
 		);
 		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
@@ -633,6 +634,10 @@ export class ComputerPanel {
 				this.#setExpanded(expanded);
 				// The line that says the computer is shared was said: once is enough (20260930734000).
 				if (!expanded && this.#introShown) this.#introduce = false;
+				// Back in the row the window follows the list again (#pick holds it only in the large view): the loop
+				// looks now, not when its wait runs out, which is seconds once the picture stood still (review r1 F2 of
+				// #1826).
+				if (!expanded) this.#quicken();
 				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701): the member's own
 				// doing, so nothing is said (review r5 F2), and before the redraw, which would take it for one without it.
 				if (!expanded) this.#endShared();
@@ -641,7 +646,6 @@ export class ComputerPanel {
 			},
 			...(options.decode ? { decode: options.decode } : {}),
 		});
-		this.#view.setSwitcher(this.#frameSwitcher);
 		this.#view.setControls(this.#controls);
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
@@ -847,7 +851,7 @@ export class ComputerPanel {
 	}
 
 	/** Give back every desktop of this agent's the member may hold (the window's Hand back, the card's I'm done before it
-	 * answers, a switch to another machine), through the company's ledger. A take-over still on its way is answered
+	 * answers, the window moving to another machine), through the company's ledger. A take-over still on its way is answered
 	 * first, and a hold it gets is given back as it comes. True once the database confirmed it and a list read after
 	 * that shows no hold of the member's; false while not: the window then says so, and the ledger asks again with
 	 * growing waits, never renews the hold and never takes it up again from the list (review r1 F4, F5; r2). A hold never
@@ -880,6 +884,12 @@ export class ComputerPanel {
 		return this.#hold?.machineId;
 	}
 
+	/** The machine the window shows now. The switcher named it; since it went (14 Nov 2026) the tests read it here, and
+	 * nothing else does. */
+	get machineId(): string | undefined {
+		return this.#machineId;
+	}
+
 	/** Whether the member holds the desktop the window shows. */
 	get holding(): boolean {
 		return this.#holding !== undefined;
@@ -904,8 +914,10 @@ export class ComputerPanel {
 		this.#syncControls();
 	}
 
+	/** The window takes the keyboard. Where the thread scrolls for it is the thread's to say (conversation.ts
+	 * #revealComputer): the browser's own scroll to a focused element knows nothing of the foot laid over the thread. */
 	focus(): void {
-		this.el.focus();
+		this.el.focus({ preventScroll: true });
 	}
 
 	dispose(): void {
@@ -1006,8 +1018,8 @@ export class ComputerPanel {
 				// F6, r3 F8, r4 F8).
 				this.#ledger.releaseOthers(this.agentId, machine?.machineId);
 				// Shared input of the last machine's goes no further (20260930734000); the next machine's screen is not seen yet.
-				// A switch of the member's ended it already; a machine gone from the list ends it here, and says so (review r5
-				// F2), as does a word that input was lost before.
+				// The list moved the window (the agent went to another computer, or this one left the list): that ends it here,
+				// and says so (review r5 F2), as does a word that input was lost before.
 				this.#screenSeen = false;
 				this.#endShared(true);
 				if (!this.#lostShown) this.#controlNote.textContent = "";
@@ -1015,14 +1027,13 @@ export class ComputerPanel {
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
 				// The last machine's picture stays, marked, until the next one's comes (or the next one says why there is
-				// none): a member who switches in the entered frame stays in it.
+				// none): the entered frame stays entered.
 				this.#view?.updating();
 				// The member's word is per machine: the next machine's first look says it again, so its desktop stays on
 				// while they watch it (review r1 F2).
 				this.#confirm = true;
 				this.#confirmedAt = Number.NEGATIVE_INFINITY;
 			}
-			this.#syncSwitchers();
 			if (!machine || machine.state !== "running") {
 				// A machine that sleeps may wake larger: what a start said of it is gone.
 				this.#startEnded = undefined;
@@ -1080,7 +1091,7 @@ export class ComputerPanel {
 				this.#confirmedAt = Date.now();
 			}
 			this.#failures = 0;
-			// The answer is the machine's the window shows now, or nothing (a switch made while the look was on its way:
+			// The answer is the machine's the window shows now, or nothing (the window moved on while the look was on its way:
 			// release review r1 of #1667, the requests' audit).
 			if (machine.machineId !== this.#machineId || this.#pick()?.machineId !== machine.machineId) continue;
 			// The live picture began while the look was on its way: its picture is newer than the look's.
@@ -1228,7 +1239,7 @@ export class ComputerPanel {
 	}
 
 	/** Takes the machine chosen at the click over, once, through the company's ledger, at the member's hand-back epoch:
-	 * its hold, or why not. Called off meanwhile (a hand-back, the window's close, a switch to another machine), what it
+	 * its hold, or why not. Called off meanwhile (a hand-back, the window's close, the window moving to another machine), what it
 	 * got is covered by the hand-back at its epoch and never renewed (review r1 F5, r5); so is one of a machine no longer
 	 * shown. A lost answer stays in the ledger as "may be held" until a hand-back covers it or the list says it holds. */
 	async #take(machine: MemberAgentMachine | undefined, attempt: TakeAttempt): Promise<void> {
@@ -1460,7 +1471,7 @@ export class ComputerPanel {
 
 	/** The shared input ends: its queue is emptied, an action of it on its way is cut off on the page, and it is never
 	 * used again (a new sharing is made when the predicate holds again: review r3 of #1701). Ended because the predicate
-	 * turned false (`lost`), input that was waiting is said lost; the member's own switch or press says nothing. */
+	 * turned false (`lost`), input that was waiting is said lost; the member's own press says nothing. */
 	#endShared(lost = false): void {
 		const shared = this.#shared;
 		this.#shared = undefined;
@@ -2285,16 +2296,33 @@ export class ComputerPanel {
 		else this.#unpicture(this.#failures >= FAILURES_SHOWN ? "error" : "loading");
 	}
 
-	/** Whether the picture up is of the machine chosen now (after a switch it is the last one's until the next comes). */
+	/** Whether the picture up is of the machine shown now (when the window moves on it is the last one's until the next
+	 * comes). */
 	#picturing(): boolean {
 		return this.#view?.shown === true && this.#pictureOf === this.#machineId;
 	}
 
-	/** The chosen machine while the agent has it and it has a screen, else the first with a screen: running ones come
-	 * first, the one the agent drove last before the others. */
+	/** The machine the window shows: the first with a screen, as the list names them (running ones first, the one whose
+	 * screen the agent used last before the others), so the window follows the agent and a member chooses nothing. Two
+	 * things hold it for a while: the one the member just made with Start one, while its start is on its way (`#started`
+	 * and the wish for it); and the one the member is at in the large view, while it runs. (`#chosen` is the tests'
+	 * `choose` alone.) */
 	#pick(): MemberAgentMachine | undefined {
 		const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-		return desktops.find((machine) => machine.machineId === this.#chosen) ?? desktops[0];
+		const chosen = desktops.find((machine) => machine.machineId === this.#chosen);
+		if (chosen) return chosen;
+		if (this.#started !== undefined && this.#wantOn?.machineId === this.#started && Date.now() < this.#wantOn.until) {
+			const started = desktops.find((machine) => machine.machineId === this.#started);
+			if (started) return started;
+		}
+		// In the large view the member is at this computer, clicking and typing on it: the window stays on it while it
+		// runs, whatever the agent drives meanwhile, and follows the list again from the row. (The switcher gave them
+		// this; without it the list alone would take the screen from under their hands.)
+		if (this.#view?.entered) {
+			const here = desktops.find((machine) => machine.machineId === this.#machineId && machine.state === "running");
+			if (here) return here;
+		}
+		return desktops[0];
 	}
 
 	/** What the window says of a machine that shows no picture: none, none with a screen, asleep or on its way up. */
@@ -2602,10 +2630,9 @@ export class ComputerPanel {
 	/** Start one (20260930730000): one desktop computer for the agent, made as its own machine_start with desktop true and
 	 * its defaults makes it, or the agent's own one big enough for a desktop. Then the press carries the wish through to a
 	 * picture, as Wake it's does: once the list shows the computer running, the window turns its screen on (20260930714000).
-	 * The wish is this page's, for that computer: it ends at its picture, a refusal, a close, a switch, or WANT_ON_MS. Never
+	 * The wish is this page's, for that computer: it ends at its picture, a refusal, a close, the window moving on, or WANT_ON_MS. Never
 	 * on open: a computer costs hours, so it takes a press. */
 	async #startComputer(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
-		const chosen = this.#chosen;
 		this.#making = true;
 		this.#startRefused = undefined;
 		this.#show("making");
@@ -2624,9 +2651,8 @@ export class ComputerPanel {
 			if (!this.#pick()) this.#show("noStart");
 			return;
 		}
-		// The member chose a machine meanwhile: the wish was theirs to drop (the computer is made all the same).
-		if (this.#chosen !== chosen) return;
-		this.#chosen = answer.machineId;
+		// The computer just made is the one the window shows while its start is on its way, wherever the list puts it.
+		this.#started = answer.machineId;
 		this.#wantOn = { machineId: answer.machineId, until: Date.now() + WANT_ON_MS };
 		this.#startEnded = undefined;
 		this.#startAnswered = undefined;
@@ -2726,82 +2752,40 @@ export class ComputerPanel {
 		if (Date.now() - this.#confirmedAt >= CONFIRM_EVERY_MS) this.#confirm = true;
 	}
 
+	/** Shows another of the agent's computers, at once. NOTHING IN THE WEB CALLS THIS since the switcher was taken out of
+	 * the window (Jonas, 14 Nov 2026: "don't get why I can pick between machines ... remove I say"): a member chooses no
+	 * machine, the window shows the list's first (#pick). It stays, as takeOver does, only as the way the tests of a
+	 * machine change made at once (the holds an older page could still have, shared input on its way to the last
+	 * computer) make one, until that machinery is retired; both go together. */
+	choose(machineId: string): void {
+		const machine = this.#listed?.machines.find((one) => one.desktopCapable && one.machineId === machineId);
+		if (this.#stop.signal.aborted || !machine) return;
+		const before = this.#pick()?.machineId;
+		this.#chosen = machine.machineId;
+		// At the choice, not when the loop next sees it (it may be waiting on a request): every machine of this agent's in
+		// the ledger but this one goes back (review r4 F8). A take-over asked before is not carried over to the machine
+		// chosen now, nor a wish that its desktop be on (20260930714000).
+		if (machine.machineId !== before) {
+			this.#wantTakeOver = undefined;
+			if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
+			// Shared input of the last computer goes no further, even while the loop waits on a request (review r1 F1 of
+			// #1701); the next one's screen is not seen yet (review r3).
+			this.#screenSeen = false;
+			this.#endShared();
+			this.#lostShown = false;
+			this.#controlNote.textContent = "";
+			// The picture takes nothing more for the last computer, at once (review r2 F1 of #1701).
+			this.#syncControls();
+		}
+		this.#ledger.releaseOthers(this.agentId, machine.machineId);
+		this.#quicken();
+	}
+
 	/** Looks come every LOOK_EVERY_MS again, from now. */
 	#quicken(): void {
 		this.#unchanged = 0;
 		if (this.#delay > LOOK_EVERY_MS && this.#failures === 0) this.#delay = LOOK_EVERY_MS;
 		this.#poke();
-	}
-
-	#switcherButton(signal: AbortSignal): HTMLButtonElement {
-		const button = h(
-			"button",
-			{
-				type: "button",
-				class: "computer-switcher",
-				hidden: true,
-				"aria-haspopup": "menu",
-				title: t("Choose a computer"),
-			},
-			h("span", { class: "computer-switcher-name" }),
-			icon("chevron-down"),
-		);
-		button.addEventListener(
-			"click",
-			(event) => {
-				event.stopPropagation();
-				const rect = button.getBoundingClientRect();
-				const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-				openContextMenu({
-					label: t("Choose a computer"),
-					x: rect.left,
-					y: rect.bottom + 4,
-					opener: button,
-					items: desktops.map((machine) => ({
-						label: machine.name,
-						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,
-						checked: machine.machineId === this.#machineId,
-						select: () => {
-							const before = this.#pick()?.machineId;
-							this.#chosen = machine.machineId;
-							// At the choice, not when the loop next sees it (it may be waiting on a request): every machine of this
-							// agent's in the ledger but this one goes back (review r4 F8). A take-over asked before is not carried
-							// over to the machine chosen now, nor a wish that its desktop be on (20260930714000).
-							if (machine.machineId !== before) {
-								this.#wantTakeOver = undefined;
-								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
-								// Shared input of the last computer goes no further, even while the loop waits on a request
-								// (review r1 F1 of #1701); the next one's screen is not seen yet (review r3).
-								this.#screenSeen = false;
-								this.#endShared();
-								this.#lostShown = false;
-								this.#controlNote.textContent = "";
-								// The picture takes nothing more for the last computer, at once (review r2 F1 of #1701).
-								this.#syncControls();
-							}
-							this.#ledger.releaseOthers(this.agentId, machine.machineId);
-							this.#quicken();
-						},
-					})),
-				});
-			},
-			{ signal },
-		);
-		// A press on the switcher is not the start of a drag.
-		button.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
-		return button;
-	}
-
-	/** The switchers name the machine shown, and show only while the agent has more than one with a screen. */
-	#syncSwitchers(): void {
-		const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-		const current = desktops.find((machine) => machine.machineId === this.#machineId);
-		for (const button of [this.#switcher, this.#frameSwitcher]) {
-			button.hidden = desktops.length < 2 || !current;
-			const label = button.querySelector(".computer-switcher-name");
-			if (label && label.textContent !== (current?.name ?? "")) label.textContent = current?.name ?? "";
-			button.setAttribute("aria-label", t("Choose a computer"));
-		}
 	}
 }
 

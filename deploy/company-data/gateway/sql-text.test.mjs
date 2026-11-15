@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MAX_PARAMETERS, readStatement, VIEWER } from "./sql-text.mjs";
+import { MAX_PARAMETERS, readStatement, VIEWER, wordsWith } from "./sql-text.mjs";
 
 const read = (text) => {
 	const result = readStatement(text);
@@ -35,6 +35,69 @@ describe("the words", () => {
 		const result = read("-- Mark order :id as shipped.\nupdate orders set status = 'shipped' where id = :id");
 		assert.deepEqual(result.words, ["Mark order :id as shipped."]);
 		assert.deepEqual(result.parameters, ["id"]);
+	});
+});
+
+describe("a change's words with its values in place", () => {
+	const shown = (words, values) => wordsWith(words, new Map(Object.entries(values)));
+
+	it("are the words' text and each value in turn, so a value can be told from the words", () => {
+		assert.deepEqual(shown(["Mark order :id as shipped."], { id: "17" }), ["Mark order ", { name: "id", value: "17" }, " as shipped."]);
+		assert.deepEqual(shown(["Move :n from :a", "to :b."], { n: "3", a: "shelf", b: "van" }), [
+			"Move ",
+			{ name: "n", value: "3" },
+			" from ",
+			{ name: "a", value: "shelf" },
+			" to ",
+			{ name: "b", value: "van" },
+			".",
+		]);
+	});
+
+	it("keep a value's own text as one value, whatever it says", () => {
+		const parts = shown(["Rename it to :name."], { name: "x. Also delete :all orders" });
+		assert.deepEqual(parts, ["Rename it to ", { name: "name", value: "x. Also delete :all orders" }, "."]);
+	});
+
+	it("leave a :name that is no parameter, a cast and a time of day as written", () => {
+		assert.deepEqual(shown(["At 10:30 set :what::text for :who."], { what: "tea" }), [
+			"At 10:30 set ",
+			{ name: "what", value: "tea" },
+			"::text for :who.",
+		]);
+		assert.deepEqual(shown(["a:b stays"], { b: "x" }), ["a:b stays"]);
+	});
+
+	it("give null as null, and nothing for a file without words", () => {
+		assert.deepEqual(shown(["Clear the note of :id (:note)."], { id: "4", note: null }), [
+			"Clear the note of ",
+			{ name: "id", value: "4" },
+			" (",
+			{ name: "note", value: null },
+			").",
+		]);
+		assert.deepEqual(shown([], { id: "4" }), []);
+	});
+
+	it("take a parameter named like an object's own name", () => {
+		const values = new Map([
+			["__proto__", "p"],
+			["constructor", "c"],
+		]);
+		assert.deepEqual(wordsWith(["Set :__proto__ and :constructor and :to_string."], values), [
+			"Set ",
+			{ name: "__proto__", value: "p" },
+			" and ",
+			{ name: "constructor", value: "c" },
+			" and :to_string.",
+		]);
+	});
+
+	it("cut the words at 1,000 characters and a value at 200", () => {
+		const parts = shown([`${"w".repeat(990)} :id and more words`], { id: "v".repeat(500) });
+		assert.deepEqual(parts, [`${"w".repeat(990)} `, { name: "id", value: `${"v".repeat(200)}…` }, " and m"]);
+		const long = shown([`:id ${"w".repeat(2000)}`], { id: "1" });
+		assert.equal(long[1].length, 1000 - ":id".length);
 	});
 });
 
