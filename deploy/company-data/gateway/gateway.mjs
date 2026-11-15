@@ -123,14 +123,13 @@ const ROW_TEXT =
 	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
 const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
 const EDITS = ["add", "change", "remove"];
-const JSON_TYPES = new Set(["json", "jsonb"]);
 const SETTLE =
 	"with looked as (select c.txid, pg_catalog.txid_status(c.txid) as status from qorpera_data.change_log c " +
 	"where $1::bigint[] is null or c.txid = any ($1::bigint[])), " +
 	"gone as (delete from qorpera_data.change_log c using looked l where c.txid = l.txid and l.status = 'aborted' returning c.txid) " +
 	"select l.txid::text as txid from looked l where l.status = 'in progress'";
 const UNROWED =
-	"delete from qorpera_data.change_log c where pg_catalog.txid_status(c.txid) is distinct from 'in progress' " +
+	"delete from qorpera_data.change_log c where pg_catalog.txid_visible_in_snapshot(c.txid, pg_catalog.txid_current_snapshot()) " +
 	"and not exists (select 1 from qorpera_data.row_changes r where r.txid <= c.txid)";
 const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
 	.map((table) => `coalesce(pg_catalog.pg_total_relation_size(pg_catalog.to_regclass('qorpera_data.${table}')), 0)`)
@@ -139,7 +138,9 @@ const OWN_SIZE = `select pg_catalog.pg_database_size(pg_catalog.current_database
 const RELATION =
 	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, " +
 	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key, " +
-	"pg_catalog.format_type(a.atttypid, -1) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable " +
+	"pg_catalog.format_type(a.atttypid, -1) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable, " +
+	"(with recursive d(oid) as (select a.atttypid union all select t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.oid and t.typtype = 'd') " +
+	"select bool_or(d.oid in ('pg_catalog.json'::pg_catalog.regtype, 'pg_catalog.jsonb'::pg_catalog.regtype)) from d) as json " +
 	"from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1 " +
 	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
@@ -1250,7 +1251,7 @@ export class Gateway {
 				params.push(
 					value === null
 						? null
-						: JSON_TYPES.has(column?.base) || typeof value === "object"
+						: column?.json === "t" || typeof value === "object"
 							? JSON.stringify(value)
 							: typeof value === "string"
 								? value

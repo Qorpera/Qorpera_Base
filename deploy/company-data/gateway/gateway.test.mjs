@@ -3123,6 +3123,16 @@ create trigger nap before update on slowed for each row execute function nap();
 		const now = await itemAt(id);
 		assert.equal((await edit(contributor, { op: "change", key: { id }, seen: now.seen, values: { doc: null } })).status, 200);
 		assert.deepEqual(await inE("select doc is null as empty from ledger.items where id = $1", [id]), [{ empty: true }]);
+		put(ENV_E, {
+			"data/ledger/tables/005-docs.sql":
+				"create domain doc as jsonb;\ncreate domain note as doc;\ncreate table docs (id int primary key, d doc, n note);\ninsert into docs values (1, '\"x\"', '\"y\"');\n",
+		});
+		assert.equal((await ask(contributor, "apply", { database: "ledger" }, ENV_E)).value.applied, true);
+		const doc = await itemAt(1, "docs");
+		assert.deepEqual(doc.values, [1, "x", "y"]);
+		const kept = await edit(contributor, { table: "docs", op: "change", key: { id: 1 }, seen: doc.seen, values: { d: "hi", n: "there" } });
+		assert.deepEqual([kept.status, kept.value.row?.values], [200, [1, "hi", "there"]], JSON.stringify(kept.value));
+		assert.deepEqual(await inE("select jsonb_typeof(d) as d, jsonb_typeof(n) as n from ledger.docs"), [{ d: "string", n: "string" }]);
 	});
 
 	it("lets an actor's line go with its rows' lines at the watcher's sweep, and keeps a running write's", async () => {
