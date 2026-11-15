@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
 	COMPANY_STATE_COFOUNDER_HANDLE,
 	COMPANY_STATE_FIRST_TODO_PATH,
@@ -1904,6 +1905,12 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
 // With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
 // three were measured once more.
+// With own code storage step 5.1's D1a (changes/index.md says, for about a minute after a change goes in, that its site is
+// being prepared; 13 November 2026), the staff instructions were measured once more on the merged tree.
+// With both on one tree (master's starter set and step 5.1's D1a; release v247's candidate, 14 November 2026) the staff
+// instructions were measured once more.
+// With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
+// and a private conversation's instructions were measured once more.
 // Track 3, T3-1 (14 November 2026): the Company Computer, which no company has had since 3 October 2026, left the
 // words every run reads; laws 3 and 6 say what members see and which route is next today; and the run's ids and
 // versions (the bootstrap binding) left the instructions for the run's records. All three were measured once more.
@@ -1923,12 +1930,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // for the run's own tools, the secrets rule in a worker's words, a broken connection and the card that fits are back,
 // and the hand-off once every founder approves is a piece of its own. The instructions were measured once more.
 // Master merged up through T3-2 (15 November 2026): the apps section says, in one voice, to read a kit's guide with app_guide before writing its file; all three measured once more.
+// v247's release merged into T3-1 (15 November 2026): its D1a sentence with T3-1's words and app_guide; the
+// conversation and private pairs measured once more.
+// Its D1a sentence in T3-2's Starting work too: the staff pair measured once more.
+// v247's release merged up through T3-2 (15 November 2026): Code projects says, in one voice, that changes/index.md also tells a site still being prepared; all three measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "bd5cd82e1da975075e4e9eb19c4a307caf5e516f3b0f19f927836f39b6727fe1",
+			instructions: "f4e48e769aeb473f9729192b9f90c4375c5e18c337b34a76f01bcc98c75564bc",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1944,7 +1955,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "bd5cd82e1da975075e4e9eb19c4a307caf5e516f3b0f19f927836f39b6727fe1",
+			instructions: "f4e48e769aeb473f9729192b9f90c4375c5e18c337b34a76f01bcc98c75564bc",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
@@ -1973,8 +1984,9 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"Give a change what customers will notice, and a picture, with manage_code describe.",
 		// Own code storage, step 6: after an operator's restore, changes/index.md names the changes it took out for 30 days.
 		"When changes/index.md says the repository was put back to an earlier copy, make the named changes again if they are still wanted.",
-		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
-		'A website repository names its built site in the checks file ("site": {"folder": "dist"}): every passing site waits in What\'s new, changes/index.md says which is live, and an undo goes live with the next passing change.',
+		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken; step
+		// 5.1 (D1a): changes/index.md also says, for about a minute after a change goes in, that its site is being prepared.
+		'A website repository names its built site in the checks file ("site": {"folder": "dist"}): every passing site waits in What\'s new, changes/index.md says which is live and which is still being prepared (about a minute after a change goes in), and an undo goes live with the next passing change.',
 		"or to press Go back in What's new.",
 		// What #1643 said of a project's history and its hand-over stays.
 		"For history, run git log, show and diff in /company/code/<owner>/<name>/main on a machine",
@@ -1999,6 +2011,22 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	expect(worker).not.toContain(".qorpera/checks.json");
 	expect(worker).not.toContain('"site": {"folder": "dist"}');
 	expect(worker).not.toContain("put back to an earlier copy");
+	expect(worker).not.toContain("being prepared");
+});
+
+// Own code storage, step 5.1 (D1a): the line the agents are told to look for is the one the coding executor writes in
+// changes/index.md, "Being prepared for What's new: change N (about a minute).", while the kernel says what is being
+// prepared (only while sites have hosts of their own: migration 20260930756000's preparing).
+it("names the line the coding executor writes while a site is being prepared", () => {
+	const records = readFileSync(
+		new URL("../../runner-orchestrator/src/code-change-records.ts", import.meta.url),
+		"utf8",
+	);
+	expect(records).toMatch(/`Being prepared for What's new: change \$\{preparing\.change\} \(about a minute\)\.`/);
+	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
+		// T3-3's one voice says it in the Code projects section.
+		"changes/index.md says which is live and which is still being prepared (about a minute after a change goes in)",
+	);
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A

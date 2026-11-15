@@ -275,7 +275,7 @@ ${sentences(
 	code
 		? "Check what checks cannot by opening what it built on a machine (main/); when it is wrong, take it out at once with manage_code undo, check main again (an undo is not checked), and follow up with a fix. Give a change what customers will notice, and a picture, with manage_code describe."
 		: "Check what checks cannot by opening what it built on a machine (main/), and follow up with a fix when it is wrong.",
-	'When changes/index.md says the repository was put back to an earlier copy, make the named changes again if they are still wanted. A website repository names its built site in the checks file ("site": {"folder": "dist"}): every passing site waits in What\'s new, changes/index.md says which is live, and an undo goes live with the next passing change.',
+	'When changes/index.md says the repository was put back to an earlier copy, make the named changes again if they are still wanted. A website repository names its built site in the checks file ("site": {"folder": "dist"}): every passing site waits in What\'s new, changes/index.md says which is live and which is still being prepared (about a minute after a change goes in), and an undo goes live with the next passing change.',
 )}
 For history, run git log, show and diff in /company/code/<owner>/<name>/main on a machine; to hand over a whole project as one file, make a git archive or git bundle into the company's folder.`;
 }
