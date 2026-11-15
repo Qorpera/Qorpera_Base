@@ -67,6 +67,7 @@ import {
 	prepareTell,
 	restoreTell,
 } from "./app-actions.ts";
+import type { AppReadingAnswer, CompanyReading } from "./company-reading.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
 /* Interface apps on the web (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, §4 and §5; Jonas, 5 November 2026): the
@@ -80,6 +81,8 @@ import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } f
  * - The bridge reads only what the manifest's `reads` names, and only what an agent of the company reads too: the app's
  *   own folder always; with `files`, the company's own work (never QorperaOS/ or what the platform writes: mail, bank,
  *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them;
+ *   with `reading`, the company's reading of itself, its agents and whether it can run, as plain names
+ *   (app/company-reading.ts);
  *   with `questions`, the agents' open question cards that point at this app; with `data`, the answers of the company
  *   databases' named questions (`query`), and the same kept live (`watch`: CompanyData below).
  *   It never hands over who the member is, a token, or anything of this app's own state.
@@ -576,6 +579,8 @@ async function readPage(files: AppFiles, entry: string): Promise<Document | null
 export interface AppBridgeHost {
 	readonly folder: () => Folder;
 	readonly agents: () => readonly { readonly name: string; readonly role: string; readonly working: boolean }[];
+	/** The company's reading of itself, for an app that reads `reading`; absent where it can't be read. */
+	readonly reading?: Pick<CompanyReading, "read" | "watch">;
 	/** The agents' open questions and an agent by its id, for an app that shows or answers them; absent where the
 	 * company has none to show. */
 	readonly questions?: AppQuestionSource & {
@@ -636,6 +641,8 @@ const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "o
 		gone: "The page was put away, or what it may ask for changed, before the member answered",
 	};
 const TODO_FILES = 200;
+/** What `reading` answers where the company's reading can't be read from here: none yet, no team, no standing. */
+const NO_READING: AppReadingAnswer = { reading: null, team: [], standing: null };
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
 /** After the member sent a note from an app, its next note is refused this long: the bar comes back no sooner. */
@@ -821,6 +828,12 @@ export class AppBridge {
 			case "todos": {
 				if (!this.#may("todos")) return refuse('Add "todos" to reads in app.toml to read the todos');
 				return { ok: true, value: await this.#todos(folder) };
+			}
+			case "reading": {
+				if (!this.#may("reading"))
+					return refuse('Add "reading" to reads in app.toml to read the company\'s reading of itself');
+				const reading = this.#host.reading;
+				return { ok: true, value: reading ? await reading.read(this.#signal) : NO_READING };
 			}
 			case "questions": {
 				if (!this.#may("questions"))
