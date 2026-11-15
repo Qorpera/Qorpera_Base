@@ -70,6 +70,7 @@ it("writes A5's settings: bypass, no sandbox, deny rules on the box's own folder
 			deny: ["Read(//slot/**)", "Edit(//slot/**)", "Write(//slot/**)", "Read(//opt/claude/**)"],
 		},
 		sandbox: { enabled: false },
+		attribution: { commit: "", pr: "" },
 	});
 	// Claude Code applies Read rules to the paths a Bash command names: a rule on a path the home also has would
 	// refuse the agent's own commands there (P4 3.6).

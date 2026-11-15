@@ -84,7 +84,8 @@ class H(BaseHTTPRequestHandler):
             req = {}
         base = {"kind": "request", "path": self.path[:120], "auth_tags": tags(auth), "auth_scheme": auth.split(" ")[0][:12],
                 "body_tags": tags(raw.decode("utf-8", "replace")), "bytes": len(raw),
-                "attacker": self.path.startswith("/c2-attacker"), "host": (self.headers.get("host") or "")[:60]}
+                "attacker": self.path.startswith("/c2-attacker"), "host": (self.headers.get("host") or "")[:60],
+                "attribution": [s for s in ("Co-Authored-By", "Generated with") if s in raw.decode("utf-8", "replace")]}
         if "/oauth/token" in self.path:
             base["kind"] = "refresh"
             base["grant"] = str(req.get("grant_type", ""))[:40]

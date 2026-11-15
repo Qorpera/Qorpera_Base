@@ -108,6 +108,7 @@ export function claudeBoxSettings(weakening?: ClaudeBoxProofWeakening): string {
 			...(weakening?.noDenyRules ? {} : { deny: [...CLAUDE_BOX_DENY] }),
 		},
 		sandbox: { enabled: false },
+		attribution: { commit: "", pr: "" },
 	})}\n`;
 }
 

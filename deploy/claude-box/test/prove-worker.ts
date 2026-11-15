@@ -206,7 +206,13 @@ interface RunResult {
 	readonly error?: string;
 	readonly stage?: string;
 	readonly leftInRoot?: string[];
-	readonly stub?: { requests: number; authTags: string[]; refreshes: number; results: { name: string; isError: boolean }[] };
+	readonly stub?: {
+		requests: number;
+		authTags: string[];
+		attribution: string[];
+		refreshes: number;
+		results: { name: string; isError: boolean }[];
+	};
 	readonly outputs: string;
 	readonly ms: number;
 }
@@ -905,6 +911,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			&& asked.includes("Your earlier report said: I made onboarding.md and notes.txt in my folder.")
 			&& asked.includes("The agent's follow-up on your earlier report: Use the new logo."),
 			`Claude Code was asked: ${asked.replaceAll("\n", " | ").slice(0, 900)}`);
+		check("no-attribution", (r1.stub?.requests ?? 0) > 0 && (rf.stub?.requests ?? 0) > 0
+			&& r1.stub?.attribution.length === 0 && rf.stub?.attribution.length === 0,
+			`what Claude Code sent holds no "Co-Authored-By" and no "Generated with": run 1 ${JSON.stringify(r1.stub?.attribution)} in ${r1.stub?.requests} requests, follow-up ${JSON.stringify(rf.stub?.attribution)} in ${rf.stub?.requests}`);
 
 		// 4c. The plan's limit and an ended sign-in, as Anthropic answers them (429 with its unified limit headers; 401), in
 		// Claude Code's own words on its own stream.
@@ -1181,6 +1190,9 @@ async function runProcess(): Promise<void> {
 			stub: {
 				requests: requests.length,
 				authTags: [...new Set(requests.flatMap((line) => line.auth_tags as string[]))].sort(),
+				attribution: [
+					...new Set(lines.filter((line) => line.kind === "request").flatMap((line) => (line.attribution as string[]) ?? [])),
+				].sort(),
 				refreshes: lines.filter((line) => line.kind === "refresh").length,
 				results: lines.filter((line) => line.kind === "result").map((line) => ({ name: line.name, isError: line.is_error })),
 			},
