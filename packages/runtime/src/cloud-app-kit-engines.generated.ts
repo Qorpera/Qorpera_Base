@@ -270,6 +270,189 @@ part faces the viewer best, and shows its note. Never invent a value: a figure t
 \`\`\`
 `;
 
+/** The curve kit's guide for agents, as app_guide answers it. */
+export const CURVE_KIT_GUIDE = `# Curve kit: where is it going?
+
+Draws one value over time, big: money in the bank, orders a day, visitors a week. The past is a filled area under a
+solid line. What is expected is a dotted line inside a band: the wider the band, the less sure. A line marks now, a
+dashed line the safe level, and a few points carry a short mark. The value that matters stands large at the top; a
+member runs a finger or the pointer along the curve and the big number follows. You write only \`curve.json\`.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`unit\` (8): the unit after the big number, such as \`"kr"\` or \`"orders"\`.
+- \`tone\`: the curve's colour, \`"accent"\` (default), \`"good"\`, \`"warn"\` or \`"bad"\`.
+- \`points\`: 2 to 120 in time order, each \`{"label" (12), "value", "band"}\`:
+  - \`label\`: the time, such as \`"Nov"\` or \`"Mon"\`. Short: the page shows as many labels as fit.
+  - \`value\`: a number. Leave it out when nobody knows it: the past then has a gap, the future a band only.
+  - \`band\`: \`[low, high]\`, only for expected points: how far it may go each way. The page draws the band; never write
+    about how unsure it is.
+  - \`state\`: \`"assumed"\` for a value that is someone's assumption (drawn dashed).
+- \`now\`: the \`label\` of the point that is now. Points after it are expected. Leave it out when every point is past.
+  Expected points with neither value nor band are drawn as fog with a "?".
+- \`safe\`: \`{"value", "label" (24)}\`, a level the value should stay above, such as the money that must stay in the bank.
+- \`marks\`: up to 3 \`{"at": label, "text" (24)}\`, such as the low point. The page shows the value and the text there.
+- \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points. Default: the value at now.
+- \`words\`: the page's own words in your language: \`now\`, \`safe\`, \`expected\`, \`assumed\`, \`unknown\`, \`between\`
+  ("{low} to {high}"), \`empty\`.
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+
+A point's \`value\` and the \`headline\`'s may be live from a company database: \`{"query": "<database>/<question>",
+"params": {}, "column": "balance", "example": 62400}\`. Known once it answers, else not known; \`example\` shows only
+outside Qorpera.
+
+## Rules
+
+- Every number comes from the company's files or databases. Never invent one. An expected value is the company's
+  own forecast, written down in its files; with none, leave the future out.
+- Labels, not sentences. Texts over their limit are cut with "…". No colours or sizes: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Money ahead",
+  "line": "In the bank, six months back and six ahead",
+  "unit": "kr",
+  "tone": "good",
+  "points": [
+    { "label": "Sep", "value": 37200 },
+    { "label": "Oct", "value": 45600 },
+    { "label": "Nov", "value": { "query": "bank/balance", "column": "balance", "example": 62400 } },
+    { "label": "Dec", "value": 58000, "band": [52000, 65000] },
+    { "label": "Jan", "value": 49000, "band": [40000, 58000] },
+    { "label": "Feb", "value": 44000, "band": [33000, 55000] }
+  ],
+  "now": "Nov",
+  "safe": { "value": 25000, "label": "safe level" },
+  "marks": [{ "at": "Feb", "text": "low point" }],
+  "source": "folder:finance/forecast.md"
+}
+\`\`\`
+`;
+
+/** The stack kit's guide for agents, as app_guide answers it. */
+export const STACK_KIT_GUIDE = `# Stack kit: what wants my yes?
+
+Shows the things that wait on a member's yes, one big card at a time: a soft colour field or a picture, one big
+number, one line, the asking agent's figure, and the answers as buttons under it. A press answers the question;
+the card is stamped and the next comes forward. With nothing left the page says so. You write only \`stack.json\`.
+
+## How the buttons work
+
+A card's buttons are the options of an open question to the member that points at this app. Ask it with ask_member:
+its title the card's \`title\`, word for word, a link \`[title](app:<name>)\` in its body, and options such as No,
+Change, Yes. The last option is the big button. save_app gives the app the reads and writes this needs. A card
+whose question is not open shows no buttons, only that it is not asked yet. When the member answers, you are woken
+with the answer, as in the chat: act on it, then write \`answer\` into the card, or leave the card out.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`cards\`: up to 24 in order, the most urgent first. A card:
+  - \`id\`: letters, digits, \`-\`. \`title\` (48): the question, such as "Pay the parts bill?".
+  - \`value\`: the number that matters, such as 4200; or a short text (18), such as "Shop v2". \`unit\` (10): "kr".
+  - \`line\` (60): one line under the number, such as "Due Friday".
+  - \`picture\`: a picture file of the app, such as \`"pictures/ad.webp"\`, in place of the colour field.
+  - \`colour\`: \`"accent"\`, \`"good"\`, \`"violet"\`, \`"warn"\`, \`"teal"\`, \`"bad"\` or \`"plain"\`. Default: one after another.
+  - \`by\` (24): who asks, such as "Ida, brand". \`figure\`: that agent's figure: planet, acorn, flame, rocket, crown,
+    heart, star, cloud, bolt, mushroom, moon or puzzle.
+  - \`paper: true\`: drawn as a paper, such as a bill; \`line\` is then who it is from.
+  - \`question\`: the open question's id, when its title is not the card's.
+  - \`answer\`: what was answered, once it is: the card counts as done. \`stamp\` (16): the word stamped on the card.
+  - \`ask\` (40): a draft for a note to you about the card.
+- \`total\`: optional \`{"value", "unit", "label" (24)}\`, one figure beside the stack, such as what is owed in all.
+- \`words\`: the page's own words in your language: \`done\` ("Nothing waits on you"), \`answered\` ("{n} answered"),
+  \`waiting\` ("Not asked yet"), \`saving\`, \`card\` ("Card {n} of {total}"), \`assumed\`, \`unknown\`, \`empty\`, \`tell\`, \`told\`.
+
+A card's \`value\` and the \`total\`'s may be live from a company database: \`{"query": "<database>/<question>", "params":
+{}, "column": "amount", "example": 4200}\`. Known once it answers, else not known; \`example\` shows only outside Qorpera.
+
+## Rules
+
+- Every number comes from the company's files or databases. Never invent one.
+- One card is one decision. Labels, not sentences: the reasoning stays in its file.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`colour\`: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Wants your yes",
+  "line": "Things the team waits on",
+  "words": { "done": "All signed", "tell": "Ask Ida", "told": "Sent to Ida" },
+  "cards": [
+    { "id": "ad", "title": "Run this ad?", "value": 1500, "unit": "kr", "line": "7 days on Instagram",
+      "picture": "pictures/ad.webp", "by": "Ida, brand", "figure": "star", "ask": "Make it warmer" },
+    { "id": "parts", "title": "Pay the parts bill?", "value": 4200, "unit": "kr", "line": "Due Friday",
+      "colour": "accent", "by": "Mads, shipping", "figure": "rocket" },
+    { "id": "vat", "title": "Send the VAT return?", "value": 3120, "unit": "kr", "line": "Due 1 December",
+      "colour": "good", "by": "Co-Founder", "figure": "crown", "answer": "Send" }
+  ]
+}
+\`\`\`
+`;
+
+/** The shelf kit's guide for agents, as app_guide answers it. */
+export const SHELF_KIT_GUIDE = `# Shelf kit: how do our things stand?
+
+Shows the company's own things side by side on one shelf: its products, its parts, its finished work. Each is a big
+picture with one level behind it, a soft colour block as high as the level, and the number that matters under it. A
+low one turns warm. An agent's one-line note can sit on the thing that needs it. Without levels the shelf is a
+gallery: finished things, framed, with the maker's figure. A member taps a thing to see it larger. You write only
+\`shelf.json\`; the pictures lie in the app folder.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`unit\` (12): the unit after every thing's number, such as \`"in stock"\`. A thing's own \`unit\` wins.
+- \`things\`: 1 to 8 (6 read best), each:
+  - \`id\`: letters, digits, \`-\`. \`name\` (24). \`picture\`: a picture file of the app, such as
+    \`"pictures/desk-lamp.webp"\`. A cut-out on a transparent background is best, all at the same scale.
+  - \`value\`: the number that matters, such as 212; or a short text (14). Leave it out when nobody knows it.
+  - \`max\`: the full level, such as the stock the store room takes: the block is \`value\` of \`max\` high. Or \`level\`:
+    0 to 1 directly. With neither, the thing has no level (a gallery).
+  - \`low\`: the number at or under which the thing is low, such as 20; or \`true\`. A low thing turns warm.
+  - \`state\`: \`"assumed"\` (drawn dashed) or \`"unknown"\` (a hole with "?").
+  - \`note\` (60): one line on the thing, such as "Order more?". \`by\` (24): who says it, or who made the thing.
+    \`figure\`: that agent's figure: planet, acorn, flame, rocket, crown, heart, star, cloud, bolt, mushroom, moon
+    or puzzle.
+  - \`colour\`: \`"good"\`, \`"accent"\`, \`"violet"\`, \`"teal"\` or \`"warn"\`. Default: one after another.
+  - \`source\`: an \`https:\` or \`folder:\` link, shown when the thing is open. \`ask\` (40): a draft for a note to you.
+- \`words\`: the page's own words in your language: \`low\`, \`assumed\`, \`unknown\`, \`close\`, \`source\`, \`empty\`, \`tell\`, \`told\`.
+
+A thing's \`value\` may be live from a company database: \`{"query": "<database>/<question>", "params": {"sku": "desk"},
+"column": "stock", "example": 212}\`. Known once it answers, else not known; \`example\` shows only outside Qorpera.
+
+## Rules
+
+- Only the company's real things, with their real pictures. Every number comes from its files or databases.
+- One note, two at most, on the things that need one. Labels, not sentences.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`colour\`: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Lamps in stock",
+  "line": "What is on the shelf in the store room",
+  "unit": "in stock",
+  "words": { "tell": "Ask Mads", "told": "Sent to Mads" },
+  "things": [
+    { "id": "desk", "name": "Desk lamp", "picture": "pictures/desk-lamp.webp", "max": 240, "low": 20,
+      "value": { "query": "shop/stock", "params": { "sku": "desk" }, "column": "stock", "example": 212 } },
+    { "id": "mushroom", "name": "Mushroom lamp", "picture": "pictures/mushroom-lamp.webp", "value": 9, "max": 240,
+      "low": 20, "note": "Order more?", "by": "Mads", "figure": "rocket", "ask": "Order 60 more" },
+    { "id": "floor", "name": "Floor lamp", "picture": "pictures/floor-lamp.webp", "value": 64, "max": 240, "low": 20 }
+  ]
+}
+\`\`\`
+`;
+
 /** The model kit's engine.js, as save_app writes it into an app's folder. */
 export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive model of how a business works in numbers.
  * The agent hands in model.json (inputs, small formulas, a flow, a curve). This engine draws it:
@@ -7221,6 +7404,1962 @@ body{margin:0}
 			/* no live changes here */
 		}
 		await refresh();
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The curve kit's engine.js, as save_app writes it into an app's folder. */
+export const CURVE_ENGINE_JS = `// The curve kit's engine: "Where is it going?"
+// One value over time, drawn big: the past as a filled area, the expected part as a dotted line inside a band that
+// widens with how unsure it is, a "now" line, a dashed safe level and a few marked points, with the value that matters
+// large at the top. A member runs a finger or the pointer along it (or the arrow keys) and the big number follows.
+// The agent writes only curve.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const SVGNS = "http://www.w3.org/2000/svg";
+	const MAX = { title: 40, line: 60, unit: 8, label: 12, mark: 24, safe: 24, head: 24, word: 28, points: 120, marks: 3 };
+	const WORDS = {
+		now: "now",
+		safe: "safe level",
+		expected: "expected",
+		assumed: "assumed",
+		unknown: "not known",
+		between: "{low} to {high}",
+		empty: "Nothing to show yet.",
+		source: "Source",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["accent", "good", "warn", "bad"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.ck{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --ck-tone:var(--q-accent);--ck-ease:cubic-bezier(.22,.8,.24,1)}
+.ck *,.ck *::before,.ck *::after{box-sizing:border-box}
+.ck.t-good{--ck-tone:var(--q-good)}.ck.t-warn{--ck-tone:var(--q-warn)}.ck.t-bad{--ck-tone:var(--q-bad)}
+.ck-head{min-width:0;max-width:40em}
+.ck-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.ck-title-row{display:flex;align-items:baseline;gap:8px}
+.ck-src{display:inline-grid;place-items:center;min-width:24px;min-height:24px;font-size:14px;color:var(--q-muted);text-decoration:none;border-radius:6px}
+.ck-src:hover{color:var(--q-accent)}
+.ck-src:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.ck-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.ck--bare{padding:clamp(12px,1vw,16px)}
+.ck--bare .ck-head{display:none}
+.ck-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.ck--bare .ck-hero{margin-top:0}
+.ck-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
+.ck-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.ck-u{font-size:clamp(18px,1.9vw,26px);font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.ck-n.unk{color:var(--q-muted)}
+.ck-sub{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:14px;line-height:1.3;color:var(--q-muted);min-height:20px}
+.ck-sub b{font-weight:650;color:var(--q-text)}
+.ck-tag{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;border:1.3px dashed color-mix(in srgb,var(--q-muted) 70%,transparent);font-size:12px;font-weight:550;color:var(--q-muted)}
+.ck-tag.exp{border-style:solid;border-color:transparent;background:color-mix(in srgb,var(--ck-tone) 13%,var(--q-bg));color:color-mix(in srgb,var(--ck-tone) 78%,var(--q-text))}
+.ck-plot{position:relative;flex:none;margin-top:clamp(8px,1.6vh,18px);min-height:240px;outline:none;touch-action:pan-y;cursor:crosshair;border-radius:12px}
+.ck-plot:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
+.ck-plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
+.ck-area{fill:var(--ck-tone);fill-opacity:.2}
+.ck-past{fill:none;stroke:var(--ck-tone);stroke-width:5;stroke-linejoin:round;stroke-linecap:round}
+.ck-past.a{stroke-dasharray:10 9}
+.ck-gap{fill:none;stroke:var(--q-muted);stroke-width:2;stroke-dasharray:1 7;stroke-linecap:round;opacity:.7}
+.ck-band{fill:var(--ck-tone);fill-opacity:.11}
+.ck-band-edge{fill:none;stroke:var(--ck-tone);stroke-width:1.2;stroke-opacity:.28}
+.ck-ahead{fill:none;stroke:var(--ck-tone);stroke-width:4.5;stroke-dasharray:1.5 10;stroke-linecap:round;stroke-linejoin:round}
+.ck-fog{fill:url(#ck-hatch);opacity:.9}
+.ck-fog-tint{fill:var(--q-text);fill-opacity:.035}
+.ck-hatch-line{stroke:var(--q-muted);stroke-width:1.3;opacity:.35}
+.ck-q{font-size:30px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central}
+.ck-safe{stroke:var(--q-warn);stroke-width:2;stroke-dasharray:8 8;opacity:.75}
+.ck-safe-t{font-size:13px;font-weight:550;fill:var(--q-warn);text-anchor:end}
+.ck-now{stroke:var(--q-text);stroke-width:2}
+.ck-now-dot{fill:var(--q-text)}
+.ck-x{font-size:13px;fill:var(--q-muted);text-anchor:middle}
+.ck-x.now{fill:var(--q-text);font-weight:700}
+.ck-mark{fill:var(--q-bg);stroke:var(--ck-tone);stroke-width:4}
+.ck-mark-v{font-size:20px;font-weight:700;fill:var(--q-text);text-anchor:middle;font-variant-numeric:tabular-nums}
+.ck-mark-t{font-size:13px;fill:var(--q-muted);text-anchor:middle}
+.ck-mark-v,.ck-mark-t,.ck-safe-t{paint-order:stroke;stroke:var(--q-bg);stroke-width:5px;stroke-linejoin:round}
+.ck-scrub{pointer-events:none;opacity:0;transition:opacity .15s}
+.ck-scrub.on{opacity:1}
+.ck-hair{stroke:var(--q-text);stroke-opacity:.35;stroke-width:1.5}
+.ck-hair-dot{fill:var(--ck-tone);stroke:var(--q-bg);stroke-width:3}
+.ck-hair-ring{fill:var(--q-bg);stroke:var(--ck-tone);stroke-width:2.5;stroke-dasharray:3 3}
+.ck-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+.ck.intro .ck-past{animation:ck-draw 1s var(--ck-ease) both}
+.ck.intro .ck-area{animation:ck-fade .9s var(--ck-ease) .15s both}
+.ck.intro .ck-later{animation:ck-fade .8s var(--ck-ease) .55s both}
+.ck.intro .ck-marks{animation:ck-fade .6s var(--ck-ease) .85s both}
+@keyframes ck-draw{from{stroke-dashoffset:var(--ck-len)}to{stroke-dashoffset:0}}
+@keyframes ck-fade{from{opacity:0}to{opacity:1}}
+@media (max-width:560px){.ck-plot{cursor:default}}
+@media (prefers-reduced-motion:reduce){.ck *,.ck *::before,.ck *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	function num(v) {
+		const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+		return Number.isFinite(n) ? n : null;
+	}
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function s(tag, attrs, ...kids) {
+		const el = D.createElementNS(SVGNS, tag);
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	const r1 = (v) => Math.round(v * 10) / 10;
+	const say = (tpl, map) => tpl.replace(/\\{(\\w+)\\}/g, (_, k) => (k in map ? map[k] : ""));
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.ck")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function bandOf(v) {
+		let lo = null;
+		let hi = null;
+		if (Array.isArray(v)) {
+			lo = num(v[0]);
+			hi = num(v[1]);
+		} else if (isObj(v)) {
+			lo = num(v.low);
+			hi = num(v.high);
+		}
+		if (lo === null || hi === null) return null;
+		return lo <= hi ? [lo, hi] : [hi, lo];
+	}
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const points = list(raw.points)
+			.slice(0, MAX.points)
+			.filter(isObj)
+			.map((p) => {
+				const value = num(p.value);
+				const state = STATES.includes(p.state) ? p.state : value === null ? "unknown" : "known";
+				return { label: cut(p.label, MAX.label), value: state === "unknown" ? null : value, state, band: bandOf(p.band) };
+			});
+		if (points.length < 2) throw new Error("fewer than two points");
+		let now = -1;
+		if (typeof raw.now === "number" && Number.isInteger(raw.now) && raw.now >= 0 && raw.now < points.length) now = raw.now;
+		else if (typeof raw.now === "string") now = points.findIndex((p) => p.label === cut(raw.now, MAX.label));
+		const safeRaw = isObj(raw.safe) ? raw.safe : { value: raw.safe };
+		const safeValue = num(safeRaw.value);
+		const safe = safeValue === null ? null : { value: safeValue, label: cut(safeRaw.label, MAX.safe) || words.safe };
+		const marks = [];
+		for (const m of list(raw.marks)) {
+			if (!isObj(m) || marks.length >= MAX.marks) continue;
+			const i = typeof m.at === "number" && Number.isInteger(m.at) ? m.at : points.findIndex((p) => p.label === cut(m.at, MAX.label));
+			if (i < 0 || i >= points.length || marks.some((x) => x.i === i)) continue;
+			marks.push({ i, text: cut(m.text, MAX.mark) });
+		}
+		let headline = null;
+		if (isObj(raw.headline)) {
+			const value = num(raw.headline.value);
+			const state = STATES.includes(raw.headline.state) ? raw.headline.state : value === null ? "unknown" : "known";
+			headline = { value: state === "unknown" ? null : value, state, label: cut(raw.headline.label, MAX.head) };
+		}
+		const source = typeof raw.source === "string" && /^(?:https:\\/\\/|folder:)/.test(raw.source) ? raw.source : "";
+		return {
+			lang,
+			words,
+			title: cut(raw.title, MAX.title),
+			line: cut(raw.line, MAX.line),
+			unit: cut(raw.unit, MAX.unit),
+			tone: TONES.includes(raw.tone) ? raw.tone : "accent",
+			points,
+			now,
+			safe,
+			marks,
+			headline,
+			source,
+		};
+	}
+
+	// ---------------------------------------------------------------- numbers
+	function formatter(m) {
+		const all = [];
+		for (const p of m.points) {
+			if (p.value !== null) all.push(p.value);
+			if (p.band) all.push(p.band[0], p.band[1]);
+		}
+		const span = all.length ? Math.max(...all.map(Math.abs)) : 0;
+		const digits = span >= 100 ? 0 : span >= 10 ? 1 : 2;
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(m.lang, { maximumFractionDigits: digits });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: digits });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// A smooth line through points that never overshoots them (monotone cubic, Fritsch and Carlson).
+	function smooth(pts) {
+		if (pts.length < 2) return pts.length ? \`M\${r1(pts[0][0])} \${r1(pts[0][1])}\` : "";
+		if (pts.length === 2) return \`M\${r1(pts[0][0])} \${r1(pts[0][1])}L\${r1(pts[1][0])} \${r1(pts[1][1])}\`;
+		const n = pts.length;
+		const dx = [];
+		const dy = [];
+		const m = [];
+		for (let i = 0; i < n - 1; i++) {
+			dx.push(pts[i + 1][0] - pts[i][0]);
+			dy.push(pts[i + 1][1] - pts[i][1]);
+			m.push(dx[i] ? dy[i] / dx[i] : 0);
+		}
+		const t = [m[0]];
+		for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2);
+		t.push(m[n - 2]);
+		for (let i = 0; i < n - 1; i++) {
+			if (m[i] === 0) {
+				t[i] = 0;
+				t[i + 1] = 0;
+				continue;
+			}
+			const a = t[i] / m[i];
+			const b = t[i + 1] / m[i];
+			const q = a * a + b * b;
+			if (q > 9) {
+				const k = 3 / Math.sqrt(q);
+				t[i] = k * a * m[i];
+				t[i + 1] = k * b * m[i];
+			}
+		}
+		let d = \`M\${r1(pts[0][0])} \${r1(pts[0][1])}\`;
+		for (let i = 0; i < n - 1; i++) {
+			const third = dx[i] / 3;
+			d += \`C\${r1(pts[i][0] + third)} \${r1(pts[i][1] + t[i] * third)} \${r1(pts[i + 1][0] - third)} \${r1(pts[i + 1][1] - t[i + 1] * third)} \${r1(pts[i + 1][0])} \${r1(pts[i + 1][1])}\`;
+		}
+		return d;
+	}
+	// The same line backwards, for the lower edge of a band.
+	const reversed = (pts) => smooth(pts.slice().reverse()).replace(/^M/, "L");
+
+	// ---------------------------------------------------------------- page
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "curve" }, CSS);
+		D.head.append(style);
+	}
+	const ui = { model: null, root: null, plot: null, svg: null, hero: null, scrub: null, frame: 0, count: 0, width: 0, height: 0, shown: false };
+
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`ck\${BARE ? " ck--bare" : ""}\`, null, h("p", "ck-quiet", null, line)));
+		ui.root = null;
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const root = h("main", \`ck t-\${m.tone}\${BARE ? " ck--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		const title = h("div", "ck-title-row", null, h("h1", "ck-title", null, m.title || ""));
+		if (m.source) title.append(h("a", "ck-src", { href: m.source, title: m.words.source, "aria-label": m.words.source }, "↗"));
+		root.append(h("header", "ck-head", null, title, m.line ? h("p", "ck-line", null, m.line) : null));
+		const hero = h("div", "ck-hero", { "aria-live": "polite" });
+		root.append(hero);
+		const plot = h("div", "ck-plot", { tabindex: "0", role: "slider", "aria-label": m.title || m.words.now, "aria-valuemin": "0", "aria-valuemax": String(m.points.length - 1) });
+		root.append(plot);
+		show(root);
+		ui.root = root;
+		ui.hero = hero;
+		ui.plot = plot;
+		bindPlot(plot);
+		draw();
+		paintHero(intro && !still());
+		if (intro) setTimeout(() => root.classList.remove("intro"), 2200);
+	}
+
+	// The index whose value the big number shows when nobody points: now, or the last point with a value.
+	function restIndex(m) {
+		if (m.now >= 0) return m.now;
+		for (let i = m.points.length - 1; i >= 0; i--) if (m.points[i].value !== null) return i;
+		return m.points.length - 1;
+	}
+	const isAhead = (m, i) => m.now >= 0 && i > m.now;
+
+	function paintHero(count) {
+		const m = ui.model;
+		const fmt = formatter(m);
+		const i = ui.scrub;
+		let value;
+		let state;
+		let label;
+		let band = null;
+		let ahead = false;
+		if (i === null && m.headline) {
+			value = m.headline.value;
+			state = m.headline.state;
+			label = m.headline.label || m.words.now;
+		} else {
+			const at = i === null ? restIndex(m) : i;
+			const p = m.points[at];
+			value = p.value;
+			state = p.state;
+			ahead = isAhead(m, at);
+			band = ahead ? p.band : null;
+			label = i === null ? (m.now >= 0 ? m.words.now : p.label) : p.label;
+			if (value === null && band) state = "band";
+		}
+		const n = h("span", \`ck-n\${value === null ? " unk" : ""}\`);
+		const row = h("div", "ck-row", null, n);
+		if (value !== null && m.unit) row.append(h("span", "ck-u", null, m.unit));
+		if (value === null && band) {
+			n.textContent = \`\${fmt(band[0])}–\${fmt(band[1])}\`;
+			n.classList.remove("unk");
+			n.style.fontSize = "clamp(34px,4.6vw,60px)";
+			if (m.unit) row.append(h("span", "ck-u", null, m.unit));
+		} else if (value === null) n.textContent = "?";
+		else if (count) countTo(n, value, fmt);
+		else n.textContent = fmt(value);
+		const sub = h("div", "ck-sub", null, h("span", null, null, label));
+		if (ahead) sub.append(h("span", "ck-tag exp", null, m.words.expected));
+		if (state === "assumed") sub.append(h("span", "ck-tag", null, m.words.assumed));
+		if (state === "unknown" && value === null && !band) sub.append(h("span", "ck-tag", null, m.words.unknown));
+		if (band && value !== null) sub.append(h("span", null, null, say(m.words.between, { low: fmt(band[0]), high: fmt(band[1]) })));
+		ui.hero.replaceChildren(row, sub);
+		if (ui.plot) {
+			const at = i === null ? restIndex(m) : i;
+			const p = m.points[at];
+			ui.plot.setAttribute("aria-valuenow", String(at));
+			ui.plot.setAttribute("aria-valuetext", \`\${p.label}: \${p.value === null ? (p.band ? \`\${fmt(p.band[0])}–\${fmt(p.band[1])}\` : "?") : fmt(p.value)}\${m.unit ? \` \${m.unit}\` : ""}\`);
+		}
+	}
+	function countTo(el, to, fmt) {
+		cancelAnimationFrame(ui.count);
+		const t0 = performance.now();
+		const from = to * 0.6;
+		let frames = 0;
+		// by the clock, and never longer than about 100 frames, so a page whose frames come slowly still ends there
+		const step = (t) => {
+			const k = Math.min(1, Math.max((t - t0) / 800, ++frames / 96));
+			const e = 1 - (1 - k) ** 3;
+			el.textContent = fmt(k >= 1 ? to : from + (to - from) * e);
+			if (k < 1) ui.count = requestAnimationFrame(step);
+		};
+		el.textContent = fmt(from);
+		ui.count = requestAnimationFrame(step);
+	}
+
+	// ---------------------------------------------------------------- the drawing
+	function size() {
+		const plot = ui.plot;
+		const W = Math.max(240, plot.clientWidth || 0);
+		const top = plot.getBoundingClientRect ? plot.getBoundingClientRect().top + (window.scrollY || 0) : 0;
+		const pad = ui.root ? Number.parseFloat(getComputedStyle(ui.root).paddingBottom) || 24 : 24;
+		const avail = (window.innerHeight || 800) - top - pad;
+		const H = Math.round(Math.max(260, Math.min(avail, W < 600 ? W * 1.8 : W * 0.62)));
+		return { W, H };
+	}
+
+	function draw() {
+		const m = ui.model;
+		const plot = ui.plot;
+		if (!m || !plot) return;
+		const { W, H } = size();
+		plot.style.height = \`\${H}px\`;
+		ui.width = W;
+		ui.height = H;
+		const fmt = formatter(m);
+		const n = m.points.length;
+		const phone = W < 600;
+		const padL = 12;
+		const padR = 12;
+		const padT = 34;
+		const padB = 36;
+		const x = (i) => padL + ((W - padL - padR) * i) / (n - 1);
+		const vals = [];
+		for (const p of m.points) {
+			if (p.value !== null) vals.push(p.value);
+			if (p.band && isAhead(m, m.points.indexOf(p))) vals.push(p.band[0], p.band[1]);
+		}
+		if (m.safe) vals.push(m.safe.value);
+		if (m.headline && m.headline.value !== null && !vals.length) vals.push(m.headline.value);
+		let lo = vals.length ? Math.min(...vals) : 0;
+		let hi = vals.length ? Math.max(...vals) : 1;
+		if (lo >= 0 && lo <= hi * 0.4) lo = 0;
+		else lo -= (hi - lo) * 0.18 || 1;
+		hi += (hi - lo) * 0.1 || 1;
+		const bottom = H - padB;
+		const y = (v) => padT + (bottom - padT) * (1 - (v - lo) / (hi - lo));
+		const svg = s("svg", { viewBox: \`0 0 \${W} \${H}\`, width: W, height: H, "aria-hidden": "true" });
+		const defs = s("defs");
+		const hatch = s("pattern", { id: "ck-hatch", width: 9, height: 9, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, s("line", { x1: 0, y1: 0, x2: 0, y2: 9, class: "ck-hatch-line" }));
+		defs.append(hatch);
+		svg.append(defs);
+		const last = m.now >= 0 ? m.now : n - 1;
+
+		// the past: runs of points with a value, each a filled area under a solid line
+		const past = s("g");
+		let run = [];
+		let prevEnd = null;
+		const flush = () => {
+			if (!run.length) return;
+			const pts = run.map((i) => [x(i), y(m.points[i].value)]);
+			if (prevEnd) past.append(s("path", { class: "ck-gap", d: \`M\${r1(prevEnd[0])} \${r1(prevEnd[1])}L\${r1(pts[0][0])} \${r1(pts[0][1])}\` }));
+			const line = smooth(pts);
+			if (pts.length > 1) past.append(s("path", { class: "ck-area", d: \`\${line}L\${r1(pts[pts.length - 1][0])} \${bottom}L\${r1(pts[0][0])} \${bottom}Z\` }));
+			const assumed = run.some((i) => m.points[i].state === "assumed");
+			const stroke = s("path", { class: \`ck-past\${assumed ? " a" : ""}\`, d: line });
+			const len = pts.reduce((sum, p, k) => (k ? sum + Math.hypot(p[0] - pts[k - 1][0], p[1] - pts[k - 1][1]) : 0), 0) * 1.15 + 20;
+			if (!assumed) {
+				stroke.style.setProperty("--ck-len", String(Math.round(len)));
+				stroke.style.strokeDasharray = String(Math.round(len));
+			}
+			past.append(stroke);
+			prevEnd = pts[pts.length - 1];
+			run = [];
+		};
+		for (let i = 0; i <= last; i++) {
+			if (m.points[i].value === null) flush();
+			else run.push(i);
+		}
+		flush();
+
+		// what is expected: a band from now outwards, a dotted line inside it, and fog where nothing is said
+		const later = s("g", { class: "ck-later" });
+		if (m.now >= 0 && m.now < n - 1) {
+			const start = m.points[m.now].value;
+			const upper = [];
+			const lower = [];
+			const line = [];
+			const lines = [];
+			let fogFrom = -1;
+			if (start !== null) {
+				upper.push([x(m.now), y(start)]);
+				lower.push([x(m.now), y(start)]);
+				line.push([x(m.now), y(start)]);
+			}
+			for (let i = m.now + 1; i < n; i++) {
+				const p = m.points[i];
+				const band = p.band || (p.value !== null ? [p.value, p.value] : null);
+				if (!band) {
+					fogFrom = i;
+					break;
+				}
+				upper.push([x(i), y(band[1])]);
+				lower.push([x(i), y(band[0])]);
+				if (p.value !== null) line.push([x(i), y(p.value)]);
+				else if (line.length) {
+					lines.push(line.splice(0));
+				}
+			}
+			if (line.length) lines.push(line.splice(0));
+			if (upper.length > 1) {
+				const top = smooth(upper);
+				later.append(s("path", { class: "ck-band", d: \`\${top}\${reversed(lower)}Z\` }));
+				later.append(s("path", { class: "ck-band-edge", d: top }), s("path", { class: "ck-band-edge", d: smooth(lower) }));
+			}
+			for (const part of lines) if (part.length > 1) later.append(s("path", { class: "ck-ahead", d: smooth(part) }));
+			if (fogFrom > 0) {
+				const fx = x(fogFrom - 1) + (x(fogFrom) - x(fogFrom - 1)) * 0.5;
+				later.append(
+					s("rect", { class: "ck-fog-tint", x: r1(fx), y: padT - 10, width: r1(W - padR - fx), height: r1(bottom - padT + 10), rx: 10 }),
+					s("rect", { class: "ck-fog", x: r1(fx), y: padT - 10, width: r1(W - padR - fx), height: r1(bottom - padT + 10), rx: 10 }),
+					s("text", { class: "ck-q", x: r1((fx + W - padR) / 2), y: r1((padT + bottom) / 2) }, "?"),
+				);
+			}
+		}
+
+		// the safe level
+		const safeG = s("g");
+		// where the safe level's words stand: [left, top, bottom], which a mark's words keep clear of
+		let safeBox = null;
+		if (m.safe && m.safe.value >= lo && m.safe.value <= hi) {
+			const sy = r1(y(m.safe.value));
+			safeG.append(s("line", { class: "ck-safe", x1: 0, x2: W, y1: sy, y2: sy }));
+			safeG.append(s("text", { class: "ck-safe-t", x: W - padR, y: sy - 9 }, m.safe.label));
+			safeBox = [W - padR - Array.from(m.safe.label).length * 7.4 - 8, sy - 26, sy + 4];
+		}
+
+		// now
+		const nowG = s("g");
+		if (m.now >= 0) {
+			const nx = r1(x(m.now));
+			nowG.append(s("line", { class: "ck-now", x1: nx, x2: nx, y1: padT - 18, y2: bottom + 6 }));
+			const v = m.points[m.now].value;
+			if (v !== null) nowG.append(s("circle", { class: "ck-now-dot", cx: nx, cy: r1(y(v)), r: 8.5 }));
+		}
+
+		// the labels along the bottom: as many as fit, now always
+		const xs = s("g");
+		const widest = Math.max(...m.points.map((p) => Array.from(p.label).length), Array.from(m.words.now).length) * 7.6 + 18;
+		const fit = Math.max(2, Math.floor((W - padL - padR) / widest));
+		const every = Math.max(1, Math.ceil(n / fit));
+		for (let i = 0; i < n; i++) {
+			const isNow = i === m.now;
+			if (!isNow && (i % every !== 0 || (m.now >= 0 && Math.abs(i - m.now) < every))) continue;
+			const label = isNow ? m.words.now : m.points[i].label;
+			if (!label) continue;
+			const anchor = i === 0 && !isNow ? "start" : i === n - 1 && !isNow ? "end" : "middle";
+			const t = s("text", { class: \`ck-x\${isNow ? " now" : ""}\`, x: r1(i === 0 ? padL - 4 : i === n - 1 ? W - padR + 4 : x(i)), y: H - 10 }, label);
+			t.style.textAnchor = anchor;
+			xs.append(t);
+		}
+
+		// the marked points, each with its value and a few words, below a low and above a high
+		const marks = s("g", { class: "ck-marks" });
+		for (const mk of m.marks) {
+			const p = m.points[mk.i];
+			const v = p.value !== null ? p.value : p.band ? (p.band[0] + p.band[1]) / 2 : null;
+			if (v === null) continue;
+			const mx = x(mk.i);
+			const my = y(v);
+			const before = m.points[mk.i - 1];
+			const after = m.points[mk.i + 1];
+			const around = [before, after].filter((q) => q && q.value !== null).map((q) => q.value);
+			const low = around.length ? v <= Math.min(...around) : my > (padT + bottom) / 2;
+			marks.append(s("circle", { class: "ck-mark", cx: r1(mx), cy: r1(my), r: 8 }));
+			const cx = Math.min(W - 64, Math.max(64, mx));
+			// below a low and above a high, outside the band where there is one, and clear of the safe level's words
+			const band = isAhead(m, mk.i) && p.band ? p.band : [v, v];
+			const under = Math.max(my, y(band[0])) + 34;
+			const over = Math.min(my, y(band[1])) - 40;
+			const safeY = m.safe ? y(m.safe.value) : -1e9;
+			const fits = (ty) =>
+				ty - 20 > padT - 30 &&
+				ty + 24 < bottom &&
+				!(safeY > ty - 22 && safeY < ty + 26) &&
+				!(safeBox && cx + 64 > safeBox[0] && ty + 24 > safeBox[1] && ty - 20 < safeBox[2]);
+			const ty = (low ? [under, my + 34, over] : [over, my - 32, under]).find(fits) ?? (low ? my + 34 : my - 32);
+			marks.append(s("text", { class: "ck-mark-v", x: r1(cx), y: r1(ty) }, fmt(v)));
+			if (mk.text) marks.append(s("text", { class: "ck-mark-t", x: r1(cx), y: r1(ty + 19) }, mk.text));
+		}
+
+		// what follows a finger or the pointer
+		const scrub = s("g", { class: "ck-scrub" });
+		const hair = s("line", { class: "ck-hair", y1: padT - 18, y2: bottom });
+		const dot = s("circle", { class: "ck-hair-dot", r: 7 });
+		scrub.append(hair, dot);
+
+		svg.append(past, later, safeG, nowG, marks, xs, scrub);
+		plot.replaceChildren(svg);
+		ui.svg = svg;
+		ui.geo = { x, y, padL, padR, n, W, phone };
+		ui.scrubEls = { scrub, hair, dot };
+		paintScrub();
+	}
+
+	function paintScrub() {
+		const els = ui.scrubEls;
+		const m = ui.model;
+		if (!els || !m) return;
+		const i = ui.scrub;
+		if (i === null) {
+			els.scrub.classList.remove("on");
+			return;
+		}
+		const p = m.points[i];
+		const gx = r1(ui.geo.x(i));
+		els.hair.setAttribute("x1", gx);
+		els.hair.setAttribute("x2", gx);
+		const v = p.value !== null ? p.value : p.band && isAhead(m, i) ? (p.band[0] + p.band[1]) / 2 : null;
+		if (v === null) els.dot.setAttribute("r", "0");
+		else {
+			els.dot.setAttribute("r", "7");
+			els.dot.setAttribute("cx", gx);
+			els.dot.setAttribute("cy", r1(ui.geo.y(v)));
+			els.dot.setAttribute("class", p.value === null ? "ck-hair-ring" : "ck-hair-dot");
+		}
+		els.scrub.classList.add("on");
+	}
+
+	function setScrub(i) {
+		if (i === ui.scrub) return;
+		ui.scrub = i;
+		paintScrub();
+		paintHero(false);
+	}
+	function indexAt(clientX) {
+		const g = ui.geo;
+		const box = ui.plot.getBoundingClientRect();
+		const px = clientX - box.left;
+		const k = (px - g.padL) / ((g.W - g.padL - g.padR) / (g.n - 1));
+		return Math.max(0, Math.min(g.n - 1, Math.round(k)));
+	}
+	function bindPlot(plot) {
+		plot.addEventListener("pointermove", (e) => {
+			if (e.pointerType === "touch" && !e.isPrimary) return;
+			setScrub(indexAt(e.clientX));
+		});
+		plot.addEventListener("pointerdown", (e) => setScrub(indexAt(e.clientX)));
+		plot.addEventListener("pointerleave", (e) => {
+			if (D.activeElement !== plot || e.pointerType === "mouse") setScrub(null);
+		});
+		plot.addEventListener("focus", () => {
+			if (ui.scrub === null && plot.matches(":focus-visible")) setScrub(restIndex(ui.model));
+		});
+		plot.addEventListener("blur", () => setScrub(null));
+		plot.addEventListener("keydown", (e) => {
+			const n = ui.model.points.length;
+			const at = ui.scrub === null ? restIndex(ui.model) : ui.scrub;
+			let next = null;
+			if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(n - 1, at + 1);
+			else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, at - 1);
+			else if (e.key === "Home") next = 0;
+			else if (e.key === "End") next = n - 1;
+			else if (e.key === "Escape") {
+				setScrub(null);
+				return;
+			}
+			if (next === null) return;
+			e.preventDefault();
+			setScrub(next);
+		});
+	}
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	function onResize() {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.plot || !ui.root) return;
+			const W = ui.plot.clientWidth;
+			if (W === ui.width && ui.lastH === window.innerHeight) return;
+			ui.lastH = window.innerHeight;
+			draw();
+		});
+	}
+	window.addEventListener("resize", onResize);
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "curve.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt === lastText && ui.root) return;
+			raw = JSON.parse(txt);
+			const next = normalize(raw);
+			const first = !ui.shown;
+			const keep = ui.scrub;
+			ui.model = next;
+			ui.scrub = keep !== null && keep < next.points.length ? keep : null;
+			lastText = txt;
+			render(first);
+			ui.shown = true;
+			ui.lastH = window.innerHeight;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The stack kit's engine.js, as save_app writes it into an app's folder. */
+export const STACK_ENGINE_JS = `// The stack kit's engine: "What wants my yes?"
+// Things that want a member's yes, one big card at a time: a soft colour field or a picture, one big number, one line,
+// the asking agent's figure, and the answers as buttons under it. A card's buttons are the options of the agent's open
+// question that points at the app (qorpera.questions), and a press answers it (qorpera.answer): Qorpera shows the
+// member what will be sent, and it is sent on their yes. The card is stamped and the next comes forward; when none is
+// left, the page says so. A card whose question is not open shows no buttons.
+// The agent writes only stack.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const MAX = { title: 40, line: 60, card: 48, cardLine: 60, unit: 10, valueText: 18, by: 24, stamp: 16, word: 40, cards: 24, label: 24 };
+	const WORDS = {
+		done: "Nothing waits on you",
+		answered: "{n} answered",
+		waiting: "Not asked yet",
+		saving: "Sending…",
+		card: "Card {n} of {total}",
+		assumed: "assumed",
+		unknown: "not known",
+		empty: "Nothing to show yet.",
+		source: "Source",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
+	};
+	const TONES = ["accent", "good", "violet", "warn", "teal", "bad"];
+	const STATES = ["known", "assumed", "unknown"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.st{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --st-ease:cubic-bezier(.22,.8,.24,1);--st-shade:rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.3)}
+.st *,.st *::before,.st *::after{box-sizing:border-box}
+.st-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:16px 40px}
+.st-head{min-width:0;max-width:34em}
+.st-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.st-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.st--bare{padding:clamp(12px,1vw,16px)}
+.st--bare .st-head{display:none}
+.st-total{text-align:right}
+.st-total-n{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.st-total-n small{margin-left:.25em;font-size:.48em;font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.st-total-n.unk{color:var(--q-muted)}
+.st-total-l{margin-top:6px;font-size:14px;color:var(--q-muted)}
+.st-stage{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:clamp(8px,2vh,24px) 0 clamp(16px,4vh,48px)}
+.st-dots{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:0;min-height:40px}
+.st-dot{display:grid;place-items:center;width:22px;height:40px;padding:0;border:0;background:none;cursor:pointer}
+.st-dot i{display:block;width:8px;height:8px;border-radius:4px;background:color-mix(in srgb,var(--q-text) 14%,var(--q-bg));transition:width .3s var(--st-ease),background .3s}
+.st-dot.done i{background:var(--q-text)}
+.st-dot.on{width:40px}
+.st-dot.on i{width:26px;background:var(--q-text)}
+.st-dot:focus-visible{outline:2px solid var(--q-accent);outline-offset:-6px;border-radius:10px}
+span.st-dot{cursor:default}
+.st-pile{position:relative;width:min(560px,100%);margin-top:clamp(10px,2vh,22px)}
+.st-back{position:absolute;border-radius:24px;background:color-mix(in srgb,var(--q-text) 4%,var(--q-bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--q-text) 6%,transparent)}
+.st-back.b1{left:12px;right:12px;top:11px;bottom:-9px}
+.st-back.b2{left:26px;right:26px;top:22px;bottom:-18px;background:color-mix(in srgb,var(--q-text) 3%,var(--q-bg))}
+.st-card{position:relative;display:flex;flex-direction:column;border-radius:24px;background:var(--q-bg);overflow:hidden;
+ box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 9%,transparent),0 22px 48px -20px var(--st-shade);transition:transform .55s var(--st-ease),opacity .45s var(--st-ease)}
+.st-card.enter{animation:st-enter .6s var(--st-ease) both}
+.st-card.leave{transform:translate(-40%,-8px) rotate(-7deg);opacity:0}
+.st-field{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;height:clamp(190px,36vh,330px);padding:24px 28px;
+ background:linear-gradient(160deg,color-mix(in srgb,var(--st-tone) 12%,var(--q-bg)) 0%,color-mix(in srgb,var(--st-tone) 34%,var(--q-bg)) 100%)}
+.st-field.pic{height:auto;aspect-ratio:16/9.4;max-height:44vh;padding:0;background:color-mix(in srgb,var(--st-tone) 10%,var(--q-bg))}
+.st-field.pic img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.st-field .st-ph{position:absolute;inset:0;display:grid;place-items:center;font-size:40px;font-weight:600;color:color-mix(in srgb,var(--st-tone) 50%,var(--q-bg))}
+.st-num{display:flex;align-items:baseline;gap:.22em;white-space:nowrap;min-width:0}
+.st-num b{font-size:clamp(44px,5.6vw,72px);font-weight:700;letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums;color:color-mix(in srgb,var(--st-tone) 28%,var(--q-text))}
+.st-num b.txt{font-size:clamp(34px,4.2vw,52px)}
+.st-num small{font-size:clamp(17px,1.8vw,22px);font-weight:600;color:color-mix(in srgb,var(--st-tone) 40%,var(--q-muted))}
+.st-num .unk{color:var(--q-muted)}
+.st-fline{font-size:15px;line-height:1.35;color:color-mix(in srgb,var(--st-tone) 30%,var(--q-muted))}
+.st-tag{display:inline-flex;align-items:center;height:20px;margin-left:8px;padding:0 8px;border-radius:999px;border:1.3px dashed var(--q-muted);font-size:12px;font-weight:550;color:var(--q-muted);vertical-align:3px}
+.st-body{display:flex;align-items:center;gap:16px;padding:20px 24px 22px}
+.st-fig{flex:none;width:52px;height:52px;display:grid;place-items:center}
+.st-fig img{width:100%;height:100%;object-fit:contain;display:block}
+.st-fig.ini{border-radius:50%;background:color-mix(in srgb,var(--st-tone) 16%,var(--q-bg));font-size:20px;font-weight:650;color:color-mix(in srgb,var(--st-tone) 70%,var(--q-text))}
+.st-ask{min-width:0;flex:1}
+.st-ask h2{margin:0;font-size:clamp(18px,1.7vw,21px);font-weight:650;line-height:1.25;letter-spacing:-.01em}
+.st-ask p{margin:3px 0 0;font-size:14px;line-height:1.35;color:var(--q-muted)}
+.st-side{flex:none;text-align:right}
+.st-side .st-num b{font-size:clamp(26px,2.6vw,34px);color:var(--q-text)}
+.st-side .st-num small{font-size:15px;color:var(--q-muted)}
+/* the paper of a bill */
+.st-card.paper{border-radius:12px;padding:34px 34px 26px;gap:14px;background:var(--q-bg)}
+.st-pile.paper .st-back{border-radius:12px}
+.st-pile.paper .st-back.b1{left:4px;right:4px;top:4px;bottom:-4px;transform:rotate(-3.5deg)}
+.st-pile.paper .st-back.b2{left:6px;right:6px;top:6px;bottom:-6px;transform:rotate(5deg)}
+.st-paper-who{font-size:15px;color:var(--q-muted)}
+.st-card.paper .st-num b{font-size:clamp(44px,5vw,60px);color:var(--q-text)}
+.st-card.paper .st-num small{color:var(--q-muted)}
+.st-bars{display:flex;flex-direction:column;gap:11px;margin:18px 0 8px}
+.st-bars i{display:block;height:10px;border-radius:5px;background:color-mix(in srgb,var(--q-text) 7%,var(--q-bg))}
+.st-card.paper .st-body{padding:10px 0 0}
+.st-stamp{position:absolute;right:26px;top:26px;padding:8px 16px;border:4px solid currentColor;border-radius:12px;font-size:19px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;line-height:1.1;color:var(--q-muted);transform:rotate(-12deg);background:color-mix(in srgb,var(--q-bg) 70%,transparent);animation:st-stamp .35s var(--st-ease) both;pointer-events:none}
+.st-stamp.main{color:var(--q-good)}
+.st-card.paper .st-stamp{top:96px}
+.st-acts{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:clamp(30px,5vh,48px);min-height:48px;width:min(560px,100%)}
+.st .st-b{min-width:112px;min-height:48px;padding:0 24px;border-radius:14px;border:1px solid color-mix(in srgb,var(--q-text) 16%,transparent);background:var(--q-bg);color:var(--q-text);font:600 15px/1.2 var(--q-font);cursor:pointer;transition:transform .15s var(--st-ease),background .2s,opacity .2s}
+.st .st-b:hover{background:color-mix(in srgb,var(--q-text) 5%,var(--q-bg))}
+.st .st-b:active{transform:translateY(1px)}
+.st .st-b.main{background:var(--q-text);border-color:var(--q-text);color:var(--q-bg)}
+.st .st-b.main:hover{background:color-mix(in srgb,var(--q-text) 86%,var(--q-bg))}
+.st .st-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.st .st-b[aria-busy=true]{opacity:.6;cursor:progress}
+.st .st-b[disabled]{opacity:.45;cursor:default}
+.st-wait{display:flex;align-items:center;gap:8px;min-height:48px;font-size:15px;color:var(--q-muted)}
+.st-wait i{display:block;width:9px;height:9px;border-radius:50%;border:1.6px dashed var(--q-muted)}
+.st-why{width:min(560px,100%);min-height:20px;margin:12px 0 0;font-size:14px;line-height:1.35;text-align:center;color:var(--q-muted)}
+.st-tell{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:4px}
+.st .st-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:none;color:var(--q-muted);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,color .2s}
+.st .st-tell-b:hover{background:color-mix(in srgb,var(--q-text) 6%,transparent);color:var(--q-text)}
+.st .st-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.st .st-tell-b svg{flex:none;width:17px;height:17px}
+.st .st-tell-b.st-bare{padding:0}
+.st .st-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.st .st-tell-b.st-told{cursor:default}
+.st .st-tell-b.st-told svg{color:var(--q-good)}
+.st-tell-why{margin:0;font-size:13px;color:var(--q-muted);max-width:22em}
+.st-done{display:flex;flex-direction:column;align-items:center;gap:14px;margin-top:clamp(40px,12vh,130px);text-align:center;animation:st-enter .7s var(--st-ease) both}
+.st-done .st-fig{width:120px;height:120px}
+.st-done-mark{display:grid;place-items:center;width:120px;height:120px;border-radius:50%;background:color-mix(in srgb,var(--q-good) 16%,var(--q-bg));color:var(--q-good)}
+.st-done-mark svg{width:52px;height:52px}
+.st-done h2{margin:6px 0 0;font-size:clamp(24px,2.6vw,30px);font-weight:700;letter-spacing:-.02em}
+.st-done p{margin:0;font-size:15px;color:var(--q-muted)}
+.st-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+@keyframes st-enter{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes st-stamp{from{opacity:0;transform:rotate(-12deg) scale(1.6)}to{opacity:1;transform:rotate(-12deg) scale(1)}}
+@media (max-width:560px){
+ .st-stage{justify-content:flex-start}
+ .st-total{text-align:left;width:100%}
+ .st-field:not(.pic){height:clamp(180px,34vh,260px);padding:20px 22px}
+ .st-body{padding:16px 18px 18px;gap:12px}
+ .st-fig{width:44px;height:44px}
+ .st-card.paper{padding:26px 22px 20px}
+ .st-acts{gap:10px}
+ .st .st-b{flex:1 1 0;min-width:0;padding:0 12px}
+}
+@media (prefers-reduced-motion:reduce){.st *,.st *::before,.st *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	// a number is a number: a text is shown as written (a live value arrives as a number)
+	const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function svg(markup, size) {
+		const el = D.createElementNS("http://www.w3.org/2000/svg", "svg");
+		el.setAttribute("viewBox", \`0 0 \${size} \${size}\`);
+		el.setAttribute("aria-hidden", "true");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "2");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.innerHTML = markup;
+		return el;
+	}
+	const say = (tpl, map) => tpl.replace(/\\{(\\w+)\\}/g, (_, k) => (k in map ? map[k] : ""));
+	const norm = (t) => text(t).toLowerCase().replace(/\\s+/g, " ").trim();
+	const esc = (t) => (window.CSS && window.CSS.escape ? window.CSS.escape(t) : String(t).replace(/["\\\\]/g, "\\\\$&"));
+	// A picture the page names (kitPage): its own element, whose src the frame has set.
+	function media(path) {
+		if (!path) return null;
+		return D.querySelector(\`#kit-media [data-kit-src="\${esc(path)}"]\`);
+	}
+	function toneVar(tone) {
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		if (tone === "plain") return "var(--q-muted)";
+		return \`var(--q-\${tone})\`;
+	}
+	// The agent's figure from the page (kitPage carries the ones the data names), or its initial in a soft circle.
+	function figureEl(id, name) {
+		const found = id ? media(\`figure:\${id}\`) : null;
+		if (found && found.getAttribute("src")) {
+			const img = h("img", null, { src: found.getAttribute("src"), alt: name || "" });
+			return h("span", "st-fig", null, img);
+		}
+		const first = Array.from(name || "")[0];
+		return first ? h("span", "st-fig ini", { "aria-hidden": "true" }, first.toUpperCase()) : null;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.st")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const seen = new Set();
+		const cards = [];
+		for (const c of list(raw.cards)) {
+			if (!isObj(c) || cards.length >= MAX.cards) continue;
+			const title = cut(c.title, MAX.card);
+			if (!title) continue;
+			let id = text(c.id).trim().slice(0, 64) || \`card-\${cards.length + 1}\`;
+			while (seen.has(id)) id += "+";
+			seen.add(id);
+			const value = num(c.value);
+			const state = STATES.includes(c.state) ? c.state : "known";
+			cards.push({
+				id,
+				title,
+				// the whole title, normalised before the cut: a question's title is matched against it
+				match: norm(c.title),
+				value: state === "unknown" ? null : value,
+				state: value === null && c.value !== undefined && typeof c.value !== "string" ? "unknown" : state,
+				valueText: typeof c.value === "string" && value === null ? cut(c.value, MAX.valueText) : "",
+				unit: cut(c.unit, MAX.unit),
+				line: cut(c.line, MAX.cardLine),
+				picture: typeof c.picture === "string" ? c.picture : "",
+				tone: [...TONES, "plain"].includes(c.colour) ? c.colour : TONES[cards.length % TONES.length],
+				by: cut(c.by, MAX.by),
+				figure: typeof c.figure === "string" ? c.figure : "",
+				paper: c.paper === true,
+				question: text(c.question).trim(),
+				answer: c.answer !== undefined && c.answer !== null && c.answer !== false ? cut(c.answer === true ? "" : c.answer, MAX.stamp) || "✓" : null,
+				stamp: cut(c.stamp, MAX.stamp),
+				ask: typeof c.ask === "string" && Array.from(c.ask.replace(/\\s+/g, " ").trim()).length <= 40 ? c.ask.replace(/\\s+/g, " ").trim() : "",
+			});
+		}
+		let total = null;
+		if (isObj(raw.total)) {
+			const value = num(raw.total.value);
+			const state = STATES.includes(raw.total.state) ? raw.total.state : value === null ? "unknown" : "known";
+			total = { value: state === "unknown" ? null : value, state, unit: cut(raw.total.unit, MAX.unit), label: cut(raw.total.label, MAX.label) };
+		}
+		return { lang, words, title: cut(raw.title, MAX.title), line: cut(raw.line, MAX.line), cards, total };
+	}
+	function formatter(lang) {
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(lang, { maximumFractionDigits: 2 });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button under a card's answers, drawn only where the
+	// bridge has \`tell\` and the words name it. It asks from a press on it alone, once per press; the member writes the
+	// note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	const TOLD = new Map();
+	const QUIET = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about || !words.tell) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${id}\\n\${about}\`;
+		const b = h("button", "st-tell-b", { type: "button" });
+		const why = h("p", "st-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			b.replaceChildren(svg(st.done ? TELL_ICON.tick : TELL_ICON.note, 24));
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("st-bare", !label);
+			b.classList.toggle("st-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async () => {
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of D.querySelectorAll(".st-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "st-tell", null, b, why);
+	}
+
+	// ---------------------------------------------------------------- state
+	const S = {
+		model: null,
+		text: null,
+		root: null,
+		// the open questions as last read, and whether a read has worked yet
+		qs: [],
+		read: false,
+		retry: 0,
+		// card id -> the question id it was seen with, so a question answered elsewhere marks its card done
+		seen: new Map(),
+		// card id -> { label, main }: answered on this page, or elsewhere while it was open
+		answered: new Map(),
+		// ids of the questions answered on this page: a read that began before the answer may still list them
+		gone: new Set(),
+		// the card in front, by id, and the one being answered or leaving
+		at: null,
+		busy: null,
+		leaving: null,
+		why: new Map(),
+		first: true,
+	};
+
+	// Each card with the open question that is its own: by the question's id, or by its whole title, which is the
+	// card's. A card already done takes none: the same ask again (each month's bill) is a new question, not the old card's.
+	function deal() {
+		const m = S.model;
+		const used = new Set();
+		const cards = m.cards.map((c) => {
+			if (c.answer !== null || S.answered.has(c.id)) return { ...c, q: null };
+			const q = S.qs.find((x) => !used.has(x.id) && ((c.question && x.id === c.question) || norm(x.title) === c.match)) || null;
+			if (q) used.add(q.id);
+			return { ...c, q };
+		});
+		// open questions that point at the app and that no card names: drawn as plain cards, so nothing open is hidden
+		for (const q of S.qs) {
+			if (used.has(q.id)) continue;
+			cards.push({
+				id: \`q:\${q.id}\`,
+				title: cut(q.title, MAX.card),
+				value: null,
+				state: "known",
+				valueText: "",
+				unit: "",
+				line: cut(text(q.body).split("\\n")[0], MAX.cardLine),
+				picture: "",
+				tone: TONES[cards.length % TONES.length],
+				by: cut(q.agent, MAX.by),
+				figure: "",
+				paper: false,
+				question: q.id,
+				answer: null,
+				stamp: "",
+				ask: "",
+				q,
+			});
+		}
+		const done = [];
+		const open = [];
+		const waiting = [];
+		for (const c of cards) {
+			if (c.answer !== null || S.answered.has(c.id)) done.push(c);
+			else if (c.q) open.push(c);
+			else waiting.push(c);
+		}
+		return { done, pile: [...open, ...waiting] };
+	}
+
+	// ---------------------------------------------------------------- drawing
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "stack" }, CSS);
+		D.head.append(style);
+	}
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`st\${BARE ? " st--bare" : ""}\`, null, h("p", "st-quiet", null, line)));
+		S.root = null;
+	}
+	function numEl(c, fmt) {
+		if (c.valueText) return h("div", "st-num", null, h("b", "txt", null, c.valueText));
+		if (c.value === null && c.state !== "unknown") return null;
+		const row = h("div", "st-num", null, c.value === null ? h("b", "unk", null, "?") : h("b", null, null, fmt(c.value)));
+		if (c.value !== null && c.unit) row.append(h("small", null, null, c.unit));
+		if (c.state === "assumed") row.append(h("span", "st-tag", null, S.model.words.assumed));
+		return row;
+	}
+
+	function cardEl(c, fmt, enter) {
+		const words = S.model.words;
+		const card = h("article", \`st-card\${c.paper ? " paper" : ""}\${enter && !still() ? " enter" : ""}\`, { "aria-label": c.title, "data-id": c.id });
+		card.style.setProperty("--st-tone", toneVar(c.tone));
+		const fig = figureEl(c.figure, c.by);
+		const ask = h("div", "st-ask", null, h("h2", null, null, c.title), c.by ? h("p", null, null, c.by) : null);
+		if (c.paper) {
+			if (c.line) card.append(h("div", "st-paper-who", null, c.line));
+			const n = numEl(c, fmt);
+			if (n) card.append(n);
+			card.append(h("div", "st-bars", { "aria-hidden": "true" }, h("i", null, { style: "width:82%" }), h("i", null, { style: "width:61%" }), h("i", null, { style: "width:72%" }), h("i", null, { style: "width:38%" })));
+			card.append(h("div", "st-body", null, fig, ask));
+		} else {
+			const pic = c.picture ? media(c.picture) : null;
+			const field = h("div", \`st-field\${c.picture ? " pic" : ""}\`);
+			if (c.picture) {
+				if (pic && pic.getAttribute("src")) field.append(h("img", null, { src: pic.getAttribute("src"), alt: "" }));
+				else field.append(h("span", "st-ph", { "aria-hidden": "true" }, "?"));
+			} else {
+				const n = numEl(c, fmt);
+				if (n) field.append(n);
+				if (c.line) field.append(h("div", "st-fline", null, c.line));
+			}
+			card.append(field);
+			const body = h("div", "st-body", null, fig, ask);
+			if (c.picture) {
+				const n = numEl(c, fmt);
+				if (n) body.append(h("div", "st-side", null, n));
+				if (c.line) ask.append(h("p", null, null, c.line));
+			}
+			card.append(body);
+		}
+		const stamp = S.answered.get(c.id);
+		if (stamp) card.append(h("span", \`st-stamp\${stamp.main ? " main" : ""}\`, null, stamp.label || "✓"));
+		return card;
+	}
+
+	function paint() {
+		const m = S.model;
+		if (!m) return;
+		ensureStyle();
+		const fmt = formatter(m.lang);
+		const words = m.words;
+		const focusKey = D.activeElement && D.activeElement.dataset ? D.activeElement.dataset.key : null;
+		const { done, pile } = deal();
+		const front = pile.find((c) => c.id === S.at) || pile[0] || null;
+		S.at = front ? front.id : null;
+
+		const root = h("main", \`st\${BARE ? " st--bare" : ""}\`, { lang: m.lang });
+		const top = h("div", "st-top");
+		top.append(h("header", "st-head", null, h("h1", "st-title", null, m.title || ""), m.line ? h("p", "st-line", null, m.line) : null));
+		if (m.total) {
+			const t = m.total;
+			const n = h("div", \`st-total-n\${t.value === null ? " unk" : ""}\`, null, t.value === null ? "?" : fmt(t.value));
+			if (t.value !== null && t.unit) n.append(h("small", null, null, t.unit));
+			top.append(h("div", "st-total", null, n, t.label ? h("div", "st-total-l", null, t.label) : null));
+		}
+		root.append(top);
+		const stage = h("section", "st-stage");
+		root.append(stage);
+
+		if (!front) {
+			// all done: the asking agent's figure when there is one, else a tick, and how many were answered
+			const lastFig = [...done].reverse().find((c) => c.figure && media(\`figure:\${c.figure}\`));
+			const mark = lastFig ? figureEl(lastFig.figure, lastFig.by) : h("span", "st-done-mark", null, svg('<path d="M10 25.5l9 9L38 15"/>', 48));
+			const count = done.length;
+			stage.append(h("div", "st-done", { role: "status" }, mark, h("h2", null, null, words.done), count ? h("p", null, null, say(words.answered, { n: String(count) })) : null));
+		} else {
+			// progress: one dot a card, the answered ones dark, the one in front long; the waiting ones open it
+			const total = done.length + pile.length;
+			const dots = h("div", "st-dots", { role: "group", "aria-label": say(words.card, { n: String(done.length + pile.indexOf(front) + 1), total: String(total) }) });
+			for (let k = 0; k < done.length; k++) dots.append(h("span", "st-dot done", { "aria-hidden": "true" }, h("i")));
+			pile.forEach((c, k) => {
+				const on = c.id === front.id;
+				const b = h("button", \`st-dot\${on ? " on" : ""}\`, { type: "button", "aria-label": \`\${c.title} · \${say(words.card, { n: String(done.length + k + 1), total: String(total) })}\`, "aria-current": on ? "true" : null, "data-key": \`dot:\${c.id}\` }, h("i"));
+				b.addEventListener("click", () => {
+					if (S.busy) return;
+					S.at = c.id;
+					paint();
+				});
+				dots.append(b);
+			});
+			if (total > 1) stage.append(dots);
+			const pileEl = h("div", \`st-pile\${front.paper ? " paper" : ""}\`);
+			if (pile.length > 2) pileEl.append(h("div", "st-back b2", { "aria-hidden": "true" }));
+			if (pile.length > 1) pileEl.append(h("div", "st-back b1", { "aria-hidden": "true" }));
+			const enter = S.first || S.entering === front.id;
+			S.entering = null;
+			pileEl.append(cardEl(front, fmt, enter));
+			stage.append(pileEl);
+
+			// the answers: the open question's options, the last one the main one
+			const acts = h("div", "st-acts");
+			const q = front.q;
+			if (q && q.options.length) {
+				q.options.forEach((o, k) => {
+					const main = k === q.options.length - 1;
+					const busy = S.busy === \`\${front.id}\\n\${o.value}\`;
+					const b = h("button", \`st-b\${main ? " main" : ""}\`, { type: "button", "data-key": \`answer:\${front.id}:\${o.value}\`, "aria-busy": busy ? "true" : null, title: o.description || null }, busy ? words.saving : cut(o.label, MAX.label) || text(o.value));
+					if (S.busy && !busy) b.disabled = true;
+					b.addEventListener("click", () => answer(front, o, main));
+					acts.append(b);
+				});
+			} else acts.append(h("div", "st-wait", null, h("i", null, { "aria-hidden": "true" }), words.waiting));
+			stage.append(acts);
+			stage.append(h("p", "st-why", { role: "status", "aria-live": "polite" }, S.why.get(front.id) || ""));
+			const tell = tellFoot(words, front.title, front.id.startsWith("q:") ? "" : front.id, front.ask);
+			if (tell) stage.append(tell);
+		}
+		show(root);
+		S.root = root;
+		S.first = false;
+		if (focusKey) {
+			const back = root.querySelector(\`[data-key="\${esc(focusKey)}"]\`);
+			if (back) back.focus({ preventScroll: true });
+		}
+	}
+
+	// ---------------------------------------------------------------- answering
+	async function answer(card, option, main) {
+		if (S.busy || !card.q || !window.qorpera || typeof window.qorpera.answer !== "function") return;
+		S.busy = \`\${card.id}\\n\${option.value}\`;
+		S.why.delete(card.id);
+		paint();
+		try {
+			await window.qorpera.answer(card.q.id, card.q.multiSelect ? [option.value] : option.value);
+		} catch (err) {
+			S.busy = null;
+			S.why.set(card.id, cut((err && err.message) || String(err || ""), 140) || "—");
+			paint();
+			return;
+		}
+		// answered: the card is stamped with the answer, then leaves, and the next comes forward
+		S.busy = null;
+		S.answered.set(card.id, { label: card.stamp || cut(option.label, MAX.stamp), main });
+		S.gone.add(card.q.id);
+		S.qs = S.qs.filter((q) => q.id !== card.q.id);
+		const el = S.root && S.root.querySelector(\`.st-card[data-id="\${esc(card.id)}"]\`);
+		if (el) el.append(h("span", \`st-stamp\${main ? " main" : ""}\`, null, card.stamp || cut(option.label, MAX.stamp)));
+		for (const b of S.root ? S.root.querySelectorAll(".st-b") : []) {
+			b.disabled = true;
+			if (b.dataset.key === \`answer:\${card.id}:\${option.value}\`) {
+				b.removeAttribute("aria-busy");
+				b.textContent = cut(option.label, MAX.label) || text(option.value);
+			}
+		}
+		const next = () => {
+			const { pile } = deal();
+			const after = pile.find((c) => c.id !== card.id);
+			S.at = after ? after.id : null;
+			S.entering = S.at;
+			paint();
+			const first = S.root && S.root.querySelector(".st-acts .st-b, .st-dot.on");
+			if (first) first.focus({ preventScroll: true });
+		};
+		if (still() || !el) next();
+		else {
+			setTimeout(() => el.classList.add("leave"), 650);
+			setTimeout(next, 1150);
+		}
+	}
+
+	// ---------------------------------------------------------------- the open questions
+	async function ask() {
+		clearTimeout(S.retry);
+		const bridge = window.qorpera;
+		if (!bridge || typeof bridge.questions !== "function") return;
+		let qs;
+		try {
+			qs = list(await bridge.questions()).filter((q) => isObj(q) && q.id && Array.isArray(q.options) && !S.gone.has(String(q.id)));
+		} catch {
+			// keep the questions the page shows, and ask again ten seconds later, until a read works
+			S.retry = setTimeout(ask, 10000);
+			return;
+		}
+		S.qs = qs.map((q) => ({
+			id: String(q.id),
+			agent: text(q.agent),
+			title: text(q.title),
+			body: text(q.body),
+			multiSelect: q.multiSelect === true,
+			options: q.options.filter(isObj).map((o) => ({ label: text(o.label), value: text(o.value), description: text(o.description) })),
+		}));
+		S.read = true;
+		// a card whose question was open and is no longer was answered elsewhere, in the chat: it is done
+		if (S.model) {
+			const { pile } = deal();
+			const open = new Map(pile.filter((c) => c.q).map((c) => [c.id, c.q.id]));
+			for (const [id, qid] of S.seen) if (!open.has(id) && !S.answered.has(id) && !S.qs.some((q) => q.id === qid)) S.answered.set(id, { label: "", main: true });
+			S.seen = new Map([...S.seen, ...open]);
+		}
+		if (!S.busy) paint();
+	}
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "stack.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt !== S.text || !S.root) {
+				raw = JSON.parse(txt);
+				S.model = normalize(raw);
+				S.text = txt;
+				D.documentElement.lang = S.model.lang;
+				if (!S.busy) paint();
+			}
+		} catch {
+			if (!S.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+			return;
+		}
+		// open questions come and go by themselves: read them again with every load
+		await ask();
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	D.addEventListener("keydown", (e) => {
+		if (!S.root || S.busy || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+		if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+		const t = e.target;
+		if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+		const { pile } = deal();
+		const k = pile.findIndex((c) => c.id === S.at);
+		const next = pile[k + (e.key === "ArrowRight" ? 1 : -1)];
+		if (!next) return;
+		S.at = next.id;
+		S.entering = next.id;
+		paint();
+	});
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The shelf kit's engine.js, as save_app writes it into an app's folder. */
+export const SHELF_ENGINE_JS = `// The shelf kit's engine: "How do our things stand?"
+// The company's real things side by side on one shelf, each as a big picture with one level behind it: a soft colour
+// block whose height is the level, the number that matters under it (warm when it is low), and an agent's one-line note
+// on the thing that needs one. Without levels it is a gallery: finished things, framed, with the maker's figure. A
+// member taps a thing to see it larger, with its note, its source and a button for a note to the app's owner.
+// The agent writes only shelf.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const MAX = { title: 40, line: 60, name: 24, unit: 12, note: 60, by: 24, word: 40, things: 8 };
+	const WORDS = {
+		low: "low",
+		assumed: "assumed",
+		unknown: "not known",
+		close: "Close",
+		source: "Source",
+		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["good", "accent", "violet", "teal", "warn"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.sh{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --sh-ease:cubic-bezier(.22,.8,.24,1);--sh-warm:color-mix(in srgb,var(--q-bad) 70%,var(--q-warn));--sh-shade:rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.32)}
+.sh *,.sh *::before,.sh *::after{box-sizing:border-box}
+.sh-head{min-width:0;max-width:40em}
+.sh-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.sh-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.sh--bare{padding:clamp(12px,1vw,16px)}
+.sh--bare .sh-head{display:none}
+.sh-shelf{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:clamp(28px,5vh,56px);padding:clamp(12px,3vh,36px) 0 clamp(8px,2vh,20px)}
+.sh-row{position:relative;display:grid;grid-template-columns:repeat(var(--sh-cols),minmax(0,var(--sh-w)));justify-content:center;column-gap:clamp(12px,2.4vw,40px)}
+.sh-row.planked::before{content:"";position:absolute;left:max(-16px,calc(var(--sh-pad) * -1));right:max(-16px,calc(var(--sh-pad) * -1));top:var(--sh-scene);height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg));box-shadow:0 7px 0 -2px color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}
+.sh .sh-thing{position:relative;display:flex;flex-direction:column;align-items:center;min-width:0;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:center;cursor:pointer;border-radius:22px}
+.sh .sh-thing:focus-visible{outline:2px solid var(--q-accent);outline-offset:6px}
+.sh-scene{position:relative;display:block;width:100%;height:var(--sh-scene)}
+.sh-level{position:absolute;left:7%;right:7%;bottom:0;display:block;border-radius:28px 28px 0 0;background:color-mix(in srgb,var(--sh-tone) 17%,var(--q-bg));transform-origin:50% 100%;transition:height .6s var(--sh-ease)}
+.sh-level.low{background:color-mix(in srgb,var(--sh-warm) 19%,var(--q-bg))}
+.sh-level.a{background:transparent;border:2px dashed color-mix(in srgb,var(--sh-tone) 45%,var(--q-bg));border-bottom:0}
+.sh-level.unk{left:14%;right:14%;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--q-text) 7%,transparent) 0 2px,transparent 2px 9px);border:2px dashed color-mix(in srgb,var(--q-text) 22%,var(--q-bg));border-bottom:0}
+.sh-level.unk::after{content:"?";position:absolute;left:0;right:0;top:12px;font-size:24px;font-weight:600;color:var(--q-muted)}
+.sh.intro .sh-level{animation:sh-grow .9s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms + 120ms)}
+.sh.intro .sh-pic,.sh.intro .sh-frame{animation:sh-rise .7s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms)}
+.sh.intro .sh-note{animation:sh-rise .6s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms + 700ms)}
+.sh-pic{position:absolute;left:8%;right:8%;bottom:0;height:min(76%,calc(var(--sh-w) * 1.05));display:flex;align-items:flex-end;justify-content:center;transition:transform .35s var(--sh-ease)}
+.sh-pic img{max-width:100%;max-height:100%;object-fit:contain;display:block;filter:drop-shadow(0 14px 14px rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.16))}
+.sh-ph{display:grid;place-items:center;width:62%;aspect-ratio:3/4;border-radius:16px;border:2px dashed color-mix(in srgb,var(--q-text) 20%,var(--q-bg));color:var(--q-muted);font-size:26px;font-weight:600}
+.sh .sh-thing:hover .sh-pic,.sh .sh-thing:focus-visible .sh-pic{transform:translateY(-6px)}
+.sh-frame{position:absolute;left:4%;right:4%;top:4%;bottom:0;display:block;border-radius:18px;overflow:hidden;background:color-mix(in srgb,var(--sh-tone) 12%,var(--q-bg));box-shadow:0 20px 44px -18px var(--sh-shade);transition:transform .35s var(--sh-ease)}
+.sh-frame img{width:100%;height:100%;object-fit:cover;display:block}
+.sh-frame .sh-ph{position:absolute;inset:0;width:auto;aspect-ratio:auto;border:0;border-radius:0}
+.sh .sh-thing:hover .sh-frame{transform:translateY(-4px)}
+.sh-note{position:absolute;left:50%;bottom:calc(min(76%,calc(var(--sh-w) * 1.05)) + 12px);z-index:2;display:flex;align-items:center;gap:9px;width:max-content;max-width:min(calc(var(--sh-w) + 24px),calc(100vw - 32px));padding:8px 14px 8px 8px;border-radius:16px;background:var(--q-bg);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 7%,transparent),0 12px 26px -10px var(--sh-shade);transform:translateX(-50%);text-align:left}
+.sh-note .sh-fig{width:32px;height:32px}
+.sh-note span{min-width:0;font-size:14px;font-weight:600;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.sh-fig{flex:none;display:grid;place-items:center;width:28px;height:28px}
+.sh-fig img{width:100%;height:100%;object-fit:contain;display:block}
+.sh-fig.ini{border-radius:50%;background:color-mix(in srgb,var(--q-accent) 14%,var(--q-bg));font-size:13px;font-weight:650;color:var(--q-accent)}
+.sh-num{display:flex;align-items:baseline;justify-content:center;gap:.24em;margin-top:28px;white-space:nowrap;max-width:100%}
+.sh-num b{font-size:clamp(28px,3.1vw,42px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.sh-num small{font-size:14px;font-weight:550;color:var(--q-muted);overflow:hidden;text-overflow:ellipsis}
+.sh-num.low b{color:var(--sh-warm)}
+.sh-num.unk b{color:var(--q-muted)}
+.sh-name{display:block;margin-top:6px;max-width:100%;font-size:14px;line-height:1.3;color:var(--q-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-tag{display:inline-flex;align-items:center;height:18px;margin-left:6px;padding:0 7px;border-radius:999px;border:1.3px dashed var(--q-muted);font-size:11.5px;font-weight:550;color:var(--q-muted);vertical-align:2px}
+.sh-tag.low{border:0;background:color-mix(in srgb,var(--sh-warm) 15%,var(--q-bg));color:var(--sh-warm)}
+.sh-maker{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;font-size:14px;color:var(--q-muted)}
+.sh-row.gallery .sh-num{margin-top:18px}
+.sh-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+/* a thing opened */
+.sh-sheet{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:clamp(12px,4vw,40px);background:color-mix(in srgb,var(--q-bg) 72%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);opacity:0;transition:opacity .25s var(--sh-ease)}
+.sh-sheet.is-open{opacity:1}
+.sh-card{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);width:min(860px,100%);max-height:calc(100vh - 32px);overflow:auto;border-radius:24px;background:var(--q-bg);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 8%,transparent),0 30px 80px -30px var(--sh-shade);transform:translateY(10px) scale(.985);transition:transform .35s var(--sh-ease)}
+.sh-sheet.is-open .sh-card{transform:none}
+.sh-big{position:relative;display:flex;align-items:flex-end;justify-content:center;min-height:360px;padding:36px 28px 0;background:color-mix(in srgb,var(--sh-tone) 13%,var(--q-bg))}
+.sh-big.low{background:color-mix(in srgb,var(--sh-warm) 14%,var(--q-bg))}
+.sh-big img{max-width:100%;max-height:340px;object-fit:contain;display:block}
+.sh-big.framed{padding:0;align-items:stretch}
+.sh-big.framed img{width:100%;height:100%;max-height:none;object-fit:cover}
+.sh-big .sh-ph{width:46%;margin-bottom:36px}
+.sh-info{display:flex;flex-direction:column;gap:14px;padding:34px 32px 28px;min-width:0}
+.sh-info h2{margin:0;padding-right:40px;font-size:22px;font-weight:650;line-height:1.25;letter-spacing:-.01em}
+.sh-info .sh-num{justify-content:flex-start;margin-top:0}
+.sh-info .sh-num b{font-size:clamp(40px,4.4vw,56px)}
+.sh-bar{position:relative;height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 7%,var(--q-bg));overflow:hidden}
+.sh-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:6px;background:color-mix(in srgb,var(--sh-tone) 60%,var(--q-bg))}
+.sh-bar.low i{background:var(--sh-warm)}
+.sh-said{display:flex;align-items:center;gap:12px;font-size:15px;line-height:1.4}
+.sh-said .sh-fig{width:40px;height:40px}
+.sh-said small{display:block;font-size:13px;color:var(--q-muted)}
+.sh-src{align-self:flex-start;font-size:14px;color:var(--q-muted);text-decoration:none}
+.sh-src:hover{color:var(--q-accent)}
+.sh .sh-x{position:absolute;right:14px;top:14px;z-index:1;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:50%;background:color-mix(in srgb,var(--q-text) 6%,var(--q-bg));color:var(--q-text);cursor:pointer}
+.sh .sh-x:hover{background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg))}
+.sh .sh-x:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.sh .sh-x svg{width:18px;height:18px}
+.sh-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:14px;margin-top:auto;padding-top:6px}
+.sh-tell-c{position:relative;align-self:stretch}
+.sh .sh-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.sh .sh-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.sh .sh-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.sh .sh-tell-b.sh-bare{padding:0}
+.sh .sh-tell-b svg{flex:none;width:17px;height:17px}
+.sh .sh-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.sh .sh-tell-b.sh-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
+.sh .sh-tell-b.sh-told.sh-bare{padding:0}
+.sh .sh-tell-b.sh-told svg{color:var(--q-good)}
+.sh-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;color:var(--q-muted);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+@keyframes sh-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes sh-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@media (max-width:640px){
+ .sh-card{grid-template-columns:1fr}
+ .sh-big{min-height:240px}
+ .sh-big img{max-height:230px}
+ .sh-info{padding:22px 22px 22px}
+ .sh-note{padding:6px 10px 6px 6px;gap:7px}
+ .sh-note .sh-fig{width:26px;height:26px}
+ .sh-note span{font-size:13px}
+ .sh-num{margin-top:22px}
+}
+@media (prefers-reduced-motion:reduce){.sh *,.sh *::before,.sh *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	// a number is a number: a text is shown as written (a live value arrives as a number)
+	const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function svg(markup) {
+		const el = D.createElementNS("http://www.w3.org/2000/svg", "svg");
+		el.setAttribute("viewBox", "0 0 24 24");
+		el.setAttribute("aria-hidden", "true");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "2");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.innerHTML = markup;
+		return el;
+	}
+	const esc = (t) => (window.CSS && window.CSS.escape ? window.CSS.escape(t) : String(t).replace(/["\\\\]/g, "\\\\$&"));
+	function media(path) {
+		if (!path) return null;
+		return D.querySelector(\`#kit-media [data-kit-src="\${esc(path)}"]\`);
+	}
+	function toneVar(tone) {
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		return \`var(--q-\${tone})\`;
+	}
+	function picture(path) {
+		const found = media(path);
+		if (found && found.getAttribute("src")) return h("img", null, { src: found.getAttribute("src"), alt: "", draggable: "false" });
+		return h("span", "sh-ph", { "aria-hidden": "true" }, "?");
+	}
+	function figureEl(id, name) {
+		const found = id ? media(\`figure:\${id}\`) : null;
+		if (found && found.getAttribute("src")) return h("span", "sh-fig", null, h("img", null, { src: found.getAttribute("src"), alt: name || "" }));
+		const first = Array.from(name || "")[0];
+		return first ? h("span", "sh-fig ini", { "aria-hidden": "true" }, first.toUpperCase()) : null;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.sh")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const unit = cut(raw.unit, MAX.unit);
+		const seen = new Set();
+		const things = [];
+		for (const t of list(raw.things)) {
+			if (!isObj(t) || things.length >= MAX.things) continue;
+			const name = cut(t.name, MAX.name);
+			if (!name) continue;
+			let id = text(t.id).trim().slice(0, 64) || \`thing-\${things.length + 1}\`;
+			while (seen.has(id)) id += "+";
+			seen.add(id);
+			const value = num(t.value);
+			const state = STATES.includes(t.state) ? t.state : t.value !== undefined && typeof t.value !== "string" && value === null ? "unknown" : "known";
+			const max = num(t.max);
+			let level = num(t.level);
+			if (level !== null) level = Math.max(0, Math.min(1, level > 1 && level <= 100 ? level / 100 : level));
+			else if (value !== null && max !== null && max > 0) level = Math.max(0, Math.min(1, value / max));
+			// a level is drawn where the thing has one; one whose number is not known yet is a hole in the shelf
+			const hasLevel = t.level !== undefined || t.max !== undefined;
+			const lowAt = num(t.low);
+			const low = t.low === true || (lowAt !== null && value !== null && value <= lowAt);
+			const ask = typeof t.ask === "string" ? t.ask.replace(/\\s+/g, " ").trim() : "";
+			things.push({
+				id,
+				name,
+				picture: typeof t.picture === "string" ? t.picture : "",
+				value: state === "unknown" ? null : value,
+				valueText: typeof t.value === "string" && value === null ? cut(t.value, 14) : "",
+				state,
+				unit: t.unit === undefined ? unit : cut(t.unit, MAX.unit),
+				level: state === "unknown" ? null : level,
+				hasLevel,
+				low,
+				note: cut(t.note, MAX.note),
+				by: cut(t.by, MAX.by),
+				figure: typeof t.figure === "string" ? t.figure : "",
+				ask: Array.from(ask).length <= 40 ? ask : "",
+				source: typeof t.source === "string" && /^(?:https:\\/\\/|folder:)/.test(t.source) ? t.source : "",
+				tone: TONES.includes(t.colour) ? t.colour : TONES[things.length % TONES.length],
+			});
+		}
+		if (!things.length) throw new Error("no things");
+		return { lang, words, title: cut(raw.title, MAX.title), line: cut(raw.line, MAX.line), things };
+	}
+	function formatter(lang) {
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of an opened thing, drawn only
+	// where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	const TOLD = new Map();
+	const QUIET = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	const ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+		x: '<path d="M6 6l12 12M18 6L6 18"/>',
+	};
+	// a closed thing keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".sh-tell-b")) if (x.__tell) x.__tell.paint();
+	}
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${id}\\n\${about}\`;
+		const b = h("button", "sh-tell-b", { type: "button" });
+		const why = h("p", "sh-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			b.replaceChildren(svg(st.done ? ICON.tick : ICON.note));
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("sh-bare", !label);
+			b.classList.toggle("sh-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of D.querySelectorAll(".sh-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "sh-tell", null, b, h("div", "sh-tell-c", null, why));
+	}
+
+	// ---------------------------------------------------------------- drawing
+	const ui = { model: null, root: null, open: null, sheet: null, opener: null, width: 0, height: 0, shown: false, count: 0 };
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "shelf" }, CSS);
+		D.head.append(style);
+	}
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`sh\${BARE ? " sh--bare" : ""}\`, null, h("p", "sh-quiet", null, line)));
+		ui.root = null;
+	}
+	function numEl(t, fmt, words) {
+		const row = h("span", \`sh-num\${t.low ? " low" : ""}\${t.value === null && !t.valueText ? " unk" : ""}\`);
+		if (t.valueText) row.append(h("b", null, null, t.valueText));
+		else if (t.value === null) {
+			if (t.state !== "unknown") return null;
+			row.append(h("b", null, null, "?"));
+		} else {
+			const b = h("b", null, { "data-n": String(t.value) }, fmt(t.value));
+			row.append(b);
+			if (t.unit) row.append(h("small", null, null, t.unit));
+		}
+		if (t.state === "assumed") row.append(h("span", "sh-tag", null, words.assumed));
+		return row;
+	}
+
+	function layout() {
+		const W = Math.max(280, (ui.root && ui.root.clientWidth) || window.innerWidth || 1280);
+		const pad = Math.max(16, Math.min(36, W * 0.026));
+		const inner = W - pad * 2;
+		const n = ui.model.things.length;
+		const cols = W < 600 ? Math.min(n, 2) : W < 900 ? Math.min(n, 3) : Math.min(n, n === 7 || n === 8 ? 4 : 6);
+		const rows = Math.ceil(n / cols);
+		const gap = Math.max(12, Math.min(40, W * 0.024));
+		const w = Math.floor(Math.min(300, (inner - gap * (cols - 1)) / cols));
+		const head = BARE ? 0 : 70;
+		const labels = 112;
+		const H = window.innerHeight || 800;
+		const avail = (H - pad * 2 - head - 40) / rows - labels - (rows > 1 ? 40 : 0);
+		const scene = Math.round(Math.max(W < 600 ? 170 : 200, Math.min(avail, w * 1.7, 470)));
+		return { W, pad, cols, w, scene };
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const fmt = formatter(m.lang);
+		const root = h("main", \`sh\${BARE ? " sh--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		root.append(h("header", "sh-head", null, h("h1", "sh-title", null, m.title || ""), m.line ? h("p", "sh-line", null, m.line) : null));
+		const shelf = h("div", "sh-shelf");
+		root.append(shelf);
+		show(root);
+		ui.root = root;
+		const L = layout();
+		ui.width = L.W;
+		ui.height = window.innerHeight;
+		shelf.style.setProperty("--sh-w", \`\${L.w}px\`);
+		shelf.style.setProperty("--sh-scene", \`\${L.scene}px\`);
+		shelf.style.setProperty("--sh-pad", \`\${L.pad}px\`);
+		for (let r = 0; r < m.things.length; r += L.cols) {
+			const part = m.things.slice(r, r + L.cols);
+			const leveled = part.some((t) => t.hasLevel);
+			const row = h("div", \`sh-row\${leveled ? " planked" : " gallery"}\`);
+			row.style.setProperty("--sh-cols", String(part.length));
+			part.forEach((t, k) => row.append(thingEl(t, r + k, fmt, m.words, leveled)));
+			shelf.append(row);
+		}
+		if (intro && !still()) {
+			for (const b of root.querySelectorAll(".sh-num b[data-n]")) countUp(b, Number(b.dataset.n), fmt);
+			setTimeout(() => root.classList.remove("intro"), 2400);
+		}
+		if (ui.open) {
+			const t = m.things.find((x) => x.id === ui.open);
+			if (t) openSheet(t, true);
+			else closeSheet(true);
+		}
+	}
+
+	function thingEl(t, i, fmt, words, leveled) {
+		const b = h("button", "sh-thing", { type: "button", "data-id": t.id, "aria-haspopup": "dialog", "aria-expanded": ui.open === t.id ? "true" : "false" });
+		b.style.setProperty("--sh-tone", toneVar(t.tone));
+		b.style.setProperty("--i", String(i));
+		const scene = h("span", "sh-scene");
+		if (leveled && t.hasLevel) {
+			if (t.level === null) scene.append(h("span", "sh-level unk", { style: "height:46%" }));
+			else scene.append(h("span", \`sh-level\${t.low ? " low" : ""}\${t.state === "assumed" ? " a" : ""}\`, { style: \`height:\${Math.max(3, Math.round(t.level * 94))}%\` }));
+		}
+		if (leveled || t.hasLevel) {
+			const pic = h("span", "sh-pic", null, picture(t.picture));
+			scene.append(pic);
+		} else scene.append(h("span", "sh-frame", null, picture(t.picture)));
+		if (t.note) {
+			const fig = figureEl(t.figure, t.by);
+			scene.append(h("span", "sh-note", null, fig, h("span", null, null, t.note)));
+		}
+		b.append(scene);
+		const n = numEl(t, fmt, words);
+		if (n) b.append(n);
+		const name = h("span", "sh-name", null, t.name);
+		if (t.low && !t.note) name.append(h("span", "sh-tag low", null, words.low));
+		b.append(name);
+		// a gallery thing names its maker under it
+		if (!t.hasLevel && !t.note && (t.by || t.figure)) b.append(h("span", "sh-maker", null, figureEl(t.figure, t.by), t.by || ""));
+		const label = [t.name, t.value !== null ? \`\${fmt(t.value)}\${t.unit ? \` \${t.unit}\` : ""}\` : t.valueText, t.low ? words.low : "", t.note].filter(Boolean).join(", ");
+		b.setAttribute("aria-label", label);
+		b.addEventListener("click", (e) => {
+			e.stopPropagation();
+			if (ui.open === t.id) closeSheet();
+			else openSheet(t);
+		});
+		return b;
+	}
+
+	function countUp(el, to, fmt) {
+		const t0 = performance.now();
+		let frames = 0;
+		// by the clock, and never longer than about 100 frames, so a page whose frames come slowly still ends there
+		const step = (t) => {
+			const k = Math.min(1, Math.max((t - t0) / 900, ++frames / 96));
+			const e = 1 - (1 - k) ** 3;
+			el.textContent = fmt(k >= 1 ? to : Math.round(to * e));
+			if (k < 1) requestAnimationFrame(step);
+		};
+		el.textContent = fmt(0);
+		requestAnimationFrame(step);
+	}
+
+	// ---------------------------------------------------------------- a thing opened
+	function openSheet(t, again) {
+		const m = ui.model;
+		const fmt = formatter(m.lang);
+		const words = m.words;
+		if (!again) {
+			hushTold();
+			ui.opener = t.id;
+		}
+		// one sheet at a time: one still fading out goes at once
+		for (const old of ui.root.querySelectorAll(".sh-sheet")) old.remove();
+		ui.open = t.id;
+		for (const b of ui.root.querySelectorAll(".sh-thing")) b.setAttribute("aria-expanded", String(b.dataset.id === t.id));
+		const close = h("button", "sh-x", { type: "button", "aria-label": words.close }, svg(ICON.x));
+		close.addEventListener("click", (e) => {
+			e.stopPropagation();
+			closeSheet();
+		});
+		const big = h("div", \`sh-big\${t.low ? " low" : ""}\${t.hasLevel ? "" : " framed"}\`, null, picture(t.picture));
+		const info = h("div", "sh-info", null, h("h2", null, null, t.name));
+		const n = numEl(t, fmt, words);
+		if (n) {
+			if (t.low) n.append(h("span", "sh-tag low", null, words.low));
+			info.append(n);
+		}
+		if (t.hasLevel && t.level !== null) info.append(h("div", \`sh-bar\${t.low ? " low" : ""}\`, { role: "img", "aria-label": \`\${Math.round(t.level * 100)}%\` }, h("i", null, { style: \`width:\${Math.max(2, Math.round(t.level * 100))}%\` })));
+		if (t.note || t.by) {
+			const said = h("div", "sh-said", null, figureEl(t.figure, t.by), h("div", null, null, t.note || "", t.by ? h("small", null, null, t.by) : null));
+			info.append(said);
+		}
+		if (t.source) info.append(h("a", "sh-src", { href: t.source }, \`\${words.source} ↗\`));
+		const tell = tellFoot(words, t.name, t.id, t.ask);
+		if (tell) info.append(tell);
+		const card = h("div", "sh-card", null, close, big, info);
+		card.style.setProperty("--sh-tone", toneVar(t.tone));
+		card.addEventListener("click", (e) => e.stopPropagation());
+		const sheet = h("div", \`sh-sheet\${again ? " is-open" : ""}\`, { role: "dialog", "aria-modal": "true", "aria-label": t.name }, card);
+		sheet.addEventListener("click", () => closeSheet());
+		ui.root.append(sheet);
+		ui.sheet = sheet;
+		if (!again) {
+			requestAnimationFrame(() => sheet.classList.add("is-open"));
+			sheet.classList.add("is-open");
+			close.focus({ preventScroll: true });
+		}
+	}
+	function closeSheet(quietly) {
+		const sheet = ui.sheet;
+		const was = ui.opener || ui.open;
+		ui.open = null;
+		ui.sheet = null;
+		hushTold();
+		if (ui.root) for (const b of ui.root.querySelectorAll(".sh-thing")) b.setAttribute("aria-expanded", "false");
+		if (!sheet) return;
+		sheet.classList.remove("is-open");
+		sheet.setAttribute("inert", "");
+		sheet.setAttribute("aria-hidden", "true");
+		if (still() || quietly) sheet.remove();
+		else setTimeout(() => sheet.remove(), 260);
+		if (!quietly && was && ui.root) {
+			const back = ui.root.querySelector(\`.sh-thing[data-id="\${esc(was)}"]\`);
+			if (back) back.focus({ preventScroll: true });
+		}
+	}
+	D.addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && ui.open) {
+			e.preventDefault();
+			closeSheet();
+		}
+	});
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	window.addEventListener("resize", () => {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.root) return;
+			const W = ui.root.clientWidth;
+			if (W === ui.width && window.innerHeight === ui.height) return;
+			render(false);
+		});
+	});
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "shelf.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt === lastText && ui.root) return;
+			raw = JSON.parse(txt);
+			ui.model = normalize(raw);
+			lastText = txt;
+			const first = !ui.shown;
+			render(first);
+			ui.shown = true;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
 	}
 	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
 	else start();

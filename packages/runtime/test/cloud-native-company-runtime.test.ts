@@ -3483,6 +3483,20 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Master and v247's release (app_guide) merged up through T3-3 under no-wall (15 November 2026): measured once more.
 	// T3-5's contracts with app_guide (its own in contract form, save_app's naming it) and master's machine words, merged up through no-wall (15 November 2026): measured once more.
 	// app_guide carried in full where save_app is (T3-6 with #1804, 15 November 2026): measured once more.
+	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
+	// views plan step 1), and save_app's kit says to read it first, so they moved again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
+	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
+	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
+	// and in the takeover surface's schema, so both moved again, measured on master with data_change and data_apply's
+	// allow.
+	// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
+	// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: measured once more.
+	// Master 01c90ff7a merged up through no-wall into T3-5 for landing (15 November 2026): app_guide's look and kits in its contract, ask_member's takeover on the shared screen; measured once more.
+	// Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): data_change opened on demand beside the other data tools; measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3514,6 +3528,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"data_describe",
 		"data_apply",
 		"data_query",
+		"data_change",
 		"company_account",
 		"manage_routine",
 		"organize_sidebar",
@@ -3537,10 +3552,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"052799c7c866b5fea037b6918eab3eaa4834930ee3c64dfbcdc5c62615dc5f1a",
+		"abdd63c38233b72664ba5b5998075f56798ba2c7bfc81854a64ae778cfbf2c79",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"8aff88ef644b027a6b5a43eec1495e40a830adb6d91939f56ae8dde18cbe4e7e",
+		"5001f1c72b4fb6421117d96b6f2e92861fdcbb3ad27cc45efabd4fc4c70585fa",
 	);
 });
 

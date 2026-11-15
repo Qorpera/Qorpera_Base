@@ -102,6 +102,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	data_describe: "the company's databases: tables, steps, questions",
 	data_query: "read a database: a named question or one select",
 	data_apply: "apply a database's waiting steps",
+	data_change: "add, change or remove a database's rows through its named change",
 	manage_routine: "set up, change, pause or remove routines: standing work that wakes you",
 	organize_sidebar: "sort agents into the sidebar's sections",
 	organize_apps: "sort the company's apps into groups in the apps drawer",

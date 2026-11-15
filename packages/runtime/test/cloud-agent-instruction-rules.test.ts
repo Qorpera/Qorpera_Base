@@ -28,6 +28,7 @@ const COFOUNDER_TOOLS = [
 	"create_group_chat",
 	"crew_and_members",
 	"data_apply",
+	"data_change",
 	"data_describe",
 	"data_query",
 	"find_mail",
@@ -782,6 +783,14 @@ const RULES: [string, string, string, Run[]][] = [
 		"on a machine of 8 cpus or more, because a render uses every processor it is given",
 		ALL,
 	],
+	// Master merged up through T3-2 for landing (15 November 2026): the render frames and no person built from shapes.
+	[
+		"5",
+		"a render's frames into the folder",
+		"Save each final frame into the company folder as it finishes (under /company on the machine)",
+		ALL,
+	],
+	["5", "no person built from plain shapes", "so frame the shot without one", ALL],
 	[
 		"5",
 		"when it is hard, never smaller",
@@ -1409,7 +1418,16 @@ const RULES: [string, string, string, Run[]][] = [
 		"A step that would drop a table or column or delete rows waits for a member's yes",
 		STAFF,
 	],
-	["10", "no secret in a database", "Never put a secret in a step, a query or a row.", ALL],
+	// Master merged up through T3-2 for landing (15 November 2026): a database's changes (slice 7) and the member's yes for a
+	// held step.
+	["10", "a change writes rows", "To add, change or remove rows, write a change and run it with data_change", STAFF],
+	[
+		"10",
+		"a held step is asked on a card",
+		"call data_apply again with the allow its answer gave, which asks them on a card",
+		STAFF,
+	],
+	["10", "no secret in a database", "Never put a secret in a step, a query, a change or a row.", ALL],
 	["10", "answer from what is known", "When asked, answer at once from what you and the files already know", STAFF],
 	[
 		"10",

@@ -409,6 +409,24 @@ describe("readable cards", () => {
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("Options with pictures show as big boxes");
 	});
 
+	// Jonas, 14 Nov 2026, on Type privately in the computer window: "Yes, remove it". Nothing in the web begins a private
+	// hold of an agent's computer any more (#1812): a member who signs in for an agent does it on the screen the agent and
+	// the other members share. The agent was told its calls are refused meanwhile and could have passed that on as
+	// privacy; it is told what is true, and still to end its turn until I'm done wakes it.
+	it("tells an agent that a member signs in on the screen they share, and promises no privacy", () => {
+		// T3-5's contract says it on its takeover line.
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
+			"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you.",
+		);
+		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+		expect(schema).toContain(
+			"surface takeover: the member signs in or enters a code on your computer's screen, then presses I'm done.",
+		);
+		for (const text of [CLOUD_ASK_MEMBER_INSTRUCTIONS, schema])
+			expect(text).not.toMatch(/holds it|calls there are refused|drives your computer|hands it back/);
+		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
+	});
+
 	// Jonas, 11 Nov 2026: "I would like the agents to be better at indicating when they need the users input and it's
 	// really stopped at you." Every answer the work waits for goes on a card, open questions too (allowCustom), and the
 	// card says what is stopped; nothing optional does.

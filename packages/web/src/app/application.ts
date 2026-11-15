@@ -14,7 +14,7 @@ import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
-import { codeReleaseCalls } from "../cloud/releases.ts";
+import { type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -51,6 +51,7 @@ import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
 import { OpenQuestions } from "./open-questions.ts";
+import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -489,6 +490,24 @@ export function mountApplication(
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	/** Each company's What's new reads and writes, as the apps drawer, What's new's page and the threads' "a change is
+	 * ready" cards make them: numbered as they start, one shared read out at a time for the drawer and the threads, never
+	 * across a write from any of them, and the latest-started answer as the company's last read (app/release-reads.ts). */
+	const releaseReads = new WeakMap<CompanyController, CompanyReleaseReads>();
+	const companyReleases = (controller: CompanyController): CompanyReleaseReads => {
+		let reads = releaseReads.get(controller);
+		if (!reads) {
+			reads = companyReleaseReads(codeReleaseCalls(cloud, controller.profile.profileId), controller.signal);
+			releaseReads.set(controller, reads);
+		}
+		return reads;
+	};
+	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
+	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
+	const showReleases = (controller: CompanyController, read: CodeReleases) => {
+		const newest = companyReleases(controller).last ?? read;
+		controller.store.set({ whatsNew: whatsNewEntry(controller, newest), siteVersions: liveVersions(newest) });
+	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
@@ -1294,6 +1313,40 @@ export function mountApplication(
 		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
 		// were read is brought up to date by decorateAppCards.
 		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
+		// What's new's calls and what it reads beside them: its page and the "a change is ready" card in an agent's thread
+		// share them (views/release-desk.ts).
+		const releaseDesk = (shared = false) => ({
+			client: shared ? companyReleases(controller).shared : companyReleases(controller).own,
+			// The company's last read, which a thread's card starts from.
+			last: () => companyReleases(controller).last,
+			options: {
+				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				// Every read, from What's new's page or a thread's card, is numbered as it starts (its client), so the latest
+				// to start is the company's last read: a thread opened next starts from what is true now (a change put live on
+				// the page is no card), with no read of its own. The drawer counts from it too.
+				listed: (read: CodeReleases) => showReleases(controller, read),
+				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
+				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
+				// entry that names none.
+				takenDown: async (signal: AbortSignal) => {
+					const sites = createWebSites(cloud, controller.profile);
+					const access = await sites.access(signal);
+					const slugs = new Set<string>();
+					for (const id of access.takenDown.keys()) {
+						const named = access.named.get(id);
+						if (named) slugs.add(named.slug);
+					}
+					if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
+					for (const site of await sites.list(signal)) if (access.takenDown.has(site.id)) slugs.add(site.slug);
+					return slugs;
+				},
+			},
+		});
+		// Who may see a site's password and change it: owners and admins (the kernel enforces the same rule).
+		const managesSites = () => {
+			const role = controller.store.get().team?.role;
+			return role === "owner" || role === "admin";
+		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1634,15 +1687,11 @@ export function mountApplication(
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
 			releasesRead = controller;
-			const releases = codeReleaseCalls(cloud, controller.profile.profileId);
+			const releases = companyReleases(controller).shared;
 			const readReleases = () =>
 				void releases.list(controller.signal).then(
 					(read) => {
-						if (!controller.signal.aborted)
-							controller.store.set({
-								whatsNew: whatsNewEntry(controller, read),
-								siteVersions: liveVersions(read),
-							});
+						if (!controller.signal.aborted) showReleases(controller, read);
 					},
 					(error: unknown) => {
 						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
@@ -1997,6 +2046,10 @@ export function mountApplication(
 							// role, and the thread offers it to the roles that route takes (M3c).
 							folderImage: cardImage,
 							folderApp: cardApp,
+							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
+							// the Sites page's row under the words.
+							codeReleases: releaseDesk(true),
+							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),
@@ -2233,12 +2286,7 @@ export function mountApplication(
 				// them offline (the kernel enforces the same rule).
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: {
-							canManage: () => {
-								const role = controller.store.get().team?.role;
-								return role === "owner" || role === "admin";
-							},
-						},
+						access: { canManage: managesSites },
 						listed: (list) => controller.store.set({ siteCount: list.length }),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
@@ -2269,35 +2317,8 @@ export function mountApplication(
 				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
 				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
 				if (!whatsNewPage) {
-					const view = new WhatsNewView(
-						controller,
-						codeReleaseCalls(cloud, controller.profile.profileId),
-						controller.signal,
-						{
-							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-							listed: (read) =>
-								controller.store.set({
-									whatsNew: whatsNewEntry(controller, read),
-									siteVersions: liveVersions(read),
-								}),
-							// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
-							// project's site that never went live is one too (the review of #1774, F4); the list is read only
-							// for an entry that names none.
-							takenDown: async (signal) => {
-								const sites = createWebSites(cloud, controller.profile);
-								const access = await sites.access(signal);
-								const slugs = new Set<string>();
-								for (const id of access.takenDown.keys()) {
-									const named = access.named.get(id);
-									if (named) slugs.add(named.slug);
-								}
-								if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
-								for (const site of await sites.list(signal))
-									if (access.takenDown.has(site.id)) slugs.add(site.slug);
-								return slugs;
-							},
-						},
-					);
+					const desk = releaseDesk();
+					const view = new WhatsNewView(controller, desk.client, controller.signal, desk.options);
 					whatsNewPage = {
 						company: controller,
 						view,
