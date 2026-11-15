@@ -112,7 +112,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_create_member_execution_sponsor(uuid,uuid,uuid,bigint,boolean)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_create_runner_registration(uuid,uuid,text,jsonb,integer,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_create_runtime_office_viewer(jsonb,bigint,text,jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
-	('public.qorpera_data_pass_redeem(text)', true, false, 'the data gateway (20260930750000): only knowing a run''s data pass (32 random bytes, only its sha256 kept) opens it, once, within 60 s, while its job is leased; anything else answers null'),
+	('public.qorpera_data_pass_redeem(text)', true, false, 'the data gateway (20260930750000; a machine''s pass, 20260930775000): only knowing a data pass (32 random bytes, only its sha256 kept) opens it, once, within 60 s, while its run''s job is leased or, for a company machine''s, while its folder view is open and valid and the company is not paused; anything else answers null'),
 	('public.qorpera_decide_member_identity_recovery(uuid,uuid,uuid,text,text,uuid,text)', false, true, 'internal: self-scoped or pure helper'),
 	('public.qorpera_decline_interface_offer(uuid,uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; only the member the offer names (I9c)'),
 	('public.qorpera_decline_profile_invitation(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),

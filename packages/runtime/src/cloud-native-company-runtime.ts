@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
@@ -11,9 +11,22 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
-import { cloudVisionAgreed, composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
+import {
+	cloudVisionAgreed,
+	composeCloudAgentHead,
+	readCloudAgentHeadReading,
+	readCloudAgentHeadVision,
+} from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
+import {
+	CLOUD_HOME_CLOSE_MS,
+	CloudCodexHome,
+	type CloudCodexHomeChannel,
+	type CloudCodexHomeReview,
+	CloudCodexHomeSteps,
+	parseCloudCompanyHome,
+} from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -35,6 +48,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { CloudControlRpcEnded, cloudControlRetryable, cloudControlTransientCode } from "./cloud-control-errors.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
@@ -47,6 +61,12 @@ import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
+import {
+	CloudFolderReading,
+	cloudCompanyMembers,
+	cloudReadingTool,
+	describeCloudCompanySenses,
+} from "./cloud-folder-reading.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
@@ -105,9 +125,10 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
 import { CloudPictureChannel } from "./cloud-picture-channel.ts";
+import { cloudRecordReflectionTool, readCloudPlatformUpdates } from "./cloud-platform-updates.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
-import { CloudRunLogGone } from "./cloud-run-log.ts";
+import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
@@ -198,6 +219,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #homeChannel: ((binding: CloudNativeToolBinding) => CloudCodexHomeChannel) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
@@ -229,6 +251,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+		/**
+		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+		 */
+		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
 		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 		 * save_coding_value. */
 		codingValues?: CloudMachineCodingValues;
@@ -256,6 +284,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#companyAccounts = options.companyAccounts;
 		this.#eventHooks = options.eventHooks;
 		this.#computerSession = options.computerSession;
+		this.#homeChannel = options.homeChannel;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
@@ -364,6 +393,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						() => false,
 					)
 				: Promise.resolve(false);
+			// The agent's home, by the company's switch (20260930752000). SQL's "no home" leaves this run exactly as it is
+			// today: no environment, no channel, the same tools and the same provider request. An ask that cannot work (a
+			// call this host's lists or the entry point do not know, a refusal, an answer of another shape) fails the run in
+			// the home's own stage: every run would meet it alike, and taken for "no home" it would switch the home off for
+			// every company unseen. Only a lost answer leaves this attempt without a home, said in the host's journal: no
+			// answer or a late one, a 5xx that is not PostgREST's, or PostgREST's word that the statement ended on a
+			// transient SQLSTATE (a lock or statement timeout, a serialization failure, a lost connection, its pool wait).
+			// Any other SQLSTATE PostgREST answers (an internal error, a missing function or relation, a violated key) fails
+			// the run like a refusal: asking again changes nothing. The switch is off for most companies, so failing their
+			// runs for a lost answer buys nothing, and the next attempt asks again.
+			const homeRequest = this.#homeChannel
+				? cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call("qorpera_company_home_available", { p_binding: binding }, requestSignal),
+						signal,
+					).then(parseCloudCompanyHome, (error: unknown) => {
+						const lost =
+							error instanceof CloudControlRpcEnded
+								? error.sqlstate !== undefined && cloudControlTransientCode(error.sqlstate)
+								: cloudControlRetryable(error);
+						if (signal.aborted || !lost) throw error;
+						console.error(`The agent's home was not asked (${cloudRuntimeErrorCategory(error, signal)})`);
+						return undefined;
+					})
+				: Promise.resolve(undefined);
+			homeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
@@ -415,6 +470,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
+			stage = "codex-home";
+			const home = await homeRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -506,6 +563,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// The platform's facts about the whole company (the company's reading of itself, 20260930765000): the
+				// Co-Founder's company runs only, asked beside its open work. A failed read is null and the run goes on.
+				const sensesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? describeCloudCompanySenses(binding, this.#paths, signal).catch((error) => {
+								if (!signal.aborted)
+									console.error(
+										`The company's senses were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return null;
+							})
+						: Promise.resolve(undefined);
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
@@ -515,12 +586,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
+				const updatesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					wake.kind === "routine" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? readCloudPlatformUpdates(folder.client, new Date(), signal).catch((error: unknown) => {
+								if (!signal.aborted)
+									console.error(
+										`Platform updates were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return undefined;
+							})
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
 				// precondition of company work. The vision, for the head (RUNTIME-AGENT-MEMORY-TREE.md
-				// §5.6), is read beside them; a failed read fails the composition, as the head is never cut.
-				const [memory, skills, vision] = await Promise.all([
+				// §5.6), is read beside them, and so is the company's reading of itself, the head's fourth part; a failed read
+				// fails the composition, as the head is never cut.
+				const [memory, skills, vision, reading] = await Promise.all([
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
@@ -539,6 +624,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 					}),
 					readCloudAgentHeadVision(notebooks.composition, signal),
+					readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
 					initialPresence,
@@ -546,16 +632,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					memory,
 					skills,
 					vision,
+					reading,
 					openWork: await openWorkRequest,
+					senses: await sensesRequest,
 					proposals: await proposalsRequest,
+					platformUpdates: await updatesRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
-				async (error) => {
-					await connectorTools();
-					throw error;
-				},
-			);
+			const {
+				initialPresence,
+				gateway,
+				memory,
+				skills,
+				vision,
+				reading,
+				openWork,
+				senses,
+				proposals,
+				platformUpdates,
+			} = await composeContext().catch(async (error) => {
+				await connectorTools();
+				throw error;
+			});
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
@@ -595,7 +693,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
 					// cuts one out of every tool result and the composer out of the context message (E3c-2). The session cuts
 					// all it sends Codex again, for any source added later.
-					const composedHead = composeCloudAgentHead(context, vision, memory);
+					const composedHead = composeCloudAgentHead(context, vision, memory, reading);
 					const head = { ...composedHead, text: redactCloudWebhookSecrets(composedHead.text) };
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
@@ -607,6 +705,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
 					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
 					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
+					const updates = offeredTools.has("record_reflection") ? platformUpdates?.context : undefined;
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
 						wake,
@@ -618,6 +717,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						head,
 						view?.tree,
 						request,
+						updates,
+						senses,
 					);
 					// The run's context is its head and views (in the developer instructions) and its context message, hashed
 					// together.
@@ -627,7 +728,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const contextSha256 = createHash("sha256").update(text).digest("hex");
 					// What composition read from the folder is released under the composed context before any model request,
 					// with the paths of the proposals it shows (P40b).
-					await notebooks.releaseComposition(contextSha256, openingSignal, proposals?.reads);
+					await notebooks.releaseComposition(contextSha256, openingSignal, [
+						...(proposals?.reads ?? []),
+						...(updates ? (platformUpdates?.reads ?? []) : []),
+					]);
 					// So are the summary lines the view and the branches show, and the run's first request is recorded with
 					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
 					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
@@ -896,6 +1000,44 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
+					// The agent's home (slice 1): built only when this company's switch is on AND this agent has a
+					// machine running. The review and the work log are handed to it where they are built, below.
+					...(home && this.#homeChannel
+						? {
+								home: (input: {
+									review: CloudCodexHomeReview;
+									log: CloudRunLog | undefined;
+									signal: AbortSignal;
+								}) =>
+									new CloudCodexHome({
+										channel: this.#homeChannel!(binding),
+										sessionId: randomUUID(),
+										machine: { id: home.machineId, name: home.machine },
+										review: input.review,
+										...(input.log ? { steps: new CloudCodexHomeSteps(input.log) } : {}),
+										// The run's session is ended in SQL when the run ends, however it ended, so its
+										// next attempt opens its own instead of meeting this one (review round 1, F10).
+										// A close that fails does not fail the run, whose work is done (F10), but it is said
+										// in the host's journal, so a close no call reaches is never silent.
+										endSession: async (sessionId, reason) => {
+											const closing = AbortSignal.timeout(CLOUD_HOME_CLOSE_MS);
+											try {
+												await this.#paths.call(
+													"qorpera_close_home_session",
+													{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
+													closing,
+												);
+											} catch (error) {
+												console.error(
+													`The agent's home session was not closed (${cloudRuntimeErrorCategory(error, closing)})`,
+												);
+												throw error;
+											}
+										},
+										signal: input.signal,
+									}),
+							}
+						: {}),
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					signal,
 					timeoutMs: this.#timeoutMs,
@@ -1116,6 +1258,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										...(context.agentKind === "cofounder"
 											? cloudMemberOfferTools(binding, identity, this.#paths)
 											: []),
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [cloudRecordReflectionTool({ folder: folder.client, operations, identity })]
+											: []),
+										// The company's reading of itself (20260930766000): the Co-Founder keeps it, in its company runs.
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [
+													cloudReadingTool(
+														identity,
+														new CloudFolderReading({
+															folder: folder.client,
+															operations,
+															identity,
+															members: cloudCompanyMembers(binding, this.#paths),
+														}),
+													),
+												]
+											: []),
 										// The agent changes the company's hooks through its folder client (E3a).
 										...cloudEventTools(binding, identity, this.#paths, folder.client),
 										// Company sites (20260930550000): a static website from the company folder at a
@@ -1141,6 +1300,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										gateway: machineGateway,
 										worker: work.isWorker,
 										...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+										...(this.#companyAccounts ? { accountFills: true } : {}),
 									})
 								: []),
 							// The notebook is the agent's own: a worker of the same agent recalls it,

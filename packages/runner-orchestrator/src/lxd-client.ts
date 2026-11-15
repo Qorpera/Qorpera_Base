@@ -264,8 +264,12 @@ export interface LxdInstanceExecStreamClient {
 }
 
 export interface LxdExecPipeRequest {
-	/** Run as root, at most 64 arguments. */
+	/** At most 64 arguments; run as root unless `user` says otherwise. */
 	readonly command: readonly string[];
+	/** The account inside the instance, by uid and gid. Root (0) unless given: an agent's home runs Codex's own
+	 * exec-server as the machine's unprivileged agent account (lanes/agent-box-20261113, slice 1). */
+	readonly user?: number;
+	readonly group?: number;
 	/** The command's environment, over LXD's defaults (`PATH`, `LANG`, `HOME` and `USER` where not given) and the
 	 * instance's `environment.*` keys. */
 	readonly environment: Readonly<Record<string, string>>;
@@ -281,9 +285,11 @@ export interface LxdExecPipeRequest {
 	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
 	readonly stderrTailBytes: number;
 	/** Hands each of stdout's messages over as it comes, in order, keeping none of it (20260930745000: a desktop's live
-	 * picture, for as long as it is watched); the result's stdout is then empty. Never recorded or logged. A handler
-	 * that throws ends the call, as an over-long message does. */
+	 * picture, for as long as it is watched; an agent's home: Codex's exec-server channel, for as long as a turn, whose
+	 * consumer bounds what it has not read yet, machine-exec-server.ts); the result's stdout is then empty. Never
+	 * recorded or logged. A handler that throws ends the call, as an over-long message does. */
 	readonly stdout?: (chunk: Buffer) => void;
+	readonly onStdout?: (chunk: Buffer) => void;
 }
 
 export interface LxdExecPipeResult {
@@ -1425,7 +1431,9 @@ function projectPath(path: string, project: string): string {
 /** At most 64 arguments and 256 environment variables, nothing with a NUL, each argument and value at most 64 KiB and
  * all of them together at most 256 KiB (well under the kernel's limit for a new program). */
 function validExecPipe(request: LxdExecPipeRequest): boolean {
-	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, user, group } = request;
+	for (const id of [user, group])
+		if (id !== undefined && (!Number.isSafeInteger(id) || id < 0 || id > 65535)) return false;
 	if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command[0]) return false;
 	if (typeof environment !== "object" || environment === null) return false;
 	const variables = Object.entries(environment);
@@ -1453,7 +1461,8 @@ function validExecPipe(request: LxdExecPipeRequest): boolean {
 		(request.stdout === undefined || typeof request.stdout === "function") &&
 		Number.isSafeInteger(stderrTailBytes) &&
 		stderrTailBytes >= 0 &&
-		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES
+		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES &&
+		(request.onStdout === undefined || typeof request.onStdout === "function")
 	);
 }
 
@@ -3749,7 +3758,7 @@ export class LxdUnixClient
 		request: LxdExecPipeRequest,
 		signal: AbortSignal,
 	): Promise<LxdExecPipeResult> {
-		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, stdout: handOver } = request;
+		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, stdout: handOver, onStdout } = request;
 		if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
 		signal.throwIfAborted();
 		const result = await this.#request(
@@ -3760,8 +3769,8 @@ export class LxdUnixClient
 				interactive: false,
 				"wait-for-websocket": true,
 				"record-output": false,
-				user: 0,
-				group: 0,
+				user: request.user ?? 0,
+				group: request.group ?? 0,
 				cwd,
 				environment: { ...environment },
 			},
@@ -3842,7 +3851,15 @@ export class LxdUnixClient
 							} else if (stream.name === "stdout" && !stdoutEnded) {
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
-								else stdout.push(payload);
+								else {
+									stdout.push(payload);
+									// The caller's own reading may fail; that fails the call, as a bound does.
+									try {
+										onStdout?.(Buffer.from(payload));
+									} catch (error) {
+										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+									}
+								}
 							} else if (stream.name === "stderr" && !stderrEnded) {
 								const kept = Buffer.concat([stderrTail, payload]);
 								stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));

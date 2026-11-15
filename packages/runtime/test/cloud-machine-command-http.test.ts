@@ -4,6 +4,7 @@ import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CODING_CONTROL_METHODS } from "../../../deploy/coding-worker/control.ts";
 import {
+	authorizeMachineAccountFill,
 	authorizeMachineCodingValue,
 	authorizeMachineCommand,
 	authorizeMachineScreen,
@@ -12,6 +13,7 @@ import {
 	authorizeMemberMachineScreen,
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
+	localMachineAccountFill,
 	localMachineCodingValue,
 	localMachineCodingValueClear,
 	localMachineScreen,
@@ -36,7 +38,14 @@ import type {
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../src/cloud-command-pages.ts";
 import {
+	CloudHomeChannelRefused,
+	type CloudHomeChannelSide,
+	type CloudHomeSessionAuthorized,
+} from "../src/cloud-home-channel.ts";
+import {
 	CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineAccountFillHttpRequest,
+	CloudMachineAccountFillRefusal,
 	type CloudMachineCodingValueHttpRequest,
 	CloudMachineCodingValueRefusal,
 	type CloudMachineCommandHttpRequest,
@@ -51,6 +60,7 @@ import {
 	cloudMemberMachineActRecord,
 	createHttpCloudMachineCommandGateway,
 	createHttpMemberMachineScreenPeer,
+	parseCloudMachineAccountFillHttpRequest,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
 	parseCloudMachineScreenHttpRequest,
@@ -853,6 +863,89 @@ describe("machine command authority", () => {
 	});
 });
 
+// The agent's home: the router opens a session's channel on its own node's machine. The one failure the run is told
+// in words of its own (the machine's Codex is not the pinned build) leaves as a refusal with its reason, so the
+// ingress passes it on and the model reads HOME_OUTDATED, not "could not be reached"; any other failure stays as it
+// is (review r1 of #1817, F2).
+describe("a home session's channel through the router", () => {
+	const authority = (): CloudHomeSessionAuthorized => ({
+		state: "authorized",
+		sessionId: randomUUID(),
+		machineId: randomUUID(),
+		machine: "machine",
+		placementId: randomUUID(),
+		bootId: randomUUID(),
+		executorOwner: "mx-a",
+		providerId: "machine-node",
+	});
+	const request = () => ({ binding: nativeToolAuthorityFixture().binding, holder: undefined });
+	const router = (
+		execServerLocal?: (
+			authority: { sessionId: string; placementId: string; bootId: string },
+			signal: AbortSignal,
+		) => Promise<CloudHomeChannelSide>,
+	) =>
+		new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: {
+				call: async () => {
+					throw new Error("no SQL in this test");
+				},
+			},
+			credential: async () => "",
+			...(execServerLocal ? { execServerLocal } : {}),
+		});
+
+	it("opens the channel on its own node's machine with what SQL authorized", async () => {
+		const side: CloudHomeChannelSide = {
+			write: () => undefined,
+			lines: (async function* () {})(),
+			close: async () => undefined,
+		};
+		const execServerLocal = vi.fn(async () => side);
+		const session = authority();
+		const signal = AbortSignal.timeout(5_000);
+		expect(await router(execServerLocal).execServer(session, request(), signal)).toBe(side);
+		expect(execServerLocal).toHaveBeenCalledTimes(1);
+		expect(execServerLocal).toHaveBeenCalledWith(session, signal);
+	});
+
+	it("passes on that the machine's Codex is not the pinned build, as a refusal with its reason", async () => {
+		const failed = await router(async () => {
+			throw new Error("HOME_CODEX_NOT_PINNED");
+		})
+			.execServer(authority(), request(), AbortSignal.timeout(5_000))
+			.catch((error: unknown) => error);
+		expect(failed).toBeInstanceOf(CloudHomeChannelRefused);
+		expect((failed as CloudHomeChannelRefused).reason).toBe("HOME_CODEX_NOT_PINNED");
+	});
+
+	it("leaves any other failure of the machine's side as it is, and refuses a machine it does not hold", async () => {
+		const failure = new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(failure);
+		const refusal = new CloudHomeChannelRefused("HOME_SESSION_ENDED");
+		await expect(
+			router(async () => {
+				throw refusal;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(refusal);
+		await expect(router().execServer(authority(), request(), AbortSignal.timeout(5_000))).rejects.toThrow(
+			"MACHINE_COMMAND_WRONG_EXECUTOR",
+		);
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer({ ...authority(), executorOwner: "mx-b" }, request(), AbortSignal.timeout(5_000)),
+		).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+	});
+});
+
 // 20260930705000: save_coding_value's route on the executor's ingress: SQL's read for the call's own receipt, the
 // clipboard helper on the machine's node (or its peer), and the box back, or a refusal by its code.
 describe("a machine's coding value", () => {
@@ -1136,6 +1229,306 @@ describe("a machine's coding value", () => {
 			{ ...f.request, scope: { machineId: f.request.scope.machineId, placementId: randomUUID() } },
 		])
 			expect(() => parseCloudMachineCodingValueHttpRequest(bad)).toThrow("Machine command gateway unavailable");
+	});
+});
+
+describe("a machine's account fill", () => {
+	const box = {
+		schema: "qorpera.company-account-fill-box/v1",
+		ephemeralPublicKey: "ZXBo",
+		iv: "aXY",
+		tag: "dGFn",
+		ciphertext: "Y2lw",
+	};
+	function fixture() {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const commandId = randomUUID();
+		const placementId = randomUUID();
+		const bootId = randomUUID();
+		const companyId = randomUUID();
+		const request: CloudMachineAccountFillHttpRequest = {
+			schema: "qorpera.machine-command-http/v1",
+			binding,
+			scope: { machineId },
+			action: "account_fill",
+			input: {
+				commandId,
+				envelope: JSON.stringify({ schema: "qorpera.cloud-tool-operation/v2" }),
+				idempotencyKey: "b".repeat(64),
+			},
+		};
+		const target = {
+			schema: "qorpera.machine-account-fill-target/v1",
+			companyId,
+			companyMachineId: machineId,
+			placementId,
+			bootId,
+			receiptId: commandId,
+			accountId: randomUUID(),
+			field: "password",
+			hosts: ["npmjs.com", "www.npmjs.com"],
+		};
+		const answer = {
+			schema: "qorpera.machine-account-fill-authority/v1",
+			state: "authorized",
+			machineId,
+			placementId,
+			bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			receiptId: commandId,
+			companyId,
+			desktopGeneration: 4,
+			target,
+		};
+		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
+		const vault = {
+			seal: vi.fn(
+				async () =>
+					({ box }) as { box: Readonly<Record<string, string>> } | { refused: { code: string; message: string } },
+			),
+		};
+		// The host runs the helper: it gets the helper's key, asks the vault through `seal`, and answers typed.
+		const host = {
+			accountFill: vi.fn(
+				async (
+					_run: unknown,
+					seal: (publicKey: string, signal: AbortSignal) => ReturnType<typeof vault.seal>,
+					signal: AbortSignal,
+				) => {
+					const sealed = await seal("k".repeat(43), signal);
+					if ("refused" in sealed) return { vaultRefused: sealed.refused };
+					return { filled: true as const } as
+						| { filled: true }
+						| { refused: string }
+						| { vaultRefused: { code: string; message: string } };
+				},
+			),
+		};
+		const router = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: closed({ call }),
+			credential: async () => "",
+			accountFillLocal: localMachineAccountFill(host, vault),
+		});
+		return {
+			binding,
+			request,
+			target,
+			answer,
+			call,
+			vault,
+			host,
+			router,
+			companyId,
+			signal: new AbortController().signal,
+		};
+	}
+
+	it("asks SQL for the call's own receipt, runs the helper with SQL's target and has the vault seal to its key", async () => {
+		const f = fixture();
+		expect(await f.router.accountFill(f.request, f.signal)).toEqual({
+			schema: "qorpera.machine-account-fill/v1",
+			commandId: f.request.input.commandId,
+			filled: true,
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_authorize_machine_account_fill",
+			{
+				p_binding: f.binding,
+				p_scope: f.request.scope,
+				p_receipt_id: f.request.input.commandId,
+				p_envelope: f.request.input.envelope,
+			},
+			f.signal,
+		);
+		expect(f.host.accountFill).toHaveBeenCalledWith(
+			{
+				placementId: f.answer.placementId,
+				bootId: f.answer.bootId,
+				receiptId: f.request.input.commandId,
+				desktopGeneration: 4,
+				target: f.target,
+			},
+			expect.any(Function),
+			f.signal,
+		);
+		// The vault gets the run's call, where the helper runs, and the helper's key: never a value.
+		expect(f.vault.seal).toHaveBeenCalledWith(
+			{
+				companyId: f.companyId,
+				binding: f.binding,
+				receiptId: f.request.input.commandId,
+				idempotencyKey: "b".repeat(64),
+				envelope: f.request.input.envelope,
+				placementId: f.answer.placementId,
+				bootId: f.answer.bootId,
+				fillPublicKey: "k".repeat(43),
+			},
+			f.signal,
+		);
+	});
+
+	it("turns SQL's answers, the helper's codes and the vault's refusal into the agent's refusals, anything else a failure", async () => {
+		const f = fixture();
+		for (const reason of [
+			"MACHINE_NOT_RUNNING",
+			"ACCOUNTS_SWITCHED_OFF",
+			"ACCOUNT_NOT_OPEN",
+			"DESKTOP_MEMBER_IN_CONTROL",
+		]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.machine-account-fill-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.accountFill(f.request, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-account-fill-authority/v1",
+			state: "refused",
+			reason: "ELSE",
+		});
+		await expect(f.router.accountFill(f.request, f.signal)).rejects.toThrow("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+		expect(f.host.accountFill).not.toHaveBeenCalled();
+		for (const code of ["FILL_WRONG_SITE", "SITE_STOP_CAPTCHA", "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS", "FILL_LOST"]) {
+			f.host.accountFill.mockResolvedValueOnce({ refused: code });
+			const error = await f.router.accountFill(f.request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineAccountFillRefusal);
+			expect(error).toMatchObject({ code });
+		}
+		f.vault.seal.mockResolvedValueOnce({
+			refused: { code: "22023", message: "The company has no such open account" },
+		});
+		await expect(f.router.accountFill(f.request, f.signal)).rejects.toMatchObject({
+			code: "VAULT_REFUSED",
+			vault: "The company has no such open account",
+		});
+		f.host.accountFill.mockResolvedValueOnce({ refused: "SOMETHING_ELSE" });
+		await expect(f.router.accountFill(f.request, f.signal)).rejects.toThrow("MACHINE_ACCOUNT_FILL_FAILED");
+		// SQL's read for another machine, receipt, company, placement or boot is no authority.
+		for (const other of [
+			{ machineId: randomUUID() },
+			{ receiptId: randomUUID() },
+			{ companyId: randomUUID() },
+			{ target: { ...f.target, placementId: randomUUID() } },
+			{ target: { ...f.target, bootId: randomUUID() } },
+			{ target: { ...f.target, companyId: randomUUID() } },
+			{ target: { ...f.target, schema: "qorpera.coding-value-machine-target/v1" } },
+			{ target: null },
+			{ executorOwner: "" },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, ...other });
+			await expect(
+				authorizeMachineAccountFill({ call: f.call }, f.request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+		}
+	});
+
+	it("crosses the ingress with the run's own lease: typed back, a refusal as 409 with its code and the vault's words", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const lease = randomBytes(32).toString("base64url");
+		const http = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: async (binding, holder) => {
+				if (holder !== `job.${binding.jobId.toLowerCase()}.${lease}`)
+					throw new Error("native binding proof is refused");
+			},
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(f.router, { call: f.call }, false) },
+		});
+		const port = await http.start();
+		cleanups.push(() => http.close());
+		const gateway = (holder: string) =>
+			createHttpCloudMachineCommandGateway({
+				url: `http://127.0.0.1:${port}`,
+				token,
+				binding: f.binding,
+				holder: () => holder,
+				allowLoopback: true,
+			});
+		const own = gateway(`job.${f.binding.jobId.toLowerCase()}.${lease}`);
+		expect(await own.accountFill!(f.request.scope, f.request.input, f.signal)).toEqual({
+			schema: "qorpera.machine-account-fill/v1",
+			commandId: f.request.input.commandId,
+			filled: true,
+		});
+		f.host.accountFill.mockResolvedValueOnce({ refused: "FILL_IN_FRAME" });
+		await expect(own.accountFill!(f.request.scope, f.request.input, f.signal)).rejects.toMatchObject({
+			code: "FILL_IN_FRAME",
+		});
+		f.vault.seal.mockResolvedValueOnce({ refused: { code: "0A000", message: "Company accounts are switched off" } });
+		const refused = await own.accountFill!(f.request.scope, f.request.input, f.signal).catch(
+			(caught: unknown) => caught,
+		);
+		expect(refused).toBeInstanceOf(CloudMachineAccountFillRefusal);
+		expect(refused).toMatchObject({ code: "VAULT_REFUSED", vault: "Company accounts are switched off" });
+		// Without the run's lease nothing is asked of SQL, and the machine is never reached.
+		const calls = f.call.mock.calls.length;
+		await expect(
+			gateway(`job.${f.binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`).accountFill!(
+				f.request.scope,
+				f.request.input,
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+		expect(f.host.accountFill).toHaveBeenCalledTimes(3);
+	});
+
+	it("goes once to the peer whose node runs the machine, which never forwards, and its refusal stays the agent's", async () => {
+		const f = fixture();
+		const sent: string[] = [];
+		const router = new MachineCommandRouter({
+			owner: "mx-c",
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+			],
+			control: closed({ call: f.call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			fetch: (async (input: string | URL | Request) => {
+				sent.push(String(input));
+				return new Response(JSON.stringify({ code: "NO_FOCUSED_PAGE" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		await expect(router.accountFill(f.request, f.signal)).rejects.toMatchObject({ code: "NO_FOCUSED_PAGE" });
+		expect(sent).toEqual(["https://node-a.example/v1/machine-commands/account-fill"]);
+		await expect(router.accountFill(f.request, f.signal, true)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(sent).toHaveLength(1);
+		// An executor without a broker (or machines) runs no helper.
+		const bare = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: closed({ call: f.call }),
+			credential: async () => "",
+		});
+		await expect(bare.accountFill(f.request, f.signal)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+	});
+
+	it("reads only its own request shape", () => {
+		const f = fixture();
+		expect(parseCloudMachineAccountFillHttpRequest(f.request)).toEqual(f.request);
+		for (const bad of [
+			{ ...f.request, action: "coding_value" },
+			{ ...f.request, input: { ...f.request.input, value: "hunter2" } },
+			{ ...f.request, input: { ...f.request.input, commandId: "x" } },
+			{ ...f.request, input: { ...f.request.input, envelope: "" } },
+			{ ...f.request, input: { ...f.request.input, idempotencyKey: "short" } },
+			{ ...f.request, scope: { machineId: f.request.scope.machineId, placementId: randomUUID() } },
+		])
+			expect(() => parseCloudMachineAccountFillHttpRequest(bad)).toThrow("Machine command gateway unavailable");
 	});
 });
 

@@ -121,6 +121,12 @@ a text is used only when its hash is the kept one. One pass serves one call; a `
 pass and the texts. A wrong token, no pass and a pass that redeems to nothing (redeemed, unknown, expired, or its run's
 job ended) all answer 401 `{ error: "Not allowed" }`.
 
+A pass may also be a company machine's (`kind: "machine"`, `qorpera_machine_data_pass`, migration `20260930775000`;
+design §9a): the node's folder service asks for it as the machine's one folder view, for a program on the machine that
+runs the command `data`. It names the view and the view's machine in place of a run, redeems while that view is open
+and valid, and is taken at the run door as a run's, with an agent's limits. It never carries a member's yes: a
+machine's pass with an `allow` is no pass.
+
 Where it listens: on the store's machine the kit starts it when `DATA_RUN_LISTEN` is set (`kit/README.md`, "The run
 door"), over TLS with a cert from the kit's CA for `10.41.0.1`. A provider host (a slot of its node's execution host)
 dials `https://10.41.0.1:8481` on its own node, which the guest guard lets through, and the node forwards it to the run
