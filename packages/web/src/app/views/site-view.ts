@@ -126,6 +126,40 @@ export function pageAddress(path: string): string | undefined {
 	return `/${path}`;
 }
 
+/** A path segment as a member reads it: percent-decoded, without a .html or .htm ending, dashes and underscores as
+ * spaces, its first letter a capital. */
+function readableSegment(segment: string): string {
+	let text = segment;
+	try {
+		text = decodeURIComponent(segment);
+	} catch {
+		/* A broken escape stays as it is. */
+	}
+	text = text
+		.replace(/\.html?$/i, "")
+		.replace(/[-_]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!text) return segment;
+	return text.charAt(0).toLocaleUpperCase(presentationLocale()) + text.slice(1);
+}
+
+/** The names the top pages show, by their addresses on the site: the front page as `front`, any other by its last
+ * segment made readable ("/lampen/" "Lampen", "/saadan-virker-den.html" "Saadan virker den"); two that would read the
+ * same each take their parent's name before theirs ("Om os · Kontakt"). Never a path: members see no technical text. */
+export function pageNames(addresses: readonly string[], front: string): string[] {
+	const parts = addresses.map((address) => address.split("/").filter(Boolean));
+	const names = parts.map((segments) => (segments.length ? readableSegment(segments.at(-1)!) : front));
+	const count = new Map<string, number>();
+	for (const name of names) count.set(name, (count.get(name) ?? 0) + 1);
+	return names.map((name, index) => {
+		const segments = parts[index]!;
+		return (count.get(name) ?? 0) > 1 && segments.length > 1
+			? `${readableSegment(segments.at(-2)!)} · ${name}`
+			: name;
+	});
+}
+
 /** The company's day today, YYYY-MM-DD in its zone (its own, or the cloud's default when it has none or an unknown one). */
 export function companyToday(zone: string | null | undefined, now = new Date()): string {
 	const format = (timeZone: string) =>
@@ -553,16 +587,21 @@ export class SiteView {
 		});
 		const most = Math.max(1, ...shown.map((page) => page.views));
 		const format = new Intl.NumberFormat(presentationLocale());
+		const names = pageNames(
+			shown.map((page) => page.address),
+			t("Front page"),
+		);
 		this.#pages.hidden = shown.length === 0;
 		this.#pages.replaceChildren(
-			...shown.map((page) => {
-				const name = page.address === "/" ? t("Front page") : page.address;
+			...shown.map((page, index) => {
+				const name = names[index]!;
+				// The page's address is where a press goes, and its tooltip; never its text.
 				const item = h(
 					"button",
 					{
 						type: "button",
 						class: "site-top",
-						title: t("Show {page}", { page: name }),
+						title: page.address,
 						onclick: () => this.#open(page.address),
 					},
 					h("span", { class: "site-top-name" }, name),

@@ -296,6 +296,9 @@ export interface CompanyState {
 	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
 	siteList?: readonly CompanySite[];
+	/** The company's sites Qorpera's operators took down, by id, as the access read last said
+	 * (`qorpera_company_site_access`): the owed row leaves them out. Unset until read, and on a cloud without it. */
+	sitesTakenDown?: ReadonlySet<string>;
 	/** What's new (app/views/whats-new.ts): set while one of the company's projects makes a website, with how many of its
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */

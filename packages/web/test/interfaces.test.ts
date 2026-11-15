@@ -508,6 +508,12 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			expect(shopTile.dataset.appKey).toBeUndefined();
 			expect(shopTile.dataset.owedPlace).toBe("site:wristband-shop");
 			expect(shopTile.style.getPropertyValue("--app-colour")).toBe(colourNameHex("blue"));
+			// One Qorpera took down (the access read says so) has no owed view, though the list still says live.
+			controller.store.set({ sitesTakenDown: new Set([id(82)]) });
+			draw();
+			expect(owedIcons(element)).toEqual([["Wristband shop", `#/c/${profileA.profileId}/site/wristband-shop`]]);
+			controller.store.set({ sitesTakenDown: new Set() });
+			draw();
 			// Its view lights it, and opens the drawer.
 			draw({ name: "company", profileId: profileA.profileId, section: "site", id: "wristband-shop" });
 			expect(shopTile.getAttribute("aria-current")).toBe("page");

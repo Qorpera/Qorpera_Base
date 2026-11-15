@@ -8,6 +8,7 @@ import { CompanyNumbers } from "../src/app/interface-apps.ts";
 import {
 	companyToday,
 	pageAddress,
+	pageNames,
 	readHours,
 	readNow,
 	readPages,
@@ -415,9 +416,12 @@ describe("the site's view", () => {
 			]),
 		).toEqual([
 			["Front page", "61"],
-			["/shop/", "30"],
-			["/about.html", "9"],
+			["Shop", "30"],
+			["About", "9"],
 		]);
+		// Its address is only where a press goes, and its tooltip.
+		expect(list.map((item) => item.title)).toEqual(["/", "/shop/", "/about.html"]);
+		expect(document.querySelector(".site-pages")!.textContent).not.toContain("/");
 		expect(list.map((item) => item.style.getPropertyValue("--share"))).toEqual(["1.000", "0.492", "0.148"]);
 		// A page moves the frame to it, with a pass of its own.
 		list[1]!.click();
@@ -561,6 +565,28 @@ describe("reading the site's numbers", () => {
 		expect(readHours(hours([1, 2, 3]), "wristband-shop")).toEqual([1, 2, 3]);
 		expect(readHours(hours([]), "wristband-shop")).toBeUndefined();
 		expect(readPages(pages([["a.html", 0]]), "wristband-shop")).toEqual([]);
+	});
+
+	it("names each page as a member reads it, never by its path", () => {
+		const front = "Front page";
+		expect(pageNames(["/", "/lampen/", "/saadan-virker-den.html", "/Om_os.htm"], front)).toEqual([
+			"Front page",
+			"Lampen",
+			"Saadan virker den",
+			"Om os",
+		]);
+		// Percent-decoded, a nested page by its last segment.
+		expect(pageNames(["/k%C3%B8b/", "/shop/hue/bl%C3%A5-hue.html", "/x/%E0%A4%A"], front)).toEqual([
+			"Køb",
+			"Blå hue",
+			"%E0%A4%A",
+		]);
+		// Two that would read the same take their parent's name first.
+		expect(pageNames(["/om-os/kontakt/", "/shop/kontakt.html", "/lampen/"], front)).toEqual([
+			"Om os · Kontakt",
+			"Shop · Kontakt",
+			"Lampen",
+		]);
 	});
 
 	it("names each page by its address on the site", () => {

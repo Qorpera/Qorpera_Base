@@ -1230,7 +1230,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
 	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
 	// The company's owed views stand first, in a row of their own (company views step 4): out of the rest.
-	const owed = owedViews(state.siteList ?? [], state.apps ?? []);
+	const owed = owedViews(state.siteList ?? [], state.apps ?? [], state.sitesTakenDown);
 	const postedApps = (state.apps ?? []).filter(
 		(app) =>
 			app.manifest?.posted === true &&
@@ -1895,14 +1895,15 @@ function setAppsOpen(parts: RailParts, profileId: string, open: boolean): void {
  * `apps/money`, `apps/ads`), in this order. The folder name is never shown; the app's own name is. */
 export const OWED_APPS = ["products", "money", "ads"] as const;
 
-/** What the owed row shows: each live website, then each owed app that is made (its app.toml read), whether or not it
- * is posted: a view that is not made yet shows nothing. A concept is never one. */
+/** What the owed row shows: each live website Qorpera did not take down, then each owed app that is made (its app.toml
+ * read), whether or not it is posted: a view that is not made yet shows nothing. A concept is never one. */
 export function owedViews(
 	sites: readonly CompanySite[],
 	apps: readonly CompanyApp[],
+	takenDown: ReadonlySet<string> = new Set(),
 ): { websites: readonly CompanySite[]; apps: readonly CompanyApp[] } {
 	return {
-		websites: sites.filter((site) => site.kind === "files" && site.state === "live"),
+		websites: sites.filter((site) => site.kind === "files" && site.state === "live" && !takenDown.has(site.id)),
 		apps: OWED_APPS.flatMap((name) => {
 			const app = apps.find((entry) => entry.name === name);
 			return app?.manifest && !app.manifest.concept ? [app] : [];

@@ -1663,7 +1663,7 @@ export function mountApplication(
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
-			const readSites = () =>
+			const readSites = () => {
 				void sites.list(controller.signal).then(
 					(list) => {
 						if (!controller.signal.aborted) controller.store.set(sitesListed(list));
@@ -1674,6 +1674,16 @@ export function mountApplication(
 							controller.store.set({ siteList: [] });
 					},
 				);
+				// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. A read that
+				// did not answer leaves what the last one said.
+				void sites.access(controller.signal).then(
+					(access) => {
+						if (!controller.signal.aborted)
+							controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
+					},
+					() => {},
+				);
+			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
 		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)

@@ -55,7 +55,7 @@ async function draw() {
 	await settle();
 }
 /** The app at `hash` over the fixture's cloud, whose sites read answers `sites` (a value, an error, or a promise). */
-async function mount(hash: string, sites: () => unknown, read = true) {
+async function mount(hash: string, sites: () => unknown, read = true, access?: () => unknown) {
 	history.replaceState(null, "", `/${hash}`);
 	const f = fixture();
 	vi.mocked(f.api.getTeam).mockResolvedValue({
@@ -72,6 +72,7 @@ async function mount(hash: string, sites: () => unknown, read = true) {
 			if (value instanceof Error) throw value;
 			return structuredClone(value);
 		}
+		if (name === "qorpera_company_site_access" && access) return access();
 		if (name === "qorpera_site_member_pass") return pass(args?.p_site === id(81) ? "wristband-shop" : "launch-page");
 		throw new CloudRpcError(name, { message: "not here", code: "PGRST202" }, 404);
 	});
@@ -129,6 +130,44 @@ describe("a company's website in the app", () => {
 		const unread = await mount(siteHash("wristband-shop"), () => [row("wristband-shop", "Wristband shop")], false);
 		expect(unread.root.querySelector(".page")?.textContent).toContain("This website can't be shown here right now.");
 		expect(unread.root.querySelector(".page .skeleton-page")).toBeNull();
+	});
+
+	it("leaves a website Qorpera took down out of the owed row, though the list still says it is live", async () => {
+		const f = await mount(
+			`#/c/${profileA.profileId}`,
+			() => [row("wristband-shop", "Wristband shop"), row("launch-page", "Launch page")],
+			true,
+			() => ({
+				schema: "qorpera.company-site-access/v1",
+				hosts: true,
+				sites: [
+					{
+						siteId: id(81),
+						slug: "wristband-shop",
+						title: "Wristband shop",
+						kind: "files",
+						source: "site",
+						takenDown: null,
+					},
+					{
+						siteId: id(82),
+						slug: "launch-page",
+						title: "Launch page",
+						kind: "files",
+						source: "site",
+						takenDown: { at: timestamp, reason: "Phishing" },
+					},
+				],
+			}),
+		);
+		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith("qorpera_company_site_access", {
+			p_profile_id: profileA.profileId,
+		});
+		expect(
+			[...f.root.querySelectorAll<HTMLElement>(".rail-apps-owed [data-owed-place]")].map(
+				(tile) => tile.dataset.owedPlace,
+			),
+		).toEqual(["site:wristband-shop"]);
 	});
 
 	it("follows the member to another website, and leaves the first one behind", async () => {

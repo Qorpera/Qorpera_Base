@@ -690,7 +690,6 @@ export const SETTINGS: Record<string, string> = {
 	"Last 24 hours": "Seneste døgn",
 	"Visits, last 24 hours: {count}": "Besøg det seneste døgn: {count}",
 	"Front page": "Forside",
-	"Show {page}": "Vis {page}",
 	"This website isn't live any more.": "Hjemmesiden er ikke live længere.",
 	"This website can't be shown here right now.": "Hjemmesiden kan ikke vises her lige nu.",
 	"This website was taken offline.": "Hjemmesiden er taget offline.",
