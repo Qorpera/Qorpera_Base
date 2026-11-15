@@ -332,7 +332,7 @@ begin
 end $$;
 
 -- 3. Each event type: a paid session; an unpaid one that waits, then succeeds; one that fails (and failed never undoes
---    paid); free (no payment required); a subscription without a payment intent (by its session); setup is no order;
+--    paid); free (no payment required); a subscription and setup are no orders;
 --    refunds (Stripe's running total, a stale one too); disputes (open, won, lost, warning_closed is won); another
 --    type is nothing.
 do $$
@@ -373,8 +373,8 @@ begin
 	perform pg_temp.o_same(pg_temp.o_order('pi_Free'), pg_temp.o_min(v_at) || ' dkk 0 0 - paid/stripe', 'free');
 	perform pg_temp.o_send(pg_temp.o_event('evt_Sub', 'checkout.session.completed',
 		pg_temp.o_session('cs_Subscription', null, 9900, v_at, 'dkk', true, 'paid', 'subscription')));
-	perform pg_temp.o_same(pg_temp.o_order('cs_Subscription'), pg_temp.o_min(v_at) || ' dkk 9900 0 - paid/stripe',
-		'a subscription, by its session');
+	perform pg_temp.o_same(coalesce(pg_temp.o_order('cs_Subscription'), 'none'), 'none',
+		'a subscription is no order (its refunds could not be joined)');
 	perform pg_temp.o_send(pg_temp.o_event('evt_Setup', 'checkout.session.completed',
 		pg_temp.o_session('cs_Setup', 'pi_Setup', 0, v_at, 'dkk', true, 'no_payment_required', 'setup')));
 	perform pg_temp.o_same(coalesce(pg_temp.o_order('pi_Setup'), pg_temp.o_order('cs_Setup'), 'none'), 'none',
@@ -413,7 +413,7 @@ begin
 	perform pg_temp.o_send(pg_temp.o_event('evt_Other', 'payment_intent.succeeded',
 		jsonb_build_object('id', 'pi_Other', 'object', 'payment_intent', 'amount', 500, 'currency', 'dkk', 'livemode', true,
 			'created', extract(epoch from v_at)::bigint)));
-	perform pg_temp.o_same(pg_temp.o_count()::text, '5', 'five orders: async, failed, free, subscription, a dispute');
+	perform pg_temp.o_same(pg_temp.o_count()::text, '4', 'four rows: async, failed, free, a dispute');
 	perform pg_temp.o_same(pg_temp.o_order('pi_Subscription'), '- - - 0 open -', 'a dispute of an unknown payment');
 end $$;
 
@@ -677,6 +677,13 @@ begin
 	-- A company without a Stripe hook.
 	perform pg_temp.o_json(pg_temp.o_member('12740000-0000-4000-8000-000000000006', 'orders-now', '{}',
 		'12740000-0000-4000-8000-000000000020') -> 'rows', '[["none", 0, 0.00, null, 0, 0.00, 0, null]]', 'no Stripe hook');
+	-- A free order is to pack too, once the company sets states of its own.
+	update public.qorpera_orders set state_at = clock_timestamp()
+	where ref_sha256 = public.qorpera_order_ref_sha256('92400000-0000-4000-8000-000000000010', 'pi_Q1');
+	perform pg_temp.o_send(pg_temp.o_event('evt_QFree', 'checkout.session.completed',
+		pg_temp.o_session('cs_QFree', 'pi_QFree', 0, v_at, 'dkk', true, 'no_payment_required')));
+	-- Q2, the four EUR orders, JPY's, KWD's (to_pack counts every currency) and the free one.
+	perform pg_temp.o_same((pg_temp.o_now() -> 'to_pack')::text, '8', 'a free order to pack');
 	-- The same answer keeps its etag.
 	perform pg_temp.o_same(((pg_temp.o_ask('orders-days') ->> 'etag') = (pg_temp.o_ask('orders-days') ->> 'etag'))::text,
 		'true', 'the etag');
@@ -700,6 +707,12 @@ begin
 		'to', to_char(current_date, 'YYYY-MM-DD'))), '22023 From :from to :to is at most 400 days', '401 days');
 	perform pg_temp.o_same(jsonb_array_length(pg_temp.o_rows('orders-days', jsonb_build_object('from',
 		to_char(current_date - 399, 'YYYY-MM-DD'))))::text, '400', '400 days');
+	perform pg_temp.o_same(pg_temp.o_refused('orders-states', jsonb_build_object('from',
+		to_char(pg_temp.o_today() - 400, 'YYYY-MM-DD'), 'to', to_char(pg_temp.o_today() - 300, 'YYYY-MM-DD'))),
+		'22023 qorpera/orders-states reaches 400 days back: :from is from ' || (pg_temp.o_today() - 399)::text,
+		'orders-states before its rows');
+	perform pg_temp.o_same(pg_temp.o_refused('orders-states', jsonb_build_object('from',
+		to_char(pg_temp.o_today() - 399, 'YYYY-MM-DD'))), 'ok', 'orders-states 400 days back');
 	perform pg_temp.o_same(pg_temp.o_refused('orders-states', '{"from": "2026-02-30"}'),
 		'22023 :from is a day as YYYY-MM-DD', 'a day that is not');
 	perform pg_temp.o_same(pg_temp.o_refused('orders-hours', '{"from": "2026-11-01", "to": "2026-11-08"}'),

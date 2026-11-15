@@ -25,7 +25,8 @@
 --    patched; nor is the hold, 20260928549330): for a hook whose proof is `stripe`, it reads the body as JSON and takes
 --    only these fields of these event types (DESIGN-5 §A.3), Stripe's event `created` for when a fact happened:
 --      checkout.session.completed, checkout.session.async_payment_succeeded, checkout.session.async_payment_failed:
---        `id`, `mode` (payment or subscription; setup is no order), `amount_total`, `currency`, `payment_intent`,
+--        `id`, `mode` (payment only: a subscription's later refunds and disputes name its invoices' payments, which its
+--        session never names, so they could not be joined; setup is no order), `amount_total`, `currency`, `payment_intent`,
 --        `created`, `livemode`, and for completed `payment_status` (paid and no_payment_required are paid; unpaid
 --        waits for the async event). Succeeded is paid, failed is failed.
 --      charge.refunded: `payment_intent`, `amount_refunded` (Stripe's running total), `livemode`.
@@ -53,7 +54,8 @@
 --    decimals; zero-decimal currencies such as JPY whole; three-decimal ones such as KWD three). An order is a paid one:
 --    pending and failed payments are not orders. Only counts and sums are answered, never one order.
 --      orders-now     one row always: stripe (none: no Stripe hook; waiting: none verified a delivery yet; live),
---                     orders_today, sales_today, to_pack (paid, not refunded in full, no state of the company's yet;
+--                     orders_today, sales_today, to_pack (paid, not refunded in full (a free one counts), no state of
+--                     the company's yet;
 --                     null when the company set none in 90 days), on_the_way, refunds_30d (refunded on the orders of
 --                     the 30 days to today), disputes_open, last_order_at (ISO, UTC). to_pack, on_the_way,
 --                     disputes_open and last_order_at count every currency; the rest the one asked.
@@ -63,7 +65,8 @@
 --                     most 400 days.
 --      orders-months  month (YYYY-MM), orders, sales, refunds: this month and the 11 before.
 --      orders-states  state, orders, amount: paid, packed, on_the_way, delivered, cancelled, failed, in that order,
---                     for the orders made from `from` to `to` (days, as orders-days).
+--                     for the orders made from `from` to `to` (days, as orders-days, but at most 400 days back: the
+--                     order rows go then).
 --
 -- Every inserted text names this migration (20260930776000).
 
@@ -253,7 +256,7 @@ begin
 
 	if v_type in ('checkout.session.completed', 'checkout.session.async_payment_succeeded',
 			'checkout.session.async_payment_failed') then
-		if v_object ->> 'mode' is distinct from 'payment' and v_object ->> 'mode' is distinct from 'subscription' then
+		if v_object ->> 'mode' is distinct from 'payment' then
 			return 'ignored'; end if;
 		v_ref := coalesce(public.qorpera_order_stripe_id(v_object -> 'payment_intent', 'pi'),
 			public.qorpera_order_stripe_id(v_object -> 'id', 'cs'));
@@ -326,7 +329,7 @@ begin
 	begin
 		perform public.qorpera_order_fact(new);
 	exception
-		when lock_not_available or deadlock_detected or serialization_failure then
+		when lock_not_available or deadlock_detected then
 			begin
 				insert into public.qorpera_order_retries (delivery_id, profile_id, since)
 				values (new.id, new.profile_id, clock_timestamp())
@@ -365,7 +368,7 @@ begin
 			if public.qorpera_order_fact(v_delivery) = 'applied' then v_applied := v_applied + 1;
 			else v_ignored := v_ignored + 1; end if;
 		exception
-			when lock_not_available or deadlock_detected or serialization_failure then
+			when lock_not_available or deadlock_detected then
 				insert into public.qorpera_order_retries (delivery_id, profile_id, since)
 				values (v_delivery.id, v_delivery.profile_id, clock_timestamp())
 				on conflict (delivery_id) do nothing;
@@ -417,7 +420,7 @@ begin
 				delete from public.qorpera_order_retries where delivery_id = v_retry.delivery_id;
 				v_retried := v_retried + 1;
 			exception
-				when lock_not_available or deadlock_detected or serialization_failure then
+				when lock_not_available or deadlock_detected then
 					update public.qorpera_order_retries set attempts = attempts + 1 where delivery_id = v_retry.delivery_id;
 					v_waiting := v_waiting + 1;
 				when others then
@@ -652,6 +655,10 @@ begin
 		if v_from > v_to then raise exception ':from is after :to' using errcode = '22023'; end if;
 		if v_to - v_from + 1 > 400 then
 			raise exception 'From :from to :to is at most 400 days' using errcode = '22023'; end if;
+		-- orders-states reads the order rows, which go 400 days after the order: no further back.
+		if p_question = 'orders-states' and v_from < v_today - 399 then
+			raise exception 'qorpera/orders-states reaches 400 days back: :from is from %', v_today - 399
+				using errcode = '22023'; end if;
 	end if;
 
 	case p_question
@@ -683,7 +690,8 @@ begin
 			-- Null for a company that set no state of its own in 90 days: "to pack" never grows for nobody.
 			case when bool_or(o.state in ('packed', 'on_the_way', 'delivered', 'cancelled')
 					and o.state_at >= p_now - interval '90 days')
-				then count(*) filter (where o.state = 'paid' and o.refunded_minor < o.amount_minor) end,
+				then count(*) filter (where o.state = 'paid'
+					and (o.refunded_minor < o.amount_minor or o.amount_minor = 0)) end,
 			count(*) filter (where o.state = 'on_the_way'),
 			public.qorpera_order_major(coalesce(sum(least(o.refunded_minor, o.amount_minor)) filter (
 				where o.state = any (c_orders) and o.currency = v_currency

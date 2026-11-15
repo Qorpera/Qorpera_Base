@@ -1998,7 +1998,7 @@ text, an account number, a single payment or the summary's items. Design: the co
   customer id, metadata, description or line items, and never Stripe's ids (a hash only). The events read are
   `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
   `charge.refunded`, `charge.dispute.created` and `charge.dispute.closed`: an agent picks these when it adds the hook's
-  endpoint at Stripe. A Checkout Session of mode `setup` is no order; a subscription's session counts by itself. Events
+  endpoint at Stripe. Only Checkout Sessions of mode `payment` are orders: a subscription's later refunds and disputes name its invoices' payments, which its session never names, so subscriptions are left out for now (and `setup` is no order). Events
   may come in any order (a refund before its session is kept and counted once the session comes).
   - Every question takes `currency` (three letters, any case; by default the currency of most of the orders in the
     last 90 days, else DKK) and `test` (`true` answers Stripe test-mode orders, kept apart from live ones; also the
@@ -2007,7 +2007,7 @@ text, an account number, a single payment or the summary's items. Design: the co
     still unpaid or whose payment failed is not counted (except in `orders-states`' `failed`). Only counts and sums,
     never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
   - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
-    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, no state of the
+    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
     company's yet; null while the company has set no state of its own in 90 days, so it never grows for a shop that
     ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
     `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
@@ -2018,7 +2018,8 @@ text, an account number, a single payment or the summary's items. Design: the co
     `sales`, `refunds`; every day, zeros included.
   - `orders-months` (`currency`, `test`): `month` (`YYYY-MM`), `orders`, `sales`, `refunds`: this month and the 11
     before.
-  - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then): `state`, `orders`,
+  - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then; `from` at most 400
+    days back, since order rows go then: 22023 otherwise): `state`, `orders`,
     `amount`, one row each of `paid`, `packed`, `on_the_way`, `delivered`, `cancelled`, `failed`, in that order.
     `packed` to `cancelled` are the company's own word (a later slice lets agents and members set them).
   - Order rows are kept 400 days after the order; the days as long as the company. The upkeep (pg_cron, every 10
