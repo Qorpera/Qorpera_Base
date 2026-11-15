@@ -6837,6 +6837,39 @@ what runs and the agent is told, always-on machines are never stopped by the ker
 5. **Coming back.** The machine is asleep as after any idle sleep; the member's own ask wakes it (opening the computer,
    or saying they still watch). Nothing new is shown to members.
 
+### 2026-11-15 amendment: the Co-Founder reflects on the platform's updates
+
+> The founder, 15 November 2026: "I would like to develop something entirely different - sort of a reflection mechanic
+> that the co-founder runs on an update hook. not any update, but when a newer better model is released, or an update
+> to behavior or platform capability drops, it should reflect. if it's a model-drop theres a lot to go over and review
+> since we now have smarter brains. if it's a platform capability that's been added, the co-founder may want to use it.
+> like the interface kit, or if it was added support for banking or other stuff. I hope such a hook is possible". Shown
+> the lead's design, he said "continue". The items below are that design. It adds to 9.1, 10 and 14.2. It goes live with
+> migration `20260930780000`, then the runtime bundle that carries it.
+
+1. **The list.** The runtime bundle carries `PLATFORM_UPDATES` (`packages/runtime/src/cloud-platform-updates.ts`): each
+   update an id (lowercase letters, digits and hyphens, never reused), a kind (`model`, `behaviour` or `capability`),
+   the day it went live for agents, a title of at most 60 bytes and at most 700 bytes of plain words to the Co-Founder.
+   An entry reaches agents exactly when its release does; a release with no new entry asks for nothing. A PR that gives
+   agents a new capability, model or behaviour they should take up adds its entry (AGENTS.md), and a test fails when a
+   model agents can be given is neither one of today's nor named by a model update.
+2. **The company's record (5.6).** `QorperaOS/vision/reflections.md`, a plain file the Co-Founder keeps, one line per
+   reflection, newest last: `- <id> | <YYYY-MM-DD> | <use|later|not|reviewed> | <one line>`
+   (RUNTIME-COMPANY-STATE-FILES.md beside the reading).
+3. **Pending.** An update is pending for a company when it went live on or after the day the company's
+   `QorperaOS/vision` folder was made (seeded at its creation, never moved or deleted), and the record has no line for
+   it, or its newest line is `later` and more than 28 days old.
+4. **The hook (9.1).** No wake of its own: the Co-Founder's planning run (any routine run of the Co-Founder in the
+   company, not a worker's) reads the pending updates beside `openWork` and gets them as the context key `updates`
+   (`{pending: [{id, kind, date, title, text}], more?}`, at most 6, oldest first), with one sentence group first in its
+   planning run that says how to reflect on each kind. No other run reads them. A failed read leaves the key out, logs
+   its category, and the run goes on. A company without a planning routine reflects once it has one again.
+5. **The tool (10).** `record_reflection {operationKey, update, decision, line}`, the Co-Founder's company runs only,
+   opened through `more_tools`: a capability takes `use`, `later` or `not`; a model `reviewed`; a change in behaviour
+   any of the four; the line one line of at most 160 bytes. It writes the record as the run, under the call's receipt
+   (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
+   class: the company's bookkeeping, no card.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
