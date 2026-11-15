@@ -243,10 +243,10 @@ describe("conversation UI boundaries", () => {
 			authorUserId: userA.id,
 			createdAt: timestamp,
 		};
-		const wall: TranscriptMessage = { ...note, id: id(86), sequence: 2, text: "> Who first?\n\nYoung couples." };
+		const quoted: TranscriptMessage = { ...note, id: id(86), sequence: 2, text: "> Who first?\n\nYoung couples." };
 		f.company
 			.conversation(session.sessionId)
-			.set({ projection: { items: [note, wall], hiddenCount: 0, lastSequence: 2 } });
+			.set({ projection: { items: [note, quoted], hiddenCount: 0, lastSequence: 2 } });
 		f.view.update();
 		const [sent, answer] = f.view.el.querySelectorAll<HTMLElement>(".message.mine");
 		// The card stands on the thread as a part of its own, above the bubble with the member's words.
@@ -260,9 +260,13 @@ describe("conversation UI boundaries", () => {
 		expect(parts[1]?.textContent).toBe("Get a quote from this one.\nBy Friday.");
 		expect(sent?.querySelector(".message-reply")).toBeNull();
 		// A press on it opens the app's own page, as any app's card does (test/application-lifecycle.test.ts).
-		// An answer to a question on the wall is drawn as before.
+		// A message that opens with a quoted line (an answer to a question on the agent's wall, as members wrote them
+		// until the wall went on 14 Nov 2026) still shows the line above the member's words, in one bubble.
 		expect(answer?.querySelectorAll(":scope > .bubble")).toHaveLength(1);
+		const text = answer?.querySelector(".bubble > .text");
+		expect(text?.firstElementChild?.className).toBe("message-reply");
 		expect(answer?.querySelector(".message-reply")?.textContent).toBe("Who first?");
+		expect(text?.textContent).toBe("Who first?Young couples.");
 		expect(answer?.querySelector(".app-card")).toBeNull();
 	});
 	it("draws an erased message as (erased), also in place of one already drawn", () => {
@@ -1433,14 +1437,15 @@ describe("conversation UI boundaries", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
 		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
-		// The failed-run line shares the band: notices first, then the run, the wall, the coding dock, then the composer.
+		// The failed-run line shares the band: notices first, then the run, the coding dock, then the composer. No wall
+		// stands between them any more (Jonas, 14 Nov 2026).
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		const dock = slot?.nextElementSibling?.nextElementSibling as HTMLElement | null | undefined;
+		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
 		expect(dock?.classList.contains("coding-dock")).toBe(true);
 		expect(dock?.hidden).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".agent-wall")).toBeNull();
 	});
 
 	it("places the failed-run line above the coding dock without a notification host", () => {
@@ -1448,8 +1453,8 @@ describe("conversation UI boundaries", () => {
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -1516,14 +1521,14 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card sits above the composer (only the wall and the coding dock between), below the notices, never in the thread.
+		// The card sits above the composer (only the coding dock between), below the notices, never in the thread.
 		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + .composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + .composer")).not.toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();

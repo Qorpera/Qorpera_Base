@@ -337,7 +337,10 @@ export interface CodingMachineJournalPlan {
 	 * too often waits for an operator, as does everything else the journal
 	 * cannot tell. */
 	readonly selfStops?: true;
-	assertInstance(instance: LxdInstanceRecord): void;
+	/** Throws unless the instance is this machine. `intent` is the reconcile's: a plan may hold a stop or a delete only
+	 * to the instance being its own (a company machine does: its instance may be months older than this code), never a
+	 * run. */
+	assertInstance(instance: LxdInstanceRecord, intent: CodingMachineIntent): void;
 }
 export function lxdCodingMachineJournalPlan(
 	value: LxdCodingMachineBinding,
@@ -550,10 +553,11 @@ function effectFromView(
 	action: Action,
 	plan: CodingMachineJournalPlan,
 	observed: LxdInstanceRecord | undefined,
+	intent: CodingMachineIntent,
 ): "succeeded" | "failed" | null {
 	if (action === "delete") return observed ? "failed" : "succeeded";
 	if (!observed) return action === "create" ? "failed" : null;
-	plan.assertInstance(observed);
+	plan.assertInstance(observed, intent);
 	if (action === "create") return "succeeded";
 	const seen = physical(observed);
 	if (seen === "other") return null;
@@ -938,7 +942,7 @@ export async function reconcileCodingMachine(
 		if (Date.now() - written.mtimeMs < DISPATCH_SETTLE_MS) return result("recovery-required");
 		const observed = await options.client.getInstance(plan.project, plan.name, signal);
 		signal.throwIfAborted();
-		const state = effectFromView(tail.action, plan, observed);
+		const state = effectFromView(tail.action, plan, observed, intent);
 		if (!state) return result("recovery-required");
 		if (!(await append({ action: tail.action, kind: "accepted", operationId: randomUUID(), state: null })))
 			return result("pending");
@@ -972,7 +976,7 @@ export async function reconcileCodingMachine(
 				return result("recovery-required");
 			const observed = await options.client.getInstance(plan.project, plan.name, signal);
 			signal.throwIfAborted();
-			const seen = effectFromView(tail.action, plan, observed);
+			const seen = effectFromView(tail.action, plan, observed, intent);
 			if (!seen) return result("recovery-required");
 			state = seen;
 		}
@@ -1005,7 +1009,7 @@ export async function reconcileCodingMachine(
 	} else if (tail.action === "delete") {
 		// A deleted machine never returns; a failed delete is only re-issued.
 		if (!instance) return intent === "run" ? result("recovery-required") : result("deleted");
-		plan.assertInstance(instance);
+		plan.assertInstance(instance, intent);
 		if (
 			tail.state !== "failed" ||
 			intent !== "delete" ||
@@ -1029,7 +1033,7 @@ export async function reconcileCodingMachine(
 				return result("recovery-required");
 			action = "create";
 		} else {
-			plan.assertInstance(instance);
+			plan.assertInstance(instance, intent);
 			const seen = physical(instance);
 			if (tail.state === "failed") {
 				// A failed stop: the VM is whatever LXD shows. Stopped is stopped (a

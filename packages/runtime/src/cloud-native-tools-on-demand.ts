@@ -24,7 +24,9 @@ export type CloudToolKind = "cofounder" | "employee" | "worker";
  * receipt and are in nearly every run. save_app and post_app are how an agent shows its work. update_memory is in 1 % of
  * runs because agents barely write their notebooks, the fault to cure, not a sign it is not needed: behind a door it
  * would be used even less (the lead, 14 November 2026); like hire_agent and save_app it is carried whatever its count. A
- * worker keeps it on demand. */
+ * worker keeps it on demand. app_guide (#1804, 14 November 2026: no receipts yet, a read leaves none) goes where
+ * save_app goes: save_app saves a kit's file only once the run has read the kit's guide, so behind a door every app made
+ * from a kit would cost a round more, and the instructions tell the agent to read the guide first. */
 const STAFF_DIRECT = [
 	"company_read",
 	"company_list",
@@ -45,6 +47,7 @@ const STAFF_DIRECT = [
 	"machine_list",
 	"save_app",
 	"post_app",
+	"app_guide",
 	"update_memory",
 ];
 
@@ -69,6 +72,7 @@ export const CLOUD_DIRECT_TOOLS: Readonly<Record<CloudToolKind, ReadonlySet<stri
 		"machine_list",
 		"save_app",
 		"post_app",
+		"app_guide",
 	]),
 };
 

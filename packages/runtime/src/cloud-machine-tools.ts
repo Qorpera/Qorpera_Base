@@ -195,7 +195,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION = [
 	`Size: cpus, memoryGiB and diskGiB, limited only by what one server holds. ${MACHINE_SIZE_FOR_THE_JOB}`,
 	"Desktop: desktop true gives it a screen, for work that needs one, such as testing a product the way a person uses it or driving an app's interface. On it, with machine_run: desktop start <company files, folders or URLs> starts the desktop and opens each (a folder under /company with an index.html, or an .html file, opens as a site served from the company folder, so a change shows after a reload; add --lang da-DK --tz Europe/Copenhagen for a Danish company); desktop run <program> starts a program; desktop stop when the work is done; desktop help lists the rest. machine_screen sees and drives the screen.",
 	`Lifetime (task or always-on): a task machine's program busy for hours brings check-ins, and a server on it that only waits stops when it sleeps (your next run is told). ${SHARE_APP_START}`,
-	"Disk: kept while the machine sleeps. It comes back empty only when its server ran out of disk, had no room for it at the wake, is gone, or moved to a new machine image; the result then says diskFreed. Keep what matters in the company's files. Commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>.",
+	"Disk: kept while the machine sleeps. It comes back empty only when its server ran out of disk, had no room for it at the wake, or is gone or moved; the result then says diskFreed. Keep what matters in the company's files. Newer preinstalled tools come only on new machines. Commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>.",
 	"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name.",
 	"The machine is the company's: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins; it reaches the internet but no private network, and nothing reaches it from outside.",
 	`The result says its state. With no room on any server it waits in line and gives its place. When the company is out of computer hours it waits until hours are added (waitingFor COMPUTER_HOURS_EXHAUSTED); an hour after the company runs out, its running machines sleep, keeping their disks, and wake by themselves once hours are added. ${CONVERSATION_START_WAIT}refused started nothing and says why (the name is taken, too large for any server, no such machine).`,
@@ -239,7 +239,7 @@ export const CLOUD_MACHINE_READ_WORKER_DESCRIPTION = `${CLOUD_MACHINE_READ_DESCR
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION =
 	"Stop a running machine command and everything it started. Files on the machine stay. companyFolder is as machine_run says.";
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
-	"Stop a machine: every program on it stops and it takes no room on the servers. Its disk is kept for a wake on the same server, unless that server runs out of disk, has no room at the wake, is gone or moves to a new machine image: then it comes back with an empty disk and its status says diskFreed. Wake it with machine_start and its name. A task machine is deleted after 30 days asleep.";
+	"Stop a machine: every program on it stops and it takes no room on the servers. Its disk is kept for a wake on the same server, unless that server runs out of disk, has no room at the wake, or is gone or moved: then it comes back with an empty disk and its status says diskFreed. Wake it with machine_start and its name. A task machine is deleted after 30 days asleep.";
 export const CLOUD_MACHINE_DELETE_DESCRIPTION =
 	"Delete a machine and its disk. This cannot be undone. Save what you need first.";
 /** The services a coding value may be taken from (qorpera_coding_value_services, 20260930695000); the database checks
@@ -260,7 +260,7 @@ const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, 
 	MACHINE_NOT_RUNNING: "the machine is not running: start it, make or copy the key again, then call again",
 	DESKTOP_MEMBER_IN_CONTROL: `${MEMBER_IN_CONTROL}; then copy the key again and call again`,
 	MACHINE_IMAGE_WITHOUT_CODING_VALUES:
-		"this machine runs an earlier image that cannot save keys; a machine started on the current image can (one that sleeps wakes on it)",
+		"this machine runs an earlier image that cannot save keys; start a new machine to save one",
 	DESKTOP_NOT_RUNNING:
 		"the machine's desktop is not running, so it has no clipboard: desktop start, make the key in its browser, press the site's Copy, then call again",
 	CLIPBOARD_EMPTY:
@@ -287,7 +287,7 @@ const SCREEN_REFUSED: Readonly<Record<CloudMachineScreenRefusalCode, string>> = 
 	MACHINE_NEEDS_COMPANY_VIEW:
 		"this machine's disk holds the whole company folder, and this run, with the member it works for, may not read all of it, so it cannot see or drive its screen: use a machine this run started",
 	MACHINE_IMAGE_WITHOUT_SCREEN:
-		"this machine runs an earlier image without machine_screen; it gets it once it sleeps and wakes (machine_stop, then machine_start), or use machine_run with desktop commands meanwhile",
+		"this machine runs an earlier image without machine_screen: start a new machine to get it, or use machine_run with desktop commands",
 	MACHINE_BOOT_CHANGED: "the machine restarted meanwhile and its desktop started over: look before you act",
 	SCREEN_ACTION_TAKEN:
 		"this action was taken on the machine before and is never taken twice: look (no action) to see what came of it",

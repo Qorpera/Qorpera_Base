@@ -3,6 +3,7 @@ import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-acti
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
+	type CloudCodexLightAsk,
 	type CloudCodexOpening,
 	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
@@ -119,6 +120,8 @@ export async function runCloudNativeRunToolSession(options: {
 	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
 	 * runCloudCodexToolSession takes it. */
 	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
+	/** A light ask's run, as runCloudCodexToolSession takes it: in place of the agent's thread. */
+	light?: (ask: CloudCodexLightAsk, signal: AbortSignal) => Promise<void>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -272,6 +275,7 @@ export async function runCloudNativeRunToolSession(options: {
 			...(options.voice ? { voice: options.voice } : {}),
 			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
+			...(options.light ? { light: options.light } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
 			...(runLog || options.closing

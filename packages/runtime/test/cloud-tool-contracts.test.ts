@@ -83,8 +83,8 @@ it("says every bound a field's description names as the field's schema holds it"
 	let checked = 0;
 	for (const tool of all)
 		for (const { path, schema } of fields(tool.inputSchema, tool.name)) {
-			// save_app's fields never reach the model (its schema is past Codex's 5,000 bytes); their numbers are its kits'.
-			if (schema.type === "object" || COMPOSITE.has(path) || tool.name === "save_app") continue;
+			// save_app's fields reach the model too since its kits' guides became app_guide's answers (#1804).
+			if (schema.type === "object" || COMPOSITE.has(path)) continue;
 			const words = typeof schema.description === "string" ? schema.description : "";
 			const range = new RegExp(`\\b(\\d[\\d,]*) to (\\d[\\d,]*)\\b${notOwn}`).exec(words);
 			const most = new RegExp(`\\b(?:at most|up to) (\\d[\\d,]*)\\b${notOwn}`, "i").exec(words);
@@ -172,15 +172,14 @@ it("says the bounds in a description's own words as the code holds them", async 
 	expect(new RegExp(property("publish_site", "slug").pattern as string).test("aa")).toBe(false);
 });
 
-it("keeps every schema small enough that Codex sends its field descriptions, save_app's aside", async () => {
+it("keeps every schema small enough that Codex sends its field descriptions", async () => {
 	// Codex sends no field description at all for a tool whose schema, as it sends it, is 5,000 bytes or more (T3-5's
-	// probe: 4,991 kept them, 5,011 lost them). save_app's schema holds its kits' guides and is far past it: none of those
-	// reach the model, which is why its own description carries what it needs.
+	// probe: 4,991 kept them, 5,011 lost them). save_app's schema held its kits' guides and was far past it until the
+	// guides became app_guide's answers (#1804, 14 November 2026): now it is held under the bound like every other tool.
 	const { all } = await catalogs();
 	for (const tool of all) {
 		const bytes = Buffer.byteLength(JSON.stringify(asSent(tool.inputSchema as JsonValue)));
-		if (tool.name === "save_app") expect(bytes).toBeGreaterThan(5000);
-		else expect(bytes, tool.name).toBeLessThanOrEqual(4600);
+		expect(bytes, tool.name).toBeLessThanOrEqual(4600);
 	}
 });
 

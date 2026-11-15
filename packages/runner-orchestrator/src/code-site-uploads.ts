@@ -22,7 +22,13 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * own (a raised error reaches the pass only as CODING_CONTROL_UNCONFIRMED). Whatever stops a site, a refusal, a call
  * that did not answer or a job that failed, is told to the kernel with `qorpera_code_site_failed` and its code: the
  * kernel counts it, waits longer before it names the site again, and stops trying a change after five. The pass then
- * goes on to the next site. A job that gave way to a turn's failed nothing: the next pass reads the tree again. */
+ * goes on to the next site. A job that gave way to a turn's failed nothing: the next pass reads the tree again.
+ *
+ * A site Qorpera took down (own code storage step 5.1; the review of #1774, round 3) is a plain stop: any step's refusal
+ * `SITE_TAKEN_DOWN` (begin, list, put or finish) ends the site's upload where it is, logged (`code-site`, step
+ * `taken-down`), and nothing is told: the kernel's due list leaves such a site out until Qorpera restores it, so the
+ * pass asks nothing more of it meanwhile, and no try is counted against the change (it is not given up). Restored, the
+ * site is due again and the next pass goes on with the same version where this one stopped. */
 
 export const CODE_SITE_RPCS = [
 	"qorpera_code_sites_due",
@@ -59,6 +65,8 @@ const UPLOAD_FAILED = "SITE_UPLOAD_FAILED";
  * the next pass tries again. Only a site whose call is busy this many passes in a row is told as a call that did not
  * answer, so a put that can never finish in time is backed off and given up like any other failure. */
 const BUSY_PASSES = 3;
+/** A step's refusal for a site Qorpera took down: a plain stop, not a failure (the header says why). */
+const TAKEN_DOWN = "SITE_TAKEN_DOWN";
 /** A read that failed without a code of its own. */
 const READ_FAILED = "CODE_HOST_SITE_READ_FAILED";
 const STATES = ["ready", "live", "kept"] as const;
@@ -334,6 +342,12 @@ export class CodeSiteUploads {
 				return "failed";
 			}
 			const stopped = error instanceof SiteStopped ? error : new SiteStopped("upload", UPLOAD_FAILED, error);
+			// Qorpera took the site down: a plain stop, told to no one (the header says why).
+			if (stopped.code === TAKEN_DOWN) {
+				this.#busy.delete(key);
+				this.#report({ event: "code-site", step: "taken-down", ...named(due), at: stopped.step });
+				return undefined;
+			}
 			if (stopped.cause instanceof CodingControlBusy) {
 				const passes = (this.#busy.get(key) ?? 0) + 1;
 				if (passes < BUSY_PASSES) {
