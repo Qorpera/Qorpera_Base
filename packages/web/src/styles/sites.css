@@ -55,6 +55,10 @@
 .site-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--agent-active); }
 .site-state.is-publishing .site-dot { background: var(--warning); animation: site-breathe 1.6s ease-in-out infinite; }
 .site-state.is-off .site-dot { background: var(--text-soft); }
+/* A site Qorpera took down (step 5.1): a grey globe, a red dot, and one plain sentence where its link and password were. */
+.site-row.is-down .site-emblem { --emblem-ink: var(--text-soft); }
+.site-state.is-down .site-dot { background: var(--danger); }
+.site-down { grid-area: body; max-width: 34em; margin: 0; color: var(--text); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .site-from, .site-meta { color: var(--text-muted); font-size: 13px; }
 :is(.site-from, .site-meta) a { color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
 :is(.site-from, .site-meta) a:hover { color: var(--text); text-decoration-color: currentColor; }

@@ -169,31 +169,34 @@ do $$
 declare v_slug text;
 begin
 	update public.qorpera_site_settings set apps_enabled = false;
-	perform pg_temp.base_error(format('select pg_temp.ca_check(%L)', 'shop-preview'), '0A000', 'Sharing app links is not switched on yet');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-0', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once')), '0A000', 'Sharing app links is not switched on yet');
+	perform pg_temp.base_error(format('select pg_temp.ca_check(%L)', 'shop-app'), '0A000', 'Sharing app links is not switched on yet');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-0', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once')), '0A000', 'Sharing app links is not switched on yet');
 	update public.qorpera_site_settings set apps_enabled = true, enabled = false;
-	perform pg_temp.base_error(format('select pg_temp.ca_check(%L)', 'shop-preview'), '0A000', 'Publishing websites is not switched on yet');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-0', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once')), '0A000', 'Publishing websites is not switched on yet');
+	perform pg_temp.base_error(format('select pg_temp.ca_check(%L)', 'shop-app'), '0A000', 'Publishing websites is not switched on yet');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-0', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once')), '0A000', 'Publishing websites is not switched on yet');
 	update public.qorpera_site_settings set enabled = true;
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_sites), 'No switched-off share made a link');
 
-	foreach v_slug in array array['ab', 'Shop', 'shop.v2', '-shop', 'shop-', 'api', 'well-known', repeat('a', 49)] loop
+	-- (Since 20260930756000 the name rule also refuses a name ending -preview, two hyphens in a row and qorpera: this
+	-- file's link is shop-app, its host shop-app-preview.qorpera.com.)
+	foreach v_slug in array array['ab', 'Shop', 'shop.v2', '-shop', 'shop-', 'api', 'well-known', repeat('a', 49),
+		'shop-preview', 'shop--app', 'qorpera-shop'] loop
 		perform pg_temp.base_error(format('select pg_temp.ca_check(%L)', v_slug), '22023');
 	end loop;
-	perform pg_temp.base_error('select pg_temp.ca_check(''shop-preview'', ''shop-box'', 0)', '22023', 'Site share request is invalid');
-	perform pg_temp.base_error('select pg_temp.ca_check(''shop-preview'', ''shop-box'', 65536)', '22023', 'Site share request is invalid');
-	perform pg_temp.base_error('select pg_temp.ca_check(''shop-preview'', ''shop-box'', null)', '22023', 'Site share request is invalid');
-	perform pg_temp.base_assert(pg_temp.ca_check('shop-preview')
-		= '{"state":"new","needsReview":true,"url":"https://shop-preview-preview.qorpera.com/"}'::jsonb,
-		'A free slug is a new link: ' || pg_temp.ca_check('shop-preview')::text);
+	perform pg_temp.base_error('select pg_temp.ca_check(''shop-app'', ''shop-box'', 0)', '22023', 'Site share request is invalid');
+	perform pg_temp.base_error('select pg_temp.ca_check(''shop-app'', ''shop-box'', 65536)', '22023', 'Site share request is invalid');
+	perform pg_temp.base_error('select pg_temp.ca_check(''shop-app'', ''shop-box'', null)', '22023', 'Site share request is invalid');
+	perform pg_temp.base_assert(pg_temp.ca_check('shop-app')
+		= '{"state":"new","needsReview":true,"url":"https://shop-app-preview.qorpera.com/"}'::jsonb,
+		'A free slug is a new link: ' || pg_temp.ca_check('shop-app')::text);
 	-- A machine share_app would refuse is refused before any card: none of that name, a removed one, a task machine.
-	perform pg_temp.base_assert(pg_temp.ca_check('shop-preview', 'no-box')
+	perform pg_temp.base_assert(pg_temp.ca_check('shop-app', 'no-box')
 			= '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb
-		and pg_temp.ca_check('shop-preview', 'old-box') = '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb
-		and pg_temp.ca_check('shop-preview', null) = '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb
-		and pg_temp.ca_check('shop-preview', 'build-box')
+		and pg_temp.ca_check('shop-app', 'old-box') = '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb
+		and pg_temp.ca_check('shop-app', null) = '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb
+		and pg_temp.ca_check('shop-app', 'build-box')
 			= '{"state":"refused","reason":"APP_MACHINE_NOT_ALWAYS_ON","needsReview":false}'::jsonb,
 		'Machines share_app refuses are refused by the check');
 end
@@ -204,71 +207,71 @@ do $$
 declare v_request jsonb; v_name text; v_share jsonb; v_again jsonb; v_password text;
 begin
 	-- The request's own checks.
-	foreach v_request in array array[pg_temp.ca_request('shop-preview') || '{"extra":true}', pg_temp.ca_request('shop-preview') - 'machine',
-		pg_temp.ca_request('shop-preview') - 'port', pg_temp.ca_request('shop-preview', p_port => 0),
-		pg_temp.ca_request('shop-preview', p_port => 65536), jsonb_set(pg_temp.ca_request('shop-preview'), '{port}', '"3000"'),
-		jsonb_set(pg_temp.ca_request('shop-preview'), '{port}', '3000.5'), jsonb_set(pg_temp.ca_request('shop-preview'), '{machine}', '7'),
-		pg_temp.ca_request('shop-preview', p_title => repeat('t', 121)), '[]'::jsonb] loop
+	foreach v_request in array array[pg_temp.ca_request('shop-app') || '{"extra":true}', pg_temp.ca_request('shop-app') - 'machine',
+		pg_temp.ca_request('shop-app') - 'port', pg_temp.ca_request('shop-app', p_port => 0),
+		pg_temp.ca_request('shop-app', p_port => 65536), jsonb_set(pg_temp.ca_request('shop-app'), '{port}', '"3000"'),
+		jsonb_set(pg_temp.ca_request('shop-app'), '{port}', '3000.5'), jsonb_set(pg_temp.ca_request('shop-app'), '{machine}', '7'),
+		pg_temp.ca_request('shop-app', p_title => repeat('t', 121)), '[]'::jsonb] loop
 		perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'bad', v_request), '22023', 'Site share request is invalid');
 	end loop;
 	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'bad', pg_temp.ca_request('api')), '22023');
 	-- The machine: the company's own, not removed, and always-on.
 	foreach v_name in array array['no-box', 'old-box'] loop
-		perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-m', pg_temp.ca_request('shop-preview', v_name),
-			pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once')), '22023',
+		perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-m', pg_temp.ca_request('shop-app', v_name),
+			pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once')), '22023',
 			'APP_MACHINE_NOT_FOUND: the company has no machine of that name; start an always-on one with machine_start');
 	end loop;
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-m', pg_temp.ca_request('shop-preview', 'build-box'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once')), '55000',
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-m', pg_temp.ca_request('shop-app', 'build-box'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once')), '55000',
 		'APP_MACHINE_NOT_ALWAYS_ON: a task machine sleeps when its task is done, so its link would stop; share from an always-on machine');
 
 	-- No review, a review still waiting, a denied one, one of another slug, tool or agent, or one with no built-in check:
 	-- no link.
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-1', pg_temp.ca_request('shop-preview')), '42501',
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-1', pg_temp.ca_request('shop-app')), '42501',
 		'SITE_APPROVAL_REQUIRED: a new app link, or an app link from another machine or port, goes out only after an owner or admin approves it on a card');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change')), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'deny')), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('other-preview', 'ask', 'access_change', 'allow_once')), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once', 'publish_site')), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once', 'share_app',
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'deny')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('other-app', 'ask', 'access_change', 'allow_once')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once', 'publish_site')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once', 'share_app',
 			'92400000-0000-4000-8000-000000000031')), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'allow', 'none')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'allow', 'none')), '42501');
 	-- An approval never carries over: an answer this run did not use, and a reviewer's allow of another call.
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once', p_used => false)), '42501');
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-preview'),
-		pg_temp.ca_review('shop-preview', 'allow', 'access_change', p_call => 'another-call')), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once', p_used => false)), '42501');
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-1', pg_temp.ca_request('shop-app'),
+		pg_temp.ca_review('shop-app', 'allow', 'access_change', p_call => 'another-call')), '42501');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_sites)
 		and not exists (select 1 from public.qorpera_company_site_app_claims), 'No refused share made a link');
 	-- A reviewer's allow of this very call under a company Allow rule opens a link.
-	perform pg_temp.base_assert((pg_temp.ca_share('rule-call', pg_temp.ca_request('rule-preview'),
-		pg_temp.ca_review('rule-preview', 'allow', 'access_change', p_call => 'rule-call')) ->> 'firstShare')::boolean,
+	perform pg_temp.base_assert((pg_temp.ca_share('rule-call', pg_temp.ca_request('rule-app'),
+		pg_temp.ca_review('rule-app', 'allow', 'access_change', p_call => 'rule-call')) ->> 'firstShare')::boolean,
 		'An allow of this call under a company rule opens a link');
-	delete from public.qorpera_company_sites where slug = 'rule-preview';
+	delete from public.qorpera_company_sites where slug = 'rule-app';
 
 	-- Approved on its card: the link, its password and a claim.
-	v_share := pg_temp.ca_share('share-1', pg_temp.ca_request('shop-preview', p_title => 'Shop preview'),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once'));
+	v_share := pg_temp.ca_share('share-1', pg_temp.ca_request('shop-app', p_title => 'Shop preview'),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once'));
 	perform pg_temp.base_assert(pg_temp.ca_keys(v_share) = array['claim', 'claimExpiresAt', 'clientUrl', 'connectUrl', 'firstShare',
 			'machine', 'newPassword', 'port', 'slug', 'url']
-		and v_share ->> 'slug' = 'shop-preview' and v_share ->> 'url' = 'https://shop-preview-preview.qorpera.com/'
+		and v_share ->> 'slug' = 'shop-app' and v_share ->> 'url' = 'https://shop-app-preview.qorpera.com/'
 		and v_share ->> 'machine' = 'shop-box' and v_share -> 'port' = '3000'::jsonb and v_share -> 'firstShare' = 'true'::jsonb
 		and v_share -> 'newPassword' = 'true'::jsonb and v_share ->> 'claim' ~ '^[A-Za-z0-9_-]{43}$'
 		and (v_share ->> 'claimExpiresAt')::timestamptz between clock_timestamp() + interval '14 minutes' and clock_timestamp() + interval '15 minutes'
-		and v_share ->> 'clientUrl' = 'https://shop-preview-preview.qorpera.com/.qorpera/client.mjs'
-		and v_share ->> 'connectUrl' = 'wss://shop-preview-preview.qorpera.com/.qorpera/connect', 'The link is shared: ' || v_share::text);
+		and v_share ->> 'clientUrl' = 'https://shop-app-preview.qorpera.com/.qorpera/client.mjs'
+		and v_share ->> 'connectUrl' = 'wss://shop-app-preview.qorpera.com/.qorpera/connect', 'The link is shared: ' || v_share::text);
 	perform pg_temp.base_assert((select kind = 'app' and machine_id = '56200000-0000-4000-8000-0000000000a1' and app_port = 3000
 		and title = 'Shop preview' and source_path = 'shop-box' and published_at is not null
 		and published_by_staff_agent_id = '92400000-0000-4000-8000-000000000030' and app_key_sha256 is null
-		and current_version_id is null from public.qorpera_company_sites where slug = 'shop-preview'), 'The site is an app link');
+		and current_version_id is null from public.qorpera_company_sites where slug = 'shop-app'), 'The site is an app link');
 	select secret.password into v_password from public.qorpera_company_site_secrets as secret
-	join public.qorpera_company_sites as site on site.id = secret.site_id where site.slug = 'shop-preview';
+	join public.qorpera_company_sites as site on site.id = secret.site_id where site.slug = 'shop-app';
 	perform pg_temp.base_assert(v_password ~ '^[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}$'
 		and strpos(v_share::text, v_password) = 0, 'The link has a new password the agent never sees: ' || v_password);
 	perform pg_temp.base_assert(exists (select 1 from public.qorpera_company_site_app_claims
@@ -277,7 +280,7 @@ begin
 		and not exists (select 1 from public.qorpera_company_site_app_claims where claim_sha256 = v_share ->> 'claim'),
 		'Only the claim''s digest is kept');
 	-- The same call again: the same link, as that call answered (a new password included), with a fresh claim.
-	v_again := pg_temp.ca_share('share-1', pg_temp.ca_request('shop-preview', p_title => 'Shop preview'));
+	v_again := pg_temp.ca_share('share-1', pg_temp.ca_request('shop-app', p_title => 'Shop preview'));
 	perform pg_temp.base_assert(v_again - 'claim' - 'claimExpiresAt' = v_share - 'claim' - 'claimExpiresAt'
 		and v_again ->> 'claim' <> v_share ->> 'claim' and (select count(*) from public.qorpera_company_sites) = 1,
 		'The same call answers the same link with a fresh claim: ' || v_again::text);
@@ -290,75 +293,75 @@ $$;
 -- 4. The link program's connection ---------------------------------------------------------------------------------------
 do $$
 declare v_claim text := current_setting('qorpera_test.ca_claim_2'); v_answer jsonb; v_key text; v_again text; v_key2 text;
-	v_share jsonb; v_site text := pg_temp.ca_site('shop-preview');
+	v_share jsonb; v_site text := pg_temp.ca_site('shop-app');
 begin
 	-- An ended claim, an unknown slug, a wrong or malformed secret, a malformed program id: all refused alike, and none
 	-- uses the claim.
-	foreach v_answer in array array[pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_claim_1')),
-		pg_temp.ca_connect('no-such-app', v_claim), pg_temp.ca_connect('shop-preview', repeat('A', 43)),
-		pg_temp.ca_connect('shop-preview', 'short'), pg_temp.ca_connect('shop-preview', null),
-		pg_temp.ca_connect('Shop-preview', v_claim), pg_temp.ca_connect('shop-preview', v_claim || '='),
-		pg_temp.ca_connect('shop-preview', v_claim, null), pg_temp.ca_connect('shop-preview', v_claim, 'short'),
-		pg_temp.ca_connect('shop-preview', v_claim, repeat('P', 44)), pg_temp.ca_connect('shop-preview', v_claim, repeat('P', 42) || '=')] loop
+	foreach v_answer in array array[pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_claim_1')),
+		pg_temp.ca_connect('no-such-app', v_claim), pg_temp.ca_connect('shop-app', repeat('A', 43)),
+		pg_temp.ca_connect('shop-app', 'short'), pg_temp.ca_connect('shop-app', null),
+		pg_temp.ca_connect('Shop-app', v_claim), pg_temp.ca_connect('shop-app', v_claim || '='),
+		pg_temp.ca_connect('shop-app', v_claim, null), pg_temp.ca_connect('shop-app', v_claim, 'short'),
+		pg_temp.ca_connect('shop-app', v_claim, repeat('P', 44)), pg_temp.ca_connect('shop-app', v_claim, repeat('P', 42) || '=')] loop
 		perform pg_temp.base_assert(v_answer = '{"state":"refused"}'::jsonb, 'Refused: ' || v_answer::text);
 	end loop;
 	perform pg_temp.base_assert((select used_at is null and program_sha256 is null from public.qorpera_company_site_app_claims
 		where claim_sha256 = pg_temp.ca_sha(v_claim)), 'No refused attempt used the claim');
 	-- The claim: a new key, of which only the digest is kept, and the site's id.
-	v_answer := pg_temp.ca_connect('shop-preview', v_claim);
+	v_answer := pg_temp.ca_connect('shop-app', v_claim);
 	v_key := v_answer ->> 'key';
 	perform pg_temp.base_assert(pg_temp.ca_keys(v_answer) = array['key', 'port', 'siteId', 'state'] and v_answer ->> 'state' = 'ok'
 		and v_key ~ '^[A-Za-z0-9_-]{43}$' and v_key <> v_claim and v_answer -> 'port' = '3000'::jsonb and v_answer ->> 'siteId' = v_site,
 		'The claim is traded for a key: ' || v_answer::text);
-	perform pg_temp.base_assert((select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-preview')
+	perform pg_temp.base_assert((select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-app')
 		and (select used_at is not null and expires_at between clock_timestamp() + interval '1 minute' and clock_timestamp() + interval '2 minutes'
 				and program_sha256 = pg_temp.ca_sha(repeat('P', 43))
 			from public.qorpera_company_site_app_claims where claim_sha256 = pg_temp.ca_sha(v_claim)),
 		'The key''s digest is kept, the claim is the program''s and has 2 minutes more');
 	-- In those 2 minutes another program (one that read the claim off the machine) never redeems it: the link stays with
 	-- the first program.
-	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_claim, repeat('Q', 43)) = '{"state":"refused"}'::jsonb
-		and (select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-preview')
-		and pg_temp.ca_connect('shop-preview', v_key) = pg_temp.ca_ok('shop-preview', 3000),
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-app', v_claim, repeat('Q', 43)) = '{"state":"refused"}'::jsonb
+		and (select app_key_sha256 = pg_temp.ca_sha(v_key) from public.qorpera_company_sites where slug = 'shop-app')
+		and pg_temp.ca_connect('shop-app', v_key) = pg_temp.ca_ok('shop-app', 3000),
 		'Another program cannot take the claim over');
 	-- The first program connects with the claim again (an answer lost on the way), each time with a new key in place of
 	-- the last: only the newest key connects.
-	v_again := pg_temp.ca_connect('shop-preview', v_claim) ->> 'key';
+	v_again := pg_temp.ca_connect('shop-app', v_claim) ->> 'key';
 	perform pg_temp.base_assert(v_again ~ '^[A-Za-z0-9_-]{43}$' and v_again <> v_key
-		and pg_temp.ca_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
+		and pg_temp.ca_connect('shop-app', v_key) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-app', v_again) = pg_temp.ca_ok('shop-app', 3000),
 		'The claim again: a new key in place of the last');
 	-- A key check reads only the key: any well-formed program id, none other.
-	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_again, repeat('Q', 43)) = pg_temp.ca_ok('shop-preview', 3000)
-		and pg_temp.ca_connect('shop-preview', v_again, 'short') = '{"state":"refused"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', v_again, null) = '{"state":"refused"}'::jsonb, 'A key with a program id');
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-app', v_again, repeat('Q', 43)) = pg_temp.ca_ok('shop-app', 3000)
+		and pg_temp.ca_connect('shop-app', v_again, 'short') = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-app', v_again, null) = '{"state":"refused"}'::jsonb, 'A key with a program id');
 	update public.qorpera_company_site_app_claims set expires_at = clock_timestamp() - interval '1 second'
 	where claim_sha256 = pg_temp.ca_sha(v_claim);
-	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_claim) = '{"state":"refused"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', v_again) = pg_temp.ca_ok('shop-preview', 3000),
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-app', v_claim) = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-app', v_again) = pg_temp.ca_ok('shop-app', 3000),
 		'After its 2 minutes the claim is refused; the key reconnects');
 	v_key := v_again;
 	-- An expired claim is refused, and the key still works: sharing the same machine and port again needs no approval
 	-- and keeps the connected program.
-	v_share := pg_temp.ca_share('share-2', pg_temp.ca_request('shop-preview'));
+	v_share := pg_temp.ca_share('share-2', pg_temp.ca_request('shop-app'));
 	perform pg_temp.base_assert(v_share -> 'firstShare' = 'false'::jsonb and v_share -> 'newPassword' = 'false'::jsonb
 		and v_share ->> 'machine' = 'shop-box', 'Sharing the live link again needs no approval: ' || v_share::text);
 	update public.qorpera_company_site_app_claims set created_at = created_at - interval '20 minutes',
 		expires_at = clock_timestamp() - interval '1 second' where claim_sha256 = pg_temp.ca_sha(v_share ->> 'claim');
-	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', v_share ->> 'claim') = '{"state":"refused"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', v_key) = pg_temp.ca_ok('shop-preview', 3000), 'An expired claim is refused');
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-app', v_share ->> 'claim') = '{"state":"refused"}'::jsonb
+		and pg_temp.ca_connect('shop-app', v_key) = pg_temp.ca_ok('shop-app', 3000), 'An expired claim is refused');
 	-- Another port is another service: only on an approval, and the connected program is cut off at once.
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-3', pg_temp.ca_request('shop-preview', p_port => 8080)),
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-3', pg_temp.ca_request('shop-app', p_port => 8080)),
 		'42501', 'SITE_APPROVAL_REQUIRED: a new app link, or an app link from another machine or port, goes out only after an owner or admin approves it on a card');
-	v_share := pg_temp.ca_share('share-3', pg_temp.ca_request('shop-preview', p_port => 8080),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once'));
+	v_share := pg_temp.ca_share('share-3', pg_temp.ca_request('shop-app', p_port => 8080),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once'));
 	perform pg_temp.base_assert(v_share -> 'port' = '8080'::jsonb and v_share -> 'firstShare' = 'false'::jsonb
-		and pg_temp.ca_connect('shop-preview', v_key) = '{"state":"refused"}'::jsonb
-		and (select app_key_sha256 is null from public.qorpera_company_sites where slug = 'shop-preview'),
+		and pg_temp.ca_connect('shop-app', v_key) = '{"state":"refused"}'::jsonb
+		and (select app_key_sha256 is null from public.qorpera_company_sites where slug = 'shop-app'),
 		'A new port cuts the old program off');
-	v_key2 := pg_temp.ca_connect('shop-preview', v_share ->> 'claim') ->> 'key';
+	v_key2 := pg_temp.ca_connect('shop-app', v_share ->> 'claim') ->> 'key';
 	perform pg_temp.base_assert(v_key2 ~ '^[A-Za-z0-9_-]{43}$'
-		and pg_temp.ca_connect('shop-preview', v_key2) = pg_temp.ca_ok('shop-preview', 8080),
+		and pg_temp.ca_connect('shop-app', v_key2) = pg_temp.ca_ok('shop-app', 8080),
 		'The new program connects to the new port');
 	perform set_config('qorpera_test.ca_key', v_key2, true);
 end
@@ -374,27 +377,27 @@ select id, 'files-site-password' from public.qorpera_company_sites where slug = 
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_share jsonb; v_check jsonb; v_key text;
 begin
-	v_check := pg_temp.ca_check('shop-preview', 'shop-box', 8080);
+	v_check := pg_temp.ca_check('shop-app', 'shop-box', 8080);
 	perform pg_temp.base_assert(v_check = '{"state":"update","needsReview":false,"machine":"shop-box","port":8080,
-		"url":"https://shop-preview-preview.qorpera.com/"}'::jsonb, 'The live link is an update, with its machine and port: ' || v_check::text);
-	v_check := pg_temp.ca_check('shop-preview', 'spare-box', 8080);
+		"url":"https://shop-app-preview.qorpera.com/"}'::jsonb, 'The live link is an update, with its machine and port: ' || v_check::text);
+	v_check := pg_temp.ca_check('shop-app', 'spare-box', 8080);
 	perform pg_temp.base_assert(v_check - 'url' = '{"state":"update","needsReview":true,"machine":"shop-box","port":8080}'::jsonb
-		and (pg_temp.ca_check('shop-preview', 'shop-box', 3000) ->> 'needsReview')::boolean,
+		and (pg_temp.ca_check('shop-app', 'shop-box', 3000) ->> 'needsReview')::boolean,
 		'From another machine or port, the update needs approval: ' || v_check::text);
 	-- From another machine, only on an approval; the connected program is cut off at once.
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-4', pg_temp.ca_request('shop-preview', 'spare-box', 8080)),
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-4', pg_temp.ca_request('shop-app', 'spare-box', 8080)),
 		'42501', 'SITE_APPROVAL_REQUIRED: a new app link, or an app link from another machine or port, goes out only after an owner or admin approves it on a card');
-	v_share := pg_temp.ca_share('share-4', pg_temp.ca_request('shop-preview', 'spare-box', 8080),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once'));
+	v_share := pg_temp.ca_share('share-4', pg_temp.ca_request('shop-app', 'spare-box', 8080),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once'));
 	perform pg_temp.base_assert(v_share ->> 'machine' = 'spare-box' and v_share -> 'firstShare' = 'false'::jsonb
 		and v_share -> 'newPassword' = 'false'::jsonb
-		and pg_temp.ca_check('shop-preview', 'spare-box', 8080) - 'url' = '{"state":"update","needsReview":false,"machine":"spare-box","port":8080}'::jsonb
-		and (pg_temp.ca_check('shop-preview', 'shop-box', 8080) ->> 'needsReview')::boolean
+		and pg_temp.ca_check('shop-app', 'spare-box', 8080) - 'url' = '{"state":"update","needsReview":false,"machine":"spare-box","port":8080}'::jsonb
+		and (pg_temp.ca_check('shop-app', 'shop-box', 8080) ->> 'needsReview')::boolean
 		and (select title = 'Shop preview' and source_path = 'spare-box' and app_key_sha256 is null
-			from public.qorpera_company_sites where slug = 'shop-preview')
-		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
+			from public.qorpera_company_sites where slug = 'shop-app')
+		and pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb,
 		'The link moved to another machine, and the old program is cut off: ' || v_share::text);
-	v_key := pg_temp.ca_connect('shop-preview', v_share ->> 'claim') ->> 'key';
+	v_key := pg_temp.ca_connect('shop-app', v_share ->> 'claim') ->> 'key';
 	perform pg_temp.base_assert(v_key is not null, 'The program on the other machine connects');
 	perform set_config('qorpera_test.ca_key', v_key, true);
 
@@ -403,10 +406,10 @@ begin
 	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L, %L)', 'share-f', pg_temp.ca_request('files-site'),
 		pg_temp.ca_review('files-site', 'ask', 'access_change', 'allow_once')), '55000',
 		'SITE_NAME_TAKEN: a website of the company has this name; choose another name for the app link');
-	perform pg_temp.base_error(format('select public.qorpera_site_publish_check(%L, %L)', v_binding, 'shop-preview'), '55000',
+	perform pg_temp.base_error(format('select public.qorpera_site_publish_check(%L, %L)', v_binding, 'shop-app'), '55000',
 		'SITE_NAME_TAKEN: an app link of the company has this name; choose another');
 	perform pg_temp.base_error(format('select public.qorpera_site_publish_begin(%L, %L, %L, %L)', v_binding, 'pub-1',
-		pg_temp.ca_publish('shop-preview'), pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once', 'publish_site')),
+		pg_temp.ca_publish('shop-app'), pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once', 'publish_site')),
 		'55000', 'SITE_NAME_TAKEN: an app link of the company has this name; choose another');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_site_versions), 'No files version on an app link');
 	perform pg_temp.base_assert((select kind = 'files' and machine_id is null from public.qorpera_company_sites where slug = 'files-site'),
@@ -415,79 +418,79 @@ begin
 	perform pg_temp.base_error('update public.qorpera_company_sites set app_port = 80 where slug = ''files-site''', '23514');
 	perform pg_temp.base_error('update public.qorpera_company_sites set kind = ''app'' where slug = ''files-site''', '23514');
 	perform pg_temp.base_error('update public.qorpera_company_sites set published_at = null, published_by_staff_agent_id = null
-		where slug = ''shop-preview''', '23514');
+		where slug = ''shop-app''', '23514');
 end
 $$;
 
 -- 6. Visitors --------------------------------------------------------------------------------------------------------------
 do $$
 declare v_password text := current_setting('qorpera_test.ca_password'); v_open jsonb; v_token text;
-	v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-preview'); v_opened jsonb;
+	v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-app'); v_opened jsonb;
 begin
 	v_opened := jsonb_build_object('state', 'open', 'siteId', v_site::text);
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', null) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_session('shop-preview', repeat('A', 32)) = '{"state":"locked"}'::jsonb
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', null) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_app_session('shop-app', repeat('A', 32)) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_app_session('no-such-app', repeat('A', 32)) = '{"state":"locked"}'::jsonb,
 		'No session, no app; an unknown slug looks the same');
-	perform pg_temp.base_assert(public.qorpera_site_app_unlock('shop-preview', 'wrong-password', '192.0.2.1') = '{"state":"wrong"}'::jsonb
+	perform pg_temp.base_assert(public.qorpera_site_app_unlock('shop-app', 'wrong-password', '192.0.2.1') = '{"state":"wrong"}'::jsonb
 		and public.qorpera_site_app_unlock('no-such-app', 'wrong-password', '192.0.2.1') = '{"state":"wrong"}'::jsonb,
 		'A wrong password and an unknown slug answer the same');
 	-- The website unlock never opens an app link, nor the app unlock a website.
-	perform pg_temp.base_assert(public.qorpera_site_unlock('shop-preview', v_password, '192.0.2.6') = '{"state":"wrong"}'::jsonb
+	perform pg_temp.base_assert(public.qorpera_site_unlock('shop-app', v_password, '192.0.2.6') = '{"state":"wrong"}'::jsonb
 		and public.qorpera_site_app_unlock('files-site', 'files-site-password', '192.0.2.6') = '{"state":"wrong"}'::jsonb,
 		'Each unlock is its kind''s');
-	v_open := public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.1');
+	v_open := public.qorpera_site_app_unlock('shop-app', v_password, '192.0.2.1');
 	v_token := v_open ->> 'token';
 	perform pg_temp.base_assert(v_open ->> 'state' = 'open' and v_token ~ '^[A-Za-z0-9_-]{32}$' and (v_open ->> 'maxAge')::int = 604800
 		and exists (select 1 from public.qorpera_company_site_sessions where site_id = v_site and token_sha256 = pg_temp.ca_sha(v_token)),
 		'The password opens a session of the app link: ' || v_open::text);
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = v_opened, 'The session is open, with the site''s id');
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = v_opened, 'The session is open, with the site''s id');
 	-- The site function never serves an app link, and the session opens no other site.
-	perform pg_temp.base_assert(public.qorpera_site_serve('shop-preview', '', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_serve('shop-preview', 'index.html', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
+	perform pg_temp.base_assert(public.qorpera_site_serve('shop-app', '', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_serve('shop-app', 'index.html', v_token, null, 0, 10485760) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_app_session('files-site', v_token) = '{"state":"locked"}'::jsonb, 'An app link is the relay''s alone');
 	-- The app unlock has the website unlock's limits, on the same rows.
-	perform public.qorpera_site_app_unlock('shop-preview', 'guess-' || i, '198.51.100.7') from generate_series(1, 10) as i;
-	perform pg_temp.base_assert(public.qorpera_site_app_unlock('shop-preview', v_password, '198.51.100.7') ->> 'state' = 'limited'
-		and public.qorpera_site_app_unlock('shop-preview', v_password, '198.51.100.8') ->> 'state' = 'open'
-		and (select count(*) from public.qorpera_site_unlock_failures where slug = 'shop-preview') >= 10, 'The limits hold');
+	perform public.qorpera_site_app_unlock('shop-app', 'guess-' || i, '198.51.100.7') from generate_series(1, 10) as i;
+	perform pg_temp.base_assert(public.qorpera_site_app_unlock('shop-app', v_password, '198.51.100.7') ->> 'state' = 'limited'
+		and public.qorpera_site_app_unlock('shop-app', v_password, '198.51.100.8') ->> 'state' = 'open'
+		and (select count(*) from public.qorpera_site_unlock_failures where slug = 'shop-app') >= 10, 'The limits hold');
 	delete from public.qorpera_site_unlock_failures;
 
 	-- App links switched off: locked, refused, and the password opens nothing; on again, the session is open again.
 	update public.qorpera_site_settings set apps_enabled = false;
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.2') = '{"state":"wrong"}'::jsonb, 'App links off');
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = '{"state":"locked"}'::jsonb
+		and pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and public.qorpera_site_app_unlock('shop-app', v_password, '192.0.2.2') = '{"state":"wrong"}'::jsonb, 'App links off');
 	update public.qorpera_site_settings set apps_enabled = true, enabled = false;
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.3') = '{"state":"wrong"}'::jsonb, 'Sites off');
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = '{"state":"locked"}'::jsonb
+		and pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and public.qorpera_site_app_unlock('shop-app', v_password, '192.0.2.3') = '{"state":"wrong"}'::jsonb, 'Sites off');
 	update public.qorpera_site_settings set enabled = true;
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = v_opened
-		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = pg_temp.ca_ok('shop-preview', 8080),
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = v_opened
+		and pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = pg_temp.ca_ok('shop-app', 8080),
 		'Both on again: open');
 
 	-- Its machine being deleted (not yet removed): the link does not answer, as share_app no longer takes the machine.
 	update public.qorpera_company_machines set desired_state = 'deleted' where id = '56200000-0000-4000-8000-0000000000a2';
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.4') = '{"state":"wrong"}'::jsonb
-		and pg_temp.ca_check('shop-preview') - 'url' = '{"state":"new","needsReview":true}'::jsonb
-		and pg_temp.ca_check('shop-preview', 'spare-box', 8080)
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = '{"state":"locked"}'::jsonb
+		and pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and public.qorpera_site_app_unlock('shop-app', v_password, '192.0.2.4') = '{"state":"wrong"}'::jsonb
+		and pg_temp.ca_check('shop-app') - 'url' = '{"state":"new","needsReview":true}'::jsonb
+		and pg_temp.ca_check('shop-app', 'spare-box', 8080)
 			= '{"state":"refused","reason":"APP_MACHINE_NOT_FOUND","needsReview":false}'::jsonb,
 		'A machine being deleted takes its link down');
 	update public.qorpera_company_machines set desired_state = 'running' where id = '56200000-0000-4000-8000-0000000000a2';
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = v_opened, 'Back');
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = v_opened, 'Back');
 
 	-- A new password ends every session.
 	perform pg_temp.ca_as('92400000-0000-4000-8000-000000000001');
 	perform public.qorpera_set_company_site_password(v_site, 'friends of the shop');
 	perform pg_temp.base_claims('service_role');
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_unlock('shop-preview', v_password, '192.0.2.5') = '{"state":"wrong"}'::jsonb,
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_app_unlock('shop-app', v_password, '192.0.2.5') = '{"state":"wrong"}'::jsonb,
 		'A new password ends the session');
-	v_token := public.qorpera_site_app_unlock('shop-preview', 'friends of the shop', '192.0.2.5') ->> 'token';
-	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-preview', v_token) = v_opened, 'The new password opens it');
+	v_token := public.qorpera_site_app_unlock('shop-app', 'friends of the shop', '192.0.2.5') ->> 'token';
+	perform pg_temp.base_assert(public.qorpera_site_app_session('shop-app', v_token) = v_opened, 'The new password opens it');
 	perform set_config('qorpera_test.ca_password', 'friends of the shop', true);
 	perform set_config('qorpera_test.ca_token', v_token, true);
 end
@@ -495,16 +498,16 @@ $$;
 
 -- 7. Members -------------------------------------------------------------------------------------------------------------
 do $$
-declare v_list jsonb; v_app jsonb; v_files jsonb; v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-preview');
+declare v_list jsonb; v_app jsonb; v_files jsonb; v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-app');
 begin
 	perform pg_temp.ca_as('92400000-0000-4000-8000-000000000003');
 	v_list := public.qorpera_list_company_sites('92400000-0000-4000-8000-000000000010');
-	select item.value into v_app from jsonb_array_elements(v_list) as item(value) where item.value ->> 'slug' = 'shop-preview';
+	select item.value into v_app from jsonb_array_elements(v_list) as item(value) where item.value ->> 'slug' = 'shop-app';
 	select item.value into v_files from jsonb_array_elements(v_list) as item(value) where item.value ->> 'slug' = 'files-site';
 	perform pg_temp.base_assert(jsonb_array_length(v_list) = 2 and pg_temp.ca_keys(v_app) = array['bytes', 'createdAt', 'files', 'id',
 			'kind', 'machine', 'passwordChangedAt', 'port', 'publishedAt', 'publishedBy', 'schema', 'slug', 'source', 'state', 'title', 'url']
 		and v_app ->> 'kind' = 'app' and v_app ->> 'machine' = 'spare-box' and v_app -> 'port' = '8080'::jsonb
-		and v_app ->> 'url' = 'https://shop-preview-preview.qorpera.com/' and v_app ->> 'state' = 'live' and v_app ->> 'title' = 'Shop preview'
+		and v_app ->> 'url' = 'https://shop-app-preview.qorpera.com/' and v_app ->> 'state' = 'live' and v_app ->> 'title' = 'Shop preview'
 		and v_app ->> 'source' = 'spare-box' and v_app -> 'files' = '0'::jsonb and v_app -> 'bytes' = '0'::jsonb
 		and v_app #>> '{publishedBy,name}' = 'Alice' and v_app ->> 'schema' = 'qorpera.company-site/v1'
 		and strpos(v_list::text, current_setting('qorpera_test.ca_password')) = 0,
@@ -516,12 +519,12 @@ begin
 	-- Its machine gone, or being deleted, the row says so.
 	update public.qorpera_company_machines set desired_state = 'deleted' where id = '56200000-0000-4000-8000-0000000000a2';
 	select item.value into v_app from jsonb_array_elements(public.qorpera_list_company_sites('92400000-0000-4000-8000-000000000010'))
-		as item(value) where item.value ->> 'slug' = 'shop-preview';
+		as item(value) where item.value ->> 'slug' = 'shop-app';
 	perform pg_temp.base_assert(v_app ->> 'state' = 'off' and v_app -> 'machine' = 'null'::jsonb and v_app ->> 'source' = 'spare-box',
 		'A link whose machine is being deleted is off: ' || v_app::text);
 	update public.qorpera_company_machines set removed_at = clock_timestamp() where id = '56200000-0000-4000-8000-0000000000a2';
 	select item.value into v_app from jsonb_array_elements(public.qorpera_list_company_sites('92400000-0000-4000-8000-000000000010'))
-		as item(value) where item.value ->> 'slug' = 'shop-preview';
+		as item(value) where item.value ->> 'slug' = 'shop-app';
 	perform pg_temp.base_assert(v_app ->> 'state' = 'off' and v_app -> 'machine' = 'null'::jsonb, 'A link whose machine is gone is off');
 	update public.qorpera_company_machines set desired_state = 'running', removed_at = null where id = '56200000-0000-4000-8000-0000000000a2';
 	-- Owners and admins read the link's password, as a website's.
@@ -583,7 +586,7 @@ begin
 	v_token := public.qorpera_site_app_unlock('their-app', 'other-company-pw', '192.0.2.9') ->> 'token';
 	perform pg_temp.base_assert(public.qorpera_site_app_session('their-app', v_token)
 			= '{"state":"open","siteId":"56200000-0000-4000-8000-000000000030"}'::jsonb
-		and public.qorpera_site_app_session('shop-preview', v_token) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_app_session('shop-app', v_token) = '{"state":"locked"}'::jsonb
 		and public.qorpera_site_app_session('their-app', current_setting('qorpera_test.ca_token')) = '{"state":"locked"}'::jsonb,
 		'A session is its link''s only');
 	-- A shared link holds its name however old its last change.
@@ -629,40 +632,40 @@ $$;
 -- 9. Unpublishing ------------------------------------------------------------------------------------------------------
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_share jsonb;
-	v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-preview');
+	v_site uuid := (select id from public.qorpera_company_sites where slug = 'shop-app');
 begin
 	-- Alice turns the link off: its key, claims and sessions go; the site, its name and its password stay.
-	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'shop-preview') = jsonb_build_object('schema',
-		'qorpera.site-unpublish/v1', 'slug', 'shop-preview', 'removed', true), 'Alice turns her link off');
+	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'shop-app') = jsonb_build_object('schema',
+		'qorpera.site-unpublish/v1', 'slug', 'shop-app', 'removed', true), 'Alice turns her link off');
 	perform pg_temp.base_assert((select published_at is null and published_by_staff_agent_id is null and app_key_sha256 is null
 			and machine_id = '56200000-0000-4000-8000-0000000000a2' from public.qorpera_company_sites where id = v_site)
 		and not exists (select 1 from public.qorpera_company_site_app_claims where site_id = v_site)
 		and not exists (select 1 from public.qorpera_company_site_sessions where site_id = v_site)
 		and (select password from public.qorpera_company_site_secrets where site_id = v_site) = current_setting('qorpera_test.ca_password'),
 		'Off: no key, claims or sessions; the password stays');
-	perform pg_temp.base_assert(pg_temp.ca_connect('shop-preview', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
-		and public.qorpera_site_app_session('shop-preview', current_setting('qorpera_test.ca_token')) = '{"state":"locked"}'::jsonb
-		and public.qorpera_site_app_unlock('shop-preview', current_setting('qorpera_test.ca_password'), '192.0.2.20') = '{"state":"wrong"}'::jsonb,
+	perform pg_temp.base_assert(pg_temp.ca_connect('shop-app', current_setting('qorpera_test.ca_key')) = '{"state":"refused"}'::jsonb
+		and public.qorpera_site_app_session('shop-app', current_setting('qorpera_test.ca_token')) = '{"state":"locked"}'::jsonb
+		and public.qorpera_site_app_unlock('shop-app', current_setting('qorpera_test.ca_password'), '192.0.2.20') = '{"state":"wrong"}'::jsonb,
 		'An off link answers nothing');
 	perform pg_temp.ca_as('92400000-0000-4000-8000-000000000003');
 	select item.value into v_share from jsonb_array_elements(public.qorpera_list_company_sites('92400000-0000-4000-8000-000000000010'))
-		as item(value) where item.value ->> 'slug' = 'shop-preview';
+		as item(value) where item.value ->> 'slug' = 'shop-app';
 	perform pg_temp.base_assert(v_share ->> 'state' = 'off' and v_share -> 'publishedAt' = 'null'::jsonb, 'Members see it off: ' || v_share::text);
 	perform pg_temp.base_claims('service_role');
-	perform pg_temp.base_assert(pg_temp.ca_check('shop-preview', 'spare-box', 8080) - 'url' = '{"state":"new","needsReview":true}'::jsonb
-		and public.qorpera_site_unpublish(v_binding, 'shop-preview') ->> 'removed' = 'false', 'Off again: nothing to turn off');
+	perform pg_temp.base_assert(pg_temp.ca_check('shop-app', 'spare-box', 8080) - 'url' = '{"state":"new","needsReview":true}'::jsonb
+		and public.qorpera_site_unpublish(v_binding, 'shop-app') ->> 'removed' = 'false', 'Off again: nothing to turn off');
 	-- Sharing it again is a new link: only on an approval, with the same password (not a new one).
-	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-5', pg_temp.ca_request('shop-preview', 'spare-box', 8080)),
+	perform pg_temp.base_error(format('select pg_temp.ca_share(%L, %L)', 'share-5', pg_temp.ca_request('shop-app', 'spare-box', 8080)),
 		'42501');
-	v_share := pg_temp.ca_share('share-5', pg_temp.ca_request('shop-preview', 'spare-box', 8080),
-		pg_temp.ca_review('shop-preview', 'ask', 'access_change', 'allow_once'));
+	v_share := pg_temp.ca_share('share-5', pg_temp.ca_request('shop-app', 'spare-box', 8080),
+		pg_temp.ca_review('shop-app', 'ask', 'access_change', 'allow_once'));
 	perform pg_temp.base_assert(v_share -> 'firstShare' = 'true'::jsonb and v_share -> 'newPassword' = 'false'::jsonb
-		and (select id from public.qorpera_company_sites where slug = 'shop-preview') = v_site
+		and (select id from public.qorpera_company_sites where slug = 'shop-app') = v_site
 		and (select password from public.qorpera_company_site_secrets where site_id = v_site) = current_setting('qorpera_test.ca_password'),
 		'Shared again, with its password: ' || v_share::text);
 	-- Turning a link off works with the switches off.
 	update public.qorpera_site_settings set enabled = false, apps_enabled = false;
-	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'shop-preview') ->> 'removed' = 'true', 'Off with the switches off');
+	perform pg_temp.base_assert(public.qorpera_site_unpublish(v_binding, 'shop-app') ->> 'removed' = 'true', 'Off with the switches off');
 	update public.qorpera_site_settings set enabled = true, apps_enabled = true;
 	-- An admin's unpublish takes the link away whole.
 	perform pg_temp.ca_as('92400000-0000-4000-8000-000000000004');
@@ -671,7 +674,7 @@ begin
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_sites where id = v_site)
 		and not exists (select 1 from public.qorpera_company_site_secrets where site_id = v_site)
 		and not exists (select 1 from public.qorpera_company_site_app_claims where site_id = v_site)
-		and pg_temp.ca_check('shop-preview') - 'url' = '{"state":"new","needsReview":true}'::jsonb, 'Gone, with its password and claims');
+		and pg_temp.ca_check('shop-app') - 'url' = '{"state":"new","needsReview":true}'::jsonb, 'Gone, with its password and claims');
 end
 $$;
 

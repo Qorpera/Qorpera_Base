@@ -721,16 +721,11 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					weight: 4,
 					name: `the window's button (${button()?.textContent ?? "none"})`,
 					run: () => {
-						// Type privately is in the large view alone (20260930734000): a click on the preview's picture opens it.
-						const view = p?.el.querySelector<HTMLElement>(".machine-screen");
-						if (!button() && view && !view.hidden && !view.classList.contains("screen-viewer-entered")) {
-							view.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }));
-							view.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }));
-						}
+						// The window's button is Done or Try again alone: nothing in the web begins private typing any more
+						// (Jonas, 14 Nov 2026).
 						const value = button();
 						if (!value || value.disabled) return false;
-						if (value.textContent === "Type privately") pressed();
-						else release(machines);
+						release(machines);
 						value.click();
 						return true;
 					},
@@ -767,7 +762,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				{
 					kind: "card",
 					weight: 3,
-					name: "the card's Take over",
+					name: "a private hold begun (the take-over kept for the tests; no button or card has it)",
 					run: () => {
 						if (!p) open();
 						pressed();
